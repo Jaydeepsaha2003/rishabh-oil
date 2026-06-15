@@ -1,0 +1,48 @@
+import { app, shell, BrowserWindow } from 'electron'
+import { join } from 'path'
+import { registerIpc } from './ipc'
+import { initDb } from './db'
+import { seedDefaultAdmin } from './auth'
+
+function createWindow(): void {
+  const win = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    show: false,
+    autoHideMenuBar: true,
+    title: 'Rishabh Oil',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false,
+      contextIsolation: true
+    }
+  })
+
+  win.on('ready-to-show', () => win.show())
+
+  win.webContents.setWindowOpenHandler((details) => {
+    shell.openExternal(details.url)
+    return { action: 'deny' }
+  })
+
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  } else {
+    win.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+}
+
+app.whenReady().then(async () => {
+  await initDb()
+  await seedDefaultAdmin().catch((e) => console.error('[auth] seed failed:', e))
+  registerIpc()
+  createWindow()
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+})
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit()
+})
