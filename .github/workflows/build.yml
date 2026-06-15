@@ -1,0 +1,61 @@
+name: Build & release desktop apps
+
+# Build manually from the Actions tab (downloads as artifacts), or push a
+# version tag like v0.1.0 to publish a Release with downloadable installers.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm install
+
+      # Optional: if these repo secrets are set, the installer auto-connects.
+      # If not, the installed app shows its setup screen on first launch.
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        run: npm run dist:win
+        env:
+          MAIN_VITE_TURSO_DATABASE_URL: ${{ secrets.MAIN_VITE_TURSO_DATABASE_URL }}
+          MAIN_VITE_TURSO_AUTH_TOKEN: ${{ secrets.MAIN_VITE_TURSO_AUTH_TOKEN }}
+
+      - name: Build macOS installer
+        if: runner.os == 'macOS'
+        run: npm run dist:mac
+        env:
+          MAIN_VITE_TURSO_DATABASE_URL: ${{ secrets.MAIN_VITE_TURSO_DATABASE_URL }}
+          MAIN_VITE_TURSO_AUTH_TOKEN: ${{ secrets.MAIN_VITE_TURSO_AUTH_TOKEN }}
+
+      # Always available: download from the run's Artifacts section.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os }}
+          path: |
+            release/*.exe
+            release/*.dmg
+
+      # On a version tag, attach the installers to a downloadable Release.
+      - name: Publish to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.exe
+            release/*.dmg
