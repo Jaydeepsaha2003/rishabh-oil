@@ -1,5 +1,7 @@
 import { ipcMain } from 'electron'
-import { ping, bumpRevision, getRevision } from './db'
+import { ping, bumpRevision, getRevision, initDb, resetClient, getConfiguredUrl } from './db'
+import { saveStoredConfig } from './config'
+import { seedDefaultAdmin } from './auth'
 import {
   list,
   get,
@@ -53,6 +55,15 @@ export function registerIpc(): void {
   handle('app:revision', () => getRevision())
 
   handle('db:ping', () => ping())
+
+  handle('config:get', () => ({ url: getConfiguredUrl() }))
+  handle('config:save', async (_e, { url, token }: { url: string; token: string }) => {
+    saveStoredConfig(url, token)
+    resetClient()
+    await initDb()
+    await seedDefaultAdmin().catch(() => {})
+    return ping()
+  })
 
   handle('data:list', (_e, { table }: { table: string }) => list(table))
   handle('data:get', (_e, { table, id }: { table: string; id: number }) => get(table, id))

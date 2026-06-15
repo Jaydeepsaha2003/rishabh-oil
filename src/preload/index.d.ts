@@ -4,6 +4,10 @@ type Row = Record<string, any>
 export interface Api {
   dbPing: () => Promise<{ ok: boolean; message: string }>
   revision: () => Promise<number>
+  config: {
+    get: () => Promise<{ url: string }>
+    save: (url: string, token: string) => Promise<{ ok: boolean; message: string }>
+  }
   data: {
     list: (table: string) => Promise<Row[]>
     get: (table: string, id: number) => Promise<Row | null>

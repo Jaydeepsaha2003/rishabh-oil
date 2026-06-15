@@ -4,6 +4,7 @@ import { LogOut } from 'lucide-react'
 import { Sidebar, type Page } from './components/Sidebar'
 import { LoginScreen } from './components/LoginScreen'
 import { LoadingSplash } from './components/LoadingSplash'
+import { DbSetupScreen } from './components/DbSetupScreen'
 import { Dashboard } from './pages/Dashboard'
 import { Settings } from './pages/Settings'
 import { Bargains } from './pages/Bargains'
@@ -17,6 +18,12 @@ function App(): React.JSX.Element {
   const [user, setUser] = useState<AppUser | null>(() => loadUser())
   const [booting, setBooting] = useState(false)
   const [page, setPage] = useState<Page>('dashboard')
+  const [dbState, setDbState] = useState<'checking' | 'ok' | 'setup'>('checking')
+
+  // On launch, test the (auto-configured) connection; show setup only if it fails.
+  useEffect(() => {
+    window.api.dbPing().then((r) => setDbState(r.ok ? 'ok' : 'setup'))
+  }, [])
 
   const allowed = user ? MODULES.filter((m) => canAccess(user, m.key)).map((m) => m.key) : []
 
@@ -39,6 +46,9 @@ function App(): React.JSX.Element {
     setUser(null)
     setPage('dashboard')
   }
+
+  if (dbState === 'checking') return <LoadingSplash />
+  if (dbState === 'setup') return <DbSetupScreen onReady={() => setDbState('ok')} />
 
   if (!user) return <LoginScreen onLogin={handleLogin} />
   if (booting) return <LoadingSplash name={user.full_name} />

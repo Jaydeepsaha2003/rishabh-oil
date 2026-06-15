@@ -1,7 +1,24 @@
 import { createClient, type Client } from '@libsql/client'
 import { SCHEMA_SQL } from './schema'
+import { getStoredConfig } from './config'
 
 let client: Client | null = null
+
+// Resolved without the token — used to pre-fill the setup screen.
+export function getConfiguredUrl(): string {
+  return (
+    getStoredConfig().url ||
+    import.meta.env.MAIN_VITE_TURSO_DATABASE_URL ||
+    process.env.MAIN_VITE_TURSO_DATABASE_URL ||
+    process.env.TURSO_DATABASE_URL ||
+    ''
+  )
+}
+
+// Drop the cached client so the next call reconnects (after the user saves new credentials).
+export function resetClient(): void {
+  client = null
+}
 
 function loadEnv(): void {
   // Node 22+ can read a local .env into process.env. In dev the cwd is the
@@ -18,18 +35,21 @@ function loadEnv(): void {
 export function getClient(): Client {
   if (client) return client
   loadEnv()
-  // MAIN_VITE_* values are baked into the build by electron-vite (so installed
-  // apps carry their credentials); plain TURSO_* from .env is the dev fallback.
+  // Resolution order: credentials the user saved on this machine (highest, so
+  // a fix sticks), then MAIN_VITE_* baked into the build, then dev .env.
+  const stored = getStoredConfig()
   const url =
+    stored.url ||
     import.meta.env.MAIN_VITE_TURSO_DATABASE_URL ||
     process.env.MAIN_VITE_TURSO_DATABASE_URL ||
     process.env.TURSO_DATABASE_URL
   const authToken =
+    stored.authToken ||
     import.meta.env.MAIN_VITE_TURSO_AUTH_TOKEN ||
     process.env.MAIN_VITE_TURSO_AUTH_TOKEN ||
     process.env.TURSO_AUTH_TOKEN
   if (!url) {
-    throw new Error('Turso database URL is not set — add it to your .env file.')
+    throw new Error('Turso database URL is not set — enter it in the setup screen.')
   }
   client = createClient({ url, authToken })
   return client

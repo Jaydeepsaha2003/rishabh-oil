@@ -7,6 +7,11 @@ type Row = Record<string, any>
 const api = {
   dbPing: (): Promise<{ ok: boolean; message: string }> => ipcRenderer.invoke('db:ping'),
   revision: (): Promise<number> => ipcRenderer.invoke('app:revision'),
+  config: {
+    get: (): Promise<{ url: string }> => ipcRenderer.invoke('config:get'),
+    save: (url: string, token: string): Promise<{ ok: boolean; message: string }> =>
+      ipcRenderer.invoke('config:save', { url, token })
+  },
   data: {
     list: (table: string): Promise<Row[]> => ipcRenderer.invoke('data:list', { table }),
     get: (table: string, id: number): Promise<Row | null> =>
