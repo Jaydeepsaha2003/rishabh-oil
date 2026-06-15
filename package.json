@@ -13,10 +13,10 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "db:test": "node --env-file=.env scripts/db-test.mjs",
     "seed:admin": "node --env-file=.env scripts/seed-admin.mjs",
-    "dist:dir": "electron-vite build && electron-builder --dir",
-    "dist:win": "electron-vite build && electron-builder --win",
-    "dist:mac": "electron-vite build && electron-builder --mac",
-    "dist:linux": "electron-vite build && electron-builder --linux"
+    "dist:dir": "electron-vite build && electron-builder --dir --publish never",
+    "dist:win": "electron-vite build && electron-builder --win --publish never",
+    "dist:mac": "electron-vite build && electron-builder --mac --publish never",
+    "dist:linux": "electron-vite build && electron-builder --linux --publish never"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",
