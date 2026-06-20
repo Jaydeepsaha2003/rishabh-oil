@@ -2,6 +2,7 @@ import { ipcMain } from 'electron'
 import { ping, bumpRevision, getRevision, initDb, resetClient, getConfiguredUrl } from './db'
 import { saveStoredConfig } from './config'
 import { seedDefaultAdmin } from './auth'
+import { seedProducts, seedFormulations } from './seed'
 import {
   list,
   get,
@@ -19,8 +20,11 @@ import {
   updateOrder,
   deleteOrder,
   advanceOrder,
+  supplierFyTaxable,
   listSupplierLedger,
-  listTransporterLedger
+  listTransporterLedger,
+  addLedgerEntry,
+  deleteLedgerEntry
 } from './orders'
 import {
   listPayments,
@@ -33,6 +37,32 @@ import {
   deleteBillDiscount
 } from './payments'
 import { login, listUsers, createUser, updateUser, deleteUser } from './auth'
+import { heartbeat, liveUsers, listIps, setIpActive, listLogs } from './access'
+import {
+  listFormulations,
+  getFormulationItems,
+  createFormulation,
+  updateFormulation,
+  deleteFormulation
+} from './formulations'
+import { stockLevels, productionNeeds } from './stock'
+import {
+  listProduction,
+  getProductionItems,
+  createProduction,
+  deleteProduction
+} from './production'
+import {
+  listSales,
+  createSale,
+  updateSale,
+  setSaleStatus,
+  deleteSale,
+  listSalesBargains,
+  createSalesBargain,
+  updateSalesBargain,
+  deleteSalesBargain
+} from './sales'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -42,7 +72,8 @@ type Row = Record<string, any>
 // Turso token never reaches the UI layer.
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
-  const READONLY = /:list$|:get$|:outstanding$|:all$|^db:ping$|^app:revision$|^auth:login$/
+  const READONLY =
+    /:list$|:get$|:items$|:outstanding$|:all$|:fyTaxable$|:needs$|:liveUsers$|:ips$|:logs$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$/
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handle = (channel: string, fn: (...a: any[]) => unknown): void => {
     ipcMain.handle(channel, async (e, args) => {
@@ -62,6 +93,8 @@ export function registerIpc(): void {
     resetClient()
     await initDb()
     await seedDefaultAdmin().catch(() => {})
+    await seedProducts().catch(() => {})
+    await seedFormulations().catch(() => {})
     return ping()
   })
 
@@ -99,6 +132,11 @@ export function registerIpc(): void {
   )
   handle('orders:delete', (_e, { id }: { id: number }) => deleteOrder(id))
   handle(
+    'orders:fyTaxable',
+    (_e, { supplierId, date, excludeId }: { supplierId: number; date: string; excludeId: number }) =>
+      supplierFyTaxable(supplierId, date, excludeId)
+  )
+  handle(
     'orders:advance',
     (_e, { id, toStatus, data }: { id: number; toStatus: string; data: Row }) =>
       advanceOrder(id, toStatus, data)
@@ -106,6 +144,10 @@ export function registerIpc(): void {
 
   handle('ledger:suppliers', () => listSupplierLedger())
   handle('ledger:transporters', () => listTransporterLedger())
+  handle('ledger:addEntry', (_e, { data }: { data: Row }) => addLedgerEntry(data))
+  handle('ledger:deleteEntry', (_e, { partyType, id }: { partyType: string; id: number }) =>
+    deleteLedgerEntry(partyType, id)
+  )
 
   handle('payments:list', () => listPayments())
   handle('payments:record', (_e, { data }: { data: Row }) => recordPayment(data))
@@ -132,4 +174,45 @@ export function registerIpc(): void {
   handle('users:create', (_e, { values }: { values: Row }) => createUser(values))
   handle('users:update', (_e, { id, values }: { id: number; values: Row }) => updateUser(id, values))
   handle('users:delete', (_e, { id }: { id: number }) => deleteUser(id))
+
+  handle('access:heartbeat', (_e, { userId, username }: { userId: number; username: string }) =>
+    heartbeat(userId, username)
+  )
+  handle('access:liveUsers', () => liveUsers())
+  handle('access:ips', () => listIps())
+  handle('access:setIp', (_e, { id, active }: { id: number; active: boolean }) =>
+    setIpActive(id, active)
+  )
+  handle('access:logs', () => listLogs())
+
+  handle('formulations:list', () => listFormulations())
+  handle('formulations:items', (_e, { id }: { id: number }) => getFormulationItems(id))
+  handle('formulations:create', (_e, { values }: { values: Row }) => createFormulation(values))
+  handle('formulations:update', (_e, { id, values }: { id: number; values: Row }) =>
+    updateFormulation(id, values)
+  )
+  handle('formulations:delete', (_e, { id }: { id: number }) => deleteFormulation(id))
+
+  handle('stock:list', () => stockLevels())
+  handle('stock:needs', () => productionNeeds())
+
+  handle('production:list', () => listProduction())
+  handle('production:items', (_e, { id }: { id: number }) => getProductionItems(id))
+  handle('production:create', (_e, { values }: { values: Row }) => createProduction(values))
+  handle('production:delete', (_e, { id }: { id: number }) => deleteProduction(id))
+
+  handle('sales:list', () => listSales())
+  handle('sales:create', (_e, { values }: { values: Row }) => createSale(values))
+  handle('sales:update', (_e, { id, values }: { id: number; values: Row }) => updateSale(id, values))
+  handle('sales:setStatus', (_e, { id, status }: { id: number; status: string }) =>
+    setSaleStatus(id, status)
+  )
+  handle('sales:delete', (_e, { id }: { id: number }) => deleteSale(id))
+
+  handle('salesBargains:list', () => listSalesBargains())
+  handle('salesBargains:create', (_e, { values }: { values: Row }) => createSalesBargain(values))
+  handle('salesBargains:update', (_e, { id, values }: { id: number; values: Row }) =>
+    updateSalesBargain(id, values)
+  )
+  handle('salesBargains:delete', (_e, { id }: { id: number }) => deleteSalesBargain(id))
 }

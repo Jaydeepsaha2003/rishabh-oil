@@ -136,6 +136,8 @@ export function Orders(): React.JSX.Element {
       invoice_rate: prev.invoice_rate || b.rate_per_uom,
       gst_pct: sup?.gst_pct ?? 0,
       tds_pct: sup?.tds_pct ?? 0,
+      tds_threshold: sup?.tds_threshold ?? 0,
+      tds_above_only: !!sup?.tds_above_only,
       adds_interest: !!sup?.adds_interest,
       interest_pct: sup?.interest_pct ?? 0,
       interest_days: sup?.interest_days ?? 0
@@ -166,7 +168,9 @@ export function Orders(): React.JSX.Element {
       ordered_qty: row.ordered_qty,
       invoice_rate: row.invoice_rate,
       gst_pct: row.gst_pct,
-      tds_pct: row.tds_pct,
+      tds_pct: sup?.tds_pct ?? row.tds_pct,
+      tds_threshold: sup?.tds_threshold ?? 0,
+      tds_above_only: !!sup?.tds_above_only,
       tanker_no: row.tanker_no ?? '',
       is_registered_transporter: row.is_registered_transporter == null ? true : !!row.is_registered_transporter,
       posting: !!row.posting,
@@ -178,6 +182,20 @@ export function Orders(): React.JSX.Element {
     setOpen(true)
   }
 
+  // Pull this supplier's taxable already billed this FY, for the cumulative TDS slab.
+  useEffect(() => {
+    if (!form.supplier_id || !form.order_date) return
+    let active = true
+    window.api.orders
+      .fyTaxable(Number(form.supplier_id), String(form.order_date), (editing?.id as number) || 0)
+      .then((t) => {
+        if (active) setForm((p) => ({ ...p, tds_prior: t }))
+      })
+    return () => {
+      active = false
+    }
+  }, [form.supplier_id, form.order_date, editing])
+
   const calc = useMemo(
     () =>
       computeMoney({
@@ -185,10 +203,13 @@ export function Orders(): React.JSX.Element {
         invoiceRate: Number(form.invoice_rate) || 0,
         bargainRate: Number(form.bargain_rate) || 0,
         gstPct: Number(form.gst_pct) || 0,
-        tdsPct: Number(form.tds_pct) || 0,
         addsInterest: !!form.adds_interest,
         interestPct: Number(form.interest_pct) || 0,
-        interestDays: Number(form.interest_days) || 0
+        interestDays: Number(form.interest_days) || 0,
+        tdsPct: form.tds_above_only ? 0 : Number(form.tds_pct) || 0,
+        tdsThreshold: Number(form.tds_threshold) || 0,
+        tdsPctAbove: Number(form.tds_pct) || 0,
+        tdsPrior: Number(form.tds_prior) || 0
       }),
     [form]
   )
@@ -301,7 +322,7 @@ export function Orders(): React.JSX.Element {
     if (!actionRow || !target) return
     // validations per stage
     if (target === 'in_transit' && !actionForm.source_id) {
-      toast.error('Select a source')
+      toast.error('Select a port')
       return
     }
     if (target === 'received') {
@@ -545,7 +566,17 @@ export function Orders(): React.JSX.Element {
               <div className="my-2 border-t" />
               <Row2 label="Taxable value" value={formatINR(calc.taxableValue)} />
               <Row2 label={`GST (${Number(form.gst_pct) || 0}%)`} value={formatINR(calc.gstAmount)} />
-              <Row2 label={`TDS (${Number(form.tds_pct) || 0}%)`} value={`− ${formatINR(calc.tdsAmount)}`} />
+              <Row2
+                label={Number(form.tds_threshold) > 0 ? 'TDS (slab)' : `TDS (${Number(form.tds_pct) || 0}%)`}
+                value={`− ${formatINR(calc.tdsAmount)}`}
+              />
+              {Number(form.tds_threshold) > 0 && (
+                <p className="-mt-1 mb-1 text-[11px] text-muted-foreground">
+                  {form.tds_above_only ? 'No TDS' : `${Number(form.tds_pct) || 0}%`} up to ₹
+                  {formatNum(Number(form.tds_threshold))}/FY, then {Number(form.tds_pct) || 0}% (₹
+                  {formatNum(Number(form.tds_prior) || 0)} billed so far)
+                </p>
+              )}
               <div className="my-2 border-t" />
               <Row2 label="Net (invoice)" value={formatINR(calc.netAmount)} strong />
               <div className="mt-3 mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -614,6 +645,11 @@ export function Orders(): React.JSX.Element {
                   onCheckedChange={(v) => setActionField('financed_by_party', v)}
                 />
               </div>
+              <p className="text-xs text-muted-foreground">
+                Unless financed, interest is charged on the days beyond the supplier&apos;s credit
+                period (for suppliers who don&apos;t already bill interest in the invoice) and added
+                to their ledger.
+              </p>
             </div>
           )}
 
@@ -629,13 +665,13 @@ export function Orders(): React.JSX.Element {
                   />
                 </div>
                 <div className="grid gap-1.5">
-                  <Label>Source</Label>
+                  <Label>Port</Label>
                   <Select
                     value={String(actionForm.source_id ?? '')}
                     onValueChange={(v) => setActionField('source_id', v)}
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Select source" />
+                      <SelectValue placeholder="Select port" />
                     </SelectTrigger>
                     <SelectContent>
                       {sources.map((s) => (
@@ -648,7 +684,7 @@ export function Orders(): React.JSX.Element {
                 </div>
               </div>
               <p className="text-xs text-muted-foreground">
-                Expected delivery is the dispatch date plus the source&apos;s transit days.
+                Expected delivery is the dispatch date plus the port&apos;s transit days.
               </p>
             </div>
           )}
@@ -786,8 +822,14 @@ export function Orders(): React.JSX.Element {
                   value={formatDate(detailRow.payment_cleared_date)}
                 />
               )}
+              {Number(detailRow.credit_interest_amount) > 0 && (
+                <Row2
+                  label={`Credit interest (${formatNum(detailRow.credit_interest_days)}d)`}
+                  value={formatINR(detailRow.credit_interest_amount)}
+                />
+              )}
               {detailRow.dispatch_date && <Row2 label="In transit" value={formatDate(detailRow.dispatch_date)} />}
-              {detailRow.source_name && <Row2 label="Source" value={detailRow.source_name} />}
+              {detailRow.source_name && <Row2 label="Port" value={detailRow.source_name} />}
               {detailRow.expected_delivery_date && (
                 <Row2 label="Expected delivery" value={formatDate(detailRow.expected_delivery_date)} />
               )}

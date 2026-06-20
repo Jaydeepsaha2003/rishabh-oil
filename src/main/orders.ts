@@ -38,6 +38,47 @@ export interface MoneyInput {
   addsInterest: boolean
   interestPct: number
   interestDays: number
+  // Slab TDS (cumulative per financial year): base % up to threshold, then above %.
+  tdsThreshold?: number
+  tdsPctAbove?: number
+  tdsPrior?: number // taxable already billed to this party this FY (before this order)
+}
+
+// Tiered TDS: the part of `taxable` still under the threshold (given `prior`
+// already billed) is taxed at basePct, the rest at abovePct.
+function tierTds(
+  taxable: number,
+  prior: number,
+  threshold: number,
+  basePct: number,
+  abovePct: number
+): number {
+  if (!threshold || threshold <= 0) return (taxable * basePct) / 100
+  const below = Math.max(0, Math.min(threshold - prior, taxable))
+  const above = taxable - below
+  return (below * basePct) / 100 + (above * abovePct) / 100
+}
+
+// Indian FY (Apr–Mar) date range for the given date.
+function fyRange(dateStr: string): { start: string; end: string } {
+  const d = new Date(dateStr)
+  const y = d.getFullYear()
+  const startY = d.getMonth() + 1 >= 4 ? y : y - 1
+  return { start: `${startY}-04-01`, end: `${startY + 1}-03-31` }
+}
+
+export async function supplierFyTaxable(
+  supplierId: number,
+  dateStr: string,
+  excludeId: number
+): Promise<number> {
+  const { start, end } = fyRange(dateStr)
+  const res = await getClient().execute({
+    sql: `SELECT COALESCE(SUM(taxable_value), 0) AS t FROM orders
+          WHERE supplier_id = ? AND order_date BETWEEN ? AND ? AND id != ?`,
+    args: [supplierId, start, end, excludeId || 0]
+  })
+  return Number(res.rows[0].t) || 0
 }
 
 export interface MoneyResult {
@@ -65,15 +106,19 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   const adjustedRate = i.invoiceRate + interestPerUnit
 
   // Provisional (invoice) block.
+  const threshold = i.tdsThreshold || 0
+  const abovePct = i.tdsPctAbove || 0
+  const prior = i.tdsPrior || 0
+
   const taxableValue = adjustedRate * i.orderedQty
   const gstAmount = (taxableValue * i.gstPct) / 100
-  const tdsAmount = (taxableValue * i.tdsPct) / 100
+  const tdsAmount = tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct)
   const netAmount = taxableValue + gstAmount - tdsAmount
 
   // Final (bargain rate) block.
   const finalTaxable = i.bargainRate * i.orderedQty
   const finalGst = (finalTaxable * i.gstPct) / 100
-  const finalTds = (finalTaxable * i.tdsPct) / 100
+  const finalTds = tierTds(finalTaxable, prior, threshold, i.tdsPct, abovePct)
   const finalNet = finalTaxable + finalGst - finalTds
 
   return {
@@ -128,7 +173,7 @@ export async function listOrders(): Promise<Row[]> {
            t.name AS transporter_name
     FROM orders o
     LEFT JOIN suppliers s ON s.id = o.supplier_id
-    LEFT JOIN oil_types ot ON ot.id = o.oil_type_id
+    LEFT JOIN products ot ON ot.id = o.oil_type_id
     LEFT JOIN sources src ON src.id = o.source_id
     LEFT JOIN transporters t ON t.id = o.transporter_id
     ORDER BY o.id DESC
@@ -138,15 +183,19 @@ export async function listOrders(): Promise<Row[]> {
 
 export async function createOrder(v: Row): Promise<{ id: number }> {
   const supplier = await getSupplier(n(v.supplier_id))
+  const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), 0)
   const m = computeMoney({
     orderedQty: n(v.ordered_qty),
     invoiceRate: n(v.invoice_rate),
     bargainRate: n(v.bargain_rate),
     gstPct: n(v.gst_pct),
-    tdsPct: n(v.tds_pct),
+    tdsPct: supplier?.tds_above_only ? 0 : n(v.tds_pct),
     addsInterest: !!supplier?.adds_interest,
     interestPct: n(supplier?.interest_pct),
-    interestDays: n(supplier?.interest_days)
+    interestDays: n(supplier?.interest_days),
+    tdsThreshold: n(supplier?.tds_threshold),
+    tdsPctAbove: n(v.tds_pct),
+    tdsPrior: prior
   })
   const res = await getClient().execute({
     sql: `INSERT INTO orders
@@ -192,15 +241,19 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
 
 export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
   const supplier = await getSupplier(n(v.supplier_id))
+  const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), id)
   const m = computeMoney({
     orderedQty: n(v.ordered_qty),
     invoiceRate: n(v.invoice_rate),
     bargainRate: n(v.bargain_rate),
     gstPct: n(v.gst_pct),
-    tdsPct: n(v.tds_pct),
+    tdsPct: supplier?.tds_above_only ? 0 : n(v.tds_pct),
     addsInterest: !!supplier?.adds_interest,
     interestPct: n(supplier?.interest_pct),
-    interestDays: n(supplier?.interest_days)
+    interestDays: n(supplier?.interest_days),
+    tdsThreshold: n(supplier?.tds_threshold),
+    tdsPctAbove: n(v.tds_pct),
+    tdsPrior: prior
   })
   await getClient().execute({
     sql: `UPDATE orders SET
@@ -280,8 +333,51 @@ export async function advanceOrder(
       args.push(data.tanker_no || null)
     }
   } else if (toStatus === 'payment_cleared') {
-    sets.push('payment_cleared_date = ?', 'financed_by_party = ?')
-    args.push(data.payment_cleared_date || null, data.financed_by_party ? 1 : 0)
+    const financed = !!data.financed_by_party
+    const pcDate = (data.payment_cleared_date as string) || null
+    // Credit-period interest: charged only on days beyond the credit period, and
+    // only for suppliers who DON'T already bill interest in the invoice
+    // (adds_interest). Skipped entirely when the party financed it.
+    const supplier = await getSupplier(n(order.supplier_id))
+    let interestDays = 0
+    let interestAmt = 0
+    if (
+      !financed &&
+      supplier &&
+      !supplier.adds_interest &&
+      n(supplier.interest_pct) > 0 &&
+      pcDate &&
+      order.order_date
+    ) {
+      const days = Math.round(
+        (new Date(pcDate).getTime() - new Date(String(order.order_date)).getTime()) / 86400000
+      )
+      interestDays = Math.max(0, days - n(supplier.credit_period_days))
+      interestAmt = (n(order.net_amount) * n(supplier.interest_pct) * interestDays) / (100 * 365)
+    }
+    await c.execute({
+      sql: `UPDATE orders SET status = 'payment_cleared', payment_cleared_date = ?, financed_by_party = ?,
+            credit_interest_days = ?, credit_interest_amount = ? WHERE id = ?`,
+      args: [pcDate, financed ? 1 : 0, interestDays, interestAmt, id]
+    })
+    await c.execute({
+      sql: "DELETE FROM supplier_ledger WHERE order_id = ? AND entry_type = 'interest'",
+      args: [id]
+    })
+    if (interestAmt > 0) {
+      await c.execute({
+        sql: `INSERT INTO supplier_ledger (supplier_id, order_id, entry_date, entry_type, amount, note)
+              VALUES (?, ?, ?, 'interest', ?, ?)`,
+        args: [
+          n(order.supplier_id),
+          id,
+          pcDate,
+          interestAmt,
+          `Interest for ${interestDays} days beyond credit period`
+        ]
+      })
+    }
+    return { id }
   } else if (toStatus === 'in_transit') {
     const sourceId = data.source_id ? Number(data.source_id) : null
     const dispatch = (data.dispatch_date as string) || null
@@ -408,6 +504,31 @@ export async function listTransporterLedger(): Promise<Row[]> {
     ORDER BY l.id DESC
   `)
   return toPlain(res)
+}
+
+// Manual ledger entry (opening balance, advance, adjustment) — Tally style.
+// Stored signed: credit (we owe the party) positive, debit negative.
+export async function addLedgerEntry(d: Row): Promise<{ id: number }> {
+  const partyType = d.party_type === 'transporter' ? 'transporter' : 'supplier'
+  const table = partyType === 'supplier' ? 'supplier_ledger' : 'transporter_ledger'
+  const col = partyType === 'supplier' ? 'supplier_id' : 'transporter_id'
+  const amount = n(d.cr) - n(d.dr)
+  const res = await getClient().execute({
+    sql: `INSERT INTO ${table} (${col}, order_id, entry_date, entry_type, amount, note)
+          VALUES (?, NULL, ?, ?, ?, ?)`,
+    args: [n(d.party_id), d.entry_date, d.entry_type || 'manual', amount, d.note || null]
+  })
+  return { id: Number(res.lastInsertRowid) }
+}
+
+// Only manual entries can be deleted (auto entries are owned by orders/payments).
+export async function deleteLedgerEntry(partyType: string, id: number): Promise<{ id: number }> {
+  const table = partyType === 'transporter' ? 'transporter_ledger' : 'supplier_ledger'
+  await getClient().execute({
+    sql: `DELETE FROM ${table} WHERE id = ? AND entry_type IN ('opening','advance','adjustment','manual')`,
+    args: [id]
+  })
+  return { id }
 }
 
 export async function recordSupplierPayment(data: Row): Promise<{ id: number }> {

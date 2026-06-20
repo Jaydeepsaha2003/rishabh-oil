@@ -11,6 +11,14 @@ import { Bargains } from './pages/Bargains'
 import { Orders } from './pages/Orders'
 import { Ledgers } from './pages/Ledgers'
 import { Payments } from './pages/Payments'
+import { Products } from './pages/Products'
+import { Formulation } from './pages/Formulation'
+import { Production } from './pages/Production'
+import { Stock } from './pages/Stock'
+import { Sales } from './pages/Sales'
+import { Suppliers } from './pages/Suppliers'
+import { Transporters } from './pages/Transporters'
+import { Customers } from './pages/Customers'
 import { clearUser, loadUser, saveUser, type AppUser } from './lib/session'
 import { MODULES, canAccess } from './lib/modules'
 
@@ -33,6 +41,29 @@ function App(): React.JSX.Element {
       setPage(allowed[0] as Page)
     }
   }, [user, allowed, page])
+
+  // Presence heartbeat — marks this user live and enforces device (IP) blocks.
+  useEffect(() => {
+    if (!user) return
+    let stop = false
+    const beat = async (): Promise<void> => {
+      try {
+        const r = await window.api.access.heartbeat(user.id, user.username)
+        if (!stop && r.blocked) {
+          clearUser()
+          setUser(null)
+        }
+      } catch {
+        // ignore transient errors
+      }
+    }
+    beat()
+    const id = setInterval(beat, 30000)
+    return () => {
+      stop = true
+      clearInterval(id)
+    }
+  }, [user])
 
   function handleLogin(u: AppUser): void {
     saveUser(u)
@@ -83,6 +114,14 @@ function App(): React.JSX.Element {
         {view === 'orders' && <Orders />}
         {view === 'payments' && <Payments />}
         {view === 'ledgers' && <Ledgers />}
+        {view === 'products' && <Products />}
+        {view === 'formulation' && <Formulation />}
+        {view === 'production' && <Production />}
+        {view === 'stock' && <Stock />}
+        {view === 'sales' && <Sales />}
+        {view === 'suppliers' && <Suppliers />}
+        {view === 'transporters' && <Transporters />}
+        {view === 'customers' && <Customers />}
         {view === 'settings' && <Settings user={user} />}
       </main>
       <Toaster richColors position="top-right" />

@@ -32,10 +32,13 @@ export interface Api {
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
     advance: (id: number, toStatus: string, data: Row) => Promise<{ id: number }>
+    fyTaxable: (supplierId: number, date: string, excludeId: number) => Promise<number>
   }
   ledger: {
     suppliers: () => Promise<Row[]>
     transporters: () => Promise<Row[]>
+    addEntry: (data: Row) => Promise<{ id: number }>
+    deleteEntry: (partyType: string, id: number) => Promise<{ id: number }>
   }
   payments: {
     list: () => Promise<Row[]>
@@ -52,9 +55,46 @@ export interface Api {
   auth: {
     login: (username: string, password: string) => Promise<Row>
   }
+  access: {
+    heartbeat: (userId: number, username: string) => Promise<{ blocked: boolean }>
+    liveUsers: () => Promise<Row[]>
+    ips: () => Promise<Row[]>
+    setIp: (id: number, active: boolean) => Promise<{ id: number }>
+    logs: () => Promise<Row[]>
+  }
   users: {
     list: () => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
+    update: (id: number, values: Row) => Promise<{ id: number }>
+    remove: (id: number) => Promise<{ id: number }>
+  }
+  formulations: {
+    list: () => Promise<Row[]>
+    items: (id: number) => Promise<Row[]>
+    create: (values: Row) => Promise<{ id: number }>
+    update: (id: number, values: Row) => Promise<{ id: number }>
+    remove: (id: number) => Promise<{ id: number }>
+  }
+  stock: {
+    list: () => Promise<Row[]>
+    needs: () => Promise<Row[]>
+  }
+  production: {
+    list: () => Promise<Row[]>
+    items: (id: number) => Promise<Row[]>
+    create: (values: Row) => Promise<{ id: number }>
+    remove: (id: number) => Promise<{ id: number }>
+  }
+  sales: {
+    list: () => Promise<Row[]>
+    create: (values: Row) => Promise<{ id: number }>
+    update: (id: number, values: Row) => Promise<{ id: number }>
+    setStatus: (id: number, status: string) => Promise<{ id: number }>
+    remove: (id: number) => Promise<{ id: number }>
+  }
+  salesBargains: {
+    list: () => Promise<Row[]>
+    create: (values: Row) => Promise<{ id: number; bargain_no: string }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
   }

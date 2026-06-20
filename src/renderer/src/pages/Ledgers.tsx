@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { toast } from 'sonner'
+import { Plus, Trash2 } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Card } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
 import {
   Table,
   TableBody,
@@ -10,102 +21,60 @@ import {
   TableHeader,
   TableRow
 } from '@/components/ui/table'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { PageHeader } from '@/components/PageHeader'
-import { formatDate, formatINR } from '@/lib/format'
+import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
 
 const TYPE_LABEL: Record<string, string> = {
-  payable: 'Payable',
+  opening: 'Opening balance',
+  payable: 'Purchase / payable',
   payment: 'Payment',
   advance: 'Advance',
+  adjustment: 'Adjustment',
+  manual: 'Entry',
+  interest: 'Interest',
   freight: 'Freight',
   shortage_penalty: 'Shortage penalty'
 }
 
-function balances(entries: Row[], nameKey: string): { name: string; balance: number }[] {
-  const map = new Map<string, number>()
-  for (const e of entries) {
-    const name = (e[nameKey] as string) ?? '—'
-    map.set(name, (map.get(name) ?? 0) + (Number(e.amount) || 0))
-  }
-  return Array.from(map.entries()).map(([name, balance]) => ({ name, balance }))
+const MANUAL_TYPES = ['opening', 'advance', 'adjustment', 'manual']
+
+// Credit (we owe the party) is positive; debit (we paid / they owe us) is negative.
+function drCr(amount: number): string {
+  const a = Math.abs(amount)
+  return `${formatINR(a)} ${amount >= 0 ? 'Cr' : 'Dr'}`
 }
 
-function LedgerTable({ entries, nameKey }: { entries: Row[]; nameKey: string }): React.JSX.Element {
-  const summary = useMemo(() => balances(entries, nameKey), [entries, nameKey])
-  return (
-    <div className="space-y-5">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {summary.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No entries yet.</p>
-        ) : (
-          summary.map((s) => (
-            <Card key={s.name} className="p-4">
-              <div className="text-sm text-muted-foreground">{s.name}</div>
-              <div className="mt-1 text-xl font-semibold tabular-nums">{formatINR(s.balance)}</div>
-              <div className="text-xs text-muted-foreground">
-                {s.balance < 0 ? 'advance / credit' : 'outstanding'}
-              </div>
-            </Card>
-          ))
-        )}
-      </div>
+function PartyLedger({ partyType }: { partyType: 'supplier' | 'transporter' }): React.JSX.Element {
+  const nameKey = partyType === 'supplier' ? 'supplier_name' : 'transporter_name'
+  const idKey = partyType === 'supplier' ? 'supplier_id' : 'transporter_id'
+  const label = partyType === 'supplier' ? 'Supplier' : 'Transporter'
 
-      <div className="rounded-lg border bg-card">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Date</TableHead>
-              <TableHead>{nameKey === 'supplier_name' ? 'Supplier' : 'Transporter'}</TableHead>
-              <TableHead>Ref</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead className="text-right">Amount</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {entries.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                  No entries yet.
-                </TableCell>
-              </TableRow>
-            ) : (
-              entries.map((e) => (
-                <TableRow key={e.id as number}>
-                  <TableCell>{formatDate(e.entry_date)}</TableCell>
-                  <TableCell>{e[nameKey] ?? '—'}</TableCell>
-                  <TableCell className="text-muted-foreground">{e.invoice_no ?? e.note ?? '—'}</TableCell>
-                  <TableCell>
-                    <Badge variant={Number(e.amount) < 0 ? 'success' : 'muted'}>
-                      {TYPE_LABEL[e.entry_type] ?? e.entry_type}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">{formatINR(e.amount)}</TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
-    </div>
-  )
-}
-
-export function Ledgers(): React.JSX.Element {
-  const [supplierEntries, setSupplierEntries] = useState<Row[]>([])
-  const [transporterEntries, setTransporterEntries] = useState<Row[]>([])
+  const [entries, setEntries] = useState<Row[]>([])
+  const [parties, setParties] = useState<Row[]>([])
+  const [partyId, setPartyId] = useState('all')
+  const [open, setOpen] = useState(false)
+  const [form, setForm] = useState<Row>({})
+  const [saving, setSaving] = useState(false)
 
   const load = useCallback(async () => {
-    const [sl, tl] = await Promise.all([
-      window.api.ledger.suppliers(),
-      window.api.ledger.transporters()
+    const [e, p] = await Promise.all([
+      partyType === 'supplier' ? window.api.ledger.suppliers() : window.api.ledger.transporters(),
+      window.api.data.list(partyType === 'supplier' ? 'suppliers' : 'transporters')
     ])
-    setSupplierEntries(sl)
-    setTransporterEntries(tl)
-  }, [])
+    setEntries(e)
+    setParties(p.filter((x) => x.active))
+  }, [partyType])
 
   useEffect(() => {
     load()
@@ -113,12 +82,285 @@ export function Ledgers(): React.JSX.Element {
 
   useLiveRefresh(load)
 
+  const statement = useMemo(() => {
+    if (partyId === 'all') return []
+    const list = entries.filter((e) => String(e[idKey]) === partyId)
+    list.sort((a, b) => {
+      const ao = a.entry_type === 'opening' ? 0 : 1
+      const bo = b.entry_type === 'opening' ? 0 : 1
+      if (ao !== bo) return ao - bo
+      const ad = String(a.entry_date || '')
+      const bd = String(b.entry_date || '')
+      if (ad !== bd) return ad < bd ? -1 : 1
+      return (a.id as number) - (b.id as number)
+    })
+    let bal = 0
+    return list.map((e): Row => {
+      bal += Number(e.amount) || 0
+      return { ...e, _bal: bal }
+    })
+  }, [entries, partyId, idKey])
+
+  const closing = statement.length ? Number(statement[statement.length - 1]._bal) : 0
+
+  const summary = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const e of entries) {
+      const name = (e[nameKey] as string) ?? '—'
+      map.set(name, (map.get(name) ?? 0) + (Number(e.amount) || 0))
+    }
+    return Array.from(map.entries()).map(([name, bal]) => ({ name, bal }))
+  }, [entries, nameKey])
+
+  function openAdd(): void {
+    setForm({
+      party_id: partyId !== 'all' ? partyId : '',
+      entry_date: todayISO(),
+      entry_type: 'opening',
+      side: 'cr',
+      amount: '',
+      note: ''
+    })
+    setOpen(true)
+  }
+
+  function setField(key: string, value: unknown): void {
+    setForm((p) => {
+      const next = { ...p, [key]: value }
+      // sensible default side per type
+      if (key === 'entry_type') next.side = value === 'advance' ? 'dr' : 'cr'
+      return next
+    })
+  }
+
+  async function save(): Promise<void> {
+    if (!form.party_id) {
+      toast.error(`Select a ${label.toLowerCase()}`)
+      return
+    }
+    if (!form.amount || Number(form.amount) <= 0) {
+      toast.error('Enter an amount')
+      return
+    }
+    setSaving(true)
+    try {
+      const amt = Number(form.amount)
+      await window.api.ledger.addEntry({
+        party_type: partyType,
+        party_id: Number(form.party_id),
+        entry_date: form.entry_date,
+        entry_type: form.entry_type,
+        dr: form.side === 'dr' ? amt : 0,
+        cr: form.side === 'cr' ? amt : 0,
+        note: form.note || TYPE_LABEL[form.entry_type]
+      })
+      toast.success('Entry added')
+      setOpen(false)
+      if (partyId === 'all') setPartyId(String(form.party_id))
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function delEntry(row: Row): Promise<void> {
+    if (!window.confirm('Delete this manual entry?')) return
+    try {
+      await window.api.ledger.deleteEntry(partyType, row.id as number)
+      toast.success('Deleted')
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  return (
+    <div>
+      <div className="mb-4 flex items-center gap-3">
+        <div className="w-72">
+          <Select value={partyId} onValueChange={setPartyId}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All {label.toLowerCase()}s — balances</SelectItem>
+              {parties.map((p) => (
+                <SelectItem key={p.id} value={String(p.id)}>
+                  {p.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <Button size="sm" onClick={openAdd}>
+          <Plus className="h-4 w-4" />
+          Add entry
+        </Button>
+      </div>
+
+      {partyId === 'all' ? (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {summary.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No entries yet.</p>
+          ) : (
+            summary.map((s) => (
+              <Card key={s.name} className="p-4">
+                <div className="text-sm text-muted-foreground">{s.name}</div>
+                <div className="mt-1 text-xl font-semibold tabular-nums">{drCr(s.bal)}</div>
+                <div className="text-xs text-muted-foreground">
+                  {s.bal >= 0 ? 'we owe' : 'advance / they owe'}
+                </div>
+              </Card>
+            ))
+          )}
+        </div>
+      ) : (
+        <div className="rounded-lg border bg-card">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Date</TableHead>
+                <TableHead>Particulars</TableHead>
+                <TableHead className="text-right">Debit</TableHead>
+                <TableHead className="text-right">Credit</TableHead>
+                <TableHead className="text-right">Balance</TableHead>
+                <TableHead className="w-[50px]" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {statement.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
+                    No entries for this {label.toLowerCase()} yet.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                statement.map((e) => {
+                  const amt = Number(e.amount) || 0
+                  return (
+                    <TableRow key={e.id as number}>
+                      <TableCell>{formatDate(e.entry_date)}</TableCell>
+                      <TableCell>
+                        {e.note || TYPE_LABEL[e.entry_type] || e.entry_type}
+                        {e.invoice_no ? <span className="text-muted-foreground"> · {e.invoice_no}</span> : null}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {amt < 0 ? formatINR(-amt) : ''}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {amt > 0 ? formatINR(amt) : ''}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">{drCr(Number(e._bal))}</TableCell>
+                      <TableCell className="text-right">
+                        {MANUAL_TYPES.includes(e.entry_type) && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-destructive"
+                            onClick={() => delEntry(e)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  )
+                })
+              )}
+            </TableBody>
+          </Table>
+          {statement.length > 0 && (
+            <div className="flex items-center justify-between border-t px-3 py-2 text-sm font-semibold">
+              <span>Closing balance</span>
+              <span className="tabular-nums">{drCr(closing)}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add ledger entry</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div className="grid gap-1.5">
+              <Label>{label}</Label>
+              <Select value={String(form.party_id ?? '')} onValueChange={(v) => setField('party_id', v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder={`Select ${label.toLowerCase()}`} />
+                </SelectTrigger>
+                <SelectContent>
+                  {parties.map((p) => (
+                    <SelectItem key={p.id} value={String(p.id)}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1.5">
+                <Label>Type</Label>
+                <Select value={form.entry_type} onValueChange={(v) => setField('entry_type', v)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="opening">Opening balance</SelectItem>
+                    <SelectItem value="advance">Advance</SelectItem>
+                    <SelectItem value="adjustment">Adjustment</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Date</Label>
+                <Input type="date" value={form.entry_date} onChange={(e) => setField('entry_date', e.target.value)} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1.5">
+                <Label>Side</Label>
+                <Select value={form.side} onValueChange={(v) => setField('side', v)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cr">Credit (we owe)</SelectItem>
+                    <SelectItem value="dr">Debit (advance / they owe)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Amount</Label>
+                <Input type="number" value={form.amount ?? ''} onChange={(e) => setField('amount', e.target.value)} />
+              </div>
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Particulars</Label>
+              <Input value={form.note ?? ''} onChange={(e) => setField('note', e.target.value)} placeholder="optional narration" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>
+              Cancel
+            </Button>
+            <Button onClick={save} disabled={saving}>
+              {saving ? 'Saving…' : 'Add entry'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
+export function Ledgers(): React.JSX.Element {
   return (
     <>
-      <PageHeader
-        title="Ledgers"
-        subtitle="Outstanding to suppliers and transporters — record payments in the Payments tab"
-      />
+      <PageHeader title="Ledgers" subtitle="Party statements with opening balance, advances and running balance" />
       <div className="p-8">
         <Tabs defaultValue="suppliers">
           <TabsList>
@@ -126,10 +368,10 @@ export function Ledgers(): React.JSX.Element {
             <TabsTrigger value="transporters">Transporters</TabsTrigger>
           </TabsList>
           <TabsContent value="suppliers" className="mt-6">
-            <LedgerTable entries={supplierEntries} nameKey="supplier_name" />
+            <PartyLedger partyType="supplier" />
           </TabsContent>
           <TabsContent value="transporters" className="mt-6">
-            <LedgerTable entries={transporterEntries} nameKey="transporter_name" />
+            <PartyLedger partyType="transporter" />
           </TabsContent>
         </Tabs>
       </div>

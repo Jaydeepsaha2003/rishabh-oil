@@ -29,7 +29,7 @@ export async function listBargains(): Promise<Row[]> {
            b.qty - COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id), 0) AS balance_qty
     FROM bargains b
     LEFT JOIN suppliers s ON s.id = b.supplier_id
-    LEFT JOIN oil_types o ON o.id = b.oil_type_id
+    LEFT JOIN products o ON o.id = b.oil_type_id
     ORDER BY b.id DESC
   `)
   return toPlain(res)
@@ -38,10 +38,12 @@ export async function listBargains(): Promise<Row[]> {
 async function nextBargainNo(oilTypeId: number, bargainDate: string): Promise<string> {
   const c = getClient()
   const oilRes = await c.execute({
-    sql: 'SELECT code FROM oil_types WHERE id = ?',
+    sql: 'SELECT code, name FROM products WHERE id = ?',
     args: [oilTypeId]
   })
-  const code = oilRes.rows.length ? String(oilRes.rows[0].code) : 'GEN'
+  const code = oilRes.rows.length
+    ? String(oilRes.rows[0].code || oilRes.rows[0].name || 'GEN')
+    : 'GEN'
   const prefix = `${code}/${financialYear(bargainDate)}/`
   const existing = await c.execute({
     sql: 'SELECT bargain_no FROM bargains WHERE bargain_no LIKE ?',

@@ -34,26 +34,31 @@ import { PageHeader } from '@/components/PageHeader'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import type { AppUser } from '@/lib/session'
-import { MODULES } from '@/lib/modules'
+import { MODULES, canWrite } from '@/lib/modules'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
 
 const ROLES = ['admin', 'manager', 'operator', 'viewer']
 
-function parsePerms(value: unknown): string[] {
-  if (!value) return []
+function parsePerms(value: unknown): Record<string, string> {
+  if (!value) return {}
   try {
     const p = JSON.parse(String(value))
-    return Array.isArray(p) ? p.map(String) : []
+    if (Array.isArray(p)) {
+      const out: Record<string, string> = {}
+      for (const k of p) out[String(k)] = 'write'
+      return out
+    }
+    return p && typeof p === 'object' ? (p as Record<string, string>) : {}
   } catch {
-    return []
+    return {}
   }
 }
 
 function accessLabel(u: Row): string {
   if (u.role === 'admin') return 'All'
-  return `${parsePerms(u.permissions).length} modules`
+  return `${Object.keys(parsePerms(u.permissions)).length} modules`
 }
 
 function UsersManager(): React.JSX.Element {
@@ -81,7 +86,7 @@ function UsersManager(): React.JSX.Element {
       password: '',
       role: 'operator',
       active: true,
-      permissions: ['dashboard']
+      permissions: { dashboard: 'read' }
     })
     setOpen(true)
   }
@@ -103,12 +108,12 @@ function UsersManager(): React.JSX.Element {
     setForm((p) => ({ ...p, [key]: value }))
   }
 
-  function togglePerm(key: string, on: boolean): void {
+  function setPerm(key: string, level: string): void {
     setForm((p) => {
-      const set = new Set<string>(p.permissions || [])
-      if (on) set.add(key)
-      else set.delete(key)
-      return { ...p, permissions: Array.from(set) }
+      const perms = { ...(p.permissions || {}) }
+      if (level === 'none') delete perms[key]
+      else perms[key] = level
+      return { ...p, permissions: perms }
     })
   }
 
@@ -259,27 +264,33 @@ function UsersManager(): React.JSX.Element {
 
             {form.role === 'admin' ? (
               <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
-                Admins have full access to every module.
+                Admins have full read &amp; write access to every module.
               </p>
             ) : (
               <div className="grid gap-1.5">
                 <Label>Module access</Label>
-                <div className="grid grid-cols-2 gap-1 rounded-md border p-2">
+                <div className="max-h-56 overflow-y-auto rounded-md border p-2">
                   {MODULES.map((m) => (
-                    <label
-                      key={m.key}
-                      className="flex items-center justify-between rounded px-2 py-1 text-sm"
-                    >
+                    <div key={m.key} className="flex items-center justify-between gap-2 px-1 py-1 text-sm">
                       <span>{m.label}</span>
-                      <Switch
-                        checked={(form.permissions || []).includes(m.key)}
-                        onCheckedChange={(v) => togglePerm(m.key, v)}
-                      />
-                    </label>
+                      <Select
+                        value={(form.permissions || {})[m.key] || 'none'}
+                        onValueChange={(v) => setPerm(m.key, v)}
+                      >
+                        <SelectTrigger className="h-8 w-28">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">No access</SelectItem>
+                          <SelectItem value="read">Read</SelectItem>
+                          <SelectItem value="write">Read &amp; write</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   ))}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Choose exactly which sections this user can open.
+                  Read lets them view; Read &amp; write lets them add, edit and delete.
                 </p>
               </div>
             )}
@@ -297,50 +308,6 @@ function UsersManager(): React.JSX.Element {
     </div>
   )
 }
-
-const oilTypeFields: FieldDef[] = [
-  { key: 'code', label: 'Code', type: 'text', required: true, placeholder: 'MUS' },
-  { key: 'name', label: 'Name', type: 'text', required: true, placeholder: 'Mustard oil' },
-  { key: 'active', label: 'Active', type: 'switch', default: true }
-]
-const oilTypeColumns: ColumnDef[] = [
-  { key: 'code', label: 'Code' },
-  { key: 'name', label: 'Name' },
-  { key: 'active', label: 'Active', type: 'switch' }
-]
-
-const supplierFields: FieldDef[] = [
-  { key: 'name', label: 'Name', type: 'text', required: true },
-  { key: 'company_type', label: 'Company type', type: 'text', placeholder: 'Pvt Ltd / Partnership' },
-  { key: 'gstin', label: 'GSTIN', type: 'text' },
-  { key: 'state', label: 'State', type: 'text' },
-  { key: 'gst_pct', label: 'GST %', type: 'number', default: 0 },
-  { key: 'tds_pct', label: 'TDS %', type: 'number', default: 0 },
-  { key: 'credit_period_days', label: 'Credit period (days)', type: 'number', default: 0 },
-  { key: 'adds_interest', label: 'Adds interest on invoice', type: 'switch', default: false },
-  { key: 'interest_pct', label: 'Interest %', type: 'number', default: 0 },
-  { key: 'interest_days', label: 'Interest days', type: 'number', default: 0 },
-  { key: 'active', label: 'Active', type: 'switch', default: true }
-]
-const supplierColumns: ColumnDef[] = [
-  { key: 'name', label: 'Name' },
-  { key: 'gst_pct', label: 'GST %', align: 'right' },
-  { key: 'tds_pct', label: 'TDS %', align: 'right' },
-  { key: 'credit_period_days', label: 'Credit days', align: 'right' },
-  { key: 'adds_interest', label: 'Interest?', type: 'switch' }
-]
-
-const transporterFields: FieldDef[] = [
-  { key: 'name', label: 'Name', type: 'text', required: true },
-  { key: 'contact', label: 'Contact', type: 'text' },
-  { key: 'default_rate_per_ton', label: 'Default rate / ton', type: 'number', default: 0 },
-  { key: 'active', label: 'Active', type: 'switch', default: true }
-]
-const transporterColumns: ColumnDef[] = [
-  { key: 'name', label: 'Name' },
-  { key: 'contact', label: 'Contact' },
-  { key: 'default_rate_per_ton', label: 'Rate / ton', align: 'right' }
-]
 
 const sourceFields: FieldDef[] = [
   { key: 'name', label: 'Name', type: 'text', required: true, placeholder: 'Kandla port' },
@@ -407,55 +374,207 @@ function GeneralSettings(): React.JSX.Element {
   )
 }
 
+function AccessPanel(): React.JSX.Element {
+  const [live, setLive] = useState<Row[]>([])
+  const [ips, setIps] = useState<Row[]>([])
+  const [logs, setLogs] = useState<Row[]>([])
+  const [retention, setRetention] = useState('30')
+
+  const load = useCallback(async () => {
+    const [l, i, lg, s] = await Promise.all([
+      window.api.access.liveUsers(),
+      window.api.access.ips(),
+      window.api.access.logs(),
+      window.api.settings.all()
+    ])
+    setLive(l)
+    setIps(i)
+    setLogs(lg)
+    setRetention(s.log_retention_days ?? '30')
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  useLiveRefresh(load)
+
+  // Live presence doesn't bump the global revision, so poll it directly.
+  useEffect(() => {
+    const id = setInterval(() => {
+      window.api.access.liveUsers().then(setLive)
+    }, 10000)
+    return () => clearInterval(id)
+  }, [])
+
+  async function toggleIp(ip: Row): Promise<void> {
+    try {
+      await window.api.access.setIp(ip.id as number, !ip.active)
+      toast.success(ip.active ? 'Device deactivated' : 'Device activated')
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  async function saveRetention(v: string): Promise<void> {
+    setRetention(v)
+    await window.api.settings.set('log_retention_days', v)
+    toast.success(`Logs kept for ${v} days`)
+  }
+
+  return (
+    <div className="space-y-6">
+      <Card className="p-5">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-base font-medium">Live users</h3>
+          <Badge variant="success">{live.length} online</Badge>
+        </div>
+        {live.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No users online right now.</p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>User</TableHead>
+                <TableHead>Device IP</TableHead>
+                <TableHead>Last seen</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {live.map((s) => (
+                <TableRow key={s.id as number}>
+                  <TableCell className="font-medium">{s.username}</TableCell>
+                  <TableCell>{s.ip}</TableCell>
+                  <TableCell className="text-muted-foreground">{s.last_seen}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </Card>
+
+      <Card className="p-5">
+        <h3 className="mb-2 text-base font-medium">Devices</h3>
+        <p className="mb-3 text-xs text-muted-foreground">
+          Each computer is a device (by IP). Deactivate one to block it from signing in.
+        </p>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>IP</TableHead>
+              <TableHead>Last seen</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="text-right">Action</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {ips.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
+                  No devices have connected yet.
+                </TableCell>
+              </TableRow>
+            ) : (
+              ips.map((ip) => (
+                <TableRow key={ip.id as number}>
+                  <TableCell className="font-medium">{ip.ip}</TableCell>
+                  <TableCell className="text-muted-foreground">{ip.last_seen}</TableCell>
+                  <TableCell>
+                    <Badge variant={ip.active ? 'success' : 'destructive'}>
+                      {ip.active ? 'Active' : 'Blocked'}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button size="sm" variant="outline" onClick={() => toggleIp(ip)}>
+                      {ip.active ? 'Deactivate' : 'Activate'}
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </Card>
+
+      <Card className="p-5">
+        <div className="mb-3 flex items-center justify-between gap-4">
+          <h3 className="text-base font-medium">Activity log</h3>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Keep for</span>
+            <Select value={retention} onValueChange={saveRetention}>
+              <SelectTrigger className="h-8 w-28">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="15">15 days</SelectItem>
+                <SelectItem value="30">30 days</SelectItem>
+                <SelectItem value="60">60 days</SelectItem>
+                <SelectItem value="90">90 days</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <div className="max-h-80 overflow-y-auto rounded-lg border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>When</TableHead>
+                <TableHead>User</TableHead>
+                <TableHead>IP</TableHead>
+                <TableHead>Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {logs.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
+                    No activity yet.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                logs.map((l) => (
+                  <TableRow key={l.id as number}>
+                    <TableCell className="text-muted-foreground">{l.created_at}</TableCell>
+                    <TableCell>{l.username}</TableCell>
+                    <TableCell>{l.ip}</TableCell>
+                    <TableCell className="capitalize">{l.action}</TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Older entries are deleted automatically based on the retention above.
+        </p>
+      </Card>
+    </div>
+  )
+}
+
 export function Settings({ user }: { user: AppUser }): React.JSX.Element {
   const isAdmin = user.role === 'admin'
   return (
     <>
       <PageHeader title="Settings" subtitle="Master data used across bargains and orders" />
       <div className="p-8">
-        <Tabs defaultValue="oil_types">
+        <Tabs defaultValue="sources">
           <TabsList>
-            <TabsTrigger value="oil_types">Oil types</TabsTrigger>
-            <TabsTrigger value="suppliers">Suppliers</TabsTrigger>
-            <TabsTrigger value="transporters">Transporters</TabsTrigger>
-            <TabsTrigger value="sources">Sources</TabsTrigger>
+            <TabsTrigger value="sources">Ports</TabsTrigger>
             <TabsTrigger value="general">General</TabsTrigger>
             {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
+            {isAdmin && <TabsTrigger value="access">Access</TabsTrigger>}
           </TabsList>
 
-          <TabsContent value="oil_types" className="mt-6">
-            <EntityManager
-              table="oil_types"
-              title="Oil type"
-              description="The oils you trade in."
-              fields={oilTypeFields}
-              columns={oilTypeColumns}
-            />
-          </TabsContent>
-          <TabsContent value="suppliers" className="mt-6">
-            <EntityManager
-              table="suppliers"
-              title="Supplier"
-              description="GST, TDS, credit period and interest rule per supplier."
-              fields={supplierFields}
-              columns={supplierColumns}
-            />
-          </TabsContent>
-          <TabsContent value="transporters" className="mt-6">
-            <EntityManager
-              table="transporters"
-              title="Transporter"
-              fields={transporterFields}
-              columns={transporterColumns}
-            />
-          </TabsContent>
           <TabsContent value="sources" className="mt-6">
             <EntityManager
               table="sources"
-              title="Source"
-              description="Delivery source points, each with its transit days."
+              title="Port"
+              description="Delivery ports, each with its transit days."
               fields={sourceFields}
               columns={sourceColumns}
+              readOnly={!canWrite(user, 'settings')}
             />
           </TabsContent>
           <TabsContent value="general" className="mt-6">
@@ -464,6 +583,11 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
           {isAdmin && (
             <TabsContent value="users" className="mt-6">
               <UsersManager />
+            </TabsContent>
+          )}
+          {isAdmin && (
+            <TabsContent value="access" className="mt-6">
+              <AccessPanel />
             </TabsContent>
           )}
         </Tabs>

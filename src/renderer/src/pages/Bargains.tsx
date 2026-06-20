@@ -69,12 +69,12 @@ export function Bargains(): React.JSX.Element {
     const [b, s, o, settings] = await Promise.all([
       window.api.bargains.list(),
       window.api.data.list('suppliers'),
-      window.api.data.list('oil_types'),
+      window.api.data.list('products'),
       window.api.settings.all()
     ])
     setRows(b)
     setSuppliers(s.filter((x) => x.active))
-    setOilTypes(o.filter((x) => x.active))
+    setOilTypes(o.filter((x) => x.active && x.category === 'raw'))
     setDefaultUom(settings.default_uom ?? 'ton')
     setDefaultShortage(settings.allowed_shortage_pct ?? '0.2')
     setLoading(false)
@@ -313,7 +313,7 @@ export function Bargains(): React.JSX.Element {
                 <SelectContent>
                   {oilTypes.map((o) => (
                     <SelectItem key={o.id} value={String(o.id)}>
-                      {o.code} · {o.name}
+                      {o.name}
                     </SelectItem>
                   ))}
                 </SelectContent>

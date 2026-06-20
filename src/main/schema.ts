@@ -15,6 +15,78 @@ CREATE TABLE IF NOT EXISTS oil_types (
   active INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE TABLE IF NOT EXISTS products (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT,
+  name TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'raw',
+  active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS formulations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL REFERENCES products(id),
+  name TEXT,
+  uom TEXT DEFAULT 'ton',
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS formulation_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  formulation_id INTEGER NOT NULL REFERENCES formulations(id),
+  product_id INTEGER NOT NULL REFERENCES products(id),
+  qty REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS production (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  prod_date TEXT NOT NULL,
+  product_id INTEGER NOT NULL REFERENCES products(id),
+  qty REAL NOT NULL DEFAULT 0,
+  uom TEXT DEFAULT 'ton',
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS production_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  production_id INTEGER NOT NULL REFERENCES production(id),
+  product_id INTEGER NOT NULL REFERENCES products(id),
+  qty REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS sales_bargains (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bargain_no TEXT,
+  bargain_date TEXT NOT NULL,
+  customer TEXT,
+  product_id INTEGER NOT NULL REFERENCES products(id),
+  qty REAL NOT NULL DEFAULT 0,
+  uom TEXT DEFAULT 'ton',
+  rate REAL DEFAULT 0,
+  rate_expiry_date TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS sales (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sale_date TEXT NOT NULL,
+  invoice_no TEXT,
+  customer TEXT,
+  product_id INTEGER NOT NULL REFERENCES products(id),
+  sales_bargain_id INTEGER REFERENCES sales_bargains(id),
+  qty REAL NOT NULL DEFAULT 0,
+  uom TEXT DEFAULT 'ton',
+  rate REAL DEFAULT 0,
+  amount REAL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending',
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS suppliers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -23,6 +95,9 @@ CREATE TABLE IF NOT EXISTS suppliers (
   state TEXT,
   gst_pct REAL NOT NULL DEFAULT 0,
   tds_pct REAL NOT NULL DEFAULT 0,
+  tds_threshold REAL NOT NULL DEFAULT 0,
+  tds_pct_above REAL NOT NULL DEFAULT 0,
+  tds_above_only INTEGER NOT NULL DEFAULT 0,
   credit_period_days INTEGER NOT NULL DEFAULT 0,
   adds_interest INTEGER NOT NULL DEFAULT 0,
   interest_pct REAL NOT NULL DEFAULT 0,
@@ -31,10 +106,33 @@ CREATE TABLE IF NOT EXISTS suppliers (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS customers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  company_type TEXT,
+  gstin TEXT,
+  state TEXT,
+  gst_pct REAL NOT NULL DEFAULT 0,
+  tds_pct REAL NOT NULL DEFAULT 0,
+  tds_threshold REAL NOT NULL DEFAULT 0,
+  tds_above_only INTEGER NOT NULL DEFAULT 0,
+  adds_interest INTEGER NOT NULL DEFAULT 0,
+  interest_pct REAL NOT NULL DEFAULT 0,
+  interest_days INTEGER NOT NULL DEFAULT 0,
+  credit_period_days INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS transporters (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
+  company_type TEXT,
   contact TEXT,
+  gst_pct REAL NOT NULL DEFAULT 0,
+  tds_pct REAL NOT NULL DEFAULT 0,
+  tds_threshold REAL NOT NULL DEFAULT 0,
+  tds_pct_above REAL NOT NULL DEFAULT 0,
   default_rate_per_ton REAL NOT NULL DEFAULT 0,
   active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -116,6 +214,8 @@ CREATE TABLE IF NOT EXISTS orders (
   outside_factory_date TEXT,
   inside_factory_date TEXT,
   received_date TEXT,
+  credit_interest_days REAL NOT NULL DEFAULT 0,
+  credit_interest_amount REAL NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -190,10 +290,39 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER,
+  username TEXT,
+  ip TEXT,
+  last_seen TEXT,
+  UNIQUE(user_id, ip)
+);
+
+CREATE TABLE IF NOT EXISTS ip_access (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ip TEXT UNIQUE,
+  label TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  first_seen TEXT,
+  last_seen TEXT
+);
+
+CREATE TABLE IF NOT EXISTS user_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER,
+  username TEXT,
+  ip TEXT,
+  action TEXT,
+  detail TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_bargains_supplier ON bargains(supplier_id);
 CREATE INDEX IF NOT EXISTS idx_orders_supplier ON orders(supplier_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 
 INSERT OR IGNORE INTO app_settings (key, value) VALUES ('allowed_shortage_pct', '0.2');
 INSERT OR IGNORE INTO app_settings (key, value) VALUES ('default_uom', 'ton');
+INSERT OR IGNORE INTO app_settings (key, value) VALUES ('log_retention_days', '30');
 `

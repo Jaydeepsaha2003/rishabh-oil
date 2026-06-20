@@ -1,18 +1,40 @@
 import {
+  Boxes,
+  Building2,
+  Contact,
   CreditCard,
   Droplets,
+  Factory,
   FileText,
+  FlaskConical,
   LayoutDashboard,
   LogOut,
   Settings as SettingsIcon,
   ShoppingCart,
-  Wallet
+  Tag,
+  Truck,
+  Wallet,
+  Warehouse
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { AppUser } from '@/lib/session'
 import { canAccess } from '@/lib/modules'
 
-export type Page = 'dashboard' | 'settings' | 'bargains' | 'orders' | 'ledgers' | 'payments'
+export type Page =
+  | 'dashboard'
+  | 'settings'
+  | 'bargains'
+  | 'orders'
+  | 'ledgers'
+  | 'payments'
+  | 'products'
+  | 'formulation'
+  | 'production'
+  | 'stock'
+  | 'sales'
+  | 'suppliers'
+  | 'transporters'
+  | 'customers'
 
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, enabled: true },
@@ -20,6 +42,14 @@ const NAV = [
   { id: 'orders', label: 'Orders', icon: ShoppingCart, enabled: true },
   { id: 'payments', label: 'Payments', icon: CreditCard, enabled: true },
   { id: 'ledgers', label: 'Ledgers', icon: Wallet, enabled: true },
+  { id: 'products', label: 'Products', icon: Boxes, enabled: true },
+  { id: 'formulation', label: 'Formulation', icon: FlaskConical, enabled: true },
+  { id: 'production', label: 'Production', icon: Factory, enabled: true },
+  { id: 'stock', label: 'Stock', icon: Warehouse, enabled: true },
+  { id: 'sales', label: 'Sales', icon: Tag, enabled: true },
+  { id: 'suppliers', label: 'Suppliers', icon: Building2, enabled: true },
+  { id: 'transporters', label: 'Transporters', icon: Truck, enabled: true },
+  { id: 'customers', label: 'Customers', icon: Contact, enabled: true },
   { id: 'settings', label: 'Settings', icon: SettingsIcon, enabled: true }
 ] as const
 

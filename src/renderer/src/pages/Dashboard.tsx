@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Droplets, FileText, MapPin, RefreshCw, Truck, Users } from 'lucide-react'
+import { Droplets, Factory, FileText, MapPin, RefreshCw, Tag, Truck, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { PageHeader } from '@/components/PageHeader'
@@ -19,10 +19,10 @@ import {
 type Status = { ok: boolean; message: string }
 
 const STATS = [
-  { table: 'oil_types', label: 'Oil types', icon: Droplets, color: 'bg-amber-100 text-amber-700' },
+  { table: 'products', label: 'Products', icon: Droplets, color: 'bg-amber-100 text-amber-700' },
   { table: 'suppliers', label: 'Suppliers', icon: Users, color: 'bg-blue-100 text-blue-700' },
   { table: 'transporters', label: 'Transporters', icon: Truck, color: 'bg-violet-100 text-violet-700' },
-  { table: 'sources', label: 'Sources', icon: MapPin, color: 'bg-emerald-100 text-emerald-700' }
+  { table: 'sources', label: 'Ports', icon: MapPin, color: 'bg-emerald-100 text-emerald-700' }
 ] as const
 
 interface Props {
@@ -144,6 +144,14 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
             <Button onClick={() => onNavigate('bargains')}>
               <FileText className="h-4 w-4" />
               New bargain
+            </Button>
+            <Button variant="outline" onClick={() => onNavigate('production')}>
+              <Factory className="h-4 w-4" />
+              Production
+            </Button>
+            <Button variant="outline" onClick={() => onNavigate('sales')}>
+              <Tag className="h-4 w-4" />
+              Sales
             </Button>
             <Button variant="outline" onClick={() => onNavigate('settings')}>
               Manage settings

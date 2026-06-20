@@ -6,6 +6,7 @@ import { getClient } from './db'
 // is safe — all *values* are passed as bound parameters.
 const TABLES: Record<string, string[]> = {
   oil_types: ['code', 'name', 'active'],
+  products: ['code', 'name', 'category', 'active'],
   suppliers: [
     'name',
     'company_type',
@@ -13,13 +14,41 @@ const TABLES: Record<string, string[]> = {
     'state',
     'gst_pct',
     'tds_pct',
+    'tds_threshold',
+    'tds_pct_above',
+    'tds_above_only',
     'credit_period_days',
     'adds_interest',
     'interest_pct',
     'interest_days',
     'active'
   ],
-  transporters: ['name', 'contact', 'default_rate_per_ton', 'active'],
+  transporters: [
+    'name',
+    'company_type',
+    'contact',
+    'gst_pct',
+    'tds_pct',
+    'tds_threshold',
+    'tds_pct_above',
+    'default_rate_per_ton',
+    'active'
+  ],
+  customers: [
+    'name',
+    'company_type',
+    'gstin',
+    'state',
+    'gst_pct',
+    'tds_pct',
+    'tds_threshold',
+    'tds_above_only',
+    'adds_interest',
+    'interest_pct',
+    'interest_days',
+    'credit_period_days',
+    'active'
+  ],
   sources: ['name', 'transit_days', 'active']
 }
 

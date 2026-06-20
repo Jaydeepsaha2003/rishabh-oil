@@ -3,7 +3,7 @@ export interface AppUser {
   username: string
   full_name: string
   role: string
-  permissions?: string[]
+  permissions?: Record<string, string> | string[]
 }
 
 const KEY = 'rishabhoil.user'

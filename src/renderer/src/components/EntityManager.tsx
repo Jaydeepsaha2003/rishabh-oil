@@ -20,9 +20,16 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
-export type FieldType = 'text' | 'number' | 'switch'
+export type FieldType = 'text' | 'number' | 'switch' | 'select'
 
 export interface FieldDef {
   key: string
@@ -31,6 +38,7 @@ export interface FieldDef {
   required?: boolean
   default?: string | number | boolean
   placeholder?: string
+  options?: { value: string; label: string }[]
 }
 
 export interface ColumnDef {
@@ -49,9 +57,17 @@ interface Props {
   description?: string
   fields: FieldDef[]
   columns: ColumnDef[]
+  readOnly?: boolean
 }
 
-export function EntityManager({ table, title, description, fields, columns }: Props): React.JSX.Element {
+export function EntityManager({
+  table,
+  title,
+  description,
+  fields,
+  columns,
+  readOnly = false
+}: Props): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
@@ -154,9 +170,11 @@ export function EntityManager({ table, title, description, fields, columns }: Pr
           <h3 className="text-base font-medium">{title}</h3>
           {description && <p className="text-xs text-muted-foreground">{description}</p>}
         </div>
-        <Button size="sm" onClick={openAdd}>
-          <Plus /> Add
-        </Button>
+        {!readOnly && (
+          <Button size="sm" onClick={openAdd}>
+            <Plus /> Add
+          </Button>
+        )}
       </div>
 
       <div className="rounded-lg border">
@@ -202,24 +220,28 @@ export function EntityManager({ table, title, description, fields, columns }: Pr
                     </TableCell>
                   ))}
                   <TableCell className="text-right">
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8"
-                        onClick={() => openEdit(row)}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-destructive"
-                        onClick={() => del(row)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
+                    {readOnly ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={() => openEdit(row)}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-destructive"
+                          onClick={() => del(row)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
                   </TableCell>
                 </TableRow>
               ))
@@ -244,6 +266,28 @@ export function EntityManager({ table, title, description, fields, columns }: Pr
                       onCheckedChange={(v) => setField(fd.key, v)}
                     />
                   </div>
+                ) : fd.type === 'select' ? (
+                  <>
+                    <Label>
+                      {fd.label}
+                      {fd.required ? ' *' : ''}
+                    </Label>
+                    <Select
+                      value={String(form[fd.key] ?? '')}
+                      onValueChange={(v) => setField(fd.key, v)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder={`Select ${fd.label.toLowerCase()}`} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(fd.options ?? []).map((o) => (
+                          <SelectItem key={o.value} value={o.value}>
+                            {o.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </>
                 ) : (
                   <>
                     <Label>

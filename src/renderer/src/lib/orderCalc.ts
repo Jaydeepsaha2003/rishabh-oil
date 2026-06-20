@@ -10,6 +10,22 @@ export interface MoneyInput {
   addsInterest: boolean
   interestPct: number
   interestDays: number
+  tdsThreshold?: number
+  tdsPctAbove?: number
+  tdsPrior?: number
+}
+
+function tierTds(
+  taxable: number,
+  prior: number,
+  threshold: number,
+  basePct: number,
+  abovePct: number
+): number {
+  if (!threshold || threshold <= 0) return (taxable * basePct) / 100
+  const below = Math.max(0, Math.min(threshold - prior, taxable))
+  const above = taxable - below
+  return (below * basePct) / 100 + (above * abovePct) / 100
 }
 
 export interface MoneyResult {
@@ -30,13 +46,16 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   const interestDays = i.addsInterest ? i.interestDays : 0
   const interestPerUnit = i.bargainRate * (interestPct / 100) * (interestDays / 365)
   const adjustedRate = i.invoiceRate + interestPerUnit
+  const threshold = i.tdsThreshold || 0
+  const abovePct = i.tdsPctAbove || 0
+  const prior = i.tdsPrior || 0
   const taxableValue = adjustedRate * i.orderedQty
   const gstAmount = (taxableValue * i.gstPct) / 100
-  const tdsAmount = (taxableValue * i.tdsPct) / 100
+  const tdsAmount = tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct)
   const netAmount = taxableValue + gstAmount - tdsAmount
   const finalTaxableValue = i.bargainRate * i.orderedQty
   const finalGstAmount = (finalTaxableValue * i.gstPct) / 100
-  const finalTdsAmount = (finalTaxableValue * i.tdsPct) / 100
+  const finalTdsAmount = tierTds(finalTaxableValue, prior, threshold, i.tdsPct, abovePct)
   const finalNetAmount = finalTaxableValue + finalGstAmount - finalTdsAmount
   return {
     interestPerUnit,

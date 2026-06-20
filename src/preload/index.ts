@@ -45,11 +45,16 @@ const api = {
       ipcRenderer.invoke('orders:update', { id, values }),
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('orders:delete', { id }),
     advance: (id: number, toStatus: string, data: Row): Promise<{ id: number }> =>
-      ipcRenderer.invoke('orders:advance', { id, toStatus, data })
+      ipcRenderer.invoke('orders:advance', { id, toStatus, data }),
+    fyTaxable: (supplierId: number, date: string, excludeId: number): Promise<number> =>
+      ipcRenderer.invoke('orders:fyTaxable', { supplierId, date, excludeId })
   },
   ledger: {
     suppliers: (): Promise<Row[]> => ipcRenderer.invoke('ledger:suppliers'),
-    transporters: (): Promise<Row[]> => ipcRenderer.invoke('ledger:transporters')
+    transporters: (): Promise<Row[]> => ipcRenderer.invoke('ledger:transporters'),
+    addEntry: (data: Row): Promise<{ id: number }> => ipcRenderer.invoke('ledger:addEntry', { data }),
+    deleteEntry: (partyType: string, id: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('ledger:deleteEntry', { partyType, id })
   },
   payments: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('payments:list'),
@@ -71,6 +76,15 @@ const api = {
     login: (username: string, password: string): Promise<Row> =>
       ipcRenderer.invoke('auth:login', { username, password })
   },
+  access: {
+    heartbeat: (userId: number, username: string): Promise<{ blocked: boolean }> =>
+      ipcRenderer.invoke('access:heartbeat', { userId, username }),
+    liveUsers: (): Promise<Row[]> => ipcRenderer.invoke('access:liveUsers'),
+    ips: (): Promise<Row[]> => ipcRenderer.invoke('access:ips'),
+    setIp: (id: number, active: boolean): Promise<{ id: number }> =>
+      ipcRenderer.invoke('access:setIp', { id, active }),
+    logs: (): Promise<Row[]> => ipcRenderer.invoke('access:logs')
+  },
   users: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('users:list'),
     create: (values: Row): Promise<{ id: number }> =>
@@ -78,6 +92,47 @@ const api = {
     update: (id: number, values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('users:update', { id, values }),
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('users:delete', { id })
+  },
+  formulations: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('formulations:list'),
+    items: (id: number): Promise<Row[]> => ipcRenderer.invoke('formulations:items', { id }),
+    create: (values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('formulations:create', { values }),
+    update: (id: number, values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('formulations:update', { id, values }),
+    remove: (id: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('formulations:delete', { id })
+  },
+  stock: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('stock:list'),
+    needs: (): Promise<Row[]> => ipcRenderer.invoke('stock:needs')
+  },
+  production: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('production:list'),
+    items: (id: number): Promise<Row[]> => ipcRenderer.invoke('production:items', { id }),
+    create: (values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('production:create', { values }),
+    remove: (id: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('production:delete', { id })
+  },
+  sales: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('sales:list'),
+    create: (values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('sales:create', { values }),
+    update: (id: number, values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('sales:update', { id, values }),
+    setStatus: (id: number, status: string): Promise<{ id: number }> =>
+      ipcRenderer.invoke('sales:setStatus', { id, status }),
+    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('sales:delete', { id })
+  },
+  salesBargains: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('salesBargains:list'),
+    create: (values: Row): Promise<{ id: number; bargain_no: string }> =>
+      ipcRenderer.invoke('salesBargains:create', { values }),
+    update: (id: number, values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('salesBargains:update', { id, values }),
+    remove: (id: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('salesBargains:delete', { id })
   }
 }
 

@@ -1,6 +1,7 @@
 import { randomBytes, scryptSync, timingSafeEqual } from 'crypto'
 import type { InValue, ResultSet } from '@libsql/client'
 import { getClient } from './db'
+import { machineIp, isIpAllowed, recordSession, logEvent } from './access'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -41,8 +42,12 @@ export async function seedDefaultAdmin(): Promise<void> {
 }
 
 export async function login(username: string, password: string): Promise<Row> {
+  const ip = machineIp()
+  if (!(await isIpAllowed(ip))) {
+    throw new Error('This device has been blocked by the administrator')
+  }
   const res = await getClient().execute({
-    sql: 'SELECT * FROM users WHERE username = ? AND active = 1 LIMIT 1',
+    sql: 'SELECT * FROM users WHERE lower(username) = lower(?) AND active = 1 LIMIT 1',
     args: [username]
   })
   if (!res.rows.length) throw new Error('Invalid username or password')
@@ -50,6 +55,8 @@ export async function login(username: string, password: string): Promise<Row> {
   if (!verifyPassword(password, String(u.password_hash))) {
     throw new Error('Invalid username or password')
   }
+  await recordSession(Number(u.id), String(u.username), ip)
+  await logEvent(Number(u.id), String(u.username), ip, 'login')
   return {
     id: u.id,
     username: u.username,
@@ -59,13 +66,20 @@ export async function login(username: string, password: string): Promise<Row> {
   }
 }
 
-function parsePermissions(value: unknown): string[] {
-  if (!value) return []
+// Returns the stored permission map (module -> 'read' | 'write'). Legacy array
+// values (just module keys) are treated as full 'write'.
+function parsePermissions(value: unknown): Record<string, string> {
+  if (!value) return {}
   try {
-    const arr = JSON.parse(String(value))
-    return Array.isArray(arr) ? arr.map(String) : []
+    const p = JSON.parse(String(value))
+    if (Array.isArray(p)) {
+      const out: Record<string, string> = {}
+      for (const k of p) out[String(k)] = 'write'
+      return out
+    }
+    return p && typeof p === 'object' ? (p as Record<string, string>) : {}
   } catch {
-    return []
+    return {}
   }
 }
 
@@ -85,7 +99,7 @@ export async function createUser(v: Row): Promise<{ id: number }> {
     v.full_name || null,
     v.role || 'viewer',
     v.active ? 1 : 0,
-    JSON.stringify(Array.isArray(v.permissions) ? v.permissions : [])
+    JSON.stringify(v.permissions && typeof v.permissions === 'object' ? v.permissions : {})
   ]
   try {
     const res = await getClient().execute({
@@ -105,7 +119,7 @@ export async function updateUser(id: number, v: Row): Promise<{ id: number }> {
     v.full_name || null,
     v.role || 'viewer',
     v.active ? 1 : 0,
-    JSON.stringify(Array.isArray(v.permissions) ? v.permissions : [])
+    JSON.stringify(v.permissions && typeof v.permissions === 'object' ? v.permissions : {})
   ]
   if (v.password) {
     sets.push('password_hash = ?')

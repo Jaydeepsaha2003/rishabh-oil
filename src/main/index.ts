@@ -3,6 +3,8 @@ import { join } from 'path'
 import { registerIpc } from './ipc'
 import { initDb } from './db'
 import { seedDefaultAdmin } from './auth'
+import { seedProducts, seedFormulations } from './seed'
+import { cleanupLogs } from './access'
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -35,6 +37,9 @@ function createWindow(): void {
 app.whenReady().then(async () => {
   await initDb()
   await seedDefaultAdmin().catch((e) => console.error('[auth] seed failed:', e))
+  await seedProducts().catch((e) => console.error('[seed] products failed:', e))
+  await seedFormulations().catch((e) => console.error('[seed] formulations failed:', e))
+  await cleanupLogs().catch(() => {})
   registerIpc()
   createWindow()
 
