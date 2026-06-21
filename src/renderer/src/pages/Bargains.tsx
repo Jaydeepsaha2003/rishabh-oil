@@ -175,7 +175,7 @@ export function Bargains(): React.JSX.Element {
     <>
       <PageHeader
         title="Bargains"
-        subtitle="Rate contracts — drawn down as orders are loaded"
+        subtitle="Rate contracts — drawn down as purchase tankers are loaded"
         actions={
           <Button size="sm" onClick={openAdd} disabled={noMasters}>
             <Plus className="h-4 w-4" />

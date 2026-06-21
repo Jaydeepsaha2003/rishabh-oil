@@ -1,7 +1,5 @@
-name: Build & release desktop apps
+name: Build Windows installer and release
 
-# Build manually from the Actions tab (downloads as artifacts), or push a
-# version tag like v0.1.0 to publish a Release with downloadable installers.
 on:
   workflow_dispatch:
   push:
@@ -12,50 +10,43 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
+  windows-installer:
+    runs-on: windows-latest
 
-      - uses: actions/setup-node@v4
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
-      - run: npm install
+      - name: Install dependencies
+        run: npm ci
 
-      # Optional: if these repo secrets are set, the installer auto-connects.
-      # If not, the installed app shows its setup screen on first launch.
+      - name: Type-check
+        run: npm run typecheck
+
       - name: Build Windows installer
-        if: runner.os == 'Windows'
         run: npm run dist:win
         env:
           MAIN_VITE_TURSO_DATABASE_URL: ${{ secrets.MAIN_VITE_TURSO_DATABASE_URL }}
           MAIN_VITE_TURSO_AUTH_TOKEN: ${{ secrets.MAIN_VITE_TURSO_AUTH_TOKEN }}
 
-      - name: Build macOS installer
-        if: runner.os == 'macOS'
-        run: npm run dist:mac
-        env:
-          MAIN_VITE_TURSO_DATABASE_URL: ${{ secrets.MAIN_VITE_TURSO_DATABASE_URL }}
-          MAIN_VITE_TURSO_AUTH_TOKEN: ${{ secrets.MAIN_VITE_TURSO_AUTH_TOKEN }}
-
-      # Always available: download from the run's Artifacts section.
-      - uses: actions/upload-artifact@v4
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: installer-${{ matrix.os }}
-          path: |
-            release/*.exe
-            release/*.dmg
+          name: Rishabh-Oil-Windows-Installer
+          path: release/*.exe
+          if-no-files-found: error
 
-      # On a version tag, attach the installers to a downloadable Release.
-      - name: Publish to Release
+      - name: Publish installer to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            release/*.exe
-            release/*.dmg
+          name: Rishabh Oil ${{ github.ref_name }}
+          generate_release_notes: true
+          files: release/*.exe
+          fail_on_unmatched_files: true

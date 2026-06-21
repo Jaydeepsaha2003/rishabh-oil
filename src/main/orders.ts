@@ -12,6 +12,8 @@ const STAGES = [
   'received'
 ]
 
+const TANKER_STAGES = ['supplier_factory', 'loaded', 'transit', 'outside_factory', 'inside_factory', 'empty']
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
 
@@ -170,7 +172,9 @@ export async function listOrders(): Promise<Row[]> {
            s.name AS supplier_name,
            ot.code AS oil_code, ot.name AS oil_name,
            src.name AS source_name,
-           t.name AS transporter_name
+           t.name AS transporter_name,
+           (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_count,
+           (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_nos
     FROM orders o
     LEFT JOIN suppliers s ON s.id = o.supplier_id
     LEFT JOIN products ot ON ot.id = o.oil_type_id
@@ -203,8 +207,9 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
        bargain_rate, invoice_rate, interest_pct, interest_days, adjusted_rate, taxable_value,
        gst_pct, gst_amount, tds_pct, tds_amount, net_amount,
        final_taxable_value, final_gst_amount, final_tds_amount, final_net_amount,
-       tanker_no, is_registered_transporter, posting, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered')`,
+       tanker_no, transporter_id, is_registered_transporter, posting, financed_by_party,
+       payment_cleared_date, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'loaded')`,
     args: [
       v.invoice_no,
       v.order_date,
@@ -230,11 +235,15 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       m.final_tds_amount,
       m.final_net_amount,
       v.tanker_no || null,
+      v.transporter_id ? n(v.transporter_id) : null,
       v.is_registered_transporter ? 1 : 0,
-      v.posting ? 1 : 0
+      1,
+      v.financed_by_party ? 1 : 0,
+      v.payment_date || v.order_date
     ]
   })
   const id = Number(res.lastInsertRowid)
+  await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
   await setSupplierPayable(id, n(v.supplier_id), m.net_amount, String(v.order_date))
   return { id }
 }
@@ -261,7 +270,8 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       ordered_qty = ?, uom = ?, bargain_rate = ?, invoice_rate = ?, interest_pct = ?, interest_days = ?,
       adjusted_rate = ?, taxable_value = ?, gst_pct = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, net_amount = ?,
       final_taxable_value = ?, final_gst_amount = ?, final_tds_amount = ?, final_net_amount = ?,
-      tanker_no = ?, is_registered_transporter = ?, posting = ?
+      tanker_no = ?, transporter_id = ?, is_registered_transporter = ?, posting = 1, financed_by_party = ?,
+      payment_cleared_date = ?
       WHERE id = ?`,
     args: [
       v.invoice_no,
@@ -288,11 +298,15 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       m.final_tds_amount,
       m.final_net_amount,
       v.tanker_no || null,
+      v.transporter_id ? n(v.transporter_id) : null,
       v.is_registered_transporter ? 1 : 0,
-      v.posting ? 1 : 0,
+      v.financed_by_party ? 1 : 0,
+      v.payment_date || v.order_date,
       id
     ]
   })
+  await getClient().execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?', args: [id] })
+  await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
   await setSupplierPayable(id, n(v.supplier_id), m.net_amount, String(v.order_date))
   return { id }
 }
@@ -301,7 +315,213 @@ export async function deleteOrder(id: number): Promise<{ id: number }> {
   const c = getClient()
   await c.execute({ sql: 'DELETE FROM supplier_ledger WHERE order_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM transporter_ledger WHERE order_id = ?', args: [id] })
+  await c.execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM orders WHERE id = ?', args: [id] })
+  return { id }
+}
+
+async function assignTankers(
+  orderId: number,
+  tankerIds: unknown,
+  bargainId: number,
+  transporterId: number
+): Promise<void> {
+  const ids = Array.isArray(tankerIds) ? tankerIds.map(Number).filter((x) => x > 0) : []
+  if (!ids.length) throw new Error('Select at least one loaded tanker')
+  const c = getClient()
+  for (const tankerId of ids) {
+    const res = await c.execute({
+      sql: 'SELECT order_id, bargain_id FROM purchase_tankers WHERE id = ?',
+      args: [tankerId]
+    })
+    if (!res.rows.length) throw new Error('A selected tanker no longer exists')
+    const row = res.rows[0]
+    if (row.order_id != null && Number(row.order_id) !== orderId) {
+      throw new Error('A selected tanker is already attached to another purchase')
+    }
+    if (Number(row.bargain_id) !== bargainId) {
+      throw new Error('All tankers on one purchase must belong to the selected bargain')
+    }
+    await c.execute({
+      sql: `UPDATE purchase_tankers SET order_id = ?,
+            transporter_id = CASE WHEN ? > 0 THEN ? ELSE transporter_id END WHERE id = ?`,
+      args: [orderId, transporterId, transporterId, tankerId]
+    })
+  }
+}
+
+export async function listPurchaseTankers(): Promise<Row[]> {
+  const res = await getClient().execute(`
+    SELECT pt.*, o.invoice_no, b.bargain_no, b.bargain_type, b.rate_per_uom AS bargain_rate,
+           b.allowed_shortage_pct, s.name AS supplier_name,
+           p.code AS oil_code, p.name AS oil_name, src.name AS source_name,
+           tr.name AS transporter_name
+    FROM purchase_tankers pt
+    LEFT JOIN orders o ON o.id = pt.order_id
+    LEFT JOIN bargains b ON b.id = pt.bargain_id
+    LEFT JOIN suppliers s ON s.id = pt.supplier_id
+    LEFT JOIN products p ON p.id = pt.oil_type_id
+    LEFT JOIN sources src ON src.id = pt.source_id
+    LEFT JOIN transporters tr ON tr.id = pt.transporter_id
+    ORDER BY CASE pt.status
+      WHEN 'supplier_factory' THEN 1 WHEN 'loaded' THEN 2 WHEN 'transit' THEN 3
+      WHEN 'outside_factory' THEN 4 WHEN 'inside_factory' THEN 5 ELSE 6 END, pt.id DESC
+  `)
+  return toPlain(res)
+}
+
+export async function createPurchaseTanker(v: Row): Promise<{ id: number }> {
+  if (!v.tanker_no || !v.bargain_id) throw new Error('Tanker number and bargain are required')
+  const res = await getClient().execute({
+    sql: `INSERT INTO purchase_tankers
+      (tanker_no, loaded_date, bargain_id, supplier_id, oil_type_id, loaded_qty, uom, payment_mode, status)
+      VALUES (?, ?, ?, ?, ?, 0, ?, 'pending', 'supplier_factory')`,
+    args: [
+      String(v.tanker_no).trim(),
+      v.factory_entry_date || v.loaded_date,
+      n(v.bargain_id),
+      n(v.supplier_id),
+      n(v.oil_type_id),
+      v.uom || 'ton'
+    ]
+  })
+  return { id: Number(res.lastInsertRowid) }
+}
+
+export async function deletePurchaseTanker(id: number): Promise<{ id: number }> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT order_id FROM purchase_tankers WHERE id = ?', args: [id] })
+  if (res.rows[0]?.order_id != null) throw new Error('Remove this tanker from its purchase before deleting it')
+  await c.execute({ sql: 'DELETE FROM purchase_tankers WHERE id = ?', args: [id] })
+  return { id }
+}
+
+async function syncPurchaseFromTankers(orderId: number): Promise<void> {
+  const c = getClient()
+  const res = await c.execute({
+    sql: `SELECT COUNT(*) AS total,
+                 SUM(CASE WHEN status = 'empty' THEN 1 ELSE 0 END) AS empty_count,
+                 SUM(COALESCE(received_qty, 0)) AS received_qty,
+                 SUM(COALESCE(transport_amount, 0)) AS transport_amount,
+                 SUM(COALESCE(shortage_charge_amount, 0)) AS shortage_amount
+          FROM purchase_tankers WHERE order_id = ?`,
+    args: [orderId]
+  })
+  const x = res.rows[0]
+  const status = n(x.total) > 0 && n(x.total) === n(x.empty_count) ? 'received' : 'loaded'
+  await c.execute({
+    sql: `UPDATE orders SET status = ?, received_qty = ?, transport_amount = ?,
+          shortage_charge_amount = ?, received_date = CASE WHEN ? = 'received' THEN date('now') ELSE received_date END
+          WHERE id = ?`,
+    args: [status, n(x.received_qty), n(x.transport_amount), n(x.shortage_amount), status, orderId]
+  })
+}
+
+export async function advancePurchaseTanker(id: number, toStatus: string, data: Row): Promise<{ id: number }> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT * FROM purchase_tankers WHERE id = ?', args: [id] })
+  if (!res.rows.length) throw new Error('Tanker not found')
+  const tanker = toPlain(res)[0]
+  const current = TANKER_STAGES.indexOf(String(tanker.status))
+  const target = TANKER_STAGES.indexOf(toStatus)
+  if (target !== current + 1) throw new Error('That is not the next tanker stage')
+
+  if (toStatus === 'loaded') {
+    const qty = n(data.loaded_qty)
+    if (qty <= 0) throw new Error('Enter the actual loaded quantity')
+    const balance = await c.execute({
+      sql: `SELECT b.qty - COALESCE(
+              (SELECT SUM(loaded_qty) FROM purchase_tankers WHERE bargain_id = b.id AND id != ?), 0
+            ) AS balance
+            FROM bargains b WHERE b.id = ?`,
+      args: [id, n(tanker.bargain_id)]
+    })
+    if (!balance.rows.length || qty > n(balance.rows[0].balance) + 1e-6) {
+      throw new Error(`Loaded qty exceeds the bargain balance (${n(balance.rows[0]?.balance).toFixed(3)})`)
+    }
+    const sourceId = data.source_id ? n(data.source_id) : null
+    const transitDate = String(data.loaded_date || '')
+    let expected: string | null = null
+    if (sourceId && transitDate) {
+      const src = await c.execute({ sql: 'SELECT transit_days FROM sources WHERE id = ?', args: [sourceId] })
+      const d = new Date(transitDate)
+      d.setDate(d.getDate() + n(src.rows[0]?.transit_days))
+      expected = d.toISOString().slice(0, 10)
+    }
+    await c.execute({
+      sql: `UPDATE purchase_tankers SET status = 'transit', loaded_date = ?, loaded_qty = ?,
+            payment_mode = ?, transit_date = ?, source_id = ?, expected_delivery_date = ?
+            WHERE id = ?`,
+      args: [
+        data.loaded_date || null,
+        qty,
+        data.payment_mode === 'supplier_finance' ? 'supplier_finance' : 'paid_by_us',
+        transitDate || null,
+        sourceId,
+        expected,
+        id
+      ]
+    })
+  } else if (toStatus === 'transit') {
+    const sourceId = data.source_id ? n(data.source_id) : null
+    const transitDate = String(data.transit_date || '')
+    let expected: string | null = null
+    if (sourceId && transitDate) {
+      const src = await c.execute({ sql: 'SELECT transit_days FROM sources WHERE id = ?', args: [sourceId] })
+      const d = new Date(transitDate)
+      d.setDate(d.getDate() + n(src.rows[0]?.transit_days))
+      expected = d.toISOString().slice(0, 10)
+    }
+    await c.execute({
+      sql: `UPDATE purchase_tankers SET status = 'transit', transit_date = ?, source_id = ?,
+            expected_delivery_date = ? WHERE id = ?`,
+      args: [transitDate || null, sourceId, expected, id]
+    })
+  } else if (toStatus === 'outside_factory') {
+    await c.execute({
+      sql: "UPDATE purchase_tankers SET status = 'outside_factory', outside_factory_date = ? WHERE id = ?",
+      args: [data.outside_factory_date || null, id]
+    })
+  } else if (toStatus === 'inside_factory') {
+    await c.execute({
+      sql: "UPDATE purchase_tankers SET status = 'inside_factory', inside_factory_date = ? WHERE id = ?",
+      args: [data.inside_factory_date || null, id]
+    })
+  } else if (toStatus === 'empty') {
+    const receivedQty = n(data.received_qty)
+    if (receivedQty <= 0 || receivedQty > n(tanker.loaded_qty) + 1e-6) throw new Error('Enter a valid empty quantity')
+    const bargain = await c.execute({
+      sql: 'SELECT bargain_type, rate_per_uom, allowed_shortage_pct FROM bargains WHERE id = ?',
+      args: [n(tanker.bargain_id)]
+    })
+    const b = bargain.rows[0] || {}
+    const isEx = String(b.bargain_type || 'Ex') !== 'Delivered'
+    const rate = isEx ? n(data.transport_rate_per_ton) : 0
+    const transport = n(tanker.loaded_qty) * rate
+    let pct = b.allowed_shortage_pct == null
+      ? n((await getSetting('allowed_shortage_pct')) ?? '0')
+      : n(b.allowed_shortage_pct)
+    const shortage = Math.max(0, n(tanker.loaded_qty) - receivedQty)
+    const excess = Math.max(0, shortage - (n(tanker.loaded_qty) * pct) / 100)
+    const penalty = isEx ? excess * n(b.rate_per_uom) : 0
+    const transporterId = isEx ? n(data.transporter_id) : null
+    await c.execute({
+      sql: `UPDATE purchase_tankers SET status = 'empty', empty_date = ?, received_qty = ?,
+            transporter_id = ?, transport_rate_per_ton = ?, transport_amount = ?,
+            shortage_charge_amount = ? WHERE id = ?`,
+      args: [data.empty_date || null, receivedQty, transporterId, rate, transport, penalty, id]
+    })
+    if (tanker.order_id && transporterId) {
+      await c.execute({
+        sql: `INSERT INTO transporter_ledger
+          (transporter_id, order_id, entry_date, entry_type, amount, note)
+          VALUES (?, ?, ?, 'freight', ?, ?)`,
+        args: [transporterId, n(tanker.order_id), data.empty_date || null, transport - penalty,
+          `Tanker ${tanker.tanker_no}: freight less shortage`]
+      })
+    }
+  }
+  if (tanker.order_id) await syncPurchaseFromTankers(n(tanker.order_id))
   return { id }
 }
 

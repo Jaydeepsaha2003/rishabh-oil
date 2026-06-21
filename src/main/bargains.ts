@@ -25,8 +25,8 @@ export async function listBargains(): Promise<Row[]> {
   // loaded_qty = total dispatched across this bargain's orders; balance = qty − loaded.
   const res = await getClient().execute(`
     SELECT b.*, s.name AS supplier_name, o.code AS oil_code, o.name AS oil_name,
-           COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id), 0) AS loaded_qty,
-           b.qty - COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id), 0) AS balance_qty
+           COALESCE((SELECT SUM(loaded_qty) FROM purchase_tankers WHERE bargain_id = b.id), 0) AS loaded_qty,
+           b.qty - COALESCE((SELECT SUM(loaded_qty) FROM purchase_tankers WHERE bargain_id = b.id), 0) AS balance_qty
     FROM bargains b
     LEFT JOIN suppliers s ON s.id = b.supplier_id
     LEFT JOIN products o ON o.id = b.oil_type_id

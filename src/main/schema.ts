@@ -219,6 +219,32 @@ CREATE TABLE IF NOT EXISTS orders (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS purchase_tankers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id INTEGER REFERENCES orders(id),
+  tanker_no TEXT NOT NULL,
+  loaded_date TEXT NOT NULL,
+  bargain_id INTEGER REFERENCES bargains(id),
+  supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+  oil_type_id INTEGER NOT NULL REFERENCES products(id),
+  loaded_qty REAL NOT NULL DEFAULT 0,
+  uom TEXT NOT NULL DEFAULT 'ton',
+  payment_mode TEXT NOT NULL DEFAULT 'pending',
+  status TEXT NOT NULL DEFAULT 'supplier_factory',
+  transit_date TEXT,
+  source_id INTEGER REFERENCES sources(id),
+  expected_delivery_date TEXT,
+  outside_factory_date TEXT,
+  inside_factory_date TEXT,
+  empty_date TEXT,
+  received_qty REAL,
+  transporter_id INTEGER REFERENCES transporters(id),
+  transport_rate_per_ton REAL DEFAULT 0,
+  transport_amount REAL DEFAULT 0,
+  shortage_charge_amount REAL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS supplier_ledger (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
@@ -321,6 +347,8 @@ CREATE TABLE IF NOT EXISTS user_logs (
 CREATE INDEX IF NOT EXISTS idx_bargains_supplier ON bargains(supplier_id);
 CREATE INDEX IF NOT EXISTS idx_orders_supplier ON orders(supplier_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_purchase_tankers_order ON purchase_tankers(order_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_tankers_status ON purchase_tankers(status);
 
 INSERT OR IGNORE INTO app_settings (key, value) VALUES ('allowed_shortage_pct', '0.2');
 INSERT OR IGNORE INTO app_settings (key, value) VALUES ('default_uom', 'ton');

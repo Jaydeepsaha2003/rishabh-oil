@@ -39,7 +39,7 @@ export type Page =
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, enabled: true },
   { id: 'bargains', label: 'Bargains', icon: FileText, enabled: true },
-  { id: 'orders', label: 'Orders', icon: ShoppingCart, enabled: true },
+  { id: 'orders', label: 'Purchases', icon: ShoppingCart, enabled: true },
   { id: 'payments', label: 'Payments', icon: CreditCard, enabled: true },
   { id: 'ledgers', label: 'Ledgers', icon: Wallet, enabled: true },
   { id: 'products', label: 'Products', icon: Boxes, enabled: true },

@@ -557,7 +557,7 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
   const isAdmin = user.role === 'admin'
   return (
     <>
-      <PageHeader title="Settings" subtitle="Master data used across bargains and orders" />
+      <PageHeader title="Settings" subtitle="Master data used across bargains and purchases" />
       <div className="p-8">
         <Tabs defaultValue="sources">
           <TabsList>

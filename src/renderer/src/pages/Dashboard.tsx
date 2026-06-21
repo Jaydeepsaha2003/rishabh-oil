@@ -48,7 +48,7 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
       )
       setCounts(Object.fromEntries(entries))
       setBargainCount((await window.api.bargains.list()).length)
-      const orders = await window.api.orders.list()
+      const orders = await window.api.tankers.list()
       setOrderTotal(orders.length)
       const sc: Record<string, number> = {}
       for (const s of STAGES) sc[s] = 0

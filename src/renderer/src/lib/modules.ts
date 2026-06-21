@@ -9,7 +9,7 @@ export interface ModuleDef {
 export const MODULES: ModuleDef[] = [
   { key: 'dashboard', label: 'Dashboard' },
   { key: 'bargains', label: 'Bargains' },
-  { key: 'orders', label: 'Orders' },
+  { key: 'orders', label: 'Purchases' },
   { key: 'payments', label: 'Payments' },
   { key: 'ledgers', label: 'Ledgers' },
   { key: 'products', label: 'Products' },

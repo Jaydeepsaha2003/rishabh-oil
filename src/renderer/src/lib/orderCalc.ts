@@ -98,27 +98,26 @@ export function computeShortage(i: ShortageInput): ShortageResult {
 
 // Tanker lifecycle, in order.
 export const STAGES = [
-  'ordered',
-  'at_port',
-  'payment_cleared',
-  'in_transit',
+  'supplier_factory',
+  'loaded',
+  'transit',
   'outside_factory',
   'inside_factory',
-  'received'
+  'empty'
 ] as const
 
 export const STATUS_LABEL: Record<string, string> = {
-  ordered: 'Ordered',
-  at_port: 'At supplier port',
-  payment_cleared: 'Payment cleared',
-  in_transit: 'In transit',
+  supplier_factory: 'Inside supplier factory',
+  loaded: 'Loaded',
+  transit: 'In transit',
+  empty: 'Empty',
   outside_factory: 'Outside factory',
   inside_factory: 'Inside factory',
-  received: 'Received'
+  received: 'Completed'
 }
 
 // Stages where the tanker is moving and can therefore run late.
-export const EN_ROUTE = ['in_transit', 'outside_factory', 'inside_factory']
+export const EN_ROUTE = ['transit', 'outside_factory', 'inside_factory']
 
 export function nextStage(s: string): string | null {
   const i = STAGES.indexOf(s as (typeof STAGES)[number])

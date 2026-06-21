@@ -91,6 +91,27 @@ const MIGRATIONS = [
   'ALTER TABLE orders ADD COLUMN credit_interest_days REAL NOT NULL DEFAULT 0',
   'ALTER TABLE orders ADD COLUMN credit_interest_amount REAL NOT NULL DEFAULT 0',
   'ALTER TABLE sales ADD COLUMN sales_bargain_id INTEGER',
+  `INSERT INTO purchase_tankers
+    (order_id, tanker_no, loaded_date, bargain_id, supplier_id, oil_type_id, loaded_qty, uom,
+     payment_mode, status, transit_date, source_id, expected_delivery_date, outside_factory_date,
+     inside_factory_date, empty_date, received_qty, transporter_id, transport_rate_per_ton,
+     transport_amount, shortage_charge_amount)
+   SELECT o.id, COALESCE(NULLIF(o.tanker_no, ''), 'Legacy-' || o.id),
+          COALESCE(o.port_entry_date, o.loaded_date, o.order_date), o.bargain_id, o.supplier_id,
+          o.oil_type_id, o.ordered_qty, o.uom,
+          CASE WHEN o.financed_by_party = 1 THEN 'supplier_finance' ELSE 'paid_by_us' END,
+          CASE
+            WHEN o.status IN ('received', 'delivered') THEN 'empty'
+            WHEN o.status = 'inside_factory' THEN 'inside_factory'
+            WHEN o.status = 'outside_factory' THEN 'outside_factory'
+            WHEN o.status = 'in_transit' THEN 'transit'
+            ELSE 'loaded'
+          END,
+          o.dispatch_date, o.source_id, o.expected_delivery_date, o.outside_factory_date,
+          o.inside_factory_date, COALESCE(o.received_date, o.delivered_date), o.received_qty,
+          o.transporter_id, o.transport_rate_per_ton, o.transport_amount, o.shortage_charge_amount
+   FROM orders o
+   WHERE NOT EXISTS (SELECT 1 FROM purchase_tankers pt WHERE pt.order_id = o.id)`,
   // Remap statuses from the earlier lifecycle to the new tanker stages.
   "UPDATE orders SET status = 'received' WHERE status = 'delivered'",
   "UPDATE orders SET status = 'at_port' WHERE status = 'loaded'"

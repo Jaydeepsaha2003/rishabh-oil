@@ -20,6 +20,10 @@ import {
   updateOrder,
   deleteOrder,
   advanceOrder,
+  listPurchaseTankers,
+  createPurchaseTanker,
+  deletePurchaseTanker,
+  advancePurchaseTanker,
   supplierFyTaxable,
   listSupplierLedger,
   listTransporterLedger,
@@ -126,6 +130,14 @@ export function registerIpc(): void {
   handle('bargains:delete', (_e, { id }: { id: number }) => deleteBargain(id))
 
   handle('orders:list', () => listOrders())
+  handle('tankers:list', () => listPurchaseTankers())
+  handle('tankers:create', (_e, { values }: { values: Row }) => createPurchaseTanker(values))
+  handle('tankers:delete', (_e, { id }: { id: number }) => deletePurchaseTanker(id))
+  handle(
+    'tankers:advance',
+    (_e, { id, toStatus, data }: { id: number; toStatus: string; data: Row }) =>
+      advancePurchaseTanker(id, toStatus, data)
+  )
   handle('orders:create', (_e, { values }: { values: Row }) => createOrder(values))
   handle('orders:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateOrder(id, values)
