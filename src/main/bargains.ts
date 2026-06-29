@@ -146,6 +146,22 @@ export async function updateBargain(id: number, v: Row): Promise<{ id: number }>
 }
 
 export async function deleteBargain(id: number): Promise<{ id: number }> {
-  await getClient().execute({ sql: 'DELETE FROM bargains WHERE id = ?', args: [id] })
+  const c = getClient()
+  // Block deletion if any purchase invoice is linked (it carries financial data).
+  const ord = await c.execute({
+    sql: 'SELECT COUNT(*) AS n FROM orders WHERE bargain_id = ?',
+    args: [id]
+  })
+  if (Number(ord.rows[0].n) > 0) {
+    throw new Error('This bargain has purchases linked to it. Delete those purchases first.')
+  }
+  // Clean up loose tankers (and their gate entries) before removing the bargain,
+  // otherwise the foreign-key constraints reject the delete.
+  await c.execute({
+    sql: 'DELETE FROM gate_entries WHERE tanker_id IN (SELECT id FROM purchase_tankers WHERE bargain_id = ?)',
+    args: [id]
+  })
+  await c.execute({ sql: 'DELETE FROM purchase_tankers WHERE bargain_id = ?', args: [id] })
+  await c.execute({ sql: 'DELETE FROM bargains WHERE id = ?', args: [id] })
   return { id }
 }
