@@ -60,6 +60,7 @@ const api = {
   ledger: {
     suppliers: (): Promise<Row[]> => ipcRenderer.invoke('ledger:suppliers'),
     transporters: (): Promise<Row[]> => ipcRenderer.invoke('ledger:transporters'),
+    customers: (): Promise<Row[]> => ipcRenderer.invoke('ledger:customers'),
     addEntry: (data: Row): Promise<{ id: number }> => ipcRenderer.invoke('ledger:addEntry', { data }),
     deleteEntry: (partyType: string, id: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('ledger:deleteEntry', { partyType, id })
@@ -115,6 +116,12 @@ const api = {
     list: (): Promise<Row[]> => ipcRenderer.invoke('stock:list'),
     needs: (): Promise<Row[]> => ipcRenderer.invoke('stock:needs')
   },
+  stockCount: {
+    sheet: (date: string): Promise<Row[]> => ipcRenderer.invoke('stockCount:sheet', { date }),
+    list: (date: string): Promise<Row[]> => ipcRenderer.invoke('stockCount:list', { date }),
+    save: (date: string, items: Row[]): Promise<{ count: number }> =>
+      ipcRenderer.invoke('stockCount:save', { date, items })
+  },
   production: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('production:list'),
     items: (id: number): Promise<Row[]> => ipcRenderer.invoke('production:items', { id }),
@@ -141,6 +148,25 @@ const api = {
       ipcRenderer.invoke('salesBargains:update', { id, values }),
     remove: (id: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('salesBargains:delete', { id })
+  },
+  gate: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('gate:list'),
+    nextNo: (): Promise<string> => ipcRenderer.invoke('gate:nextNo'),
+    create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('gate:create', { values }),
+    update: (id: number, values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('gate:update', { id, values }),
+    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('gate:delete', { id })
+  },
+  lc: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('lc:list'),
+    issuances: (lcId: number): Promise<Row[]> => ipcRenderer.invoke('lc:issuances', { lcId }),
+    create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('lc:create', { values }),
+    update: (id: number, values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('lc:update', { id, values }),
+    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('lc:delete', { id }),
+    issue: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('lc:issue', { values }),
+    removeIssuance: (id: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('lc:deleteIssuance', { id })
   }
 }
 

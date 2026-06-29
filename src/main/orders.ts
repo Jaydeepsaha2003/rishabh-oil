@@ -1,6 +1,7 @@
 import type { InValue, ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getSetting } from './repos'
+import { tankerGateReceived } from './gate'
 
 const STAGES = [
   'ordered',
@@ -372,17 +373,20 @@ export async function listPurchaseTankers(): Promise<Row[]> {
 
 export async function createPurchaseTanker(v: Row): Promise<{ id: number }> {
   if (!v.tanker_no || !v.bargain_id) throw new Error('Tanker number and bargain are required')
+  if (!v.transporter_id) throw new Error('Select the transporter for this tanker')
   const res = await getClient().execute({
     sql: `INSERT INTO purchase_tankers
-      (tanker_no, loaded_date, bargain_id, supplier_id, oil_type_id, loaded_qty, uom, payment_mode, status)
-      VALUES (?, ?, ?, ?, ?, 0, ?, 'pending', 'supplier_factory')`,
+      (tanker_no, loaded_date, bargain_id, supplier_id, oil_type_id, loaded_qty, uom, payment_mode,
+       transporter_id, status)
+      VALUES (?, ?, ?, ?, ?, 0, ?, 'pending', ?, 'supplier_factory')`,
     args: [
       String(v.tanker_no).trim(),
       v.factory_entry_date || v.loaded_date,
       n(v.bargain_id),
       n(v.supplier_id),
       n(v.oil_type_id),
-      v.uom || 'ton'
+      v.uom || 'ton',
+      n(v.transporter_id)
     ]
   })
   return { id: Number(res.lastInsertRowid) }
@@ -490,6 +494,16 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
   } else if (toStatus === 'empty') {
     const receivedQty = n(data.received_qty)
     if (receivedQty <= 0 || receivedQty > n(tanker.loaded_qty) + 1e-6) throw new Error('Enter a valid empty quantity')
+    // Cross-check against the gate-recorded received quantity for this tanker.
+    const gateQty = await tankerGateReceived(id)
+    if (gateQty == null) {
+      throw new Error('No gate entry found for this tanker. Record the gate receipt first.')
+    }
+    if (Math.abs(gateQty - receivedQty) > 0.001) {
+      throw new Error(
+        `Received qty (${receivedQty}) does not match the gate received qty (${gateQty}) for this tanker.`
+      )
+    }
     const bargain = await c.execute({
       sql: 'SELECT bargain_type, rate_per_uom, allowed_shortage_pct FROM bargains WHERE id = ?',
       args: [n(tanker.bargain_id)]
@@ -508,8 +522,21 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
     await c.execute({
       sql: `UPDATE purchase_tankers SET status = 'empty', empty_date = ?, received_qty = ?,
             transporter_id = ?, transport_rate_per_ton = ?, transport_amount = ?,
-            shortage_charge_amount = ? WHERE id = ?`,
-      args: [data.empty_date || null, receivedQty, transporterId, rate, transport, penalty, id]
+            shortage_charge_amount = ?, krfl_weighment_doc_no = ?, krfl_weighment_photo = ?,
+            outside_weighment_doc_no = ?, outside_weighment_photo = ? WHERE id = ?`,
+      args: [
+        data.empty_date || null,
+        receivedQty,
+        transporterId,
+        rate,
+        transport,
+        penalty,
+        data.krfl_weighment_doc_no || null,
+        data.krfl_weighment_photo || null,
+        data.outside_weighment_doc_no || null,
+        data.outside_weighment_photo || null,
+        id
+      ]
     })
     if (tanker.order_id && transporterId) {
       await c.execute({
@@ -729,9 +756,24 @@ export async function listTransporterLedger(): Promise<Row[]> {
 // Manual ledger entry (opening balance, advance, adjustment) — Tally style.
 // Stored signed: credit (we owe the party) positive, debit negative.
 export async function addLedgerEntry(d: Row): Promise<{ id: number }> {
-  const partyType = d.party_type === 'transporter' ? 'transporter' : 'supplier'
-  const table = partyType === 'supplier' ? 'supplier_ledger' : 'transporter_ledger'
-  const col = partyType === 'supplier' ? 'supplier_id' : 'transporter_id'
+  const partyType =
+    d.party_type === 'transporter'
+      ? 'transporter'
+      : d.party_type === 'customer'
+        ? 'customer'
+        : 'supplier'
+  const table =
+    partyType === 'supplier'
+      ? 'supplier_ledger'
+      : partyType === 'transporter'
+        ? 'transporter_ledger'
+        : 'customer_ledger'
+  const col =
+    partyType === 'supplier'
+      ? 'supplier_id'
+      : partyType === 'transporter'
+        ? 'transporter_id'
+        : 'customer_id'
   const amount = n(d.cr) - n(d.dr)
   const res = await getClient().execute({
     sql: `INSERT INTO ${table} (${col}, order_id, entry_date, entry_type, amount, note)
@@ -743,9 +785,14 @@ export async function addLedgerEntry(d: Row): Promise<{ id: number }> {
 
 // Only manual entries can be deleted (auto entries are owned by orders/payments).
 export async function deleteLedgerEntry(partyType: string, id: number): Promise<{ id: number }> {
-  const table = partyType === 'transporter' ? 'transporter_ledger' : 'supplier_ledger'
+  const table =
+    partyType === 'transporter'
+      ? 'transporter_ledger'
+      : partyType === 'customer'
+        ? 'customer_ledger'
+        : 'supplier_ledger'
   await getClient().execute({
-    sql: `DELETE FROM ${table} WHERE id = ? AND entry_type IN ('opening','advance','adjustment','manual')`,
+    sql: `DELETE FROM ${table} WHERE id = ? AND entry_type IN ('opening','advance','adjustment','manual','general','dr_note','cr_note')`,
     args: [id]
   })
   return { id }

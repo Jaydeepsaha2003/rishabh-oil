@@ -1,6 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { toast } from 'sonner'
+import { Download, Upload } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   Table,
   TableBody,
@@ -9,10 +14,49 @@ import {
   TableHeader,
   TableRow
 } from '@/components/ui/table'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { PageHeader } from '@/components/PageHeader'
-import { formatNum } from '@/lib/format'
+import { formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+
+// Minimal CSV helpers (handles quoted fields, commas, newlines).
+function csvCell(v: unknown): string {
+  const s = String(v ?? '')
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = []
+  let row: string[] = []
+  let field = ''
+  let inQuotes = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          field += '"'
+          i++
+        } else inQuotes = false
+      } else field += ch
+    } else if (ch === '"') inQuotes = true
+    else if (ch === ',') {
+      row.push(field)
+      field = ''
+    } else if (ch === '\n') {
+      row.push(field)
+      rows.push(row)
+      row = []
+      field = ''
+    } else if (ch !== '\r') field += ch
+  }
+  if (field.length || row.length) {
+    row.push(field)
+    rows.push(row)
+  }
+  return rows
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -25,7 +69,7 @@ const CAT_LABEL: Record<string, string> = {
 
 function StockTable({ rows }: { rows: Row[] }): React.JSX.Element {
   return (
-    <div className="rounded-lg border bg-card">
+    <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
       <Table>
         <TableHeader>
           <TableRow>
@@ -69,6 +113,249 @@ function StockTable({ rows }: { rows: Row[] }): React.JSX.Element {
   )
 }
 
+function StatCard({ label, value, tone }: { label: string; value: string; tone?: string }): React.JSX.Element {
+  return (
+    <div className="rounded-xl border bg-card p-4 shadow-sm">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className={cn('mt-1 text-xl font-semibold tabular-nums', tone)}>{value}</div>
+    </div>
+  )
+}
+
+// Daily physical-count sheet: enter actual closing stock and compare with the
+// computed book stock to see the difference (for tally / reconciliation).
+function DayClose(): React.JSX.Element {
+  const [date, setDate] = useState(todayISO())
+  const [rows, setRows] = useState<Row[]>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setRows(await window.api.stockCount.sheet(date))
+    setLoading(false)
+  }, [date])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  function setField(pid: number, key: string, value: unknown): void {
+    setRows((rs) => rs.map((r) => (r.product_id === pid ? { ...r, [key]: value } : r)))
+  }
+
+  const counted = rows.filter((r) => r.actual_qty !== null && r.actual_qty !== '')
+  const diffOf = (r: Row): number => Number(r.book_qty || 0) - Number(r.actual_qty || 0)
+  const totalDiff = counted.reduce((s, r) => s + diffOf(r), 0)
+  const totalActualValue = rows.reduce((s, r) => s + (Number(r.actual_value) || 0), 0)
+  const mismatches = counted.filter((r) => Math.abs(diffOf(r)) > 0.0005).length
+
+  async function save(): Promise<void> {
+    setSaving(true)
+    try {
+      const res = await window.api.stockCount.save(date, rows)
+      toast.success(`Saved ${res.count} actual ${res.count === 1 ? 'count' : 'counts'}`)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Download a CSV template pre-filled with every product and its book qty.
+  function downloadTemplate(): void {
+    const headers = ['Product ID', 'Product', 'Category', 'Book Qty', 'Actual Qty', 'Actual Value', 'Note']
+    const lines = [headers.join(',')]
+    for (const r of rows) {
+      lines.push(
+        [
+          r.product_id,
+          r.name,
+          CAT_LABEL[r.category] || r.category,
+          r.book_qty,
+          '',
+          r.actual_value ?? '',
+          r.note ?? ''
+        ]
+          .map(csvCell)
+          .join(',')
+      )
+    }
+    const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `day-close-${date}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  // Import a filled template — match by Product ID (or product name) and fill the grid.
+  async function onUpload(file: File | undefined): Promise<void> {
+    if (!file) return
+    try {
+      const grid = parseCsv(await file.text()).filter((r) => r.some((c) => c.trim() !== ''))
+      if (grid.length < 2) {
+        toast.error('The file has no data rows')
+        return
+      }
+      const header = grid[0].map((h) => h.trim().toLowerCase())
+      const idx = (...names: string[]): number =>
+        header.findIndex((h) => names.some((nm) => h.includes(nm)))
+      const pidI = idx('product id', 'productid')
+      const nameI = idx('product', 'name')
+      const qtyI = idx('actual qty', 'actual quantity')
+      const valI = idx('actual value')
+      const noteI = idx('note')
+      if (qtyI < 0 && valI < 0) {
+        toast.error('No "Actual Qty" or "Actual Value" column found')
+        return
+      }
+      const byId = new Map<string, string[]>()
+      const byName = new Map<string, string[]>()
+      for (let i = 1; i < grid.length; i++) {
+        const c = grid[i]
+        if (pidI >= 0 && c[pidI]?.trim()) byId.set(String(Number(c[pidI])), c)
+        if (nameI >= 0 && c[nameI]?.trim()) byName.set(c[nameI].trim().toLowerCase(), c)
+      }
+      let applied = 0
+      const merged = rows.map((r) => {
+        const c = byId.get(String(r.product_id)) || byName.get(String(r.name).toLowerCase())
+        if (!c) return r
+        applied++
+        const pick = (i: number, cur: unknown): unknown =>
+          i >= 0 && c[i] != null && c[i].trim() !== '' ? c[i].trim() : cur
+        return {
+          ...r,
+          actual_qty: pick(qtyI, r.actual_qty),
+          actual_value: pick(valI, r.actual_value),
+          note: pick(noteI, r.note)
+        }
+      })
+      setRows(merged)
+      toast.success(`Imported ${applied} ${applied === 1 ? 'row' : 'rows'} — review and Save day close`)
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="grid gap-1.5">
+          <Label className="text-xs text-muted-foreground">Closing date</Label>
+          <Input type="date" max={todayISO()} value={date} onChange={(e) => setDate(e.target.value || todayISO())} className="h-9 w-44" />
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            onChange={(e) => onUpload(e.target.files?.[0])}
+          />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="outline" size="icon" onClick={downloadTemplate} aria-label="Download template">
+                <Download className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Download a CSV template (all products + book qty) to fill in</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="outline" size="icon" onClick={() => fileRef.current?.click()} aria-label="Upload filled template">
+                <Upload className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Upload a filled template to fill the actual counts below</TooltipContent>
+          </Tooltip>
+          <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save day close'}</Button>
+        </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="Products counted" value={`${counted.length} / ${rows.length}`} />
+        <StatCard label="Mismatches" value={String(mismatches)} tone={mismatches ? 'text-amber-700' : 'text-emerald-700'} />
+        <StatCard label="Net difference (book − actual)" value={`${formatNum(totalDiff)}`} tone={Math.abs(totalDiff) > 0.0005 ? 'text-amber-700' : ''} />
+        <StatCard label="Total actual value" value={formatINR(totalActualValue)} />
+      </div>
+
+      <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Product</TableHead>
+              <TableHead>Category</TableHead>
+              <TableHead className="text-right">Book qty</TableHead>
+              <TableHead className="w-[130px] text-right">Actual qty</TableHead>
+              <TableHead className="text-right">Difference</TableHead>
+              <TableHead className="w-[150px] text-right">Actual value (₹)</TableHead>
+              <TableHead className="w-[180px]">Note</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading ? (
+              <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+            ) : rows.length === 0 ? (
+              <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No products.</TableCell></TableRow>
+            ) : (
+              rows.map((r) => {
+                const has = r.actual_qty !== null && r.actual_qty !== ''
+                const diff = diffOf(r)
+                const off = has && Math.abs(diff) > 0.0005
+                return (
+                  <TableRow key={r.product_id as number}>
+                    <TableCell className="font-medium">{r.name}</TableCell>
+                    <TableCell><Badge variant="secondary">{CAT_LABEL[r.category] || r.category}</Badge></TableCell>
+                    <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.book_qty)}</TableCell>
+                    <TableCell className="text-right">
+                      <Input
+                        type="number"
+                        className="h-8 w-28 text-right"
+                        placeholder="—"
+                        value={r.actual_qty ?? ''}
+                        onChange={(e) => setField(r.product_id, 'actual_qty', e.target.value)}
+                      />
+                    </TableCell>
+                    <TableCell className={cn('text-right tabular-nums', off ? (diff > 0 ? 'text-amber-700' : 'text-red-600') : 'text-muted-foreground')}>
+                      {has ? formatNum(diff) : '—'}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Input
+                        type="number"
+                        className="h-8 w-36 text-right"
+                        placeholder="—"
+                        value={r.actual_value ?? ''}
+                        onChange={(e) => setField(r.product_id, 'actual_value', e.target.value)}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Input
+                        className="h-8"
+                        placeholder="optional"
+                        value={r.note ?? ''}
+                        onChange={(e) => setField(r.product_id, 'note', e.target.value)}
+                      />
+                    </TableCell>
+                  </TableRow>
+                )
+              })
+            )}
+          </TableBody>
+        </Table>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Book qty is the system-computed stock (received + produced − consumed − sold). Difference = book − actual; a positive value means physical stock is short of the books.
+      </p>
+    </div>
+  )
+}
+
 export function Stock(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
 
@@ -82,19 +369,18 @@ export function Stock(): React.JSX.Element {
 
   useLiveRefresh(load)
 
-  const byCat = (cat: string): Row[] => rows.filter((r) => r.category === cat)
+  const byCat = useMemo(() => (cat: string): Row[] => rows.filter((r) => r.category === cat), [rows])
 
   return (
     <>
-      <PageHeader title="Stock" subtitle="Live balance per product" />
+      <PageHeader title="Stock" subtitle="Live balance per product, and daily book-vs-actual reconciliation" hint="Book balances update automatically (purchases add raw oil, production consumes inputs and adds outputs, sales reduce finished goods). Use Day close to enter the actual physical count each day and see the difference." />
       <div className="p-8">
         <Tabs defaultValue="raw">
           <TabsList>
             <TabsTrigger value="raw">Raw ({byCat('raw').length})</TabsTrigger>
-            <TabsTrigger value="intermediate">
-              Intermediate ({byCat('intermediate').length})
-            </TabsTrigger>
+            <TabsTrigger value="intermediate">Intermediate ({byCat('intermediate').length})</TabsTrigger>
             <TabsTrigger value="finished">Finished ({byCat('finished').length})</TabsTrigger>
+            <TabsTrigger value="dayclose">Day close (actual vs book)</TabsTrigger>
           </TabsList>
           <TabsContent value="raw" className="mt-6">
             <StockTable rows={byCat('raw')} />
@@ -105,10 +391,10 @@ export function Stock(): React.JSX.Element {
           <TabsContent value="finished" className="mt-6">
             <StockTable rows={byCat('finished')} />
           </TabsContent>
+          <TabsContent value="dayclose" className="mt-6">
+            <DayClose />
+          </TabsContent>
         </Tabs>
-        <p className="mt-3 text-xs text-muted-foreground">
-          Stock = raw received on orders + produced − consumed in production − sold.
-        </p>
       </div>
     </>
   )

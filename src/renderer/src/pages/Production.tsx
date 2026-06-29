@@ -240,6 +240,7 @@ export function Production(): React.JSX.Element {
       <PageHeader
         title="Production"
         subtitle="Daily production runs"
+        hint="Recording a run consumes the formula's input products from stock and adds the produced output. The formula must total 100%."
         actions={
           <Button size="sm" onClick={openAdd} disabled={outputs.length === 0}>
             <Plus className="h-4 w-4" />

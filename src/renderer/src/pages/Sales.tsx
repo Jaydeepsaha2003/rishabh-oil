@@ -42,6 +42,7 @@ function SalesTab(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
   const [bargains, setBargains] = useState<Row[]>([])
+  const [customers, setCustomers] = useState<Row[]>([])
   const [stock, setStock] = useState<Record<number, Row>>({})
   const [loading, setLoading] = useState(true)
 
@@ -52,15 +53,17 @@ function SalesTab(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [s, pr, sb, st] = await Promise.all([
+    const [s, pr, sb, st, cu] = await Promise.all([
       window.api.sales.list(),
       window.api.data.list('products'),
       window.api.salesBargains.list(),
-      window.api.stock.list()
+      window.api.stock.list(),
+      window.api.data.list('customers')
     ])
     setRows(s)
     setProducts(pr.filter((x) => x.active && x.category === 'finished'))
     setBargains(sb)
+    setCustomers(cu.filter((x) => x.active))
     const sm: Record<number, Row> = {}
     for (const l of st) sm[l.id as number] = l
     setStock(sm)
@@ -78,6 +81,7 @@ function SalesTab(): React.JSX.Element {
       sale_date: todayISO(),
       invoice_no: '',
       customer: '',
+      customer_id: '',
       product_id: '',
       sales_bargain_id: '',
       qty: '',
@@ -96,6 +100,7 @@ function SalesTab(): React.JSX.Element {
       sale_date: row.sale_date ?? todayISO(),
       invoice_no: row.invoice_no ?? '',
       customer: row.customer ?? '',
+      customer_id: row.customer_id ? String(row.customer_id) : '',
       product_id: String(row.product_id ?? ''),
       sales_bargain_id: row.sales_bargain_id ? String(row.sales_bargain_id) : '',
       qty: row.qty ?? '',
@@ -290,6 +295,24 @@ function SalesTab(): React.JSX.Element {
                 <Label>Invoice no</Label>
                 <Input value={form.invoice_no ?? ''} onChange={(e) => setField('invoice_no', e.target.value)} />
               </div>
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Customer</Label>
+              <Select
+                value={form.customer_id ? String(form.customer_id) : ''}
+                onValueChange={(v) => {
+                  const cust = customers.find((c) => String(c.id) === v)
+                  setForm((p) => ({ ...p, customer_id: v, customer: cust?.name ?? p.customer }))
+                }}
+              >
+                <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
+                <SelectContent>
+                  {customers.map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="text-xs text-muted-foreground">Links the sale to the customer ledger so receipts can be tracked.</span>
             </div>
             <div className="grid gap-1.5">
               <Label>Product *</Label>
@@ -623,7 +646,7 @@ export function Sales(): React.JSX.Element {
 
   return (
     <>
-      <PageHeader title="Sales" subtitle="Finished-goods sales and sales bargains" />
+      <PageHeader title="Sales" subtitle="Finished-goods sales and sales bargains" hint="A sales bargain books a rate and quantity with a customer; each dispatch draws it down and reduces finished-goods stock. Short stock can be produced on the spot." />
       <div className="p-8">
         {needs.length > 0 && (
           <Card className="mb-6 border-amber-200 bg-amber-50 p-4">

@@ -36,7 +36,7 @@ const columns: ColumnDef[] = [
 export function Transporters(): React.JSX.Element {
   return (
     <>
-      <PageHeader title="Transporters" subtitle="Company type, GST and fixed TDS per transporter" />
+      <PageHeader title="Transporters" subtitle="Company type, GST and fixed TDS per transporter" hint="Transporters use a fixed TDS % (not slab-based). Freight is posted to the transporter ledger when a tanker reaches Empty, less any shortage penalty." />
       <div className="p-8">
         <EntityManager
           table="transporters"

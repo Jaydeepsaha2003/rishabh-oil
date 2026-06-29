@@ -242,6 +242,52 @@ CREATE TABLE IF NOT EXISTS purchase_tankers (
   transport_rate_per_ton REAL DEFAULT 0,
   transport_amount REAL DEFAULT 0,
   shortage_charge_amount REAL DEFAULT 0,
+  krfl_weighment_doc_no TEXT,
+  krfl_weighment_photo TEXT,
+  outside_weighment_doc_no TEXT,
+  outside_weighment_photo TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS gate_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  gate_entry_no TEXT NOT NULL,
+  entry_date TEXT NOT NULL,
+  tanker_id INTEGER REFERENCES purchase_tankers(id),
+  tanker_no TEXT,
+  oil_type_id INTEGER REFERENCES products(id),
+  dispatch_qty REAL NOT NULL DEFAULT 0,
+  received_qty REAL NOT NULL DEFAULT 0,
+  uom TEXT NOT NULL DEFAULT 'ton',
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS letters_of_credit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lc_no TEXT NOT NULL,
+  facility_type TEXT NOT NULL DEFAULT 'lc',
+  bank TEXT NOT NULL,
+  party_type TEXT,
+  party_id INTEGER,
+  amount REAL NOT NULL DEFAULT 0,
+  open_date TEXT,
+  expiry_date TEXT,
+  interest_pct REAL DEFAULT 0,
+  charges REAL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'open',
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS lc_issuances (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lc_id INTEGER NOT NULL REFERENCES letters_of_credit(id),
+  issue_date TEXT NOT NULL,
+  amount REAL NOT NULL DEFAULT 0,
+  order_id INTEGER REFERENCES orders(id),
+  bill_no TEXT,
+  note TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -260,6 +306,17 @@ CREATE TABLE IF NOT EXISTS transporter_ledger (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   transporter_id INTEGER NOT NULL REFERENCES transporters(id),
   order_id INTEGER REFERENCES orders(id),
+  payment_id INTEGER,
+  entry_date TEXT NOT NULL,
+  entry_type TEXT NOT NULL,
+  amount REAL NOT NULL,
+  note TEXT
+);
+
+CREATE TABLE IF NOT EXISTS customer_ledger (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  customer_id INTEGER NOT NULL REFERENCES customers(id),
+  sale_id INTEGER REFERENCES sales(id),
   payment_id INTEGER,
   entry_date TEXT NOT NULL,
   entry_type TEXT NOT NULL,
@@ -345,6 +402,18 @@ CREATE TABLE IF NOT EXISTS user_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_bargains_supplier ON bargains(supplier_id);
+CREATE TABLE IF NOT EXISTS stock_counts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  count_date TEXT NOT NULL,
+  product_id INTEGER NOT NULL REFERENCES products(id),
+  book_qty REAL NOT NULL DEFAULT 0,
+  actual_qty REAL NOT NULL DEFAULT 0,
+  actual_value REAL,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(count_date, product_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_orders_supplier ON orders(supplier_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_purchase_tankers_order ON purchase_tankers(order_id);

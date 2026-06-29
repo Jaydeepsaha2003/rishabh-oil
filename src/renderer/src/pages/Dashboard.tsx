@@ -68,6 +68,7 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
       <PageHeader
         title="Dashboard"
         subtitle="Overview of your system"
+        hint="A live snapshot across purchases, stock and sales. Figures refresh automatically as other users make changes."
         actions={
           <Button variant="outline" size="sm" onClick={refresh}>
             <RefreshCw className={cn('h-4 w-4', checking && 'animate-spin')} />

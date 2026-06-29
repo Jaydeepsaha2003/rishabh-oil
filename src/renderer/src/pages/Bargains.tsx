@@ -176,6 +176,7 @@ export function Bargains(): React.JSX.Element {
       <PageHeader
         title="Bargains"
         subtitle="Rate contracts — drawn down as purchase tankers are loaded"
+        hint="Each bargain locks a rate and quantity with a supplier. The bargain number is generated as OILCODE/DD-MM/PARTYNAME/SERIAL (e.g. RPO/29-06/DILEXIM/0002). Landed rate = base rate + customs duty."
         actions={
           <Button size="sm" onClick={openAdd} disabled={noMasters}>
             <Plus className="h-4 w-4" />

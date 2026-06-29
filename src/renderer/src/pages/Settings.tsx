@@ -557,7 +557,7 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
   const isAdmin = user.role === 'admin'
   return (
     <>
-      <PageHeader title="Settings" subtitle="Master data used across bargains and purchases" />
+      <PageHeader title="Settings" subtitle="Master data used across bargains and purchases" hint="Ports/sources (with transit days), the default allowed shortage %, users and access control. Changes here flow through to every module." />
       <div className="p-8">
         <Tabs defaultValue="sources">
           <TabsList>

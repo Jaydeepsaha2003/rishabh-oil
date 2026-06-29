@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, Pencil, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, FileText, Pencil, Plus, Trash2 } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
-import { Card } from '@/components/ui/card'
 import { Switch } from '@/components/ui/switch'
 import {
   Select,
@@ -31,13 +30,14 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { PageHeader } from '@/components/PageHeader'
-import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
+import { formatDate, formatINR, todayISO } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
 
-const SOURCES = ['Credit Card', 'Bank / CC', 'LC', 'Bill discount']
+const SOURCES = ['Bank', 'Credit Card', 'Bill Discounting', 'Letter of Credit']
 const METHODS = [
   { v: 'on_account', l: 'On account' },
   { v: 'fifo', l: 'FIFO (oldest first)' },
@@ -56,6 +56,7 @@ function PaymentsTab(): React.JSX.Element {
   const [payments, setPayments] = useState<Row[]>([])
   const [suppliers, setSuppliers] = useState<Row[]>([])
   const [transporters, setTransporters] = useState<Row[]>([])
+  const [customers, setCustomers] = useState<Row[]>([])
   const [recording, setRecording] = useState(false)
   const [saving, setSaving] = useState(false)
   const [outstanding, setOutstanding] = useState<Row[]>([])
@@ -63,14 +64,16 @@ function PaymentsTab(): React.JSX.Element {
   const [form, setForm] = useState<Row>({})
 
   const load = useCallback(async () => {
-    const [p, s, t] = await Promise.all([
+    const [p, s, t, cu] = await Promise.all([
       window.api.payments.list(),
       window.api.data.list('suppliers'),
-      window.api.data.list('transporters')
+      window.api.data.list('transporters'),
+      window.api.data.list('customers')
     ])
     setPayments(p)
     setSuppliers(s.filter((x) => x.active))
     setTransporters(t.filter((x) => x.active))
+    setCustomers(cu.filter((x) => x.active))
   }, [])
 
   useEffect(() => {
@@ -79,7 +82,13 @@ function PaymentsTab(): React.JSX.Element {
 
   useLiveRefresh(load)
 
-  const parties = form.party_type === 'transporter' ? transporters : suppliers
+  const parties =
+    form.party_type === 'transporter'
+      ? transporters
+      : form.party_type === 'customer'
+        ? customers
+        : suppliers
+  const isReceipt = form.party_type === 'customer'
 
   function openAdd(): void {
     setForm({
@@ -87,7 +96,7 @@ function PaymentsTab(): React.JSX.Element {
       party_id: '',
       payment_date: todayISO(),
       amount: '',
-      source: 'Bank / CC',
+      source: 'Bank',
       is_advance: false,
       method: 'on_account',
       reference: '',
@@ -148,7 +157,7 @@ function PaymentsTab(): React.JSX.Element {
         note: form.note,
         allocations
       })
-      toast.success('Payment recorded')
+      toast.success(isReceipt ? 'Receipt recorded' : 'Payment recorded')
       setRecording(false)
       await load()
     } catch (e) {
@@ -172,6 +181,17 @@ function PaymentsTab(): React.JSX.Element {
 
   const allocEditable = !form.is_advance && form.method === 'specific'
   const showInvoices = !!form.party_id
+  const totalOutstanding = outstanding.reduce((sum, o) => sum + Number(o.outstanding || 0), 0)
+  const allocatedSpecific = outstanding.reduce((sum, o) => sum + Number(alloc[o.id] || 0), 0)
+  const payAmount = Number(form.amount) || 0
+  // How much of this payment would be left over as excess (kept on the party account).
+  const excess = form.is_advance
+    ? payAmount
+    : form.method === 'specific'
+      ? Math.max(0, payAmount - allocatedSpecific)
+      : form.method === 'fifo'
+        ? Math.max(0, payAmount - totalOutstanding)
+        : payAmount // on account — nothing applied to invoices
 
   if (!recording) {
     return (
@@ -179,7 +199,7 @@ function PaymentsTab(): React.JSX.Element {
         <div className="mb-4 flex justify-end">
           <Button size="sm" onClick={openAdd}>
             <Plus className="h-4 w-4" />
-            Record payment
+            Record payment / receipt
           </Button>
         </div>
 
@@ -212,7 +232,7 @@ function PaymentsTab(): React.JSX.Element {
                     <TableCell>{p.source ?? '—'}</TableCell>
                     <TableCell>
                       {p.is_advance ? (
-                        <Badge variant="warning">Advance</Badge>
+                        <Badge variant="warning">Excess</Badge>
                       ) : (
                         <span className="text-sm text-muted-foreground">
                           {METHODS.find((m) => m.v === p.method)?.l ?? p.method}
@@ -242,178 +262,178 @@ function PaymentsTab(): React.JSX.Element {
     )
   }
 
+  const partyName = parties.find((x) => String(x.id) === String(form.party_id))?.name
+  const applied = Math.max(0, payAmount - excess)
+
   return (
     <div>
-      <div className="mb-4 flex items-center gap-2">
+      <div className="mb-5 flex items-center gap-3">
         <Button variant="ghost" size="sm" onClick={() => setRecording(false)}>
           <ArrowLeft className="h-4 w-4" /> Back
         </Button>
-        <h3 className="text-base font-medium">Record payment</h3>
+        <h3 className="text-lg font-semibold">{isReceipt ? 'Record receipt' : 'Record payment'}</h3>
+        <Badge variant={isReceipt ? 'success' : 'warning'}>
+          {isReceipt ? 'Money in' : 'Money out'}
+        </Badge>
       </div>
-      <Card className="max-w-2xl p-6">
-        <div className="grid gap-3">
-            <div className="grid grid-cols-2 gap-3">
+
+      <div className="grid gap-6 xl:grid-cols-[1fr_340px]">
+        {/* form */}
+        <div className="space-y-5">
+          <section className="rounded-xl border bg-card p-5 shadow-sm">
+            <h4 className="mb-4 text-sm font-semibold text-muted-foreground">Party</h4>
+            <div className="grid gap-4 sm:grid-cols-2">
               <div className="grid gap-1.5">
-                <Label>Pay to</Label>
+                <Label>Debtor / creditor</Label>
                 <Select value={form.party_type} onValueChange={(v) => setField('party_type', v)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="supplier">Supplier</SelectItem>
-                    <SelectItem value="transporter">Transporter</SelectItem>
+                    <SelectItem value="supplier">Supplier (creditor — pay)</SelectItem>
+                    <SelectItem value="transporter">Transporter (creditor — pay)</SelectItem>
+                    <SelectItem value="customer">Customer (debtor — receive)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div className="grid gap-1.5">
-                <Label>{form.party_type === 'transporter' ? 'Transporter' : 'Supplier'}</Label>
+                <Label>{form.party_type === 'transporter' ? 'Transporter' : isReceipt ? 'Customer' : 'Supplier'} *</Label>
                 <Select value={String(form.party_id)} onValueChange={(v) => setField('party_id', v)}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select" />
-                  </SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder="Select party" /></SelectTrigger>
                   <SelectContent>
                     {parties.map((x) => (
-                      <SelectItem key={x.id} value={String(x.id)}>
-                        {x.name}
-                      </SelectItem>
+                      <SelectItem key={x.id} value={String(x.id)}>{x.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
             </div>
+          </section>
 
-            <div className="grid grid-cols-2 gap-3">
+          <section className="rounded-xl border bg-card p-5 shadow-sm">
+            <h4 className="mb-4 text-sm font-semibold text-muted-foreground">
+              {isReceipt ? 'Receipt' : 'Payment'} details
+            </h4>
+            <div className="grid gap-4 sm:grid-cols-2">
               <div className="grid gap-1.5">
                 <Label>Date</Label>
-                <Input
-                  type="date"
-                  value={form.payment_date ?? ''}
-                  onChange={(e) => setField('payment_date', e.target.value)}
-                />
+                <Input type="date" value={form.payment_date ?? ''} onChange={(e) => setField('payment_date', e.target.value)} />
               </div>
               <div className="grid gap-1.5">
-                <Label>Amount</Label>
-                <Input
-                  type="number"
-                  value={form.amount ?? ''}
-                  onChange={(e) => setField('amount', e.target.value)}
-                />
+                <Label>Amount *</Label>
+                <Input type="number" value={form.amount ?? ''} onChange={(e) => setField('amount', e.target.value)} placeholder="0.00" />
               </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <Label>Source</Label>
                 <Select value={form.source} onValueChange={(v) => setField('source', v)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {SOURCES.map((s) => (
-                      <SelectItem key={s} value={s}>
-                        {s}
-                      </SelectItem>
-                    ))}
+                    {SOURCES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
               <div className="grid gap-1.5">
                 <Label>Allocation</Label>
-                <Select
-                  value={form.method}
-                  onValueChange={(v) => setField('method', v)}
-                  disabled={!!form.is_advance}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
+                <Select value={form.method} onValueChange={(v) => setField('method', v)} disabled={!!form.is_advance}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {METHODS.map((m) => (
-                      <SelectItem key={m.v} value={m.v}>
-                        {m.l}
-                      </SelectItem>
-                    ))}
+                    {METHODS.map((m) => <SelectItem key={m.v} value={m.v}>{m.l}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
             </div>
 
-            <div className="flex items-center justify-between rounded-md border px-3 py-1.5">
-              <span className="text-sm">Advance payment</span>
-              <Switch
-                checked={!!form.is_advance}
-                onCheckedChange={(v) => setField('is_advance', v)}
-              />
+            <div className="mt-4 flex items-center justify-between rounded-lg border px-3 py-2">
+              <div>
+                <span className="text-sm font-medium">Excess amount (on account)</span>
+                <p className="text-[11px] text-muted-foreground">Kept as a credit on the party account, not applied to any invoice.</p>
+              </div>
+              <Switch checked={!!form.is_advance} onCheckedChange={(v) => setField('is_advance', v)} />
             </div>
 
-            {showInvoices && (
-              <div className="rounded-lg border">
-                <div className="flex items-center justify-between border-b px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  <span>Open invoices</span>
-                  <span>{outstanding.length}</span>
-                </div>
-                <div className="max-h-44 overflow-y-auto p-2">
-                  {outstanding.length === 0 ? (
-                    <p className="px-1 py-2 text-sm text-muted-foreground">
-                      No open invoices for this party.
-                    </p>
-                  ) : (
-                    outstanding.map((o) => (
-                      <div key={o.id} className="flex items-center gap-2 px-1 py-1">
-                        <div className="flex-1 text-sm">
-                          <span className="font-medium">{o.invoice_no}</span>
-                          <span className="text-muted-foreground">
-                            {' '}
-                            · {formatDate(o.order_date)} · due {formatINR(o.outstanding)}
-                          </span>
-                        </div>
-                        {allocEditable ? (
-                          <Input
-                            type="number"
-                            className="h-8 w-28"
-                            placeholder="0"
-                            value={alloc[o.id] ?? ''}
-                            onChange={(e) => setAlloc((p) => ({ ...p, [o.id]: e.target.value }))}
-                          />
-                        ) : (
-                          <span className="text-sm tabular-nums text-muted-foreground">
-                            {formatINR(o.outstanding)}
-                          </span>
-                        )}
+            <div className="mt-4 grid gap-1.5">
+              <Label>Reference / note</Label>
+              <Input value={form.note ?? ''} onChange={(e) => setField('note', e.target.value)} placeholder="cheque no, UTR, remark…" />
+            </div>
+          </section>
+
+          {showInvoices && (
+            <section className="overflow-hidden rounded-xl border bg-card shadow-sm">
+              <div className="flex items-center justify-between border-b bg-muted/40 px-4 py-2.5">
+                <h4 className="text-sm font-semibold">{isReceipt ? 'Sales' : 'Purchase'} invoices outstanding</h4>
+                <Badge variant="secondary">{outstanding.length}</Badge>
+              </div>
+              <div className="max-h-64 overflow-y-auto divide-y">
+                {outstanding.length === 0 ? (
+                  <p className="px-4 py-6 text-center text-sm text-muted-foreground">No open invoices for this party.</p>
+                ) : (
+                  outstanding.map((o) => (
+                    <div key={o.id} className="flex items-center gap-3 px-4 py-2.5">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-medium">{o.invoice_no || '—'}</div>
+                        <div className="text-xs text-muted-foreground">{formatDate(o.order_date)} · due {formatINR(o.outstanding)}</div>
                       </div>
-                    ))
-                  )}
-                </div>
-                {!allocEditable && outstanding.length > 0 && (
-                  <div className="border-t px-3 py-1.5 text-[11px] text-muted-foreground">
-                    {form.is_advance
-                      ? 'Advance — not applied to invoices.'
-                      : form.method === 'fifo'
-                        ? 'FIFO will apply to the oldest invoices automatically.'
-                        : 'On account — not applied to specific invoices.'}
-                  </div>
+                      {allocEditable ? (
+                        <Input
+                          type="number"
+                          className="h-8 w-32"
+                          placeholder="0"
+                          value={alloc[o.id] ?? ''}
+                          onChange={(e) => setAlloc((p) => ({ ...p, [o.id]: e.target.value }))}
+                        />
+                      ) : (
+                        <span className="text-sm tabular-nums text-muted-foreground">{formatINR(o.outstanding)}</span>
+                      )}
+                    </div>
+                  ))
                 )}
               </div>
-            )}
+              {!allocEditable && outstanding.length > 0 && (
+                <div className="border-t px-4 py-2 text-[11px] text-muted-foreground">
+                  {form.is_advance
+                    ? 'Excess — kept on the party account, not applied to invoices.'
+                    : form.method === 'fifo'
+                      ? 'FIFO will apply to the oldest invoices automatically.'
+                      : 'On account — not applied to specific invoices.'}
+                </div>
+              )}
+            </section>
+          )}
+        </div>
 
-            <div className="grid gap-1.5">
-              <Label>Reference / note</Label>
-              <Input
-                value={form.note ?? ''}
-                onChange={(e) => setField('note', e.target.value)}
-                placeholder="cheque no, UTR, remark…"
-              />
+        {/* summary */}
+        <aside className={cn('h-fit rounded-xl border border-t-4 bg-card p-5 shadow-sm xl:sticky xl:top-6', isReceipt ? 'border-t-emerald-400' : 'border-t-amber-400')}>
+          <h4 className="text-sm font-semibold text-muted-foreground">{isReceipt ? 'Receipt' : 'Payment'} summary</h4>
+          <div className="mt-3">
+            <div className="text-xs text-muted-foreground">{isReceipt ? 'Receiving from' : 'Paying'}</div>
+            <div className="truncate text-base font-semibold">{partyName || '—'}</div>
+          </div>
+          <div className={cn('mt-4 rounded-lg p-3', isReceipt ? 'bg-emerald-50' : 'bg-amber-50')}>
+            <div className="text-xs text-muted-foreground">{isReceipt ? 'Amount received' : 'Amount paid'}</div>
+            <div className={cn('text-2xl font-bold tabular-nums', isReceipt ? 'text-emerald-700' : 'text-amber-700')}>
+              {formatINR(payAmount)}
             </div>
-        </div>
-        <div className="mt-5 flex justify-end gap-2">
-          <Button variant="outline" onClick={() => setRecording(false)} disabled={saving}>
-            Cancel
-          </Button>
-          <Button onClick={save} disabled={saving}>
-            {saving ? 'Saving…' : 'Record payment'}
-          </Button>
-        </div>
-      </Card>
+          </div>
+          <div className="mt-4 space-y-0.5">
+            <MoneyRowLine label="Total outstanding" value={formatINR(totalOutstanding)} />
+            <MoneyRowLine label="Applied to invoices" value={formatINR(applied)} />
+            <MoneyRowLine label="Excess on account" value={formatINR(excess)} strong={excess > 0.005} />
+          </div>
+          <div className="mt-5 grid grid-cols-2 gap-2">
+            <Button variant="outline" onClick={() => setRecording(false)} disabled={saving}>Cancel</Button>
+            <Button onClick={save} disabled={saving}>
+              {saving ? 'Saving…' : isReceipt ? 'Receive' : 'Pay'}
+            </Button>
+          </div>
+        </aside>
+      </div>
+    </div>
+  )
+}
+
+function MoneyRowLine({ label, value, strong }: { label: string; value: string; strong?: boolean }): React.JSX.Element {
+  return (
+    <div className="flex items-center justify-between py-1 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      <span className={strong ? 'font-semibold tabular-nums text-amber-700' : 'tabular-nums'}>{value}</span>
     </div>
   )
 }
@@ -680,18 +700,382 @@ function BillDiscountTab(): React.JSX.Element {
   )
 }
 
+// ---------------- Letters of credit / facilities tab ----------------
+
+function emptyLc(): Row {
+  return {
+    lc_no: '',
+    facility_type: 'lc',
+    bank: '',
+    party_type: 'supplier',
+    party_id: '',
+    amount: '',
+    open_date: todayISO(),
+    expiry_date: '',
+    interest_pct: '',
+    charges: '',
+    status: 'open',
+    note: ''
+  }
+}
+
+function LcTab(): React.JSX.Element {
+  const [rows, setRows] = useState<Row[]>([])
+  const [suppliers, setSuppliers] = useState<Row[]>([])
+  const [orders, setOrders] = useState<Row[]>([])
+  const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState<Row | null>(null)
+  const [form, setForm] = useState<Row>(emptyLc())
+  const [saving, setSaving] = useState(false)
+  const [issueFor, setIssueFor] = useState<Row | null>(null)
+  const [issueForm, setIssueForm] = useState<Row>({})
+  const [viewFor, setViewFor] = useState<Row | null>(null)
+  const [issuances, setIssuances] = useState<Row[]>([])
+
+  const load = useCallback(async () => {
+    const [l, s, o] = await Promise.all([
+      window.api.lc.list(),
+      window.api.data.list('suppliers'),
+      window.api.orders.list()
+    ])
+    setRows(l)
+    setSuppliers(s.filter((x) => x.active))
+    setOrders(o)
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  useLiveRefresh(load)
+
+  function setField(key: string, value: unknown): void {
+    setForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  function openAdd(): void {
+    setEditing(null)
+    setForm(emptyLc())
+    setOpen(true)
+  }
+
+  function openEdit(row: Row): void {
+    setEditing(row)
+    setForm({
+      lc_no: row.lc_no ?? '',
+      facility_type: row.facility_type ?? 'lc',
+      bank: row.bank ?? '',
+      party_type: row.party_type ?? 'supplier',
+      party_id: row.party_id ? String(row.party_id) : '',
+      amount: row.amount ?? '',
+      open_date: row.open_date ?? '',
+      expiry_date: row.expiry_date ?? '',
+      interest_pct: row.interest_pct ?? '',
+      charges: row.charges ?? '',
+      status: row.status ?? 'open',
+      note: row.note ?? ''
+    })
+    setOpen(true)
+  }
+
+  async function save(): Promise<void> {
+    if (!form.lc_no || !form.bank) {
+      toast.error('LC number and bank are required')
+      return
+    }
+    setSaving(true)
+    try {
+      const payload = { ...form, party_id: form.party_id ? Number(form.party_id) : null }
+      if (editing) await window.api.lc.update(editing.id as number, payload)
+      else await window.api.lc.create(payload)
+      toast.success('LC saved')
+      setOpen(false)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function del(row: Row): Promise<void> {
+    if (!window.confirm(`Delete LC ${row.lc_no} and its issuances?`)) return
+    try {
+      await window.api.lc.remove(row.id as number)
+      toast.success('Deleted')
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  function openIssue(row: Row): void {
+    setIssueFor(row)
+    setIssueForm({ issue_date: todayISO(), amount: '', order_id: '', bill_no: '', note: '' })
+  }
+
+  async function saveIssue(): Promise<void> {
+    if (!issueFor) return
+    try {
+      await window.api.lc.issue({
+        ...issueForm,
+        lc_id: issueFor.id,
+        amount: Number(issueForm.amount) || 0,
+        order_id: issueForm.order_id ? Number(issueForm.order_id) : null
+      })
+      toast.success('Issued against LC')
+      setIssueFor(null)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  async function openView(row: Row): Promise<void> {
+    setViewFor(row)
+    setIssuances(await window.api.lc.issuances(row.id as number))
+  }
+
+  async function delIssuance(id: number): Promise<void> {
+    try {
+      await window.api.lc.removeIssuance(id)
+      if (viewFor) setIssuances(await window.api.lc.issuances(viewFor.id as number))
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  return (
+    <div>
+      <div className="mb-4 flex justify-end">
+        <Button size="sm" onClick={openAdd}>
+          <Plus className="h-4 w-4" /> Open LC / facility
+        </Button>
+      </div>
+
+      <div className="rounded-lg border bg-card">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>LC / facility no</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead>Bank</TableHead>
+              <TableHead>Beneficiary</TableHead>
+              <TableHead className="text-right">Sanctioned</TableHead>
+              <TableHead className="text-right">Utilized</TableHead>
+              <TableHead className="text-right">Available</TableHead>
+              <TableHead>Expiry</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="w-[140px] text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">
+                  No LCs or facilities opened yet.
+                </TableCell>
+              </TableRow>
+            ) : (
+              rows.map((r) => (
+                <TableRow key={r.id as number}>
+                  <TableCell className="font-medium">{r.lc_no}</TableCell>
+                  <TableCell>
+                    <Badge variant="secondary">{r.facility_type === 'bill_discounting' ? 'Bill disc.' : 'LC'}</Badge>
+                  </TableCell>
+                  <TableCell>{r.bank}</TableCell>
+                  <TableCell>{r.supplier_name ?? '—'}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatINR(r.amount)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatINR(r.utilized)}</TableCell>
+                  <TableCell className="text-right font-medium tabular-nums">{formatINR(r.available)}</TableCell>
+                  <TableCell>{formatDate(r.expiry_date)}</TableCell>
+                  <TableCell>
+                    <Badge variant={r.status === 'open' ? 'success' : r.status === 'closed' ? 'muted' : 'warning'}>
+                      {r.status === 'open' ? 'Open' : r.status === 'closed' ? 'Closed' : 'Utilized'}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      <Button variant="outline" size="sm" onClick={() => openIssue(r)} disabled={Number(r.available) <= 0.005}>Issue</Button>
+                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openView(r)} title="Issuances"><FileText className="h-4 w-4" /></Button>
+                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(r)}><Pencil className="h-4 w-4" /></Button>
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => del(r)}><Trash2 className="h-4 w-4" /></Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </div>
+
+      {/* Open / edit LC */}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>{editing ? 'Edit LC / facility' : 'Open LC / facility'}</DialogTitle>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-1.5">
+              <Label>LC / facility no *</Label>
+              <Input value={form.lc_no} onChange={(e) => setField('lc_no', e.target.value)} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Type</Label>
+              <Select value={form.facility_type} onValueChange={(v) => setField('facility_type', v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="lc">Letter of credit</SelectItem>
+                  <SelectItem value="bill_discounting">Bill discounting</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Bank *</Label>
+              <Input value={form.bank} onChange={(e) => setField('bank', e.target.value)} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Beneficiary (supplier)</Label>
+              <Select value={String(form.party_id)} onValueChange={(v) => setField('party_id', v)}>
+                <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                <SelectContent>
+                  {suppliers.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Sanctioned amount</Label>
+              <Input type="number" value={form.amount} onChange={(e) => setField('amount', e.target.value)} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Status</Label>
+              <Select value={form.status} onValueChange={(v) => setField('status', v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="open">Open</SelectItem>
+                  <SelectItem value="utilized">Utilized</SelectItem>
+                  <SelectItem value="closed">Closed</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Open date</Label>
+              <Input type="date" value={form.open_date} onChange={(e) => setField('open_date', e.target.value)} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Expiry date</Label>
+              <Input type="date" value={form.expiry_date} onChange={(e) => setField('expiry_date', e.target.value)} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Interest %</Label>
+              <Input type="number" value={form.interest_pct} onChange={(e) => setField('interest_pct', e.target.value)} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Charges</Label>
+              <Input type="number" value={form.charges} onChange={(e) => setField('charges', e.target.value)} />
+            </div>
+            <div className="col-span-2 grid gap-1.5">
+              <Label>Note</Label>
+              <Input value={form.note} onChange={(e) => setField('note', e.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>Cancel</Button>
+            <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Issue against LC */}
+      <Dialog open={!!issueFor} onOpenChange={(o) => !o && setIssueFor(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Issue against {issueFor?.lc_no}</DialogTitle>
+          </DialogHeader>
+          {issueFor && (
+            <div className="grid gap-3">
+              <div className="rounded-md bg-muted px-3 py-2 text-sm">
+                {issueFor.bank} · Available {formatINR(issueFor.available)}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-1.5"><Label>Issue date</Label><Input type="date" value={issueForm.issue_date || ''} onChange={(e) => setIssueForm((p) => ({ ...p, issue_date: e.target.value }))} /></div>
+                <div className="grid gap-1.5"><Label>Amount *</Label><Input type="number" value={issueForm.amount || ''} onChange={(e) => setIssueForm((p) => ({ ...p, amount: e.target.value }))} /></div>
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Against purchase invoice (optional)</Label>
+                <Select value={String(issueForm.order_id || '')} onValueChange={(v) => setIssueForm((p) => ({ ...p, order_id: v }))}>
+                  <SelectTrigger><SelectValue placeholder="Select invoice" /></SelectTrigger>
+                  <SelectContent>
+                    {orders.map((o) => <SelectItem key={o.id} value={String(o.id)}>{o.invoice_no} · {o.supplier_name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-1.5"><Label>Bill no</Label><Input value={issueForm.bill_no || ''} onChange={(e) => setIssueForm((p) => ({ ...p, bill_no: e.target.value }))} /></div>
+                <div className="grid gap-1.5"><Label>Note</Label><Input value={issueForm.note || ''} onChange={(e) => setIssueForm((p) => ({ ...p, note: e.target.value }))} /></div>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIssueFor(null)}>Cancel</Button>
+            <Button onClick={saveIssue}>Issue</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* View issuances */}
+      <Dialog open={!!viewFor} onOpenChange={(o) => !o && setViewFor(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Issuances · {viewFor?.lc_no}</DialogTitle>
+          </DialogHeader>
+          <div className="rounded-lg border">
+            <Table>
+              <TableHeader><TableRow>
+                <TableHead>Date</TableHead><TableHead>Invoice / bill</TableHead>
+                <TableHead className="text-right">Amount</TableHead><TableHead className="w-[40px]" />
+              </TableRow></TableHeader>
+              <TableBody>
+                {issuances.length === 0 ? (
+                  <TableRow><TableCell colSpan={4} className="py-6 text-center text-muted-foreground">No issuances yet.</TableCell></TableRow>
+                ) : (
+                  issuances.map((i) => (
+                    <TableRow key={i.id as number}>
+                      <TableCell>{formatDate(i.issue_date)}</TableCell>
+                      <TableCell>{i.invoice_no || i.bill_no || '—'}</TableCell>
+                      <TableCell className="text-right tabular-nums">{formatINR(i.amount)}</TableCell>
+                      <TableCell className="text-right">
+                        <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => delIssuance(i.id as number)}><Trash2 className="h-4 w-4" /></Button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
 export function Payments(): React.JSX.Element {
   return (
     <>
-      <PageHeader title="Payments" subtitle="Pay suppliers and transporters; track bill discounting" />
+      <PageHeader title="Payments" subtitle="Pay suppliers and transporters; LC, bill discounting and excess on account" hint="Pick a party to see its open invoices, then pay against them (FIFO or specific) or keep an Excess amount on account. Open Letters of Credit / discounting facilities with a bank and issue against them; utilization is tracked automatically. Sources: Bank, Credit Card, Bill Discounting, Letter of Credit." />
       <div className="p-8">
         <Tabs defaultValue="payments">
           <TabsList>
             <TabsTrigger value="payments">Payments</TabsTrigger>
+            <TabsTrigger value="lc">Letters of credit</TabsTrigger>
             <TabsTrigger value="bill_discount">Bill discounting</TabsTrigger>
           </TabsList>
           <TabsContent value="payments" className="mt-6">
             <PaymentsTab />
+          </TabsContent>
+          <TabsContent value="lc" className="mt-6">
+            <LcTab />
           </TabsContent>
           <TabsContent value="bill_discount" className="mt-6">
             <BillDiscountTab />

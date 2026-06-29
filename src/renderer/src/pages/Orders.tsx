@@ -19,12 +19,39 @@ type Row = Record<string, any>
 
 const TANKER_STAGES = ['supplier_factory', 'loaded', 'transit', 'outside_factory', 'inside_factory', 'empty']
 const TANKER_LABEL: Record<string, string> = {
-  supplier_factory: 'Inside supplier factory',
+  supplier_factory: 'To be loaded',
   loaded: 'Loaded',
   transit: 'In transit',
   outside_factory: 'Outside factory',
   inside_factory: 'Inside factory',
   empty: 'Empty'
+}
+
+// Read an image file and return a downscaled JPEG data URL so weighment-slip
+// photos stay small enough to live in the cloud DB (works for all users).
+function fileToCompressedDataUrl(file: File, maxDim = 1280, quality = 0.7): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('Could not read the file'))
+    reader.onload = () => {
+      const img = new Image()
+      img.onerror = () => reject(new Error('That file is not a valid image'))
+      img.onload = () => {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height))
+        const w = Math.round(img.width * scale)
+        const h = Math.round(img.height * scale)
+        const canvas = document.createElement('canvas')
+        canvas.width = w
+        canvas.height = h
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return reject(new Error('Image processing is not supported'))
+        ctx.drawImage(img, 0, 0, w, h)
+        resolve(canvas.toDataURL('image/jpeg', quality))
+      }
+      img.src = String(reader.result)
+    }
+    reader.readAsDataURL(file)
+  })
 }
 
 function nextTankerStage(status: string): string | null {
@@ -37,14 +64,24 @@ function StatusBadge({ status }: { status: string }): React.JSX.Element {
   return <Badge variant={variant}>{TANKER_LABEL[status] ?? (status === 'received' ? 'Completed' : status)}</Badge>
 }
 
-function Summary({ label, value, note }: { label: string; value: string; note: string }): React.JSX.Element {
-  return (
-    <div className="rounded-xl border bg-card p-4 shadow-sm">
-      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
-      <div className="mt-1 text-xs text-muted-foreground">{note}</div>
-    </div>
-  )
+// Movement-overview columns. 'loaded' is transient (loading jumps straight to
+// transit), so it is not shown as its own resting column.
+const PIVOT_STAGES = [
+  { key: 'supplier_factory', label: 'To be loaded' },
+  { key: 'transit', label: 'In transit' },
+  { key: 'outside_factory', label: 'Outside factory' },
+  { key: 'inside_factory', label: 'Inside factory' },
+  { key: 'empty', label: 'Empty' }
+]
+
+// The date a tanker entered a given stage. 'To be loaded' uses the creation
+// date (no separate entry stamp is kept once it loads).
+function stageEntryDate(t: Row, stageKey: string): unknown {
+  if (stageKey === 'supplier_factory') return t.created_at
+  if (stageKey === 'transit') return t.transit_date
+  if (stageKey === 'outside_factory') return t.outside_factory_date
+  if (stageKey === 'inside_factory') return t.inside_factory_date
+  return t.empty_date
 }
 
 function MoneyRow({ label, value, strong }: { label: string; value: string; strong?: boolean }): React.JSX.Element {
@@ -66,6 +103,8 @@ export function Orders(): React.JSX.Element {
   const [transporters, setTransporters] = useState<Row[]>([])
   const [settings, setSettings] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
+  const [pivotStart, setPivotStart] = useState(todayISO())
+  const [pivotEnd, setPivotEnd] = useState(todayISO())
 
   const [loadingOpen, setLoadingOpen] = useState(false)
   const [loadingForm, setLoadingForm] = useState<Row>({ tanker_count: 1, factory_entry_date: todayISO() })
@@ -105,11 +144,34 @@ export function Orders(): React.JSX.Element {
   useEffect(() => { load() }, [load])
   useLiveRefresh(load)
 
-  const counts = useMemo(() => {
-    const c: Record<string, number> = {}
-    for (const tanker of tankers) c[tanker.status] = (c[tanker.status] || 0) + 1
-    return c
-  }, [tankers])
+  // Oil-type × stage movement matrix — counts tankers that entered each stage
+  // within the selected [start, end] date window.
+  const pivot = useMemo(() => {
+    const start = pivotStart
+    const end = pivotEnd < pivotStart ? pivotStart : pivotEnd
+    const inRange = (d: unknown): boolean => {
+      const s = String(d || '').slice(0, 10)
+      return !!s && s >= start && s <= end
+    }
+    const map = new Map<string, { label: string; counts: Record<string, number>; total: number }>()
+    const totals: Record<string, number> = {}
+    let grand = 0
+    for (const t of tankers) {
+      const key = String(t.oil_code || t.oil_name || '—')
+      const label = [t.oil_code, t.oil_name].filter(Boolean).join(' · ') || '—'
+      for (const s of PIVOT_STAGES) {
+        if (!inRange(stageEntryDate(t, s.key))) continue
+        if (!map.has(key)) map.set(key, { label, counts: {}, total: 0 })
+        const row = map.get(key)!
+        row.counts[s.key] = (row.counts[s.key] || 0) + 1
+        row.total += 1
+        totals[s.key] = (totals[s.key] || 0) + 1
+        grand += 1
+      }
+    }
+    const rows = Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label))
+    return { rows, totals, grand }
+  }, [tankers, pivotStart, pivotEnd])
 
   function selectLoadingBargain(index: number, id: string): void {
     const b = bargains.find((x) => String(x.id) === id)
@@ -137,14 +199,19 @@ export function Orders(): React.JSX.Element {
       toast.error('Enter the tanker number and bargain for every tanker')
       return
     }
+    if (loadingRows.some((row) => !row.transporter_id)) {
+      toast.error('Select the transporter for every tanker')
+      return
+    }
     try {
       for (const row of loadingRows) {
         await window.api.tankers.create({
           ...row,
+          transporter_id: Number(row.transporter_id),
           factory_entry_date: loadingForm.factory_entry_date
         })
       }
-      toast.success(`${loadingRows.length} tanker${loadingRows.length === 1 ? '' : 's'} sent inside supplier factory`)
+      toast.success(`${loadingRows.length} tanker${loadingRows.length === 1 ? '' : 's'} sent to supplier — ready to be loaded`)
       setLoadingOpen(false)
       setLoadingForm({ tanker_count: 1, factory_entry_date: todayISO() })
       setLoadingRows([{}])
@@ -188,6 +255,16 @@ export function Orders(): React.JSX.Element {
     setActionRow(row)
   }
 
+  async function onWeighmentPhoto(field: string, file: File | undefined): Promise<void> {
+    if (!file) return
+    try {
+      const url = await fileToCompressedDataUrl(file)
+      setActionForm((p) => ({ ...p, [field]: url }))
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
   async function advanceTanker(): Promise<void> {
     if (!actionRow) return
     const target = nextTankerStage(actionRow.status)
@@ -211,7 +288,11 @@ export function Orders(): React.JSX.Element {
         source_id: actionForm.source_id ? Number(actionForm.source_id) : null,
         transporter_id: actionForm.transporter_id ? Number(actionForm.transporter_id) : null,
         received_qty: Number(actionForm.received_qty) || 0,
-        transport_rate_per_ton: Number(actionForm.transport_rate_per_ton) || 0
+        transport_rate_per_ton: Number(actionForm.transport_rate_per_ton) || 0,
+        krfl_weighment_doc_no: actionForm.krfl_weighment_doc_no || null,
+        krfl_weighment_photo: actionForm.krfl_weighment_photo || null,
+        outside_weighment_doc_no: actionForm.outside_weighment_doc_no || null,
+        outside_weighment_photo: actionForm.outside_weighment_photo || null
       })
       toast.success(target === 'loaded' ? 'Loading confirmed and tanker moved to In transit' : `Tanker moved to ${TANKER_LABEL[target]}`)
       setActionRow(null)
@@ -384,6 +465,7 @@ export function Orders(): React.JSX.Element {
       <PageHeader
         title="Purchases"
         subtitle="Load tankers first, then combine one or more tankers into a purchase invoice"
+        hint="Tanker lifecycle: To be loaded → Loaded → In transit → Outside factory → Inside factory → Empty. Pick the transporter when sending tankers to the supplier. At Empty, record received qty plus the KRFL and outside-factory weighment slips."
         actions={!formPage ? (
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={() => setLoadingOpen(true)}>
@@ -523,8 +605,60 @@ export function Orders(): React.JSX.Element {
             </TabsList>
 
             <TabsContent value="tankers" className="space-y-5">
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-                {TANKER_STAGES.filter((stage) => stage !== 'loaded').map((stage) => <Summary key={stage} label={TANKER_LABEL[stage]} value={String(counts[stage] || 0)} note={stage === 'supplier_factory' ? 'Quantity not known yet' : 'Tankers at this stage'} />)}
+              <div className="overflow-hidden rounded-xl border bg-card">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+                  <div>
+                    <h3 className="font-medium">Tanker movement by oil type</h3>
+                    <p className="text-xs text-muted-foreground">
+                      {pivotStart === todayISO() && pivotEnd === todayISO()
+                        ? "Today's movement"
+                        : `Movement from ${formatDate(pivotStart)} to ${formatDate(pivotEnd)}`}{' '}
+                      · tankers that entered each stage in the period
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Label className="text-xs text-muted-foreground">From</Label>
+                    <Input type="date" max={pivotEnd} value={pivotStart} onChange={(e) => setPivotStart(e.target.value || todayISO())} className="h-9 w-40" />
+                    <Label className="text-xs text-muted-foreground">To</Label>
+                    <Input type="date" min={pivotStart} max={todayISO()} value={pivotEnd} onChange={(e) => setPivotEnd(e.target.value || todayISO())} className="h-9 w-40" />
+                    {(pivotStart !== todayISO() || pivotEnd !== todayISO()) && (
+                      <Button variant="ghost" size="sm" onClick={() => { setPivotStart(todayISO()); setPivotEnd(todayISO()) }}>Today</Button>
+                    )}
+                  </div>
+                </div>
+                <Table>
+                  <TableHeader className="bg-amber-100/70"><TableRow>
+                    <TableHead className="text-amber-900">Oil type</TableHead>
+                    {PIVOT_STAGES.map((s) => <TableHead key={s.key} className="text-center text-amber-900">{s.label}</TableHead>)}
+                    <TableHead className="text-center text-amber-900">Total</TableHead>
+                  </TableRow></TableHeader>
+                  <TableBody>
+                    {pivot.rows.length === 0 ? (
+                      <TableRow><TableCell colSpan={PIVOT_STAGES.length + 2} className="py-8 text-center text-muted-foreground">No tanker movement in this period.</TableCell></TableRow>
+                    ) : (
+                      <>
+                        {pivot.rows.map((row) => (
+                          <TableRow key={row.label}>
+                            <TableCell className="font-medium">{row.label}</TableCell>
+                            {PIVOT_STAGES.map((s) => (
+                              <TableCell key={s.key} className="text-center tabular-nums">
+                                {row.counts[s.key] ? row.counts[s.key] : <span className="text-muted-foreground">—</span>}
+                              </TableCell>
+                            ))}
+                            <TableCell className="text-center font-semibold tabular-nums">{row.total}</TableCell>
+                          </TableRow>
+                        ))}
+                        <TableRow className="bg-muted/40">
+                          <TableCell className="font-semibold">Total</TableCell>
+                          {PIVOT_STAGES.map((s) => (
+                            <TableCell key={s.key} className="text-center font-semibold tabular-nums">{pivot.totals[s.key] || 0}</TableCell>
+                          ))}
+                          <TableCell className="text-center font-semibold tabular-nums">{pivot.grand}</TableCell>
+                        </TableRow>
+                      </>
+                    )}
+                  </TableBody>
+                </Table>
               </div>
               <div className="overflow-hidden rounded-xl border bg-card">
                 <Table>
@@ -589,10 +723,10 @@ export function Orders(): React.JSX.Element {
       <Dialog open={loadingOpen} onOpenChange={setLoadingOpen}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
-            <DialogTitle>Send tankers inside supplier factory</DialogTitle>
+            <DialogTitle>Send tankers to supplier — to be loaded</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Enter only the tanker count, tanker numbers and intended bargains. Loaded quantity and payment will be entered after loading.
+            Enter the tanker count, tanker numbers, intended bargains and the transporter carrying each tanker. Loaded quantity and payment are entered after loading.
           </p>
           <div className="grid grid-cols-2 gap-3">
             <div className="grid gap-1.5">
@@ -606,7 +740,7 @@ export function Orders(): React.JSX.Element {
           </div>
           <div className="max-h-[55vh] space-y-3 overflow-y-auto pr-1">
             {loadingRows.map((row, index) => (
-              <div key={index} className="grid gap-3 rounded-lg border p-3 md:grid-cols-[48px_1fr_2fr]">
+              <div key={index} className="grid gap-3 rounded-lg border p-3 md:grid-cols-[40px_1fr_1.5fr_1.5fr]">
                 <div className="flex h-9 items-center justify-center rounded-md bg-muted text-sm font-semibold">{index + 1}</div>
                 <div className="grid gap-1.5">
                   <Label>Tanker number *</Label>
@@ -626,6 +760,17 @@ export function Orders(): React.JSX.Element {
                   </Select>
                   {row.supplier_name && <span className="text-xs text-muted-foreground">{row.supplier_name} · {row.oil_label}</span>}
                 </div>
+                <div className="grid gap-1.5">
+                  <Label>Transporter *</Label>
+                  <Select value={String(row.transporter_id || '')} onValueChange={(value) => setLoadingRows((current) => current.map((item, i) => i === index ? { ...item, transporter_id: value } : item))}>
+                    <SelectTrigger><SelectValue placeholder="Select transporter" /></SelectTrigger>
+                    <SelectContent>
+                      {transporters.map((tr) => (
+                        <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             ))}
           </div>
@@ -634,7 +779,7 @@ export function Orders(): React.JSX.Element {
       </Dialog>
 
       <Dialog open={!!actionRow} onOpenChange={(open) => !open && setActionRow(null)}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{target ? `Move ${actionRow?.tanker_no} to ${TANKER_LABEL[target]}` : 'Update tanker'}</DialogTitle></DialogHeader>
           {target === 'loaded' && <div className="grid gap-4">
             <div className="rounded-md bg-muted px-3 py-2 text-sm">
@@ -679,6 +824,28 @@ export function Orders(): React.JSX.Element {
                 setActionForm((p) => ({ ...p, transporter_id: v, transport_rate_per_ton: p.transport_rate_per_ton || tr?.default_rate_per_ton || '' }))
               }}><SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger><SelectContent>{transporters.map((tr) => <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>)}</SelectContent></Select></div>
               <div className="grid gap-1.5"><Label>Transport rate / {actionRow.uom}</Label><Input type="number" value={actionForm.transport_rate_per_ton || ''} onChange={(e) => setActionForm((p) => ({ ...p, transport_rate_per_ton: e.target.value }))} /></div>
+            </div>
+            <div className="grid gap-3 rounded-lg border p-3">
+              <div className="text-sm font-medium">KRFL weighment slip</div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-1.5"><Label>Doc number</Label><Input value={actionForm.krfl_weighment_doc_no || ''} onChange={(e) => setActionForm((p) => ({ ...p, krfl_weighment_doc_no: e.target.value }))} /></div>
+                <div className="grid gap-1.5">
+                  <Label>Photo upload</Label>
+                  <input type="file" accept="image/*" className="text-xs file:mr-2 file:rounded-md file:border-0 file:bg-muted file:px-2 file:py-1.5 file:text-xs file:font-medium" onChange={(e) => onWeighmentPhoto('krfl_weighment_photo', e.target.files?.[0])} />
+                </div>
+              </div>
+              {actionForm.krfl_weighment_photo && <img src={actionForm.krfl_weighment_photo} alt="KRFL weighment slip" className="max-h-32 w-fit rounded-md border" />}
+            </div>
+            <div className="grid gap-3 rounded-lg border p-3">
+              <div className="text-sm font-medium">Outside factory weighment slip</div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-1.5"><Label>Doc number</Label><Input value={actionForm.outside_weighment_doc_no || ''} onChange={(e) => setActionForm((p) => ({ ...p, outside_weighment_doc_no: e.target.value }))} /></div>
+                <div className="grid gap-1.5">
+                  <Label>Photo upload</Label>
+                  <input type="file" accept="image/*" className="text-xs file:mr-2 file:rounded-md file:border-0 file:bg-muted file:px-2 file:py-1.5 file:text-xs file:font-medium" onChange={(e) => onWeighmentPhoto('outside_weighment_photo', e.target.files?.[0])} />
+                </div>
+              </div>
+              {actionForm.outside_weighment_photo && <img src={actionForm.outside_weighment_photo} alt="Outside factory weighment slip" className="max-h-32 w-fit rounded-md border" />}
             </div>
             <div className="rounded-lg border bg-muted/30 p-3"><MoneyRow label="Loaded" value={`${formatNum(actionRow.loaded_qty)} ${actionRow.uom}`} /><MoneyRow label="Shortage" value={`${formatNum(shortage.actualShortage)} ${actionRow.uom}`} /><MoneyRow label="Freight" value={formatINR(shortage.transportAmount)} /></div>
           </div>}

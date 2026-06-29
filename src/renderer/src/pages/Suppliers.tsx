@@ -30,7 +30,7 @@ const columns: ColumnDef[] = [
 export function Suppliers(): React.JSX.Element {
   return (
     <>
-      <PageHeader title="Suppliers" subtitle="GST, TDS slab, credit period and interest rule per supplier" />
+      <PageHeader title="Suppliers" subtitle="GST, TDS slab, credit period and interest rule per supplier" hint="Slab TDS is cumulative per financial year: a base % up to the threshold, then a higher % above it. 'Below slab no TDS' charges TDS only above the threshold." />
       <div className="p-8">
         <EntityManager
           table="suppliers"

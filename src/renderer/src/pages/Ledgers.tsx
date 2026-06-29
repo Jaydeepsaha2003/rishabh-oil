@@ -42,12 +42,32 @@ const TYPE_LABEL: Record<string, string> = {
   advance: 'Advance',
   adjustment: 'Adjustment',
   manual: 'Entry',
+  general: 'General voucher',
+  dr_note: 'Debit note',
+  cr_note: 'Credit note',
   interest: 'Interest',
   freight: 'Freight',
   shortage_penalty: 'Shortage penalty'
 }
 
-const MANUAL_TYPES = ['opening', 'advance', 'adjustment', 'manual']
+// Tally voucher type shown per entry.
+const VOUCHER_TYPE: Record<string, string> = {
+  opening: 'General Voucher',
+  payable: 'Purchase',
+  payment: 'General Voucher',
+  advance: 'General Voucher',
+  adjustment: 'General Voucher',
+  manual: 'General Voucher',
+  general: 'General Voucher',
+  interest: 'Dr Note',
+  freight: 'Purchase',
+  shortage_penalty: 'Cr Note',
+  dr_note: 'Dr Note',
+  cr_note: 'Cr Note',
+  sale: 'Sale'
+}
+
+const MANUAL_TYPES = ['opening', 'advance', 'adjustment', 'manual', 'general', 'dr_note', 'cr_note']
 
 // Credit (we owe the party) is positive; debit (we paid / they owe us) is negative.
 function drCr(amount: number): string {
@@ -55,10 +75,26 @@ function drCr(amount: number): string {
   return `${formatINR(a)} ${amount >= 0 ? 'Cr' : 'Dr'}`
 }
 
-function PartyLedger({ partyType }: { partyType: 'supplier' | 'transporter' }): React.JSX.Element {
-  const nameKey = partyType === 'supplier' ? 'supplier_name' : 'transporter_name'
-  const idKey = partyType === 'supplier' ? 'supplier_id' : 'transporter_id'
-  const label = partyType === 'supplier' ? 'Supplier' : 'Transporter'
+function PartyLedger({
+  partyType
+}: {
+  partyType: 'supplier' | 'transporter' | 'customer'
+}): React.JSX.Element {
+  const nameKey =
+    partyType === 'supplier'
+      ? 'supplier_name'
+      : partyType === 'transporter'
+        ? 'transporter_name'
+        : 'customer_name'
+  const idKey =
+    partyType === 'supplier'
+      ? 'supplier_id'
+      : partyType === 'transporter'
+        ? 'transporter_id'
+        : 'customer_id'
+  const label =
+    partyType === 'supplier' ? 'Supplier' : partyType === 'transporter' ? 'Transporter' : 'Customer'
+  const isCustomer = partyType === 'customer'
 
   const [entries, setEntries] = useState<Row[]>([])
   const [parties, setParties] = useState<Row[]>([])
@@ -68,10 +104,15 @@ function PartyLedger({ partyType }: { partyType: 'supplier' | 'transporter' }): 
   const [saving, setSaving] = useState(false)
 
   const load = useCallback(async () => {
-    const [e, p] = await Promise.all([
-      partyType === 'supplier' ? window.api.ledger.suppliers() : window.api.ledger.transporters(),
-      window.api.data.list(partyType === 'supplier' ? 'suppliers' : 'transporters')
-    ])
+    const table =
+      partyType === 'supplier' ? 'suppliers' : partyType === 'transporter' ? 'transporters' : 'customers'
+    const ledgerCall =
+      partyType === 'supplier'
+        ? window.api.ledger.suppliers()
+        : partyType === 'transporter'
+          ? window.api.ledger.transporters()
+          : window.api.ledger.customers()
+    const [e, p] = await Promise.all([ledgerCall, window.api.data.list(table)])
     setEntries(e)
     setParties(p.filter((x) => x.active))
   }, [partyType])
@@ -102,6 +143,9 @@ function PartyLedger({ partyType }: { partyType: 'supplier' | 'transporter' }): 
   }, [entries, partyId, idKey])
 
   const closing = statement.length ? Number(statement[statement.length - 1]._bal) : 0
+  const totalDr = statement.reduce((s, e) => s + (Number(e.amount) < 0 ? -Number(e.amount) : 0), 0)
+  const totalCr = statement.reduce((s, e) => s + (Number(e.amount) > 0 ? Number(e.amount) : 0), 0)
+  const selectedName = parties.find((p) => String(p.id) === partyId)?.name
 
   const summary = useMemo(() => {
     const map = new Map<string, number>()
@@ -127,8 +171,10 @@ function PartyLedger({ partyType }: { partyType: 'supplier' | 'transporter' }): 
   function setField(key: string, value: unknown): void {
     setForm((p) => {
       const next = { ...p, [key]: value }
-      // sensible default side per type
-      if (key === 'entry_type') next.side = value === 'advance' ? 'dr' : 'cr'
+      // sensible default side per voucher type
+      if (key === 'entry_type') {
+        next.side = value === 'advance' || value === 'dr_note' ? 'dr' : 'cr'
+      }
       return next
     })
   }
@@ -210,21 +256,41 @@ function PartyLedger({ partyType }: { partyType: 'supplier' | 'transporter' }): 
                 <div className="text-sm text-muted-foreground">{s.name}</div>
                 <div className="mt-1 text-xl font-semibold tabular-nums">{drCr(s.bal)}</div>
                 <div className="text-xs text-muted-foreground">
-                  {s.bal >= 0 ? 'we owe' : 'advance / they owe'}
+                  {isCustomer
+                    ? s.bal > 0
+                      ? 'excess held (we owe)'
+                      : s.bal < 0
+                        ? 'receivable (they owe)'
+                        : 'settled'
+                    : s.bal >= 0
+                      ? 'we owe'
+                      : 'advance / they owe'}
                 </div>
               </Card>
             ))
           )}
         </div>
       ) : (
-        <div className="rounded-lg border bg-card">
+        <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-muted/40 px-4 py-3">
+            <div>
+              <div className="text-sm font-semibold">{selectedName || label}</div>
+              <div className="text-xs text-muted-foreground">{statement.length} entries</div>
+            </div>
+            <div className="text-right">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Closing balance</div>
+              <div className="text-lg font-bold tabular-nums">{drCr(closing)}</div>
+            </div>
+          </div>
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Date</TableHead>
-                <TableHead>Particulars</TableHead>
-                <TableHead className="text-right">Debit</TableHead>
-                <TableHead className="text-right">Credit</TableHead>
+                <TableHead>Account</TableHead>
+                <TableHead>Voucher no</TableHead>
+                <TableHead>Voucher type</TableHead>
+                <TableHead className="text-right">Dr.</TableHead>
+                <TableHead className="text-right">Cr.</TableHead>
                 <TableHead className="text-right">Balance</TableHead>
                 <TableHead className="w-[50px]" />
               </TableRow>
@@ -232,7 +298,7 @@ function PartyLedger({ partyType }: { partyType: 'supplier' | 'transporter' }): 
             <TableBody>
               {statement.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
+                  <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
                     No entries for this {label.toLowerCase()} yet.
                   </TableCell>
                 </TableRow>
@@ -243,8 +309,18 @@ function PartyLedger({ partyType }: { partyType: 'supplier' | 'transporter' }): 
                     <TableRow key={e.id as number}>
                       <TableCell>{formatDate(e.entry_date)}</TableCell>
                       <TableCell>
-                        {e.note || TYPE_LABEL[e.entry_type] || e.entry_type}
-                        {e.invoice_no ? <span className="text-muted-foreground"> · {e.invoice_no}</span> : null}
+                        <div className="font-medium">{e[nameKey] || '—'}</div>
+                        {(e.note || TYPE_LABEL[e.entry_type]) && (
+                          <div className="text-xs text-muted-foreground">
+                            {e.note || TYPE_LABEL[e.entry_type]}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">{e.invoice_no || '—'}</TableCell>
+                      <TableCell>
+                        <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium">
+                          {VOUCHER_TYPE[e.entry_type] || 'General Voucher'}
+                        </span>
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {amt < 0 ? formatINR(-amt) : ''}
@@ -272,9 +348,16 @@ function PartyLedger({ partyType }: { partyType: 'supplier' | 'transporter' }): 
             </TableBody>
           </Table>
           {statement.length > 0 && (
-            <div className="flex items-center justify-between border-t px-3 py-2 text-sm font-semibold">
-              <span>Closing balance</span>
-              <span className="tabular-nums">{drCr(closing)}</span>
+            <div className="flex items-center justify-end gap-6 border-t bg-muted/30 px-4 py-2.5 text-sm">
+              <span className="text-muted-foreground">
+                Total Dr <span className="font-semibold tabular-nums text-foreground">{formatINR(totalDr)}</span>
+              </span>
+              <span className="text-muted-foreground">
+                Total Cr <span className="font-semibold tabular-nums text-foreground">{formatINR(totalCr)}</span>
+              </span>
+              <span className="font-semibold">
+                Closing <span className="tabular-nums">{drCr(closing)}</span>
+              </span>
             </div>
           )}
         </div>
@@ -310,8 +393,10 @@ function PartyLedger({ partyType }: { partyType: 'supplier' | 'transporter' }): 
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="opening">Opening balance</SelectItem>
-                    <SelectItem value="advance">Advance</SelectItem>
-                    <SelectItem value="adjustment">Adjustment</SelectItem>
+                    <SelectItem value="general">General voucher</SelectItem>
+                    <SelectItem value="dr_note">Debit note</SelectItem>
+                    <SelectItem value="cr_note">Credit note</SelectItem>
+                    <SelectItem value="advance">Advance / excess</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -360,15 +445,19 @@ function PartyLedger({ partyType }: { partyType: 'supplier' | 'transporter' }): 
 export function Ledgers(): React.JSX.Element {
   return (
     <>
-      <PageHeader title="Ledgers" subtitle="Party statements with opening balance, advances and running balance" />
+      <PageHeader title="Ledgers" subtitle="Party statements with opening balance, advances and running balance" hint="Tally-style statements. Credit (we owe the party) is positive; debit is negative. Only manual entries (opening, advance, adjustment) can be deleted — order and payment entries are posted automatically." />
       <div className="p-8">
         <Tabs defaultValue="suppliers">
           <TabsList>
             <TabsTrigger value="suppliers">Suppliers</TabsTrigger>
+            <TabsTrigger value="customers">Customers</TabsTrigger>
             <TabsTrigger value="transporters">Transporters</TabsTrigger>
           </TabsList>
           <TabsContent value="suppliers" className="mt-6">
             <PartyLedger partyType="supplier" />
+          </TabsContent>
+          <TabsContent value="customers" className="mt-6">
+            <PartyLedger partyType="customer" />
           </TabsContent>
           <TabsContent value="transporters" className="mt-6">
             <PartyLedger partyType="transporter" />

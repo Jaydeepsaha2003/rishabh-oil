@@ -277,6 +277,7 @@ export function Formulation(): React.JSX.Element {
       <PageHeader
         title="Formulation"
         subtitle="Recipes for finished goods and intermediates"
+        hint="A recipe lists the input products and their percentages for one output. Every formulation must add up to exactly 100% before it can be saved."
         actions={
           <Button size="sm" onClick={openAdd} disabled={outputs.length === 0}>
             <Plus className="h-4 w-4" />

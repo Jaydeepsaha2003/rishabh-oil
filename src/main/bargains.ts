@@ -12,13 +12,12 @@ function toPlain(res: ResultSet): Row[] {
   })
 }
 
-// Indian financial year (Apr–Mar). e.g. 2025-06-13 -> "25-26".
-function financialYear(dateStr: string): string {
+// "DD-MM" from an ISO date string. e.g. 2025-06-13 -> "13-06".
+function dayMonth(dateStr: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr || '')
+  if (m) return `${m[3]}-${m[2]}`
   const d = new Date(dateStr)
-  const y = d.getFullYear()
-  const m = d.getMonth() + 1
-  const startYear = m >= 4 ? y : y - 1
-  return `${String(startYear).slice(2)}-${String(startYear + 1).slice(2)}`
+  return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
 export async function listBargains(): Promise<Row[]> {
@@ -35,26 +34,42 @@ export async function listBargains(): Promise<Row[]> {
   return toPlain(res)
 }
 
-async function nextBargainNo(oilTypeId: number, bargainDate: string): Promise<string> {
+// Format: OIL/DD-MM/PARTYNAME(no spaces, upper)/SERIAL.
+// Serial is a continuous running number across all bargains.
+async function nextBargainNo(
+  oilTypeId: number,
+  supplierId: number,
+  bargainDate: string
+): Promise<string> {
   const c = getClient()
   const oilRes = await c.execute({
     sql: 'SELECT code, name FROM products WHERE id = ?',
     args: [oilTypeId]
   })
-  const code = oilRes.rows.length
-    ? String(oilRes.rows[0].code || oilRes.rows[0].name || 'GEN')
-    : 'GEN'
-  const prefix = `${code}/${financialYear(bargainDate)}/`
-  const existing = await c.execute({
-    sql: 'SELECT bargain_no FROM bargains WHERE bargain_no LIKE ?',
-    args: [`${prefix}%`]
+  const oil = (
+    oilRes.rows.length ? String(oilRes.rows[0].code || oilRes.rows[0].name || 'OIL') : 'OIL'
+  )
+    .replace(/\s+/g, '')
+    .toUpperCase()
+
+  const supRes = await c.execute({
+    sql: 'SELECT name FROM suppliers WHERE id = ?',
+    args: [supplierId]
   })
+  const party = (supRes.rows.length ? String(supRes.rows[0].name || 'PARTY') : 'PARTY')
+    .replace(/\s+/g, '')
+    .toUpperCase()
+
+  // continuous serial = max trailing serial across all bargain numbers + 1
+  const existing = await c.execute('SELECT bargain_no FROM bargains')
   let maxSeq = 0
   for (const r of existing.rows) {
-    const n = parseInt(String(r.bargain_no).split('/')[2] ?? '0', 10)
+    const parts = String(r.bargain_no).split('/')
+    const n = parseInt(parts[parts.length - 1] ?? '0', 10)
     if (!Number.isNaN(n) && n > maxSeq) maxSeq = n
   }
-  return `${prefix}${String(maxSeq + 1).padStart(4, '0')}`
+  const serial = String(maxSeq + 1).padStart(4, '0')
+  return `${oil}/${dayMonth(bargainDate)}/${party}/${serial}`
 }
 
 // Bargain (landed) rate = base rate (ex duty) + customs duty.
@@ -66,7 +81,11 @@ export async function createBargain(v: Row): Promise<{ id: number; bargain_no: s
   const qty = Number(v.qty) || 0
   const rate = landedRate(v)
   const total = qty * rate
-  const bargain_no = await nextBargainNo(Number(v.oil_type_id), String(v.bargain_date))
+  const bargain_no = await nextBargainNo(
+    Number(v.oil_type_id),
+    Number(v.supplier_id),
+    String(v.bargain_date)
+  )
   const res = await getClient().execute({
     sql: `INSERT INTO bargains
       (bargain_no, bargain_date, supplier_id, oil_type_id, bargain_type, qty, opening_qty, uom,

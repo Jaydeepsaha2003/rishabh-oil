@@ -43,6 +43,7 @@ export interface Api {
   ledger: {
     suppliers: () => Promise<Row[]>
     transporters: () => Promise<Row[]>
+    customers: () => Promise<Row[]>
     addEntry: (data: Row) => Promise<{ id: number }>
     deleteEntry: (partyType: string, id: number) => Promise<{ id: number }>
   }
@@ -85,6 +86,11 @@ export interface Api {
     list: () => Promise<Row[]>
     needs: () => Promise<Row[]>
   }
+  stockCount: {
+    sheet: (date: string) => Promise<Row[]>
+    list: (date: string) => Promise<Row[]>
+    save: (date: string, items: Row[]) => Promise<{ count: number }>
+  }
   production: {
     list: () => Promise<Row[]>
     items: (id: number) => Promise<Row[]>
@@ -103,6 +109,22 @@ export interface Api {
     create: (values: Row) => Promise<{ id: number; bargain_no: string }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
+  }
+  gate: {
+    list: () => Promise<Row[]>
+    nextNo: () => Promise<string>
+    create: (values: Row) => Promise<{ id: number }>
+    update: (id: number, values: Row) => Promise<{ id: number }>
+    remove: (id: number) => Promise<{ id: number }>
+  }
+  lc: {
+    list: () => Promise<Row[]>
+    issuances: (lcId: number) => Promise<Row[]>
+    create: (values: Row) => Promise<{ id: number }>
+    update: (id: number, values: Row) => Promise<{ id: number }>
+    remove: (id: number) => Promise<{ id: number }>
+    issue: (values: Row) => Promise<{ id: number }>
+    removeIssuance: (id: number) => Promise<{ id: number }>
   }
 }
 

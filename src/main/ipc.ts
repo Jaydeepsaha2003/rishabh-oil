@@ -50,12 +50,29 @@ import {
   deleteFormulation
 } from './formulations'
 import { stockLevels, productionNeeds } from './stock'
+import { stockCountSheet, listStockCounts, saveStockCounts } from './stockcount'
 import {
   listProduction,
   getProductionItems,
   createProduction,
   deleteProduction
 } from './production'
+import {
+  listGateEntries,
+  nextGateEntryNo,
+  createGateEntry,
+  updateGateEntry,
+  deleteGateEntry
+} from './gate'
+import {
+  listLCs,
+  listLCIssuances,
+  createLC,
+  updateLC,
+  deleteLC,
+  issueLC,
+  deleteLCIssuance
+} from './lc'
 import {
   listSales,
   createSale,
@@ -65,7 +82,8 @@ import {
   listSalesBargains,
   createSalesBargain,
   updateSalesBargain,
-  deleteSalesBargain
+  deleteSalesBargain,
+  listCustomerLedger
 } from './sales'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -77,7 +95,7 @@ type Row = Record<string, any>
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:outstanding$|:all$|:fyTaxable$|:needs$|:liveUsers$|:ips$|:logs$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:fyTaxable$|:needs$|:nextNo$|:liveUsers$|:ips$|:logs$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$/
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handle = (channel: string, fn: (...a: any[]) => unknown): void => {
     ipcMain.handle(channel, async (e, args) => {
@@ -156,6 +174,7 @@ export function registerIpc(): void {
 
   handle('ledger:suppliers', () => listSupplierLedger())
   handle('ledger:transporters', () => listTransporterLedger())
+  handle('ledger:customers', () => listCustomerLedger())
   handle('ledger:addEntry', (_e, { data }: { data: Row }) => addLedgerEntry(data))
   handle('ledger:deleteEntry', (_e, { partyType, id }: { partyType: string; id: number }) =>
     deleteLedgerEntry(partyType, id)
@@ -207,6 +226,11 @@ export function registerIpc(): void {
 
   handle('stock:list', () => stockLevels())
   handle('stock:needs', () => productionNeeds())
+  handle('stockCount:sheet', (_e, { date }: { date: string }) => stockCountSheet(date))
+  handle('stockCount:list', (_e, { date }: { date: string }) => listStockCounts(date))
+  handle('stockCount:save', (_e, { date, items }: { date: string; items: Row[] }) =>
+    saveStockCounts(date, items)
+  )
 
   handle('production:list', () => listProduction())
   handle('production:items', (_e, { id }: { id: number }) => getProductionItems(id))
@@ -227,4 +251,20 @@ export function registerIpc(): void {
     updateSalesBargain(id, values)
   )
   handle('salesBargains:delete', (_e, { id }: { id: number }) => deleteSalesBargain(id))
+
+  handle('gate:list', () => listGateEntries())
+  handle('gate:nextNo', () => nextGateEntryNo())
+  handle('gate:create', (_e, { values }: { values: Row }) => createGateEntry(values))
+  handle('gate:update', (_e, { id, values }: { id: number; values: Row }) =>
+    updateGateEntry(id, values)
+  )
+  handle('gate:delete', (_e, { id }: { id: number }) => deleteGateEntry(id))
+
+  handle('lc:list', () => listLCs())
+  handle('lc:issuances', (_e, { lcId }: { lcId: number }) => listLCIssuances(lcId))
+  handle('lc:create', (_e, { values }: { values: Row }) => createLC(values))
+  handle('lc:update', (_e, { id, values }: { id: number; values: Row }) => updateLC(id, values))
+  handle('lc:delete', (_e, { id }: { id: number }) => deleteLC(id))
+  handle('lc:issue', (_e, { values }: { values: Row }) => issueLC(values))
+  handle('lc:deleteIssuance', (_e, { id }: { id: number }) => deleteLCIssuance(id))
 }

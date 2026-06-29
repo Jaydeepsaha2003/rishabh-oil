@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import {
   Boxes,
   Building2,
   Contact,
   CreditCard,
+  DoorOpen,
   Droplets,
   Factory,
   FileText,
@@ -14,17 +16,20 @@ import {
   Tag,
   Truck,
   Wallet,
-  Warehouse
+  Warehouse,
+  type LucideIcon
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { AppUser } from '@/lib/session'
 import { canAccess } from '@/lib/modules'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
 export type Page =
   | 'dashboard'
   | 'settings'
   | 'bargains'
   | 'orders'
+  | 'gateEntry'
   | 'ledgers'
   | 'payments'
   | 'products'
@@ -36,22 +41,33 @@ export type Page =
   | 'transporters'
   | 'customers'
 
-const NAV = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, enabled: true },
-  { id: 'bargains', label: 'Bargains', icon: FileText, enabled: true },
-  { id: 'orders', label: 'Purchases', icon: ShoppingCart, enabled: true },
-  { id: 'payments', label: 'Payments', icon: CreditCard, enabled: true },
-  { id: 'ledgers', label: 'Ledgers', icon: Wallet, enabled: true },
-  { id: 'products', label: 'Products', icon: Boxes, enabled: true },
-  { id: 'formulation', label: 'Formulation', icon: FlaskConical, enabled: true },
-  { id: 'production', label: 'Production', icon: Factory, enabled: true },
-  { id: 'stock', label: 'Stock', icon: Warehouse, enabled: true },
-  { id: 'sales', label: 'Sales', icon: Tag, enabled: true },
-  { id: 'suppliers', label: 'Suppliers', icon: Building2, enabled: true },
-  { id: 'transporters', label: 'Transporters', icon: Truck, enabled: true },
-  { id: 'customers', label: 'Customers', icon: Contact, enabled: true },
-  { id: 'settings', label: 'Settings', icon: SettingsIcon, enabled: true }
-] as const
+const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
+  dashboard: { label: 'Dashboard', icon: LayoutDashboard },
+  bargains: { label: 'Bargain', icon: FileText },
+  orders: { label: 'Purchases', icon: ShoppingCart },
+  gateEntry: { label: 'Gate Entry', icon: DoorOpen },
+  payments: { label: 'Payments', icon: CreditCard },
+  ledgers: { label: 'Ledgers', icon: Wallet },
+  products: { label: 'Products', icon: Boxes },
+  formulation: { label: 'Formulation', icon: FlaskConical },
+  production: { label: 'Production', icon: Factory },
+  stock: { label: 'Stock', icon: Warehouse },
+  sales: { label: 'Sales', icon: Tag },
+  suppliers: { label: 'Suppliers', icon: Building2 },
+  transporters: { label: 'Transporters', icon: Truck },
+  customers: { label: 'Customers', icon: Contact },
+  settings: { label: 'Settings', icon: SettingsIcon }
+}
+
+const GROUPS: { label: string; ids: string[] }[] = [
+  { label: 'Overview', ids: ['dashboard'] },
+  { label: 'Purchase', ids: ['bargains', 'orders', 'gateEntry'] },
+  { label: 'Production', ids: ['products', 'formulation', 'production', 'stock'] },
+  { label: 'Sales', ids: ['sales'] },
+  { label: 'Accounts', ids: ['payments', 'ledgers'] },
+  { label: 'Masters', ids: ['suppliers', 'transporters', 'customers'] },
+  { label: 'System', ids: ['settings'] }
+]
 
 interface Props {
   page: Page
@@ -71,61 +87,126 @@ function initials(name: string): string {
 }
 
 export function Sidebar({ page, onNavigate, user, onLogout }: Props): React.JSX.Element {
+  const [expanded, setExpanded] = useState(false)
+
+  const visibleGroups = GROUPS.map((g) => ({
+    ...g,
+    ids: g.ids.filter((id) => canAccess(user, id))
+  })).filter((g) => g.ids.length > 0)
+
+  function navItem(id: string): React.JSX.Element {
+    const it = ITEMS[id]
+    const Icon = it.icon
+    const active = page === id
+    const btn = (
+      <button
+        onClick={() => onNavigate(id as Page)}
+        className={cn(
+          'flex w-full items-center gap-3 rounded-lg py-2 text-sm font-medium transition-colors',
+          expanded ? 'px-3' : 'justify-center px-0',
+          active
+            ? 'bg-primary text-primary-foreground shadow-sm'
+            : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+        )}
+      >
+        <Icon className="h-4 w-4 shrink-0" />
+        {expanded && <span className="truncate">{it.label}</span>}
+      </button>
+    )
+    if (expanded) return <div key={id}>{btn}</div>
+    return (
+      <Tooltip key={id}>
+        <TooltipTrigger asChild>{btn}</TooltipTrigger>
+        <TooltipContent side="right">{it.label}</TooltipContent>
+      </Tooltip>
+    )
+  }
+
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r bg-card">
-      <div className="flex items-center gap-2.5 border-b px-5 py-4">
-        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-500 text-white shadow-sm">
-          <Droplets className="h-5 w-5" />
-        </div>
-        <div className="leading-tight">
-          <div className="text-sm font-semibold">Rishabh Oil</div>
-          <div className="text-[11px] text-muted-foreground">Production system</div>
-        </div>
-      </div>
+    <>
+      {/* reserves the collapsed rail width so content doesn't sit under the bar */}
+      <div className="w-16 shrink-0" />
 
-      <nav className="flex-1 space-y-0.5 p-3">
-        <div className="px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-          Menu
+      <aside
+        onMouseEnter={() => setExpanded(true)}
+        onMouseLeave={() => setExpanded(false)}
+        className={cn(
+          'fixed left-0 top-0 z-30 flex h-screen flex-col border-r bg-card shadow-sm transition-[width] duration-200 ease-out',
+          expanded ? 'w-64' : 'w-16'
+        )}
+      >
+        <div className="flex h-14 items-center gap-2.5 border-b px-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-500 text-white shadow-sm">
+            <Droplets className="h-5 w-5" />
+          </div>
+          {expanded && (
+            <div className="leading-tight">
+              <div className="text-sm font-semibold">Rishabh Oil</div>
+              <div className="text-[11px] text-muted-foreground">Production system</div>
+            </div>
+          )}
         </div>
-        {NAV.filter((n) => canAccess(user, n.id)).map((n) => {
-          const Icon = n.icon
-          const active = page === n.id
-          return (
-            <button
-              key={n.id}
-              onClick={() => onNavigate(n.id as Page)}
-              className={cn(
-                'flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-                active
-                  ? 'bg-primary text-primary-foreground shadow-sm'
-                  : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+
+        <nav className="flex-1 space-y-1 overflow-y-auto overflow-x-hidden p-2">
+          {visibleGroups.map((g, gi) => (
+            <div key={g.label} className="space-y-0.5">
+              {expanded ? (
+                <div className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                  {g.label}
+                </div>
+              ) : (
+                gi > 0 && <div className="mx-2 my-1 border-t" />
               )}
-            >
-              <Icon className="h-4 w-4" />
-              {n.label}
-            </button>
-          )
-        })}
-      </nav>
+              {g.ids.map((id) => navItem(id))}
+            </div>
+          ))}
+        </nav>
 
-      <div className="border-t p-3">
-        <div className="flex items-center gap-2.5 rounded-lg px-2 py-1.5">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-500 text-xs font-medium text-white">
-            {initials(user.full_name || user.username)}
-          </div>
-          <div className="min-w-0 flex-1 leading-tight">
-            <div className="truncate text-sm font-medium">{user.full_name || user.username}</div>
-            <div className="text-[11px] capitalize text-muted-foreground">{user.role}</div>
-          </div>
-          <button
-            onClick={onLogout}
-            title="Sign out"
-            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          >
-            <LogOut className="h-4 w-4" />
-          </button>
+        <div className="border-t p-2">
+          {expanded ? (
+            <div className="flex items-center gap-2.5 px-1 py-1">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-500 text-xs font-medium text-white">
+                {initials(user.full_name || user.username)}
+              </div>
+              <div className="min-w-0 flex-1 leading-tight">
+                <div className="truncate text-sm font-medium">{user.full_name || user.username}</div>
+                <div className="text-[11px] capitalize text-muted-foreground">{user.role}</div>
+              </div>
+              <button
+                onClick={onLogout}
+                title="Sign out"
+                className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-1">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-500 text-xs font-medium text-white">
+                    {initials(user.full_name || user.username)}
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side="right">
+                  {user.full_name || user.username} · {user.role}
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={onLogout}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    <LogOut className="h-4 w-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right">Sign out</TooltipContent>
+              </Tooltip>
+            </div>
+          )}
         </div>
-      </div>
-    </aside>
+      </aside>
+    </>
   )
 }

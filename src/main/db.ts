@@ -91,6 +91,12 @@ const MIGRATIONS = [
   'ALTER TABLE orders ADD COLUMN credit_interest_days REAL NOT NULL DEFAULT 0',
   'ALTER TABLE orders ADD COLUMN credit_interest_amount REAL NOT NULL DEFAULT 0',
   'ALTER TABLE sales ADD COLUMN sales_bargain_id INTEGER',
+  'ALTER TABLE sales ADD COLUMN customer_id INTEGER',
+  'ALTER TABLE payment_allocations ADD COLUMN sale_id INTEGER',
+  'ALTER TABLE purchase_tankers ADD COLUMN krfl_weighment_doc_no TEXT',
+  'ALTER TABLE purchase_tankers ADD COLUMN krfl_weighment_photo TEXT',
+  'ALTER TABLE purchase_tankers ADD COLUMN outside_weighment_doc_no TEXT',
+  'ALTER TABLE purchase_tankers ADD COLUMN outside_weighment_photo TEXT',
   `INSERT INTO purchase_tankers
     (order_id, tanker_no, loaded_date, bargain_id, supplier_id, oil_type_id, loaded_qty, uom,
      payment_mode, status, transit_date, source_id, expected_delivery_date, outside_factory_date,

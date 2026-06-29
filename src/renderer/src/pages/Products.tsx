@@ -30,7 +30,7 @@ const columns: ColumnDef[] = [
 export function Products(): React.JSX.Element {
   return (
     <>
-      <PageHeader title="Products" subtitle="Raw oils, intermediates and finished products" />
+      <PageHeader title="Products" subtitle="Raw oils, intermediates and finished products" hint="The master catalog. Raw oils are bought via bargains; intermediates and finished goods are built from formulations and tracked in stock." />
       <div className="p-8">
         <EntityManager
           table="products"
