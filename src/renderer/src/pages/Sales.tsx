@@ -30,6 +30,8 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { PageHeader } from '@/components/PageHeader'
+import { UomSelect } from '@/components/UomSelect'
+import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
@@ -289,7 +291,7 @@ function SalesTab(): React.JSX.Element {
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <Label>Date</Label>
-                <Input type="date" value={form.sale_date} onChange={(e) => setField('sale_date', e.target.value)} />
+                <DatePicker value={form.sale_date} onChange={(v) => setField('sale_date', v)} />
               </div>
               <div className="grid gap-1.5">
                 <Label>Invoice no</Label>
@@ -439,6 +441,7 @@ function SalesBargainsTab(): React.JSX.Element {
       customer: '',
       product_id: '',
       qty: '',
+      uom: 'MT',
       rate: '',
       rate_expiry_date: '',
       note: ''
@@ -456,6 +459,7 @@ function SalesBargainsTab(): React.JSX.Element {
       customer: row.customer ?? '',
       product_id: String(row.product_id ?? ''),
       qty: row.qty ?? '',
+      uom: row.uom ?? 'MT',
       rate: row.rate ?? '',
       rate_expiry_date: row.rate_expiry_date ?? '',
       note: row.note ?? ''
@@ -576,7 +580,7 @@ function SalesBargainsTab(): React.JSX.Element {
           <div className="grid grid-cols-2 gap-3">
             <div className="grid gap-1.5">
               <Label>Date</Label>
-              <Input type="date" value={form.bargain_date} onChange={(e) => setField('bargain_date', e.target.value)} />
+              <DatePicker value={form.bargain_date} onChange={(v) => setField('bargain_date', v)} />
             </div>
             <div className="grid gap-1.5">
               <Label>Customer</Label>
@@ -602,15 +606,18 @@ function SalesBargainsTab(): React.JSX.Element {
               <Input type="number" value={form.qty ?? ''} onChange={(e) => setField('qty', e.target.value)} />
             </div>
             <div className="grid gap-1.5">
+              <Label>UOM</Label>
+              <UomSelect value={form.uom || 'MT'} onChange={(v) => setField('uom', v)} />
+            </div>
+            <div className="grid gap-1.5">
               <Label>Rate</Label>
               <Input type="number" value={form.rate ?? ''} onChange={(e) => setField('rate', e.target.value)} />
             </div>
             <div className="grid gap-1.5">
               <Label>Rate expiry</Label>
-              <Input
-                type="date"
+              <DatePicker
                 value={form.rate_expiry_date ?? ''}
-                onChange={(e) => setField('rate_expiry_date', e.target.value)}
+                onChange={(v) => setField('rate_expiry_date', v)}
               />
             </div>
             <div className="grid gap-1.5">

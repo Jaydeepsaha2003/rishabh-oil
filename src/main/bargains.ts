@@ -36,7 +36,8 @@ function dayMonth(dateStr: string): string {
 export async function listBargains(): Promise<Row[]> {
   // loaded_qty = total dispatched across this bargain's orders; balance = qty − loaded.
   const res = await getClient().execute(`
-    SELECT b.*, s.name AS supplier_name, o.code AS oil_code, o.name AS oil_name,
+    SELECT b.*, s.name AS supplier_name, s.supplier_type AS supplier_type,
+           o.code AS oil_code, o.name AS oil_name,
            COALESCE((SELECT SUM(loaded_qty) FROM purchase_tankers WHERE bargain_id = b.id), 0) AS loaded_qty,
            b.qty - COALESCE((SELECT SUM(loaded_qty) FROM purchase_tankers WHERE bargain_id = b.id), 0) AS balance_qty
     FROM bargains b
@@ -111,7 +112,7 @@ export async function createBargain(v: Row): Promise<{ id: number; bargain_no: s
       v.bargain_date,
       Number(v.supplier_id),
       Number(v.oil_type_id),
-      v.bargain_type || 'Ex',
+      v.bargain_type || 'EX',
       qty,
       v.opening_qty != null && v.opening_qty !== '' ? Number(v.opening_qty) : null,
       v.uom || 'ton',
@@ -143,7 +144,7 @@ export async function updateBargain(id: number, v: Row): Promise<{ id: number }>
       v.bargain_date,
       Number(v.supplier_id),
       Number(v.oil_type_id),
-      v.bargain_type || 'Ex',
+      v.bargain_type || 'EX',
       qty,
       v.opening_qty != null && v.opening_qty !== '' ? Number(v.opening_qty) : null,
       v.uom || 'ton',

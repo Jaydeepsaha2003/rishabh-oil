@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { DatePicker } from '@/components/ui/date-picker'
 import {
   Table,
   TableBody,
@@ -29,7 +30,15 @@ import {
 } from '@/components/ui/select'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
-export type FieldType = 'text' | 'number' | 'switch' | 'select'
+export type FieldType = 'text' | 'number' | 'switch' | 'select' | 'date'
+export type ColumnType = FieldType
+
+// Format a stored date/datetime as DD/MM/YYYY.
+function fmtDate(v: unknown): string {
+  const s = String(v ?? '').slice(0, 10)
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : '—'
+}
 
 export interface FieldDef {
   key: string
@@ -44,7 +53,7 @@ export interface FieldDef {
 export interface ColumnDef {
   key: string
   label: string
-  type?: FieldType
+  type?: ColumnType
   align?: 'left' | 'right'
 }
 
@@ -58,6 +67,8 @@ interface Props {
   fields: FieldDef[]
   columns: ColumnDef[]
   readOnly?: boolean
+  // When a field changes, optionally return other fields to auto-fill.
+  onFieldChange?: (key: string, value: unknown, form: Row) => Row | undefined
 }
 
 export function EntityManager({
@@ -66,7 +77,8 @@ export function EntityManager({
   description,
   fields,
   columns,
-  readOnly = false
+  readOnly = false,
+  onFieldChange
 }: Props): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
@@ -111,7 +123,12 @@ export function EntityManager({
   }
 
   function setField(key: string, value: unknown): void {
-    setForm((prev) => ({ ...prev, [key]: value }))
+    setForm((prev) => {
+      let next = { ...prev, [key]: value }
+      const extra = onFieldChange?.(key, value, next)
+      if (extra) next = { ...next, ...extra }
+      return next
+    })
   }
 
   async function save(): Promise<void> {
@@ -159,6 +176,7 @@ export function EntityManager({
   function renderCell(row: Row, col: ColumnDef): string {
     const v = row[col.key]
     if (col.type === 'switch') return v ? 'Yes' : 'No'
+    if (col.type === 'date') return fmtDate(v)
     if (v == null || v === '') return '—'
     return String(v)
   }
@@ -266,6 +284,17 @@ export function EntityManager({
                       onCheckedChange={(v) => setField(fd.key, v)}
                     />
                   </div>
+                ) : fd.type === 'date' ? (
+                  <>
+                    <Label>
+                      {fd.label}
+                      {fd.required ? ' *' : ''}
+                    </Label>
+                    <DatePicker
+                      value={(form[fd.key] as string) ?? ''}
+                      onChange={(v) => setField(fd.key, v)}
+                    />
+                  </>
                 ) : fd.type === 'select' ? (
                   <>
                     <Label>

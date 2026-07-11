@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Toaster } from 'sonner'
-import { LogOut } from 'lucide-react'
+import { Download, LogOut } from 'lucide-react'
 import { Sidebar, type Page } from './components/Sidebar'
 import { LoginScreen } from './components/LoginScreen'
 import { LoadingSplash } from './components/LoadingSplash'
@@ -22,6 +22,30 @@ import { Transporters } from './pages/Transporters'
 import { Customers } from './pages/Customers'
 import { clearUser, loadUser, saveUser, type AppUser } from './lib/session'
 import { MODULES, canAccess } from './lib/modules'
+
+// Floating "Update" pill — appears automatically once a new version has been
+// downloaded in the background; one click restarts into the new version.
+function UpdateBanner(): React.JSX.Element | null {
+  const [ready, setReady] = useState<string | null>(null)
+  useEffect(
+    () =>
+      window.api.updates.onStatus((s) => {
+        if (s.state === 'downloaded') setReady(String(s.version || ''))
+      }),
+    []
+  )
+  if (ready == null) return null
+  return (
+    <button
+      onClick={() => window.api.updates.install()}
+      className="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg transition-colors hover:bg-emerald-700"
+      title={`Version ${ready} downloaded — click to restart and update`}
+    >
+      <Download className="h-4 w-4" />
+      Update{ready ? ` to v${ready}` : ''}
+    </button>
+  )
+}
 
 function App(): React.JSX.Element {
   const [user, setUser] = useState<AppUser | null>(() => loadUser())
@@ -126,6 +150,7 @@ function App(): React.JSX.Element {
         {view === 'customers' && <Customers />}
         {view === 'settings' && <Settings user={user} />}
       </main>
+      <UpdateBanner />
       <Toaster richColors position="top-right" />
     </div>
   )

@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DatePicker } from '@/components/ui/date-picker'
 import {
   Table,
   TableBody,
@@ -248,7 +249,7 @@ function DayClose(): React.JSX.Element {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="grid gap-1.5">
           <Label className="text-xs text-muted-foreground">Closing date</Label>
-          <Input type="date" max={todayISO()} value={date} onChange={(e) => setDate(e.target.value || todayISO())} className="h-9 w-44" />
+          <DatePicker max={todayISO()} value={date} onChange={(v) => setDate(v || todayISO())} className="w-44" />
         </div>
         <div className="flex items-center gap-2">
           <input

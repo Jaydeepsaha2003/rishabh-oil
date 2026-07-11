@@ -24,7 +24,8 @@ const columns: ColumnDef[] = [
   { key: 'name', label: 'Name' },
   { key: 'code', label: 'Code' },
   { key: 'category', label: 'Category', type: 'select' },
-  { key: 'active', label: 'Active', type: 'switch' }
+  { key: 'active', label: 'Active', type: 'switch' },
+  { key: 'created_at', label: 'Created', type: 'date' }
 ]
 
 export function Products(): React.JSX.Element {

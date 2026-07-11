@@ -2,10 +2,11 @@ import { PageHeader } from '@/components/PageHeader'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { loadUser } from '@/lib/session'
 import { canWrite } from '@/lib/modules'
+import { COMPANY_TYPES } from '@/lib/constants'
 
 const fields: FieldDef[] = [
   { key: 'name', label: 'Name', type: 'text', required: true },
-  { key: 'company_type', label: 'Company type', type: 'text', placeholder: 'Pvt Ltd / Partnership' },
+  { key: 'company_type', label: 'Company type', type: 'select', options: COMPANY_TYPES },
   { key: 'gstin', label: 'GSTIN', type: 'text' },
   { key: 'state', label: 'State', type: 'text' },
   { key: 'gst_pct', label: 'GST %', type: 'number', default: 0 },
@@ -23,7 +24,8 @@ const columns: ColumnDef[] = [
   { key: 'name', label: 'Name' },
   { key: 'gst_pct', label: 'GST %', align: 'right' },
   { key: 'tds_pct', label: 'TDS %', align: 'right' },
-  { key: 'credit_period_days', label: 'Credit days', align: 'right' }
+  { key: 'credit_period_days', label: 'Credit days', align: 'right' },
+  { key: 'created_at', label: 'Created', type: 'date' }
 ]
 
 export function Customers(): React.JSX.Element {

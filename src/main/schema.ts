@@ -15,6 +15,13 @@ CREATE TABLE IF NOT EXISTS oil_types (
   active INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE TABLE IF NOT EXISTS uoms (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS products (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   code TEXT,
@@ -90,6 +97,7 @@ CREATE TABLE IF NOT EXISTS sales (
 CREATE TABLE IF NOT EXISTS suppliers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
+  supplier_type TEXT,
   company_type TEXT,
   gstin TEXT,
   state TEXT,
@@ -102,6 +110,8 @@ CREATE TABLE IF NOT EXISTS suppliers (
   adds_interest INTEGER NOT NULL DEFAULT 0,
   interest_pct REAL NOT NULL DEFAULT 0,
   interest_days INTEGER NOT NULL DEFAULT 0,
+  opening_purchase_amount REAL NOT NULL DEFAULT 0,
+  opening_purchase_date TEXT,
   active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -151,7 +161,7 @@ CREATE TABLE IF NOT EXISTS bargains (
   bargain_date TEXT NOT NULL,
   supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
   oil_type_id INTEGER NOT NULL REFERENCES oil_types(id),
-  bargain_type TEXT NOT NULL DEFAULT 'Ex',
+  bargain_type TEXT NOT NULL DEFAULT 'EX',
   qty REAL NOT NULL,
   opening_qty REAL,
   uom TEXT NOT NULL DEFAULT 'ton',
@@ -172,7 +182,7 @@ CREATE TABLE IF NOT EXISTS orders (
   bargain_id INTEGER REFERENCES bargains(id),
   supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
   oil_type_id INTEGER NOT NULL REFERENCES oil_types(id),
-  bargain_type TEXT NOT NULL DEFAULT 'Ex',
+  bargain_type TEXT NOT NULL DEFAULT 'EX',
   ordered_qty REAL NOT NULL,
   uom TEXT NOT NULL DEFAULT 'ton',
   bargain_rate REAL NOT NULL DEFAULT 0,
@@ -182,6 +192,7 @@ CREATE TABLE IF NOT EXISTS orders (
   adjusted_rate REAL NOT NULL DEFAULT 0,
   taxable_value REAL NOT NULL DEFAULT 0,
   gst_pct REAL NOT NULL DEFAULT 0,
+  gst_type TEXT NOT NULL DEFAULT 'CGST_SGST',
   gst_amount REAL NOT NULL DEFAULT 0,
   tds_pct REAL NOT NULL DEFAULT 0,
   tds_amount REAL NOT NULL DEFAULT 0,
@@ -420,6 +431,7 @@ CREATE INDEX IF NOT EXISTS idx_purchase_tankers_order ON purchase_tankers(order_
 CREATE INDEX IF NOT EXISTS idx_purchase_tankers_status ON purchase_tankers(status);
 
 INSERT OR IGNORE INTO app_settings (key, value) VALUES ('allowed_shortage_pct', '0.2');
-INSERT OR IGNORE INTO app_settings (key, value) VALUES ('default_uom', 'ton');
+INSERT OR IGNORE INTO app_settings (key, value) VALUES ('default_uom', 'MT');
 INSERT OR IGNORE INTO app_settings (key, value) VALUES ('log_retention_days', '30');
+INSERT OR IGNORE INTO uoms (name) VALUES ('MT'), ('TON'), ('KG'), ('LTR'), ('QUINTAL');
 `

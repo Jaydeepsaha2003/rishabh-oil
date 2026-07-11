@@ -5,6 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DatePicker } from '@/components/ui/date-picker'
 import { Card } from '@/components/ui/card'
 import {
   Select,
@@ -402,7 +403,7 @@ function PartyLedger({
               </div>
               <div className="grid gap-1.5">
                 <Label>Date</Label>
-                <Input type="date" value={form.entry_date} onChange={(e) => setField('entry_date', e.target.value)} />
+                <DatePicker value={form.entry_date} onChange={(v) => setField('entry_date', v)} />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">

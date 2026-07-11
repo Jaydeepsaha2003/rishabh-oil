@@ -32,6 +32,13 @@ function n(v: unknown): number {
   return Number.isFinite(x) ? x : 0
 }
 
+// Bargain condition "DLD" (delivered) — supplier bears transport. Accept the
+// legacy "Delivered" value too. Anything else (e.g. "EX") is buyer-borne.
+function isDelivered(v: unknown): boolean {
+  const s = String(v || '').toUpperCase()
+  return s === 'DLD' || s === 'DELIVERED'
+}
+
 // --- the calculation engine (kept in sync with src/renderer/src/lib/orderCalc.ts) ---
 export interface MoneyInput {
   orderedQty: number
@@ -77,12 +84,24 @@ export async function supplierFyTaxable(
   excludeId: number
 ): Promise<number> {
   const { start, end } = fyRange(dateStr)
-  const res = await getClient().execute({
+  const c = getClient()
+  const res = await c.execute({
     sql: `SELECT COALESCE(SUM(taxable_value), 0) AS t FROM orders
           WHERE supplier_id = ? AND order_date BETWEEN ? AND ? AND id != ?`,
     args: [supplierId, start, end, excludeId || 0]
   })
-  return Number(res.rows[0].t) || 0
+  // Add the "purchase bill amount as on <date>" if that date is in this FY —
+  // it seeds the cumulative taxable so the TDS slab picks up from the right point.
+  const sup = await c.execute({
+    sql: 'SELECT opening_purchase_amount, opening_purchase_date FROM suppliers WHERE id = ?',
+    args: [supplierId]
+  })
+  let opening = 0
+  if (sup.rows.length) {
+    const od = String(sup.rows[0].opening_purchase_date || '')
+    if (od && od >= start && od <= end) opening = Number(sup.rows[0].opening_purchase_amount) || 0
+  }
+  return (Number(res.rows[0].t) || 0) + opening
 }
 
 export interface MoneyResult {
@@ -208,18 +227,18 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     sql: `INSERT INTO orders
       (invoice_no, order_date, bargain_id, supplier_id, oil_type_id, bargain_type, ordered_qty, uom,
        bargain_rate, invoice_rate, interest_pct, interest_days, adjusted_rate, taxable_value,
-       gst_pct, gst_amount, tds_pct, tds_amount, net_amount,
+       gst_pct, gst_type, gst_amount, tds_pct, tds_amount, net_amount,
        final_taxable_value, final_gst_amount, final_tds_amount, final_net_amount,
        tanker_no, transporter_id, is_registered_transporter, posting, financed_by_party,
        payment_cleared_date, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'loaded')`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'loaded')`,
     args: [
       v.invoice_no,
       v.order_date,
       v.bargain_id ? n(v.bargain_id) : null,
       n(v.supplier_id),
       n(v.oil_type_id),
-      v.bargain_type || 'Ex',
+      v.bargain_type || 'EX',
       n(v.ordered_qty),
       v.uom || 'ton',
       n(v.bargain_rate),
@@ -229,6 +248,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       m.adjusted_rate,
       m.taxable_value,
       n(v.gst_pct),
+      v.gst_type || 'CGST_SGST',
       m.gst_amount,
       n(v.tds_pct),
       m.tds_amount,
@@ -272,7 +292,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     sql: `UPDATE orders SET
       invoice_no = ?, order_date = ?, bargain_id = ?, supplier_id = ?, oil_type_id = ?, bargain_type = ?,
       ordered_qty = ?, uom = ?, bargain_rate = ?, invoice_rate = ?, interest_pct = ?, interest_days = ?,
-      adjusted_rate = ?, taxable_value = ?, gst_pct = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, net_amount = ?,
+      adjusted_rate = ?, taxable_value = ?, gst_pct = ?, gst_type = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, net_amount = ?,
       final_taxable_value = ?, final_gst_amount = ?, final_tds_amount = ?, final_net_amount = ?,
       tanker_no = ?, transporter_id = ?, is_registered_transporter = ?, posting = 1, financed_by_party = ?,
       payment_cleared_date = ?
@@ -283,7 +303,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       v.bargain_id ? n(v.bargain_id) : null,
       n(v.supplier_id),
       n(v.oil_type_id),
-      v.bargain_type || 'Ex',
+      v.bargain_type || 'EX',
       n(v.ordered_qty),
       v.uom || 'ton',
       n(v.bargain_rate),
@@ -293,6 +313,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       m.adjusted_rate,
       m.taxable_value,
       n(v.gst_pct),
+      v.gst_type || 'CGST_SGST',
       m.gst_amount,
       n(v.tds_pct),
       m.tds_amount,
@@ -376,7 +397,10 @@ export async function listPurchaseTankers(): Promise<Row[]> {
 
 export async function createPurchaseTanker(v: Row): Promise<{ id: number }> {
   if (!v.tanker_no || !v.bargain_id) throw new Error('Tanker number and bargain are required')
-  if (!v.transporter_id) throw new Error('Select the transporter for this tanker')
+  // Transporter required for EX (buyer arranges transport); optional for DLD.
+  if (String(v.condition || 'EX') !== 'DLD' && !v.transporter_id) {
+    throw new Error('Select the transporter for this tanker')
+  }
   const res = await getClient().execute({
     sql: `INSERT INTO purchase_tankers
       (tanker_no, loaded_date, bargain_id, supplier_id, oil_type_id, loaded_qty, uom, payment_mode,
@@ -388,8 +412,8 @@ export async function createPurchaseTanker(v: Row): Promise<{ id: number }> {
       n(v.bargain_id),
       n(v.supplier_id),
       n(v.oil_type_id),
-      v.uom || 'ton',
-      n(v.transporter_id)
+      v.uom || 'MT',
+      v.transporter_id ? n(v.transporter_id) : null
     ]
   })
   return { id: Number(res.lastInsertRowid) }
@@ -512,7 +536,7 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
       args: [n(tanker.bargain_id)]
     })
     const b = bargain.rows[0] || {}
-    const isEx = String(b.bargain_type || 'Ex') !== 'Delivered'
+    const isEx = !isDelivered(b.bargain_type)
     const rate = isEx ? n(data.transport_rate_per_ton) : 0
     const transport = n(tanker.loaded_qty) * rate
     let pct = b.allowed_shortage_pct == null
@@ -651,7 +675,7 @@ export async function advanceOrder(
     sets.push('inside_factory_date = ?')
     args.push(data.inside_factory_date || null)
   } else if (toStatus === 'received') {
-    const isEx = (order.bargain_type || 'Ex') !== 'Delivered'
+    const isEx = !isDelivered(order.bargain_type)
     const orderedQty = n(order.ordered_qty)
     const receivedQty = n(data.received_qty)
     const bargainRate = n(order.bargain_rate)

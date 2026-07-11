@@ -2,22 +2,11 @@ import { PageHeader } from '@/components/PageHeader'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { loadUser } from '@/lib/session'
 import { canWrite } from '@/lib/modules'
+import { COMPANY_TYPES } from '@/lib/constants'
 
 const fields: FieldDef[] = [
   { key: 'name', label: 'Name', type: 'text', required: true },
-  {
-    key: 'company_type',
-    label: 'Company type',
-    type: 'select',
-    required: true,
-    options: [
-      { value: 'Proprietorship', label: 'Proprietorship' },
-      { value: 'Partnership', label: 'Partnership' },
-      { value: 'Pvt Ltd', label: 'Pvt Ltd' },
-      { value: 'Individual/HUF', label: 'Individual / HUF' },
-      { value: 'Other', label: 'Other' }
-    ]
-  },
+  { key: 'company_type', label: 'Company type', type: 'select', required: true, options: COMPANY_TYPES },
   { key: 'contact', label: 'Contact', type: 'text' },
   { key: 'gst_pct', label: 'GST %', type: 'number', required: true, default: 0 },
   { key: 'tds_pct', label: 'TDS %', type: 'number', required: true, default: 0 },
@@ -30,7 +19,8 @@ const columns: ColumnDef[] = [
   { key: 'company_type', label: 'Type' },
   { key: 'gst_pct', label: 'GST %', align: 'right' },
   { key: 'tds_pct', label: 'TDS %', align: 'right' },
-  { key: 'default_rate_per_ton', label: 'Rate / ton', align: 'right' }
+  { key: 'default_rate_per_ton', label: 'Rate / ton', align: 'right' },
+  { key: 'created_at', label: 'Created', type: 'date' }
 ]
 
 export function Transporters(): React.JSX.Element {

@@ -7,10 +7,13 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DatePicker } from '@/components/ui/date-picker'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import { computeMoney, computeShortage } from '@/lib/orderCalc'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
@@ -74,14 +77,18 @@ const PIVOT_STAGES = [
   { key: 'empty', label: 'Empty' }
 ]
 
-// The date a tanker entered a given stage. 'To be loaded' uses the creation
-// date (no separate entry stamp is kept once it loads).
-function stageEntryDate(t: Row, stageKey: string): unknown {
-  if (stageKey === 'supplier_factory') return t.created_at
-  if (stageKey === 'transit') return t.transit_date
-  if (stageKey === 'outside_factory') return t.outside_factory_date
-  if (stageKey === 'inside_factory') return t.inside_factory_date
-  return t.empty_date
+// The stage a tanker is in as of `asOf` (its current/last stage on that date),
+// so each tanker is counted once — a tanker in transit is NOT also "to be loaded".
+function stageAsOf(t: Row, asOf: string): string {
+  const on = (d: unknown): boolean => {
+    const s = String(d || '').slice(0, 10)
+    return !!s && s <= asOf
+  }
+  if (on(t.empty_date)) return 'empty'
+  if (on(t.inside_factory_date)) return 'inside_factory'
+  if (on(t.outside_factory_date)) return 'outside_factory'
+  if (on(t.transit_date)) return 'transit'
+  return 'supplier_factory'
 }
 
 function MoneyRow({ label, value, strong }: { label: string; value: string; strong?: boolean }): React.JSX.Element {
@@ -144,30 +151,41 @@ export function Orders(): React.JSX.Element {
   useEffect(() => { load() }, [load])
   useLiveRefresh(load)
 
-  // Oil-type × stage movement matrix — counts tankers that entered each stage
-  // within the selected [start, end] date window.
+  // Oil-type × stage status matrix — each tanker counted ONCE in its current
+  // stage as of the "To" date. Empty (finished) tankers are shown only if they
+  // were emptied within [From, To]; in-progress tankers always show current stage.
   const pivot = useMemo(() => {
     const start = pivotStart
     const end = pivotEnd < pivotStart ? pivotStart : pivotEnd
-    const inRange = (d: unknown): boolean => {
-      const s = String(d || '').slice(0, 10)
-      return !!s && s >= start && s <= end
-    }
-    const map = new Map<string, { label: string; counts: Record<string, number>; total: number }>()
+    const dstr = (d: unknown): string => String(d || '').slice(0, 10)
+    type Item = { bargain_no: string; supplier_name: string; tanker_no: string }
+    type Cell = { count: number; items: Item[] }
+    const map = new Map<string, { label: string; cells: Record<string, Cell>; total: number }>()
     const totals: Record<string, number> = {}
     let grand = 0
     for (const t of tankers) {
+      const created = dstr(t.created_at)
+      if (created && created > end) continue // didn't exist yet
+      const stage = stageAsOf(t, end)
+      // finished tankers only count if emptied within the window
+      if (stage === 'empty') {
+        const ed = dstr(t.empty_date)
+        if (!(ed >= start && ed <= end)) continue
+      }
       const key = String(t.oil_code || t.oil_name || '—')
       const label = [t.oil_code, t.oil_name].filter(Boolean).join(' · ') || '—'
-      for (const s of PIVOT_STAGES) {
-        if (!inRange(stageEntryDate(t, s.key))) continue
-        if (!map.has(key)) map.set(key, { label, counts: {}, total: 0 })
-        const row = map.get(key)!
-        row.counts[s.key] = (row.counts[s.key] || 0) + 1
-        row.total += 1
-        totals[s.key] = (totals[s.key] || 0) + 1
-        grand += 1
-      }
+      if (!map.has(key)) map.set(key, { label, cells: {}, total: 0 })
+      const row = map.get(key)!
+      const cell = (row.cells[stage] ??= { count: 0, items: [] })
+      cell.count += 1
+      cell.items.push({
+        bargain_no: String(t.bargain_no || '—'),
+        supplier_name: String(t.supplier_name || '—'),
+        tanker_no: String(t.tanker_no || '')
+      })
+      row.total += 1
+      totals[stage] = (totals[stage] || 0) + 1
+      grand += 1
     }
     const rows = Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label))
     return { rows, totals, grand }
@@ -184,7 +202,9 @@ export function Orders(): React.JSX.Element {
       supplier_name: b.supplier_name,
       oil_label: `${b.oil_code} · ${b.oil_name}`,
       uom: b.uom,
-      balance_qty: b.balance_qty
+      balance_qty: b.balance_qty,
+      // default the condition (EX/DLD) from the bargain; user can toggle it
+      condition: ['DLD', 'Delivered'].includes(String(b.bargain_type)) ? 'DLD' : 'EX'
     } : row))
   }
 
@@ -199,15 +219,17 @@ export function Orders(): React.JSX.Element {
       toast.error('Enter the tanker number and bargain for every tanker')
       return
     }
-    if (loadingRows.some((row) => !row.transporter_id)) {
-      toast.error('Select the transporter for every tanker')
+    // Transporter is required only for EX tankers (DLD = supplier delivers).
+    if (loadingRows.some((row) => (row.condition || 'EX') !== 'DLD' && !row.transporter_id)) {
+      toast.error('Select the transporter for every EX tanker')
       return
     }
     try {
       for (const row of loadingRows) {
         await window.api.tankers.create({
           ...row,
-          transporter_id: Number(row.transporter_id),
+          condition: row.condition || 'EX',
+          transporter_id: row.transporter_id ? Number(row.transporter_id) : null,
           factory_entry_date: loadingForm.factory_entry_date
         })
       }
@@ -277,7 +299,7 @@ export function Orders(): React.JSX.Element {
       toast.error('Select the source / port')
       return
     }
-    if (target === 'empty' && (actionRow.bargain_type || 'Ex') !== 'Delivered' && !actionForm.transporter_id) {
+    if (target === 'empty' && !['DLD', 'Delivered'].includes(String(actionRow.bargain_type)) && !actionForm.transporter_id) {
       toast.error('Select a transporter')
       return
     }
@@ -330,7 +352,7 @@ export function Orders(): React.JSX.Element {
 
   function openNewPurchase(): void {
     setEditing(null)
-    setForm({ invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '' })
+    setForm({ invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST' })
     setSelected([])
     setError(null)
     setFormPage(true)
@@ -353,6 +375,7 @@ export function Orders(): React.JSX.Element {
       order_date: row.order_date,
       invoice_rate: row.invoice_rate,
       gst_pct: row.gst_pct,
+      gst_type: row.gst_type || 'CGST_SGST',
       tds_pct: supplier?.tds_pct ?? row.tds_pct,
       tds_threshold: supplier?.tds_threshold ?? 0,
       tds_above_only: !!supplier?.tds_above_only,
@@ -388,6 +411,18 @@ export function Orders(): React.JSX.Element {
   const chosenTankers = useMemo(() => tankers.filter((x) => selected.includes(Number(x.id))), [tankers, selected])
   const totalQty = chosenTankers.reduce((sum, x) => sum + Number(x.loaded_qty || 0), 0)
   const financedCount = chosenTankers.filter((x) => x.payment_mode === 'supplier_finance').length
+  // Transporter is already chosen during tanker movement — reuse it here.
+  const tankerTransporterIds = Array.from(
+    new Set(chosenTankers.map((x) => x.transporter_id).filter(Boolean).map(String))
+  )
+  const tankerTransporterId = tankerTransporterIds.length === 1 ? tankerTransporterIds[0] : ''
+  const tankerTransporterName =
+    chosenTankers.find((x) => String(x.transporter_id) === tankerTransporterId)?.transporter_name || ''
+  useEffect(() => {
+    if (tankerTransporterId && String(form.transporter_id || '') !== tankerTransporterId) {
+      setForm((p) => ({ ...p, transporter_id: tankerTransporterId }))
+    }
+  }, [tankerTransporterId]) // eslint-disable-line react-hooks/exhaustive-deps
   const calc = useMemo(() => computeMoney({
     orderedQty: totalQty,
     invoiceRate: Number(form.invoice_rate) || 0,
@@ -406,7 +441,6 @@ export function Orders(): React.JSX.Element {
     if (!form.bargain_id) return setError('Select a bargain')
     if (!form.invoice_no) return setError('Invoice number is required')
     if (!selected.length) return setError('Select at least one loaded tanker')
-    if (!form.transporter_id) return setError('Select the transporter')
     if (Number(form.invoice_rate) <= 0) return setError('Invoice rate must be greater than zero')
     setSaving(true)
     setError(null)
@@ -418,7 +452,7 @@ export function Orders(): React.JSX.Element {
       gst_pct: Number(form.gst_pct) || 0,
       tds_pct: Number(form.tds_pct) || 0,
       tanker_ids: selected,
-      transporter_id: Number(form.transporter_id),
+      transporter_id: form.transporter_id ? Number(form.transporter_id) : null,
       financed_by_party: financedCount === selected.length,
       payment_date: form.order_date
     }
@@ -498,7 +532,7 @@ export function Orders(): React.JSX.Element {
                     <Select value={String(form.bargain_id || '')} onValueChange={(v) => choosePurchaseBargain(v)}>
                       <SelectTrigger><SelectValue placeholder="Select bargain" /></SelectTrigger>
                       <SelectContent>
-                        {bargains.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.bargain_no} · {b.supplier_name} · {b.oil_code}</SelectItem>)}
+                        {bargains.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.bargain_no}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
@@ -508,7 +542,7 @@ export function Orders(): React.JSX.Element {
                   </div>
                   <div className="grid gap-1.5">
                     <Label>Purchase date *</Label>
-                    <Input type="date" value={form.order_date || ''} onChange={(e) => setForm((p) => ({ ...p, order_date: e.target.value }))} />
+                    <DatePicker value={form.order_date || ''} onChange={(v) => setForm((p) => ({ ...p, order_date: v }))} />
                   </div>
                   <div className="grid gap-1.5">
                     <Label>Invoice rate *</Label>
@@ -519,17 +553,29 @@ export function Orders(): React.JSX.Element {
                     <Input type="number" value={form.gst_pct ?? ''} onChange={(e) => setForm((p) => ({ ...p, gst_pct: e.target.value }))} />
                   </div>
                   <div className="grid gap-1.5">
+                    <Label>GST type</Label>
+                    <Select value={form.gst_type || 'CGST_SGST'} onValueChange={(v) => setForm((p) => ({ ...p, gst_type: v }))}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="CGST_SGST">CGST + SGST (intra-state)</SelectItem>
+                        <SelectItem value="IGST">IGST (inter-state)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid gap-1.5">
                     <Label>TDS %</Label>
                     <Input type="number" value={form.tds_pct ?? ''} onChange={(e) => setForm((p) => ({ ...p, tds_pct: e.target.value }))} />
                   </div>
                   <div className="grid gap-1.5">
-                    <Label>Transporter *</Label>
-                    <Select value={String(form.transporter_id || '')} onValueChange={(value) => setForm((p) => ({ ...p, transporter_id: value }))}>
-                      <SelectTrigger><SelectValue placeholder="Select transporter" /></SelectTrigger>
-                      <SelectContent>
-                        {transporters.map((tr) => <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
+                    <Label>Transporter</Label>
+                    <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm">
+                      {tankerTransporterName || (
+                        <span className="text-muted-foreground">
+                          {chosenTankers.length ? 'Supplier-delivered / from tankers' : 'Select tankers first'}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[11px] text-muted-foreground">Taken from the selected tankers.</span>
                   </div>
                 </div>
                 <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
@@ -584,7 +630,14 @@ export function Orders(): React.JSX.Element {
               <MoneyRow label="Bargain rate" value={formatINR(Number(form.bargain_rate) || 0)} />
               <MoneyRow label="Adjusted invoice rate" value={formatINR(calc.adjustedRate)} />
               <MoneyRow label="Taxable value" value={formatINR(calc.taxableValue)} />
-              <MoneyRow label="GST" value={formatINR(calc.gstAmount)} />
+              {form.gst_type === 'IGST' ? (
+                <MoneyRow label={`IGST${form.gst_pct ? ` @ ${form.gst_pct}%` : ''}`} value={formatINR(calc.gstAmount)} />
+              ) : (
+                <>
+                  <MoneyRow label={`CGST${form.gst_pct ? ` @ ${(Number(form.gst_pct) || 0) / 2}%` : ''}`} value={formatINR(calc.gstAmount / 2)} />
+                  <MoneyRow label={`SGST${form.gst_pct ? ` @ ${(Number(form.gst_pct) || 0) / 2}%` : ''}`} value={formatINR(calc.gstAmount / 2)} />
+                </>
+              )}
               <MoneyRow label="TDS" value={`− ${formatINR(calc.tdsAmount)}`} />
               <div className="my-3 border-t" />
               <MoneyRow label="Net purchase amount" value={formatINR(calc.netAmount)} strong />
@@ -610,17 +663,14 @@ export function Orders(): React.JSX.Element {
                   <div>
                     <h3 className="font-medium">Tanker movement by oil type</h3>
                     <p className="text-xs text-muted-foreground">
-                      {pivotStart === todayISO() && pivotEnd === todayISO()
-                        ? "Today's movement"
-                        : `Movement from ${formatDate(pivotStart)} to ${formatDate(pivotEnd)}`}{' '}
-                      · tankers that entered each stage in the period
+                      Status as of {formatDate(pivotEnd)} · each tanker in its current stage · hover a count for details
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <Label className="text-xs text-muted-foreground">From</Label>
-                    <Input type="date" max={pivotEnd} value={pivotStart} onChange={(e) => setPivotStart(e.target.value || todayISO())} className="h-9 w-40" />
+                    <DatePicker max={pivotEnd} value={pivotStart} onChange={(v) => setPivotStart(v || todayISO())} className="w-40" />
                     <Label className="text-xs text-muted-foreground">To</Label>
-                    <Input type="date" min={pivotStart} max={todayISO()} value={pivotEnd} onChange={(e) => setPivotEnd(e.target.value || todayISO())} className="h-9 w-40" />
+                    <DatePicker min={pivotStart} max={todayISO()} value={pivotEnd} onChange={(v) => setPivotEnd(v || todayISO())} className="w-40" />
                     {(pivotStart !== todayISO() || pivotEnd !== todayISO()) && (
                       <Button variant="ghost" size="sm" onClick={() => { setPivotStart(todayISO()); setPivotEnd(todayISO()) }}>Today</Button>
                     )}
@@ -634,17 +684,41 @@ export function Orders(): React.JSX.Element {
                   </TableRow></TableHeader>
                   <TableBody>
                     {pivot.rows.length === 0 ? (
-                      <TableRow><TableCell colSpan={PIVOT_STAGES.length + 2} className="py-8 text-center text-muted-foreground">No tanker movement in this period.</TableCell></TableRow>
+                      <TableRow><TableCell colSpan={PIVOT_STAGES.length + 2} className="py-8 text-center text-muted-foreground">No tankers to show for this period.</TableCell></TableRow>
                     ) : (
                       <>
                         {pivot.rows.map((row) => (
                           <TableRow key={row.label}>
                             <TableCell className="font-medium">{row.label}</TableCell>
-                            {PIVOT_STAGES.map((s) => (
-                              <TableCell key={s.key} className="text-center tabular-nums">
-                                {row.counts[s.key] ? row.counts[s.key] : <span className="text-muted-foreground">—</span>}
-                              </TableCell>
-                            ))}
+                            {PIVOT_STAGES.map((s) => {
+                              const cell = row.cells[s.key]
+                              return (
+                                <TableCell key={s.key} className="text-center tabular-nums">
+                                  {cell && cell.count > 0 ? (
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <span className="cursor-default font-medium underline decoration-dotted decoration-muted-foreground/50 underline-offset-4">
+                                          {cell.count}
+                                        </span>
+                                      </TooltipTrigger>
+                                      <TooltipContent className="max-w-xs">
+                                        <div className="mb-1 font-semibold">{s.label} · {row.label}</div>
+                                        <div className="space-y-0.5">
+                                          {cell.items.map((it, i) => (
+                                            <div key={i}>
+                                              {it.supplier_name} · {it.bargain_no}
+                                              {it.tanker_no ? ` · ${it.tanker_no}` : ''}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  ) : (
+                                    <span className="text-muted-foreground">—</span>
+                                  )}
+                                </TableCell>
+                              )
+                            })}
                             <TableCell className="text-center font-semibold tabular-nums">{row.total}</TableCell>
                           </TableRow>
                         ))}
@@ -673,7 +747,7 @@ export function Orders(): React.JSX.Element {
                           const next = nextTankerStage(row.status)
                           return <TableRow key={row.id}>
                             <TableCell><div className="font-medium">{row.tanker_no}</div><div className="text-xs text-muted-foreground">{row.status === 'supplier_factory' ? `Entered ${formatDate(row.loaded_date)}` : `Loaded ${formatDate(row.loaded_date)}`}</div></TableCell>
-                            <TableCell><div>{row.supplier_name}</div><div className="text-xs text-muted-foreground">{row.bargain_no} · {row.oil_code}</div></TableCell>
+                            <TableCell><div>{row.supplier_name}</div><div className="text-xs text-muted-foreground">{row.bargain_no}</div></TableCell>
                             <TableCell className="text-right tabular-nums">{Number(row.loaded_qty) > 0 ? `${formatNum(row.loaded_qty)} ${row.uom}` : 'Not loaded'}</TableCell>
                             <TableCell>{row.payment_mode === 'pending' ? <span className="text-muted-foreground">Not decided</span> : row.payment_mode === 'supplier_finance' ? <Badge variant="warning">Supplier financed</Badge> : <Badge variant="muted">Paid by us</Badge>}</TableCell>
                             <TableCell>{row.invoice_no || <span className="text-muted-foreground">Not entered</span>}</TableCell>
@@ -721,7 +795,7 @@ export function Orders(): React.JSX.Element {
       )}
 
       <Dialog open={loadingOpen} onOpenChange={setLoadingOpen}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="max-w-4xl">
           <DialogHeader>
             <DialogTitle>Send tankers to supplier — to be loaded</DialogTitle>
           </DialogHeader>
@@ -735,35 +809,57 @@ export function Orders(): React.JSX.Element {
             </div>
             <div className="grid gap-1.5">
               <Label>Factory entry date</Label>
-              <Input type="date" value={loadingForm.factory_entry_date || ''} onChange={(e) => setLoadingForm((p) => ({ ...p, factory_entry_date: e.target.value }))} />
+              <DatePicker value={loadingForm.factory_entry_date || ''} onChange={(v) => setLoadingForm((p) => ({ ...p, factory_entry_date: v }))} />
             </div>
           </div>
           <div className="max-h-[55vh] space-y-3 overflow-y-auto pr-1">
             {loadingRows.map((row, index) => (
-              <div key={index} className="grid gap-3 rounded-lg border p-3 md:grid-cols-[40px_1fr_1.5fr_1.5fr]">
-                <div className="flex h-9 items-center justify-center rounded-md bg-muted text-sm font-semibold">{index + 1}</div>
-                <div className="grid gap-1.5">
+              <div
+                key={index}
+                className="grid items-start gap-3 rounded-lg border p-3 md:grid-cols-[2.25rem_minmax(0,1fr)_minmax(0,1.5fr)_6rem_minmax(0,1.3fr)]"
+              >
+                <div className="flex h-9 items-center justify-center rounded-md bg-muted text-sm font-semibold md:mt-[26px]">
+                  {index + 1}
+                </div>
+                <div className="grid min-w-0 gap-1.5">
                   <Label>Tanker number *</Label>
                   <Input value={row.tanker_no || ''} onChange={(e) => setLoadingRows((current) => current.map((item, i) => i === index ? { ...item, tanker_no: e.target.value } : item))} />
                 </div>
-                <div className="grid gap-1.5">
-                  <Label>Bargain / oil *</Label>
+                <div className="grid min-w-0 gap-1.5">
+                  <Label>Bargain *</Label>
                   <Select value={String(row.bargain_id || '')} onValueChange={(value) => selectLoadingBargain(index, value)}>
                     <SelectTrigger><SelectValue placeholder="Select intended bargain" /></SelectTrigger>
-                    <SelectContent>
+                    <SelectContent className="w-[min(30rem,85vw)]">
                       {bargains.map((b) => (
                         <SelectItem key={b.id} value={String(b.id)}>
-                          {b.bargain_no} · {b.supplier_name} · {b.oil_code}
+                          {b.bargain_no}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                  {row.supplier_name && <span className="text-xs text-muted-foreground">{row.supplier_name} · {row.oil_label}</span>}
                 </div>
                 <div className="grid gap-1.5">
-                  <Label>Transporter *</Label>
+                  <Label>Condition</Label>
+                  <div className="flex h-9 rounded-md border p-0.5">
+                    {['EX', 'DLD'].map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setLoadingRows((current) => current.map((item, i) => i === index ? { ...item, condition: c } : item))}
+                        className={cn(
+                          'flex-1 rounded text-xs font-semibold transition-colors',
+                          (row.condition || 'EX') === c ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                        )}
+                      >
+                        {c}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="grid min-w-0 gap-1.5">
+                  <Label>{(row.condition || 'EX') === 'DLD' ? 'Transporter' : 'Transporter *'}</Label>
                   <Select value={String(row.transporter_id || '')} onValueChange={(value) => setLoadingRows((current) => current.map((item, i) => i === index ? { ...item, transporter_id: value } : item))}>
-                    <SelectTrigger><SelectValue placeholder="Select transporter" /></SelectTrigger>
+                    <SelectTrigger><SelectValue placeholder={(row.condition || 'EX') === 'DLD' ? 'Optional' : 'Select transporter'} /></SelectTrigger>
                     <SelectContent>
                       {transporters.map((tr) => (
                         <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>
@@ -786,7 +882,7 @@ export function Orders(): React.JSX.Element {
               {actionRow?.bargain_no} · {actionRow?.supplier_name} · {actionRow?.oil_code}
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5"><Label>Loaded date</Label><Input type="date" value={actionForm.loaded_date || ''} onChange={(e) => setActionForm((p) => ({ ...p, loaded_date: e.target.value }))} /></div>
+              <div className="grid gap-1.5"><Label>Loaded date</Label><DatePicker value={actionForm.loaded_date || ''} onChange={(v) => setActionForm((p) => ({ ...p, loaded_date: v }))} /></div>
               <div className="grid gap-1.5"><Label>Actual loaded quantity *</Label><Input type="number" value={actionForm.loaded_qty || ''} onChange={(e) => setActionForm((p) => ({ ...p, loaded_qty: e.target.value }))} /></div>
             </div>
             <div className="grid gap-1.5">
@@ -808,14 +904,14 @@ export function Orders(): React.JSX.Element {
             <p className="text-xs text-muted-foreground">After confirming loading, this tanker will automatically move to In transit. A purchase invoice is not required first.</p>
           </div>}
           {target === 'transit' && <div className="grid grid-cols-2 gap-3">
-            <div className="grid gap-1.5"><Label>Transit date</Label><Input type="date" value={actionForm.transit_date || ''} onChange={(e) => setActionForm((p) => ({ ...p, transit_date: e.target.value }))} /></div>
+            <div className="grid gap-1.5"><Label>Transit date</Label><DatePicker value={actionForm.transit_date || ''} onChange={(v) => setActionForm((p) => ({ ...p, transit_date: v }))} /></div>
             <div className="grid gap-1.5"><Label>Source / port</Label><Select value={String(actionForm.source_id || '')} onValueChange={(v) => setActionForm((p) => ({ ...p, source_id: v }))}><SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger><SelectContent>{sources.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name} · {s.transit_days}d</SelectItem>)}</SelectContent></Select></div>
           </div>}
-          {target === 'outside_factory' && <div className="grid gap-1.5"><Label>Outside factory date</Label><Input type="date" value={actionForm.outside_factory_date || ''} onChange={(e) => setActionForm({ outside_factory_date: e.target.value })} /></div>}
-          {target === 'inside_factory' && <div className="grid gap-1.5"><Label>Inside factory date</Label><Input type="date" value={actionForm.inside_factory_date || ''} onChange={(e) => setActionForm({ inside_factory_date: e.target.value })} /></div>}
+          {target === 'outside_factory' && <div className="grid gap-1.5"><Label>Outside factory date</Label><DatePicker value={actionForm.outside_factory_date || ''} onChange={(v) => setActionForm({ outside_factory_date: v })} /></div>}
+          {target === 'inside_factory' && <div className="grid gap-1.5"><Label>Inside factory date</Label><DatePicker value={actionForm.inside_factory_date || ''} onChange={(v) => setActionForm({ inside_factory_date: v })} /></div>}
           {target === 'empty' && actionRow && shortage && <div className="grid gap-4">
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5"><Label>Empty date</Label><Input type="date" value={actionForm.empty_date || ''} onChange={(e) => setActionForm((p) => ({ ...p, empty_date: e.target.value }))} /></div>
+              <div className="grid gap-1.5"><Label>Empty date</Label><DatePicker value={actionForm.empty_date || ''} onChange={(v) => setActionForm((p) => ({ ...p, empty_date: v }))} /></div>
               <div className="grid gap-1.5"><Label>Received quantity</Label><Input type="number" value={actionForm.received_qty || ''} onChange={(e) => setActionForm((p) => ({ ...p, received_qty: e.target.value }))} /></div>
             </div>
             <div className="grid grid-cols-2 gap-3">

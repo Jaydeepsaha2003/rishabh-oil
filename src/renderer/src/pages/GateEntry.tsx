@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { formatDate, formatNum, todayISO } from '@/lib/format'
@@ -189,7 +190,7 @@ export function GateEntry(): React.JSX.Element {
           <div className="grid gap-4">
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1.5"><Label>Gate entry no *</Label><Input value={form.gate_entry_no || ''} onChange={(e) => setForm((p) => ({ ...p, gate_entry_no: e.target.value }))} /></div>
-              <div className="grid gap-1.5"><Label>Date *</Label><Input type="date" value={form.entry_date || ''} onChange={(e) => setForm((p) => ({ ...p, entry_date: e.target.value }))} /></div>
+              <div className="grid gap-1.5"><Label>Date *</Label><DatePicker value={form.entry_date || ''} onChange={(v) => setForm((p) => ({ ...p, entry_date: v }))} /></div>
             </div>
             <div className="grid gap-1.5">
               <Label>Tanker</Label>

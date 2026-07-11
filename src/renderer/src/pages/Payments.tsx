@@ -30,6 +30,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { PageHeader } from '@/components/PageHeader'
+import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
@@ -315,7 +316,7 @@ function PaymentsTab(): React.JSX.Element {
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="grid gap-1.5">
                 <Label>Date</Label>
-                <Input type="date" value={form.payment_date ?? ''} onChange={(e) => setField('payment_date', e.target.value)} />
+                <DatePicker value={form.payment_date ?? ''} onChange={(v) => setField('payment_date', v)} />
               </div>
               <div className="grid gap-1.5">
                 <Label>Amount *</Label>
@@ -646,18 +647,17 @@ function BillDiscountTab(): React.JSX.Element {
             </div>
             <div className="grid gap-1.5">
               <Label>Open date</Label>
-              <Input type="date" value={form.open_date} onChange={(e) => setField('open_date', e.target.value)} />
+              <DatePicker value={form.open_date} onChange={(v) => setField('open_date', v)} />
             </div>
             <div className="grid gap-1.5">
               <Label>Maturity date</Label>
-              <Input type="date" value={form.maturity_date} onChange={(e) => setField('maturity_date', e.target.value)} />
+              <DatePicker value={form.maturity_date} onChange={(v) => setField('maturity_date', v)} />
             </div>
             <div className="grid gap-1.5">
               <Label>Payment received date</Label>
-              <Input
-                type="date"
+              <DatePicker
                 value={form.payment_received_date}
-                onChange={(e) => setField('payment_received_date', e.target.value)}
+                onChange={(v) => setField('payment_received_date', v)}
               />
             </div>
             <div className="grid gap-1.5">
@@ -961,11 +961,11 @@ function LcTab(): React.JSX.Element {
             </div>
             <div className="grid gap-1.5">
               <Label>Open date</Label>
-              <Input type="date" value={form.open_date} onChange={(e) => setField('open_date', e.target.value)} />
+              <DatePicker value={form.open_date} onChange={(v) => setField('open_date', v)} />
             </div>
             <div className="grid gap-1.5">
               <Label>Expiry date</Label>
-              <Input type="date" value={form.expiry_date} onChange={(e) => setField('expiry_date', e.target.value)} />
+              <DatePicker value={form.expiry_date} onChange={(v) => setField('expiry_date', v)} />
             </div>
             <div className="grid gap-1.5">
               <Label>Interest %</Label>
@@ -999,7 +999,7 @@ function LcTab(): React.JSX.Element {
                 {issueFor.bank} · Available {formatINR(issueFor.available)}
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1.5"><Label>Issue date</Label><Input type="date" value={issueForm.issue_date || ''} onChange={(e) => setIssueForm((p) => ({ ...p, issue_date: e.target.value }))} /></div>
+                <div className="grid gap-1.5"><Label>Issue date</Label><DatePicker value={issueForm.issue_date || ''} onChange={(v) => setIssueForm((p) => ({ ...p, issue_date: v }))} /></div>
                 <div className="grid gap-1.5"><Label>Amount *</Label><Input type="number" value={issueForm.amount || ''} onChange={(e) => setIssueForm((p) => ({ ...p, amount: e.target.value }))} /></div>
               </div>
               <div className="grid gap-1.5">

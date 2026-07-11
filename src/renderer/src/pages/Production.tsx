@@ -4,6 +4,7 @@ import { ArrowLeft, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DatePicker } from '@/components/ui/date-picker'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
 import {
@@ -146,10 +147,9 @@ export function Production(): React.JSX.Element {
             <div className="grid grid-cols-3 gap-3">
               <div className="grid gap-1.5">
                 <Label>Date</Label>
-                <Input
-                  type="date"
+                <DatePicker
                   value={form.prod_date}
-                  onChange={(e) => setForm((p) => ({ ...p, prod_date: e.target.value }))}
+                  onChange={(v) => setForm((p) => ({ ...p, prod_date: v }))}
                 />
               </div>
               <div className="col-span-2 grid gap-1.5">

@@ -96,6 +96,17 @@ const MIGRATIONS = [
   // bargains/orders keep a legacy oil_types FK; mirror products so it is satisfied.
   `INSERT OR IGNORE INTO oil_types (id, code, name, active)
      SELECT id, COALESCE(code, name, 'GEN'), COALESCE(name, code, 'PRODUCT'), 1 FROM products`,
+  // default UOM switched from ton to MT
+  "UPDATE app_settings SET value = 'MT' WHERE key = 'default_uom' AND value = 'ton'",
+  'ALTER TABLE suppliers ADD COLUMN supplier_type TEXT',
+  "ALTER TABLE orders ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
+  'ALTER TABLE suppliers ADD COLUMN opening_purchase_amount REAL NOT NULL DEFAULT 0',
+  'ALTER TABLE suppliers ADD COLUMN opening_purchase_date TEXT',
+  // bargain condition renamed to EX/DLD
+  "UPDATE bargains SET bargain_type = 'EX' WHERE bargain_type = 'Ex'",
+  "UPDATE bargains SET bargain_type = 'DLD' WHERE bargain_type = 'Delivered'",
+  "UPDATE orders SET bargain_type = 'EX' WHERE bargain_type = 'Ex'",
+  "UPDATE orders SET bargain_type = 'DLD' WHERE bargain_type = 'Delivered'",
   'ALTER TABLE purchase_tankers ADD COLUMN krfl_weighment_doc_no TEXT',
   'ALTER TABLE purchase_tankers ADD COLUMN krfl_weighment_photo TEXT',
   'ALTER TABLE purchase_tankers ADD COLUMN outside_weighment_doc_no TEXT',

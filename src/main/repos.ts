@@ -9,6 +9,7 @@ const TABLES: Record<string, string[]> = {
   products: ['code', 'name', 'category', 'active'],
   suppliers: [
     'name',
+    'supplier_type',
     'company_type',
     'gstin',
     'state',
@@ -21,6 +22,8 @@ const TABLES: Record<string, string[]> = {
     'adds_interest',
     'interest_pct',
     'interest_days',
+    'opening_purchase_amount',
+    'opening_purchase_date',
     'active'
   ],
   transporters: [
@@ -49,7 +52,8 @@ const TABLES: Record<string, string[]> = {
     'credit_period_days',
     'active'
   ],
-  sources: ['name', 'transit_days', 'active']
+  sources: ['name', 'transit_days', 'active'],
+  uoms: ['name', 'active']
 }
 
 type Row = Record<string, unknown>

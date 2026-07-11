@@ -28,7 +28,10 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { PageHeader } from '@/components/PageHeader'
+import { UomSelect } from '@/components/UomSelect'
+import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -39,9 +42,8 @@ function emptyForm(uom: string): Row {
     bargain_date: todayISO(),
     supplier_id: '',
     oil_type_id: '',
-    bargain_type: 'Ex',
+    bargain_type: 'EX',
     qty: '',
-    opening_qty: '',
     uom,
     base_rate: '',
     duty: '',
@@ -55,12 +57,13 @@ export function Bargains(): React.JSX.Element {
   const [loading, setLoading] = useState(true)
   const [suppliers, setSuppliers] = useState<Row[]>([])
   const [oilTypes, setOilTypes] = useState<Row[]>([])
-  const [defaultUom, setDefaultUom] = useState('ton')
+  const [defaultUom, setDefaultUom] = useState('MT')
   const [defaultShortage, setDefaultShortage] = useState('0.2')
+  const [typeFilter, setTypeFilter] = useState('OIL')
 
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Row | null>(null)
-  const [form, setForm] = useState<Row>(emptyForm('ton'))
+  const [form, setForm] = useState<Row>(emptyForm('MT'))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -74,8 +77,12 @@ export function Bargains(): React.JSX.Element {
     ])
     setRows(b)
     setSuppliers(s.filter((x) => x.active))
-    setOilTypes(o.filter((x) => x.active && x.category === 'raw'))
-    setDefaultUom(settings.default_uom ?? 'ton')
+    setOilTypes(
+      o
+        .filter((x) => x.active && x.category === 'raw')
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+    )
+    setDefaultUom(settings.default_uom ?? 'MT')
     setDefaultShortage(settings.allowed_shortage_pct ?? '0.2')
     setLoading(false)
   }, [])
@@ -99,9 +106,8 @@ export function Bargains(): React.JSX.Element {
       bargain_date: row.bargain_date ?? todayISO(),
       supplier_id: String(row.supplier_id ?? ''),
       oil_type_id: String(row.oil_type_id ?? ''),
-      bargain_type: row.bargain_type ?? 'Ex',
+      bargain_type: row.bargain_type ?? 'EX',
       qty: row.qty ?? '',
-      opening_qty: row.opening_qty ?? '',
       uom: row.uom ?? defaultUom,
       base_rate: row.base_rate ?? '',
       duty: row.duty ?? '',
@@ -134,11 +140,10 @@ export function Bargains(): React.JSX.Element {
         oil_type_id: Number(form.oil_type_id),
         bargain_type: form.bargain_type,
         qty: Number(form.qty),
-        opening_qty: form.opening_qty,
         uom: form.uom || defaultUom,
         base_rate: Number(form.base_rate) || 0,
         duty: Number(form.duty) || 0,
-        allowed_shortage_pct: form.allowed_shortage_pct,
+        allowed_shortage_pct: form.bargain_type === 'DLD' ? 0 : form.allowed_shortage_pct,
         rate_expiry_date: form.rate_expiry_date || null
       }
       if (editing) {
@@ -170,6 +175,11 @@ export function Bargains(): React.JSX.Element {
   }
 
   const noMasters = suppliers.length === 0 || oilTypes.length === 0
+  const TYPE_FILTERS = ['OIL', 'HUSK', 'PACKAGING', 'CHEMICAL', 'ALL']
+  const visibleRows =
+    typeFilter === 'ALL'
+      ? rows
+      : rows.filter((r) => String(r.supplier_type || '').toUpperCase() === typeFilter)
 
   return (
     <>
@@ -192,6 +202,21 @@ export function Bargains(): React.JSX.Element {
           </div>
         )}
 
+        <div className="mb-4 inline-flex flex-wrap gap-1 rounded-lg border bg-muted/40 p-1">
+          {TYPE_FILTERS.map((t) => (
+            <button
+              key={t}
+              onClick={() => setTypeFilter(t)}
+              className={cn(
+                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                typeFilter === t ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {t === 'ALL' ? 'All' : t}
+            </button>
+          ))}
+        </div>
+
         <div className="rounded-lg border bg-card">
           <Table>
             <TableHeader>
@@ -200,7 +225,7 @@ export function Bargains(): React.JSX.Element {
                 <TableHead>Date</TableHead>
                 <TableHead>Supplier</TableHead>
                 <TableHead>Oil</TableHead>
-                <TableHead>Type</TableHead>
+                <TableHead>Condition</TableHead>
                 <TableHead className="text-right">Qty</TableHead>
                 <TableHead className="text-right">BG rate</TableHead>
                 <TableHead className="text-right">Balance</TableHead>
@@ -215,14 +240,16 @@ export function Bargains(): React.JSX.Element {
                     Loading…
                   </TableCell>
                 </TableRow>
-              ) : rows.length === 0 ? (
+              ) : visibleRows.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
-                    No bargains yet. Click “New bargain” to add one.
+                    {rows.length === 0
+                      ? 'No bargains yet. Click “New bargain” to add one.'
+                      : `No ${typeFilter === 'ALL' ? '' : typeFilter + ' '}bargains to show.`}
                   </TableCell>
                 </TableRow>
               ) : (
-                rows.map((row) => (
+                visibleRows.map((row) => (
                   <TableRow key={row.id as number}>
                     <TableCell className="font-medium">{row.bargain_no}</TableCell>
                     <TableCell>{formatDate(row.bargain_date)}</TableCell>
@@ -231,7 +258,7 @@ export function Bargains(): React.JSX.Element {
                       <span className="font-medium">{row.oil_code}</span>
                     </TableCell>
                     <TableCell>
-                      <Badge variant={row.bargain_type === 'Delivered' ? 'secondary' : 'muted'}>
+                      <Badge variant={row.bargain_type === 'DLD' || row.bargain_type === 'Delivered' ? 'secondary' : 'muted'}>
                         {row.bargain_type}
                       </Badge>
                     </TableCell>
@@ -279,10 +306,9 @@ export function Bargains(): React.JSX.Element {
           <div className="grid grid-cols-2 gap-3 py-1">
             <div className="grid gap-1.5">
               <Label>Bargain date *</Label>
-              <Input
-                type="date"
+              <DatePicker
                 value={form.bargain_date}
-                onChange={(e) => setField('bargain_date', e.target.value)}
+                onChange={(v) => setField('bargain_date', v)}
               />
             </div>
             <div className="grid gap-1.5">
@@ -322,34 +348,34 @@ export function Bargains(): React.JSX.Element {
             </div>
 
             <div className="grid gap-1.5">
-              <Label>Bargain type</Label>
-              <Select value={form.bargain_type} onValueChange={(v) => setField('bargain_type', v)}>
+              <Label>Bargain condition</Label>
+              <Select
+                value={form.bargain_type}
+                onValueChange={(v) =>
+                  setForm((p) => ({
+                    ...p,
+                    bargain_type: v,
+                    allowed_shortage_pct: v === 'DLD' ? '0' : p.allowed_shortage_pct
+                  }))
+                }
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="Ex">Ex</SelectItem>
-                  <SelectItem value="Delivered">Delivered</SelectItem>
+                  <SelectItem value="EX">EX</SelectItem>
+                  <SelectItem value="DLD">DLD</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div className="grid gap-1.5">
               <Label>UOM</Label>
-              <Input value={form.uom} onChange={(e) => setField('uom', e.target.value)} />
+              <UomSelect value={form.uom} onChange={(v) => setField('uom', v)} />
             </div>
 
             <div className="grid gap-1.5">
               <Label>Bargain qty *</Label>
               <Input type="number" value={form.qty} onChange={(e) => setField('qty', e.target.value)} />
-            </div>
-            <div className="grid gap-1.5">
-              <Label>Opening qty</Label>
-              <Input
-                type="number"
-                value={form.opening_qty}
-                onChange={(e) => setField('opening_qty', e.target.value)}
-                placeholder="optional"
-              />
             </div>
 
             <div className="grid gap-1.5">
@@ -369,17 +395,17 @@ export function Bargains(): React.JSX.Element {
               <Label>Allowed shortage %</Label>
               <Input
                 type="number"
-                value={form.allowed_shortage_pct}
+                value={form.bargain_type === 'DLD' ? '0' : form.allowed_shortage_pct}
+                disabled={form.bargain_type === 'DLD'}
                 onChange={(e) => setField('allowed_shortage_pct', e.target.value)}
-                placeholder={`default ${defaultShortage}`}
+                placeholder={form.bargain_type === 'DLD' ? 'NIL — supplier delivers' : `default ${defaultShortage}`}
               />
             </div>
             <div className="grid gap-1.5">
-              <Label>Rate expiry date</Label>
-              <Input
-                type="date"
+              <Label>Contract expiry</Label>
+              <DatePicker
                 value={form.rate_expiry_date ?? ''}
-                onChange={(e) => setField('rate_expiry_date', e.target.value)}
+                onChange={(v) => setField('rate_expiry_date', v)}
               />
             </div>
 
