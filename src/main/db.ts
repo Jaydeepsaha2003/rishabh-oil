@@ -93,6 +93,9 @@ const MIGRATIONS = [
   'ALTER TABLE sales ADD COLUMN sales_bargain_id INTEGER',
   'ALTER TABLE sales ADD COLUMN customer_id INTEGER',
   'ALTER TABLE payment_allocations ADD COLUMN sale_id INTEGER',
+  // bargains/orders keep a legacy oil_types FK; mirror products so it is satisfied.
+  `INSERT OR IGNORE INTO oil_types (id, code, name, active)
+     SELECT id, COALESCE(code, name, 'GEN'), COALESCE(name, code, 'PRODUCT'), 1 FROM products`,
   'ALTER TABLE purchase_tankers ADD COLUMN krfl_weighment_doc_no TEXT',
   'ALTER TABLE purchase_tankers ADD COLUMN krfl_weighment_photo TEXT',
   'ALTER TABLE purchase_tankers ADD COLUMN outside_weighment_doc_no TEXT',

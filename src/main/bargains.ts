@@ -12,6 +12,19 @@ function toPlain(res: ResultSet): Row[] {
   })
 }
 
+// bargains/orders still carry a foreign key to the legacy oil_types table, but
+// the app now picks oils from products. Mirror the product row into oil_types
+// (same id) so the FK is satisfied for any product chosen.
+export async function ensureOilType(productId: number): Promise<void> {
+  if (!productId) return
+  await getClient().execute({
+    sql: `INSERT OR IGNORE INTO oil_types (id, code, name, active)
+          SELECT id, COALESCE(code, name, 'GEN'), COALESCE(name, code, 'PRODUCT'), 1
+          FROM products WHERE id = ?`,
+    args: [productId]
+  })
+}
+
 // "DD-MM" from an ISO date string. e.g. 2025-06-13 -> "13-06".
 function dayMonth(dateStr: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr || '')
@@ -86,6 +99,8 @@ export async function createBargain(v: Row): Promise<{ id: number; bargain_no: s
     Number(v.supplier_id),
     String(v.bargain_date)
   )
+  // The legacy oil_types FK is still enforced; mirror the chosen product into it.
+  await ensureOilType(Number(v.oil_type_id))
   const res = await getClient().execute({
     sql: `INSERT INTO bargains
       (bargain_no, bargain_date, supplier_id, oil_type_id, bargain_type, qty, opening_qty, uom,
@@ -117,6 +132,7 @@ export async function updateBargain(id: number, v: Row): Promise<{ id: number }>
   const qty = Number(v.qty) || 0
   const rate = landedRate(v)
   const total = qty * rate
+  await ensureOilType(Number(v.oil_type_id))
   await getClient().execute({
     sql: `UPDATE bargains SET
       bargain_date = ?, supplier_id = ?, oil_type_id = ?, bargain_type = ?,

@@ -2,6 +2,7 @@ import type { InValue, ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getSetting } from './repos'
 import { tankerGateReceived } from './gate'
+import { ensureOilType } from './bargains'
 
 const STAGES = [
   'ordered',
@@ -187,6 +188,7 @@ export async function listOrders(): Promise<Row[]> {
 }
 
 export async function createOrder(v: Row): Promise<{ id: number }> {
+  await ensureOilType(n(v.oil_type_id))
   const supplier = await getSupplier(n(v.supplier_id))
   const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), 0)
   const m = computeMoney({
@@ -250,6 +252,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
 }
 
 export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
+  await ensureOilType(n(v.oil_type_id))
   const supplier = await getSupplier(n(v.supplier_id))
   const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), id)
   const m = computeMoney({
