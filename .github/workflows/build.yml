@@ -30,18 +30,20 @@ jobs:
         run: npm run typecheck
 
       # electron-builder publishes a PUBLISHED (non-draft) release, which GitHub
-      # only allows for an existing tag. The tag lives in the source repo, not the
-      # releases repo, so create it there (pointing at the releases repo's default
-      # branch) before publishing.
-      - name: Ensure release tag exists in releases repo
+      # only allows for an existing tag. Reset any prior release+tag for this
+      # version in the releases repo (so re-runs are idempotent), then create a
+      # fresh tag pointing at the releases repo's default branch.
+      - name: Reset release + tag in releases repo
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
         run: |
           VERSION="v$(node -p "require('./package.json').version")"
-          SHA=$(gh api repos/Jaydeepsaha2003/rishabh-oil-releases/git/refs/heads/main --jq .object.sha)
-          gh api --method POST repos/Jaydeepsaha2003/rishabh-oil-releases/git/refs \
-            -f ref="refs/tags/$VERSION" -f sha="$SHA" 2>/dev/null || echo "tag $VERSION already exists"
+          REPO=Jaydeepsaha2003/rishabh-oil-releases
+          gh release delete "$VERSION" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || echo "no existing release"
+          gh api --method DELETE "repos/$REPO/git/refs/tags/$VERSION" 2>/dev/null || echo "no dangling tag"
+          SHA=$(gh api "repos/$REPO/git/refs/heads/main" --jq .object.sha)
+          gh api --method POST "repos/$REPO/git/refs" -f ref="refs/tags/$VERSION" -f sha="$SHA" 2>/dev/null || echo "tag create skipped"
 
       - name: Build and publish installer to releases repo
         run: npm run release:win
