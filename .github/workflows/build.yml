@@ -29,11 +29,11 @@ jobs:
       - name: Type-check
         run: npm run typecheck
 
-      # electron-builder publishes a PUBLISHED (non-draft) release, which GitHub
-      # only allows for an existing tag. Reset any prior release+tag for this
-      # version in the releases repo (so re-runs are idempotent), then create a
-      # fresh tag pointing at the releases repo's default branch.
-      - name: Reset release + tag in releases repo
+      # Pre-create the (published) release in the releases repo so electron-builder
+      # only UPLOADS assets to it — avoids the race where parallel asset uploads
+      # each try to create the release and one 422s ("tag already exists").
+      # Reset any prior release+tag first so re-runs are idempotent.
+      - name: Prepare release in releases repo
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
@@ -42,8 +42,7 @@ jobs:
           REPO=Jaydeepsaha2003/rishabh-oil-releases
           gh release delete "$VERSION" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || echo "no existing release"
           gh api --method DELETE "repos/$REPO/git/refs/tags/$VERSION" 2>/dev/null || echo "no dangling tag"
-          SHA=$(gh api "repos/$REPO/git/refs/heads/main" --jq .object.sha)
-          gh api --method POST "repos/$REPO/git/refs" -f ref="refs/tags/$VERSION" -f sha="$SHA" 2>/dev/null || echo "tag create skipped"
+          gh release create "$VERSION" --repo "$REPO" --target main --title "$VERSION" --notes "Automated release $VERSION"
 
       - name: Build and publish installer to releases repo
         run: npm run release:win
