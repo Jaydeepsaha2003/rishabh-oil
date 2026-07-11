@@ -29,6 +29,20 @@ jobs:
       - name: Type-check
         run: npm run typecheck
 
+      # electron-builder publishes a PUBLISHED (non-draft) release, which GitHub
+      # only allows for an existing tag. The tag lives in the source repo, not the
+      # releases repo, so create it there (pointing at the releases repo's default
+      # branch) before publishing.
+      - name: Ensure release tag exists in releases repo
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          VERSION="v$(node -p "require('./package.json').version")"
+          SHA=$(gh api repos/Jaydeepsaha2003/rishabh-oil-releases/git/refs/heads/main --jq .object.sha)
+          gh api --method POST repos/Jaydeepsaha2003/rishabh-oil-releases/git/refs \
+            -f ref="refs/tags/$VERSION" -f sha="$SHA" 2>/dev/null || echo "tag $VERSION already exists"
+
       - name: Build and publish installer to releases repo
         run: npm run release:win
         env:
