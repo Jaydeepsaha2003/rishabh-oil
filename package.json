@@ -1,6 +1,6 @@
 {
   "name": "rishabh-oil",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Oil production management system",
   "main": "./out/main/index.js",
   "author": "Rishabh Oil",
@@ -16,7 +16,8 @@
     "dist:dir": "electron-vite build && electron-builder --dir --publish never",
     "dist:win": "electron-vite build && electron-builder --win --publish never",
     "dist:mac": "electron-vite build && electron-builder --mac --publish never",
-    "dist:linux": "electron-vite build && electron-builder --linux --publish never"
+    "dist:linux": "electron-vite build && electron-builder --linux --publish never",
+    "release:win": "electron-vite build && electron-builder --win --publish always"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",
@@ -30,6 +31,7 @@
     "@radix-ui/react-tooltip": "^1.2.10",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^0.454.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -57,6 +59,14 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Jaydeepsaha2003",
+        "repo": "rishabh-oil-releases",
+        "releaseType": "release"
+      }
+    ],
     "files": [
       "out/**/*",
       "package.json"

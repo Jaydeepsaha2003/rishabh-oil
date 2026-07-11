@@ -1,10 +1,13 @@
 import { app, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { registerIpc } from './ipc'
+import { registerUpdater } from './updater'
 import { initDb } from './db'
 import { seedDefaultAdmin } from './auth'
 import { seedProducts, seedFormulations } from './seed'
 import { cleanupLogs } from './access'
+
+let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -20,6 +23,10 @@ function createWindow(): void {
     }
   })
 
+  mainWindow = win
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null
+  })
   win.on('ready-to-show', () => win.show())
 
   win.webContents.setWindowOpenHandler((details) => {
@@ -41,6 +48,7 @@ app.whenReady().then(async () => {
   await seedFormulations().catch((e) => console.error('[seed] formulations failed:', e))
   await cleanupLogs().catch(() => {})
   registerIpc()
+  registerUpdater(() => mainWindow)
   createWindow()
 
   app.on('activate', () => {

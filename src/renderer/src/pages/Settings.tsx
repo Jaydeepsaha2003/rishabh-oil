@@ -553,6 +553,77 @@ function AccessPanel(): React.JSX.Element {
   )
 }
 
+function UpdatePanel(): React.JSX.Element {
+  const [version, setVersion] = useState('')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [status, setStatus] = useState<Record<string, any>>({ state: 'idle' })
+  const [checking, setChecking] = useState(false)
+
+  useEffect(() => {
+    window.api.updates.version().then(setVersion).catch(() => {})
+    const off = window.api.updates.onStatus((s) => setStatus(s))
+    return off
+  }, [])
+
+  async function check(): Promise<void> {
+    setChecking(true)
+    setStatus({ state: 'checking' })
+    try {
+      const r = await window.api.updates.check()
+      if (!r.ok) setStatus({ state: r.message?.includes('installed app') ? 'dev' : 'error', message: r.message })
+    } catch (e) {
+      setStatus({ state: 'error', message: (e as Error).message })
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const st = status.state
+  return (
+    <Card className="max-w-xl p-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-medium">Rishabh Oil</h3>
+          <p className="text-sm text-muted-foreground">Current version {version || '—'}</p>
+        </div>
+        <Button onClick={check} disabled={checking || st === 'downloading'}>
+          {checking ? 'Checking…' : 'Check for updates'}
+        </Button>
+      </div>
+
+      <div className="mt-4 rounded-lg border bg-muted/30 p-4 text-sm">
+        {st === 'idle' && <span className="text-muted-foreground">Click “Check for updates” to see if a newer version is available.</span>}
+        {st === 'checking' && <span className="text-muted-foreground">Checking for updates…</span>}
+        {st === 'none' && <span className="text-emerald-700">You’re on the latest version.</span>}
+        {st === 'available' && <span>Update {status.version ? `v${status.version}` : ''} found — downloading in the background…</span>}
+        {st === 'downloading' && (
+          <div>
+            <div className="mb-1.5 flex justify-between text-xs text-muted-foreground">
+              <span>Downloading update…</span>
+              <span>{status.percent ?? 0}%</span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div className="h-full rounded-full bg-amber-500 transition-all" style={{ width: `${status.percent ?? 0}%` }} />
+            </div>
+          </div>
+        )}
+        {st === 'downloaded' && (
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-emerald-700">Update {status.version ? `v${status.version}` : ''} downloaded and ready.</span>
+            <Button size="sm" onClick={() => window.api.updates.install()}>Restart &amp; install</Button>
+          </div>
+        )}
+        {st === 'dev' && <span className="text-muted-foreground">Updates are only available in the installed app (not in dev mode).</span>}
+        {st === 'error' && <span className="text-red-600">Update check failed: {status.message}</span>}
+      </div>
+
+      <p className="mt-3 text-xs text-muted-foreground">
+        The app also checks for updates automatically shortly after it starts. Updates download in the background; you decide when to restart.
+      </p>
+    </Card>
+  )
+}
+
 export function Settings({ user }: { user: AppUser }): React.JSX.Element {
   const isAdmin = user.role === 'admin'
   return (
@@ -563,6 +634,7 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
           <TabsList>
             <TabsTrigger value="sources">Ports</TabsTrigger>
             <TabsTrigger value="general">General</TabsTrigger>
+            <TabsTrigger value="update">Software update</TabsTrigger>
             {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
             {isAdmin && <TabsTrigger value="access">Access</TabsTrigger>}
           </TabsList>
@@ -579,6 +651,9 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
           </TabsContent>
           <TabsContent value="general" className="mt-6">
             <GeneralSettings />
+          </TabsContent>
+          <TabsContent value="update" className="mt-6">
+            <UpdatePanel />
           </TabsContent>
           {isAdmin && (
             <TabsContent value="users" className="mt-6">

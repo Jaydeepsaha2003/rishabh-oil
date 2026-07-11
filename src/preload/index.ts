@@ -167,6 +167,17 @@ const api = {
     issue: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('lc:issue', { values }),
     removeIssuance: (id: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('lc:deleteIssuance', { id })
+  },
+  updates: {
+    version: (): Promise<string> => ipcRenderer.invoke('app:version'),
+    check: (): Promise<{ ok: boolean; version?: string; message?: string }> =>
+      ipcRenderer.invoke('update:check'),
+    install: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('update:install'),
+    onStatus: (cb: (status: Row) => void): (() => void) => {
+      const listener = (_e: unknown, data: Row): void => cb(data)
+      ipcRenderer.on('update:status', listener)
+      return () => ipcRenderer.removeListener('update:status', listener)
+    }
   }
 }
 

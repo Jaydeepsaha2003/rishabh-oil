@@ -29,11 +29,14 @@ jobs:
       - name: Type-check
         run: npm run typecheck
 
-      - name: Build Windows installer
-        run: npm run dist:win
+      - name: Build and publish installer to releases repo
+        run: npm run release:win
         env:
           MAIN_VITE_TURSO_DATABASE_URL: ${{ secrets.MAIN_VITE_TURSO_DATABASE_URL }}
           MAIN_VITE_TURSO_AUTH_TOKEN: ${{ secrets.MAIN_VITE_TURSO_AUTH_TOKEN }}
+          # PAT with contents:write on Jaydeepsaha2003/rishabh-oil-releases.
+          # electron-builder publishes the installer + latest.yml (auto-update feed) there.
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
@@ -41,12 +44,3 @@ jobs:
           name: Rishabh-Oil-Windows-Installer
           path: release/*.exe
           if-no-files-found: error
-
-      - name: Publish installer to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Rishabh Oil ${{ github.ref_name }}
-          generate_release_notes: true
-          files: release/*.exe
-          fail_on_unmatched_files: true

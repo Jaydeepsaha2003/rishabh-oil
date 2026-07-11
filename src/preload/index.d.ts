@@ -126,6 +126,12 @@ export interface Api {
     issue: (values: Row) => Promise<{ id: number }>
     removeIssuance: (id: number) => Promise<{ id: number }>
   }
+  updates: {
+    version: () => Promise<string>
+    check: () => Promise<{ ok: boolean; version?: string; message?: string }>
+    install: () => Promise<{ ok: boolean }>
+    onStatus: (cb: (status: Row) => void) => () => void
+  }
 }
 
 declare global {
