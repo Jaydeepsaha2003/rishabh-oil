@@ -179,8 +179,8 @@ export function GateEntry(): React.JSX.Element {
               <p className="text-xs text-muted-foreground">Pick the tanker and press the green button. Weight comes later.</p>
             </div>
           </div>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <div className="grid gap-1.5 xl:col-span-2">
+          <div className="grid items-end gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
+            <div className="grid min-w-0 gap-1.5">
               <Label>Tanker *</Label>
               <Select value={String(arrival.tanker_id || '')} onValueChange={chooseTanker}>
                 <SelectTrigger><SelectValue placeholder="Select arriving tanker" /></SelectTrigger>
@@ -190,30 +190,31 @@ export function GateEntry(): React.JSX.Element {
                   ))}
                 </SelectContent>
               </Select>
-              <span className="text-[11px] text-muted-foreground">Not in the list? Type the tanker number on the right.</span>
             </div>
-            <div className="grid gap-1.5">
+            <div className="grid min-w-0 gap-1.5">
               <Label>Tanker number *</Label>
               <Input value={arrival.tanker_no || ''} onChange={(e) => setArrival((p) => ({ ...p, tanker_no: e.target.value }))} />
             </div>
-            <div className="grid gap-1.5">
+            <div className="grid min-w-0 gap-1.5">
               <Label>Gate entry no</Label>
               <Input value={arrival.gate_entry_no || ''} onChange={(e) => setArrival((p) => ({ ...p, gate_entry_no: e.target.value }))} />
             </div>
-            <div className="grid gap-1.5">
+            <div className="grid min-w-0 gap-1.5">
               <Label>Date</Label>
               <DatePicker value={arrival.entry_date || ''} onChange={(v) => setArrival((p) => ({ ...p, entry_date: v }))} />
             </div>
+            <Button
+              className="h-9 bg-emerald-600 px-5 font-semibold hover:bg-emerald-700"
+              onClick={recordArrival}
+              disabled={savingArrival}
+            >
+              <Truck className="h-4 w-4" />
+              {savingArrival ? 'Saving…' : 'Tanker received'}
+            </Button>
           </div>
-          <Button
-            size="sm"
-            className="mt-3 bg-emerald-600 px-5 font-semibold hover:bg-emerald-700"
-            onClick={recordArrival}
-            disabled={savingArrival}
-          >
-            <Truck className="h-4 w-4" />
-            {savingArrival ? 'Saving…' : 'Tanker received — inside factory'}
-          </Button>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Not in the list? Type the tanker number manually and press the button.
+          </p>
         </section>
 
         {/* Step 2 — waiting for weighment */}
