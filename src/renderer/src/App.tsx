@@ -20,6 +20,8 @@ import { Sales } from './pages/Sales'
 import { Suppliers } from './pages/Suppliers'
 import { Transporters } from './pages/Transporters'
 import { Customers } from './pages/Customers'
+import { Ports } from './pages/Ports'
+import { Brokers } from './pages/Brokers'
 import { clearUser, loadUser, saveUser, type AppUser } from './lib/session'
 import { MODULES, canAccess } from './lib/modules'
 
@@ -148,6 +150,8 @@ function App(): React.JSX.Element {
         {view === 'suppliers' && <Suppliers />}
         {view === 'transporters' && <Transporters />}
         {view === 'customers' && <Customers />}
+        {view === 'ports' && <Ports />}
+        {view === 'brokers' && <Brokers />}
         {view === 'settings' && <Settings user={user} />}
       </main>
       <UpdateBanner />

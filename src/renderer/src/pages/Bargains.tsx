@@ -1,6 +1,16 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { Pencil, Plus, Trash2 } from 'lucide-react'
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowUp,
+  ArrowUpDown,
+  BarChart3,
+  FileSpreadsheet,
+  Pencil,
+  Plus,
+  Trash2
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -37,6 +47,48 @@ import { useLiveRefresh } from '@/lib/useLiveRefresh'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
 
+type SortState = { key: string; dir: 'asc' | 'desc' } | null
+
+// Per-column sort accessors. Anything not listed here isn't sortable.
+const SORT_ACCESSORS: Record<string, (r: Row) => string | number> = {
+  bargain_no: (r) => String(r.bargain_no || ''),
+  bargain_date: (r) => String(r.bargain_date || ''),
+  supplier: (r) => String(r.supplier_name || ''),
+  oil: (r) => String(r.oil_code || r.oil_name || ''),
+  condition: (r) => String(r.bargain_type || ''),
+  qty: (r) => Number(r.qty) || 0,
+  rate: (r) => Number(r.rate_per_uom) || 0,
+  balance: (r) => Number(r.balance_qty) || 0,
+  total: (r) => Number(r.total_amount) || 0
+}
+
+const oilOf = (r: Row): string => String(r.oil_code || r.oil_name || '—')
+
+// Default order: grouped by oil (A→Z), oldest first inside each group.
+function defaultCompare(a: Row, b: Row): number {
+  const byOil = oilOf(a).localeCompare(oilOf(b))
+  if (byOil !== 0) return byOil
+  const byDate = String(a.bargain_date || '').localeCompare(String(b.bargain_date || ''))
+  if (byDate !== 0) return byDate
+  return (Number(a.id) || 0) - (Number(b.id) || 0)
+}
+
+function csvCell(v: unknown): string {
+  const s = String(v ?? '')
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+function downloadCsv(filename: string, lines: string[]): void {
+  // BOM so Excel opens it with the right encoding (₹, Unicode names)
+  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 function emptyForm(uom: string): Row {
   return {
     bargain_date: todayISO(),
@@ -47,7 +99,6 @@ function emptyForm(uom: string): Row {
     uom,
     base_rate: '',
     duty: '',
-    allowed_shortage_pct: '',
     rate_expiry_date: ''
   }
 }
@@ -58,7 +109,6 @@ export function Bargains(): React.JSX.Element {
   const [suppliers, setSuppliers] = useState<Row[]>([])
   const [oilTypes, setOilTypes] = useState<Row[]>([])
   const [defaultUom, setDefaultUom] = useState('MT')
-  const [defaultShortage, setDefaultShortage] = useState('0.2')
   const [typeFilter, setTypeFilter] = useState('OIL')
 
   const [open, setOpen] = useState(false)
@@ -83,7 +133,6 @@ export function Bargains(): React.JSX.Element {
         .sort((a, b) => String(a.name).localeCompare(String(b.name)))
     )
     setDefaultUom(settings.default_uom ?? 'MT')
-    setDefaultShortage(settings.allowed_shortage_pct ?? '0.2')
     setLoading(false)
   }, [])
 
@@ -111,7 +160,6 @@ export function Bargains(): React.JSX.Element {
       uom: row.uom ?? defaultUom,
       base_rate: row.base_rate ?? '',
       duty: row.duty ?? '',
-      allowed_shortage_pct: row.allowed_shortage_pct ?? '',
       rate_expiry_date: row.rate_expiry_date ?? ''
     })
     setError(null)
@@ -143,7 +191,6 @@ export function Bargains(): React.JSX.Element {
         uom: form.uom || defaultUom,
         base_rate: Number(form.base_rate) || 0,
         duty: Number(form.duty) || 0,
-        allowed_shortage_pct: form.bargain_type === 'DLD' ? 0 : form.allowed_shortage_pct,
         rate_expiry_date: form.rate_expiry_date || null
       }
       if (editing) {
@@ -181,17 +228,132 @@ export function Bargains(): React.JSX.Element {
       ? rows
       : rows.filter((r) => String(r.supplier_type || '').toUpperCase() === typeFilter)
 
+  const [sort, setSort] = useState<SortState>(null)
+  const [reportOpen, setReportOpen] = useState(false)
+
+  function toggleSort(key: string): void {
+    setSort((s) => (s?.key !== key ? { key, dir: 'asc' } : s.dir === 'asc' ? { key, dir: 'desc' } : null))
+  }
+
+  const sortedRows = useMemo(() => {
+    const list = [...visibleRows]
+    if (!sort) {
+      list.sort(defaultCompare)
+    } else {
+      const acc = SORT_ACCESSORS[sort.key]
+      list.sort((a, b) => {
+        const va = acc(a)
+        const vb = acc(b)
+        const c = typeof va === 'number' ? va - (vb as number) : String(va).localeCompare(String(vb))
+        return sort.dir === 'asc' ? c : -c
+      })
+    }
+    return list
+  }, [visibleRows, sort])
+
+  // Oil-group separators only make sense while rows are grouped by oil.
+  const groupedByOil = !sort || sort.key === 'oil'
+
+  // Report: one summary line per oil type — open bargains (balance left), total
+  // qty/balance, weighted average rate and total value. Not bargain-wise.
+  const report = useMemo(() => {
+    type Agg = {
+      label: string
+      count: number
+      openCount: number
+      qty: number
+      balance: number
+      total: number
+      openValue: number
+    }
+    const groups = new Map<string, Agg>()
+    for (const r of rows) {
+      const key = oilOf(r)
+      if (!groups.has(key))
+        groups.set(key, { label: key, count: 0, openCount: 0, qty: 0, balance: 0, total: 0, openValue: 0 })
+      const g = groups.get(key)!
+      const qty = Number(r.qty) || 0
+      const balance = Number(r.balance_qty) || 0
+      const rate = Number(r.rate_per_uom) || 0
+      g.count += 1
+      g.qty += qty
+      g.balance += balance
+      g.total += Number(r.total_amount) || 0
+      if (balance > 0.005) {
+        g.openCount += 1
+        g.openValue += balance * rate
+      }
+    }
+    const list = Array.from(groups.values()).sort((a, b) => a.label.localeCompare(b.label))
+    const grand = list.reduce(
+      (s, g) => ({
+        count: s.count + g.count,
+        openCount: s.openCount + g.openCount,
+        qty: s.qty + g.qty,
+        balance: s.balance + g.balance,
+        total: s.total + g.total,
+        openValue: s.openValue + g.openValue
+      }),
+      { count: 0, openCount: 0, qty: 0, balance: 0, total: 0, openValue: 0 }
+    )
+    return { groups: list, grand }
+  }, [rows])
+
+  // Weighted average rate = total value ÷ total qty.
+  const avgRate = (g: { total: number; qty: number }): number => (g.qty > 0 ? g.total / g.qty : 0)
+
+  function downloadExcel(): void {
+    const headers = ['Bargain No', 'Date', 'Supplier', 'Oil', 'Condition', 'Qty', 'UOM', 'BG Rate', 'Balance', 'Total Amount']
+    const lines = [headers.join(',')]
+    for (const r of sortedRows) {
+      lines.push(
+        [r.bargain_no, r.bargain_date, r.supplier_name, oilOf(r), r.bargain_type, r.qty, r.uom, r.rate_per_uom, r.balance_qty, r.total_amount]
+          .map(csvCell)
+          .join(',')
+      )
+    }
+    downloadCsv(`bargains-${typeFilter.toLowerCase()}-${todayISO()}.csv`, lines)
+  }
+
+  function downloadReportExcel(): void {
+    const lines = ['Oil,Open Bargains,Total Bargains,Open Qty,Total Qty,Avg Rate,Open Value,Total Value']
+    for (const g of report.groups) {
+      lines.push(
+        [g.label, g.openCount, g.count, g.balance, g.qty, avgRate(g).toFixed(2), g.openValue, g.total]
+          .map(csvCell)
+          .join(',')
+      )
+    }
+    const t = report.grand
+    lines.push(
+      ['GRAND TOTAL', t.openCount, t.count, t.balance, t.qty, avgRate(t).toFixed(2), t.openValue, t.total]
+        .map(csvCell)
+        .join(',')
+    )
+    downloadCsv(`bargain-report-by-oil-${todayISO()}.csv`, lines)
+  }
+
   return (
     <>
       <PageHeader
         title="Bargains"
         subtitle="Rate contracts — drawn down as purchase tankers are loaded"
-        hint="Each bargain locks a rate and quantity with a supplier. The bargain number is generated as OILCODE/DD-MM/PARTYNAME/SERIAL (e.g. RPO/29-06/DILEXIM/0002). Landed rate = base rate + customs duty."
+        hint="Each bargain locks a rate and quantity with a supplier. The bargain number is OILCODE/DD-MM/PARTYNAME/SERIAL, where the serial restarts every month from 01 (e.g. MAHUWA/01-07/ROHINIOIL/03). Landed rate = base rate + customs duty. Click any column header to sort; the Report button groups the full history by oil."
         actions={
-          <Button size="sm" onClick={openAdd} disabled={noMasters}>
-            <Plus className="h-4 w-4" />
-            New bargain
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => setReportOpen((v) => !v)}>
+              <BarChart3 className="h-4 w-4" />
+              {reportOpen ? 'Back to list' : 'Report'}
+            </Button>
+            <Button variant="outline" size="sm" onClick={downloadExcel}>
+              <FileSpreadsheet className="h-4 w-4" />
+              Excel
+            </Button>
+            <Button size="sm" onClick={openAdd} disabled={noMasters}>
+              <Plus className="h-4 w-4" />
+              New bargain
+            </Button>
+          </div>
         }
       />
 
@@ -202,99 +364,212 @@ export function Bargains(): React.JSX.Element {
           </div>
         )}
 
-        <div className="mb-4 inline-flex flex-wrap gap-1 rounded-lg border bg-muted/40 p-1">
-          {TYPE_FILTERS.map((t) => (
-            <button
-              key={t}
-              onClick={() => setTypeFilter(t)}
-              className={cn(
-                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-                typeFilter === t ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
-              )}
-            >
-              {t === 'ALL' ? 'All' : t}
-            </button>
-          ))}
-        </div>
+        {reportOpen ? (
+          <div className="space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <button
+                  className="mb-1 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+                  onClick={() => setReportOpen(false)}
+                >
+                  <ArrowLeft className="h-4 w-4" /> Back to list
+                </button>
+                <h3 className="text-lg font-semibold">Bargain report — by oil</h3>
+                <p className="text-xs text-muted-foreground">
+                  Open bargains, weighted average rate and value per oil type · {report.grand.count} bargains overall
+                </p>
+              </div>
+              <Button variant="outline" size="sm" onClick={downloadReportExcel}>
+                <FileSpreadsheet className="h-4 w-4" /> Download report
+              </Button>
+            </div>
 
-        <div className="rounded-lg border bg-card">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Bargain no</TableHead>
-                <TableHead>Date</TableHead>
-                <TableHead>Supplier</TableHead>
-                <TableHead>Oil</TableHead>
-                <TableHead>Condition</TableHead>
-                <TableHead className="text-right">Qty</TableHead>
-                <TableHead className="text-right">BG rate</TableHead>
-                <TableHead className="text-right">Balance</TableHead>
-                <TableHead className="text-right">Total</TableHead>
-                <TableHead className="w-[90px] text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loading ? (
-                <TableRow>
-                  <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
-                    Loading…
-                  </TableCell>
-                </TableRow>
-              ) : visibleRows.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
-                    {rows.length === 0
-                      ? 'No bargains yet. Click “New bargain” to add one.'
-                      : `No ${typeFilter === 'ALL' ? '' : typeFilter + ' '}bargains to show.`}
-                  </TableCell>
-                </TableRow>
-              ) : (
-                visibleRows.map((row) => (
-                  <TableRow key={row.id as number}>
-                    <TableCell className="font-medium">{row.bargain_no}</TableCell>
-                    <TableCell>{formatDate(row.bargain_date)}</TableCell>
-                    <TableCell>{row.supplier_name ?? '—'}</TableCell>
-                    <TableCell>
-                      <span className="font-medium">{row.oil_code}</span>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={row.bargain_type === 'DLD' || row.bargain_type === 'Delivered' ? 'secondary' : 'muted'}>
-                        {row.bargain_type}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {formatNum(row.qty)} {row.uom}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">{formatINR(row.rate_per_uom)}</TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      <span className={Number(row.balance_qty) < 0 ? 'text-red-600' : ''}>
-                        {formatNum(row.balance_qty)} {row.uom}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-right font-medium tabular-nums">
-                      {formatINR(row.total_amount)}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(row)}>
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-destructive"
-                          onClick={() => del(row)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
+            <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+              <Table className="text-[13px]">
+                <TableHeader className="bg-amber-100/70">
+                  <TableRow>
+                    <TableHead className="text-amber-900">Oil</TableHead>
+                    <TableHead className="text-center text-amber-900">Open bargains</TableHead>
+                    <TableHead className="text-center text-amber-900">Total bargains</TableHead>
+                    <TableHead className="text-right text-amber-900">Open qty</TableHead>
+                    <TableHead className="text-right text-amber-900">Total qty</TableHead>
+                    <TableHead className="text-right text-amber-900">Avg rate</TableHead>
+                    <TableHead className="text-right text-amber-900">Open value</TableHead>
+                    <TableHead className="text-right text-amber-900">Total value</TableHead>
                   </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
+                </TableHeader>
+                <TableBody>
+                  {report.groups.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">No bargains yet.</TableCell>
+                    </TableRow>
+                  ) : (
+                    <>
+                      {report.groups.map((g) => (
+                        <TableRow key={g.label}>
+                          <TableCell className="font-semibold">{g.label}</TableCell>
+                          <TableCell className="text-center tabular-nums">
+                            <Badge variant={g.openCount > 0 ? 'warning' : 'muted'}>{g.openCount}</Badge>
+                          </TableCell>
+                          <TableCell className="text-center tabular-nums">{g.count}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatNum(g.balance)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatNum(g.qty)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatINR(avgRate(g))}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatINR(g.openValue)}</TableCell>
+                          <TableCell className="text-right font-medium tabular-nums">{formatINR(g.total)}</TableCell>
+                        </TableRow>
+                      ))}
+                      <TableRow className="bg-muted/50 font-semibold">
+                        <TableCell>Grand total</TableCell>
+                        <TableCell className="text-center tabular-nums">{report.grand.openCount}</TableCell>
+                        <TableCell className="text-center tabular-nums">{report.grand.count}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.balance)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.qty)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatINR(avgRate(report.grand))}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatINR(report.grand.openValue)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatINR(report.grand.total)}</TableCell>
+                      </TableRow>
+                    </>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Open = bargains with balance quantity left. Avg rate is weighted (total value ÷ total qty). Open value = balance qty × bargain rate.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="mb-4 inline-flex flex-wrap gap-1 rounded-lg border bg-muted/40 p-1">
+              {TYPE_FILTERS.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTypeFilter(t)}
+                  className={cn(
+                    'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                    typeFilter === t ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  {t === 'ALL' ? 'All' : t}
+                </button>
+              ))}
+            </div>
+
+            <div className="rounded-lg border bg-card">
+              <Table className="text-[13px]">
+                <TableHeader>
+                  <TableRow>
+                    {(
+                      [
+                        { id: 'bargain_no', label: 'Bargain no' },
+                        { id: 'bargain_date', label: 'Date' },
+                        { id: 'supplier', label: 'Supplier' },
+                        { id: 'oil', label: 'Oil' },
+                        { id: 'condition', label: 'Condition' },
+                        { id: 'qty', label: 'Qty', right: true },
+                        { id: 'rate', label: 'BG rate', right: true },
+                        { id: 'balance', label: 'Balance', right: true },
+                        { id: 'total', label: 'Total', right: true }
+                      ] as { id: string; label: string; right?: boolean }[]
+                    ).map((c) => (
+                      <TableHead key={c.id} className={c.right ? 'text-right' : ''}>
+                        <button
+                          onClick={() => toggleSort(c.id)}
+                          className={cn(
+                            'inline-flex items-center gap-1 transition-colors hover:text-foreground',
+                            c.right && 'w-full justify-end'
+                          )}
+                          title={`Sort by ${c.label}`}
+                        >
+                          {c.label}
+                          {sort?.key === c.id ? (
+                            sort.dir === 'asc' ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
+                          ) : (
+                            <ArrowUpDown className="h-3 w-3 opacity-30" />
+                          )}
+                        </button>
+                      </TableHead>
+                    ))}
+                    <TableHead className="w-[90px] text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {loading ? (
+                    <TableRow>
+                      <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                        Loading…
+                      </TableCell>
+                    </TableRow>
+                  ) : sortedRows.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                        {rows.length === 0
+                          ? 'No bargains yet. Click “New bargain” to add one.'
+                          : `No ${typeFilter === 'ALL' ? '' : typeFilter + ' '}bargains to show.`}
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    sortedRows.map((row, i) => {
+                      const newGroup =
+                        groupedByOil && (i === 0 || oilOf(row) !== oilOf(sortedRows[i - 1]))
+                      return (
+                        <Fragment key={row.id as number}>
+                          {newGroup && (
+                            <TableRow className="border-y-2 border-slate-300 bg-slate-100 hover:bg-slate-100">
+                              <TableCell colSpan={10} className="py-1.5 text-xs font-bold uppercase tracking-wide text-slate-700">
+                                {oilOf(row)}
+                              </TableCell>
+                            </TableRow>
+                          )}
+                          <TableRow>
+                          <TableCell className="font-medium">{row.bargain_no}</TableCell>
+                          <TableCell>{formatDate(row.bargain_date)}</TableCell>
+                          <TableCell>{row.supplier_name ?? '—'}</TableCell>
+                          <TableCell>
+                            <span className="font-medium">{row.oil_code}</span>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={row.bargain_type === 'DLD' || row.bargain_type === 'Delivered' ? 'secondary' : 'muted'}>
+                              {row.bargain_type}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {formatNum(row.qty)} {row.uom}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">{formatINR(row.rate_per_uom)}</TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            <span className={Number(row.balance_qty) < 0 ? 'text-red-600' : ''}>
+                              {formatNum(row.balance_qty)} {row.uom}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right font-medium tabular-nums">
+                            {formatINR(row.total_amount)}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-1">
+                              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(row)}>
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-destructive"
+                                onClick={() => del(row)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                          </TableRow>
+                        </Fragment>
+                      )
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </>
+        )}
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
@@ -340,7 +615,7 @@ export function Bargains(): React.JSX.Element {
                 <SelectContent>
                   {oilTypes.map((o) => (
                     <SelectItem key={o.id} value={String(o.id)}>
-                      {o.name}
+                      {o.code || o.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -349,16 +624,7 @@ export function Bargains(): React.JSX.Element {
 
             <div className="grid gap-1.5">
               <Label>Bargain condition</Label>
-              <Select
-                value={form.bargain_type}
-                onValueChange={(v) =>
-                  setForm((p) => ({
-                    ...p,
-                    bargain_type: v,
-                    allowed_shortage_pct: v === 'DLD' ? '0' : p.allowed_shortage_pct
-                  }))
-                }
-              >
+              <Select value={form.bargain_type} onValueChange={(v) => setField('bargain_type', v)}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -387,20 +653,10 @@ export function Bargains(): React.JSX.Element {
               />
             </div>
             <div className="grid gap-1.5">
-              <Label>Duty per {form.uom || 'ton'}</Label>
+              <Label>Duty per {form.uom || 'MT'}</Label>
               <Input type="number" value={form.duty} onChange={(e) => setField('duty', e.target.value)} />
             </div>
 
-            <div className="grid gap-1.5">
-              <Label>Allowed shortage %</Label>
-              <Input
-                type="number"
-                value={form.bargain_type === 'DLD' ? '0' : form.allowed_shortage_pct}
-                disabled={form.bargain_type === 'DLD'}
-                onChange={(e) => setField('allowed_shortage_pct', e.target.value)}
-                placeholder={form.bargain_type === 'DLD' ? 'NIL — supplier delivers' : `default ${defaultShortage}`}
-              />
-            </div>
             <div className="grid gap-1.5">
               <Label>Contract expiry</Label>
               <DatePicker

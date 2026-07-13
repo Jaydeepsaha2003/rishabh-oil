@@ -74,15 +74,20 @@ async function nextBargainNo(
     .replace(/\s+/g, '')
     .toUpperCase()
 
-  // continuous serial = max trailing serial across all bargain numbers + 1
-  const existing = await c.execute('SELECT bargain_no FROM bargains')
+  // Serial resets every calendar month: max trailing serial among bargains in
+  // the same month + 1, two-digit padded (01, 02, … grows past 99 naturally).
+  const monthKey = String(bargainDate).slice(0, 7) // yyyy-mm
+  const existing = await c.execute({
+    sql: 'SELECT bargain_no FROM bargains WHERE substr(bargain_date, 1, 7) = ?',
+    args: [monthKey]
+  })
   let maxSeq = 0
   for (const r of existing.rows) {
     const parts = String(r.bargain_no).split('/')
     const n = parseInt(parts[parts.length - 1] ?? '0', 10)
     if (!Number.isNaN(n) && n > maxSeq) maxSeq = n
   }
-  const serial = String(maxSeq + 1).padStart(4, '0')
+  const serial = String(maxSeq + 1).padStart(2, '0')
   return `${oil}/${dayMonth(bargainDate)}/${party}/${serial}`
 }
 
@@ -115,7 +120,7 @@ export async function createBargain(v: Row): Promise<{ id: number; bargain_no: s
       v.bargain_type || 'EX',
       qty,
       v.opening_qty != null && v.opening_qty !== '' ? Number(v.opening_qty) : null,
-      v.uom || 'ton',
+      v.uom || 'MT',
       Number(v.base_rate) || 0,
       Number(v.duty) || 0,
       rate,
@@ -147,7 +152,7 @@ export async function updateBargain(id: number, v: Row): Promise<{ id: number }>
       v.bargain_type || 'EX',
       qty,
       v.opening_qty != null && v.opening_qty !== '' ? Number(v.opening_qty) : null,
-      v.uom || 'ton',
+      v.uom || 'MT',
       Number(v.base_rate) || 0,
       Number(v.duty) || 0,
       rate,

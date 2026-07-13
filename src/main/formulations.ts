@@ -57,7 +57,7 @@ async function writeItems(formulationId: number, items: Row[]): Promise<void> {
 export async function createFormulation(v: Row): Promise<{ id: number }> {
   const res = await getClient().execute({
     sql: 'INSERT INTO formulations (product_id, name, uom, active) VALUES (?, ?, ?, 1)',
-    args: [n(v.product_id), v.name || null, v.uom || 'ton']
+    args: [n(v.product_id), v.name || null, v.uom || 'MT']
   })
   const id = Number(res.lastInsertRowid)
   await writeItems(id, v.items)
@@ -67,7 +67,7 @@ export async function createFormulation(v: Row): Promise<{ id: number }> {
 export async function updateFormulation(id: number, v: Row): Promise<{ id: number }> {
   await getClient().execute({
     sql: 'UPDATE formulations SET product_id = ?, name = ?, uom = ? WHERE id = ?',
-    args: [n(v.product_id), v.name || null, v.uom || 'ton', id]
+    args: [n(v.product_id), v.name || null, v.uom || 'MT', id]
   })
   await writeItems(id, v.items)
   return { id }

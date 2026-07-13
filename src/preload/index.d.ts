@@ -115,6 +115,7 @@ export interface Api {
     nextNo: () => Promise<string>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
+    complete: (id: number, receivedQty: number) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
   }
   lc: {

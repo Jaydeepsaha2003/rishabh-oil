@@ -229,9 +229,9 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
        bargain_rate, invoice_rate, interest_pct, interest_days, adjusted_rate, taxable_value,
        gst_pct, gst_type, gst_amount, tds_pct, tds_amount, net_amount,
        final_taxable_value, final_gst_amount, final_tds_amount, final_net_amount,
-       tanker_no, transporter_id, is_registered_transporter, posting, financed_by_party,
+       tanker_no, transporter_id, allowed_shortage_pct, is_registered_transporter, posting, financed_by_party,
        payment_cleared_date, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'loaded')`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'loaded')`,
     args: [
       v.invoice_no,
       v.order_date,
@@ -240,7 +240,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       n(v.oil_type_id),
       v.bargain_type || 'EX',
       n(v.ordered_qty),
-      v.uom || 'ton',
+      v.uom || 'MT',
       n(v.bargain_rate),
       n(v.invoice_rate),
       m.interest_pct,
@@ -259,6 +259,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       m.final_net_amount,
       v.tanker_no || null,
       v.transporter_id ? n(v.transporter_id) : null,
+      v.allowed_shortage_pct != null && v.allowed_shortage_pct !== '' ? Number(v.allowed_shortage_pct) : null,
       v.is_registered_transporter ? 1 : 0,
       1,
       v.financed_by_party ? 1 : 0,
@@ -294,7 +295,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       ordered_qty = ?, uom = ?, bargain_rate = ?, invoice_rate = ?, interest_pct = ?, interest_days = ?,
       adjusted_rate = ?, taxable_value = ?, gst_pct = ?, gst_type = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, net_amount = ?,
       final_taxable_value = ?, final_gst_amount = ?, final_tds_amount = ?, final_net_amount = ?,
-      tanker_no = ?, transporter_id = ?, is_registered_transporter = ?, posting = 1, financed_by_party = ?,
+      tanker_no = ?, transporter_id = ?, allowed_shortage_pct = ?, is_registered_transporter = ?, posting = 1, financed_by_party = ?,
       payment_cleared_date = ?
       WHERE id = ?`,
     args: [
@@ -305,7 +306,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       n(v.oil_type_id),
       v.bargain_type || 'EX',
       n(v.ordered_qty),
-      v.uom || 'ton',
+      v.uom || 'MT',
       n(v.bargain_rate),
       n(v.invoice_rate),
       m.interest_pct,
@@ -324,6 +325,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       m.final_net_amount,
       v.tanker_no || null,
       v.transporter_id ? n(v.transporter_id) : null,
+      v.allowed_shortage_pct != null && v.allowed_shortage_pct !== '' ? Number(v.allowed_shortage_pct) : null,
       v.is_registered_transporter ? 1 : 0,
       v.financed_by_party ? 1 : 0,
       v.payment_date || v.order_date,
@@ -377,7 +379,8 @@ async function assignTankers(
 
 export async function listPurchaseTankers(): Promise<Row[]> {
   const res = await getClient().execute(`
-    SELECT pt.*, o.invoice_no, b.bargain_no, b.bargain_type, b.rate_per_uom AS bargain_rate,
+    SELECT pt.*, o.invoice_no, o.allowed_shortage_pct AS order_allowed_shortage_pct,
+           b.bargain_no, b.bargain_type, b.rate_per_uom AS bargain_rate,
            b.allowed_shortage_pct, s.name AS supplier_name,
            p.code AS oil_code, p.name AS oil_name, src.name AS source_name,
            tr.name AS transporter_name
@@ -539,9 +542,20 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
     const isEx = !isDelivered(b.bargain_type)
     const rate = isEx ? n(data.transport_rate_per_ton) : 0
     const transport = n(tanker.loaded_qty) * rate
+    // Shortage tolerance: the purchase's own % (set at purchase creation when a
+    // transporter is attached) wins; else the bargain's; else the global default.
     let pct = b.allowed_shortage_pct == null
       ? n((await getSetting('allowed_shortage_pct')) ?? '0')
       : n(b.allowed_shortage_pct)
+    if (tanker.order_id) {
+      const ord = await c.execute({
+        sql: 'SELECT allowed_shortage_pct FROM orders WHERE id = ?',
+        args: [n(tanker.order_id)]
+      })
+      if (ord.rows.length && ord.rows[0].allowed_shortage_pct != null) {
+        pct = n(ord.rows[0].allowed_shortage_pct)
+      }
+    }
     const shortage = Math.max(0, n(tanker.loaded_qty) - receivedQty)
     const excess = Math.max(0, shortage - (n(tanker.loaded_qty) * pct) / 100)
     const penalty = isEx ? excess * n(b.rate_per_uom) : 0
@@ -691,6 +705,8 @@ export async function advanceOrder(
       const bp = b.rows.length ? b.rows[0].allowed_shortage_pct : null
       if (bp != null) pct = Number(bp)
     }
+    // the purchase's own tolerance (captured at creation) wins over both
+    if (order.allowed_shortage_pct != null) pct = Number(order.allowed_shortage_pct)
     const allowedQty = (orderedQty * pct) / 100
     const actualShortage = Math.max(0, orderedQty - receivedQty)
     const excessShortage = Math.max(0, actualShortage - allowedQty)

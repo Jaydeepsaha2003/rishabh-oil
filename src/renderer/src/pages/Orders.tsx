@@ -119,6 +119,7 @@ export function Orders(): React.JSX.Element {
   const [actionRow, setActionRow] = useState<Row | null>(null)
   const [actionForm, setActionForm] = useState<Row>({})
   const [detailRow, setDetailRow] = useState<Row | null>(null)
+  const [gateEntries, setGateEntries] = useState<Row[]>([])
 
   const [formPage, setFormPage] = useState(false)
   const [editing, setEditing] = useState<Row | null>(null)
@@ -129,14 +130,15 @@ export function Orders(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [o, pt, b, s, src, tr, cfg] = await Promise.all([
+    const [o, pt, b, s, src, tr, cfg, ge] = await Promise.all([
       window.api.orders.list(),
       window.api.tankers.list(),
       window.api.bargains.list(),
       window.api.data.list('suppliers'),
       window.api.data.list('sources'),
       window.api.data.list('transporters'),
-      window.api.settings.all()
+      window.api.settings.all(),
+      window.api.gate.list()
     ])
     setRows(o)
     setTankers(pt)
@@ -145,8 +147,19 @@ export function Orders(): React.JSX.Element {
     setSources(src.filter((x) => x.active))
     setTransporters(tr.filter((x) => x.active))
     setSettings(cfg)
+    setGateEntries(ge)
     setLoading(false)
   }, [])
+
+  // Total gate-received qty for a tanker — completed weighments only; a pending
+  // arrival (no weight yet) doesn't count. Null when nothing is completed.
+  function gateQtyFor(tankerId: unknown): number | null {
+    const list = gateEntries.filter(
+      (g) => Number(g.tanker_id) === Number(tankerId) && String(g.status || 'completed') === 'completed'
+    )
+    if (!list.length) return null
+    return list.reduce((s, g) => s + (Number(g.received_qty) || 0), 0)
+  }
 
   useEffect(() => { load() }, [load])
   useLiveRefresh(load)
@@ -173,7 +186,7 @@ export function Orders(): React.JSX.Element {
         if (!(ed >= start && ed <= end)) continue
       }
       const key = String(t.oil_code || t.oil_name || '—')
-      const label = [t.oil_code, t.oil_name].filter(Boolean).join(' · ') || '—'
+      const label = key
       if (!map.has(key)) map.set(key, { label, cells: {}, total: 0 })
       const row = map.get(key)!
       const cell = (row.cells[stage] ??= { count: 0, items: [] })
@@ -200,7 +213,7 @@ export function Orders(): React.JSX.Element {
       supplier_id: b.supplier_id,
       oil_type_id: b.oil_type_id,
       supplier_name: b.supplier_name,
-      oil_label: `${b.oil_code} · ${b.oil_name}`,
+      oil_label: String(b.oil_code || b.oil_name || ''),
       uom: b.uom,
       balance_qty: b.balance_qty,
       // default the condition (EX/DLD) from the bargain; user can toggle it
@@ -269,7 +282,8 @@ export function Orders(): React.JSX.Element {
     if (target === 'inside_factory') next.inside_factory_date = todayISO()
     if (target === 'empty') Object.assign(next, {
       empty_date: todayISO(),
-      received_qty: row.loaded_qty,
+      // prefill with the gate-received qty so the gate cross-check passes
+      received_qty: gateQtyFor(row.id) ?? row.loaded_qty,
       transporter_id: row.transporter_id || '',
       transport_rate_per_ton: transporters.find((x) => x.id === row.transporter_id)?.default_rate_per_ton || ''
     })
@@ -336,7 +350,7 @@ export function Orders(): React.JSX.Element {
       bargain_type: b.bargain_type,
       bargain_rate: b.rate_per_uom,
       supplier_name: b.supplier_name,
-      oil_label: `${b.oil_code} · ${b.oil_name}`,
+      oil_label: String(b.oil_code || b.oil_name || ''),
       uom: b.uom,
       invoice_rate: p.invoice_rate || b.rate_per_uom,
       gst_pct: supplier?.gst_pct ?? 0,
@@ -352,7 +366,7 @@ export function Orders(): React.JSX.Element {
 
   function openNewPurchase(): void {
     setEditing(null)
-    setForm({ invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST' })
+    setForm({ invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '' })
     setSelected([])
     setError(null)
     setFormPage(true)
@@ -369,7 +383,7 @@ export function Orders(): React.JSX.Element {
       bargain_type: row.bargain_type,
       bargain_rate: row.bargain_rate,
       supplier_name: row.supplier_name,
-      oil_label: `${row.oil_code} · ${row.oil_name}`,
+      oil_label: String(row.oil_code || row.oil_name || ''),
       uom: row.uom,
       invoice_no: row.invoice_no,
       order_date: row.order_date,
@@ -383,7 +397,8 @@ export function Orders(): React.JSX.Element {
       interest_pct: supplier?.interest_pct ?? row.interest_pct,
       interest_days: supplier?.interest_days ?? row.interest_days,
       transporter_id: row.transporter_id || '',
-      is_registered_transporter: !!row.is_registered_transporter
+      is_registered_transporter: !!row.is_registered_transporter,
+      allowed_shortage_pct: row.allowed_shortage_pct ?? ''
     })
     setSelected(tankers.filter((x) => x.order_id === row.id).map((x) => Number(x.id)))
     setError(null)
@@ -453,6 +468,10 @@ export function Orders(): React.JSX.Element {
       tds_pct: Number(form.tds_pct) || 0,
       tanker_ids: selected,
       transporter_id: form.transporter_id ? Number(form.transporter_id) : null,
+      allowed_shortage_pct:
+        form.allowed_shortage_pct === '' || form.allowed_shortage_pct == null
+          ? null
+          : Number(form.allowed_shortage_pct),
       financed_by_party: financedCount === selected.length,
       payment_date: form.order_date
     }
@@ -489,7 +508,12 @@ export function Orders(): React.JSX.Element {
   const shortage = actionRow ? computeShortage({
     orderedQty: Number(actionRow.loaded_qty) || 0,
     receivedQty: Number(actionForm.received_qty) || 0,
-    allowedPct: Number(settings.allowed_shortage_pct || 0),
+    allowedPct: Number(
+      actionRow.order_allowed_shortage_pct ??
+        actionRow.allowed_shortage_pct ??
+        settings.allowed_shortage_pct ??
+        0
+    ),
     bargainRate: Number(actionRow.bargain_rate) || 0,
     transportRatePerTon: Number(actionForm.transport_rate_per_ton) || 0
   }) : null
@@ -577,6 +601,17 @@ export function Orders(): React.JSX.Element {
                     </div>
                     <span className="text-[11px] text-muted-foreground">Taken from the selected tankers.</span>
                   </div>
+                  <div className={cn('grid gap-1.5', !tankerTransporterId && 'opacity-50')}>
+                    <Label>Allowed shortage %</Label>
+                    <Input
+                      type="number"
+                      value={form.allowed_shortage_pct ?? ''}
+                      disabled={!tankerTransporterId}
+                      placeholder={tankerTransporterId ? `default ${settings.allowed_shortage_pct ?? '0.2'}` : 'No transporter — N/A'}
+                      onChange={(e) => setForm((p) => ({ ...p, allowed_shortage_pct: e.target.value }))}
+                    />
+                    <span className="text-[11px] text-muted-foreground">Shortage tolerance before the transporter is charged.</span>
+                  </div>
                 </div>
                 <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
                   Saving the purchase automatically posts its payable amount to the supplier ledger.
@@ -623,7 +658,7 @@ export function Orders(): React.JSX.Element {
             <aside className="h-fit rounded-xl border bg-card p-5 xl:sticky xl:top-6">
               <h3 className="mb-3 font-medium">Purchase summary</h3>
               <MoneyRow label="Tankers" value={String(selected.length)} />
-              <MoneyRow label="Total loaded quantity" value={`${formatNum(totalQty)} ${form.uom || 'ton'}`} strong />
+              <MoneyRow label="Total loaded quantity" value={`${formatNum(totalQty)} ${form.uom || 'MT'}`} strong />
               <MoneyRow label="Paid by us" value={String(selected.length - financedCount)} />
               <MoneyRow label="Supplier financed" value={String(financedCount)} />
               <div className="my-3 border-t" />
@@ -910,6 +945,24 @@ export function Orders(): React.JSX.Element {
           {target === 'outside_factory' && <div className="grid gap-1.5"><Label>Outside factory date</Label><DatePicker value={actionForm.outside_factory_date || ''} onChange={(v) => setActionForm({ outside_factory_date: v })} /></div>}
           {target === 'inside_factory' && <div className="grid gap-1.5"><Label>Inside factory date</Label><DatePicker value={actionForm.inside_factory_date || ''} onChange={(v) => setActionForm({ inside_factory_date: v })} /></div>}
           {target === 'empty' && actionRow && shortage && <div className="grid gap-4">
+            {(() => {
+              const gq = gateQtyFor(actionRow.id)
+              const hasPending = gateEntries.some(
+                (g) => Number(g.tanker_id) === Number(actionRow.id) && g.status === 'pending'
+              )
+              return gq == null ? (
+                <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  {hasPending
+                    ? `Tanker ${actionRow.tanker_no} arrived at the gate but its weight is still pending. Complete the weighment in Gate Entry first — this step is blocked until then.`
+                    : `No gate entry recorded for tanker ${actionRow.tanker_no}. Record the gate receipt in Gate Entry first — this step is blocked until then.`}
+                </div>
+              ) : (
+                <div className="rounded-md bg-muted px-3 py-2 text-sm">
+                  Gate received qty: <span className="font-semibold tabular-nums">{formatNum(gq)} {actionRow.uom}</span>
+                  <span className="text-muted-foreground"> — the received quantity must match this.</span>
+                </div>
+              )
+            })()}
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1.5"><Label>Empty date</Label><DatePicker value={actionForm.empty_date || ''} onChange={(v) => setActionForm((p) => ({ ...p, empty_date: v }))} /></div>
               <div className="grid gap-1.5"><Label>Received quantity</Label><Input type="number" value={actionForm.received_qty || ''} onChange={(e) => setActionForm((p) => ({ ...p, received_qty: e.target.value }))} /></div>

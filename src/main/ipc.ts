@@ -62,6 +62,7 @@ import {
   nextGateEntryNo,
   createGateEntry,
   updateGateEntry,
+  completeGateEntry,
   deleteGateEntry
 } from './gate'
 import {
@@ -257,6 +258,9 @@ export function registerIpc(): void {
   handle('gate:create', (_e, { values }: { values: Row }) => createGateEntry(values))
   handle('gate:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateGateEntry(id, values)
+  )
+  handle('gate:complete', (_e, { id, receivedQty }: { id: number; receivedQty: number }) =>
+    completeGateEntry(id, receivedQty)
   )
   handle('gate:delete', (_e, { id }: { id: number }) => deleteGateEntry(id))
 

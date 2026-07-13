@@ -155,6 +155,18 @@ CREATE TABLE IF NOT EXISTS sources (
   active INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE TABLE IF NOT EXISTS brokers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  contact_person TEXT,
+  phone TEXT,
+  brokerage_pct REAL NOT NULL DEFAULT 0,
+  address TEXT,
+  note TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS bargains (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   bargain_no TEXT NOT NULL UNIQUE,
@@ -269,7 +281,8 @@ CREATE TABLE IF NOT EXISTS gate_entries (
   oil_type_id INTEGER REFERENCES products(id),
   dispatch_qty REAL NOT NULL DEFAULT 0,
   received_qty REAL NOT NULL DEFAULT 0,
-  uom TEXT NOT NULL DEFAULT 'ton',
+  uom TEXT NOT NULL DEFAULT 'MT',
+  status TEXT NOT NULL DEFAULT 'completed',
   note TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

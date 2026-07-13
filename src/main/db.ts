@@ -100,6 +100,7 @@ const MIGRATIONS = [
   "UPDATE app_settings SET value = 'MT' WHERE key = 'default_uom' AND value = 'ton'",
   'ALTER TABLE suppliers ADD COLUMN supplier_type TEXT',
   "ALTER TABLE orders ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
+  "ALTER TABLE gate_entries ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'",
   'ALTER TABLE suppliers ADD COLUMN opening_purchase_amount REAL NOT NULL DEFAULT 0',
   'ALTER TABLE suppliers ADD COLUMN opening_purchase_date TEXT',
   // bargain condition renamed to EX/DLD
@@ -137,6 +138,28 @@ const MIGRATIONS = [
   "UPDATE orders SET status = 'at_port' WHERE status = 'loaded'"
 ]
 
+// One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to
+// the 2-digit scheme (…/17), keeping the same number. Idempotent — already
+// 2-digit values are left untouched.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function backfillBargainSerials(c: any): Promise<void> {
+  const res = await c.execute('SELECT id, bargain_no FROM bargains')
+  for (const r of res.rows) {
+    const no = String(r.bargain_no || '')
+    const parts = no.split('/')
+    const last = parts[parts.length - 1] ?? ''
+    const num = parseInt(last, 10)
+    if (!/^\d+$/.test(last) || Number.isNaN(num)) continue
+    const fixed = String(num).padStart(2, '0')
+    if (fixed === last) continue
+    parts[parts.length - 1] = fixed
+    await c.execute({
+      sql: 'UPDATE bargains SET bargain_no = ? WHERE id = ?',
+      args: [parts.join('/'), r.id]
+    })
+  }
+}
+
 export async function initDb(): Promise<void> {
   // Never crash the app if the token is missing — the UI surfaces the status.
   try {
@@ -154,6 +177,7 @@ export async function initDb(): Promise<void> {
         // column already exists — expected on databases already migrated
       }
     }
+    await backfillBargainSerials(c).catch(() => {})
     console.log('[db] schema ready')
   } catch (err) {
     console.error('[db] init skipped/failed:', (err as Error).message)

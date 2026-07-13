@@ -21,6 +21,8 @@ export const MODULES: ModuleDef[] = [
   { key: 'suppliers', label: 'Suppliers' },
   { key: 'transporters', label: 'Transporters' },
   { key: 'customers', label: 'Customers' },
+  { key: 'ports', label: 'Ports' },
+  { key: 'brokers', label: 'Brokers' },
   { key: 'settings', label: 'Settings' }
 ]
 

@@ -37,8 +37,13 @@ export function DatePicker({
   const [open, setOpen] = React.useState(false)
   const selected = toDate(value)
 
-  const disabledMatcher: Matcher | undefined =
-    min || max ? { before: toDate(min) as Date, after: toDate(max) as Date } : undefined
+  // Build one matcher per defined bound — a combined {before, after} object with
+  // an undefined side is treated as a (broken) interval and silently matches nothing.
+  const matchers: Matcher[] = []
+  const minDate = toDate(min)
+  const maxDate = toDate(max)
+  if (minDate) matchers.push({ before: minDate })
+  if (maxDate) matchers.push({ after: maxDate })
 
   return (
     // modal — otherwise the calendar is mouse-dead inside modal dialogs
@@ -67,7 +72,7 @@ export function DatePicker({
             if (d) onChange(format(d, 'yyyy-MM-dd'))
             setOpen(false)
           }}
-          disabled={disabledMatcher}
+          disabled={matchers.length ? matchers : undefined}
           initialFocus
         />
       </PopoverContent>

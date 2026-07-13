@@ -44,10 +44,13 @@ export async function nextGateEntryNo(): Promise<string> {
   return `GE/${String(maxSeq + 1).padStart(4, '0')}`
 }
 
-// Total received qty recorded at the gate for a tanker (0 if no gate entry).
+// Total received qty recorded at the gate for a tanker. Only COMPLETED entries
+// count — an arrival still waiting for weighment is not a received quantity.
+// Returns null when the tanker has no completed gate entry yet.
 export async function tankerGateReceived(tankerId: number): Promise<number | null> {
   const res = await getClient().execute({
-    sql: 'SELECT COALESCE(SUM(received_qty), 0) AS qty, COUNT(*) AS cnt FROM gate_entries WHERE tanker_id = ?',
+    sql: `SELECT COALESCE(SUM(received_qty), 0) AS qty, COUNT(*) AS cnt
+          FROM gate_entries WHERE tanker_id = ? AND status = 'completed'`,
     args: [tankerId]
   })
   if (!res.rows.length || n(res.rows[0].cnt) === 0) return null
@@ -57,10 +60,13 @@ export async function tankerGateReceived(tankerId: number): Promise<number | nul
 export async function createGateEntry(v: Row): Promise<{ id: number }> {
   const c = getClient()
   const gateNo = String(v.gate_entry_no || '').trim() || (await nextGateEntryNo())
+  // Two-step flow: an arrival without a weight stays 'pending' until the
+  // weighed quantity is entered, which completes the transaction.
+  const status = v.status || (n(v.received_qty) > 0 ? 'completed' : 'pending')
   const res = await c.execute({
     sql: `INSERT INTO gate_entries
-      (gate_entry_no, entry_date, tanker_id, tanker_no, oil_type_id, dispatch_qty, received_qty, uom, note)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (gate_entry_no, entry_date, tanker_id, tanker_no, oil_type_id, dispatch_qty, received_qty, uom, status, note)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       gateNo,
       v.entry_date,
@@ -69,17 +75,31 @@ export async function createGateEntry(v: Row): Promise<{ id: number }> {
       v.oil_type_id ? n(v.oil_type_id) : null,
       n(v.dispatch_qty),
       n(v.received_qty),
-      v.uom || 'ton',
+      v.uom || 'MT',
+      status,
       v.note || null
     ]
   })
   return { id: Number(res.lastInsertRowid) }
 }
 
+// Step 2 for the gateman: enter the weighed quantity and finish the entry.
+export async function completeGateEntry(id: number, receivedQty: number): Promise<{ id: number }> {
+  if (!Number.isFinite(receivedQty) || receivedQty <= 0) {
+    throw new Error('Enter the weighed quantity')
+  }
+  await getClient().execute({
+    sql: "UPDATE gate_entries SET received_qty = ?, status = 'completed' WHERE id = ?",
+    args: [receivedQty, id]
+  })
+  return { id }
+}
+
 export async function updateGateEntry(id: number, v: Row): Promise<{ id: number }> {
+  const status = n(v.received_qty) > 0 ? 'completed' : 'pending'
   await getClient().execute({
     sql: `UPDATE gate_entries SET gate_entry_no = ?, entry_date = ?, tanker_id = ?, tanker_no = ?,
-          oil_type_id = ?, dispatch_qty = ?, received_qty = ?, uom = ?, note = ? WHERE id = ?`,
+          oil_type_id = ?, dispatch_qty = ?, received_qty = ?, uom = ?, status = ?, note = ? WHERE id = ?`,
     args: [
       String(v.gate_entry_no || '').trim(),
       v.entry_date,
@@ -88,7 +108,8 @@ export async function updateGateEntry(id: number, v: Row): Promise<{ id: number 
       v.oil_type_id ? n(v.oil_type_id) : null,
       n(v.dispatch_qty),
       n(v.received_qty),
-      v.uom || 'ton',
+      v.uom || 'MT',
+      status,
       v.note || null,
       id
     ]

@@ -103,15 +103,19 @@ async function nextSalesBargainNo(
     .toUpperCase()
   const party = String(customer || 'PARTY').replace(/\s+/g, '').toUpperCase() || 'PARTY'
 
-  // continuous serial = max trailing segment across all sales bargains + 1
-  const res = await c.execute('SELECT bargain_no FROM sales_bargains')
+  // Serial resets every calendar month (2-digit), mirroring purchase bargains.
+  const monthKey = String(dateStr).slice(0, 7) // yyyy-mm
+  const res = await c.execute({
+    sql: 'SELECT bargain_no FROM sales_bargains WHERE substr(bargain_date, 1, 7) = ?',
+    args: [monthKey]
+  })
   let maxSeq = 0
   for (const r of res.rows) {
     const parts = String(r.bargain_no).split('/')
     const seq = parseInt(parts[parts.length - 1] ?? '0', 10)
     if (!Number.isNaN(seq) && seq > maxSeq) maxSeq = seq
   }
-  const serial = String(maxSeq + 1).padStart(4, '0')
+  const serial = String(maxSeq + 1).padStart(2, '0')
   return `${fg}/${dayMonth(dateStr)}/${party}/${serial}`
 }
 
@@ -130,7 +134,7 @@ export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_
       v.customer || null,
       n(v.product_id),
       n(v.qty),
-      v.uom || 'ton',
+      v.uom || 'MT',
       n(v.rate),
       v.rate_expiry_date || null,
       v.note || null
@@ -148,7 +152,7 @@ export async function updateSalesBargain(id: number, v: Row): Promise<{ id: numb
       v.customer || null,
       n(v.product_id),
       n(v.qty),
-      v.uom || 'ton',
+      v.uom || 'MT',
       n(v.rate),
       v.rate_expiry_date || null,
       v.note || null,
@@ -179,7 +183,7 @@ export async function createSale(v: Row): Promise<{ id: number }> {
       n(v.product_id),
       v.sales_bargain_id ? n(v.sales_bargain_id) : null,
       qty,
-      v.uom || 'ton',
+      v.uom || 'MT',
       rate,
       amount,
       v.status || 'pending',
@@ -207,7 +211,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       n(v.product_id),
       v.sales_bargain_id ? n(v.sales_bargain_id) : null,
       qty,
-      v.uom || 'ton',
+      v.uom || 'MT',
       rate,
       amount,
       v.status || 'pending',

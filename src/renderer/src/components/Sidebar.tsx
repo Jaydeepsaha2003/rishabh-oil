@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import {
+  Anchor,
   Boxes,
+  Briefcase,
   Building2,
   Contact,
   CreditCard,
@@ -40,6 +42,8 @@ export type Page =
   | 'suppliers'
   | 'transporters'
   | 'customers'
+  | 'ports'
+  | 'brokers'
 
 const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   dashboard: { label: 'Dashboard', icon: LayoutDashboard },
@@ -56,6 +60,8 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   suppliers: { label: 'Suppliers', icon: Building2 },
   transporters: { label: 'Transporters', icon: Truck },
   customers: { label: 'Customers', icon: Contact },
+  ports: { label: 'Ports', icon: Anchor },
+  brokers: { label: 'Brokers', icon: Briefcase },
   settings: { label: 'Settings', icon: SettingsIcon }
 }
 
@@ -65,7 +71,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Production', ids: ['products', 'formulation', 'production', 'stock'] },
   { label: 'Sales', ids: ['sales'] },
   { label: 'Accounts', ids: ['payments', 'ledgers'] },
-  { label: 'Masters', ids: ['suppliers', 'transporters', 'customers'] },
+  { label: 'Masters', ids: ['suppliers', 'transporters', 'customers', 'ports', 'brokers'] },
   { label: 'System', ids: ['settings'] }
 ]
 

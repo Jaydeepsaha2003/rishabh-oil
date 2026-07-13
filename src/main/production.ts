@@ -48,7 +48,7 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
 
   const ins = await c.execute({
     sql: 'INSERT INTO production (prod_date, product_id, qty, uom, note) VALUES (?, ?, ?, ?, ?)',
-    args: [v.prod_date, productId, qty, v.uom || 'ton', v.note || null]
+    args: [v.prod_date, productId, qty, v.uom || 'MT', v.note || null]
   })
   const id = Number(ins.lastInsertRowid)
 
