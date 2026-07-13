@@ -28,6 +28,7 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
+import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
 export type FieldType = 'text' | 'number' | 'switch' | 'select' | 'date'
@@ -48,6 +49,9 @@ export interface FieldDef {
   default?: string | number | boolean
   placeholder?: string
   options?: { value: string; label: string }[]
+  // Field is editable only while this returns true (e.g. gated by a switch).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  enabledWhen?: (form: Record<string, any>) => boolean
 }
 
 export interface ColumnDef {
@@ -274,65 +278,72 @@ export function EntityManager({
             <DialogTitle>{editingId == null ? `Add ${title}` : `Edit ${title}`}</DialogTitle>
           </DialogHeader>
           <div className="grid max-h-[60vh] gap-3 overflow-y-auto py-2 pr-1">
-            {fields.map((fd) => (
-              <div key={fd.key} className="grid gap-1.5">
-                {fd.type === 'switch' ? (
-                  <div className="flex items-center justify-between rounded-md border px-3 py-2">
-                    <Label>{fd.label}</Label>
-                    <Switch
-                      checked={!!form[fd.key]}
-                      onCheckedChange={(v) => setField(fd.key, v)}
-                    />
-                  </div>
-                ) : fd.type === 'date' ? (
-                  <>
-                    <Label>
-                      {fd.label}
-                      {fd.required ? ' *' : ''}
-                    </Label>
-                    <DatePicker
-                      value={(form[fd.key] as string) ?? ''}
-                      onChange={(v) => setField(fd.key, v)}
-                    />
-                  </>
-                ) : fd.type === 'select' ? (
-                  <>
-                    <Label>
-                      {fd.label}
-                      {fd.required ? ' *' : ''}
-                    </Label>
-                    <Select
-                      value={String(form[fd.key] ?? '')}
-                      onValueChange={(v) => setField(fd.key, v)}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder={`Select ${fd.label.toLowerCase()}`} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(fd.options ?? []).map((o) => (
-                          <SelectItem key={o.value} value={o.value}>
-                            {o.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </>
-                ) : (
-                  <>
-                    <Label>
-                      {fd.label}
-                      {fd.required ? ' *' : ''}
-                    </Label>
-                    <Input
-                      type={fd.type === 'number' ? 'number' : 'text'}
-                      value={form[fd.key] ?? ''}
-                      placeholder={fd.placeholder}
-                      onChange={(e) => setField(fd.key, e.target.value)}
-                    />
-                  </>
-                )}
-              </div>
-            ))}
+            {fields.map((fd) => {
+              const fieldDisabled = fd.enabledWhen ? !fd.enabledWhen(form) : false
+              return (
+                <div key={fd.key} className={cn('grid gap-1.5', fieldDisabled && 'opacity-50')}>
+                  {fd.type === 'switch' ? (
+                    <div className="flex items-center justify-between rounded-md border px-3 py-2">
+                      <Label>{fd.label}</Label>
+                      <Switch
+                        checked={!!form[fd.key]}
+                        disabled={fieldDisabled}
+                        onCheckedChange={(v) => setField(fd.key, v)}
+                      />
+                    </div>
+                  ) : fd.type === 'date' ? (
+                    <>
+                      <Label>
+                        {fd.label}
+                        {fd.required ? ' *' : ''}
+                      </Label>
+                      <DatePicker
+                        value={(form[fd.key] as string) ?? ''}
+                        disabled={fieldDisabled}
+                        onChange={(v) => setField(fd.key, v)}
+                      />
+                    </>
+                  ) : fd.type === 'select' ? (
+                    <>
+                      <Label>
+                        {fd.label}
+                        {fd.required ? ' *' : ''}
+                      </Label>
+                      <Select
+                        value={String(form[fd.key] ?? '')}
+                        disabled={fieldDisabled}
+                        onValueChange={(v) => setField(fd.key, v)}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder={`Select ${fd.label.toLowerCase()}`} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(fd.options ?? []).map((o) => (
+                            <SelectItem key={o.value} value={o.value}>
+                              {o.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </>
+                  ) : (
+                    <>
+                      <Label>
+                        {fd.label}
+                        {fd.required ? ' *' : ''}
+                      </Label>
+                      <Input
+                        type={fd.type === 'number' ? 'number' : 'text'}
+                        value={form[fd.key] ?? ''}
+                        placeholder={fd.placeholder}
+                        disabled={fieldDisabled}
+                        onChange={(e) => setField(fd.key, e.target.value)}
+                      />
+                    </>
+                  )}
+                </div>
+              )
+            })}
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <DialogFooter>

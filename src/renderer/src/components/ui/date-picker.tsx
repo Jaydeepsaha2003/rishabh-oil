@@ -41,7 +41,8 @@ export function DatePicker({
     min || max ? { before: toDate(min) as Date, after: toDate(max) as Date } : undefined
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    // modal — otherwise the calendar is mouse-dead inside modal dialogs
+    <Popover modal open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
           type="button"

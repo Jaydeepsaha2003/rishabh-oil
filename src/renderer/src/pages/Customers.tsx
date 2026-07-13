@@ -14,8 +14,8 @@ const fields: FieldDef[] = [
   { key: 'tds_threshold', label: 'TDS slab threshold (₹/FY)', type: 'number', default: 0 },
   { key: 'tds_above_only', label: 'No TDS below the slab', type: 'switch', default: false },
   { key: 'adds_interest', label: 'Charges interest after credit period', type: 'switch', default: false },
-  { key: 'interest_pct', label: 'Interest %', type: 'number', default: 0 },
-  { key: 'interest_days', label: 'Interest days', type: 'number', default: 0 },
+  { key: 'interest_pct', label: 'Interest %', type: 'number', default: 0, enabledWhen: (f) => !!f.adds_interest },
+  { key: 'interest_days', label: 'Interest days', type: 'number', default: 0, enabledWhen: (f) => !!f.adds_interest },
   { key: 'credit_period_days', label: 'Credit period (days)', type: 'number', default: 0 },
   { key: 'active', label: 'Active', type: 'switch', default: true }
 ]

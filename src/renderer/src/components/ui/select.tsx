@@ -75,7 +75,9 @@ function Select({ value, onValueChange, disabled, children }: SelectProps): Reac
 
   return (
     <SelectContext.Provider value={{ value: current, items, disabled }}>
-      <Popover open={open} onOpenChange={(o) => !disabled && setOpen(o)}>
+      {/* modal — otherwise the list is mouse-dead inside modal dialogs
+          (the dialog disables pointer events on the body, where this portals to) */}
+      <Popover modal open={open} onOpenChange={(o) => !disabled && setOpen(o)}>
         {trigger}
         <PopoverContent
           align="start"
