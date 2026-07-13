@@ -167,23 +167,23 @@ export function GateEntry(): React.JSX.Element {
         subtitle="Step 1: record the tanker coming in · Step 2: enter the weight to complete"
         hint="Made for the gate: record the arrival the moment a tanker comes in (no weight needed). It waits under 'Waiting for weighment' until the weighbridge figure is entered, which completes the entry. The Empty step in Purchases checks against this weight."
       />
-      <div className="w-full space-y-6 p-6">
+      <div className="w-full space-y-4 p-6">
         {/* Step 1 — arrival */}
-        <section className="rounded-xl border-2 border-emerald-200 bg-card p-5 shadow-sm">
-          <div className="mb-4 flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
-              <Truck className="h-5 w-5" />
+        <section className="rounded-xl border border-emerald-200 bg-card p-4 shadow-sm">
+          <div className="mb-3 flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-100 text-emerald-700">
+              <Truck className="h-4 w-4" />
             </div>
             <div>
-              <h3 className="text-base font-semibold">1 · Tanker arrived at gate</h3>
+              <h3 className="text-sm font-semibold">1 · Tanker arrived at gate</h3>
               <p className="text-xs text-muted-foreground">Pick the tanker and press the green button. Weight comes later.</p>
             </div>
           </div>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
             <div className="grid gap-1.5 xl:col-span-2">
               <Label>Tanker *</Label>
               <Select value={String(arrival.tanker_id || '')} onValueChange={chooseTanker}>
-                <SelectTrigger className="h-11 text-base"><SelectValue placeholder="Select arriving tanker" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Select arriving tanker" /></SelectTrigger>
                 <SelectContent>
                   {arrivable.map((t) => (
                     <SelectItem key={t.id} value={String(t.id)}>{t.tanker_no} · {t.supplier_name}</SelectItem>
@@ -194,71 +194,72 @@ export function GateEntry(): React.JSX.Element {
             </div>
             <div className="grid gap-1.5">
               <Label>Tanker number *</Label>
-              <Input className="h-11 text-base" value={arrival.tanker_no || ''} onChange={(e) => setArrival((p) => ({ ...p, tanker_no: e.target.value }))} />
+              <Input value={arrival.tanker_no || ''} onChange={(e) => setArrival((p) => ({ ...p, tanker_no: e.target.value }))} />
             </div>
             <div className="grid gap-1.5">
               <Label>Gate entry no</Label>
-              <Input className="h-11 text-base" value={arrival.gate_entry_no || ''} onChange={(e) => setArrival((p) => ({ ...p, gate_entry_no: e.target.value }))} />
+              <Input value={arrival.gate_entry_no || ''} onChange={(e) => setArrival((p) => ({ ...p, gate_entry_no: e.target.value }))} />
             </div>
             <div className="grid gap-1.5">
               <Label>Date</Label>
-              <DatePicker className="h-11" value={arrival.entry_date || ''} onChange={(v) => setArrival((p) => ({ ...p, entry_date: v }))} />
+              <DatePicker value={arrival.entry_date || ''} onChange={(v) => setArrival((p) => ({ ...p, entry_date: v }))} />
             </div>
           </div>
           <Button
-            className="mt-4 h-12 w-full bg-emerald-600 text-base font-semibold hover:bg-emerald-700 md:w-auto md:px-10"
+            size="sm"
+            className="mt-3 bg-emerald-600 px-5 font-semibold hover:bg-emerald-700"
             onClick={recordArrival}
             disabled={savingArrival}
           >
-            <Truck className="h-5 w-5" />
+            <Truck className="h-4 w-4" />
             {savingArrival ? 'Saving…' : 'Tanker received — inside factory'}
           </Button>
         </section>
 
         {/* Step 2 — waiting for weighment */}
         <section>
-          <div className="mb-3 flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-100 text-amber-700">
-              <Scale className="h-5 w-5" />
+          <div className="mb-2 flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-100 text-amber-700">
+              <Scale className="h-4 w-4" />
             </div>
             <div>
-              <h3 className="text-base font-semibold">2 · Waiting for weighment</h3>
+              <h3 className="text-sm font-semibold">2 · Waiting for weighment</h3>
               <p className="text-xs text-muted-foreground">Enter the weighbridge figure to complete the entry.</p>
             </div>
             <Badge variant={pending.length ? 'warning' : 'muted'} className="ml-1">{pending.length}</Badge>
           </div>
           {pending.length === 0 ? (
-            <div className="rounded-xl border border-dashed py-8 text-center text-sm text-muted-foreground">
+            <div className="rounded-xl border border-dashed py-5 text-center text-sm text-muted-foreground">
               No tankers waiting for weight.
             </div>
           ) : (
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {pending.map((row) => (
-                <div key={row.id} className="rounded-xl border-2 border-amber-200 bg-card p-4 shadow-sm">
+                <div key={row.id} className="rounded-lg border border-amber-200 bg-card p-3 shadow-sm">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="truncate text-lg font-bold">{row.tanker_no}</div>
+                      <div className="truncate text-sm font-semibold">{row.tanker_no}</div>
                       <div className="truncate text-xs text-muted-foreground">
                         {row.supplier_name || '—'}{row.bargain_no ? ` · ${row.bargain_no}` : ''}
                       </div>
                     </div>
-                    <Badge variant="warning">Pending weight</Badge>
+                    <Badge variant="warning">Pending</Badge>
                   </div>
-                  <div className="mt-1 text-xs text-muted-foreground">
+                  <div className="mt-0.5 text-xs text-muted-foreground">
                     {row.gate_entry_no} · arrived {formatDate(row.entry_date)}
                     {Number(row.dispatch_qty) > 0 && <> · dispatch {formatNum(row.dispatch_qty)} {row.uom}</>}
                   </div>
-                  <div className="mt-3 flex gap-2">
+                  <div className="mt-2 flex gap-1.5">
                     <Input
                       type="number"
-                      className="h-12 flex-1 text-lg font-semibold"
+                      className="flex-1"
                       placeholder={`Weight (${row.uom})`}
                       value={weights[row.id] ?? ''}
                       onChange={(e) => setWeights((p) => ({ ...p, [row.id]: e.target.value }))}
                       onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)}
                     />
-                    <Button className="h-12 px-5 text-base font-semibold" onClick={() => saveWeight(row)}>
-                      <Scale className="h-5 w-5" /> Save
+                    <Button size="sm" className="h-9" onClick={() => saveWeight(row)}>
+                      <Scale className="h-4 w-4" /> Save
                     </Button>
                   </div>
                 </div>
