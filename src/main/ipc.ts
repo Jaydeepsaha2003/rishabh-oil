@@ -66,6 +66,13 @@ import {
   deleteGateEntry
 } from './gate'
 import {
+  listAccounts,
+  createAccount,
+  accountStatement,
+  addManualJournal,
+  deleteManualEntry
+} from './journal'
+import {
   listLCs,
   listLCIssuances,
   createLC,
@@ -96,7 +103,7 @@ type Row = Record<string, any>
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:fyTaxable$|:needs$|:nextNo$|:liveUsers$|:ips$|:logs$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:fyTaxable$|:needs$|:nextNo$|:liveUsers$|:ips$|:logs$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$/
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handle = (channel: string, fn: (...a: any[]) => unknown): void => {
     ipcMain.handle(channel, async (e, args) => {
@@ -172,6 +179,14 @@ export function registerIpc(): void {
     (_e, { id, toStatus, data }: { id: number; toStatus: string; data: Row }) =>
       advanceOrder(id, toStatus, data)
   )
+
+  handle('journal:accounts', () => listAccounts())
+  handle('journal:createAccount', (_e, { name }: { name: string }) => createAccount(name))
+  handle('journal:statement', (_e, { accountId }: { accountId: number }) =>
+    accountStatement(accountId)
+  )
+  handle('journal:addEntry', (_e, { data }: { data: Row }) => addManualJournal(data))
+  handle('journal:deleteEntry', (_e, { id }: { id: number }) => deleteManualEntry(id))
 
   handle('ledger:suppliers', () => listSupplierLedger())
   handle('ledger:transporters', () => listTransporterLedger())

@@ -57,6 +57,17 @@ const api = {
     advance: (id: number, toStatus: string, data: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('tankers:advance', { id, toStatus, data })
   },
+  journal: {
+    accounts: (): Promise<Row[]> => ipcRenderer.invoke('journal:accounts'),
+    createAccount: (name: string): Promise<{ id: number }> =>
+      ipcRenderer.invoke('journal:createAccount', { name }),
+    statement: (accountId: number): Promise<Row[]> =>
+      ipcRenderer.invoke('journal:statement', { accountId }),
+    addEntry: (data: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('journal:addEntry', { data }),
+    deleteEntry: (id: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('journal:deleteEntry', { id })
+  },
   ledger: {
     suppliers: (): Promise<Row[]> => ipcRenderer.invoke('ledger:suppliers'),
     transporters: (): Promise<Row[]> => ipcRenderer.invoke('ledger:transporters'),

@@ -40,6 +40,13 @@ export interface Api {
     remove: (id: number) => Promise<{ id: number }>
     advance: (id: number, toStatus: string, data: Row) => Promise<{ id: number }>
   }
+  journal: {
+    accounts: () => Promise<Row[]>
+    createAccount: (name: string) => Promise<{ id: number }>
+    statement: (accountId: number) => Promise<Row[]>
+    addEntry: (data: Row) => Promise<{ id: number }>
+    deleteEntry: (id: number) => Promise<{ id: number }>
+  }
   ledger: {
     suppliers: () => Promise<Row[]>
     transporters: () => Promise<Row[]>

@@ -37,12 +37,14 @@ export async function listBargains(): Promise<Row[]> {
   // loaded_qty = total dispatched across this bargain's orders; balance = qty − loaded.
   const res = await getClient().execute(`
     SELECT b.*, s.name AS supplier_name, s.supplier_type AS supplier_type,
+           br.name AS broker_name,
            o.code AS oil_code, o.name AS oil_name,
            COALESCE((SELECT SUM(loaded_qty) FROM purchase_tankers WHERE bargain_id = b.id), 0) AS loaded_qty,
            b.qty - COALESCE((SELECT SUM(loaded_qty) FROM purchase_tankers WHERE bargain_id = b.id), 0) AS balance_qty
     FROM bargains b
     LEFT JOIN suppliers s ON s.id = b.supplier_id
     LEFT JOIN products o ON o.id = b.oil_type_id
+    LEFT JOIN brokers br ON br.id = b.broker_id
     ORDER BY b.id DESC
   `)
   return toPlain(res)
@@ -109,13 +111,14 @@ export async function createBargain(v: Row): Promise<{ id: number; bargain_no: s
   await ensureOilType(Number(v.oil_type_id))
   const res = await getClient().execute({
     sql: `INSERT INTO bargains
-      (bargain_no, bargain_date, supplier_id, oil_type_id, bargain_type, qty, opening_qty, uom,
+      (bargain_no, bargain_date, supplier_id, broker_id, oil_type_id, bargain_type, qty, opening_qty, uom,
        base_rate, duty, rate_per_uom, allowed_shortage_pct, rate_expiry_date, total_amount, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
     args: [
       bargain_no,
       v.bargain_date,
       Number(v.supplier_id),
+      v.broker_id ? Number(v.broker_id) : null,
       Number(v.oil_type_id),
       v.bargain_type || 'EX',
       qty,
@@ -141,13 +144,14 @@ export async function updateBargain(id: number, v: Row): Promise<{ id: number }>
   await ensureOilType(Number(v.oil_type_id))
   await getClient().execute({
     sql: `UPDATE bargains SET
-      bargain_date = ?, supplier_id = ?, oil_type_id = ?, bargain_type = ?,
+      bargain_date = ?, supplier_id = ?, broker_id = ?, oil_type_id = ?, bargain_type = ?,
       qty = ?, opening_qty = ?, uom = ?, base_rate = ?, duty = ?, rate_per_uom = ?,
       allowed_shortage_pct = ?, rate_expiry_date = ?, total_amount = ?
       WHERE id = ?`,
     args: [
       v.bargain_date,
       Number(v.supplier_id),
+      v.broker_id ? Number(v.broker_id) : null,
       Number(v.oil_type_id),
       v.bargain_type || 'EX',
       qty,

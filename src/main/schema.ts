@@ -172,6 +172,7 @@ CREATE TABLE IF NOT EXISTS bargains (
   bargain_no TEXT NOT NULL UNIQUE,
   bargain_date TEXT NOT NULL,
   supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+  broker_id INTEGER REFERENCES brokers(id),
   oil_type_id INTEGER NOT NULL REFERENCES oil_types(id),
   bargain_type TEXT NOT NULL DEFAULT 'EX',
   qty REAL NOT NULL,
@@ -314,6 +315,36 @@ CREATE TABLE IF NOT EXISTS lc_issuances (
   note TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS ledger_accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  acc_group TEXT NOT NULL DEFAULT 'General',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS journal_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_date TEXT NOT NULL,
+  vch_type TEXT NOT NULL,
+  vch_no TEXT,
+  narration TEXT,
+  order_id INTEGER,
+  sale_id INTEGER,
+  payment_id INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS journal_lines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL REFERENCES journal_entries(id),
+  account_id INTEGER NOT NULL REFERENCES ledger_accounts(id),
+  dr REAL NOT NULL DEFAULT 0,
+  cr REAL NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_journal_lines_account ON journal_lines(account_id);
+CREATE INDEX IF NOT EXISTS idx_journal_lines_entry ON journal_lines(entry_id);
 
 CREATE TABLE IF NOT EXISTS supplier_ledger (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

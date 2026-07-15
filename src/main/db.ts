@@ -101,6 +101,7 @@ const MIGRATIONS = [
   'ALTER TABLE suppliers ADD COLUMN supplier_type TEXT',
   "ALTER TABLE orders ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
   "ALTER TABLE gate_entries ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'",
+  'ALTER TABLE bargains ADD COLUMN broker_id INTEGER',
   'ALTER TABLE suppliers ADD COLUMN opening_purchase_amount REAL NOT NULL DEFAULT 0',
   'ALTER TABLE suppliers ADD COLUMN opening_purchase_date TEXT',
   // bargain condition renamed to EX/DLD

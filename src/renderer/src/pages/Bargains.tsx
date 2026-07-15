@@ -6,6 +6,8 @@ import {
   ArrowUp,
   ArrowUpDown,
   BarChart3,
+  ChevronDown,
+  ChevronRight,
   FileSpreadsheet,
   Pencil,
   Plus,
@@ -93,6 +95,7 @@ function emptyForm(uom: string): Row {
   return {
     bargain_date: todayISO(),
     supplier_id: '',
+    broker_id: '',
     oil_type_id: '',
     bargain_type: 'EX',
     qty: '',
@@ -107,6 +110,7 @@ export function Bargains(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [suppliers, setSuppliers] = useState<Row[]>([])
+  const [brokers, setBrokers] = useState<Row[]>([])
   const [oilTypes, setOilTypes] = useState<Row[]>([])
   const [defaultUom, setDefaultUom] = useState('MT')
   const [typeFilter, setTypeFilter] = useState('OIL')
@@ -119,14 +123,16 @@ export function Bargains(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [b, s, o, settings] = await Promise.all([
+    const [b, s, o, br, settings] = await Promise.all([
       window.api.bargains.list(),
       window.api.data.list('suppliers'),
       window.api.data.list('products'),
+      window.api.data.list('brokers'),
       window.api.settings.all()
     ])
     setRows(b)
     setSuppliers(s.filter((x) => x.active))
+    setBrokers(br.filter((x) => x.active))
     setOilTypes(
       o
         .filter((x) => x.active && x.category === 'raw')
@@ -154,6 +160,7 @@ export function Bargains(): React.JSX.Element {
     setForm({
       bargain_date: row.bargain_date ?? todayISO(),
       supplier_id: String(row.supplier_id ?? ''),
+      broker_id: row.broker_id ? String(row.broker_id) : '',
       oil_type_id: String(row.oil_type_id ?? ''),
       bargain_type: row.bargain_type ?? 'EX',
       qty: row.qty ?? '',
@@ -185,6 +192,7 @@ export function Bargains(): React.JSX.Element {
       const payload: Row = {
         bargain_date: form.bargain_date,
         supplier_id: Number(form.supplier_id),
+        broker_id: form.broker_id ? Number(form.broker_id) : null,
         oil_type_id: Number(form.oil_type_id),
         bargain_type: form.bargain_type,
         qty: Number(form.qty),
@@ -254,6 +262,32 @@ export function Bargains(): React.JSX.Element {
   // Oil-group separators only make sense while rows are grouped by oil.
   const groupedByOil = !sort || sort.key === 'oil'
 
+  // Collapsed oil groups (band click toggles).
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  function toggleGroup(oil: string): void {
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(oil)) next.delete(oil)
+      else next.add(oil)
+      return next
+    })
+  }
+
+  // Per-oil totals shown on the group band, aligned to the table columns.
+  const groupStats = useMemo(() => {
+    const m = new Map<string, { count: number; qty: number; bal: number; balValue: number; uom: string }>()
+    for (const r of visibleRows) {
+      const k = oilOf(r)
+      if (!m.has(k)) m.set(k, { count: 0, qty: 0, bal: 0, balValue: 0, uom: String(r.uom || 'MT') })
+      const g = m.get(k)!
+      g.count += 1
+      g.qty += Number(r.qty) || 0
+      g.bal += Number(r.balance_qty) || 0
+      g.balValue += (Number(r.balance_qty) || 0) * (Number(r.rate_per_uom) || 0)
+    }
+    return m
+  }, [visibleRows])
+
   // Report: one summary line per oil type — open bargains (balance left), total
   // qty/balance, weighted average rate and total value. Not bargain-wise.
   const report = useMemo(() => {
@@ -303,7 +337,7 @@ export function Bargains(): React.JSX.Element {
   const avgRate = (g: { total: number; qty: number }): number => (g.qty > 0 ? g.total / g.qty : 0)
 
   function downloadExcel(): void {
-    const headers = ['Bargain No', 'Date', 'Supplier', 'Oil', 'Condition', 'Qty', 'UOM', 'BG Rate', 'Balance', 'Total Amount']
+    const headers = ['Bargain No', 'Date', 'Supplier', 'Oil', 'Condition', 'Op Qty', 'UOM', 'BG Rate', 'Bal Qty', 'Total Amount']
     const lines = [headers.join(',')]
     for (const r of sortedRows) {
       lines.push(
@@ -357,7 +391,7 @@ export function Bargains(): React.JSX.Element {
         }
       />
 
-      <div className="p-8">
+      <div className="w-full p-4">
         {noMasters && (
           <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             Add at least one supplier and one oil type in Settings before creating a bargain.
@@ -466,9 +500,9 @@ export function Bargains(): React.JSX.Element {
                         { id: 'supplier', label: 'Supplier' },
                         { id: 'oil', label: 'Oil' },
                         { id: 'condition', label: 'Condition' },
-                        { id: 'qty', label: 'Qty', right: true },
+                        { id: 'qty', label: 'Op Qty', right: true },
                         { id: 'rate', label: 'BG rate', right: true },
-                        { id: 'balance', label: 'Balance', right: true },
+                        { id: 'balance', label: 'Bal Qty', right: true },
                         { id: 'total', label: 'Total', right: true }
                       ] as { id: string; label: string; right?: boolean }[]
                     ).map((c) => (
@@ -510,17 +544,41 @@ export function Bargains(): React.JSX.Element {
                     </TableRow>
                   ) : (
                     sortedRows.map((row, i) => {
+                      const oil = oilOf(row)
                       const newGroup =
-                        groupedByOil && (i === 0 || oilOf(row) !== oilOf(sortedRows[i - 1]))
+                        groupedByOil && (i === 0 || oil !== oilOf(sortedRows[i - 1]))
+                      const isCollapsed = groupedByOil && collapsed.has(oil)
+                      const g = groupStats.get(oil)
                       return (
                         <Fragment key={row.id as number}>
                           {newGroup && (
-                            <TableRow className="border-y-2 border-slate-300 bg-slate-100 hover:bg-slate-100">
-                              <TableCell colSpan={10} className="py-1.5 text-xs font-bold uppercase tracking-wide text-slate-700">
-                                {oilOf(row)}
+                            <TableRow
+                              className="cursor-pointer border-y-2 border-slate-300 bg-slate-100 hover:bg-slate-200/70"
+                              onClick={() => toggleGroup(oil)}
+                            >
+                              <TableCell colSpan={5} className="py-1.5">
+                                <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-700">
+                                  {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                                  {oil}
+                                  <span className="font-medium normal-case tracking-normal text-slate-500">
+                                    · {g?.count ?? 0} bargain{(g?.count ?? 0) === 1 ? '' : 's'}
+                                  </span>
+                                </span>
                               </TableCell>
+                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">
+                                {formatNum(g?.qty ?? 0)} {g?.uom || 'MT'}
+                              </TableCell>
+                              <TableCell className="py-1.5" />
+                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">
+                                {formatNum(g?.bal ?? 0)} {g?.uom || 'MT'}
+                              </TableCell>
+                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">
+                                {formatINR(g?.balValue ?? 0)}
+                              </TableCell>
+                              <TableCell className="py-1.5" />
                             </TableRow>
                           )}
+                          {!isCollapsed && (
                           <TableRow>
                           <TableCell className="font-medium">{row.bargain_no}</TableCell>
                           <TableCell>{formatDate(row.bargain_date)}</TableCell>
@@ -561,6 +619,7 @@ export function Bargains(): React.JSX.Element {
                             </div>
                           </TableCell>
                           </TableRow>
+                          )}
                         </Fragment>
                       )
                     })
@@ -616,6 +675,22 @@ export function Bargains(): React.JSX.Element {
                   {oilTypes.map((o) => (
                     <SelectItem key={o.id} value={String(o.id)}>
                       {o.code || o.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label>Broker</Label>
+              <Select value={String(form.broker_id || '')} onValueChange={(v) => setField('broker_id', v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select broker (optional)" />
+                </SelectTrigger>
+                <SelectContent>
+                  {brokers.map((b) => (
+                    <SelectItem key={b.id} value={String(b.id)}>
+                      {b.name}
                     </SelectItem>
                   ))}
                 </SelectContent>

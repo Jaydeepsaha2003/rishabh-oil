@@ -1,5 +1,6 @@
 import type { InValue, ResultSet } from '@libsql/client'
 import { getClient } from './db'
+import { deleteJournalByRef, postPaymentJournal } from './journal'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -173,11 +174,31 @@ export async function recordPayment(data: Row): Promise<{ id: number }> {
       ]
     })
   }
+
+  // Tally journal: party account vs the money-source account.
+  const partyTable =
+    partyType === 'supplier' ? 'suppliers' : partyType === 'transporter' ? 'transporters' : 'customers'
+  const nameRes = await c.execute({
+    sql: `SELECT name FROM ${partyTable} WHERE id = ?`,
+    args: [partyId]
+  })
+  await postPaymentJournal({
+    paymentId,
+    date: String(data.payment_date),
+    partyName: String(nameRes.rows[0]?.name || 'PARTY'),
+    partyGroup: partyType === 'customer' ? 'Sundry Debtors' : 'Sundry Creditors',
+    source: String(data.source || 'BANK'),
+    amount,
+    isReceipt: partyType === 'customer',
+    reference: data.reference || null
+  }).catch((e) => console.error('[journal] payment post failed:', (e as Error).message))
+
   return { id: paymentId }
 }
 
 export async function deletePayment(id: number): Promise<{ id: number }> {
   const c = getClient()
+  await deleteJournalByRef('payment_id', id)
   await c.execute({ sql: 'DELETE FROM payment_allocations WHERE payment_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM supplier_ledger WHERE payment_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM transporter_ledger WHERE payment_id = ?', args: [id] })

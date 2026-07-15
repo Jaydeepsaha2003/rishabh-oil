@@ -1,5 +1,6 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
+import { deleteJournalByRef, postSaleJournal } from './journal'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -38,6 +39,23 @@ async function postCustomerReceivable(
       args: [customerId, saleId, date, -Math.abs(amount)]
     })
   }
+}
+
+// Tally journal for a sale: Dr Customer, Cr {FG} SALE A/C.
+async function postSaleEntry(saleId: number, v: Row, amount: number): Promise<void> {
+  const prod = await getClient().execute({
+    sql: 'SELECT code, name FROM products WHERE id = ?',
+    args: [n(v.product_id)]
+  })
+  const code = String(prod.rows[0]?.code || prod.rows[0]?.name || 'FG').toUpperCase()
+  await postSaleJournal({
+    saleId,
+    date: String(v.sale_date),
+    invoiceNo: v.invoice_no ? String(v.invoice_no) : null,
+    productCode: code,
+    customerName: String(v.customer || '').trim(),
+    amount
+  }).catch((e) => console.error('[journal] sale post failed:', (e as Error).message))
 }
 
 export async function listCustomerLedger(): Promise<Row[]> {
@@ -192,6 +210,7 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   })
   const id = Number(res.lastInsertRowid)
   await postCustomerReceivable(id, customerId, amount, String(v.sale_date))
+  await postSaleEntry(id, v, amount)
   return { id }
 }
 
@@ -220,6 +239,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
     ]
   })
   await postCustomerReceivable(id, customerId, amount, String(v.sale_date))
+  await postSaleEntry(id, v, amount)
   return { id }
 }
 
@@ -230,6 +250,7 @@ export async function setSaleStatus(id: number, status: string): Promise<{ id: n
 
 export async function deleteSale(id: number): Promise<{ id: number }> {
   const c = getClient()
+  await deleteJournalByRef('sale_id', id)
   await c.execute({ sql: 'DELETE FROM payment_allocations WHERE sale_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM customer_ledger WHERE sale_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM sales WHERE id = ?', args: [id] })

@@ -204,11 +204,9 @@ export function Orders(): React.JSX.Element {
     return { rows, totals, grand }
   }, [tankers, pivotStart, pivotEnd])
 
-  function selectLoadingBargain(index: number, id: string): void {
-    const b = bargains.find((x) => String(x.id) === id)
-    if (!b) return
-    setLoadingRows((current) => current.map((row, i) => i === index ? {
-      ...row,
+  // Row fields derived from a bargain (auto or manual pick).
+  function bargainDefaults(b: Row): Row {
+    return {
       bargain_id: b.id,
       supplier_id: b.supplier_id,
       oil_type_id: b.oil_type_id,
@@ -218,23 +216,81 @@ export function Orders(): React.JSX.Element {
       balance_qty: b.balance_qty,
       // default the condition (EX/DLD) from the bargain; user can toggle it
       condition: ['DLD', 'Delivered'].includes(String(b.bargain_type)) ? 'DLD' : 'EX'
-    } : row))
+    }
+  }
+
+  function selectLoadingBargain(index: number, id: string): void {
+    const b = bargains.find((x) => String(x.id) === id)
+    if (!b) return
+    setLoadingRows((current) =>
+      current.map((row, i) => (i === index ? { ...row, ...bargainDefaults(b) } : row))
+    )
+  }
+
+  // Distinct oils that actually have bargains (route step 1).
+  const bargainOils = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const b of bargains) {
+      const id = String(b.oil_type_id)
+      if (!m.has(id)) m.set(id, String(b.oil_code || b.oil_name || '—'))
+    }
+    return Array.from(m.entries()).sort((a, b) => a[1].localeCompare(b[1]))
+  }, [bargains])
+
+  // Suppliers with bargains for the picked oil (route step 2).
+  function suppliersForOil(oilId: string): { id: string; name: string }[] {
+    const m = new Map<string, string>()
+    for (const b of bargains.filter((x) => String(x.oil_type_id) === oilId)) {
+      m.set(String(b.supplier_id), String(b.supplier_name || '—'))
+    }
+    return Array.from(m.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  // Bargains matching the dialog-level oil + supplier picks, oldest first.
+  function routeBargains(picks: Row): Row[] {
+    if (!picks.oil_pick || !picks.supplier_pick) return []
+    return bargains
+      .filter((b) => String(b.oil_type_id) === picks.oil_pick && String(b.supplier_id) === picks.supplier_pick)
+      .sort((a, b) => {
+        const d = String(a.bargain_date || '').localeCompare(String(b.bargain_date || ''))
+        return d !== 0 ? d : (Number(a.id) || 0) - (Number(b.id) || 0)
+      })
+  }
+
+  // Oil picked once for the whole dialog — reset supplier and row bargains.
+  function pickOil(oilId: string): void {
+    setLoadingForm((p) => ({ ...p, oil_pick: oilId, supplier_pick: '', auto_bargain_id: '' }))
+    setLoadingRows((current) =>
+      current.map((row) => ({ ...row, bargain_id: '', supplier_name: '', balance_qty: undefined }))
+    )
+  }
+
+  // Supplier picked once — auto-select the OLDEST bargain (preferring balance
+  // left) and apply it to every tanker row; each row stays changeable.
+  function pickSupplier(supplierId: string): void {
+    const candidates = routeBargains({ oil_pick: loadingForm.oil_pick, supplier_pick: supplierId })
+    const pick = candidates.find((b) => Number(b.balance_qty) > 0.005) || candidates[0]
+    setLoadingForm((p) => ({ ...p, supplier_pick: supplierId, auto_bargain_id: pick ? String(pick.id) : '' }))
+    if (pick) {
+      setLoadingRows((current) => current.map((row) => ({ ...row, ...bargainDefaults(pick) })))
+    }
   }
 
   function setTankerCount(value: string): void {
     const count = Math.max(1, Math.min(20, Number(value) || 1))
+    // new rows inherit the dialog's auto-picked bargain
+    const auto = bargains.find((b) => String(b.id) === String(loadingForm.auto_bargain_id))
     setLoadingForm((p) => ({ ...p, tanker_count: count }))
-    setLoadingRows((current) => Array.from({ length: count }, (_, i) => current[i] || {}))
+    setLoadingRows((current) =>
+      Array.from({ length: count }, (_, i) => current[i] || (auto ? bargainDefaults(auto) : {}))
+    )
   }
 
   async function createTanker(): Promise<void> {
     if (loadingRows.some((row) => !row.bargain_id || !String(row.tanker_no || '').trim())) {
       toast.error('Enter the tanker number and bargain for every tanker')
-      return
-    }
-    // Transporter is required only for EX tankers (DLD = supplier delivers).
-    if (loadingRows.some((row) => (row.condition || 'EX') !== 'DLD' && !row.transporter_id)) {
-      toast.error('Select the transporter for every EX tanker')
       return
     }
     try {
@@ -275,7 +331,8 @@ export function Orders(): React.JSX.Element {
       loaded_date: todayISO(),
       loaded_qty: '',
       payment_mode: 'paid_by_us',
-      source_id: ''
+      source_id: '',
+      bargain_id: String(row.bargain_id || '')
     })
     if (target === 'transit') Object.assign(next, { transit_date: todayISO(), source_id: '' })
     if (target === 'outside_factory') next.outside_factory_date = todayISO()
@@ -321,6 +378,7 @@ export function Orders(): React.JSX.Element {
       await window.api.tankers.advance(actionRow.id, target, {
         ...actionForm,
         loaded_qty: Number(actionForm.loaded_qty) || 0,
+        bargain_id: actionForm.bargain_id ? Number(actionForm.bargain_id) : null,
         source_id: actionForm.source_id ? Number(actionForm.source_id) : null,
         transporter_id: actionForm.transporter_id ? Number(actionForm.transporter_id) : null,
         received_qty: Number(actionForm.received_qty) || 0,
@@ -830,14 +888,36 @@ export function Orders(): React.JSX.Element {
       )}
 
       <Dialog open={loadingOpen} onOpenChange={setLoadingOpen}>
-        <DialogContent className="max-w-4xl">
+        <DialogContent className="max-w-6xl">
           <DialogHeader>
             <DialogTitle>Send tankers to supplier — to be loaded</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Enter the tanker count, tanker numbers, intended bargains and the transporter carrying each tanker. Loaded quantity and payment are entered after loading.
+            Pick the oil and supplier once — the oldest open bargain is auto-selected for every tanker (changeable per tanker). Loaded quantity and payment are entered after loading.
           </p>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3 md:grid-cols-4">
+            <div className="grid gap-1.5">
+              <Label>Oil *</Label>
+              <Select value={String(loadingForm.oil_pick || '')} onValueChange={pickOil}>
+                <SelectTrigger><SelectValue placeholder="Select oil" /></SelectTrigger>
+                <SelectContent>
+                  {bargainOils.map(([id, label]) => (
+                    <SelectItem key={id} value={id}>{label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Supplier *</Label>
+              <Select value={String(loadingForm.supplier_pick || '')} onValueChange={pickSupplier} disabled={!loadingForm.oil_pick}>
+                <SelectTrigger><SelectValue placeholder={loadingForm.oil_pick ? 'Select supplier' : 'Pick oil first'} /></SelectTrigger>
+                <SelectContent>
+                  {suppliersForOil(String(loadingForm.oil_pick || '')).map((s) => (
+                    <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="grid gap-1.5">
               <Label>Number of tankers</Label>
               <Input type="number" min="1" max="20" value={loadingForm.tanker_count} onChange={(e) => setTankerCount(e.target.value)} />
@@ -851,7 +931,7 @@ export function Orders(): React.JSX.Element {
             {loadingRows.map((row, index) => (
               <div
                 key={index}
-                className="grid items-start gap-3 rounded-lg border p-3 md:grid-cols-[2.25rem_minmax(0,1fr)_minmax(0,1.5fr)_6rem_minmax(0,1.3fr)]"
+                className="grid items-start gap-3 rounded-lg border p-3 md:grid-cols-[2.25rem_minmax(0,1fr)_minmax(0,1.5fr)_5.5rem_minmax(0,1.2fr)]"
               >
                 <div className="flex h-9 items-center justify-center rounded-md bg-muted text-sm font-semibold md:mt-[26px]">
                   {index + 1}
@@ -861,13 +941,19 @@ export function Orders(): React.JSX.Element {
                   <Input value={row.tanker_no || ''} onChange={(e) => setLoadingRows((current) => current.map((item, i) => i === index ? { ...item, tanker_no: e.target.value } : item))} />
                 </div>
                 <div className="grid min-w-0 gap-1.5">
-                  <Label>Bargain *</Label>
-                  <Select value={String(row.bargain_id || '')} onValueChange={(value) => selectLoadingBargain(index, value)}>
-                    <SelectTrigger><SelectValue placeholder="Select intended bargain" /></SelectTrigger>
+                  <Label>Bargain (oldest auto) *</Label>
+                  <Select
+                    value={String(row.bargain_id || '')}
+                    onValueChange={(value) => selectLoadingBargain(index, value)}
+                    disabled={!loadingForm.oil_pick || !loadingForm.supplier_pick}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={loadingForm.supplier_pick ? 'Select bargain' : 'Pick oil & supplier above'} />
+                    </SelectTrigger>
                     <SelectContent className="w-[min(30rem,85vw)]">
-                      {bargains.map((b) => (
+                      {routeBargains(loadingForm).map((b) => (
                         <SelectItem key={b.id} value={String(b.id)}>
-                          {b.bargain_no}
+                          {b.bargain_no} · BAL {formatNum(b.balance_qty)}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -892,9 +978,9 @@ export function Orders(): React.JSX.Element {
                   </div>
                 </div>
                 <div className="grid min-w-0 gap-1.5">
-                  <Label>{(row.condition || 'EX') === 'DLD' ? 'Transporter' : 'Transporter *'}</Label>
+                  <Label>Transporter</Label>
                   <Select value={String(row.transporter_id || '')} onValueChange={(value) => setLoadingRows((current) => current.map((item, i) => i === index ? { ...item, transporter_id: value } : item))}>
-                    <SelectTrigger><SelectValue placeholder={(row.condition || 'EX') === 'DLD' ? 'Optional' : 'Select transporter'} /></SelectTrigger>
+                    <SelectTrigger><SelectValue placeholder="Optional" /></SelectTrigger>
                     <SelectContent>
                       {transporters.map((tr) => (
                         <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>
@@ -912,9 +998,30 @@ export function Orders(): React.JSX.Element {
       <Dialog open={!!actionRow} onOpenChange={(open) => !open && setActionRow(null)}>
         <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{target ? `Move ${actionRow?.tanker_no} to ${TANKER_LABEL[target]}` : 'Update tanker'}</DialogTitle></DialogHeader>
-          {target === 'loaded' && <div className="grid gap-4">
-            <div className="rounded-md bg-muted px-3 py-2 text-sm">
-              {actionRow?.bargain_no} · {actionRow?.supplier_name} · {actionRow?.oil_code}
+          {target === 'loaded' && actionRow && <div className="grid gap-4">
+            <div className="grid gap-1.5">
+              <Label>Bargain (auto-selected — change if needed)</Label>
+              <Select
+                value={String(actionForm.bargain_id || '')}
+                onValueChange={(v) => setActionForm((p) => ({ ...p, bargain_id: v }))}
+              >
+                <SelectTrigger><SelectValue placeholder="Select bargain" /></SelectTrigger>
+                <SelectContent>
+                  {bargains
+                    .filter(
+                      (b) =>
+                        String(b.supplier_id) === String(actionRow.supplier_id) &&
+                        String(b.oil_type_id) === String(actionRow.oil_type_id)
+                    )
+                    .sort((a, b) => String(a.bargain_date || '').localeCompare(String(b.bargain_date || '')))
+                    .map((b) => (
+                      <SelectItem key={b.id} value={String(b.id)}>
+                        {b.bargain_no} · BAL {formatNum(b.balance_qty)}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              <span className="text-[11px] text-muted-foreground">{actionRow.supplier_name}</span>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1.5"><Label>Loaded date</Label><DatePicker value={actionForm.loaded_date || ''} onChange={(v) => setActionForm((p) => ({ ...p, loaded_date: v }))} /></div>

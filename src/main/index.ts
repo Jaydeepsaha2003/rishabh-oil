@@ -3,6 +3,7 @@ import { join } from 'path'
 import { registerIpc } from './ipc'
 import { registerUpdater } from './updater'
 import { initDb } from './db'
+import { backfillJournal } from './journal'
 import { seedDefaultAdmin } from './auth'
 import { seedProducts, seedFormulations } from './seed'
 import { cleanupLogs } from './access'
@@ -43,6 +44,7 @@ function createWindow(): void {
 
 app.whenReady().then(async () => {
   await initDb()
+  await backfillJournal().catch((e) => console.error('[journal] backfill failed:', e))
   await seedDefaultAdmin().catch((e) => console.error('[auth] seed failed:', e))
   await seedProducts().catch((e) => console.error('[seed] products failed:', e))
   await seedFormulations().catch((e) => console.error('[seed] formulations failed:', e))

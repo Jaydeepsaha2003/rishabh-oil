@@ -3,6 +3,7 @@ import { getClient } from './db'
 import { getSetting } from './repos'
 import { tankerGateReceived } from './gate'
 import { ensureOilType } from './bargains'
+import { deleteJournalByRef, postPurchaseJournal } from './journal'
 
 const STAGES = [
   'ordered',
@@ -269,7 +270,34 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   const id = Number(res.lastInsertRowid)
   await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
   await setSupplierPayable(id, n(v.supplier_id), m.net_amount, String(v.order_date))
+  await postOrderJournal(id, v, m, supplier)
   return { id }
+}
+
+// Tally double entry for a purchase: Dr {OIL} PUR A/C + Dr GST INPUT,
+// Cr TDS PAYABLE + Cr Supplier.
+async function postOrderJournal(
+  orderId: number,
+  v: Row,
+  m: MoneyResult,
+  supplier: Row | null
+): Promise<void> {
+  const oil = await getClient().execute({
+    sql: 'SELECT code, name FROM products WHERE id = ?',
+    args: [n(v.oil_type_id)]
+  })
+  const oilCode = String(oil.rows[0]?.code || oil.rows[0]?.name || 'OIL').toUpperCase()
+  await postPurchaseJournal({
+    orderId,
+    date: String(v.order_date),
+    invoiceNo: String(v.invoice_no || ''),
+    oilCode,
+    supplierName: String(supplier?.name || 'SUPPLIER'),
+    taxable: m.taxable_value,
+    gst: m.gst_amount,
+    tds: m.tds_amount,
+    net: m.net_amount
+  }).catch((e) => console.error('[journal] purchase post failed:', (e as Error).message))
 }
 
 export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
@@ -335,11 +363,13 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
   await getClient().execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?', args: [id] })
   await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
   await setSupplierPayable(id, n(v.supplier_id), m.net_amount, String(v.order_date))
+  await postOrderJournal(id, v, m, supplier)
   return { id }
 }
 
 export async function deleteOrder(id: number): Promise<{ id: number }> {
   const c = getClient()
+  await deleteJournalByRef('order_id', id)
   await c.execute({ sql: 'DELETE FROM supplier_ledger WHERE order_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM transporter_ledger WHERE order_id = ?', args: [id] })
   await c.execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?', args: [id] })
@@ -400,10 +430,8 @@ export async function listPurchaseTankers(): Promise<Row[]> {
 
 export async function createPurchaseTanker(v: Row): Promise<{ id: number }> {
   if (!v.tanker_no || !v.bargain_id) throw new Error('Tanker number and bargain are required')
-  // Transporter required for EX (buyer arranges transport); optional for DLD.
-  if (String(v.condition || 'EX') !== 'DLD' && !v.transporter_id) {
-    throw new Error('Select the transporter for this tanker')
-  }
+  // Transporter is optional at send time (for both EX and DLD); it can still be
+  // set later — the Empty stage requires it for EX freight posting.
   const res = await getClient().execute({
     sql: `INSERT INTO purchase_tankers
       (tanker_no, loaded_date, bargain_id, supplier_id, oil_type_id, loaded_qty, uom, payment_mode,
@@ -463,12 +491,15 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
   if (toStatus === 'loaded') {
     const qty = n(data.loaded_qty)
     if (qty <= 0) throw new Error('Enter the actual loaded quantity')
+    // The bargain may be switched at loading time (defaults to the one chosen
+    // when the tanker was sent). Balance is validated against the final choice.
+    const bargainId = data.bargain_id ? n(data.bargain_id) : n(tanker.bargain_id)
     const balance = await c.execute({
       sql: `SELECT b.qty - COALESCE(
               (SELECT SUM(loaded_qty) FROM purchase_tankers WHERE bargain_id = b.id AND id != ?), 0
             ) AS balance
             FROM bargains b WHERE b.id = ?`,
-      args: [id, n(tanker.bargain_id)]
+      args: [id, bargainId]
     })
     if (!balance.rows.length || qty > n(balance.rows[0].balance) + 1e-6) {
       throw new Error(`Loaded qty exceeds the bargain balance (${n(balance.rows[0]?.balance).toFixed(3)})`)
@@ -483,10 +514,11 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
       expected = d.toISOString().slice(0, 10)
     }
     await c.execute({
-      sql: `UPDATE purchase_tankers SET status = 'transit', loaded_date = ?, loaded_qty = ?,
+      sql: `UPDATE purchase_tankers SET status = 'transit', bargain_id = ?, loaded_date = ?, loaded_qty = ?,
             payment_mode = ?, transit_date = ?, source_id = ?, expected_delivery_date = ?
             WHERE id = ?`,
       args: [
+        bargainId,
         data.loaded_date || null,
         qty,
         data.payment_mode === 'supplier_finance' ? 'supplier_finance' : 'paid_by_us',
