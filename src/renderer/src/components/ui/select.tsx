@@ -84,7 +84,8 @@ function Select({ value, onValueChange, disabled, children }: SelectProps): Reac
           className={cn('w-[var(--radix-popover-trigger-width)] min-w-[10rem] p-0 uppercase', contentClassName)}
         >
           <Command>
-            <CommandInput placeholder="Search…" />
+            {/* autoFocus so typing filters immediately on every screen size */}
+            <CommandInput autoFocus placeholder="Search…" />
             <CommandList>
               <CommandEmpty>No results.</CommandEmpty>
               {items.map((it) => (

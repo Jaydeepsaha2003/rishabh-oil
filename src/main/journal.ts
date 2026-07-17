@@ -276,6 +276,12 @@ export async function postSaleJournal(v: {
 export async function backfillJournal(): Promise<void> {
   const c = getClient()
 
+  // Core accounts always exist, even before any voucher touches them.
+  await getOrCreateAccount('ROUND OFF A/C', 'Indirect Expenses').catch(() => {})
+  await getOrCreateAccount('GST INPUT A/C', 'Duties & Taxes').catch(() => {})
+  await getOrCreateAccount('TDS PAYABLE A/C', 'Duties & Taxes').catch(() => {})
+  await getOrCreateAccount('BANK A/C', 'Bank Accounts').catch(() => {})
+
   const orders = await c.execute(`
     SELECT o.id, o.invoice_no, o.order_date, o.taxable_value, o.gst_amount, o.tds_amount, o.round_off, o.net_amount,
            s.name AS supplier_name, p.code AS oil_code, p.name AS oil_name
