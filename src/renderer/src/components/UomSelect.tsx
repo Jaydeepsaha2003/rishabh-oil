@@ -26,7 +26,11 @@ export function UomSelect({ value, onChange, className }: Props): React.JSX.Elem
 
   const load = useCallback(async () => {
     const list = await window.api.data.list('uoms')
-    setUoms(list.filter((u) => u.active))
+    setUoms(
+      list
+        .filter((u) => u.active)
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+    )
   }, [])
 
   useEffect(() => {

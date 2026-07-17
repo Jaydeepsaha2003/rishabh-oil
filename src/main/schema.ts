@@ -209,6 +209,7 @@ CREATE TABLE IF NOT EXISTS orders (
   gst_amount REAL NOT NULL DEFAULT 0,
   tds_pct REAL NOT NULL DEFAULT 0,
   tds_amount REAL NOT NULL DEFAULT 0,
+  round_off REAL NOT NULL DEFAULT 0,
   net_amount REAL NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'ordered',
   loaded_date TEXT,

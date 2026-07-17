@@ -102,6 +102,7 @@ const MIGRATIONS = [
   "ALTER TABLE orders ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
   "ALTER TABLE gate_entries ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'",
   'ALTER TABLE bargains ADD COLUMN broker_id INTEGER',
+  'ALTER TABLE orders ADD COLUMN round_off REAL NOT NULL DEFAULT 0',
   'ALTER TABLE suppliers ADD COLUMN opening_purchase_amount REAL NOT NULL DEFAULT 0',
   'ALTER TABLE suppliers ADD COLUMN opening_purchase_date TEXT',
   // bargain condition renamed to EX/DLD
@@ -134,9 +135,11 @@ const MIGRATIONS = [
           o.transporter_id, o.transport_rate_per_ton, o.transport_amount, o.shortage_charge_amount
    FROM orders o
    WHERE NOT EXISTS (SELECT 1 FROM purchase_tankers pt WHERE pt.order_id = o.id)`,
-  // Remap statuses from the earlier lifecycle to the new tanker stages.
+  // Order status is now derived from its tankers (loaded → received). Remap
+  // leftovers from the earlier order lifecycle; the OLD 'loaded'→'at_port'
+  // remap is gone — it ran every boot and corrupted freshly created purchases.
   "UPDATE orders SET status = 'received' WHERE status = 'delivered'",
-  "UPDATE orders SET status = 'at_port' WHERE status = 'loaded'"
+  "UPDATE orders SET status = 'loaded' WHERE status IN ('at_port', 'ordered', 'payment_cleared', 'in_transit', 'outside_factory', 'inside_factory')"
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

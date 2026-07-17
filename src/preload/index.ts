@@ -53,6 +53,8 @@ const api = {
     list: (): Promise<Row[]> => ipcRenderer.invoke('tankers:list'),
     create: (values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('tankers:create', { values }),
+    update: (id: number, values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('tankers:update', { id, values }),
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('tankers:delete', { id }),
     advance: (id: number, toStatus: string, data: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('tankers:advance', { id, toStatus, data })

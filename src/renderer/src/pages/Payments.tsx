@@ -1007,7 +1007,9 @@ function LcTab(): React.JSX.Element {
                 <Select value={String(issueForm.order_id || '')} onValueChange={(v) => setIssueForm((p) => ({ ...p, order_id: v }))}>
                   <SelectTrigger><SelectValue placeholder="Select invoice" /></SelectTrigger>
                   <SelectContent>
-                    {orders.map((o) => <SelectItem key={o.id} value={String(o.id)}>{o.invoice_no} · {o.supplier_name}</SelectItem>)}
+                    {[...orders]
+                      .sort((a, b) => String(a.invoice_no).localeCompare(String(b.invoice_no)))
+                      .map((o) => <SelectItem key={o.id} value={String(o.id)}>{o.invoice_no} · {o.supplier_name}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>

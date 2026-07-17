@@ -120,6 +120,8 @@ export function Orders(): React.JSX.Element {
   const [actionForm, setActionForm] = useState<Row>({})
   const [detailRow, setDetailRow] = useState<Row | null>(null)
   const [gateEntries, setGateEntries] = useState<Row[]>([])
+  const [editTanker, setEditTanker] = useState<Row | null>(null)
+  const [editTankerForm, setEditTankerForm] = useState<Row>({})
 
   const [formPage, setFormPage] = useState(false)
   const [editing, setEditing] = useState<Row | null>(null)
@@ -326,6 +328,11 @@ export function Orders(): React.JSX.Element {
   function openTankerAction(row: Row): void {
     const target = nextTankerStage(row.status)
     if (!target) return
+    // Invoice gate: after loading, billing is mandatory before moving further.
+    if (target === 'outside_factory' && !row.order_id) {
+      toast.error(`Tanker ${row.tanker_no} is not billed yet — create the purchase invoice first`)
+      return
+    }
     const next: Row = {}
     if (target === 'loaded') Object.assign(next, {
       loaded_date: todayISO(),
@@ -346,6 +353,44 @@ export function Orders(): React.JSX.Element {
     })
     setActionForm(next)
     setActionRow(row)
+  }
+
+  function openEditTanker(row: Row): void {
+    setEditTanker(row)
+    setEditTankerForm({
+      tanker_no: row.tanker_no || '',
+      bargain_id: String(row.bargain_id || ''),
+      loaded_date: row.loaded_date || '',
+      loaded_qty: row.loaded_qty ?? '',
+      payment_mode: row.payment_mode || 'pending',
+      transit_date: row.transit_date || '',
+      source_id: row.source_id ? String(row.source_id) : '',
+      outside_factory_date: row.outside_factory_date || '',
+      inside_factory_date: row.inside_factory_date || '',
+      empty_date: row.empty_date || '',
+      received_qty: row.received_qty ?? '',
+      transporter_id: row.transporter_id ? String(row.transporter_id) : '',
+      transport_rate_per_ton: row.transport_rate_per_ton ?? '',
+      krfl_weighment_doc_no: row.krfl_weighment_doc_no || '',
+      outside_weighment_doc_no: row.outside_weighment_doc_no || ''
+    })
+  }
+
+  async function saveEditTanker(): Promise<void> {
+    if (!editTanker) return
+    try {
+      await window.api.tankers.update(editTanker.id, {
+        ...editTankerForm,
+        bargain_id: editTankerForm.bargain_id ? Number(editTankerForm.bargain_id) : null,
+        source_id: editTankerForm.source_id ? Number(editTankerForm.source_id) : null,
+        transporter_id: editTankerForm.transporter_id ? Number(editTankerForm.transporter_id) : null
+      })
+      toast.success('Tanker updated')
+      setEditTanker(null)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
   }
 
   async function onWeighmentPhoto(field: string, file: File | undefined): Promise<void> {
@@ -424,7 +469,7 @@ export function Orders(): React.JSX.Element {
 
   function openNewPurchase(): void {
     setEditing(null)
-    setForm({ invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '' })
+    setForm({ invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '', round_off: '', round_off_manual: false })
     setSelected([])
     setError(null)
     setFormPage(true)
@@ -456,7 +501,10 @@ export function Orders(): React.JSX.Element {
       interest_days: supplier?.interest_days ?? row.interest_days,
       transporter_id: row.transporter_id || '',
       is_registered_transporter: !!row.is_registered_transporter,
-      allowed_shortage_pct: row.allowed_shortage_pct ?? ''
+      allowed_shortage_pct: row.allowed_shortage_pct ?? '',
+      round_off: row.round_off ?? '',
+      // keep the saved round off on edit; auto kicks in only if it was zero
+      round_off_manual: !!(row.round_off && Number(row.round_off) !== 0)
     })
     setSelected(tankers.filter((x) => x.order_id === row.id).map((x) => Number(x.id)))
     setError(null)
@@ -510,6 +558,19 @@ export function Orders(): React.JSX.Element {
     tdsPrior: Number(form.tds_prior) || 0
   }), [form, totalQty])
 
+  // Auto round-off to the nearest rupee (Tally style). A manual edit overrides
+  // it; clearing the field brings the auto value back.
+  useEffect(() => {
+    if (!formPage || form.round_off_manual) return
+    const net = calc.netAmount
+    if (!Number.isFinite(net) || net <= 0) return
+    const auto = Math.round(net) - net
+    const val = Math.abs(auto) < 0.005 ? '' : auto.toFixed(2)
+    if (String(form.round_off ?? '') !== val) {
+      setForm((p) => ({ ...p, round_off: val }))
+    }
+  }, [calc.netAmount, form.round_off_manual, form.round_off, formPage])
+
   async function savePurchase(): Promise<void> {
     if (!form.bargain_id) return setError('Select a bargain')
     if (!form.invoice_no) return setError('Invoice number is required')
@@ -530,6 +591,7 @@ export function Orders(): React.JSX.Element {
         form.allowed_shortage_pct === '' || form.allowed_shortage_pct == null
           ? null
           : Number(form.allowed_shortage_pct),
+      round_off: Number(form.round_off) || 0,
       financed_by_party: financedCount === selected.length,
       payment_date: form.order_date
     }
@@ -614,7 +676,9 @@ export function Orders(): React.JSX.Element {
                     <Select value={String(form.bargain_id || '')} onValueChange={(v) => choosePurchaseBargain(v)}>
                       <SelectTrigger><SelectValue placeholder="Select bargain" /></SelectTrigger>
                       <SelectContent>
-                        {bargains.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.bargain_no}</SelectItem>)}
+                        {[...bargains]
+                          .sort((a, b) => String(a.bargain_no).localeCompare(String(b.bargain_no)))
+                          .map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.bargain_no}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
@@ -732,8 +796,26 @@ export function Orders(): React.JSX.Element {
                 </>
               )}
               <MoneyRow label="TDS" value={`− ${formatINR(calc.tdsAmount)}`} />
+              <div className="flex items-center justify-between py-1.5 text-sm">
+                <span className="text-muted-foreground" title="Auto-rounds the net to the nearest rupee. Type to override; clear to go back to auto.">
+                  Round off {form.round_off_manual ? '(manual)' : '(auto)'}
+                </span>
+                <Input
+                  type="number"
+                  className="h-7 w-28 text-right"
+                  placeholder="0.00"
+                  value={form.round_off ?? ''}
+                  onChange={(e) =>
+                    setForm((p) => ({
+                      ...p,
+                      round_off: e.target.value,
+                      round_off_manual: e.target.value !== ''
+                    }))
+                  }
+                />
+              </div>
               <div className="my-3 border-t" />
-              <MoneyRow label="Net purchase amount" value={formatINR(calc.netAmount)} strong />
+              <MoneyRow label="Net purchase amount" value={formatINR(calc.netAmount + (Number(form.round_off) || 0))} strong />
               {error && <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
               <div className="mt-5 grid grid-cols-2 gap-2">
                 <Button variant="outline" onClick={() => setFormPage(false)} disabled={saving}>Cancel</Button>
@@ -847,6 +929,7 @@ export function Orders(): React.JSX.Element {
                             <TableCell><StatusBadge status={row.status} /></TableCell>
                             <TableCell className="text-right"><div className="flex justify-end gap-1">
                               {next && <Button size="sm" variant="outline" onClick={() => openTankerAction(row)}>{TANKER_LABEL[next]}</Button>}
+                              <Button size="icon" variant="ghost" className="h-8 w-8" title="Edit stage entries" onClick={() => openEditTanker(row)}><Pencil className="h-4 w-4" /></Button>
                               {!row.order_id && <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => deleteTanker(row)}><Trash2 className="h-4 w-4" /></Button>}
                             </div></TableCell>
                           </TableRow>
@@ -872,7 +955,11 @@ export function Orders(): React.JSX.Element {
                           <TableCell className="text-center"><Badge variant="secondary">{row.tanker_count || 0}</Badge></TableCell>
                           <TableCell className="text-right tabular-nums">{formatNum(row.ordered_qty)} {row.uom}</TableCell>
                           <TableCell className="text-right font-medium tabular-nums">{formatINR(row.net_amount)}</TableCell>
-                          <TableCell><StatusBadge status={row.status} /></TableCell>
+                          <TableCell>
+                            <Badge variant={row.status === 'received' ? 'success' : 'warning'}>
+                              {row.status === 'received' ? 'Completed' : 'In process'}
+                            </Badge>
+                          </TableCell>
                           <TableCell><div className="flex justify-end gap-1">
                             <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setDetailRow(row)}><Eye className="h-4 w-4" /></Button>
                             <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEditPurchase(row)}><Pencil className="h-4 w-4" /></Button>
@@ -1106,6 +1193,146 @@ export function Orders(): React.JSX.Element {
             <div className="rounded-lg border bg-muted/30 p-3"><MoneyRow label="Loaded" value={`${formatNum(actionRow.loaded_qty)} ${actionRow.uom}`} /><MoneyRow label="Shortage" value={`${formatNum(shortage.actualShortage)} ${actionRow.uom}`} /><MoneyRow label="Freight" value={formatINR(shortage.transportAmount)} /></div>
           </div>}
           <DialogFooter><Button variant="outline" onClick={() => setActionRow(null)}>Cancel</Button><Button onClick={advanceTanker}>Confirm</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit all stage entries of a tanker */}
+      <Dialog open={!!editTanker} onOpenChange={(open) => !open && setEditTanker(null)}>
+        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Edit tanker {editTanker?.tanker_no} — {TANKER_LABEL[String(editTanker?.status)] ?? editTanker?.status}</DialogTitle>
+          </DialogHeader>
+          {editTanker && (() => {
+            const eIdx = TANKER_STAGES.indexOf(String(editTanker.status))
+            const eGate = gateQtyFor(editTanker.id)
+            return (
+              <div className="grid gap-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-1.5">
+                    <Label>Tanker number</Label>
+                    <Input value={editTankerForm.tanker_no || ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, tanker_no: e.target.value }))} />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label>Bargain</Label>
+                    <Select value={String(editTankerForm.bargain_id || '')} onValueChange={(v) => setEditTankerForm((p) => ({ ...p, bargain_id: v }))}>
+                      <SelectTrigger><SelectValue placeholder="Select bargain" /></SelectTrigger>
+                      <SelectContent>
+                        {bargains
+                          .filter((b) => String(b.supplier_id) === String(editTanker.supplier_id) && String(b.oil_type_id) === String(editTanker.oil_type_id))
+                          .map((b) => (
+                            <SelectItem key={b.id} value={String(b.id)}>{b.bargain_no} · BAL {formatNum(b.balance_qty)}</SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-1.5">
+                    <Label>{eIdx <= 0 ? 'Factory entry date' : 'Loaded date'}</Label>
+                    <DatePicker value={editTankerForm.loaded_date || ''} onChange={(v) => setEditTankerForm((p) => ({ ...p, loaded_date: v }))} />
+                  </div>
+                  {eIdx >= 2 && (
+                    <div className="grid gap-1.5">
+                      <Label>Loaded qty ({editTanker.uom})</Label>
+                      <Input type="number" value={editTankerForm.loaded_qty ?? ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, loaded_qty: e.target.value }))} />
+                    </div>
+                  )}
+                </div>
+
+                {eIdx >= 2 && (
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="grid gap-1.5">
+                      <Label>Payment</Label>
+                      <Select value={editTankerForm.payment_mode || 'paid_by_us'} onValueChange={(v) => setEditTankerForm((p) => ({ ...p, payment_mode: v }))}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="paid_by_us">Payment done by us</SelectItem>
+                          <SelectItem value="supplier_finance">Supplier financed</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label>Transit date</Label>
+                      <DatePicker value={editTankerForm.transit_date || ''} onChange={(v) => setEditTankerForm((p) => ({ ...p, transit_date: v }))} />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label>Source / port</Label>
+                      <Select value={String(editTankerForm.source_id || '')} onValueChange={(v) => setEditTankerForm((p) => ({ ...p, source_id: v }))}>
+                        <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                        <SelectContent>
+                          {sources.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name} · {s.transit_days}d</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                )}
+
+                {eIdx >= 3 && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="grid gap-1.5">
+                      <Label>Outside factory date</Label>
+                      <DatePicker value={editTankerForm.outside_factory_date || ''} onChange={(v) => setEditTankerForm((p) => ({ ...p, outside_factory_date: v }))} />
+                    </div>
+                    {eIdx >= 4 && (
+                      <div className="grid gap-1.5">
+                        <Label>Inside factory date</Label>
+                        <DatePicker value={editTankerForm.inside_factory_date || ''} onChange={(v) => setEditTankerForm((p) => ({ ...p, inside_factory_date: v }))} />
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {eIdx >= 5 && (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="grid gap-1.5">
+                        <Label>Empty date</Label>
+                        <DatePicker value={editTankerForm.empty_date || ''} onChange={(v) => setEditTankerForm((p) => ({ ...p, empty_date: v }))} />
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label>Received qty {eGate != null ? `(gate: ${formatNum(eGate)})` : ''}</Label>
+                        <Input type="number" value={editTankerForm.received_qty ?? ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, received_qty: e.target.value }))} />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="grid gap-1.5">
+                        <Label>Transporter</Label>
+                        <Select value={String(editTankerForm.transporter_id || '')} onValueChange={(v) => setEditTankerForm((p) => ({ ...p, transporter_id: v }))}>
+                          <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                          <SelectContent>
+                            {transporters.map((tr) => <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label>Transport rate / {editTanker.uom}</Label>
+                        <Input type="number" value={editTankerForm.transport_rate_per_ton ?? ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, transport_rate_per_ton: e.target.value }))} />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="grid gap-1.5">
+                        <Label>KRFL weighment doc no</Label>
+                        <Input value={editTankerForm.krfl_weighment_doc_no || ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, krfl_weighment_doc_no: e.target.value }))} />
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label>Outside factory weighment doc no</Label>
+                        <Input value={editTankerForm.outside_weighment_doc_no || ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, outside_weighment_doc_no: e.target.value }))} />
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                <p className="text-[11px] text-muted-foreground">
+                  Changing quantities revalidates the bargain balance{eIdx >= 5 ? ', re-matches the gate weight and recalculates freight/shortage on the linked purchase' : ''}.
+                </p>
+              </div>
+            )
+          })()}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditTanker(null)}>Cancel</Button>
+            <Button onClick={saveEditTanker}>Save changes</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

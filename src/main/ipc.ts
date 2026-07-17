@@ -22,6 +22,7 @@ import {
   advanceOrder,
   listPurchaseTankers,
   createPurchaseTanker,
+  updateTankerDetails,
   deletePurchaseTanker,
   advancePurchaseTanker,
   supplierFyTaxable,
@@ -158,6 +159,9 @@ export function registerIpc(): void {
   handle('orders:list', () => listOrders())
   handle('tankers:list', () => listPurchaseTankers())
   handle('tankers:create', (_e, { values }: { values: Row }) => createPurchaseTanker(values))
+  handle('tankers:update', (_e, { id, values }: { id: number; values: Row }) =>
+    updateTankerDetails(id, values)
+  )
   handle('tankers:delete', (_e, { id }: { id: number }) => deletePurchaseTanker(id))
   handle(
     'tankers:advance',

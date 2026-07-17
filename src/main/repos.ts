@@ -78,7 +78,11 @@ function pickKeys(values: Row, allowed: string[]): string[] {
 
 export async function list(table: string): Promise<Row[]> {
   assertTable(table)
-  const res = await getClient().execute(`SELECT * FROM ${table} ORDER BY id DESC`)
+  // Every master table has a `name` and feeds dropdowns across the app —
+  // always list A→Z.
+  const res = await getClient().execute(
+    `SELECT * FROM ${table} ORDER BY name COLLATE NOCASE ASC`
+  )
   return res.rows.map((r) => {
     const o: Row = {}
     for (const col of res.columns) o[col] = (r as unknown as Row)[col]

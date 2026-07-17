@@ -58,7 +58,9 @@ export function GateEntry(): React.JSX.Element {
   // Tankers that can still arrive: not emptied yet and no gate entry so far.
   const arrivable = useMemo(() => {
     const withEntry = new Set(rows.map((r) => Number(r.tanker_id)).filter((x) => x > 0))
-    return tankers.filter((t) => t.status !== 'empty' && !withEntry.has(Number(t.id)))
+    return tankers
+      .filter((t) => t.status !== 'empty' && !withEntry.has(Number(t.id)))
+      .sort((a, b) => String(a.tanker_no).localeCompare(String(b.tanker_no)))
   }, [tankers, rows])
 
   function chooseTanker(id: string): void {

@@ -211,6 +211,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   await ensureOilType(n(v.oil_type_id))
   const supplier = await getSupplier(n(v.supplier_id))
   const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), 0)
+  const roundOff = n(v.round_off)
   const m = computeMoney({
     orderedQty: n(v.ordered_qty),
     invoiceRate: n(v.invoice_rate),
@@ -228,11 +229,11 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     sql: `INSERT INTO orders
       (invoice_no, order_date, bargain_id, supplier_id, oil_type_id, bargain_type, ordered_qty, uom,
        bargain_rate, invoice_rate, interest_pct, interest_days, adjusted_rate, taxable_value,
-       gst_pct, gst_type, gst_amount, tds_pct, tds_amount, net_amount,
+       gst_pct, gst_type, gst_amount, tds_pct, tds_amount, round_off, net_amount,
        final_taxable_value, final_gst_amount, final_tds_amount, final_net_amount,
        tanker_no, transporter_id, allowed_shortage_pct, is_registered_transporter, posting, financed_by_party,
        payment_cleared_date, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'loaded')`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'loaded')`,
     args: [
       v.invoice_no,
       v.order_date,
@@ -253,7 +254,8 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       m.gst_amount,
       n(v.tds_pct),
       m.tds_amount,
-      m.net_amount,
+      roundOff,
+      m.net_amount + roundOff,
       m.final_taxable_value,
       m.final_gst_amount,
       m.final_tds_amount,
@@ -269,18 +271,19 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   })
   const id = Number(res.lastInsertRowid)
   await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
-  await setSupplierPayable(id, n(v.supplier_id), m.net_amount, String(v.order_date))
-  await postOrderJournal(id, v, m, supplier)
+  await setSupplierPayable(id, n(v.supplier_id), m.net_amount + roundOff, String(v.order_date))
+  await postOrderJournal(id, v, m, supplier, roundOff)
   return { id }
 }
 
-// Tally double entry for a purchase: Dr {OIL} PUR A/C + Dr GST INPUT,
+// Tally double entry for a purchase: Dr {OIL} PUR A/C + Dr GST INPUT (+ Round off),
 // Cr TDS PAYABLE + Cr Supplier.
 async function postOrderJournal(
   orderId: number,
   v: Row,
   m: MoneyResult,
-  supplier: Row | null
+  supplier: Row | null,
+  roundOff = 0
 ): Promise<void> {
   const oil = await getClient().execute({
     sql: 'SELECT code, name FROM products WHERE id = ?',
@@ -296,7 +299,8 @@ async function postOrderJournal(
     taxable: m.taxable_value,
     gst: m.gst_amount,
     tds: m.tds_amount,
-    net: m.net_amount
+    net: m.net_amount + roundOff,
+    roundOff
   }).catch((e) => console.error('[journal] purchase post failed:', (e as Error).message))
 }
 
@@ -304,6 +308,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
   await ensureOilType(n(v.oil_type_id))
   const supplier = await getSupplier(n(v.supplier_id))
   const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), id)
+  const roundOff = n(v.round_off)
   const m = computeMoney({
     orderedQty: n(v.ordered_qty),
     invoiceRate: n(v.invoice_rate),
@@ -321,7 +326,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     sql: `UPDATE orders SET
       invoice_no = ?, order_date = ?, bargain_id = ?, supplier_id = ?, oil_type_id = ?, bargain_type = ?,
       ordered_qty = ?, uom = ?, bargain_rate = ?, invoice_rate = ?, interest_pct = ?, interest_days = ?,
-      adjusted_rate = ?, taxable_value = ?, gst_pct = ?, gst_type = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, net_amount = ?,
+      adjusted_rate = ?, taxable_value = ?, gst_pct = ?, gst_type = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, round_off = ?, net_amount = ?,
       final_taxable_value = ?, final_gst_amount = ?, final_tds_amount = ?, final_net_amount = ?,
       tanker_no = ?, transporter_id = ?, allowed_shortage_pct = ?, is_registered_transporter = ?, posting = 1, financed_by_party = ?,
       payment_cleared_date = ?
@@ -346,7 +351,8 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       m.gst_amount,
       n(v.tds_pct),
       m.tds_amount,
-      m.net_amount,
+      roundOff,
+      m.net_amount + roundOff,
       m.final_taxable_value,
       m.final_gst_amount,
       m.final_tds_amount,
@@ -362,8 +368,8 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
   })
   await getClient().execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?', args: [id] })
   await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
-  await setSupplierPayable(id, n(v.supplier_id), m.net_amount, String(v.order_date))
-  await postOrderJournal(id, v, m, supplier)
+  await setSupplierPayable(id, n(v.supplier_id), m.net_amount + roundOff, String(v.order_date))
+  await postOrderJournal(id, v, m, supplier, roundOff)
   return { id }
 }
 
@@ -450,6 +456,150 @@ export async function createPurchaseTanker(v: Row): Promise<{ id: number }> {
   return { id: Number(res.lastInsertRowid) }
 }
 
+// Edit any stage data of a tanker in one go (the pencil on the movement list).
+// Recomputes expected delivery, and — for emptied tankers — freight/shortage
+// and the transporter-ledger freight entry; the linked purchase is re-synced.
+export async function updateTankerDetails(id: number, v: Row): Promise<{ id: number }> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT * FROM purchase_tankers WHERE id = ?', args: [id] })
+  if (!res.rows.length) throw new Error('Tanker not found')
+  const t = toPlain(res)[0]
+
+  const pick = (key: string): unknown => (v[key] !== undefined ? v[key] : t[key])
+  const pickNum = (key: string, fallback: number): number =>
+    v[key] !== undefined && v[key] !== '' ? n(v[key]) : fallback
+
+  const bargainId = v.bargain_id ? n(v.bargain_id) : n(t.bargain_id)
+  const loadedQty = pickNum('loaded_qty', n(t.loaded_qty))
+  const receivedQty = pickNum('received_qty', n(t.received_qty))
+
+  // Bargain data (also refresh supplier/oil if the bargain was switched).
+  const bRes = await c.execute({
+    sql: 'SELECT supplier_id, oil_type_id, bargain_type, rate_per_uom, allowed_shortage_pct FROM bargains WHERE id = ?',
+    args: [bargainId]
+  })
+  if (!bRes.rows.length) throw new Error('Bargain not found')
+  const b = bRes.rows[0]
+
+  // Loaded qty must stay within the bargain balance (excluding this tanker).
+  if (loadedQty > 0) {
+    const bal = await c.execute({
+      sql: `SELECT b.qty - COALESCE(
+              (SELECT SUM(loaded_qty) FROM purchase_tankers WHERE bargain_id = b.id AND id != ?), 0
+            ) AS balance FROM bargains b WHERE b.id = ?`,
+      args: [id, bargainId]
+    })
+    if (loadedQty > n(bal.rows[0]?.balance) + 1e-6) {
+      throw new Error(`Loaded qty exceeds the bargain balance (${n(bal.rows[0]?.balance).toFixed(3)})`)
+    }
+  }
+
+  // Changing the received qty of an emptied tanker must still match the gate.
+  if (String(t.status) === 'empty' && Math.abs(receivedQty - n(t.received_qty)) > 1e-9) {
+    const gateQty = await tankerGateReceived(id)
+    if (gateQty == null) throw new Error('No completed gate entry for this tanker')
+    if (Math.abs(gateQty - receivedQty) > 0.001) {
+      throw new Error(`Received qty (${receivedQty}) does not match the gate received qty (${gateQty})`)
+    }
+  }
+
+  // Expected delivery from transit date + port transit days.
+  const sourceId = v.source_id !== undefined ? (v.source_id ? n(v.source_id) : null) : (t.source_id ?? null)
+  const transitDate = (pick('transit_date') as string) || null
+  let expected: string | null = null
+  if (sourceId && transitDate) {
+    const src = await c.execute({ sql: 'SELECT transit_days FROM sources WHERE id = ?', args: [sourceId] })
+    const d = new Date(transitDate)
+    d.setDate(d.getDate() + n(src.rows[0]?.transit_days))
+    expected = d.toISOString().slice(0, 10)
+  }
+
+  // Freight / shortage recompute for emptied tankers.
+  let transporterId =
+    v.transporter_id !== undefined ? (v.transporter_id ? n(v.transporter_id) : null) : (t.transporter_id ?? null)
+  let rate = pickNum('transport_rate_per_ton', n(t.transport_rate_per_ton))
+  let transport = n(t.transport_amount)
+  let penalty = n(t.shortage_charge_amount)
+  if (String(t.status) === 'empty') {
+    const isEx = !isDelivered(b.bargain_type)
+    rate = isEx ? rate : 0
+    transport = loadedQty * rate
+    let pct = b.allowed_shortage_pct == null
+      ? n((await getSetting('allowed_shortage_pct')) ?? '0')
+      : n(b.allowed_shortage_pct)
+    if (t.order_id) {
+      const ord = await c.execute({
+        sql: 'SELECT allowed_shortage_pct FROM orders WHERE id = ?',
+        args: [n(t.order_id)]
+      })
+      if (ord.rows.length && ord.rows[0].allowed_shortage_pct != null) pct = n(ord.rows[0].allowed_shortage_pct)
+    }
+    const shortage = Math.max(0, loadedQty - receivedQty)
+    const excess = Math.max(0, shortage - (loadedQty * pct) / 100)
+    penalty = isEx ? excess * n(b.rate_per_uom) : 0
+    transporterId = isEx ? transporterId : null
+
+    // Refresh this tanker's freight entry in the transporter ledger.
+    if (t.order_id) {
+      await c.execute({
+        sql: "DELETE FROM transporter_ledger WHERE order_id = ? AND entry_type = 'freight' AND note LIKE ?",
+        args: [n(t.order_id), `Tanker ${t.tanker_no}:%`]
+      })
+      if (transporterId) {
+        await c.execute({
+          sql: `INSERT INTO transporter_ledger (transporter_id, order_id, entry_date, entry_type, amount, note)
+                VALUES (?, ?, ?, 'freight', ?, ?)`,
+          args: [
+            transporterId,
+            n(t.order_id),
+            (pick('empty_date') as string) || null,
+            transport - penalty,
+            `Tanker ${String(pick('tanker_no') || t.tanker_no)}: freight less shortage`
+          ]
+        })
+      }
+    }
+  }
+
+  await c.execute({
+    sql: `UPDATE purchase_tankers SET
+      tanker_no = ?, bargain_id = ?, supplier_id = ?, oil_type_id = ?,
+      loaded_date = ?, loaded_qty = ?, payment_mode = ?,
+      transit_date = ?, source_id = ?, expected_delivery_date = ?,
+      outside_factory_date = ?, inside_factory_date = ?, empty_date = ?,
+      received_qty = ?, transporter_id = ?, transport_rate_per_ton = ?,
+      transport_amount = ?, shortage_charge_amount = ?,
+      krfl_weighment_doc_no = ?, outside_weighment_doc_no = ?
+      WHERE id = ?`,
+    args: [
+      String(pick('tanker_no') || t.tanker_no).trim(),
+      bargainId,
+      n(b.supplier_id),
+      n(b.oil_type_id),
+      (pick('loaded_date') as string) || null,
+      loadedQty,
+      (pick('payment_mode') as string) || 'pending',
+      transitDate,
+      sourceId,
+      expected,
+      (pick('outside_factory_date') as string) || null,
+      (pick('inside_factory_date') as string) || null,
+      (pick('empty_date') as string) || null,
+      receivedQty,
+      transporterId,
+      rate,
+      transport,
+      penalty,
+      (pick('krfl_weighment_doc_no') as string) || null,
+      (pick('outside_weighment_doc_no') as string) || null,
+      id
+    ]
+  })
+
+  if (t.order_id) await syncPurchaseFromTankers(n(t.order_id))
+  return { id }
+}
+
 export async function deletePurchaseTanker(id: number): Promise<{ id: number }> {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT order_id FROM purchase_tankers WHERE id = ?', args: [id] })
@@ -477,6 +627,18 @@ async function syncPurchaseFromTankers(orderId: number): Promise<void> {
           WHERE id = ?`,
     args: [status, n(x.received_qty), n(x.transport_amount), n(x.shortage_amount), status, orderId]
   })
+}
+
+// Startup backfill: recompute each purchase's status/received totals from its
+// tankers (fixes rows whose status was corrupted by the old lifecycle remap).
+export async function backfillOrderStatuses(): Promise<void> {
+  const c = getClient()
+  const res = await c.execute(
+    'SELECT DISTINCT order_id FROM purchase_tankers WHERE order_id IS NOT NULL'
+  )
+  for (const r of res.rows) {
+    await syncPurchaseFromTankers(n(r.order_id)).catch(() => {})
+  }
 }
 
 export async function advancePurchaseTanker(id: number, toStatus: string, data: Row): Promise<{ id: number }> {
@@ -544,6 +706,13 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
       args: [transitDate || null, sourceId, expected, id]
     })
   } else if (toStatus === 'outside_factory') {
+    // Invoice gate: a loaded tanker must be billed on a purchase invoice
+    // before it can move past transit.
+    if (!tanker.order_id) {
+      throw new Error(
+        `Tanker ${tanker.tanker_no} is not billed yet. Create the purchase invoice first, then move it further.`
+      )
+    }
     await c.execute({
       sql: "UPDATE purchase_tankers SET status = 'outside_factory', outside_factory_date = ? WHERE id = ?",
       args: [data.outside_factory_date || null, id]
