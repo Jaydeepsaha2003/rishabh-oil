@@ -169,7 +169,8 @@ export function Sidebar({
           )}
         </div>
 
-        {/* Company switcher — the active company scopes every business screen. */}
+        {/* Company switcher — the active company scopes every business screen.
+            Clickable in BOTH states, so switching never requires expanding. */}
         <div className="border-b p-2">
           {expanded ? (
             <Select value={String(companyId || '')} onValueChange={onCompanyChange}>
@@ -185,16 +186,21 @@ export function Sidebar({
               </SelectContent>
             </Select>
           ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div className="mx-auto flex h-8 w-8 items-center justify-center rounded-md bg-muted text-xs font-bold text-muted-foreground">
-                  {String(activeCompany?.name || 'C').charAt(0)}
-                </div>
-              </TooltipTrigger>
-              <TooltipContent side="right">
-                {activeCompany?.name || 'Company'} — hover the sidebar to switch
-              </TooltipContent>
-            </Tooltip>
+            <Select value={String(companyId || '')} onValueChange={onCompanyChange}>
+              <SelectTrigger
+                title={activeCompany?.name || 'Switch company'}
+                className="h-8 w-full justify-center gap-0.5 bg-muted px-1 text-xs font-bold text-muted-foreground [&>svg]:h-3 [&>svg]:w-3"
+              >
+                <span>{String(activeCompany?.name || 'C').charAt(0)}</span>
+              </SelectTrigger>
+              <SelectContent className="min-w-[14rem]">
+                {companies
+                  .filter((c) => c.active)
+                  .map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
           )}
         </div>
 

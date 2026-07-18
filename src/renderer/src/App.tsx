@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Toaster } from 'sonner'
+import { Toaster, toast } from 'sonner'
 import { Download, LogOut } from 'lucide-react'
 import { Sidebar, type Page } from './components/Sidebar'
 import { LoginScreen } from './components/LoginScreen'
@@ -73,7 +73,9 @@ function App(): React.JSX.Element {
     let cancelled = false
     ;(async () => {
       const list = await window.api.company.list().catch(() => [] as CompanyRow[])
-      const active = list.filter((c) => c.active)
+      // Default new devices to the OLDEST active company (the original one),
+      // not the alphabetically first — a remembered choice always wins.
+      const active = [...list.filter((c) => c.active)].sort((a, b) => Number(a.id) - Number(b.id))
       const stored = Number(localStorage.getItem('companyId') || 0)
       const pick = active.find((c) => Number(c.id) === stored) || active[0] || list[0]
       const id = Number(pick?.id || 1)
@@ -89,12 +91,18 @@ function App(): React.JSX.Element {
     }
   }, [user, dbState])
 
-  function switchCompany(id: string): void {
+  // Instant switch: set the active company in the main process and remount the
+  // pages (via key) so every screen refetches — no full app reload needed.
+  async function switchCompany(id: string): Promise<void> {
     localStorage.setItem('companyId', id)
-    window.api.company
-      .setActive(Number(id))
-      .then(() => window.location.reload())
-      .catch(() => window.location.reload())
+    try {
+      await window.api.company.setActive(Number(id))
+    } catch {
+      // main process falls back to company 1; the UI below still updates
+    }
+    setCompanyId(Number(id))
+    const name = companies.find((c) => String(c.id) === id)?.name
+    if (name) toast.success(`Working in ${name}`)
   }
 
   const allowed = user ? MODULES.filter((m) => canAccess(user, m.key)).map((m) => m.key) : []
@@ -182,7 +190,7 @@ function App(): React.JSX.Element {
         companyId={companyId}
         onCompanyChange={switchCompany}
       />
-      <main className="relative flex-1 overflow-auto">
+      <main key={companyId} className="relative flex-1 overflow-auto">
         {view === 'dashboard' && <Dashboard onNavigate={setPage} />}
         {view === 'bargains' && <Bargains />}
         {view === 'orders' && <Orders />}
