@@ -39,6 +39,13 @@ export interface Api {
     setActive: (id: number) => Promise<{ id: number }>
     getActive: () => Promise<{ id: number }>
   }
+  consignment: {
+    list: () => Promise<Row[]>
+    summary: () => Promise<Row[]>
+    create: (values: Row) => Promise<{ id: number }>
+    update: (id: number, values: Row) => Promise<{ id: number }>
+    remove: (id: number) => Promise<{ id: number }>
+  }
   tankers: {
     list: (all?: boolean) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
@@ -98,6 +105,9 @@ export interface Api {
   stock: {
     list: () => Promise<Row[]>
     needs: () => Promise<Row[]>
+    transfers: () => Promise<Row[]>
+    transfer: (values: Row) => Promise<{ id: number }>
+    deleteTransfer: (id: number) => Promise<{ id: number }>
   }
   stockCount: {
     sheet: (date: string) => Promise<Row[]>

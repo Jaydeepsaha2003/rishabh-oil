@@ -35,26 +35,25 @@ function dayMonth(dateStr: string): string {
 }
 
 export async function listBargains(): Promise<Row[]> {
+  // Bargains are GENERAL — shared across every company, not company-scoped.
   // loaded_qty = total dispatched across this bargain's orders; balance = qty − loaded.
-  const res = await getClient().execute({
-    sql: `
+  const res = await getClient().execute(`
     SELECT b.*, s.name AS supplier_name, s.supplier_type AS supplier_type,
            br.name AS broker_name,
            o.code AS oil_code, o.name AS oil_name,
            COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id), 0)
-             + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id), 0) AS loaded_qty,
+             + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id), 0)
+             + COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id AND is_consignment = 1), 0) AS loaded_qty,
            b.qty
              - COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id), 0)
-             - COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id), 0) AS balance_qty
+             - COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id), 0)
+             - COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id AND is_consignment = 1), 0) AS balance_qty
     FROM bargains b
     LEFT JOIN suppliers s ON s.id = b.supplier_id
     LEFT JOIN products o ON o.id = b.oil_type_id
     LEFT JOIN brokers br ON br.id = b.broker_id
-    WHERE b.company_id = ?
     ORDER BY b.id DESC
-  `,
-    args: [getActiveCompanyId()]
-  })
+  `)
   return toPlain(res)
 }
 
@@ -84,12 +83,12 @@ async function nextBargainNo(
     .replace(/\s+/g, '')
     .toUpperCase()
 
-  // Serial resets every calendar month PER COMPANY: max trailing serial among
-  // this company's bargains in the month + 1, two-digit padded.
+  // Serial resets every calendar month, GLOBAL across all companies (bargains
+  // are general): max trailing serial among the month's bargains + 1, 2-digit.
   const monthKey = String(bargainDate).slice(0, 7) // yyyy-mm
   const existing = await c.execute({
-    sql: 'SELECT bargain_no FROM bargains WHERE substr(bargain_date, 1, 7) = ? AND company_id = ?',
-    args: [monthKey, getActiveCompanyId()]
+    sql: 'SELECT bargain_no FROM bargains WHERE substr(bargain_date, 1, 7) = ?',
+    args: [monthKey]
   })
   let maxSeq = 0
   for (const r of existing.rows) {

@@ -9,6 +9,7 @@ import { Dashboard } from './pages/Dashboard'
 import { Settings } from './pages/Settings'
 import { Bargains } from './pages/Bargains'
 import { Orders } from './pages/Orders'
+import { Consignment } from './pages/Consignment'
 import { GateEntry } from './pages/GateEntry'
 import { Ledgers } from './pages/Ledgers'
 import { Payments } from './pages/Payments'
@@ -194,6 +195,7 @@ function App(): React.JSX.Element {
         {view === 'dashboard' && <Dashboard onNavigate={setPage} />}
         {view === 'bargains' && <Bargains />}
         {view === 'orders' && <Orders />}
+        {view === 'consignment' && <Consignment />}
         {view === 'gateEntry' && <GateEntry />}
         {view === 'payments' && <Payments />}
         {view === 'ledgers' && <Ledgers />}

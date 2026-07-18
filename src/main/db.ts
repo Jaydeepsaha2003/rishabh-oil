@@ -121,6 +121,35 @@ const MIGRATIONS = [
   // Invoice rate above bargain rate = freight billed by the supplier: the
   // difference is kept as per-ton freight data but NO transporter ledger posts.
   'ALTER TABLE orders ADD COLUMN freight_paid_to_supplier INTEGER NOT NULL DEFAULT 0',
+  // Consignment purchase: goods were already at our site (no tanker movement,
+  // no transporter, booked straight to received) — drawn from consignment stock.
+  'ALTER TABLE orders ADD COLUMN is_consignment INTEGER NOT NULL DEFAULT 0',
+  // Consignment stock: supplier goods lying at our place, off-books until
+  // invoiced. Created here (not in SCHEMA_SQL) so it also lands on existing DBs.
+  `CREATE TABLE IF NOT EXISTS consignment_stock (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    qty REAL NOT NULL,
+    uom TEXT NOT NULL DEFAULT 'MT',
+    deposit_date TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  // Inter-company stock movement: qty leaves the source company's stock and
+  // adds to the destination company's stock (physical move, not a sale).
+  `CREATE TABLE IF NOT EXISTS stock_transfers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_company_id INTEGER NOT NULL,
+    to_company_id INTEGER NOT NULL,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    qty REAL NOT NULL,
+    uom TEXT NOT NULL DEFAULT 'MT',
+    transfer_date TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
   // Party ledgers are company books too — doc-linked rows inherit the parent
   // document's company; manual rows take the company they were entered in.
   'ALTER TABLE supplier_ledger ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',

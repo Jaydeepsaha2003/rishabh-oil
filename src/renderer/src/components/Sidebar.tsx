@@ -13,6 +13,7 @@ import {
   FlaskConical,
   LayoutDashboard,
   LogOut,
+  PackageOpen,
   Settings as SettingsIcon,
   ShoppingCart,
   Tag,
@@ -32,6 +33,7 @@ export type Page =
   | 'settings'
   | 'bargains'
   | 'orders'
+  | 'consignment'
   | 'gateEntry'
   | 'ledgers'
   | 'payments'
@@ -50,6 +52,7 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   dashboard: { label: 'Dashboard', icon: LayoutDashboard },
   bargains: { label: 'Bargain', icon: FileText },
   orders: { label: 'Purchases', icon: ShoppingCart },
+  consignment: { label: 'Consignment', icon: PackageOpen },
   gateEntry: { label: 'Gate Entry', icon: DoorOpen },
   payments: { label: 'Payments', icon: CreditCard },
   ledgers: { label: 'Ledgers', icon: Wallet },
@@ -68,7 +71,7 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
 
 const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Overview', ids: ['dashboard'] },
-  { label: 'Purchase', ids: ['bargains', 'orders', 'gateEntry'] },
+  { label: 'Purchase', ids: ['bargains', 'orders', 'consignment', 'gateEntry'] },
   { label: 'Production', ids: ['products', 'formulation', 'production', 'stock'] },
   { label: 'Sales', ids: ['sales'] },
   { label: 'Accounts', ids: ['payments', 'ledgers'] },

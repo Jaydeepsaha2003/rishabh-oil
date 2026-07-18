@@ -36,6 +36,13 @@ export async function stockLevels(): Promise<Row[]> {
   const sold = await sumMap(
     "SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status = 'done' AND company_id = ? GROUP BY product_id"
   )
+  // Inter-company transfers: in = received from another company, out = sent away.
+  const transferredIn = await sumMap(
+    'SELECT product_id AS pid, SUM(qty) AS q FROM stock_transfers WHERE to_company_id = ? GROUP BY product_id'
+  )
+  const transferredOut = await sumMap(
+    'SELECT product_id AS pid, SUM(qty) AS q FROM stock_transfers WHERE from_company_id = ? GROUP BY product_id'
+  )
 
   return products.rows.map((p) => {
     const id = Number(p.id)
@@ -43,6 +50,8 @@ export async function stockLevels(): Promise<Row[]> {
     const prod = produced.get(id) || 0
     const cons = consumed.get(id) || 0
     const sld = sold.get(id) || 0
+    const tIn = transferredIn.get(id) || 0
+    const tOut = transferredOut.get(id) || 0
     return {
       id,
       code: p.code,
@@ -53,9 +62,83 @@ export async function stockLevels(): Promise<Row[]> {
       produced: prod,
       consumed: cons,
       sold: sld,
-      stock: rec + prod - cons - sld
+      transferred_in: tIn,
+      transferred_out: tOut,
+      stock: rec + prod + tIn - cons - sld - tOut
     }
   })
+}
+
+// Current stock of one product for a specific company (used to validate
+// transfers in either direction, independent of the active company).
+async function productStockForCompany(companyId: number, productId: number): Promise<number> {
+  const c = getClient()
+  const one = async (sql: string): Promise<number> => {
+    const r = await c.execute({ sql, args: [companyId, productId] })
+    return Number(r.rows[0]?.q) || 0
+  }
+  const rec = await one("SELECT COALESCE(SUM(received_qty), 0) AS q FROM orders WHERE status = 'received' AND company_id = ? AND oil_type_id = ?")
+  const prod = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM production WHERE company_id = ? AND product_id = ?')
+  const cons = await one('SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE p.company_id = ? AND i.product_id = ?')
+  const sld = await one("SELECT COALESCE(SUM(qty), 0) AS q FROM sales WHERE status = 'done' AND company_id = ? AND product_id = ?")
+  const tIn = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE to_company_id = ? AND product_id = ?')
+  const tOut = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE from_company_id = ? AND product_id = ?')
+  return rec + prod + tIn - cons - sld - tOut
+}
+
+// Transfers involving the active company (either direction), newest first.
+export async function listStockTransfers(): Promise<Row[]> {
+  const cid = getActiveCompanyId()
+  const res = await getClient().execute({
+    sql: `SELECT t.*, p.code AS product_code, p.name AS product_name,
+                 fc.name AS from_company_name, tc.name AS to_company_name
+          FROM stock_transfers t
+          LEFT JOIN products p ON p.id = t.product_id
+          LEFT JOIN companies fc ON fc.id = t.from_company_id
+          LEFT JOIN companies tc ON tc.id = t.to_company_id
+          WHERE t.from_company_id = ? OR t.to_company_id = ?
+          ORDER BY t.id DESC`,
+    args: [cid, cid]
+  })
+  return res.rows.map((r) => {
+    const o: Row = {}
+    for (const k of res.columns) o[k] = (r as Row)[k]
+    o.direction = Number(o.from_company_id) === cid ? 'out' : 'in'
+    return o
+  })
+}
+
+// Move stock FROM the active company TO another company.
+export async function createStockTransfer(v: Row): Promise<{ id: number }> {
+  const from = getActiveCompanyId()
+  const to = Number(v.to_company_id) || 0
+  const productId = Number(v.product_id) || 0
+  const qty = Number(v.qty) || 0
+  if (!to || to === from) throw new Error('Choose a different destination company')
+  if (!productId) throw new Error('Select a product')
+  if (qty <= 0) throw new Error('Quantity must be greater than zero')
+  const avail = await productStockForCompany(from, productId)
+  if (qty > avail + 1e-6) throw new Error(`Only ${avail.toFixed(3)} in stock to transfer`)
+  const res = await getClient().execute({
+    sql: `INSERT INTO stock_transfers (from_company_id, to_company_id, product_id, qty, uom, transfer_date, note)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    args: [from, to, productId, qty, v.uom || 'MT', v.transfer_date, v.note ? String(v.note).trim() : null]
+  })
+  return { id: Number(res.lastInsertRowid) }
+}
+
+// Reverse a transfer — only if the destination still holds enough to give back.
+export async function deleteStockTransfer(id: number): Promise<{ id: number }> {
+  const c = getClient()
+  const cur = await c.execute({ sql: 'SELECT * FROM stock_transfers WHERE id = ?', args: [id] })
+  if (!cur.rows.length) return { id }
+  const t = cur.rows[0]
+  const destStock = await productStockForCompany(Number(t.to_company_id), Number(t.product_id))
+  if (destStock - Number(t.qty) < -1e-6) {
+    throw new Error('Cannot reverse — the destination company has already used this stock')
+  }
+  await c.execute({ sql: 'DELETE FROM stock_transfers WHERE id = ?', args: [id] })
+  return { id }
 }
 
 export async function stockMap(): Promise<Record<number, number>> {

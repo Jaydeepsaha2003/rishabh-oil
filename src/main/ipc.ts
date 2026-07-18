@@ -41,6 +41,13 @@ import {
   updateBillDiscount,
   deleteBillDiscount
 } from './payments'
+import {
+  listConsignment,
+  consignmentSummary,
+  createConsignment,
+  updateConsignment,
+  deleteConsignment
+} from './consignment'
 import { login, listUsers, createUser, updateUser, deleteUser } from './auth'
 import { heartbeat, liveUsers, listIps, setIpActive, listLogs } from './access'
 import {
@@ -50,7 +57,13 @@ import {
   updateFormulation,
   deleteFormulation
 } from './formulations'
-import { stockLevels, productionNeeds } from './stock'
+import {
+  stockLevels,
+  productionNeeds,
+  listStockTransfers,
+  createStockTransfer,
+  deleteStockTransfer
+} from './stock'
 import { stockCountSheet, listStockCounts, saveStockCounts } from './stockcount'
 import {
   listProduction,
@@ -105,7 +118,7 @@ type Row = Record<string, any>
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:fyTaxable$|:needs$|:nextNo$|:liveUsers$|:ips$|:logs$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^company:setActive$|^company:getActive$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:nextNo$|:liveUsers$|:ips$|:logs$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^company:setActive$|^company:getActive$/
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handle = (channel: string, fn: (...a: any[]) => unknown): void => {
     ipcMain.handle(channel, async (e, args) => {
@@ -189,6 +202,14 @@ export function registerIpc(): void {
       advanceOrder(id, toStatus, data)
   )
 
+  handle('consignment:list', () => listConsignment())
+  handle('consignment:summary', () => consignmentSummary())
+  handle('consignment:create', (_e, { values }: { values: Row }) => createConsignment(values))
+  handle('consignment:update', (_e, { id, values }: { id: number; values: Row }) =>
+    updateConsignment(id, values)
+  )
+  handle('consignment:delete', (_e, { id }: { id: number }) => deleteConsignment(id))
+
   handle('journal:accounts', () => listAccounts())
   handle('journal:createAccount', (_e, { name }: { name: string }) => createAccount(name))
   handle('journal:statement', (_e, { accountId }: { accountId: number }) =>
@@ -251,6 +272,9 @@ export function registerIpc(): void {
 
   handle('stock:list', () => stockLevels())
   handle('stock:needs', () => productionNeeds())
+  handle('stock:transfers', () => listStockTransfers())
+  handle('stock:transfer', (_e, { values }: { values: Row }) => createStockTransfer(values))
+  handle('stock:deleteTransfer', (_e, { id }: { id: number }) => deleteStockTransfer(id))
   handle('stockCount:sheet', (_e, { date }: { date: string }) => stockCountSheet(date))
   handle('stockCount:list', (_e, { date }: { date: string }) => listStockCounts(date))
   handle('stockCount:save', (_e, { date, items }: { date: string; items: Row[] }) =>

@@ -55,6 +55,15 @@ const api = {
       ipcRenderer.invoke('company:setActive', { id }),
     getActive: (): Promise<{ id: number }> => ipcRenderer.invoke('company:getActive')
   },
+  consignment: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('consignment:list'),
+    summary: (): Promise<Row[]> => ipcRenderer.invoke('consignment:summary'),
+    create: (values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('consignment:create', { values }),
+    update: (id: number, values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('consignment:update', { id, values }),
+    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('consignment:delete', { id })
+  },
   tankers: {
     list: (all?: boolean): Promise<Row[]> => ipcRenderer.invoke('tankers:list', { all }),
     create: (values: Row): Promise<{ id: number }> =>
@@ -133,7 +142,12 @@ const api = {
   },
   stock: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('stock:list'),
-    needs: (): Promise<Row[]> => ipcRenderer.invoke('stock:needs')
+    needs: (): Promise<Row[]> => ipcRenderer.invoke('stock:needs'),
+    transfers: (): Promise<Row[]> => ipcRenderer.invoke('stock:transfers'),
+    transfer: (values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('stock:transfer', { values }),
+    deleteTransfer: (id: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('stock:deleteTransfer', { id })
   },
   stockCount: {
     sheet: (date: string): Promise<Row[]> => ipcRenderer.invoke('stockCount:sheet', { date }),

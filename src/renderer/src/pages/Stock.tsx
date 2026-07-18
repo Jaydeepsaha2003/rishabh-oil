@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { Download, Upload } from 'lucide-react'
+import { ArrowRightLeft, Download, Trash2, Upload } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   Table,
   TableBody,
@@ -17,7 +18,7 @@ import {
 } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { PageHeader } from '@/components/PageHeader'
-import { formatINR, formatNum, todayISO } from '@/lib/format'
+import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
@@ -77,6 +78,8 @@ function StockTable({ rows }: { rows: Row[] }): React.JSX.Element {
             <TableHead>Product</TableHead>
             <TableHead className="text-right">Received</TableHead>
             <TableHead className="text-right">Produced</TableHead>
+            <TableHead className="text-right">Transfer in</TableHead>
+            <TableHead className="text-right">Transfer out</TableHead>
             <TableHead className="text-right">Consumed</TableHead>
             <TableHead className="text-right">Sold</TableHead>
             <TableHead className="text-right">In stock</TableHead>
@@ -85,7 +88,7 @@ function StockTable({ rows }: { rows: Row[] }): React.JSX.Element {
         <TableBody>
           {rows.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
+              <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                 Nothing here yet.
               </TableCell>
             </TableRow>
@@ -95,6 +98,8 @@ function StockTable({ rows }: { rows: Row[] }): React.JSX.Element {
                 <TableCell className="font-medium">{r.name}</TableCell>
                 <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.received)}</TableCell>
                 <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.produced)}</TableCell>
+                <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.transferred_in) > 0 ? formatNum(r.transferred_in) : '—'}</TableCell>
+                <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.transferred_out) > 0 ? formatNum(r.transferred_out) : '—'}</TableCell>
                 <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.consumed)}</TableCell>
                 <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.sold)}</TableCell>
                 <TableCell
@@ -357,6 +362,171 @@ function DayClose(): React.JSX.Element {
   )
 }
 
+// Move stock from the active (current) company to another company.
+function Transfers(): React.JSX.Element {
+  const [stock, setStock] = useState<Row[]>([])
+  const [companies, setCompanies] = useState<Row[]>([])
+  const [activeId, setActiveId] = useState<number>(0)
+  const [transfers, setTransfers] = useState<Row[]>([])
+  const [form, setForm] = useState<Row>({ product_id: '', to_company_id: '', qty: '', transfer_date: todayISO(), note: '' })
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const load = useCallback(async () => {
+    const [s, cs, active, t] = await Promise.all([
+      window.api.stock.list(),
+      window.api.company.list(),
+      window.api.company.getActive(),
+      window.api.stock.transfers()
+    ])
+    setStock(s)
+    setCompanies(cs)
+    setActiveId(Number(active.id))
+    setTransfers(t)
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+  useLiveRefresh(load)
+
+  const activeName = companies.find((c) => Number(c.id) === activeId)?.name || 'this company'
+  const targets = companies.filter((c) => c.active && Number(c.id) !== activeId)
+  const chosen = stock.find((s) => String(s.id) === String(form.product_id))
+  const available = chosen ? Number(chosen.stock) || 0 : 0
+
+  async function submit(): Promise<void> {
+    if (!form.product_id) return setError('Select a product')
+    if (!form.to_company_id) return setError('Select the destination company')
+    const qty = Number(form.qty) || 0
+    if (qty <= 0) return setError('Enter a quantity greater than zero')
+    if (qty > available + 1e-6) return setError(`Only ${formatNum(available)} in stock to transfer`)
+    setSaving(true)
+    setError(null)
+    try {
+      await window.api.stock.transfer({
+        product_id: Number(form.product_id),
+        to_company_id: Number(form.to_company_id),
+        qty,
+        transfer_date: form.transfer_date,
+        note: form.note || null
+      })
+      toast.success('Stock transferred')
+      setForm({ product_id: '', to_company_id: '', qty: '', transfer_date: todayISO(), note: '' })
+      await load()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function remove(row: Row): Promise<void> {
+    if (!window.confirm('Reverse this transfer? The stock returns to the source company.')) return
+    try {
+      await window.api.stock.deleteTransfer(row.id as number)
+      toast.success('Transfer reversed')
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-xl border bg-card p-5 shadow-sm">
+        <h3 className="mb-1 font-medium">Transfer stock to another company</h3>
+        <p className="mb-4 text-xs text-muted-foreground">
+          Moves stock out of <b>{activeName}</b> and into the destination company. This is a physical stock move only — it does not create a sale or any ledger entry.
+        </p>
+        <div className="grid gap-4 md:grid-cols-4">
+          <div className="grid gap-1.5">
+            <Label>Product *</Label>
+            <Select value={String(form.product_id || '')} onValueChange={(v) => setForm((p) => ({ ...p, product_id: v }))}>
+              <SelectTrigger><SelectValue placeholder="Select product" /></SelectTrigger>
+              <SelectContent>
+                {stock.map((s) => (
+                  <SelectItem key={s.id} value={String(s.id)}>{s.name} · {formatNum(s.stock)} in stock</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-1.5">
+            <Label>To company *</Label>
+            <Select value={String(form.to_company_id || '')} onValueChange={(v) => setForm((p) => ({ ...p, to_company_id: v }))}>
+              <SelectTrigger><SelectValue placeholder="Select company" /></SelectTrigger>
+              <SelectContent>
+                {targets.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-1.5">
+            <Label>Quantity * {chosen ? `(max ${formatNum(available)})` : ''}</Label>
+            <Input type="number" value={form.qty} onChange={(e) => setForm((p) => ({ ...p, qty: e.target.value }))} />
+          </div>
+          <div className="grid gap-1.5">
+            <Label>Date</Label>
+            <DatePicker value={form.transfer_date || ''} onChange={(v) => setForm((p) => ({ ...p, transfer_date: v }))} />
+          </div>
+          <div className="grid gap-1.5 md:col-span-3">
+            <Label>Note</Label>
+            <Input value={form.note ?? ''} onChange={(e) => setForm((p) => ({ ...p, note: e.target.value }))} />
+          </div>
+          <div className="flex items-end">
+            <Button className="w-full" onClick={submit} disabled={saving}>
+              <ArrowRightLeft className="h-4 w-4" /> {saving ? 'Transferring…' : 'Transfer'}
+            </Button>
+          </div>
+        </div>
+        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+      </div>
+
+      <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Date</TableHead>
+              <TableHead>Direction</TableHead>
+              <TableHead>Product</TableHead>
+              <TableHead>From → To</TableHead>
+              <TableHead className="text-right">Quantity</TableHead>
+              <TableHead>Note</TableHead>
+              <TableHead className="text-right">Action</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {transfers.length === 0 ? (
+              <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No transfers yet.</TableCell></TableRow>
+            ) : (
+              transfers.map((t) => (
+                <TableRow key={t.id as number}>
+                  <TableCell>{formatDate(t.transfer_date)}</TableCell>
+                  <TableCell>
+                    <Badge variant={t.direction === 'out' ? 'secondary' : 'default'}>
+                      {t.direction === 'out' ? 'Out' : 'In'}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="font-medium">{t.product_code || t.product_name}</TableCell>
+                  <TableCell className="text-muted-foreground">{t.from_company_name} → {t.to_company_name}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatNum(t.qty)} {t.uom}</TableCell>
+                  <TableCell className="max-w-[200px] truncate text-muted-foreground">{t.note || '—'}</TableCell>
+                  <TableCell className="text-right">
+                    {t.direction === 'out' && (
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => remove(t)}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  )
+}
+
 export function Stock(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
 
@@ -381,6 +551,7 @@ export function Stock(): React.JSX.Element {
             <TabsTrigger value="raw">Raw ({byCat('raw').length})</TabsTrigger>
             <TabsTrigger value="intermediate">Intermediate ({byCat('intermediate').length})</TabsTrigger>
             <TabsTrigger value="finished">Finished ({byCat('finished').length})</TabsTrigger>
+            <TabsTrigger value="transfers">Transfers</TabsTrigger>
             <TabsTrigger value="dayclose">Day close (actual vs book)</TabsTrigger>
           </TabsList>
           <TabsContent value="raw" className="mt-6">
@@ -391,6 +562,9 @@ export function Stock(): React.JSX.Element {
           </TabsContent>
           <TabsContent value="finished" className="mt-6">
             <StockTable rows={byCat('finished')} />
+          </TabsContent>
+          <TabsContent value="transfers" className="mt-6">
+            <Transfers />
           </TabsContent>
           <TabsContent value="dayclose" className="mt-6">
             <DayClose />

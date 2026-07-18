@@ -3,6 +3,7 @@ import { getClient } from './db'
 import { getSetting } from './repos'
 import { tankerGateReceived } from './gate'
 import { createBargain, ensureOilType } from './bargains'
+import { consignmentAvailable } from './consignment'
 import { deleteJournalByRef, postPurchaseJournal } from './journal'
 import { getActiveCompanyId } from './company'
 
@@ -247,6 +248,16 @@ export async function listOrders(): Promise<Row[]> {
 
 export async function createOrder(v: Row): Promise<{ id: number }> {
   await ensureOilType(n(v.oil_type_id))
+  // Consignment purchase: goods already at our site, drawn from consignment
+  // stock — no tankers, no transporter, booked straight to 'received'.
+  const isConsignment = !!v.is_consignment
+  if (isConsignment) {
+    const avail = await consignmentAvailable(n(v.supplier_id), n(v.oil_type_id))
+    if (n(v.ordered_qty) <= 0) throw new Error('Enter the quantity to invoice')
+    if (n(v.ordered_qty) > avail + 1e-6) {
+      throw new Error(`Only ${avail.toFixed(3)} of consigned stock is available for this supplier and product`)
+    }
+  }
   const supplier = await getSupplier(n(v.supplier_id))
   const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), 0)
   const roundOff = n(v.round_off)
@@ -273,8 +284,8 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
        gst_pct, gst_type, gst_amount, tds_pct, tds_amount, round_off, net_amount,
        final_taxable_value, final_gst_amount, final_tds_amount, final_net_amount,
        tanker_no, transporter_id, allowed_shortage_pct, is_registered_transporter, posting, financed_by_party,
-       payment_cleared_date, remarks, freight_paid_to_supplier, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'loaded')`,
+       payment_cleared_date, remarks, freight_paid_to_supplier, is_consignment, received_qty, received_date, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       v.invoice_no,
@@ -310,12 +321,19 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       v.financed_by_party ? 1 : 0,
       v.payment_date || v.order_date,
       v.remarks ? String(v.remarks).trim() : null,
-      v.freight_paid_to_supplier ? 1 : 0
+      v.freight_paid_to_supplier ? 1 : 0,
+      isConsignment ? 1 : 0,
+      // consignment goods are already at site → received on booking
+      isConsignment ? n(v.ordered_qty) : null,
+      isConsignment ? v.order_date : null,
+      isConsignment ? 'received' : 'loaded'
     ]
   })
   const id = Number(res.lastInsertRowid)
-  await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
-  await applySupplierFreight(id, v)
+  if (!isConsignment) {
+    await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
+    await applySupplierFreight(id, v)
+  }
   await setSupplierPayable(id, n(v.supplier_id), m.net_amount + roundOff, String(v.order_date))
   await postOrderJournal(id, v, m, supplier, roundOff)
   return { id }

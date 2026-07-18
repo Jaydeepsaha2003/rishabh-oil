@@ -132,7 +132,8 @@ export function Bargains(): React.JSX.Element {
       window.api.data.list('suppliers'),
       window.api.data.list('products'),
       window.api.data.list('brokers'),
-      window.api.tankers.list(),
+      // bargains are general → show consumption from every company's tankers
+      window.api.tankers.list(true),
       window.api.settings.all()
     ])
     setRows(b)
