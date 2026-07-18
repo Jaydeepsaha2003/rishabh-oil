@@ -147,7 +147,9 @@ export function Ledgers(): React.JSX.Element {
               </SelectTrigger>
               <SelectContent>
                 {accounts.map((a) => (
-                  <SelectItem key={a.id} value={String(a.id)}>{a.name}</SelectItem>
+                  <SelectItem key={a.id} value={String(a.id)}>
+                    <span className="mr-1.5 tabular-nums text-muted-foreground">{a.id}.</span>{a.name}
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -181,7 +183,7 @@ export function Ledgers(): React.JSX.Element {
                   className="rounded-lg border bg-card p-3 text-left shadow-sm transition-colors hover:bg-muted/40"
                 >
                   <div className="truncate text-sm font-medium">{a.name}</div>
-                  <div className="text-[11px] text-muted-foreground">{a.acc_group}</div>
+                  <div className="text-[11px] text-muted-foreground">Ledger No. {a.id} · {a.acc_group}</div>
                   <div className="mt-1 text-sm font-semibold tabular-nums">{balText(Number(a.balance) || 0)}</div>
                 </button>
               ))
@@ -192,7 +194,9 @@ export function Ledgers(): React.JSX.Element {
             <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-muted/40 px-4 py-2.5">
               <div>
                 <div className="text-sm font-semibold">{selected?.name}</div>
-                <div className="text-[11px] text-muted-foreground">{selected?.acc_group} · {statement.length} vouchers</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Ledger No. {selected?.id} · {selected?.acc_group} · {statement.length} vouchers
+                </div>
               </div>
               <div className="text-right">
                 <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Closing balance</div>
@@ -202,6 +206,7 @@ export function Ledgers(): React.JSX.Element {
             <Table className="text-xs">
               <TableHeader>
                 <TableRow>
+                  <TableHead className="h-8 w-[52px]">S.No</TableHead>
                   <TableHead className="h-8">Date</TableHead>
                   <TableHead className="h-8">Particulars</TableHead>
                   <TableHead className="h-8">Vch Type</TableHead>
@@ -214,16 +219,17 @@ export function Ledgers(): React.JSX.Element {
               <TableBody>
                 {statement.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
                       No vouchers on this account yet.
                     </TableCell>
                   </TableRow>
                 ) : (
-                  statement.map((l) => {
+                  statement.map((l, i) => {
                     const isDr = Number(l.dr) > 0
                     const manual = l.order_id == null && l.sale_id == null && l.payment_id == null
                     return (
                       <TableRow key={l.id as number}>
+                        <TableCell className="py-1.5 tabular-nums text-muted-foreground">{i + 1}</TableCell>
                         <TableCell className="whitespace-nowrap py-1.5">{formatDate(l.entry_date)}</TableCell>
                         <TableCell className="py-1.5">
                           <span className="mr-1.5 font-semibold text-muted-foreground">{isDr ? 'Dr' : 'Cr'}</span>

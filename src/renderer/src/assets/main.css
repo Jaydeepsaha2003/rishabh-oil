@@ -71,3 +71,12 @@
     -webkit-font-smoothing: antialiased;
   }
 }
+
+/* Scrollable area without a visible scrollbar (wheel/touch still works). */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

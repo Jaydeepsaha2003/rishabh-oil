@@ -153,7 +153,12 @@ export function Sidebar({ page, onNavigate, user, onLogout }: Props): React.JSX.
           )}
         </div>
 
-        <nav className="flex-1 space-y-1 overflow-y-auto overflow-x-hidden p-2">
+        <nav
+          className={cn(
+            'flex-1 space-y-1 overflow-y-auto overflow-x-hidden p-2',
+            !expanded && 'no-scrollbar'
+          )}
+        >
           {visibleGroups.map((g, gi) => (
             <div key={g.label} className="space-y-0.5">
               {expanded ? (

@@ -218,9 +218,12 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     bargainRate: n(v.bargain_rate),
     gstPct: n(v.gst_pct),
     tdsPct: supplier?.tds_above_only ? 0 : n(v.tds_pct),
-    addsInterest: !!supplier?.adds_interest,
-    interestPct: n(supplier?.interest_pct),
-    interestDays: n(supplier?.interest_days),
+    // per-invoice interest choice from the form wins; fall back to the supplier
+    addsInterest: v.charge_interest !== undefined ? !!v.charge_interest : !!supplier?.adds_interest,
+    interestPct:
+      v.interest_pct !== undefined && v.interest_pct !== '' ? n(v.interest_pct) : n(supplier?.interest_pct),
+    interestDays:
+      v.interest_days !== undefined && v.interest_days !== '' ? n(v.interest_days) : n(supplier?.interest_days),
     tdsThreshold: n(supplier?.tds_threshold),
     tdsPctAbove: n(v.tds_pct),
     tdsPrior: prior
@@ -300,7 +303,8 @@ async function postOrderJournal(
     gst: m.gst_amount,
     tds: m.tds_amount,
     net: m.net_amount + roundOff,
-    roundOff
+    roundOff,
+    interest: m.interest_per_unit * n(v.ordered_qty)
   }).catch((e) => console.error('[journal] purchase post failed:', (e as Error).message))
 }
 
@@ -315,9 +319,12 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     bargainRate: n(v.bargain_rate),
     gstPct: n(v.gst_pct),
     tdsPct: supplier?.tds_above_only ? 0 : n(v.tds_pct),
-    addsInterest: !!supplier?.adds_interest,
-    interestPct: n(supplier?.interest_pct),
-    interestDays: n(supplier?.interest_days),
+    // per-invoice interest choice from the form wins; fall back to the supplier
+    addsInterest: v.charge_interest !== undefined ? !!v.charge_interest : !!supplier?.adds_interest,
+    interestPct:
+      v.interest_pct !== undefined && v.interest_pct !== '' ? n(v.interest_pct) : n(supplier?.interest_pct),
+    interestDays:
+      v.interest_days !== undefined && v.interest_days !== '' ? n(v.interest_days) : n(supplier?.interest_days),
     tdsThreshold: n(supplier?.tds_threshold),
     tdsPctAbove: n(v.tds_pct),
     tdsPrior: prior

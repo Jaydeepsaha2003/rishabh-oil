@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -469,7 +470,7 @@ export function Orders(): React.JSX.Element {
 
   function openNewPurchase(): void {
     setEditing(null)
-    setForm({ invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '', round_off: '', round_off_manual: false })
+    setForm({ invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '', round_off: '', round_off_manual: false, charge_interest: false, interest_touched: false })
     setSelected([])
     setError(null)
     setFormPage(true)
@@ -497,8 +498,11 @@ export function Orders(): React.JSX.Element {
       tds_threshold: supplier?.tds_threshold ?? 0,
       tds_above_only: !!supplier?.tds_above_only,
       adds_interest: !!supplier?.adds_interest,
-      interest_pct: supplier?.interest_pct ?? row.interest_pct,
-      interest_days: supplier?.interest_days ?? row.interest_days,
+      // prefer the values stored on the invoice; fall back to the supplier's
+      interest_pct: Number(row.interest_pct) > 0 ? row.interest_pct : (supplier?.interest_pct ?? 0),
+      interest_days: Number(row.interest_days) > 0 ? row.interest_days : (supplier?.interest_days ?? 0),
+      charge_interest: Number(row.interest_pct) > 0 && Number(row.interest_days) > 0,
+      interest_touched: true,
       transporter_id: row.transporter_id || '',
       is_registered_transporter: !!row.is_registered_transporter,
       allowed_shortage_pct: row.allowed_shortage_pct ?? '',
@@ -550,13 +554,23 @@ export function Orders(): React.JSX.Element {
     bargainRate: Number(form.bargain_rate) || 0,
     gstPct: Number(form.gst_pct) || 0,
     tdsPct: form.tds_above_only ? 0 : Number(form.tds_pct) || 0,
-    addsInterest: !!form.adds_interest,
+    addsInterest: !!form.charge_interest,
     interestPct: Number(form.interest_pct) || 0,
     interestDays: Number(form.interest_days) || 0,
     tdsThreshold: Number(form.tds_threshold) || 0,
     tdsPctAbove: Number(form.tds_pct) || 0,
     tdsPrior: Number(form.tds_prior) || 0
   }), [form, totalQty])
+
+  // Default the per-invoice interest toggle: ON when the supplier charges
+  // interest AND the purchase is supplier-financed. A manual flip sticks.
+  useEffect(() => {
+    if (!formPage || editing || form.interest_touched) return
+    const on = !!form.adds_interest && selected.length > 0 && financedCount === selected.length
+    if (!!form.charge_interest !== on) {
+      setForm((p) => ({ ...p, charge_interest: on }))
+    }
+  }, [formPage, editing, form.interest_touched, form.adds_interest, form.charge_interest, financedCount, selected.length])
 
   // Auto round-off to the nearest rupee (Tally style). A manual edit overrides
   // it; clearing the field brings the auto value back.
@@ -734,6 +748,41 @@ export function Orders(): React.JSX.Element {
                     />
                     <span className="text-[11px] text-muted-foreground">Shortage tolerance before the transporter is charged.</span>
                   </div>
+
+                  <div className="flex flex-wrap items-center gap-4 rounded-lg border px-3 py-2 md:col-span-3">
+                    <div className="flex items-center gap-2.5">
+                      <Switch
+                        checked={!!form.charge_interest}
+                        onCheckedChange={(v) =>
+                          setForm((p) => ({ ...p, charge_interest: v, interest_touched: true }))
+                        }
+                      />
+                      <div>
+                        <span className="text-sm font-medium">Supplier interest</span>
+                        <p className="text-[11px] text-muted-foreground">
+                          On the booked rate, added to the invoice rate. Defaults ON when the supplier charges interest and the tankers are supplier-financed.
+                        </p>
+                      </div>
+                    </div>
+                    <div className={cn('ml-auto flex items-center gap-2', !form.charge_interest && 'opacity-50')}>
+                      <Label className="text-xs">Int %</Label>
+                      <Input
+                        type="number"
+                        className="h-8 w-20 text-right"
+                        disabled={!form.charge_interest}
+                        value={form.interest_pct ?? ''}
+                        onChange={(e) => setForm((p) => ({ ...p, interest_pct: e.target.value }))}
+                      />
+                      <Label className="text-xs">Days</Label>
+                      <Input
+                        type="number"
+                        className="h-8 w-20 text-right"
+                        disabled={!form.charge_interest}
+                        value={form.interest_days ?? ''}
+                        onChange={(e) => setForm((p) => ({ ...p, interest_days: e.target.value }))}
+                      />
+                    </div>
+                  </div>
                 </div>
                 <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
                   Saving the purchase automatically posts its payable amount to the supplier ledger.
@@ -785,6 +834,12 @@ export function Orders(): React.JSX.Element {
               <MoneyRow label="Supplier financed" value={String(financedCount)} />
               <div className="my-3 border-t" />
               <MoneyRow label="Bargain rate" value={formatINR(Number(form.bargain_rate) || 0)} />
+              {!!form.charge_interest && (
+                <MoneyRow
+                  label={`Interest @ ${Number(form.interest_pct) || 0}% · ${Number(form.interest_days) || 0}d`}
+                  value={formatINR(calc.interestPerUnit * totalQty)}
+                />
+              )}
               <MoneyRow label="Adjusted invoice rate" value={formatINR(calc.adjustedRate)} />
               <MoneyRow label="Taxable value" value={formatINR(calc.taxableValue)} />
               {form.gst_type === 'IGST' ? (

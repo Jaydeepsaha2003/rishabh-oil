@@ -112,6 +112,9 @@ export function Bargains(): React.JSX.Element {
   const [suppliers, setSuppliers] = useState<Row[]>([])
   const [brokers, setBrokers] = useState<Row[]>([])
   const [oilTypes, setOilTypes] = useState<Row[]>([])
+  const [tankers, setTankers] = useState<Row[]>([])
+  const [defaultShortagePct, setDefaultShortagePct] = useState('0.2')
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [defaultUom, setDefaultUom] = useState('MT')
   const [typeFilter, setTypeFilter] = useState('OIL')
 
@@ -123,16 +126,19 @@ export function Bargains(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [b, s, o, br, settings] = await Promise.all([
+    const [b, s, o, br, pt, settings] = await Promise.all([
       window.api.bargains.list(),
       window.api.data.list('suppliers'),
       window.api.data.list('products'),
       window.api.data.list('brokers'),
+      window.api.tankers.list(),
       window.api.settings.all()
     ])
     setRows(b)
     setSuppliers(s.filter((x) => x.active))
     setBrokers(br.filter((x) => x.active))
+    setTankers(pt)
+    setDefaultShortagePct(settings.allowed_shortage_pct ?? '0.2')
     setOilTypes(
       o
         .filter((x) => x.active && x.category === 'raw')
@@ -261,6 +267,15 @@ export function Bargains(): React.JSX.Element {
 
   // Oil-group separators only make sense while rows are grouped by oil.
   const groupedByOil = !sort || sort.key === 'oil'
+
+  function toggleExpand(id: number): void {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   // Collapsed oil groups (band click toggles).
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -579,8 +594,17 @@ export function Bargains(): React.JSX.Element {
                             </TableRow>
                           )}
                           {!isCollapsed && (
-                          <TableRow>
-                          <TableCell className="font-medium">{row.bargain_no}</TableCell>
+                          <>
+                          <TableRow className="cursor-pointer" onClick={() => toggleExpand(Number(row.id))}>
+                          <TableCell className="font-medium">
+                            <ChevronRight
+                              className={cn(
+                                'mr-1 inline h-3.5 w-3.5 text-muted-foreground transition-transform',
+                                expanded.has(Number(row.id)) && 'rotate-90'
+                              )}
+                            />
+                            {row.bargain_no}
+                          </TableCell>
                           <TableCell>{formatDate(row.bargain_date)}</TableCell>
                           <TableCell>{row.supplier_name ?? '—'}</TableCell>
                           <TableCell>
@@ -605,20 +629,94 @@ export function Bargains(): React.JSX.Element {
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-1">
-                              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(row)}>
+                              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); openEdit(row) }}>
                                 <Pencil className="h-4 w-4" />
                               </Button>
                               <Button
                                 variant="ghost"
                                 size="icon"
                                 className="h-8 w-8 text-destructive"
-                                onClick={() => del(row)}
+                                onClick={(e) => { e.stopPropagation(); del(row) }}
                               >
                                 <Trash2 className="h-4 w-4" />
                               </Button>
                             </div>
                           </TableCell>
                           </TableRow>
+                          {expanded.has(Number(row.id)) && (
+                            <TableRow className="bg-muted/20 hover:bg-muted/20">
+                              <TableCell colSpan={10} className="p-0">
+                                {(() => {
+                                  const list = tankers.filter((t) => Number(t.bargain_id) === Number(row.id))
+                                  if (!list.length) {
+                                    return <p className="px-8 py-3 text-xs text-muted-foreground">No tankers on this bargain yet.</p>
+                                  }
+                                  const pctOf = (t: Row): number =>
+                                    Number(t.order_allowed_shortage_pct ?? row.allowed_shortage_pct ?? defaultShortagePct) || 0
+                                  const tot = list.reduce(
+                                    (s, t) => {
+                                      const loaded = Number(t.loaded_qty) || 0
+                                      const rec = t.received_qty != null ? Number(t.received_qty) : null
+                                      s.dis += loaded
+                                      s.rec += rec ?? 0
+                                      s.shortage += rec != null ? Math.max(0, loaded - rec) : 0
+                                      s.allowed += (loaded * pctOf(t)) / 100
+                                      return s
+                                    },
+                                    { dis: 0, rec: 0, shortage: 0, allowed: 0 }
+                                  )
+                                  return (
+                                    <div className="px-8 py-3">
+                                      <table className="w-full text-xs">
+                                        <thead>
+                                          <tr className="border-b text-left text-muted-foreground">
+                                            <th className="py-1.5 pr-3 font-semibold">Tanker</th>
+                                            <th className="py-1.5 pr-3 font-semibold">Loading Date</th>
+                                            <th className="py-1.5 pr-3 font-semibold">Receipt Date</th>
+                                            <th className="py-1.5 pr-3 text-right font-semibold">Dis Qty</th>
+                                            <th className="py-1.5 pr-3 text-right font-semibold">Rec Qty</th>
+                                            <th className="py-1.5 pr-3 text-right font-semibold">Shortage</th>
+                                            <th className="py-1.5 text-right font-semibold">Allowed MT</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {list.map((t) => {
+                                            const loaded = Number(t.loaded_qty) || 0
+                                            const rec = t.status === 'empty' && t.received_qty != null ? Number(t.received_qty) : null
+                                            return (
+                                              <tr key={t.id as number} className="border-b last:border-0">
+                                                <td className="py-1.5 pr-3 font-medium">{t.tanker_no}</td>
+                                                <td className="py-1.5 pr-3">{loaded > 0 ? formatDate(t.loaded_date) : '—'}</td>
+                                                <td className="py-1.5 pr-3">{t.empty_date ? formatDate(t.empty_date) : '—'}</td>
+                                                <td className="py-1.5 pr-3 text-right tabular-nums">{loaded > 0 ? formatNum(loaded) : '—'}</td>
+                                                <td className="py-1.5 pr-3 text-right tabular-nums">{rec != null ? formatNum(rec) : '—'}</td>
+                                                <td className="py-1.5 pr-3 text-right tabular-nums">
+                                                  {rec != null ? (
+                                                    <span className={Math.max(0, loaded - rec) > 0 ? 'text-amber-700' : ''}>
+                                                      {formatNum(Math.max(0, loaded - rec))}
+                                                    </span>
+                                                  ) : '—'}
+                                                </td>
+                                                <td className="py-1.5 text-right tabular-nums">{loaded > 0 ? formatNum((loaded * pctOf(t)) / 100) : '—'}</td>
+                                              </tr>
+                                            )
+                                          })}
+                                          <tr className="font-semibold">
+                                            <td className="py-1.5 pr-3" colSpan={3}>Total</td>
+                                            <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(tot.dis)}</td>
+                                            <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(tot.rec)}</td>
+                                            <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(tot.shortage)}</td>
+                                            <td className="py-1.5 text-right tabular-nums">{formatNum(tot.allowed)}</td>
+                                          </tr>
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  )
+                                })()}
+                              </TableCell>
+                            </TableRow>
+                          )}
+                          </>
                           )}
                         </Fragment>
                       )

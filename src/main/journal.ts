@@ -182,7 +182,8 @@ export async function accountStatement(accountId: number): Promise<Row[]> {
 // --- auto-posting helpers ---
 
 // Purchase (Tally style):
-//   Dr {OILCODE} PUR A/C   taxable value
+//   Dr {OILCODE} PUR A/C   taxable value less interest
+//   Dr INTEREST A/C        supplier interest portion
 //   Dr GST INPUT A/C       gst amount
 //   Dr/Cr ROUND OFF A/C    rounding difference
 //     Cr TDS PAYABLE A/C   tds amount
@@ -198,9 +199,11 @@ export async function postPurchaseJournal(v: {
   tds: number
   net: number
   roundOff?: number
+  interest?: number
 }): Promise<void> {
   await deleteJournalByRef('order_id', v.orderId)
   const ro = n(v.roundOff)
+  const interest = Math.min(Math.max(0, n(v.interest)), n(v.taxable))
   await postJournal({
     date: v.date,
     vchType: 'PURCHASE OIL',
@@ -208,7 +211,8 @@ export async function postPurchaseJournal(v: {
     narration: `Purchase ${v.invoiceNo}`,
     orderId: v.orderId,
     lines: [
-      { account: `${v.oilCode} PUR A/C`, group: 'Purchase Accounts', dr: v.taxable },
+      { account: `${v.oilCode} PUR A/C`, group: 'Purchase Accounts', dr: v.taxable - interest },
+      { account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest },
       { account: 'GST INPUT A/C', group: 'Duties & Taxes', dr: v.gst },
       { account: 'ROUND OFF A/C', group: 'Indirect Expenses', dr: ro > 0 ? ro : 0, cr: ro < 0 ? -ro : 0 },
       { account: 'TDS PAYABLE A/C', group: 'Duties & Taxes', cr: v.tds },
@@ -278,12 +282,14 @@ export async function backfillJournal(): Promise<void> {
 
   // Core accounts always exist, even before any voucher touches them.
   await getOrCreateAccount('ROUND OFF A/C', 'Indirect Expenses').catch(() => {})
+  await getOrCreateAccount('INTEREST A/C', 'Indirect Expenses').catch(() => {})
   await getOrCreateAccount('GST INPUT A/C', 'Duties & Taxes').catch(() => {})
   await getOrCreateAccount('TDS PAYABLE A/C', 'Duties & Taxes').catch(() => {})
   await getOrCreateAccount('BANK A/C', 'Bank Accounts').catch(() => {})
 
   const orders = await c.execute(`
     SELECT o.id, o.invoice_no, o.order_date, o.taxable_value, o.gst_amount, o.tds_amount, o.round_off, o.net_amount,
+           o.interest_pct, o.interest_days, o.bargain_rate, o.ordered_qty,
            s.name AS supplier_name, p.code AS oil_code, p.name AS oil_name
     FROM orders o
     LEFT JOIN suppliers s ON s.id = o.supplier_id
@@ -291,6 +297,8 @@ export async function backfillJournal(): Promise<void> {
     WHERE NOT EXISTS (SELECT 1 FROM journal_entries je WHERE je.order_id = o.id)
   `)
   for (const r of orders.rows) {
+    const interest =
+      n(r.bargain_rate) * (n(r.interest_pct) / 100) * (n(r.interest_days) / 365) * n(r.ordered_qty)
     await postPurchaseJournal({
       orderId: Number(r.id),
       date: String(r.order_date),
@@ -301,7 +309,8 @@ export async function backfillJournal(): Promise<void> {
       gst: n(r.gst_amount),
       tds: n(r.tds_amount),
       net: n(r.net_amount),
-      roundOff: n(r.round_off)
+      roundOff: n(r.round_off),
+      interest
     }).catch(() => {})
   }
 
