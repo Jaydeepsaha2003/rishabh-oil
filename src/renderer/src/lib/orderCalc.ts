@@ -44,7 +44,9 @@ export interface MoneyResult {
 export function computeMoney(i: MoneyInput): MoneyResult {
   const interestPct = i.addsInterest ? i.interestPct : 0
   const interestDays = i.addsInterest ? i.interestDays : 0
-  const interestPerUnit = i.bargainRate * (interestPct / 100) * (interestDays / 365)
+  // I = (BG rate + I) × Int%/100 × days/365  ⟹  I = BG rate × k / (1 − k)
+  const k = (interestPct / 100) * (interestDays / 365)
+  const interestPerUnit = k > 0 && k < 1 ? (i.bargainRate * k) / (1 - k) : 0
   const adjustedRate = i.invoiceRate + interestPerUnit
   const threshold = i.tdsThreshold || 0
   const abovePct = i.tdsPctAbove || 0

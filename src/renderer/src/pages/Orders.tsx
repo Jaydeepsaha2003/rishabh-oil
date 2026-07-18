@@ -469,6 +469,32 @@ export function Orders(): React.JSX.Element {
     }
   }
 
+  // Supplier-first invoice booking: pick the supplier, then choose from ALL its
+  // unbilled loaded tankers. The bargain details follow from the chosen tankers.
+  function choosePurchaseSupplier(id: string): void {
+    const s = suppliers.find((x) => String(x.id) === id)
+    if (!s) return
+    setForm((p) => ({
+      ...p,
+      supplier_id: s.id,
+      supplier_name: s.name,
+      bargain_id: '',
+      bargain_type: '',
+      bargain_rate: '',
+      oil_type_id: '',
+      oil_label: '',
+      invoice_rate: '',
+      gst_pct: s.gst_pct ?? 0,
+      tds_pct: s.tds_pct ?? 0,
+      tds_threshold: s.tds_threshold ?? 0,
+      tds_above_only: !!s.tds_above_only,
+      adds_interest: !!s.adds_interest,
+      interest_pct: s.interest_pct ?? 0,
+      interest_days: s.interest_days ?? 0
+    }))
+    setSelected([])
+  }
+
   function choosePurchaseBargain(id: string, keepSelection = false): void {
     const b = bargains.find((x) => String(x.id) === id)
     if (!b) return
@@ -553,14 +579,42 @@ export function Orders(): React.JSX.Element {
 
   const selectableTankers = useMemo(
     () => tankers.filter((x) =>
-      x.bargain_id === form.bargain_id &&
+      String(x.supplier_id) === String(form.supplier_id || '') &&
       x.status !== 'supplier_factory' &&
       Number(x.loaded_qty) > 0 &&
       (x.order_id == null || x.order_id === editing?.id)
     ),
-    [tankers, form.bargain_id, editing]
+    [tankers, form.supplier_id, editing]
   )
+  // Only suppliers that actually have billable tankers appear in the picker
+  // (plus the invoice's own supplier when editing).
+  const invoiceSuppliers = useMemo(() => {
+    const billable = new Set(
+      tankers
+        .filter((x) =>
+          x.status !== 'supplier_factory' &&
+          Number(x.loaded_qty) > 0 &&
+          (x.order_id == null || x.order_id === editing?.id))
+        .map((x) => String(x.supplier_id))
+    )
+    return suppliers.filter(
+      (s) => billable.has(String(s.id)) || String(s.id) === String(form.supplier_id || '')
+    )
+  }, [suppliers, tankers, editing, form.supplier_id])
   const chosenTankers = useMemo(() => tankers.filter((x) => selected.includes(Number(x.id))), [tankers, selected])
+  // The invoice's bargain follows the first selected tanker automatically.
+  useEffect(() => {
+    if (!formPage) return
+    const first = chosenTankers[0]
+    if (!first) return
+    if (String(form.bargain_id || '') !== String(first.bargain_id)) {
+      choosePurchaseBargain(String(first.bargain_id), true)
+    }
+  }, [formPage, chosenTankers, form.bargain_id]) // eslint-disable-line react-hooks/exhaustive-deps
+  const mixedRates = useMemo(
+    () => new Set(chosenTankers.map((x) => Number(x.bargain_rate) || 0)).size > 1,
+    [chosenTankers]
+  )
   const totalQty = chosenTankers.reduce((sum, x) => sum + Number(x.loaded_qty || 0), 0)
   const financedCount = chosenTankers.filter((x) => x.payment_mode === 'supplier_finance').length
   // Transporter is already chosen during tanker movement — reuse it here.
@@ -613,9 +667,10 @@ export function Orders(): React.JSX.Element {
   }, [calc.netAmount, form.round_off_manual, form.round_off, formPage])
 
   async function savePurchase(): Promise<void> {
-    if (!form.bargain_id) return setError('Select a bargain')
-    if (!form.invoice_no) return setError('Invoice number is required')
+    if (!form.supplier_id) return setError('Select the supplier')
     if (!selected.length) return setError('Select at least one loaded tanker')
+    if (!form.bargain_id) return setError('Select at least one loaded tanker')
+    if (!form.invoice_no) return setError('Invoice number is required')
     if (Number(form.invoice_rate) <= 0) return setError('Invoice rate must be greater than zero')
     setSaving(true)
     setError(null)
@@ -713,18 +768,25 @@ export function Orders(): React.JSX.Element {
           <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
             <div className="space-y-6">
               <section className="rounded-xl border bg-card p-5">
-                <h3 className="mb-4 font-medium">Invoice and bargain</h3>
+                <h3 className="mb-4 font-medium">Invoice details</h3>
                 <div className="grid gap-4 md:grid-cols-3">
                   <div className="grid gap-1.5 md:col-span-3">
-                    <Label>Bargain *</Label>
-                    <Select value={String(form.bargain_id || '')} onValueChange={(v) => choosePurchaseBargain(v)}>
-                      <SelectTrigger><SelectValue placeholder="Select bargain" /></SelectTrigger>
+                    <Label>Supplier *</Label>
+                    <Select
+                      value={String(form.supplier_id || '')}
+                      onValueChange={(v) => choosePurchaseSupplier(v)}
+                      disabled={!!editing}
+                    >
+                      <SelectTrigger><SelectValue placeholder="Select the supplier — its loaded tankers appear below" /></SelectTrigger>
                       <SelectContent>
-                        {[...bargains]
-                          .sort((a, b) => String(a.bargain_no).localeCompare(String(b.bargain_no)))
-                          .map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.bargain_no}</SelectItem>)}
+                        {invoiceSuppliers.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
                       </SelectContent>
                     </Select>
+                    <span className="text-[11px] text-muted-foreground">
+                      {form.bargain_id
+                        ? `Bargain ${bargains.find((b) => String(b.id) === String(form.bargain_id))?.bargain_no || ''} — taken from the selected tankers.`
+                        : 'The bargain is picked up automatically from the tankers you select.'}
+                    </span>
                   </div>
                   <div className="grid gap-1.5">
                     <Label>Invoice number *</Label>
@@ -790,7 +852,7 @@ export function Orders(): React.JSX.Element {
                       <div>
                         <span className="text-sm font-medium">Supplier interest</span>
                         <p className="text-[11px] text-muted-foreground">
-                          On the booked rate, added to the invoice rate. Defaults ON when the supplier charges interest and the tankers are supplier-financed.
+                          Interest = (BG rate + interest) × Int% × days ÷ 365; the adjusted invoice rate is BG rate + interest. Defaults ON when the supplier charges interest and the tankers are supplier-financed.
                         </p>
                       </div>
                     </div>
@@ -823,16 +885,21 @@ export function Orders(): React.JSX.Element {
                 <div className="mb-4 flex items-center justify-between">
                   <div>
                     <h3 className="font-medium">Tankers on this invoice</h3>
-                    <p className="text-xs text-muted-foreground">One invoice may include any number of loaded tankers from the same bargain.</p>
+                    <p className="text-xs text-muted-foreground">All the supplier&apos;s unbilled loaded tankers — tick the ones covered by this invoice.</p>
                   </div>
                   <Badge variant="secondary">{selected.length} selected</Badge>
                 </div>
-                {!form.bargain_id ? (
-                  <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">Select a bargain to see its loaded tankers.</div>
+                {!form.supplier_id ? (
+                  <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">Select the supplier to see all its loaded tankers.</div>
                 ) : selectableTankers.length === 0 ? (
-                  <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">No available loaded tankers for this bargain.</div>
+                  <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">No unbilled loaded tankers for this supplier.</div>
                 ) : (
                   <div className="grid gap-2">
+                    {mixedRates && (
+                      <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                        The selected tankers come from bargains with different rates — the invoice uses the first tanker&apos;s bargain rate, so adjust the invoice rate if needed.
+                      </div>
+                    )}
                     {selectableTankers.map((tanker) => {
                       const checked = selected.includes(Number(tanker.id))
                       return (
@@ -845,7 +912,9 @@ export function Orders(): React.JSX.Element {
                           />
                           <div className="min-w-0 flex-1">
                             <div className="font-medium">{tanker.tanker_no}</div>
-                            <div className="text-xs text-muted-foreground">Loaded {formatDate(tanker.loaded_date)} · {tanker.payment_mode === 'supplier_finance' ? 'Supplier financed' : 'Paid by us'}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {tanker.bargain_no} · {tanker.oil_code || tanker.oil_name} · Loaded {formatDate(tanker.loaded_date)} · {tanker.payment_mode === 'supplier_finance' ? 'Supplier financed' : 'Paid by us'}
+                            </div>
                           </div>
                           <div className="font-medium tabular-nums">{formatNum(tanker.loaded_qty)} {tanker.uom}</div>
                         </label>
@@ -1245,11 +1314,11 @@ export function Orders(): React.JSX.Element {
             <p className="text-xs text-muted-foreground">After confirming loading, this tanker will automatically move to In transit. A purchase invoice is not required first.</p>
           </div>}
           {target === 'transit' && <div className="grid grid-cols-2 gap-3">
-            <div className="grid gap-1.5"><Label>Transit date</Label><DatePicker value={actionForm.transit_date || ''} onChange={(v) => setActionForm((p) => ({ ...p, transit_date: v }))} /></div>
+            <div className="grid gap-1.5"><Label>Transit date</Label><DatePicker value={actionForm.transit_date || ''} min={actionRow?.loaded_date || undefined} onChange={(v) => setActionForm((p) => ({ ...p, transit_date: v }))} /></div>
             <div className="grid gap-1.5"><Label>Source / port</Label><Select value={String(actionForm.source_id || '')} onValueChange={(v) => setActionForm((p) => ({ ...p, source_id: v }))}><SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger><SelectContent>{sources.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name} · {s.transit_days}d</SelectItem>)}</SelectContent></Select></div>
           </div>}
-          {target === 'outside_factory' && <div className="grid gap-1.5"><Label>Outside factory date</Label><DatePicker value={actionForm.outside_factory_date || ''} onChange={(v) => setActionForm({ outside_factory_date: v })} /></div>}
-          {target === 'inside_factory' && <div className="grid gap-1.5"><Label>Inside factory date</Label><DatePicker value={actionForm.inside_factory_date || ''} onChange={(v) => setActionForm({ inside_factory_date: v })} /></div>}
+          {target === 'outside_factory' && <div className="grid gap-1.5"><Label>Outside factory date</Label><DatePicker value={actionForm.outside_factory_date || ''} min={actionRow?.transit_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm({ outside_factory_date: v })} /></div>}
+          {target === 'inside_factory' && <div className="grid gap-1.5"><Label>Inside factory date</Label><DatePicker value={actionForm.inside_factory_date || ''} min={actionRow?.outside_factory_date || actionRow?.transit_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm({ inside_factory_date: v })} /></div>}
           {target === 'empty' && actionRow && shortage && <div className="grid gap-4">
             {(() => {
               const gq = gateQtyFor(actionRow.id)
@@ -1270,7 +1339,7 @@ export function Orders(): React.JSX.Element {
               )
             })()}
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5"><Label>Empty date</Label><DatePicker value={actionForm.empty_date || ''} onChange={(v) => setActionForm((p) => ({ ...p, empty_date: v }))} /></div>
+              <div className="grid gap-1.5"><Label>Empty date</Label><DatePicker value={actionForm.empty_date || ''} min={actionRow?.inside_factory_date || actionRow?.outside_factory_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm((p) => ({ ...p, empty_date: v }))} /></div>
               <div className="grid gap-1.5"><Label>Received quantity</Label><Input type="number" value={actionForm.received_qty || ''} onChange={(e) => setActionForm((p) => ({ ...p, received_qty: e.target.value }))} /></div>
             </div>
             <div className="grid grid-cols-2 gap-3">

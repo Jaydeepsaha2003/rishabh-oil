@@ -126,8 +126,10 @@ export interface MoneyResult {
 export function computeMoney(i: MoneyInput): MoneyResult {
   const interestPct = i.addsInterest ? i.interestPct : 0
   const interestDays = i.addsInterest ? i.interestDays : 0
-  // Interest is computed on the booked (bargain) rate, added to the invoice rate.
-  const interestPerUnit = i.bargainRate * (interestPct / 100) * (interestDays / 365)
+  // Interest is charged on the adjusted rate itself (BG rate + interest):
+  // I = (R + I) × Int%/100 × days/365 = (R + I) × k  ⟹  I = R × k / (1 − k)
+  const k = (interestPct / 100) * (interestDays / 365)
+  const interestPerUnit = k > 0 && k < 1 ? (i.bargainRate * k) / (1 - k) : 0
   const adjustedRate = i.invoiceRate + interestPerUnit
 
   // Provisional (invoice) block.
@@ -159,6 +161,36 @@ export function computeMoney(i: MoneyInput): MoneyResult {
     final_gst_amount: finalGst,
     final_tds_amount: finalTds,
     final_net_amount: finalNet
+  }
+}
+
+// Tanker stage dates must be chronological — e.g. a receipt on 3rd July can't
+// follow a loading on 16th July. Empty/missing dates are skipped.
+const STAGE_DATE_FIELDS: Array<[string, string]> = [
+  ['loaded_date', 'Loading date'],
+  ['transit_date', 'Transit date'],
+  ['outside_factory_date', 'Outside factory date'],
+  ['inside_factory_date', 'Inside factory date'],
+  ['empty_date', 'Receipt (empty) date']
+]
+
+function ddmmyyyy(iso: string): string {
+  return iso.split('-').reverse().join('/')
+}
+
+function assertStageDateOrder(t: Row): void {
+  let prevVal = ''
+  let prevLabel = ''
+  for (const [key, label] of STAGE_DATE_FIELDS) {
+    const val = String(t[key] || '').slice(0, 10)
+    if (!val) continue
+    if (prevVal && val < prevVal) {
+      throw new Error(
+        `${label} (${ddmmyyyy(val)}) cannot be before the ${prevLabel.toLowerCase()} (${ddmmyyyy(prevVal)})`
+      )
+    }
+    prevVal = val
+    prevLabel = label
   }
 }
 
@@ -492,6 +524,11 @@ export async function updateTankerDetails(id: number, v: Row): Promise<{ id: num
   const loadedQty = pickNum('loaded_qty', n(t.loaded_qty))
   const receivedQty = pickNum('received_qty', n(t.received_qty))
 
+  // Stage dates must stay chronological after the edit.
+  const mergedDates: Row = {}
+  for (const [key] of STAGE_DATE_FIELDS) mergedDates[key] = pick(key)
+  assertStageDateOrder(mergedDates)
+
   // Bargain data (also refresh supplier/oil if the bargain was switched).
   const bRes = await c.execute({
     sql: 'SELECT supplier_id, oil_type_id, bargain_type, rate_per_uom, allowed_shortage_pct FROM bargains WHERE id = ?',
@@ -677,6 +714,15 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
   const current = TANKER_STAGES.indexOf(String(tanker.status))
   const target = TANKER_STAGES.indexOf(toStatus)
   if (target !== current + 1) throw new Error('That is not the next tanker stage')
+
+  // The new stage's date can never fall before an earlier stage's date.
+  assertStageDateOrder({
+    loaded_date: data.loaded_date ?? tanker.loaded_date,
+    transit_date: data.transit_date ?? tanker.transit_date,
+    outside_factory_date: data.outside_factory_date ?? tanker.outside_factory_date,
+    inside_factory_date: data.inside_factory_date ?? tanker.inside_factory_date,
+    empty_date: data.empty_date ?? tanker.empty_date
+  })
 
   if (toStatus === 'loaded') {
     const qty = n(data.loaded_qty)
