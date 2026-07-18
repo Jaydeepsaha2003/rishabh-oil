@@ -49,16 +49,53 @@ function UpdateBanner(): React.JSX.Element | null {
   )
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type CompanyRow = Record<string, any>
+
 function App(): React.JSX.Element {
   const [user, setUser] = useState<AppUser | null>(() => loadUser())
   const [booting, setBooting] = useState(false)
   const [page, setPage] = useState<Page>('dashboard')
   const [dbState, setDbState] = useState<'checking' | 'ok' | 'setup'>('checking')
+  const [companies, setCompanies] = useState<CompanyRow[]>([])
+  const [companyId, setCompanyId] = useState<number>(0)
+  const [companyReady, setCompanyReady] = useState(false)
 
   // On launch, test the (auto-configured) connection; show setup only if it fails.
   useEffect(() => {
     window.api.dbPing().then((r) => setDbState(r.ok ? 'ok' : 'setup'))
   }, [])
+
+  // Pick the active company (remembered per machine) BEFORE any page loads data
+  // — every scoped query in the main process filters by it.
+  useEffect(() => {
+    if (!user || dbState !== 'ok') return
+    let cancelled = false
+    ;(async () => {
+      const list = await window.api.company.list().catch(() => [] as CompanyRow[])
+      const active = list.filter((c) => c.active)
+      const stored = Number(localStorage.getItem('companyId') || 0)
+      const pick = active.find((c) => Number(c.id) === stored) || active[0] || list[0]
+      const id = Number(pick?.id || 1)
+      await window.api.company.setActive(id).catch(() => {})
+      if (cancelled) return
+      setCompanies(list)
+      setCompanyId(id)
+      localStorage.setItem('companyId', String(id))
+      setCompanyReady(true)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [user, dbState])
+
+  function switchCompany(id: string): void {
+    localStorage.setItem('companyId', id)
+    window.api.company
+      .setActive(Number(id))
+      .then(() => window.location.reload())
+      .catch(() => window.location.reload())
+  }
 
   const allowed = user ? MODULES.filter((m) => canAccess(user, m.key)).map((m) => m.key) : []
 
@@ -130,11 +167,21 @@ function App(): React.JSX.Element {
     )
   }
 
+  if (!companyReady) return <LoadingSplash />
+
   const view = allowed.includes(page) ? page : (allowed[0] as Page)
 
   return (
     <div className="flex h-screen overflow-hidden bg-muted/30 text-foreground">
-      <Sidebar page={view} onNavigate={setPage} user={user} onLogout={handleLogout} />
+      <Sidebar
+        page={view}
+        onNavigate={setPage}
+        user={user}
+        onLogout={handleLogout}
+        companies={companies}
+        companyId={companyId}
+        onCompanyChange={switchCompany}
+      />
       <main className="relative flex-1 overflow-auto">
         {view === 'dashboard' && <Dashboard onNavigate={setPage} />}
         {view === 'bargains' && <Bargains />}

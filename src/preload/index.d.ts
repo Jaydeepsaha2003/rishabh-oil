@@ -34,8 +34,13 @@ export interface Api {
     advance: (id: number, toStatus: string, data: Row) => Promise<{ id: number }>
     fyTaxable: (supplierId: number, date: string, excludeId: number) => Promise<number>
   }
-  tankers: {
+  company: {
     list: () => Promise<Row[]>
+    setActive: (id: number) => Promise<{ id: number }>
+    getActive: () => Promise<{ id: number }>
+  }
+  tankers: {
+    list: (all?: boolean) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>

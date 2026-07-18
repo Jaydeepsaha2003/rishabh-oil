@@ -1,5 +1,6 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
+import { getActiveCompanyId } from './company'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -18,12 +19,16 @@ function n(v: unknown): number {
 }
 
 export async function listProduction(): Promise<Row[]> {
-  const res = await getClient().execute(`
+  const res = await getClient().execute({
+    args: [getActiveCompanyId()],
+    sql: `
     SELECT p.*, pr.name AS product_name, pr.category AS product_category
     FROM production p
     LEFT JOIN products pr ON pr.id = p.product_id
+    WHERE p.company_id = ?
     ORDER BY p.prod_date DESC, p.id DESC
-  `)
+  `
+  })
   return toPlain(res)
 }
 
@@ -47,8 +52,8 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
   const qty = n(v.qty)
 
   const ins = await c.execute({
-    sql: 'INSERT INTO production (prod_date, product_id, qty, uom, note) VALUES (?, ?, ?, ?, ?)',
-    args: [v.prod_date, productId, qty, v.uom || 'MT', v.note || null]
+    sql: 'INSERT INTO production (company_id, prod_date, product_id, qty, uom, note) VALUES (?, ?, ?, ?, ?, ?)',
+    args: [getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', v.note || null]
   })
   const id = Number(ins.lastInsertRowid)
 

@@ -40,7 +40,8 @@ export function GateEntry(): React.JSX.Element {
     setLoading(true)
     const [g, pt, nextNo] = await Promise.all([
       window.api.gate.list(),
-      window.api.tankers.list(),
+      // the gate serves every company — list tankers across all of them
+      window.api.tankers.list(true),
       window.api.gate.nextNo().catch(() => '')
     ])
     setRows(g)

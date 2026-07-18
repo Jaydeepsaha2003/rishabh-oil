@@ -1,6 +1,7 @@
 import type { InValue, ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { deleteJournalByRef, postPaymentJournal } from './journal'
+import { getActiveCompanyId } from './company'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -31,21 +32,21 @@ export async function outstandingInvoices(
            COALESCE((SELECT SUM(a.amount) FROM payment_allocations a
                      JOIN payments p ON p.id = a.payment_id
                      WHERE a.sale_id = s.id AND p.party_type = 'customer'), 0) AS allocated
-         FROM sales s WHERE s.customer_id = ? ORDER BY s.sale_date ASC, s.id ASC`
+         FROM sales s WHERE s.customer_id = ? AND s.company_id = ? ORDER BY s.sale_date ASC, s.id ASC`
       : partyType === 'supplier'
       ? `SELECT o.id, o.invoice_no, o.order_date, o.net_amount AS invoice_amount,
            COALESCE((SELECT SUM(a.amount) FROM payment_allocations a
                      JOIN payments p ON p.id = a.payment_id
                      WHERE a.order_id = o.id AND p.party_type = 'supplier'), 0) AS allocated
-         FROM orders o WHERE o.supplier_id = ? ORDER BY o.order_date ASC, o.id ASC`
+         FROM orders o WHERE o.supplier_id = ? AND o.company_id = ? ORDER BY o.order_date ASC, o.id ASC`
       : `SELECT o.id, o.invoice_no, o.order_date,
            (o.transport_amount - o.shortage_charge_amount) AS invoice_amount,
            COALESCE((SELECT SUM(a.amount) FROM payment_allocations a
                      JOIN payments p ON p.id = a.payment_id
                      WHERE a.order_id = o.id AND p.party_type = 'transporter'), 0) AS allocated
-         FROM orders o WHERE o.transporter_id = ? AND o.status = 'delivered'
+         FROM orders o WHERE o.transporter_id = ? AND o.company_id = ? AND o.status = 'delivered'
          ORDER BY o.order_date ASC, o.id ASC`
-  const res = await c.execute({ sql, args: [partyId] })
+  const res = await c.execute({ sql, args: [partyId, getActiveCompanyId()] })
   return toPlain(res)
     .map((r) => ({ ...r, outstanding: n(r.invoice_amount) - n(r.allocated) }))
     .filter((r) => r.outstanding > 0.005)
@@ -67,7 +68,9 @@ function ledgerMeta(partyType: string): {
 }
 
 export async function listPayments(): Promise<Row[]> {
-  const res = await getClient().execute(`
+  const res = await getClient().execute({
+    args: [getActiveCompanyId()],
+    sql: `
     SELECT p.*,
       CASE p.party_type
         WHEN 'supplier' THEN s.name
@@ -78,8 +81,10 @@ export async function listPayments(): Promise<Row[]> {
     LEFT JOIN suppliers s ON p.party_type = 'supplier' AND s.id = p.party_id
     LEFT JOIN transporters t ON p.party_type = 'transporter' AND t.id = p.party_id
     LEFT JOIN customers c ON p.party_type = 'customer' AND c.id = p.party_id
+    WHERE p.company_id = ?
     ORDER BY p.id DESC
-  `)
+  `
+  })
   return toPlain(res)
 }
 
@@ -101,9 +106,10 @@ export async function recordPayment(data: Row): Promise<{ id: number }> {
 
   const ins = await c.execute({
     sql: `INSERT INTO payments
-      (party_type, party_id, payment_date, amount, source, method, is_advance, reference, note)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (company_id, party_type, party_id, payment_date, amount, source, method, is_advance, reference, note)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
+      getActiveCompanyId(),
       partyType,
       partyId,
       data.payment_date,
@@ -144,8 +150,8 @@ export async function recordPayment(data: Row): Promise<{ id: number }> {
       args: [paymentId, a.ref, a.amount]
     })
     await c.execute({
-      sql: `INSERT INTO ${ledgerTable} (${partyCol}, ${refCol}, payment_id, entry_date, entry_type, amount, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      sql: `INSERT INTO ${ledgerTable} (${partyCol}, ${refCol}, payment_id, entry_date, entry_type, amount, note, company_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         partyId,
         a.ref,
@@ -153,7 +159,8 @@ export async function recordPayment(data: Row): Promise<{ id: number }> {
         data.payment_date,
         entryWord,
         sign * a.amount,
-        data.source || (partyType === 'customer' ? 'Receipt' : 'Payment')
+        data.source || (partyType === 'customer' ? 'Receipt' : 'Payment'),
+        getActiveCompanyId()
       ]
     })
   }
@@ -162,15 +169,16 @@ export async function recordPayment(data: Row): Promise<{ id: number }> {
   const remainder = amount - allocatedSum
   if (remainder > 0.005) {
     await c.execute({
-      sql: `INSERT INTO ${ledgerTable} (${partyCol}, ${refCol}, payment_id, entry_date, entry_type, amount, note)
-            VALUES (?, NULL, ?, ?, ?, ?, ?)`,
+      sql: `INSERT INTO ${ledgerTable} (${partyCol}, ${refCol}, payment_id, entry_date, entry_type, amount, note, company_id)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, ?)`,
       args: [
         partyId,
         paymentId,
         data.payment_date,
         data.is_advance ? 'advance' : entryWord,
         sign * remainder,
-        data.is_advance ? 'Excess amount' : data.source || 'On account'
+        data.is_advance ? 'Excess amount' : data.source || 'On account',
+        getActiveCompanyId()
       ]
     })
   }
@@ -210,12 +218,16 @@ export async function deletePayment(id: number): Promise<{ id: number }> {
 // --- bill discounting ---
 
 export async function listBillDiscounts(): Promise<Row[]> {
-  const res = await getClient().execute(`
+  const res = await getClient().execute({
+    args: [getActiveCompanyId()],
+    sql: `
     SELECT b.*, s.name AS supplier_name
     FROM bill_discounts b
     LEFT JOIN suppliers s ON s.id = b.supplier_id
+    WHERE b.company_id = ?
     ORDER BY b.id DESC
-  `)
+  `
+  })
   return toPlain(res)
 }
 
@@ -244,9 +256,9 @@ function bdArgs(v: Row): InValue[] {
 
 export async function createBillDiscount(v: Row): Promise<{ id: number }> {
   const res = await getClient().execute({
-    sql: `INSERT INTO bill_discounts (${BD_COLS.join(', ')})
-          VALUES (${BD_COLS.map(() => '?').join(', ')})`,
-    args: bdArgs(v)
+    sql: `INSERT INTO bill_discounts (company_id, ${BD_COLS.join(', ')})
+          VALUES (?, ${BD_COLS.map(() => '?').join(', ')})`,
+    args: [getActiveCompanyId(), ...bdArgs(v)]
   })
   return { id: Number(res.lastInsertRowid) }
 }

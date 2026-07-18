@@ -119,6 +119,9 @@ export function Orders(): React.JSX.Element {
   const [loadingRows, setLoadingRows] = useState<Row[]>([{}])
   const [actionRow, setActionRow] = useState<Row | null>(null)
   const [actionForm, setActionForm] = useState<Row>({})
+  // Loading more than the bargain balance: the excess needs a confirmed new
+  // bargain line (optionally at a different rate) before the tanker can load.
+  const [excess, setExcess] = useState<{ qty: number; balance: number; diffRate: boolean; rate: string } | null>(null)
   const [detailRow, setDetailRow] = useState<Row | null>(null)
   const [gateEntries, setGateEntries] = useState<Row[]>([])
   const [editTanker, setEditTanker] = useState<Row | null>(null)
@@ -353,6 +356,7 @@ export function Orders(): React.JSX.Element {
       transport_rate_per_ton: transporters.find((x) => x.id === row.transporter_id)?.default_rate_per_ton || ''
     })
     setActionForm(next)
+    setExcess(null)
     setActionRow(row)
   }
 
@@ -420,10 +424,28 @@ export function Orders(): React.JSX.Element {
       toast.error('Select a transporter')
       return
     }
+    // More qty on the truck than the bargain has left: pause and ask before
+    // booking the excess as a fresh bargain line (rate confirmed by the user).
+    if (target === 'loaded' && !excess) {
+      const b = bargains.find((x) => String(x.id) === String(actionForm.bargain_id))
+      const balance = Math.max(Number(b?.balance_qty) || 0, 0)
+      const over = (Number(actionForm.loaded_qty) || 0) - balance
+      if (b && over > 1e-6) {
+        setExcess({
+          qty: Math.round(over * 1000) / 1000,
+          balance,
+          diffRate: false,
+          rate: String(b.rate_per_uom ?? '')
+        })
+        return
+      }
+    }
     try {
       await window.api.tankers.advance(actionRow.id, target, {
         ...actionForm,
         loaded_qty: Number(actionForm.loaded_qty) || 0,
+        allow_excess: !!excess,
+        excess_rate: excess && excess.diffRate && Number(excess.rate) > 0 ? Number(excess.rate) : null,
         bargain_id: actionForm.bargain_id ? Number(actionForm.bargain_id) : null,
         source_id: actionForm.source_id ? Number(actionForm.source_id) : null,
         transporter_id: actionForm.transporter_id ? Number(actionForm.transporter_id) : null,
@@ -434,8 +456,13 @@ export function Orders(): React.JSX.Element {
         outside_weighment_doc_no: actionForm.outside_weighment_doc_no || null,
         outside_weighment_photo: actionForm.outside_weighment_photo || null
       })
-      toast.success(target === 'loaded' ? 'Loading confirmed and tanker moved to In transit' : `Tanker moved to ${TANKER_LABEL[target]}`)
+      if (target === 'loaded' && excess) {
+        toast.success(`Loading confirmed — extra ${formatNum(excess.qty)} added as a new bargain`)
+      } else {
+        toast.success(target === 'loaded' ? 'Loading confirmed and tanker moved to In transit' : `Tanker moved to ${TANKER_LABEL[target]}`)
+      }
       setActionRow(null)
+      setExcess(null)
       await load()
     } catch (e) {
       toast.error((e as Error).message)
@@ -654,30 +681,33 @@ export function Orders(): React.JSX.Element {
 
   return (
     <>
-      <PageHeader
-        title="Purchases"
-        subtitle="Load tankers first, then combine one or more tankers into a purchase invoice"
-        hint="Tanker lifecycle: To be loaded → Loaded → In transit → Outside factory → Inside factory → Empty. Pick the transporter when sending tankers to the supplier. At Empty, record received qty plus the KRFL and outside-factory weighment slips."
-        actions={!formPage ? (
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={() => setLoadingOpen(true)}>
-              <Truck className="h-4 w-4" /> Send tankers to supplier
-            </Button>
-            <Button size="sm" onClick={openNewPurchase}>
-              <Plus className="h-4 w-4" /> New purchase
-            </Button>
-          </div>
-        ) : undefined}
-      />
+      {!formPage && (
+        <PageHeader
+          title="Purchases"
+          subtitle="Load tankers first, then combine one or more tankers into a purchase invoice"
+          hint="Tanker lifecycle: To be loaded → Loaded → In transit → Outside factory → Inside factory → Empty. Pick the transporter when sending tankers to the supplier. At Empty, record received qty plus the KRFL and outside-factory weighment slips."
+          actions={
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setLoadingOpen(true)}>
+                <Truck className="h-4 w-4" /> Send tankers to supplier
+              </Button>
+              <Button size="sm" onClick={openNewPurchase}>
+                <Plus className="h-4 w-4" /> New purchase
+              </Button>
+            </div>
+          }
+        />
+      )}
 
       {formPage ? (
-        <div className="p-8">
-          <button className="mb-5 inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground" onClick={() => setFormPage(false)}>
-            <ArrowLeft className="h-4 w-4" /> Back to purchases
-          </button>
-          <div className="mb-6">
-            <h2 className="text-xl font-semibold">{editing ? `Edit purchase ${editing.invoice_no}` : 'Create purchase invoice'}</h2>
-            <p className="mt-1 text-sm text-muted-foreground">Select all loaded tankers covered by this single supplier invoice.</p>
+        <div className="p-6">
+          <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 border-b pb-3">
+            <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground" onClick={() => setFormPage(false)}>
+              <ArrowLeft className="h-4 w-4" /> Back
+            </button>
+            <div className="h-4 border-l" />
+            <h2 className="text-base font-semibold">{editing ? `Edit purchase ${editing.invoice_no}` : 'Create purchase invoice'}</h2>
+            <p className="text-sm text-muted-foreground">Select all loaded tankers covered by this single supplier invoice.</p>
           </div>
 
           <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
@@ -1137,7 +1167,7 @@ export function Orders(): React.JSX.Element {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!actionRow} onOpenChange={(open) => !open && setActionRow(null)}>
+      <Dialog open={!!actionRow} onOpenChange={(open) => { if (!open) { setActionRow(null); setExcess(null) } }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{target ? `Move ${actionRow?.tanker_no} to ${TANKER_LABEL[target]}` : 'Update tanker'}</DialogTitle></DialogHeader>
           {target === 'loaded' && actionRow && <div className="grid gap-4">
@@ -1145,7 +1175,7 @@ export function Orders(): React.JSX.Element {
               <Label>Bargain (auto-selected — change if needed)</Label>
               <Select
                 value={String(actionForm.bargain_id || '')}
-                onValueChange={(v) => setActionForm((p) => ({ ...p, bargain_id: v }))}
+                onValueChange={(v) => { setExcess(null); setActionForm((p) => ({ ...p, bargain_id: v })) }}
               >
                 <SelectTrigger><SelectValue placeholder="Select bargain" /></SelectTrigger>
                 <SelectContent>
@@ -1167,8 +1197,35 @@ export function Orders(): React.JSX.Element {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1.5"><Label>Loaded date</Label><DatePicker value={actionForm.loaded_date || ''} onChange={(v) => setActionForm((p) => ({ ...p, loaded_date: v }))} /></div>
-              <div className="grid gap-1.5"><Label>Actual loaded quantity *</Label><Input type="number" value={actionForm.loaded_qty || ''} onChange={(e) => setActionForm((p) => ({ ...p, loaded_qty: e.target.value }))} /></div>
+              <div className="grid gap-1.5"><Label>Actual loaded quantity *</Label><Input type="number" value={actionForm.loaded_qty || ''} onChange={(e) => { setExcess(null); setActionForm((p) => ({ ...p, loaded_qty: e.target.value })) }} /></div>
             </div>
+            {excess && (
+              <div className="space-y-2.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
+                <p>
+                  This bargain has only <b>{formatNum(excess.balance)} {actionRow.uom}</b> left. On confirming, the
+                  extra <b>{formatNum(excess.qty)} {actionRow.uom}</b> will be entered as a new bargain line for{' '}
+                  {actionRow.supplier_name}.
+                </p>
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={excess.diffRate}
+                    onCheckedChange={(v) => setExcess((p) => (p ? { ...p, diffRate: v } : p))}
+                  />
+                  <span>A different rate applies to the extra quantity</span>
+                </div>
+                {excess.diffRate && (
+                  <div className="grid gap-1.5">
+                    <Label className="text-amber-900">Rate for the extra qty (per {actionRow.uom})</Label>
+                    <Input
+                      type="number"
+                      className="bg-white"
+                      value={excess.rate}
+                      onChange={(e) => setExcess((p) => (p ? { ...p, rate: e.target.value } : p))}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
             <div className="grid gap-1.5">
               <Label>Source / port</Label>
               <Select value={String(actionForm.source_id || '')} onValueChange={(value) => setActionForm((p) => ({ ...p, source_id: value }))}>
@@ -1247,7 +1304,7 @@ export function Orders(): React.JSX.Element {
             </div>
             <div className="rounded-lg border bg-muted/30 p-3"><MoneyRow label="Loaded" value={`${formatNum(actionRow.loaded_qty)} ${actionRow.uom}`} /><MoneyRow label="Shortage" value={`${formatNum(shortage.actualShortage)} ${actionRow.uom}`} /><MoneyRow label="Freight" value={formatINR(shortage.transportAmount)} /></div>
           </div>}
-          <DialogFooter><Button variant="outline" onClick={() => setActionRow(null)}>Cancel</Button><Button onClick={advanceTanker}>Confirm</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => { setActionRow(null); setExcess(null) }}>Cancel</Button><Button onClick={advanceTanker}>{excess ? 'Add bargain & confirm' : 'Confirm'}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 

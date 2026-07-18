@@ -54,7 +54,8 @@ const TABLES: Record<string, string[]> = {
   ],
   sources: ['name', 'transit_days', 'active'],
   uoms: ['name', 'active'],
-  brokers: ['name', 'contact_person', 'phone', 'brokerage_pct', 'address', 'note', 'active']
+  brokers: ['name', 'contact_person', 'phone', 'brokerage_pct', 'address', 'note', 'active'],
+  companies: ['name', 'active']
 }
 
 type Row = Record<string, unknown>

@@ -647,9 +647,25 @@ export function Bargains(): React.JSX.Element {
                             <TableRow className="bg-muted/20 hover:bg-muted/20">
                               <TableCell colSpan={10} className="p-0">
                                 {(() => {
-                                  const list = tankers.filter((t) => Number(t.bargain_id) === Number(row.id))
+                                  // A tanker may be split across two bargains (excess loading):
+                                  // its bargain gets loaded − extra, the auto-created line gets extra.
+                                  const list = tankers.filter(
+                                    (t) =>
+                                      Number(t.bargain_id) === Number(row.id) ||
+                                      (Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) === Number(row.id))
+                                  )
                                   if (!list.length) {
                                     return <p className="px-8 py-3 text-xs text-muted-foreground">No tankers on this bargain yet.</p>
+                                  }
+                                  const disOf = (t: Row): number => {
+                                    const loaded = Number(t.loaded_qty) || 0
+                                    const extra = t.extra_bargain_id ? Number(t.extra_qty) || 0 : 0
+                                    return Number(t.bargain_id) === Number(row.id) ? loaded - extra : extra
+                                  }
+                                  // receipts/shortage belong to the whole tanker — pro-rate by share
+                                  const shareOf = (t: Row): number => {
+                                    const loaded = Number(t.loaded_qty) || 0
+                                    return loaded > 0 ? disOf(t) / loaded : 1
                                   }
                                   const pctOf = (t: Row): number =>
                                     Number(t.order_allowed_shortage_pct ?? row.allowed_shortage_pct ?? defaultShortagePct) || 0
@@ -657,10 +673,11 @@ export function Bargains(): React.JSX.Element {
                                     (s, t) => {
                                       const loaded = Number(t.loaded_qty) || 0
                                       const rec = t.received_qty != null ? Number(t.received_qty) : null
-                                      s.dis += loaded
-                                      s.rec += rec ?? 0
-                                      s.shortage += rec != null ? Math.max(0, loaded - rec) : 0
-                                      s.allowed += (loaded * pctOf(t)) / 100
+                                      const share = shareOf(t)
+                                      s.dis += disOf(t)
+                                      s.rec += (rec ?? 0) * share
+                                      s.shortage += rec != null ? Math.max(0, loaded - rec) * share : 0
+                                      s.allowed += (disOf(t) * pctOf(t)) / 100
                                       return s
                                     },
                                     { dis: 0, rec: 0, shortage: 0, allowed: 0 }
@@ -682,22 +699,27 @@ export function Bargains(): React.JSX.Element {
                                         <tbody>
                                           {list.map((t) => {
                                             const loaded = Number(t.loaded_qty) || 0
-                                            const rec = t.status === 'empty' && t.received_qty != null ? Number(t.received_qty) : null
+                                            const dis = disOf(t)
+                                            const share = shareOf(t)
+                                            const split = Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) > 0
+                                            const rec = t.status === 'empty' && t.received_qty != null ? Number(t.received_qty) * share : null
+                                            const shortage = rec != null ? Math.max(0, loaded - Number(t.received_qty)) * share : null
                                             return (
                                               <tr key={t.id as number} className="border-b last:border-0">
-                                                <td className="py-1.5 pr-3 font-medium">{t.tanker_no}</td>
+                                                <td className="py-1.5 pr-3 font-medium">
+                                                  {t.tanker_no}
+                                                  {split && <span className="ml-1 text-[10px] font-normal text-muted-foreground">(split)</span>}
+                                                </td>
                                                 <td className="py-1.5 pr-3">{loaded > 0 ? formatDate(t.loaded_date) : '—'}</td>
                                                 <td className="py-1.5 pr-3">{t.empty_date ? formatDate(t.empty_date) : '—'}</td>
-                                                <td className="py-1.5 pr-3 text-right tabular-nums">{loaded > 0 ? formatNum(loaded) : '—'}</td>
+                                                <td className="py-1.5 pr-3 text-right tabular-nums">{loaded > 0 ? formatNum(dis) : '—'}</td>
                                                 <td className="py-1.5 pr-3 text-right tabular-nums">{rec != null ? formatNum(rec) : '—'}</td>
                                                 <td className="py-1.5 pr-3 text-right tabular-nums">
-                                                  {rec != null ? (
-                                                    <span className={Math.max(0, loaded - rec) > 0 ? 'text-amber-700' : ''}>
-                                                      {formatNum(Math.max(0, loaded - rec))}
-                                                    </span>
+                                                  {shortage != null ? (
+                                                    <span className={shortage > 0 ? 'text-amber-700' : ''}>{formatNum(shortage)}</span>
                                                   ) : '—'}
                                                 </td>
-                                                <td className="py-1.5 text-right tabular-nums">{loaded > 0 ? formatNum((loaded * pctOf(t)) / 100) : '—'}</td>
+                                                <td className="py-1.5 text-right tabular-nums">{loaded > 0 ? formatNum((dis * pctOf(t)) / 100) : '—'}</td>
                                               </tr>
                                             )
                                           })}

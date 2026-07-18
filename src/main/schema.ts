@@ -8,6 +8,13 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS companies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS oil_types (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   code TEXT NOT NULL,
@@ -475,6 +482,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_purchase_tankers_order ON purchase_tankers(order_id);
 CREATE INDEX IF NOT EXISTS idx_purchase_tankers_status ON purchase_tankers(status);
 
+INSERT OR IGNORE INTO companies (id, name) VALUES (1, 'RISHABH OIL');
 INSERT OR IGNORE INTO app_settings (key, value) VALUES ('allowed_shortage_pct', '0.2');
 INSERT OR IGNORE INTO app_settings (key, value) VALUES ('default_uom', 'MT');
 INSERT OR IGNORE INTO app_settings (key, value) VALUES ('log_retention_days', '30');

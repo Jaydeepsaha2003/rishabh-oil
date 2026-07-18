@@ -319,6 +319,16 @@ const sourceColumns: ColumnDef[] = [
   { key: 'transit_days', label: 'Transit days', align: 'right' }
 ]
 
+const companyFields: FieldDef[] = [
+  { key: 'name', label: 'Company name', type: 'text', required: true },
+  { key: 'active', label: 'Active', type: 'switch', default: true }
+]
+const companyColumns: ColumnDef[] = [
+  { key: 'name', label: 'Company' },
+  { key: 'active', label: 'Active', type: 'switch' },
+  { key: 'created_at', label: 'Created', type: 'date' }
+]
+
 function GeneralSettings(): React.JSX.Element {
   const [shortage, setShortage] = useState('')
   const [uom, setUom] = useState('')
@@ -635,6 +645,7 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
             <TabsTrigger value="sources">Ports</TabsTrigger>
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="update">Software update</TabsTrigger>
+            {isAdmin && <TabsTrigger value="companies">Companies</TabsTrigger>}
             {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
             {isAdmin && <TabsTrigger value="access">Access</TabsTrigger>}
           </TabsList>
@@ -655,6 +666,17 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
           <TabsContent value="update" className="mt-6">
             <UpdatePanel />
           </TabsContent>
+          {isAdmin && (
+            <TabsContent value="companies" className="mt-6">
+              <EntityManager
+                table="companies"
+                title="Company"
+                description="Each company keeps its own bargains, purchases, sales, stock and account books. Switch the working company from the sidebar. Masters and Gate Entry are shared."
+                fields={companyFields}
+                columns={companyColumns}
+              />
+            </TabsContent>
+          )}
           {isAdmin && (
             <TabsContent value="users" className="mt-6">
               <UsersManager />

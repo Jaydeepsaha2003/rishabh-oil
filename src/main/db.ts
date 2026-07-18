@@ -103,6 +103,41 @@ const MIGRATIONS = [
   "ALTER TABLE gate_entries ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'",
   'ALTER TABLE bargains ADD COLUMN broker_id INTEGER',
   'ALTER TABLE orders ADD COLUMN round_off REAL NOT NULL DEFAULT 0',
+  // multi-company: every business document belongs to a company (masters and
+  // gate entries stay shared). Existing data lands in company 1.
+  'ALTER TABLE bargains ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
+  'ALTER TABLE orders ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
+  'ALTER TABLE purchase_tankers ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
+  'ALTER TABLE sales ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
+  'ALTER TABLE sales_bargains ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
+  'ALTER TABLE production ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
+  'ALTER TABLE payments ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
+  'ALTER TABLE bill_discounts ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
+  'ALTER TABLE letters_of_credit ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
+  'ALTER TABLE journal_entries ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
+  // Party ledgers are company books too — doc-linked rows inherit the parent
+  // document's company; manual rows take the company they were entered in.
+  'ALTER TABLE supplier_ledger ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
+  'ALTER TABLE transporter_ledger ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
+  'ALTER TABLE customer_ledger ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
+  // Excess loading: qty loaded beyond the chosen bargain's balance is booked
+  // against an auto-created bargain line; the split is remembered per tanker.
+  'ALTER TABLE purchase_tankers ADD COLUMN extra_bargain_id INTEGER',
+  'ALTER TABLE purchase_tankers ADD COLUMN extra_qty REAL NOT NULL DEFAULT 0',
+  // Self-healing: doc-linked party-ledger rows always belong to their parent
+  // document's company (covers rows written before these columns existed).
+  `UPDATE supplier_ledger SET company_id = COALESCE(
+     (SELECT o.company_id FROM orders o WHERE o.id = supplier_ledger.order_id),
+     (SELECT p.company_id FROM payments p WHERE p.id = supplier_ledger.payment_id),
+     company_id)`,
+  `UPDATE transporter_ledger SET company_id = COALESCE(
+     (SELECT o.company_id FROM orders o WHERE o.id = transporter_ledger.order_id),
+     (SELECT p.company_id FROM payments p WHERE p.id = transporter_ledger.payment_id),
+     company_id)`,
+  `UPDATE customer_ledger SET company_id = COALESCE(
+     (SELECT s.company_id FROM sales s WHERE s.id = customer_ledger.sale_id),
+     (SELECT p.company_id FROM payments p WHERE p.id = customer_ledger.payment_id),
+     company_id)`,
   'ALTER TABLE suppliers ADD COLUMN opening_purchase_amount REAL NOT NULL DEFAULT 0',
   'ALTER TABLE suppliers ADD COLUMN opening_purchase_date TEXT',
   // bargain condition renamed to EX/DLD
@@ -164,6 +199,34 @@ async function backfillBargainSerials(c: any): Promise<void> {
   }
 }
 
+// stock_counts was UNIQUE(count_date, product_id); multi-company needs the
+// company in the key. Rebuild once (detected by the missing company_id column).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function rebuildStockCountsForCompanies(c: any): Promise<void> {
+  const info = await c.execute('PRAGMA table_info(stock_counts)')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const hasCompany = info.rows.some((r: any) => String(r.name) === 'company_id')
+  if (hasCompany) return
+  await c.execute(`CREATE TABLE stock_counts_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    count_date TEXT NOT NULL,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    book_qty REAL NOT NULL DEFAULT 0,
+    actual_qty REAL NOT NULL DEFAULT 0,
+    actual_value REAL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(company_id, count_date, product_id)
+  )`)
+  await c.execute(`INSERT INTO stock_counts_new
+      (id, company_id, count_date, product_id, book_qty, actual_qty, actual_value, note, created_at)
+    SELECT id, 1, count_date, product_id, book_qty, actual_qty, actual_value, note, created_at
+    FROM stock_counts`)
+  await c.execute('DROP TABLE stock_counts')
+  await c.execute('ALTER TABLE stock_counts_new RENAME TO stock_counts')
+}
+
 export async function initDb(): Promise<void> {
   // Never crash the app if the token is missing — the UI surfaces the status.
   try {
@@ -182,6 +245,9 @@ export async function initDb(): Promise<void> {
       }
     }
     await backfillBargainSerials(c).catch(() => {})
+    await rebuildStockCountsForCompanies(c).catch((e) =>
+      console.error('[db] stock_counts rebuild failed:', (e as Error).message)
+    )
     console.log('[db] schema ready')
   } catch (err) {
     console.error('[db] init skipped/failed:', (err as Error).message)

@@ -49,8 +49,14 @@ const api = {
     fyTaxable: (supplierId: number, date: string, excludeId: number): Promise<number> =>
       ipcRenderer.invoke('orders:fyTaxable', { supplierId, date, excludeId })
   },
+  company: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('company:list'),
+    setActive: (id: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('company:setActive', { id }),
+    getActive: (): Promise<{ id: number }> => ipcRenderer.invoke('company:getActive')
+  },
   tankers: {
-    list: (): Promise<Row[]> => ipcRenderer.invoke('tankers:list'),
+    list: (all?: boolean): Promise<Row[]> => ipcRenderer.invoke('tankers:list', { all }),
     create: (values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('tankers:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>

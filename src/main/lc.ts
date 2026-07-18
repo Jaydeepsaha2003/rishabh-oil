@@ -1,5 +1,6 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
+import { getActiveCompanyId } from './company'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -19,15 +20,19 @@ function n(v: unknown): number {
 
 // LCs / discounting facilities with their utilisation (sum of issuances).
 export async function listLCs(): Promise<Row[]> {
-  const res = await getClient().execute(`
+  const res = await getClient().execute({
+    args: [getActiveCompanyId()],
+    sql: `
     SELECT l.*,
       s.name AS supplier_name,
       COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS utilized,
       l.amount - COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS available
     FROM letters_of_credit l
     LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+    WHERE l.company_id = ?
     ORDER BY l.id DESC
-  `)
+  `
+  })
   return toPlain(res)
 }
 
@@ -69,9 +74,9 @@ function lcArgs(v: Row): (string | number | null)[] {
 export async function createLC(v: Row): Promise<{ id: number }> {
   if (!v.lc_no || !v.bank) throw new Error('LC number and bank are required')
   const res = await getClient().execute({
-    sql: `INSERT INTO letters_of_credit (${LC_COLS.join(', ')})
-          VALUES (${LC_COLS.map(() => '?').join(', ')})`,
-    args: lcArgs(v)
+    sql: `INSERT INTO letters_of_credit (company_id, ${LC_COLS.join(', ')})
+          VALUES (?, ${LC_COLS.map(() => '?').join(', ')})`,
+    args: [getActiveCompanyId(), ...lcArgs(v)]
   })
   return { id: Number(res.lastInsertRowid) }
 }

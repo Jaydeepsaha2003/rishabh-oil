@@ -1,5 +1,6 @@
 import { getClient } from './db'
 import { stockLevels } from './stock'
+import { getActiveCompanyId } from './company'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -14,8 +15,8 @@ function n(v: unknown): number {
 export async function stockCountSheet(date: string): Promise<Row[]> {
   const levels = await stockLevels()
   const saved = await getClient().execute({
-    sql: 'SELECT * FROM stock_counts WHERE count_date = ?',
-    args: [date]
+    sql: 'SELECT * FROM stock_counts WHERE count_date = ? AND company_id = ?',
+    args: [date, getActiveCompanyId()]
   })
   const byProduct = new Map<number, Row>()
   for (const r of saved.rows) byProduct.set(Number(r.product_id), r as unknown as Row)
@@ -39,8 +40,8 @@ export async function listStockCounts(date: string): Promise<Row[]> {
   const res = await getClient().execute({
     sql: `SELECT sc.*, p.code, p.name, p.category
           FROM stock_counts sc LEFT JOIN products p ON p.id = sc.product_id
-          WHERE sc.count_date = ? ORDER BY p.category, p.name`,
-    args: [date]
+          WHERE sc.count_date = ? AND sc.company_id = ? ORDER BY p.category, p.name`,
+    args: [date, getActiveCompanyId()]
   })
   return res.rows.map((r) => {
     const o: Row = {}
@@ -57,14 +58,15 @@ export async function saveStockCounts(date: string, items: Row[]): Promise<{ cou
     const hasValue = it.actual_value !== '' && it.actual_value != null
     if (!hasActual && !hasValue) continue
     await c.execute({
-      sql: `INSERT INTO stock_counts (count_date, product_id, book_qty, actual_qty, actual_value, note)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(count_date, product_id) DO UPDATE SET
+      sql: `INSERT INTO stock_counts (company_id, count_date, product_id, book_qty, actual_qty, actual_value, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(company_id, count_date, product_id) DO UPDATE SET
               book_qty = excluded.book_qty,
               actual_qty = excluded.actual_qty,
               actual_value = excluded.actual_value,
               note = excluded.note`,
       args: [
+        getActiveCompanyId(),
         date,
         n(it.product_id),
         n(it.book_qty),

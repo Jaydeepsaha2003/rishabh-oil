@@ -2,8 +2,9 @@ import type { InValue, ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getSetting } from './repos'
 import { tankerGateReceived } from './gate'
-import { ensureOilType } from './bargains'
+import { createBargain, ensureOilType } from './bargains'
 import { deleteJournalByRef, postPurchaseJournal } from './journal'
+import { getActiveCompanyId } from './company'
 
 const STAGES = [
   'ordered',
@@ -88,8 +89,8 @@ export async function supplierFyTaxable(
   const c = getClient()
   const res = await c.execute({
     sql: `SELECT COALESCE(SUM(taxable_value), 0) AS t FROM orders
-          WHERE supplier_id = ? AND order_date BETWEEN ? AND ? AND id != ?`,
-    args: [supplierId, start, end, excludeId || 0]
+          WHERE supplier_id = ? AND order_date BETWEEN ? AND ? AND id != ? AND company_id = ?`,
+    args: [supplierId, start, end, excludeId || 0, getActiveCompanyId()]
   })
   // Add the "purchase bill amount as on <date>" if that date is in this FY —
   // it seeds the cumulative taxable so the TDS slab picks up from the right point.
@@ -182,14 +183,16 @@ async function setSupplierPayable(
     args: [orderId]
   })
   await c.execute({
-    sql: `INSERT INTO supplier_ledger (supplier_id, order_id, entry_date, entry_type, amount, note)
-          VALUES (?, ?, ?, 'payable', ?, 'Order net amount')`,
-    args: [supplierId, orderId, date, amount]
+    sql: `INSERT INTO supplier_ledger (supplier_id, order_id, entry_date, entry_type, amount, note, company_id)
+          VALUES (?, ?, ?, 'payable', ?, 'Order net amount', (SELECT company_id FROM orders WHERE id = ?))`,
+    args: [supplierId, orderId, date, amount, orderId]
   })
 }
 
 export async function listOrders(): Promise<Row[]> {
-  const res = await getClient().execute(`
+  const res = await getClient().execute({
+    args: [getActiveCompanyId()],
+    sql: `
     SELECT o.*,
            s.name AS supplier_name,
            ot.code AS oil_code, ot.name AS oil_name,
@@ -202,8 +205,10 @@ export async function listOrders(): Promise<Row[]> {
     LEFT JOIN products ot ON ot.id = o.oil_type_id
     LEFT JOIN sources src ON src.id = o.source_id
     LEFT JOIN transporters t ON t.id = o.transporter_id
+    WHERE o.company_id = ?
     ORDER BY o.id DESC
-  `)
+  `
+  })
   return toPlain(res)
 }
 
@@ -230,14 +235,15 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   })
   const res = await getClient().execute({
     sql: `INSERT INTO orders
-      (invoice_no, order_date, bargain_id, supplier_id, oil_type_id, bargain_type, ordered_qty, uom,
+      (company_id, invoice_no, order_date, bargain_id, supplier_id, oil_type_id, bargain_type, ordered_qty, uom,
        bargain_rate, invoice_rate, interest_pct, interest_days, adjusted_rate, taxable_value,
        gst_pct, gst_type, gst_amount, tds_pct, tds_amount, round_off, net_amount,
        final_taxable_value, final_gst_amount, final_tds_amount, final_net_amount,
        tanker_no, transporter_id, allowed_shortage_pct, is_registered_transporter, posting, financed_by_party,
        payment_cleared_date, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'loaded')`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'loaded')`,
     args: [
+      getActiveCompanyId(),
       v.invoice_no,
       v.order_date,
       v.bargain_id ? n(v.bargain_id) : null,
@@ -420,8 +426,11 @@ async function assignTankers(
   }
 }
 
-export async function listPurchaseTankers(): Promise<Row[]> {
-  const res = await getClient().execute(`
+// allCompanies = true is used by the (shared) Gate Entry screen.
+export async function listPurchaseTankers(allCompanies = false): Promise<Row[]> {
+  const res = await getClient().execute({
+    args: allCompanies ? [] : [getActiveCompanyId()],
+    sql: `
     SELECT pt.*, o.invoice_no, o.allowed_shortage_pct AS order_allowed_shortage_pct,
            b.bargain_no, b.bargain_type, b.rate_per_uom AS bargain_rate,
            b.allowed_shortage_pct, s.name AS supplier_name,
@@ -434,10 +443,12 @@ export async function listPurchaseTankers(): Promise<Row[]> {
     LEFT JOIN products p ON p.id = pt.oil_type_id
     LEFT JOIN sources src ON src.id = pt.source_id
     LEFT JOIN transporters tr ON tr.id = pt.transporter_id
+    ${allCompanies ? '' : 'WHERE pt.company_id = ?'}
     ORDER BY CASE pt.status
       WHEN 'supplier_factory' THEN 1 WHEN 'loaded' THEN 2 WHEN 'transit' THEN 3
       WHEN 'outside_factory' THEN 4 WHEN 'inside_factory' THEN 5 ELSE 6 END, pt.id DESC
-  `)
+  `
+  })
   return toPlain(res)
 }
 
@@ -447,12 +458,13 @@ export async function createPurchaseTanker(v: Row): Promise<{ id: number }> {
   // set later — the Empty stage requires it for EX freight posting.
   const res = await getClient().execute({
     sql: `INSERT INTO purchase_tankers
-      (tanker_no, loaded_date, bargain_id, supplier_id, oil_type_id, loaded_qty, uom, payment_mode,
+      (company_id, tanker_no, loaded_date, bargain_id, supplier_id, oil_type_id, loaded_qty, uom, payment_mode,
        transporter_id, status)
-      VALUES (?, ?, ?, ?, ?, 0, ?, 'pending', ?, 'supplier_factory')`,
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, 'supplier_factory')`,
     args: [
+      getActiveCompanyId(),
       String(v.tanker_no).trim(),
-      v.factory_entry_date || v.loaded_date,
+      v.factory_entry_date || v.loaded_date || null,
       n(v.bargain_id),
       n(v.supplier_id),
       n(v.oil_type_id),
@@ -489,14 +501,22 @@ export async function updateTankerDetails(id: number, v: Row): Promise<{ id: num
   const b = bRes.rows[0]
 
   // Loaded qty must stay within the bargain balance (excluding this tanker).
+  // Any excess portion already booked to an auto-created bargain is netted out.
+  const extraQty = n(t.extra_qty)
   if (loadedQty > 0) {
+    if (extraQty > 0 && loadedQty < extraQty - 1e-6) {
+      throw new Error(
+        `Loaded qty cannot be below the excess qty (${extraQty.toFixed(3)}) already booked to its own bargain`
+      )
+    }
     const bal = await c.execute({
-      sql: `SELECT b.qty - COALESCE(
-              (SELECT SUM(loaded_qty) FROM purchase_tankers WHERE bargain_id = b.id AND id != ?), 0
-            ) AS balance FROM bargains b WHERE b.id = ?`,
-      args: [id, bargainId]
+      sql: `SELECT b.qty
+              - COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND id != ?), 0)
+              - COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id AND id != ?), 0)
+            AS balance FROM bargains b WHERE b.id = ?`,
+      args: [id, id, bargainId]
     })
-    if (loadedQty > n(bal.rows[0]?.balance) + 1e-6) {
+    if (loadedQty - extraQty > n(bal.rows[0]?.balance) + 1e-6) {
       throw new Error(`Loaded qty exceeds the bargain balance (${n(bal.rows[0]?.balance).toFixed(3)})`)
     }
   }
@@ -554,14 +574,15 @@ export async function updateTankerDetails(id: number, v: Row): Promise<{ id: num
       })
       if (transporterId) {
         await c.execute({
-          sql: `INSERT INTO transporter_ledger (transporter_id, order_id, entry_date, entry_type, amount, note)
-                VALUES (?, ?, ?, 'freight', ?, ?)`,
+          sql: `INSERT INTO transporter_ledger (transporter_id, order_id, entry_date, entry_type, amount, note, company_id)
+                VALUES (?, ?, ?, 'freight', ?, ?, (SELECT company_id FROM orders WHERE id = ?))`,
           args: [
             transporterId,
             n(t.order_id),
             (pick('empty_date') as string) || null,
             transport - penalty,
-            `Tanker ${String(pick('tanker_no') || t.tanker_no)}: freight less shortage`
+            `Tanker ${String(pick('tanker_no') || t.tanker_no)}: freight less shortage`,
+            n(t.order_id)
           ]
         })
       }
@@ -664,14 +685,44 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
     // when the tanker was sent). Balance is validated against the final choice.
     const bargainId = data.bargain_id ? n(data.bargain_id) : n(tanker.bargain_id)
     const balance = await c.execute({
-      sql: `SELECT b.qty - COALESCE(
-              (SELECT SUM(loaded_qty) FROM purchase_tankers WHERE bargain_id = b.id AND id != ?), 0
-            ) AS balance
+      sql: `SELECT b.qty
+              - COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND id != ?), 0)
+              - COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id AND id != ?), 0)
+            AS balance
             FROM bargains b WHERE b.id = ?`,
-      args: [id, bargainId]
+      args: [id, id, bargainId]
     })
-    if (!balance.rows.length || qty > n(balance.rows[0].balance) + 1e-6) {
-      throw new Error(`Loaded qty exceeds the bargain balance (${n(balance.rows[0]?.balance).toFixed(3)})`)
+    if (!balance.rows.length) throw new Error('Bargain not found')
+    const bal = n(balance.rows[0].balance)
+    // Trucks sometimes take on more than the bargain has left. With the user's
+    // confirmation the excess becomes its own bargain line (same supplier/oil,
+    // rate as confirmed) and this tanker's consumption is split across the two.
+    let extraBargainId: number | null = null
+    let extraQty = 0
+    if (qty > bal + 1e-6) {
+      if (!data.allow_excess) {
+        throw new Error(`Loaded qty exceeds the bargain balance (${bal.toFixed(3)})`)
+      }
+      extraQty = Math.round((qty - Math.max(bal, 0)) * 1000) / 1000
+      const oRes = await c.execute({ sql: 'SELECT * FROM bargains WHERE id = ?', args: [bargainId] })
+      if (!oRes.rows.length) throw new Error('Bargain not found')
+      const orig = toPlain(oRes)[0]
+      const duty = n(orig.duty)
+      const hasRate = data.excess_rate !== undefined && data.excess_rate !== null && data.excess_rate !== ''
+      const baseRate = hasRate ? n(data.excess_rate) - duty : n(orig.base_rate)
+      const created = await createBargain({
+        bargain_date: String(data.loaded_date || '').slice(0, 10) || String(orig.bargain_date),
+        supplier_id: orig.supplier_id,
+        broker_id: orig.broker_id,
+        oil_type_id: orig.oil_type_id,
+        bargain_type: orig.bargain_type,
+        qty: extraQty,
+        uom: orig.uom,
+        base_rate: baseRate,
+        duty,
+        allowed_shortage_pct: orig.allowed_shortage_pct
+      })
+      extraBargainId = created.id
     }
     const sourceId = data.source_id ? n(data.source_id) : null
     const transitDate = String(data.loaded_date || '')
@@ -684,7 +735,8 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
     }
     await c.execute({
       sql: `UPDATE purchase_tankers SET status = 'transit', bargain_id = ?, loaded_date = ?, loaded_qty = ?,
-            payment_mode = ?, transit_date = ?, source_id = ?, expected_delivery_date = ?
+            payment_mode = ?, transit_date = ?, source_id = ?, expected_delivery_date = ?,
+            extra_bargain_id = ?, extra_qty = ?
             WHERE id = ?`,
       args: [
         bargainId,
@@ -694,6 +746,8 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
         transitDate || null,
         sourceId,
         expected,
+        extraBargainId,
+        extraQty,
         id
       ]
     })
@@ -790,10 +844,10 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
     if (tanker.order_id && transporterId) {
       await c.execute({
         sql: `INSERT INTO transporter_ledger
-          (transporter_id, order_id, entry_date, entry_type, amount, note)
-          VALUES (?, ?, ?, 'freight', ?, ?)`,
+          (transporter_id, order_id, entry_date, entry_type, amount, note, company_id)
+          VALUES (?, ?, ?, 'freight', ?, ?, (SELECT company_id FROM orders WHERE id = ?))`,
         args: [transporterId, n(tanker.order_id), data.empty_date || null, transport - penalty,
-          `Tanker ${tanker.tanker_no}: freight less shortage`]
+          `Tanker ${tanker.tanker_no}: freight less shortage`, n(tanker.order_id)]
       })
     }
   }
@@ -862,14 +916,15 @@ export async function advanceOrder(
     })
     if (interestAmt > 0) {
       await c.execute({
-        sql: `INSERT INTO supplier_ledger (supplier_id, order_id, entry_date, entry_type, amount, note)
-              VALUES (?, ?, ?, 'interest', ?, ?)`,
+        sql: `INSERT INTO supplier_ledger (supplier_id, order_id, entry_date, entry_type, amount, note, company_id)
+              VALUES (?, ?, ?, 'interest', ?, ?, (SELECT company_id FROM orders WHERE id = ?))`,
         args: [
           n(order.supplier_id),
           id,
           pcDate,
           interestAmt,
-          `Interest for ${interestDays} days beyond credit period`
+          `Interest for ${interestDays} days beyond credit period`,
+          id
         ]
       })
     }
@@ -954,20 +1009,21 @@ export async function advanceOrder(
     })
     if (isEx && transporterId) {
       await c.execute({
-        sql: `INSERT INTO transporter_ledger (transporter_id, order_id, entry_date, entry_type, amount, note)
-              VALUES (?, ?, ?, 'freight', ?, 'Freight earned')`,
-        args: [transporterId, id, data.received_date || null, transportAmount]
+        sql: `INSERT INTO transporter_ledger (transporter_id, order_id, entry_date, entry_type, amount, note, company_id)
+              VALUES (?, ?, ?, 'freight', ?, 'Freight earned', (SELECT company_id FROM orders WHERE id = ?))`,
+        args: [transporterId, id, data.received_date || null, transportAmount, id]
       })
       if (shortageCharge > 0) {
         await c.execute({
-          sql: `INSERT INTO transporter_ledger (transporter_id, order_id, entry_date, entry_type, amount, note)
-                VALUES (?, ?, ?, 'shortage_penalty', ?, ?)`,
+          sql: `INSERT INTO transporter_ledger (transporter_id, order_id, entry_date, entry_type, amount, note, company_id)
+                VALUES (?, ?, ?, 'shortage_penalty', ?, ?, (SELECT company_id FROM orders WHERE id = ?))`,
           args: [
             transporterId,
             id,
             data.received_date || null,
             -shortageCharge,
-            `Shortage ${excessShortage.toFixed(3)} ${order.uom} beyond ${pct}% tolerance`
+            `Shortage ${excessShortage.toFixed(3)} ${order.uom} beyond ${pct}% tolerance`,
+            id
           ]
         })
       }
@@ -983,24 +1039,32 @@ export async function advanceOrder(
 // --- ledgers ---
 
 export async function listSupplierLedger(): Promise<Row[]> {
-  const res = await getClient().execute(`
+  const res = await getClient().execute({
+    args: [getActiveCompanyId()],
+    sql: `
     SELECT l.*, s.name AS supplier_name, o.invoice_no
     FROM supplier_ledger l
     LEFT JOIN suppliers s ON s.id = l.supplier_id
     LEFT JOIN orders o ON o.id = l.order_id
+    WHERE l.company_id = ?
     ORDER BY l.id DESC
-  `)
+  `
+  })
   return toPlain(res)
 }
 
 export async function listTransporterLedger(): Promise<Row[]> {
-  const res = await getClient().execute(`
+  const res = await getClient().execute({
+    args: [getActiveCompanyId()],
+    sql: `
     SELECT l.*, t.name AS transporter_name, o.invoice_no
     FROM transporter_ledger l
     LEFT JOIN transporters t ON t.id = l.transporter_id
     LEFT JOIN orders o ON o.id = l.order_id
+    WHERE l.company_id = ?
     ORDER BY l.id DESC
-  `)
+  `
+  })
   return toPlain(res)
 }
 
@@ -1027,9 +1091,9 @@ export async function addLedgerEntry(d: Row): Promise<{ id: number }> {
         : 'customer_id'
   const amount = n(d.cr) - n(d.dr)
   const res = await getClient().execute({
-    sql: `INSERT INTO ${table} (${col}, order_id, entry_date, entry_type, amount, note)
-          VALUES (?, NULL, ?, ?, ?, ?)`,
-    args: [n(d.party_id), d.entry_date, d.entry_type || 'manual', amount, d.note || null]
+    sql: `INSERT INTO ${table} (${col}, order_id, entry_date, entry_type, amount, note, company_id)
+          VALUES (?, NULL, ?, ?, ?, ?, ?)`,
+    args: [n(d.party_id), d.entry_date, d.entry_type || 'manual', amount, d.note || null, getActiveCompanyId()]
   })
   return { id: Number(res.lastInsertRowid) }
 }
@@ -1051,14 +1115,15 @@ export async function deleteLedgerEntry(partyType: string, id: number): Promise<
 
 export async function recordSupplierPayment(data: Row): Promise<{ id: number }> {
   const res = await getClient().execute({
-    sql: `INSERT INTO supplier_ledger (supplier_id, order_id, entry_date, entry_type, amount, note)
-          VALUES (?, ?, ?, 'payment', ?, ?)`,
+    sql: `INSERT INTO supplier_ledger (supplier_id, order_id, entry_date, entry_type, amount, note, company_id)
+          VALUES (?, ?, ?, 'payment', ?, ?, ?)`,
     args: [
       n(data.supplier_id),
       data.order_id ? n(data.order_id) : null,
       data.entry_date,
       -Math.abs(n(data.amount)),
-      data.note || 'Payment'
+      data.note || 'Payment',
+      getActiveCompanyId()
     ]
   })
   return { id: Number(res.lastInsertRowid) }

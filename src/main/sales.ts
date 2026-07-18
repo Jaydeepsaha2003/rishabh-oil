@@ -1,6 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { deleteJournalByRef, postSaleJournal } from './journal'
+import { getActiveCompanyId } from './company'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -34,9 +35,9 @@ async function postCustomerReceivable(
   })
   if (customerId && amount > 0) {
     await c.execute({
-      sql: `INSERT INTO customer_ledger (customer_id, sale_id, entry_date, entry_type, amount, note)
-            VALUES (?, ?, ?, 'sale', ?, 'Sale invoice')`,
-      args: [customerId, saleId, date, -Math.abs(amount)]
+      sql: `INSERT INTO customer_ledger (customer_id, sale_id, entry_date, entry_type, amount, note, company_id)
+            VALUES (?, ?, ?, 'sale', ?, 'Sale invoice', (SELECT company_id FROM sales WHERE id = ?))`,
+      args: [customerId, saleId, date, -Math.abs(amount), saleId]
     })
   }
 }
@@ -59,24 +60,32 @@ async function postSaleEntry(saleId: number, v: Row, amount: number): Promise<vo
 }
 
 export async function listCustomerLedger(): Promise<Row[]> {
-  const res = await getClient().execute(`
+  const res = await getClient().execute({
+    args: [getActiveCompanyId()],
+    sql: `
     SELECT l.*, c.name AS customer_name, s.invoice_no
     FROM customer_ledger l
     LEFT JOIN customers c ON c.id = l.customer_id
     LEFT JOIN sales s ON s.id = l.sale_id
+    WHERE l.company_id = ?
     ORDER BY l.id DESC
-  `)
+  `
+  })
   return toPlain(res)
 }
 
 export async function listSales(): Promise<Row[]> {
-  const res = await getClient().execute(`
+  const res = await getClient().execute({
+    args: [getActiveCompanyId()],
+    sql: `
     SELECT s.*, pr.name AS product_name, pr.category AS product_category, sb.bargain_no AS sales_bargain_no
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id
     LEFT JOIN sales_bargains sb ON sb.id = s.sales_bargain_id
+    WHERE s.company_id = ?
     ORDER BY s.sale_date DESC, s.id DESC
-  `)
+  `
+  })
   return toPlain(res)
 }
 
@@ -91,14 +100,18 @@ function dayMonth(dateStr: string): string {
 }
 
 export async function listSalesBargains(): Promise<Row[]> {
-  const res = await getClient().execute(`
+  const res = await getClient().execute({
+    args: [getActiveCompanyId()],
+    sql: `
     SELECT b.*, pr.name AS product_name,
       COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id), 0) AS sold_qty,
       b.qty - COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id), 0) AS balance_qty
     FROM sales_bargains b
     LEFT JOIN products pr ON pr.id = b.product_id
+    WHERE b.company_id = ?
     ORDER BY b.id DESC
-  `)
+  `
+  })
   return toPlain(res)
 }
 
@@ -121,11 +134,11 @@ async function nextSalesBargainNo(
     .toUpperCase()
   const party = String(customer || 'PARTY').replace(/\s+/g, '').toUpperCase() || 'PARTY'
 
-  // Serial resets every calendar month (2-digit), mirroring purchase bargains.
+  // Serial resets every calendar month per company, mirroring purchase bargains.
   const monthKey = String(dateStr).slice(0, 7) // yyyy-mm
   const res = await c.execute({
-    sql: 'SELECT bargain_no FROM sales_bargains WHERE substr(bargain_date, 1, 7) = ?',
-    args: [monthKey]
+    sql: 'SELECT bargain_no FROM sales_bargains WHERE substr(bargain_date, 1, 7) = ? AND company_id = ?',
+    args: [monthKey, getActiveCompanyId()]
   })
   let maxSeq = 0
   for (const r of res.rows) {
@@ -144,9 +157,10 @@ export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_
     String(v.bargain_date)
   )
   const res = await getClient().execute({
-    sql: `INSERT INTO sales_bargains (bargain_no, bargain_date, customer, product_id, qty, uom, rate, rate_expiry_date, status, note)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+    sql: `INSERT INTO sales_bargains (company_id, bargain_no, bargain_date, customer, product_id, qty, uom, rate, rate_expiry_date, status, note)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
     args: [
+      getActiveCompanyId(),
       bargain_no,
       v.bargain_date,
       v.customer || null,
@@ -191,9 +205,10 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   const amount = qty * rate
   const customerId = v.customer_id ? n(v.customer_id) : null
   const res = await getClient().execute({
-    sql: `INSERT INTO sales (sale_date, invoice_no, customer, customer_id, product_id, sales_bargain_id, qty, uom, rate, amount, status, note)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO sales (company_id, sale_date, invoice_no, customer, customer_id, product_id, sales_bargain_id, qty, uom, rate, amount, status, note)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
+      getActiveCompanyId(),
       v.sale_date,
       v.invoice_no || null,
       v.customer || null,

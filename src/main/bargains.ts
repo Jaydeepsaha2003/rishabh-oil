@@ -1,5 +1,6 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
+import { getActiveCompanyId } from './company'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -35,18 +36,25 @@ function dayMonth(dateStr: string): string {
 
 export async function listBargains(): Promise<Row[]> {
   // loaded_qty = total dispatched across this bargain's orders; balance = qty − loaded.
-  const res = await getClient().execute(`
+  const res = await getClient().execute({
+    sql: `
     SELECT b.*, s.name AS supplier_name, s.supplier_type AS supplier_type,
            br.name AS broker_name,
            o.code AS oil_code, o.name AS oil_name,
-           COALESCE((SELECT SUM(loaded_qty) FROM purchase_tankers WHERE bargain_id = b.id), 0) AS loaded_qty,
-           b.qty - COALESCE((SELECT SUM(loaded_qty) FROM purchase_tankers WHERE bargain_id = b.id), 0) AS balance_qty
+           COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id), 0)
+             + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id), 0) AS loaded_qty,
+           b.qty
+             - COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id), 0)
+             - COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id), 0) AS balance_qty
     FROM bargains b
     LEFT JOIN suppliers s ON s.id = b.supplier_id
     LEFT JOIN products o ON o.id = b.oil_type_id
     LEFT JOIN brokers br ON br.id = b.broker_id
+    WHERE b.company_id = ?
     ORDER BY b.id DESC
-  `)
+  `,
+    args: [getActiveCompanyId()]
+  })
   return toPlain(res)
 }
 
@@ -76,12 +84,12 @@ async function nextBargainNo(
     .replace(/\s+/g, '')
     .toUpperCase()
 
-  // Serial resets every calendar month: max trailing serial among bargains in
-  // the same month + 1, two-digit padded (01, 02, … grows past 99 naturally).
+  // Serial resets every calendar month PER COMPANY: max trailing serial among
+  // this company's bargains in the month + 1, two-digit padded.
   const monthKey = String(bargainDate).slice(0, 7) // yyyy-mm
   const existing = await c.execute({
-    sql: 'SELECT bargain_no FROM bargains WHERE substr(bargain_date, 1, 7) = ?',
-    args: [monthKey]
+    sql: 'SELECT bargain_no FROM bargains WHERE substr(bargain_date, 1, 7) = ? AND company_id = ?',
+    args: [monthKey, getActiveCompanyId()]
   })
   let maxSeq = 0
   for (const r of existing.rows) {
@@ -111,10 +119,11 @@ export async function createBargain(v: Row): Promise<{ id: number; bargain_no: s
   await ensureOilType(Number(v.oil_type_id))
   const res = await getClient().execute({
     sql: `INSERT INTO bargains
-      (bargain_no, bargain_date, supplier_id, broker_id, oil_type_id, bargain_type, qty, opening_qty, uom,
+      (company_id, bargain_no, bargain_date, supplier_id, broker_id, oil_type_id, bargain_type, qty, opening_qty, uom,
        base_rate, duty, rate_per_uom, allowed_shortage_pct, rate_expiry_date, total_amount, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
     args: [
+      getActiveCompanyId(),
       bargain_no,
       v.bargain_date,
       Number(v.supplier_id),

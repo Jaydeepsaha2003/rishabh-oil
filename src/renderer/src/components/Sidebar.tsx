@@ -25,6 +25,7 @@ import { cn } from '@/lib/utils'
 import type { AppUser } from '@/lib/session'
 import { canAccess } from '@/lib/modules'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 export type Page =
   | 'dashboard'
@@ -75,11 +76,17 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'System', ids: ['settings'] }
 ]
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type CompanyRow = Record<string, any>
+
 interface Props {
   page: Page
   onNavigate: (page: Page) => void
   user: AppUser
   onLogout: () => void
+  companies: CompanyRow[]
+  companyId: number
+  onCompanyChange: (id: string) => void
 }
 
 function initials(name: string): string {
@@ -92,8 +99,17 @@ function initials(name: string): string {
     .toUpperCase()
 }
 
-export function Sidebar({ page, onNavigate, user, onLogout }: Props): React.JSX.Element {
+export function Sidebar({
+  page,
+  onNavigate,
+  user,
+  onLogout,
+  companies,
+  companyId,
+  onCompanyChange
+}: Props): React.JSX.Element {
   const [expanded, setExpanded] = useState(false)
+  const activeCompany = companies.find((c) => Number(c.id) === Number(companyId))
 
   const visibleGroups = GROUPS.map((g) => ({
     ...g,
@@ -150,6 +166,35 @@ export function Sidebar({ page, onNavigate, user, onLogout }: Props): React.JSX.
               <div className="text-sm font-semibold">Rishabh Oil</div>
               <div className="text-[11px] text-muted-foreground">Production system</div>
             </div>
+          )}
+        </div>
+
+        {/* Company switcher — the active company scopes every business screen. */}
+        <div className="border-b p-2">
+          {expanded ? (
+            <Select value={String(companyId || '')} onValueChange={onCompanyChange}>
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue placeholder="Select company" />
+              </SelectTrigger>
+              <SelectContent>
+                {companies
+                  .filter((c) => c.active)
+                  .map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="mx-auto flex h-8 w-8 items-center justify-center rounded-md bg-muted text-xs font-bold text-muted-foreground">
+                  {String(activeCompany?.name || 'C').charAt(0)}
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {activeCompany?.name || 'Company'} — hover the sidebar to switch
+              </TooltipContent>
+            </Tooltip>
           )}
         </div>
 

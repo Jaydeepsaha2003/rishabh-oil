@@ -66,6 +66,7 @@ import {
   completeGateEntry,
   deleteGateEntry
 } from './gate'
+import { listCompanies, setActiveCompany, getActiveCompanyId } from './company'
 import {
   listAccounts,
   createAccount,
@@ -104,7 +105,7 @@ type Row = Record<string, any>
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:fyTaxable$|:needs$|:nextNo$|:liveUsers$|:ips$|:logs$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:fyTaxable$|:needs$|:nextNo$|:liveUsers$|:ips$|:logs$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^company:setActive$|^company:getActive$/
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handle = (channel: string, fn: (...a: any[]) => unknown): void => {
     ipcMain.handle(channel, async (e, args) => {
@@ -128,6 +129,10 @@ export function registerIpc(): void {
     await seedFormulations().catch(() => {})
     return ping()
   })
+
+  handle('company:list', () => listCompanies())
+  handle('company:setActive', (_e, { id }: { id: number }) => setActiveCompany(id))
+  handle('company:getActive', () => ({ id: getActiveCompanyId() }))
 
   handle('data:list', (_e, { table }: { table: string }) => list(table))
   handle('data:get', (_e, { table, id }: { table: string; id: number }) => get(table, id))
@@ -157,7 +162,7 @@ export function registerIpc(): void {
   handle('bargains:delete', (_e, { id }: { id: number }) => deleteBargain(id))
 
   handle('orders:list', () => listOrders())
-  handle('tankers:list', () => listPurchaseTankers())
+  handle('tankers:list', (_e, args?: { all?: boolean }) => listPurchaseTankers(!!args?.all))
   handle('tankers:create', (_e, { values }: { values: Row }) => createPurchaseTanker(values))
   handle('tankers:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateTankerDetails(id, values)

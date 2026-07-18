@@ -1,17 +1,20 @@
 import { getClient } from './db'
+import { getActiveCompanyId } from './company'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
 
-// Stock per product is derived from movements (no stored balance):
+// Stock per product is derived from movements (no stored balance), scoped to
+// the ACTIVE COMPANY:
 //   + raw received on purchase orders   (orders.received_qty where status='received', by oil_type_id)
 //   + produced output                   (production.qty)
 //   − consumed in production            (production_items.qty)
 //   − sold (fulfilled)                  (sales.qty where status='done')
 export async function stockLevels(): Promise<Row[]> {
   const c = getClient()
+  const cid = getActiveCompanyId()
   const sumMap = async (sql: string): Promise<Map<number, number>> => {
-    const res = await c.execute(sql)
+    const res = await c.execute({ sql, args: [cid] })
     const m = new Map<number, number>()
     for (const r of res.rows) m.set(Number(r.pid), Number(r.q) || 0)
     return m
@@ -21,14 +24,17 @@ export async function stockLevels(): Promise<Row[]> {
     'SELECT id, code, name, category, active FROM products ORDER BY category, name'
   )
   const received = await sumMap(
-    "SELECT oil_type_id AS pid, SUM(received_qty) AS q FROM orders WHERE status = 'received' GROUP BY oil_type_id"
+    "SELECT oil_type_id AS pid, SUM(received_qty) AS q FROM orders WHERE status = 'received' AND company_id = ? GROUP BY oil_type_id"
   )
-  const produced = await sumMap('SELECT product_id AS pid, SUM(qty) AS q FROM production GROUP BY product_id')
+  const produced = await sumMap(
+    'SELECT product_id AS pid, SUM(qty) AS q FROM production WHERE company_id = ? GROUP BY product_id'
+  )
   const consumed = await sumMap(
-    'SELECT product_id AS pid, SUM(qty) AS q FROM production_items GROUP BY product_id'
+    `SELECT i.product_id AS pid, SUM(i.qty) AS q FROM production_items i
+     JOIN production p ON p.id = i.production_id WHERE p.company_id = ? GROUP BY i.product_id`
   )
   const sold = await sumMap(
-    "SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status = 'done' GROUP BY product_id"
+    "SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status = 'done' AND company_id = ? GROUP BY product_id"
   )
 
   return products.rows.map((p) => {
@@ -65,26 +71,30 @@ export async function stockMap(): Promise<Record<number, number>> {
 //   raw_short = even producing the shortfall, some formula component is short on stock
 export async function productionNeeds(): Promise<Row[]> {
   const c = getClient()
+  const cid = getActiveCompanyId()
   const levels = await stockLevels()
   const stockOf: Record<number, number> = {}
   for (const l of levels) stockOf[l.id as number] = l.stock as number
 
   const num = async (sql: string, key: string): Promise<Map<number, number>> => {
-    const r = await c.execute(sql)
+    const r = await c.execute({ sql, args: [cid] })
     const m = new Map<number, number>()
     for (const row of r.rows) m.set(Number(row[key]), Number(row.q) || 0)
     return m
   }
 
   const pending = await num(
-    "SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status != 'done' GROUP BY product_id",
+    "SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status != 'done' AND company_id = ? GROUP BY product_id",
     'pid'
   )
 
   // Remaining per sales bargain → summed per product.
-  const bargains = await c.execute('SELECT id, product_id, qty FROM sales_bargains')
+  const bargains = await c.execute({
+    sql: 'SELECT id, product_id, qty FROM sales_bargains WHERE company_id = ?',
+    args: [cid]
+  })
   const soldByB = await num(
-    'SELECT sales_bargain_id AS bid, SUM(qty) AS q FROM sales WHERE sales_bargain_id IS NOT NULL GROUP BY sales_bargain_id',
+    'SELECT sales_bargain_id AS bid, SUM(qty) AS q FROM sales WHERE sales_bargain_id IS NOT NULL AND company_id = ? GROUP BY sales_bargain_id',
     'bid'
   )
   const contractRemaining = new Map<number, number>()

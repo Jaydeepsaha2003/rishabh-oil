@@ -1,5 +1,6 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
+import { getActiveCompanyId } from './company'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -35,11 +36,17 @@ export async function getOrCreateAccount(name: string, group = 'General'): Promi
 }
 
 export async function listAccounts(): Promise<Row[]> {
-  const res = await getClient().execute(`
+  // Accounts are shared; balances are per ACTIVE COMPANY (separate books).
+  const res = await getClient().execute({
+    args: [getActiveCompanyId()],
+    sql: `
     SELECT a.*,
-      COALESCE((SELECT SUM(dr) - SUM(cr) FROM journal_lines WHERE account_id = a.id), 0) AS balance
+      COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
+                FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+                WHERE jl.account_id = a.id AND je.company_id = ?), 0) AS balance
     FROM ledger_accounts a ORDER BY a.name
-  `)
+  `
+  })
   return toPlain(res)
 }
 
@@ -64,6 +71,7 @@ interface PostArgs {
   orderId?: number | null
   saleId?: number | null
   paymentId?: number | null
+  companyId?: number
   lines: JournalLine[]
 }
 
@@ -78,9 +86,10 @@ export async function postJournal(a: PostArgs): Promise<{ id: number }> {
     throw new Error(`Journal not balanced (Dr ${dr.toFixed(2)} vs Cr ${cr.toFixed(2)})`)
   }
   const ins = await c.execute({
-    sql: `INSERT INTO journal_entries (entry_date, vch_type, vch_no, narration, order_id, sale_id, payment_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO journal_entries (company_id, entry_date, vch_type, vch_no, narration, order_id, sale_id, payment_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
+      a.companyId ?? getActiveCompanyId(),
       a.date,
       a.vchType,
       a.vchNo || null,
@@ -146,9 +155,9 @@ export async function accountStatement(accountId: number): Promise<Row[]> {
                  jl.dr, jl.cr, je.order_id, je.sale_id, je.payment_id
           FROM journal_lines jl
           JOIN journal_entries je ON je.id = jl.entry_id
-          WHERE jl.account_id = ?
+          WHERE jl.account_id = ? AND je.company_id = ?
           ORDER BY je.entry_date ASC, je.id ASC, jl.id ASC`,
-    args: [accountId]
+    args: [accountId, getActiveCompanyId()]
   })
   const lines = toPlain(res)
   if (!lines.length) return lines
@@ -200,6 +209,7 @@ export async function postPurchaseJournal(v: {
   net: number
   roundOff?: number
   interest?: number
+  companyId?: number
 }): Promise<void> {
   await deleteJournalByRef('order_id', v.orderId)
   const ro = n(v.roundOff)
@@ -210,6 +220,7 @@ export async function postPurchaseJournal(v: {
     vchNo: v.invoiceNo,
     narration: `Purchase ${v.invoiceNo}`,
     orderId: v.orderId,
+    companyId: v.companyId,
     lines: [
       { account: `${v.oilCode} PUR A/C`, group: 'Purchase Accounts', dr: v.taxable - interest },
       { account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest },
@@ -231,6 +242,7 @@ export async function postPaymentJournal(v: {
   amount: number
   isReceipt: boolean
   reference?: string | null
+  companyId?: number
 }): Promise<void> {
   await deleteJournalByRef('payment_id', v.paymentId)
   const sourceAccount = `${String(v.source || 'BANK').toUpperCase()} A/C`
@@ -239,6 +251,7 @@ export async function postPaymentJournal(v: {
     vchType: v.isReceipt ? 'RECEIPT' : 'PAYMENT',
     vchNo: v.reference || null,
     paymentId: v.paymentId,
+    companyId: v.companyId,
     lines: v.isReceipt
       ? [
           { account: sourceAccount, group: 'Bank Accounts', dr: v.amount },
@@ -260,6 +273,7 @@ export async function postSaleJournal(v: {
   productCode: string
   customerName: string
   amount: number
+  companyId?: number
 }): Promise<void> {
   await deleteJournalByRef('sale_id', v.saleId)
   if (n(v.amount) <= 0) return
@@ -268,6 +282,7 @@ export async function postSaleJournal(v: {
     vchType: 'SALE',
     vchNo: v.invoiceNo,
     saleId: v.saleId,
+    companyId: v.companyId,
     lines: [
       { account: v.customerName || 'CASH CUSTOMER A/C', group: 'Sundry Debtors', dr: v.amount },
       { account: `${v.productCode} SALE A/C`, group: 'Sales Accounts', cr: v.amount }
@@ -289,7 +304,7 @@ export async function backfillJournal(): Promise<void> {
 
   const orders = await c.execute(`
     SELECT o.id, o.invoice_no, o.order_date, o.taxable_value, o.gst_amount, o.tds_amount, o.round_off, o.net_amount,
-           o.interest_pct, o.interest_days, o.bargain_rate, o.ordered_qty,
+           o.interest_pct, o.interest_days, o.bargain_rate, o.ordered_qty, o.company_id,
            s.name AS supplier_name, p.code AS oil_code, p.name AS oil_name
     FROM orders o
     LEFT JOIN suppliers s ON s.id = o.supplier_id
@@ -310,12 +325,13 @@ export async function backfillJournal(): Promise<void> {
       tds: n(r.tds_amount),
       net: n(r.net_amount),
       roundOff: n(r.round_off),
-      interest
+      interest,
+      companyId: n(r.company_id) || 1
     }).catch(() => {})
   }
 
   const pays = await c.execute(`
-    SELECT p.id, p.party_type, p.payment_date, p.amount, p.source, p.reference,
+    SELECT p.id, p.party_type, p.payment_date, p.amount, p.source, p.reference, p.company_id,
            CASE p.party_type WHEN 'supplier' THEN s.name WHEN 'transporter' THEN t.name ELSE cu.name END AS party_name
     FROM payments p
     LEFT JOIN suppliers s ON p.party_type = 'supplier' AND s.id = p.party_id
@@ -332,12 +348,13 @@ export async function backfillJournal(): Promise<void> {
       source: String(r.source || 'BANK'),
       amount: n(r.amount),
       isReceipt: String(r.party_type) === 'customer',
-      reference: r.reference ? String(r.reference) : null
+      reference: r.reference ? String(r.reference) : null,
+      companyId: n(r.company_id) || 1
     }).catch(() => {})
   }
 
   const sales = await c.execute(`
-    SELECT s.id, s.sale_date, s.invoice_no, s.customer, s.amount, p.code, p.name
+    SELECT s.id, s.sale_date, s.invoice_no, s.customer, s.amount, s.company_id, p.code, p.name
     FROM sales s
     LEFT JOIN products p ON p.id = s.product_id
     WHERE NOT EXISTS (SELECT 1 FROM journal_entries je WHERE je.sale_id = s.id)
@@ -349,7 +366,8 @@ export async function backfillJournal(): Promise<void> {
       invoiceNo: r.invoice_no ? String(r.invoice_no) : null,
       productCode: String(r.code || r.name || 'FG').toUpperCase(),
       customerName: String(r.customer || '').trim(),
-      amount: n(r.amount)
+      amount: n(r.amount),
+      companyId: n(r.company_id) || 1
     }).catch(() => {})
   }
 
