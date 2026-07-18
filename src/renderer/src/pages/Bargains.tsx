@@ -102,7 +102,8 @@ function emptyForm(uom: string): Row {
     uom,
     base_rate: '',
     duty: '',
-    rate_expiry_date: ''
+    rate_expiry_date: '',
+    remarks: ''
   }
 }
 
@@ -173,7 +174,8 @@ export function Bargains(): React.JSX.Element {
       uom: row.uom ?? defaultUom,
       base_rate: row.base_rate ?? '',
       duty: row.duty ?? '',
-      rate_expiry_date: row.rate_expiry_date ?? ''
+      rate_expiry_date: row.rate_expiry_date ?? '',
+      remarks: row.remarks ?? ''
     })
     setError(null)
     setOpen(true)
@@ -205,7 +207,8 @@ export function Bargains(): React.JSX.Element {
         uom: form.uom || defaultUom,
         base_rate: Number(form.base_rate) || 0,
         duty: Number(form.duty) || 0,
-        rate_expiry_date: form.rate_expiry_date || null
+        rate_expiry_date: form.rate_expiry_date || null,
+        remarks: form.remarks || null
       }
       if (editing) {
         await window.api.bargains.update(editing.id as number, payload)
@@ -654,8 +657,16 @@ export function Bargains(): React.JSX.Element {
                                       Number(t.bargain_id) === Number(row.id) ||
                                       (Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) === Number(row.id))
                                   )
+                                  const remarksLine = row.remarks ? (
+                                    <p className="pb-2 text-xs text-muted-foreground"><span className="font-semibold">Remarks:</span> {row.remarks}</p>
+                                  ) : null
                                   if (!list.length) {
-                                    return <p className="px-8 py-3 text-xs text-muted-foreground">No tankers on this bargain yet.</p>
+                                    return (
+                                      <div className="px-8 py-3">
+                                        {remarksLine}
+                                        <p className="text-xs text-muted-foreground">No tankers on this bargain yet.</p>
+                                      </div>
+                                    )
                                   }
                                   const disOf = (t: Row): number => {
                                     const loaded = Number(t.loaded_qty) || 0
@@ -684,6 +695,7 @@ export function Bargains(): React.JSX.Element {
                                   )
                                   return (
                                     <div className="px-8 py-3">
+                                      {remarksLine}
                                       <table className="w-full text-xs">
                                         <thead>
                                           <tr className="border-b text-left text-muted-foreground">
@@ -872,6 +884,17 @@ export function Bargains(): React.JSX.Element {
                 {formatINR(total)}
               </div>
             </div>
+          </div>
+
+          <div className="grid gap-1.5">
+            <Label>Remarks</Label>
+            <textarea
+              rows={2}
+              className="w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              placeholder="Optional notes about this bargain"
+              value={form.remarks ?? ''}
+              onChange={(e) => setField('remarks', e.target.value)}
+            />
           </div>
 
           {error && <p className="text-sm text-destructive">{error}</p>}

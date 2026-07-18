@@ -115,6 +115,12 @@ const MIGRATIONS = [
   'ALTER TABLE bill_discounts ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
   'ALTER TABLE letters_of_credit ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
   'ALTER TABLE journal_entries ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',
+  // Free-text remarks on bargains and purchase invoices.
+  'ALTER TABLE bargains ADD COLUMN remarks TEXT',
+  'ALTER TABLE orders ADD COLUMN remarks TEXT',
+  // Invoice rate above bargain rate = freight billed by the supplier: the
+  // difference is kept as per-ton freight data but NO transporter ledger posts.
+  'ALTER TABLE orders ADD COLUMN freight_paid_to_supplier INTEGER NOT NULL DEFAULT 0',
   // Party ledgers are company books too — doc-linked rows inherit the parent
   // document's company; manual rows take the company they were entered in.
   'ALTER TABLE supplier_ledger ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1',

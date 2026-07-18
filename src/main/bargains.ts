@@ -120,8 +120,8 @@ export async function createBargain(v: Row): Promise<{ id: number; bargain_no: s
   const res = await getClient().execute({
     sql: `INSERT INTO bargains
       (company_id, bargain_no, bargain_date, supplier_id, broker_id, oil_type_id, bargain_type, qty, opening_qty, uom,
-       base_rate, duty, rate_per_uom, allowed_shortage_pct, rate_expiry_date, total_amount, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
+       base_rate, duty, rate_per_uom, allowed_shortage_pct, rate_expiry_date, total_amount, remarks, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
     args: [
       getActiveCompanyId(),
       bargain_no,
@@ -140,7 +140,8 @@ export async function createBargain(v: Row): Promise<{ id: number; bargain_no: s
         ? Number(v.allowed_shortage_pct)
         : null,
       v.rate_expiry_date || null,
-      total
+      total,
+      v.remarks ? String(v.remarks).trim() : null
     ]
   })
   return { id: Number(res.lastInsertRowid), bargain_no }
@@ -155,7 +156,7 @@ export async function updateBargain(id: number, v: Row): Promise<{ id: number }>
     sql: `UPDATE bargains SET
       bargain_date = ?, supplier_id = ?, broker_id = ?, oil_type_id = ?, bargain_type = ?,
       qty = ?, opening_qty = ?, uom = ?, base_rate = ?, duty = ?, rate_per_uom = ?,
-      allowed_shortage_pct = ?, rate_expiry_date = ?, total_amount = ?
+      allowed_shortage_pct = ?, rate_expiry_date = ?, total_amount = ?, remarks = ?
       WHERE id = ?`,
     args: [
       v.bargain_date,
@@ -174,6 +175,7 @@ export async function updateBargain(id: number, v: Row): Promise<{ id: number }>
         : null,
       v.rate_expiry_date || null,
       total,
+      v.remarks ? String(v.remarks).trim() : null,
       id
     ]
   })

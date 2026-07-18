@@ -126,10 +126,11 @@ export interface MoneyResult {
 export function computeMoney(i: MoneyInput): MoneyResult {
   const interestPct = i.addsInterest ? i.interestPct : 0
   const interestDays = i.addsInterest ? i.interestDays : 0
-  // Interest is charged on the adjusted rate itself (BG rate + interest):
-  // I = (R + I) × Int%/100 × days/365 = (R + I) × k  ⟹  I = R × k / (1 − k)
-  const k = (interestPct / 100) * (interestDays / 365)
-  const interestPerUnit = k > 0 && k < 1 ? (i.bargainRate * k) / (1 - k) : 0
+  // Interest is simple interest on the GST-INCLUSIVE bargain rate:
+  // I = BG rate × (1 + GST%) × Int% × days / 365; adjusted rate = rate + I.
+  // e.g. 122800 @ 5% GST, 15% for 15d → 128940 × 15% × 15/365 = 794.8356.
+  const interestPerUnit =
+    i.bargainRate * (1 + (i.gstPct || 0) / 100) * (interestPct / 100) * (interestDays / 365)
   const adjustedRate = i.invoiceRate + interestPerUnit
 
   // Provisional (invoice) block.
@@ -272,8 +273,8 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
        gst_pct, gst_type, gst_amount, tds_pct, tds_amount, round_off, net_amount,
        final_taxable_value, final_gst_amount, final_tds_amount, final_net_amount,
        tanker_no, transporter_id, allowed_shortage_pct, is_registered_transporter, posting, financed_by_party,
-       payment_cleared_date, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'loaded')`,
+       payment_cleared_date, remarks, freight_paid_to_supplier, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'loaded')`,
     args: [
       getActiveCompanyId(),
       v.invoice_no,
@@ -307,14 +308,40 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       v.is_registered_transporter ? 1 : 0,
       1,
       v.financed_by_party ? 1 : 0,
-      v.payment_date || v.order_date
+      v.payment_date || v.order_date,
+      v.remarks ? String(v.remarks).trim() : null,
+      v.freight_paid_to_supplier ? 1 : 0
     ]
   })
   const id = Number(res.lastInsertRowid)
   await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
+  await applySupplierFreight(id, v)
   await setSupplierPayable(id, n(v.supplier_id), m.net_amount + roundOff, String(v.order_date))
   await postOrderJournal(id, v, m, supplier, roundOff)
   return { id }
+}
+
+// When freight is billed by the supplier (invoice rate > bargain rate), keep
+// the per-ton difference as freight DATA on the invoice's tankers — purely for
+// maintenance; no transporter ledger is ever posted for such invoices.
+async function applySupplierFreight(orderId: number, v: Row): Promise<void> {
+  if (!v.freight_paid_to_supplier) return
+  const diff = n(v.invoice_rate) - n(v.bargain_rate)
+  if (diff <= 0) return
+  await getClient().execute({
+    sql: 'UPDATE purchase_tankers SET transport_rate_per_ton = ? WHERE order_id = ?',
+    args: [diff, orderId]
+  })
+}
+
+// True when the order's freight sits inside the supplier invoice — then the
+// transporter ledger must stay untouched for its tankers.
+async function freightPaidToSupplier(orderId: number): Promise<boolean> {
+  const res = await getClient().execute({
+    sql: 'SELECT freight_paid_to_supplier FROM orders WHERE id = ?',
+    args: [orderId]
+  })
+  return n(res.rows[0]?.freight_paid_to_supplier) === 1
 }
 
 // Tally double entry for a purchase: Dr {OIL} PUR A/C + Dr GST INPUT (+ Round off),
@@ -374,7 +401,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       adjusted_rate = ?, taxable_value = ?, gst_pct = ?, gst_type = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, round_off = ?, net_amount = ?,
       final_taxable_value = ?, final_gst_amount = ?, final_tds_amount = ?, final_net_amount = ?,
       tanker_no = ?, transporter_id = ?, allowed_shortage_pct = ?, is_registered_transporter = ?, posting = 1, financed_by_party = ?,
-      payment_cleared_date = ?
+      payment_cleared_date = ?, remarks = ?, freight_paid_to_supplier = ?
       WHERE id = ?`,
     args: [
       v.invoice_no,
@@ -408,11 +435,14 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       v.is_registered_transporter ? 1 : 0,
       v.financed_by_party ? 1 : 0,
       v.payment_date || v.order_date,
+      v.remarks ? String(v.remarks).trim() : null,
+      v.freight_paid_to_supplier ? 1 : 0,
       id
     ]
   })
   await getClient().execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?', args: [id] })
   await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
+  await applySupplierFreight(id, v)
   await setSupplierPayable(id, n(v.supplier_id), m.net_amount + roundOff, String(v.order_date))
   await postOrderJournal(id, v, m, supplier, roundOff)
   return { id }
@@ -603,13 +633,14 @@ export async function updateTankerDetails(id: number, v: Row): Promise<{ id: num
     penalty = isEx ? excess * n(b.rate_per_uom) : 0
     transporterId = isEx ? transporterId : null
 
-    // Refresh this tanker's freight entry in the transporter ledger.
+    // Refresh this tanker's freight entry in the transporter ledger — unless
+    // the supplier billed the freight (then it stays data-only).
     if (t.order_id) {
       await c.execute({
         sql: "DELETE FROM transporter_ledger WHERE order_id = ? AND entry_type = 'freight' AND note LIKE ?",
         args: [n(t.order_id), `Tanker ${t.tanker_no}:%`]
       })
-      if (transporterId) {
+      if (transporterId && !(await freightPaidToSupplier(n(t.order_id)))) {
         await c.execute({
           sql: `INSERT INTO transporter_ledger (transporter_id, order_id, entry_date, entry_type, amount, note, company_id)
                 VALUES (?, ?, ?, 'freight', ?, ?, (SELECT company_id FROM orders WHERE id = ?))`,
@@ -887,7 +918,7 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
         id
       ]
     })
-    if (tanker.order_id && transporterId) {
+    if (tanker.order_id && transporterId && !(await freightPaidToSupplier(n(tanker.order_id)))) {
       await c.execute({
         sql: `INSERT INTO transporter_ledger
           (transporter_id, order_id, entry_date, entry_type, amount, note, company_id)
@@ -1053,7 +1084,7 @@ export async function advanceOrder(
       sql: "DELETE FROM transporter_ledger WHERE order_id = ? AND entry_type IN ('freight','shortage_penalty')",
       args: [id]
     })
-    if (isEx && transporterId) {
+    if (isEx && transporterId && !n(order.freight_paid_to_supplier)) {
       await c.execute({
         sql: `INSERT INTO transporter_ledger (transporter_id, order_id, entry_date, entry_type, amount, note, company_id)
               VALUES (?, ?, ?, 'freight', ?, 'Freight earned', (SELECT company_id FROM orders WHERE id = ?))`,

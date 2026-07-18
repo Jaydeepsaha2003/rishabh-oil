@@ -44,9 +44,10 @@ export interface MoneyResult {
 export function computeMoney(i: MoneyInput): MoneyResult {
   const interestPct = i.addsInterest ? i.interestPct : 0
   const interestDays = i.addsInterest ? i.interestDays : 0
-  // I = (BG rate + I) × Int%/100 × days/365  ⟹  I = BG rate × k / (1 − k)
-  const k = (interestPct / 100) * (interestDays / 365)
-  const interestPerUnit = k > 0 && k < 1 ? (i.bargainRate * k) / (1 - k) : 0
+  // Simple interest on the GST-inclusive bargain rate:
+  // I = BG rate × (1 + GST%) × Int% × days / 365
+  const interestPerUnit =
+    i.bargainRate * (1 + (i.gstPct || 0) / 100) * (interestPct / 100) * (interestDays / 365)
   const adjustedRate = i.invoiceRate + interestPerUnit
   const threshold = i.tdsThreshold || 0
   const abovePct = i.tdsPctAbove || 0

@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { DatePicker } from '@/components/ui/date-picker'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Tooltip, TooltipContent, TooltipTrigger, InfoTip } from '@/components/ui/tooltip'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -484,6 +484,7 @@ export function Orders(): React.JSX.Element {
       oil_type_id: '',
       oil_label: '',
       invoice_rate: '',
+      invoice_rate_touched: false,
       gst_pct: s.gst_pct ?? 0,
       tds_pct: s.tds_pct ?? 0,
       tds_threshold: s.tds_threshold ?? 0,
@@ -509,7 +510,8 @@ export function Orders(): React.JSX.Element {
       supplier_name: b.supplier_name,
       oil_label: String(b.oil_code || b.oil_name || ''),
       uom: b.uom,
-      invoice_rate: p.invoice_rate || b.rate_per_uom,
+      // follow the bargain's rate unless the user typed one themselves
+      invoice_rate: p.invoice_rate_touched && p.invoice_rate ? p.invoice_rate : b.rate_per_uom,
       gst_pct: supplier?.gst_pct ?? 0,
       tds_pct: supplier?.tds_pct ?? 0,
       tds_threshold: supplier?.tds_threshold ?? 0,
@@ -523,7 +525,7 @@ export function Orders(): React.JSX.Element {
 
   function openNewPurchase(): void {
     setEditing(null)
-    setForm({ invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '', round_off: '', round_off_manual: false, charge_interest: false, interest_touched: false })
+    setForm({ invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '', round_off: '', round_off_manual: false, charge_interest: false, interest_touched: false, remarks: '', freight_paid_to_supplier: false })
     setSelected([])
     setError(null)
     setFormPage(true)
@@ -561,7 +563,11 @@ export function Orders(): React.JSX.Element {
       allowed_shortage_pct: row.allowed_shortage_pct ?? '',
       round_off: row.round_off ?? '',
       // keep the saved round off on edit; auto kicks in only if it was zero
-      round_off_manual: !!(row.round_off && Number(row.round_off) !== 0)
+      round_off_manual: !!(row.round_off && Number(row.round_off) !== 0),
+      remarks: row.remarks ?? '',
+      freight_paid_to_supplier: !!row.freight_paid_to_supplier,
+      // the saved invoice rate is a deliberate choice — never auto-overwrite it
+      invoice_rate_touched: true
     })
     setSelected(tankers.filter((x) => x.order_id === row.id).map((x) => Number(x.id)))
     setError(null)
@@ -798,7 +804,7 @@ export function Orders(): React.JSX.Element {
                   </div>
                   <div className="grid gap-1.5">
                     <Label>Invoice rate *</Label>
-                    <Input type="number" value={form.invoice_rate || ''} onChange={(e) => setForm((p) => ({ ...p, invoice_rate: e.target.value }))} />
+                    <Input type="number" value={form.invoice_rate ?? ''} onChange={(e) => setForm((p) => ({ ...p, invoice_rate: e.target.value, invoice_rate_touched: true }))} />
                   </div>
                   <div className="grid gap-1.5">
                     <Label>GST %</Label>
@@ -849,11 +855,9 @@ export function Orders(): React.JSX.Element {
                           setForm((p) => ({ ...p, charge_interest: v, interest_touched: true }))
                         }
                       />
-                      <div>
+                      <div className="flex items-center gap-1.5">
                         <span className="text-sm font-medium">Supplier interest</span>
-                        <p className="text-[11px] text-muted-foreground">
-                          Interest = (BG rate + interest) × Int% × days ÷ 365; the adjusted invoice rate is BG rate + interest. Defaults ON when the supplier charges interest and the tankers are supplier-financed.
-                        </p>
+                        <InfoTip text="Interest = BG rate incl. GST × Int% × days ÷ 365; the adjusted invoice rate is BG rate + interest. Defaults ON when the supplier charges interest and the tankers are supplier-financed." />
                       </div>
                     </div>
                     <div className={cn('ml-auto flex items-center gap-2', !form.charge_interest && 'opacity-50')}>
@@ -874,6 +878,32 @@ export function Orders(): React.JSX.Element {
                         onChange={(e) => setForm((p) => ({ ...p, interest_days: e.target.value }))}
                       />
                     </div>
+                  </div>
+
+                  {Number(form.bargain_rate) > 0 && Number(form.invoice_rate) > Number(form.bargain_rate) && (
+                    <div className="flex flex-wrap items-center gap-4 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 md:col-span-3">
+                      <div className="flex items-center gap-2.5">
+                        <Switch
+                          checked={!!form.freight_paid_to_supplier}
+                          onCheckedChange={(v) => setForm((p) => ({ ...p, freight_paid_to_supplier: v }))}
+                        />
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm font-medium">Transporter charges paid to supplier</span>
+                          <InfoTip text={`Invoice rate is ${formatINR(Number(form.invoice_rate) - Number(form.bargain_rate))}/${form.uom || 'MT'} above the bargain rate. ON: that difference is kept as per-${form.uom || 'MT'} freight data on this invoice's tankers and NO transporter ledger is posted — the supplier already paid the transporter.`} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid gap-1.5 md:col-span-3">
+                    <Label>Remarks</Label>
+                    <textarea
+                      rows={2}
+                      className="w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                      placeholder="Optional notes about this invoice"
+                      value={form.remarks ?? ''}
+                      onChange={(e) => setForm((p) => ({ ...p, remarks: e.target.value }))}
+                    />
                   </div>
                 </div>
                 <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
@@ -1526,6 +1556,11 @@ export function Orders(): React.JSX.Element {
             <MoneyRow label="Tankers" value={detailRow.tanker_nos || '—'} />
             <MoneyRow label="Total quantity" value={`${formatNum(detailRow.ordered_qty)} ${detailRow.uom}`} />
             <MoneyRow label="Net amount" value={formatINR(detailRow.net_amount)} strong />
+            {detailRow.remarks && (
+              <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                <span className="font-semibold">Remarks:</span> {detailRow.remarks}
+              </p>
+            )}
           </div>}
         </DialogContent>
       </Dialog>
