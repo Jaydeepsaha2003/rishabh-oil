@@ -29,6 +29,7 @@ import {
 import { DatePicker } from '@/components/ui/date-picker'
 import { PageHeader } from '@/components/PageHeader'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -36,9 +37,21 @@ type Row = Record<string, any>
 
 const VCH_TYPES = ['JOURNAL', 'DEBIT NOTE', 'CREDIT NOTE', 'PAYMENT', 'RECEIPT', 'CONTRA', 'OPENING BALANCE']
 
+// Which source page a voucher line drills through to (its originating document).
+function lineTarget(l: Row): 'orders' | 'sales' | 'payments' | null {
+  if (l.order_id != null) return 'orders'
+  if (l.sale_id != null) return 'sales'
+  if (l.payment_id != null) return 'payments'
+  return null
+}
+
+interface Props {
+  onOpenRecord?: (page: 'orders' | 'sales' | 'payments', id: number) => void
+}
+
 // Tally-style ledger over the double-entry journal. Purchases post
 // automatically as: Dr {OIL} PUR A/C + Dr GST INPUT — Cr TDS PAYABLE + Cr Supplier.
-export function Ledgers(): React.JSX.Element {
+export function Ledgers({ onOpenRecord }: Props): React.JSX.Element {
   const [accounts, setAccounts] = useState<Row[]>([])
   const [accountId, setAccountId] = useState('')
   const [statement, setStatement] = useState<Row[]>([])
@@ -71,6 +84,8 @@ export function Ledgers(): React.JSX.Element {
 
   const selected = accounts.find((a) => String(a.id) === accountId)
   const balText = (bal: number): string => `${formatINR(Math.abs(bal))} ${bal >= 0 ? 'Dr' : 'Cr'}`
+  // Debit balance = green, credit balance = red.
+  const balClass = (bal: number): string => (bal >= 0 ? 'text-emerald-600' : 'text-red-600')
 
   function openAdd(): void {
     setForm({
@@ -184,7 +199,7 @@ export function Ledgers(): React.JSX.Element {
                 >
                   <div className="truncate text-sm font-medium">{a.name}</div>
                   <div className="text-[11px] text-muted-foreground">Ledger No. {a.id} · {a.acc_group}</div>
-                  <div className="mt-1 text-sm font-semibold tabular-nums">{balText(Number(a.balance) || 0)}</div>
+                  <div className={cn('mt-1 text-sm font-semibold tabular-nums', balClass(Number(a.balance) || 0))}>{balText(Number(a.balance) || 0)}</div>
                 </button>
               ))
             )}
@@ -200,7 +215,7 @@ export function Ledgers(): React.JSX.Element {
               </div>
               <div className="text-right">
                 <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Closing balance</div>
-                <div className="text-base font-bold tabular-nums">{balText(totals.bal)}</div>
+                <div className={cn('text-base font-bold tabular-nums', balClass(totals.bal))}>{balText(totals.bal)}</div>
               </div>
             </div>
             <Table className="text-xs">
@@ -210,7 +225,8 @@ export function Ledgers(): React.JSX.Element {
                   <TableHead className="h-8">Date</TableHead>
                   <TableHead className="h-8">Particulars</TableHead>
                   <TableHead className="h-8">Vch Type</TableHead>
-                  <TableHead className="h-8">Vch No.</TableHead>
+                  <TableHead className="h-8">Voucher</TableHead>
+                  <TableHead className="h-8">Ref No.</TableHead>
                   <TableHead className="h-8 text-right">Debit</TableHead>
                   <TableHead className="h-8 text-right">Credit</TableHead>
                   <TableHead className="h-8 w-[40px]" />
@@ -219,7 +235,7 @@ export function Ledgers(): React.JSX.Element {
               <TableBody>
                 {statement.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
+                    <TableCell colSpan={9} className="py-8 text-center text-muted-foreground">
                       No vouchers on this account yet.
                     </TableCell>
                   </TableRow>
@@ -227,8 +243,16 @@ export function Ledgers(): React.JSX.Element {
                   statement.map((l, i) => {
                     const isDr = Number(l.dr) > 0
                     const manual = l.order_id == null && l.sale_id == null && l.payment_id == null
+                    const target = lineTarget(l)
+                    const recordId = Number(l.order_id ?? l.sale_id ?? l.payment_id) || 0
+                    const clickable = !!target && !!onOpenRecord && recordId > 0
                     return (
-                      <TableRow key={l.id as number}>
+                      <TableRow
+                        key={l.id as number}
+                        className={cn(clickable && 'cursor-pointer hover:bg-muted/50')}
+                        onClick={clickable ? () => onOpenRecord?.(target!, recordId) : undefined}
+                        title={clickable ? 'Open the source document' : undefined}
+                      >
                         <TableCell className="py-1.5 tabular-nums text-muted-foreground">{i + 1}</TableCell>
                         <TableCell className="whitespace-nowrap py-1.5">{formatDate(l.entry_date)}</TableCell>
                         <TableCell className="py-1.5">
@@ -236,12 +260,18 @@ export function Ledgers(): React.JSX.Element {
                           {l.particulars || l.narration || '—'}
                         </TableCell>
                         <TableCell className="py-1.5">{l.vch_type}</TableCell>
+                        <TableCell className="whitespace-nowrap py-1.5 font-medium tabular-nums">{l.voucher_code || '—'}</TableCell>
                         <TableCell className="py-1.5 text-muted-foreground">{l.vch_no || '—'}</TableCell>
                         <TableCell className="py-1.5 text-right tabular-nums">{isDr ? formatINR(l.dr) : ''}</TableCell>
                         <TableCell className="py-1.5 text-right tabular-nums">{!isDr ? formatINR(l.cr) : ''}</TableCell>
                         <TableCell className="py-1.5 text-right">
                           {manual && (
-                            <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => delEntry(l)}>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 text-destructive"
+                              onClick={(e) => { e.stopPropagation(); delEntry(l) }}
+                            >
                               <Trash2 className="h-3.5 w-3.5" />
                             </Button>
                           )}
@@ -260,7 +290,7 @@ export function Ledgers(): React.JSX.Element {
                 <span className="text-muted-foreground">
                   Total Cr <span className="font-semibold tabular-nums text-foreground">{formatINR(totals.cr)}</span>
                 </span>
-                <span className="font-semibold">Closing <span className="tabular-nums">{balText(totals.bal)}</span></span>
+                <span className="font-semibold">Closing <span className={cn('tabular-nums', balClass(totals.bal))}>{balText(totals.bal)}</span></span>
               </div>
             )}
           </div>

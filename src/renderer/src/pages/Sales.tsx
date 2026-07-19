@@ -40,7 +40,7 @@ type Row = Record<string, any>
 
 // ---------------- Sales tab ----------------
 
-function SalesTab(): React.JSX.Element {
+function SalesTab({ focusId, onFocusHandled }: { focusId?: number | null; onFocusHandled?: () => void }): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
   const [bargains, setBargains] = useState<Row[]>([])
@@ -91,6 +91,14 @@ function SalesTab(): React.JSX.Element {
       status: 'pending'
     }
   }
+  // Deep-link from Ledgers: open the sale once its data has loaded.
+  useEffect(() => {
+    if (!focusId) return
+    const row = rows.find((r) => Number(r.id) === Number(focusId))
+    if (!row) return
+    openEdit(row)
+    onFocusHandled?.()
+  }, [focusId, rows]) // eslint-disable-line react-hooks/exhaustive-deps
   function openAdd(): void {
     setEditing(null)
     setForm(blank())
@@ -641,7 +649,7 @@ function SalesBargainsTab(): React.JSX.Element {
 
 // ---------------- page ----------------
 
-export function Sales(): React.JSX.Element {
+export function Sales({ focusId, onFocusHandled }: { focusId?: number | null; onFocusHandled?: () => void } = {}): React.JSX.Element {
   const [needs, setNeeds] = useState<Row[]>([])
   const loadNeeds = useCallback(async () => {
     setNeeds(await window.api.stock.needs())
@@ -686,7 +694,7 @@ export function Sales(): React.JSX.Element {
             <TabsTrigger value="bargains">Sales bargains</TabsTrigger>
           </TabsList>
           <TabsContent value="sales" className="mt-6">
-            <SalesTab />
+            <SalesTab focusId={focusId} onFocusHandled={onFocusHandled} />
           </TabsContent>
           <TabsContent value="bargains" className="mt-6">
             <SalesBargainsTab />

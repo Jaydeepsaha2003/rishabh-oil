@@ -1,6 +1,6 @@
 {
   "name": "rishabh-oil",
-  "version": "0.3.13",
+  "version": "0.3.14",
   "description": "Oil production management system",
   "main": "./out/main/index.js",
   "author": "Rishabh Oil",

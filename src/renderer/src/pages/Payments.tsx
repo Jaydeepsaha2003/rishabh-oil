@@ -1062,7 +1062,12 @@ function LcTab(): React.JSX.Element {
   )
 }
 
-export function Payments(): React.JSX.Element {
+export function Payments({ focusId, onFocusHandled }: { focusId?: number | null; onFocusHandled?: () => void } = {}): React.JSX.Element {
+  // Payments have no per-record form to open; a ledger drill-through simply
+  // lands on this page. Acknowledge the deep-link so it doesn't linger.
+  useEffect(() => {
+    if (focusId) onFocusHandled?.()
+  }, [focusId, onFocusHandled])
   return (
     <>
       <PageHeader title="Payments" subtitle="Pay suppliers and transporters; LC, bill discounting and excess on account" hint="Pick a party to see its open invoices, then pay against them (FIFO or specific) or keep an Excess amount on account. Open Letters of Credit / discounting facilities with a bank and issue against them; utilization is tracked automatically. Sources: Bank, Credit Card, Bill Discounting, Letter of Credit." />

@@ -148,6 +148,40 @@ export async function deleteManualEntry(id: number): Promise<{ id: number }> {
 // Tally-style ledger for one account. "Particulars" shows the PRINCIPAL contra
 // account — the largest line on the opposite side of the voucher (Tally style),
 // e.g. the supplier ledger shows "SHEA PUR A/C", not the GST/TDS legs.
+// Short voucher-type prefix for the running voucher serial (PUR/1, DN/1, …).
+function vchPrefix(t: string): string {
+  const u = String(t || '').toUpperCase()
+  if (u.includes('PURCHASE')) return 'PUR'
+  if (u.includes('SALE')) return 'SAL'
+  if (u.includes('DEBIT')) return 'DN'
+  if (u.includes('CREDIT')) return 'CN'
+  if (u.includes('RECEIPT')) return 'RCP'
+  if (u.includes('PAYMENT')) return 'PAY'
+  if (u.includes('CONTRA')) return 'CON'
+  if (u.includes('OPENING')) return 'OB'
+  if (u.includes('JOURNAL')) return 'JV'
+  const letters = u.replace(/[^A-Z]/g, '')
+  return letters.slice(0, 3) || 'VCH'
+}
+
+// A stable running serial per voucher type across the company, keyed by entry id
+// (ordered by id so a voucher always keeps the same number).
+async function voucherCodeMap(companyId: number): Promise<Map<number, string>> {
+  const res = await getClient().execute({
+    sql: 'SELECT id, vch_type FROM journal_entries WHERE company_id = ? ORDER BY id ASC',
+    args: [companyId]
+  })
+  const counters = new Map<string, number>()
+  const map = new Map<number, string>()
+  for (const r of res.rows) {
+    const pre = vchPrefix(String(r.vch_type))
+    const seq = (counters.get(pre) || 0) + 1
+    counters.set(pre, seq)
+    map.set(Number(r.id), `${pre}/${seq}`)
+  }
+  return map
+}
+
 export async function accountStatement(accountId: number): Promise<Row[]> {
   const c = getClient()
   const res = await c.execute({
@@ -178,12 +212,14 @@ export async function accountStatement(accountId: number): Promise<Row[]> {
     byEntry.get(k)!.push(r)
   }
 
+  const codes = await voucherCodeMap(getActiveCompanyId())
   for (const l of lines) {
     const rest = byEntry.get(Number(l.entry_id)) || []
     const opposite = Number(l.dr) > 0
       ? rest.filter((r) => n(r.cr) > 0).sort((a, b) => n(b.cr) - n(a.cr))
       : rest.filter((r) => n(r.dr) > 0).sort((a, b) => n(b.dr) - n(a.dr))
     l.particulars = String((opposite[0] || rest[0])?.name || '')
+    l.voucher_code = codes.get(Number(l.entry_id)) || ''
   }
   return lines
 }

@@ -61,6 +61,13 @@ function App(): React.JSX.Element {
   const [companies, setCompanies] = useState<CompanyRow[]>([])
   const [companyId, setCompanyId] = useState<number>(0)
   const [companyReady, setCompanyReady] = useState(false)
+  // Deep-link from the Ledgers page to a specific source document.
+  const [focus, setFocus] = useState<{ page: Page; id: number } | null>(null)
+
+  function openRecord(page: 'orders' | 'sales' | 'payments', id: number): void {
+    setFocus({ page, id })
+    setPage(page)
+  }
 
   // On launch, test the (auto-configured) connection; show setup only if it fails.
   useEffect(() => {
@@ -194,16 +201,31 @@ function App(): React.JSX.Element {
       <main key={companyId} className="relative flex-1 overflow-auto">
         {view === 'dashboard' && <Dashboard onNavigate={setPage} />}
         {view === 'bargains' && <Bargains />}
-        {view === 'orders' && <Orders />}
+        {view === 'orders' && (
+          <Orders
+            focusId={focus?.page === 'orders' ? focus.id : null}
+            onFocusHandled={() => setFocus(null)}
+          />
+        )}
         {view === 'consignment' && <Consignment />}
         {view === 'gateEntry' && <GateEntry />}
-        {view === 'payments' && <Payments />}
-        {view === 'ledgers' && <Ledgers />}
+        {view === 'payments' && (
+          <Payments
+            focusId={focus?.page === 'payments' ? focus.id : null}
+            onFocusHandled={() => setFocus(null)}
+          />
+        )}
+        {view === 'ledgers' && <Ledgers onOpenRecord={openRecord} />}
         {view === 'products' && <Products />}
         {view === 'formulation' && <Formulation />}
         {view === 'production' && <Production />}
         {view === 'stock' && <Stock />}
-        {view === 'sales' && <Sales />}
+        {view === 'sales' && (
+          <Sales
+            focusId={focus?.page === 'sales' ? focus.id : null}
+            onFocusHandled={() => setFocus(null)}
+          />
+        )}
         {view === 'suppliers' && <Suppliers />}
         {view === 'transporters' && <Transporters />}
         {view === 'customers' && <Customers />}

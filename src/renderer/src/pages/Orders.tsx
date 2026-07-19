@@ -101,7 +101,12 @@ function MoneyRow({ label, value, strong }: { label: string; value: string; stro
   )
 }
 
-export function Orders(): React.JSX.Element {
+interface OrdersProps {
+  focusId?: number | null
+  onFocusHandled?: () => void
+}
+
+export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX.Element {
   const [tab, setTab] = useState('tankers')
   const [rows, setRows] = useState<Row[]>([])
   const [tankers, setTankers] = useState<Row[]>([])
@@ -169,6 +174,17 @@ export function Orders(): React.JSX.Element {
 
   useEffect(() => { load() }, [load])
   useLiveRefresh(load)
+
+  // Deep-link from Ledgers: open the booking invoice view for a specific order
+  // once its data has loaded.
+  useEffect(() => {
+    if (!focusId) return
+    const row = rows.find((r) => Number(r.id) === Number(focusId))
+    if (!row) return
+    openEditPurchase(row)
+    setTab('purchases')
+    onFocusHandled?.()
+  }, [focusId, rows]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Oil-type × stage status matrix — each tanker counted ONCE in its current
   // stage as of the "To" date. Empty (finished) tankers are shown only if they
