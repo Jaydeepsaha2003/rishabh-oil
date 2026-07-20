@@ -790,8 +790,9 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
     if (!balance.rows.length) throw new Error('Bargain not found')
     const bal = n(balance.rows[0].balance)
     // Trucks sometimes take on more than the bargain has left. With the user's
-    // confirmation the excess becomes its own bargain line (same supplier/oil,
-    // rate as confirmed) and this tanker's consumption is split across the two.
+    // confirmation the excess is either (a) allocated to another EXISTING open
+    // bargain (same supplier/oil), or (b) booked as its own new bargain line.
+    // Either way this tanker's consumption is split across the two bargains.
     let extraBargainId: number | null = null
     let extraQty = 0
     if (qty > bal + 1e-6) {
@@ -802,22 +803,50 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
       const oRes = await c.execute({ sql: 'SELECT * FROM bargains WHERE id = ?', args: [bargainId] })
       if (!oRes.rows.length) throw new Error('Bargain not found')
       const orig = toPlain(oRes)[0]
-      const duty = n(orig.duty)
-      const hasRate = data.excess_rate !== undefined && data.excess_rate !== null && data.excess_rate !== ''
-      const baseRate = hasRate ? n(data.excess_rate) - duty : n(orig.base_rate)
-      const created = await createBargain({
-        bargain_date: String(data.loaded_date || '').slice(0, 10) || String(orig.bargain_date),
-        supplier_id: orig.supplier_id,
-        broker_id: orig.broker_id,
-        oil_type_id: orig.oil_type_id,
-        bargain_type: orig.bargain_type,
-        qty: extraQty,
-        uom: orig.uom,
-        base_rate: baseRate,
-        duty,
-        allowed_shortage_pct: orig.allowed_shortage_pct
-      })
-      extraBargainId = created.id
+
+      if (data.extra_bargain_id) {
+        // (a) Use the next available bargain — must be a different bargain with
+        // enough balance for the excess quantity.
+        const chosenId = n(data.extra_bargain_id)
+        if (chosenId === bargainId) throw new Error('The excess bargain must be different from the loading bargain')
+        const chRes = await c.execute({
+          sql: `SELECT b.id, b.supplier_id, b.oil_type_id,
+                  b.qty
+                    - COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND id != ?), 0)
+                    - COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id AND id != ?), 0)
+                    - COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id AND is_consignment = 1), 0)
+                  AS balance
+                FROM bargains b WHERE b.id = ?`,
+          args: [id, id, chosenId]
+        })
+        if (!chRes.rows.length) throw new Error('Selected bargain not found')
+        const ch = chRes.rows[0]
+        if (n(ch.supplier_id) !== n(orig.supplier_id) || n(ch.oil_type_id) !== n(orig.oil_type_id)) {
+          throw new Error('The excess bargain must be for the same supplier and oil')
+        }
+        if (extraQty > n(ch.balance) + 1e-6) {
+          throw new Error(`The selected bargain has only ${n(ch.balance).toFixed(3)} balance for the ${extraQty.toFixed(3)} excess`)
+        }
+        extraBargainId = chosenId
+      } else {
+        // (b) Book the excess as a brand-new bargain line (optional rate).
+        const duty = n(orig.duty)
+        const hasRate = data.excess_rate !== undefined && data.excess_rate !== null && data.excess_rate !== ''
+        const baseRate = hasRate ? n(data.excess_rate) - duty : n(orig.base_rate)
+        const created = await createBargain({
+          bargain_date: String(data.loaded_date || '').slice(0, 10) || String(orig.bargain_date),
+          supplier_id: orig.supplier_id,
+          broker_id: orig.broker_id,
+          oil_type_id: orig.oil_type_id,
+          bargain_type: orig.bargain_type,
+          qty: extraQty,
+          uom: orig.uom,
+          base_rate: baseRate,
+          duty,
+          allowed_shortage_pct: orig.allowed_shortage_pct
+        })
+        extraBargainId = created.id
+      }
     }
     const sourceId = data.source_id ? n(data.source_id) : null
     const transitDate = String(data.loaded_date || '')

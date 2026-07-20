@@ -120,7 +120,12 @@ const api = {
     ips: (): Promise<Row[]> => ipcRenderer.invoke('access:ips'),
     setIp: (id: number, active: boolean): Promise<{ id: number }> =>
       ipcRenderer.invoke('access:setIp', { id, active }),
-    logs: (): Promise<Row[]> => ipcRenderer.invoke('access:logs')
+    logs: (filter?: Row): Promise<{ rows: Row[]; users: string[]; entities: string[] }> =>
+      ipcRenderer.invoke('access:logs', { filter })
+  },
+  session: {
+    setUser: (id: number | null, username: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('session:setUser', { id, username })
   },
   users: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('users:list'),

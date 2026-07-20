@@ -2,6 +2,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'crypto'
 import type { InValue, ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { machineIp, isIpAllowed, recordSession, logEvent } from './access'
+import { setCurrentUser } from './currentUser'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -56,7 +57,8 @@ export async function login(username: string, password: string): Promise<Row> {
     throw new Error('Invalid username or password')
   }
   await recordSession(Number(u.id), String(u.username), ip)
-  await logEvent(Number(u.id), String(u.username), ip, 'login')
+  setCurrentUser(Number(u.id), String(u.username))
+  await logEvent(Number(u.id), String(u.username), ip, 'login', null, null, 'Session', null)
   return {
     id: u.id,
     username: u.username,

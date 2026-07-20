@@ -122,6 +122,13 @@ function App(): React.JSX.Element {
     }
   }, [user, allowed, page])
 
+  // Tell the main process who is acting on this device, so the audit trail can
+  // attribute every write. Runs on login and whenever the user is restored.
+  useEffect(() => {
+    if (!user) return
+    window.api.session.setUser(Number(user.id), String(user.username)).catch(() => {})
+  }, [user])
+
   // Presence heartbeat — marks this user live and enforces device (IP) blocks.
   useEffect(() => {
     if (!user) return

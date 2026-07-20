@@ -81,21 +81,61 @@ export async function logEvent(
   username: string,
   ip: string,
   action: string,
-  detail?: string
+  detail?: string | null,
+  companyId?: number | null,
+  entity?: string | null,
+  entityId?: number | null
 ): Promise<void> {
   await getClient().execute({
-    sql: 'INSERT INTO user_logs (user_id, username, ip, action, detail) VALUES (?, ?, ?, ?, ?)',
-    args: [userId, username, ip, action, detail || null]
+    sql: `INSERT INTO user_logs (user_id, username, ip, action, detail, company_id, entity, entity_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [userId, username, ip, action, detail || null, companyId ?? null, entity || null, entityId ?? null]
   })
 }
 
-export async function listLogs(limit = 300): Promise<Row[]> {
-  return toPlain(
+export interface LogFilter {
+  username?: string
+  entity?: string
+  action?: string
+  from?: string
+  to?: string
+  q?: string
+  limit?: number
+}
+
+// Activity log with optional filters (newest first). Also returns the distinct
+// users/sections present, so the UI can populate its filter dropdowns.
+export async function listLogs(
+  filter: LogFilter = {}
+): Promise<{ rows: Row[]; users: string[]; entities: string[] }> {
+  const where: string[] = []
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const args: any[] = []
+  if (filter.username) { where.push('username = ?'); args.push(filter.username) }
+  if (filter.entity) { where.push('entity = ?'); args.push(filter.entity) }
+  if (filter.action) { where.push('action = ?'); args.push(filter.action) }
+  if (filter.from) { where.push('created_at >= ?'); args.push(filter.from) }
+  if (filter.to) { where.push('created_at <= ?'); args.push(`${filter.to} 23:59:59`) }
+  if (filter.q) {
+    where.push('(detail LIKE ? OR entity LIKE ? OR action LIKE ? OR username LIKE ?)')
+    const like = `%${filter.q}%`
+    args.push(like, like, like, like)
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
+  args.push(Math.min(Math.max(Number(filter.limit) || 500, 1), 2000))
+  const rows = toPlain(
     await getClient().execute({
-      sql: 'SELECT * FROM user_logs ORDER BY id DESC LIMIT ?',
-      args: [limit]
+      sql: `SELECT * FROM user_logs ${whereSql} ORDER BY id DESC LIMIT ?`,
+      args
     })
   )
+  const u = toPlain(await getClient().execute('SELECT DISTINCT username FROM user_logs WHERE username IS NOT NULL ORDER BY username'))
+  const en = toPlain(await getClient().execute("SELECT DISTINCT entity FROM user_logs WHERE entity IS NOT NULL AND entity != '' ORDER BY entity"))
+  return {
+    rows,
+    users: u.map((r) => String(r.username)),
+    entities: en.map((r) => String(r.entity))
+  }
 }
 
 // Delete logs older than the configured retention (default 30 days).

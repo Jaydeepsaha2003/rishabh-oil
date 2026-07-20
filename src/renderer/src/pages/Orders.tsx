@@ -124,9 +124,11 @@ export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX
   const [loadingRows, setLoadingRows] = useState<Row[]>([{}])
   const [actionRow, setActionRow] = useState<Row | null>(null)
   const [actionForm, setActionForm] = useState<Row>({})
-  // Loading more than the bargain balance: the excess needs a confirmed new
-  // bargain line (optionally at a different rate) before the tanker can load.
-  const [excess, setExcess] = useState<{ qty: number; balance: number; diffRate: boolean; rate: string } | null>(null)
+  // Loading more than the bargain balance: the excess is either booked as a new
+  // bargain (optional rate) or allocated to an existing next bargain.
+  const [excess, setExcess] = useState<
+    { qty: number; balance: number; mode: 'new' | 'existing'; diffRate: boolean; rate: string; targetBargainId: string } | null
+  >(null)
   const [detailRow, setDetailRow] = useState<Row | null>(null)
   const [gateEntries, setGateEntries] = useState<Row[]>([])
   const [editTanker, setEditTanker] = useState<Row | null>(null)
@@ -450,18 +452,26 @@ export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX
         setExcess({
           qty: Math.round(over * 1000) / 1000,
           balance,
+          mode: 'new',
           diffRate: false,
-          rate: String(b.rate_per_uom ?? '')
+          rate: String(b.rate_per_uom ?? ''),
+          targetBargainId: ''
         })
         return
       }
+    }
+    // Excess allocated to an existing bargain requires that choice.
+    if (target === 'loaded' && excess && excess.mode === 'existing' && !excess.targetBargainId) {
+      toast.error('Select the next bargain for the excess quantity')
+      return
     }
     try {
       await window.api.tankers.advance(actionRow.id, target, {
         ...actionForm,
         loaded_qty: Number(actionForm.loaded_qty) || 0,
         allow_excess: !!excess,
-        excess_rate: excess && excess.diffRate && Number(excess.rate) > 0 ? Number(excess.rate) : null,
+        excess_rate: excess && excess.mode === 'new' && excess.diffRate && Number(excess.rate) > 0 ? Number(excess.rate) : null,
+        extra_bargain_id: excess && excess.mode === 'existing' && excess.targetBargainId ? Number(excess.targetBargainId) : null,
         bargain_id: actionForm.bargain_id ? Number(actionForm.bargain_id) : null,
         source_id: actionForm.source_id ? Number(actionForm.source_id) : null,
         transporter_id: actionForm.transporter_id ? Number(actionForm.transporter_id) : null,
@@ -473,7 +483,11 @@ export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX
         outside_weighment_photo: actionForm.outside_weighment_photo || null
       })
       if (target === 'loaded' && excess) {
-        toast.success(`Loading confirmed — extra ${formatNum(excess.qty)} added as a new bargain`)
+        toast.success(
+          excess.mode === 'existing'
+            ? `Loading confirmed — extra ${formatNum(excess.qty)} allocated to the selected bargain`
+            : `Loading confirmed — extra ${formatNum(excess.qty)} added as a new bargain`
+        )
       } else {
         toast.success(target === 'loaded' ? 'Loading confirmed and tanker moved to In transit' : `Tanker moved to ${TANKER_LABEL[target]}`)
       }
@@ -1314,33 +1328,95 @@ export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX
               <div className="grid gap-1.5"><Label>Loaded date</Label><DatePicker value={actionForm.loaded_date || ''} onChange={(v) => setActionForm((p) => ({ ...p, loaded_date: v }))} /></div>
               <div className="grid gap-1.5"><Label>Actual loaded quantity *</Label><Input type="number" value={actionForm.loaded_qty || ''} onChange={(e) => { setExcess(null); setActionForm((p) => ({ ...p, loaded_qty: e.target.value })) }} /></div>
             </div>
-            {excess && (
-              <div className="space-y-2.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
-                <p>
-                  This bargain has only <b>{formatNum(excess.balance)} {actionRow.uom}</b> left. On confirming, the
-                  extra <b>{formatNum(excess.qty)} {actionRow.uom}</b> will be entered as a new bargain line for{' '}
-                  {actionRow.supplier_name}.
-                </p>
-                <div className="flex items-center gap-2">
-                  <Switch
-                    checked={excess.diffRate}
-                    onCheckedChange={(v) => setExcess((p) => (p ? { ...p, diffRate: v } : p))}
-                  />
-                  <span>A different rate applies to the extra quantity</span>
-                </div>
-                {excess.diffRate && (
-                  <div className="grid gap-1.5">
-                    <Label className="text-amber-900">Rate for the extra qty (per {actionRow.uom})</Label>
-                    <Input
-                      type="number"
-                      className="bg-white"
-                      value={excess.rate}
-                      onChange={(e) => setExcess((p) => (p ? { ...p, rate: e.target.value } : p))}
-                    />
+            {excess && (() => {
+              // Other open bargains (same supplier + oil) that can absorb the excess.
+              const nextBargains = bargains.filter(
+                (b) =>
+                  String(b.supplier_id) === String(actionRow.supplier_id) &&
+                  String(b.oil_type_id) === String(actionRow.oil_type_id) &&
+                  String(b.id) !== String(actionForm.bargain_id) &&
+                  Number(b.balance_qty) >= excess.qty - 1e-6
+              )
+              return (
+                <div className="space-y-2.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
+                  <p>
+                    This bargain has only <b>{formatNum(excess.balance)} {actionRow.uom}</b> left. Choose where the extra{' '}
+                    <b>{formatNum(excess.qty)} {actionRow.uom}</b> should go:
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setExcess((p) => (p ? { ...p, mode: 'new' } : p))}
+                      className={cn(
+                        'rounded-md border px-3 py-1.5 text-xs font-medium',
+                        excess.mode === 'new' ? 'border-amber-500 bg-amber-100' : 'border-amber-300 bg-white'
+                      )}
+                    >
+                      Book as a new bargain
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setExcess((p) => (p ? { ...p, mode: 'existing' } : p))}
+                      className={cn(
+                        'rounded-md border px-3 py-1.5 text-xs font-medium',
+                        excess.mode === 'existing' ? 'border-amber-500 bg-amber-100' : 'border-amber-300 bg-white'
+                      )}
+                    >
+                      Use the next available bargain
+                    </button>
                   </div>
-                )}
-              </div>
-            )}
+
+                  {excess.mode === 'new' ? (
+                    <>
+                      <p className="text-[11px]">A new bargain line will be created for {actionRow.supplier_name}.</p>
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={excess.diffRate}
+                          onCheckedChange={(v) => setExcess((p) => (p ? { ...p, diffRate: v } : p))}
+                        />
+                        <span>A different rate applies to the extra quantity</span>
+                      </div>
+                      {excess.diffRate && (
+                        <div className="grid gap-1.5">
+                          <Label className="text-amber-900">Rate for the extra qty (per {actionRow.uom})</Label>
+                          <Input
+                            type="number"
+                            className="bg-white"
+                            value={excess.rate}
+                            onChange={(e) => setExcess((p) => (p ? { ...p, rate: e.target.value } : p))}
+                          />
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="grid gap-1.5">
+                      <Label className="text-amber-900">Next bargain for the excess</Label>
+                      {nextBargains.length === 0 ? (
+                        <p className="text-[11px]">
+                          No other open bargain for {actionRow.supplier_name} has {formatNum(excess.qty)} {actionRow.uom} free — book it as a new bargain instead.
+                        </p>
+                      ) : (
+                        <Select
+                          value={excess.targetBargainId}
+                          onValueChange={(v) => setExcess((p) => (p ? { ...p, targetBargainId: v } : p))}
+                        >
+                          <SelectTrigger className="bg-white"><SelectValue placeholder="Select bargain" /></SelectTrigger>
+                          <SelectContent>
+                            {nextBargains
+                              .sort((a, b) => String(a.bargain_date || '').localeCompare(String(b.bargain_date || '')))
+                              .map((b) => (
+                                <SelectItem key={b.id} value={String(b.id)}>
+                                  {b.bargain_no} · BAL {formatNum(b.balance_qty)}
+                                </SelectItem>
+                              ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
             <div className="grid gap-1.5">
               <Label>Source / port</Label>
               <Select value={String(actionForm.source_id || '')} onValueChange={(value) => setActionForm((p) => ({ ...p, source_id: value }))}>
@@ -1419,7 +1495,7 @@ export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX
             </div>
             <div className="rounded-lg border bg-muted/30 p-3"><MoneyRow label="Loaded" value={`${formatNum(actionRow.loaded_qty)} ${actionRow.uom}`} /><MoneyRow label="Shortage" value={`${formatNum(shortage.actualShortage)} ${actionRow.uom}`} /><MoneyRow label="Freight" value={formatINR(shortage.transportAmount)} /></div>
           </div>}
-          <DialogFooter><Button variant="outline" onClick={() => { setActionRow(null); setExcess(null) }}>Cancel</Button><Button onClick={advanceTanker}>{excess ? 'Add bargain & confirm' : 'Confirm'}</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => { setActionRow(null); setExcess(null) }}>Cancel</Button><Button onClick={advanceTanker}>{excess ? (excess.mode === 'existing' ? 'Allocate & confirm' : 'Add bargain & confirm') : 'Confirm'}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 

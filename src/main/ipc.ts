@@ -49,7 +49,8 @@ import {
   deleteConsignment
 } from './consignment'
 import { login, listUsers, createUser, updateUser, deleteUser } from './auth'
-import { heartbeat, liveUsers, listIps, setIpActive, listLogs } from './access'
+import { heartbeat, liveUsers, listIps, setIpActive, listLogs, logEvent, machineIp, type LogFilter } from './access'
+import { getCurrentUser, setCurrentUser } from './currentUser'
 import {
   listFormulations,
   getFormulationItems,
@@ -112,18 +113,123 @@ import {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
 
+// --- Audit trail ---------------------------------------------------------
+// Turn a channel + its args/result into a human-readable log line. Only a few
+// safe fields are summarised — never the full payload (which can hold images).
+
+const NS_ENTITY: Record<string, string> = {
+  bargains: 'Bargain',
+  orders: 'Purchase',
+  tankers: 'Tanker',
+  consignment: 'Consignment',
+  sales: 'Sale',
+  salesBargains: 'Sales bargain',
+  payments: 'Payment',
+  billDiscount: 'Bill discount',
+  lc: 'Letter of credit',
+  journal: 'Journal',
+  ledger: 'Ledger',
+  production: 'Production',
+  formulation: 'Formulation',
+  stock: 'Stock',
+  stockCount: 'Stock count',
+  gate: 'Gate entry',
+  users: 'User',
+  access: 'Access',
+  settings: 'Settings',
+  company: 'Company'
+}
+
+const OP_VERB: Record<string, string> = {
+  create: 'Created',
+  update: 'Updated',
+  delete: 'Deleted',
+  advance: 'Advanced',
+  record: 'Recorded',
+  save: 'Saved',
+  setStatus: 'Changed status',
+  issue: 'Issued',
+  addEntry: 'Added entry',
+  deleteEntry: 'Deleted entry',
+  createAccount: 'Created account',
+  deleteIssuance: 'Deleted issuance',
+  transfer: 'Transferred',
+  deleteTransfer: 'Reversed transfer',
+  setIp: 'Changed device',
+  set: 'Changed setting'
+}
+
+function tableLabel(table: string): string {
+  const map: Record<string, string> = {
+    suppliers: 'Supplier',
+    customers: 'Customer',
+    transporters: 'Transporter',
+    brokers: 'Broker',
+    products: 'Product',
+    sources: 'Port',
+    uoms: 'UOM',
+    companies: 'Company'
+  }
+  return map[table] || (table ? table.charAt(0).toUpperCase() + table.slice(1) : 'Record')
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function summarizeArgs(args: any): string {
+  const v = args?.values || args?.data || args || {}
+  const parts: string[] = []
+  const add = (label: string, val: unknown): void => {
+    if (val != null && val !== '') parts.push(label ? `${label} ${val}` : String(val))
+  }
+  add('', v.name)
+  add('Inv', v.invoice_no)
+  add('', v.bargain_no)
+  add('Tanker', v.tanker_no)
+  add('LC', v.lc_no)
+  add('Qty', v.qty ?? v.ordered_qty)
+  add('₹', v.amount)
+  if (args?.toStatus) parts.push(`→ ${args.toStatus}`)
+  if (args?.key) parts.push(`${args.key} = ${args.value}`)
+  return parts.join(' · ').slice(0, 220)
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function recordAudit(channel: string, args: any, result: any): Promise<void> {
+  const [ns, op] = channel.split(':')
+  const entity = ns === 'data' ? tableLabel(String(args?.table || '')) : NS_ENTITY[ns] || ns
+  const action = OP_VERB[op] || op
+  const entityId = Number(result?.id ?? args?.id) || null
+  const detail = summarizeArgs(args)
+  const user = getCurrentUser()
+  await logEvent(
+    user.id,
+    user.username,
+    machineIp(),
+    action,
+    detail,
+    getActiveCompanyId(),
+    entity,
+    entityId
+  )
+}
+
 // All database access lives here in the main process. The renderer (UI) can
 // only call the specific channels we expose through the preload bridge, so the
 // Turso token never reaches the UI layer.
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:nextNo$|:liveUsers$|:ips$|:logs$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^company:setActive$|^company:getActive$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:nextNo$|:liveUsers$|:ips$|:logs$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^company:setActive$|^company:getActive$|^session:setUser$/
+  // Writes that shouldn't clutter the audit trail (infra / no business meaning).
+  const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handle = (channel: string, fn: (...a: any[]) => unknown): void => {
     ipcMain.handle(channel, async (e, args) => {
       const result = await fn(e, args)
-      if (!READONLY.test(channel)) await bumpRevision().catch(() => {})
+      if (!READONLY.test(channel)) {
+        await bumpRevision().catch(() => {})
+        if (!AUDIT_SKIP.has(channel)) await recordAudit(channel, args, result).catch(() => {})
+      }
       return result
     })
   }
@@ -260,7 +366,11 @@ export function registerIpc(): void {
   handle('access:setIp', (_e, { id, active }: { id: number; active: boolean }) =>
     setIpActive(id, active)
   )
-  handle('access:logs', () => listLogs())
+  handle('access:logs', (_e, args?: { filter?: LogFilter }) => listLogs(args?.filter || {}))
+
+  handle('session:setUser', (_e, { id, username }: { id: number | null; username: string }) =>
+    setCurrentUser(id, username)
+  )
 
   handle('formulations:list', () => listFormulations())
   handle('formulations:items', (_e, { id }: { id: number }) => getFormulationItems(id))

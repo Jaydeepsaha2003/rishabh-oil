@@ -70,6 +70,16 @@ const CAT_LABEL: Record<string, string> = {
 }
 
 function StockTable({ rows }: { rows: Row[] }): React.JSX.Element {
+  const sum = (k: string): number => rows.reduce((s, r) => s + (Number(r[k]) || 0), 0)
+  const totals = {
+    received: sum('received'),
+    produced: sum('produced'),
+    transferred_in: sum('transferred_in'),
+    transferred_out: sum('transferred_out'),
+    consumed: sum('consumed'),
+    sold: sum('sold'),
+    stock: sum('stock')
+  }
   return (
     <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
       <Table>
@@ -93,25 +103,37 @@ function StockTable({ rows }: { rows: Row[] }): React.JSX.Element {
               </TableCell>
             </TableRow>
           ) : (
-            rows.map((r) => (
-              <TableRow key={r.id as number}>
-                <TableCell className="font-medium">{r.name}</TableCell>
-                <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.received)}</TableCell>
-                <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.produced)}</TableCell>
-                <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.transferred_in) > 0 ? formatNum(r.transferred_in) : '—'}</TableCell>
-                <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.transferred_out) > 0 ? formatNum(r.transferred_out) : '—'}</TableCell>
-                <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.consumed)}</TableCell>
-                <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.sold)}</TableCell>
-                <TableCell
-                  className={cn(
-                    'text-right font-semibold tabular-nums',
-                    Number(r.stock) < -1e-9 ? 'text-red-600' : ''
-                  )}
-                >
-                  {formatNum(r.stock)}
-                </TableCell>
+            <>
+              {rows.map((r) => (
+                <TableRow key={r.id as number}>
+                  <TableCell className="font-medium">{r.name}</TableCell>
+                  <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.received)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.produced)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.transferred_in) > 0 ? formatNum(r.transferred_in) : '—'}</TableCell>
+                  <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.transferred_out) > 0 ? formatNum(r.transferred_out) : '—'}</TableCell>
+                  <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.consumed)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.sold)}</TableCell>
+                  <TableCell
+                    className={cn(
+                      'text-right font-semibold tabular-nums',
+                      Number(r.stock) < -1e-9 ? 'text-red-600' : ''
+                    )}
+                  >
+                    {formatNum(r.stock)}
+                  </TableCell>
+                </TableRow>
+              ))}
+              <TableRow className="border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
+                <TableCell className="font-bold uppercase tracking-wide text-amber-900">Grand total</TableCell>
+                <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.received)}</TableCell>
+                <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.produced)}</TableCell>
+                <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.transferred_in)}</TableCell>
+                <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.transferred_out)}</TableCell>
+                <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.consumed)}</TableCell>
+                <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.sold)}</TableCell>
+                <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.stock)}</TableCell>
               </TableRow>
-            ))
+            </>
           )}
         </TableBody>
       </Table>

@@ -137,6 +137,10 @@ const MIGRATIONS = [
     note TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
+  // Audit trail: attribute each logged action to a company, section and record.
+  'ALTER TABLE user_logs ADD COLUMN company_id INTEGER',
+  'ALTER TABLE user_logs ADD COLUMN entity TEXT',
+  'ALTER TABLE user_logs ADD COLUMN entity_id INTEGER',
   // Inter-company stock movement: qty leaves the source company's stock and
   // adds to the destination company's stock (physical move, not a sale).
   `CREATE TABLE IF NOT EXISTS stock_transfers (

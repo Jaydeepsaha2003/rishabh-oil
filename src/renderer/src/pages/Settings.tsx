@@ -388,26 +388,45 @@ function AccessPanel(): React.JSX.Element {
   const [live, setLive] = useState<Row[]>([])
   const [ips, setIps] = useState<Row[]>([])
   const [logs, setLogs] = useState<Row[]>([])
+  const [logUsers, setLogUsers] = useState<string[]>([])
+  const [logEntities, setLogEntities] = useState<string[]>([])
+  const [filter, setFilter] = useState<Row>({ username: '', entity: '', q: '', from: '', to: '' })
   const [retention, setRetention] = useState('30')
 
   const load = useCallback(async () => {
-    const [l, i, lg, s] = await Promise.all([
+    const [l, i, s] = await Promise.all([
       window.api.access.liveUsers(),
       window.api.access.ips(),
-      window.api.access.logs(),
       window.api.settings.all()
     ])
     setLive(l)
     setIps(i)
-    setLogs(lg)
     setRetention(s.log_retention_days ?? '30')
   }, [])
+
+  const loadLogs = useCallback(async () => {
+    const f: Row = {}
+    if (filter.username) f.username = filter.username
+    if (filter.entity) f.entity = filter.entity
+    if (filter.q) f.q = filter.q
+    if (filter.from) f.from = filter.from
+    if (filter.to) f.to = filter.to
+    const res = await window.api.access.logs(f)
+    setLogs(res.rows)
+    setLogUsers(res.users)
+    setLogEntities(res.entities)
+  }, [filter])
 
   useEffect(() => {
     load()
   }, [load])
 
+  useEffect(() => {
+    loadLogs()
+  }, [loadLogs])
+
   useLiveRefresh(load)
+  useLiveRefresh(loadLogs)
 
   // Live presence doesn't bump the global revision, so poll it directly.
   useEffect(() => {
@@ -508,8 +527,11 @@ function AccessPanel(): React.JSX.Element {
       </Card>
 
       <Card className="p-5">
-        <div className="mb-3 flex items-center justify-between gap-4">
-          <h3 className="text-base font-medium">Activity log</h3>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h3 className="text-base font-medium">Activity log</h3>
+            <p className="text-xs text-muted-foreground">Every create, edit, delete and status change across the app — who did it, when, and to what.</p>
+          </div>
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted-foreground">Keep for</span>
             <Select value={retention} onValueChange={saveRetention}>
@@ -525,30 +547,59 @@ function AccessPanel(): React.JSX.Element {
             </Select>
           </div>
         </div>
-        <div className="max-h-80 overflow-y-auto rounded-lg border">
+
+        <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+          <Input
+            placeholder="Search details…"
+            value={filter.q}
+            onChange={(e) => setFilter((p) => ({ ...p, q: e.target.value }))}
+          />
+          <Select value={filter.username || 'ALL'} onValueChange={(v) => setFilter((p) => ({ ...p, username: v === 'ALL' ? '' : v }))}>
+            <SelectTrigger><SelectValue placeholder="All users" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All users</SelectItem>
+              {logUsers.map((u) => <SelectItem key={u} value={u}>{u}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={filter.entity || 'ALL'} onValueChange={(v) => setFilter((p) => ({ ...p, entity: v === 'ALL' ? '' : v }))}>
+            <SelectTrigger><SelectValue placeholder="All sections" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All sections</SelectItem>
+              {logEntities.map((en) => <SelectItem key={en} value={en}>{en}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Input type="date" value={filter.from} onChange={(e) => setFilter((p) => ({ ...p, from: e.target.value }))} />
+          <Input type="date" value={filter.to} onChange={(e) => setFilter((p) => ({ ...p, to: e.target.value }))} />
+        </div>
+
+        <div className="max-h-[28rem] overflow-y-auto rounded-lg border">
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>When</TableHead>
                 <TableHead>User</TableHead>
-                <TableHead>IP</TableHead>
+                <TableHead>Section</TableHead>
                 <TableHead>Action</TableHead>
+                <TableHead>Details</TableHead>
+                <TableHead>Device</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {logs.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
-                    No activity yet.
+                  <TableCell colSpan={6} className="py-6 text-center text-muted-foreground">
+                    No activity matches these filters.
                   </TableCell>
                 </TableRow>
               ) : (
                 logs.map((l) => (
                   <TableRow key={l.id as number}>
-                    <TableCell className="text-muted-foreground">{l.created_at}</TableCell>
-                    <TableCell>{l.username}</TableCell>
-                    <TableCell>{l.ip}</TableCell>
+                    <TableCell className="whitespace-nowrap text-muted-foreground">{l.created_at}</TableCell>
+                    <TableCell className="font-medium">{l.username}</TableCell>
+                    <TableCell>{l.entity || '—'}</TableCell>
                     <TableCell className="capitalize">{l.action}</TableCell>
+                    <TableCell className="max-w-[280px] truncate text-muted-foreground" title={String(l.detail || '')}>{l.detail || '—'}</TableCell>
+                    <TableCell className="text-muted-foreground">{l.ip}</TableCell>
                   </TableRow>
                 ))
               )}
@@ -556,7 +607,7 @@ function AccessPanel(): React.JSX.Element {
           </Table>
         </div>
         <p className="mt-2 text-xs text-muted-foreground">
-          Older entries are deleted automatically based on the retention above.
+          Showing up to 500 recent entries. Older entries are deleted automatically based on the retention above.
         </p>
       </Card>
     </div>

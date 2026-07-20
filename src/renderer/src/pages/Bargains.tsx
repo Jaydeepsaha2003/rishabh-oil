@@ -11,6 +11,7 @@ import {
   FileSpreadsheet,
   Pencil,
   Plus,
+  Search,
   Trash2
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -118,6 +119,7 @@ export function Bargains(): React.JSX.Element {
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [defaultUom, setDefaultUom] = useState('MT')
   const [typeFilter, setTypeFilter] = useState('OIL')
+  const [search, setSearch] = useState('')
 
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Row | null>(null)
@@ -241,10 +243,16 @@ export function Bargains(): React.JSX.Element {
 
   const noMasters = suppliers.length === 0 || oilTypes.length === 0
   const TYPE_FILTERS = ['OIL', 'HUSK', 'PACKAGING', 'CHEMICAL', 'ALL']
-  const visibleRows =
-    typeFilter === 'ALL'
-      ? rows
-      : rows.filter((r) => String(r.supplier_type || '').toUpperCase() === typeFilter)
+  const q = search.trim().toLowerCase()
+  const visibleRows = rows
+    .filter((r) => typeFilter === 'ALL' || String(r.supplier_type || '').toUpperCase() === typeFilter)
+    .filter(
+      (r) =>
+        !q ||
+        [r.bargain_no, r.supplier_name, r.oil_code, r.oil_name, r.broker_name, r.remarks].some((f) =>
+          String(f || '').toLowerCase().includes(q)
+        )
+    )
 
   const [sort, setSort] = useState<SortState>(null)
   const [reportOpen, setReportOpen] = useState(false)
@@ -282,9 +290,10 @@ export function Bargains(): React.JSX.Element {
   }
 
   // Collapsed oil groups (band click toggles).
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  // Oil groups are COLLAPSED by default — we track the ones the user opens.
+  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set())
   function toggleGroup(oil: string): void {
-    setCollapsed((prev) => {
+    setOpenGroups((prev) => {
       const next = new Set(prev)
       if (next.has(oil)) next.delete(oil)
       else next.add(oil)
@@ -306,6 +315,21 @@ export function Bargains(): React.JSX.Element {
     }
     return m
   }, [visibleRows])
+
+  // Grand total across the currently visible groups (matches the group bands).
+  const grandVisible = useMemo(() => {
+    let count = 0
+    let qty = 0
+    let bal = 0
+    let balValue = 0
+    for (const g of groupStats.values()) {
+      count += g.count
+      qty += g.qty
+      bal += g.bal
+      balValue += g.balValue
+    }
+    return { count, qty, bal, balValue }
+  }, [groupStats])
 
   // Report: one summary line per oil type — open bargains (balance left), total
   // qty/balance, weighted average rate and total value. Not bargain-wise.
@@ -369,17 +393,17 @@ export function Bargains(): React.JSX.Element {
   }
 
   function downloadReportExcel(): void {
-    const lines = ['Oil,Open Bargains,Total Bargains,Open Qty,Total Qty,Avg Rate,Open Value,Total Value']
+    const lines = ['Oil,Open Bargains,Total Bargains,Bal Qty,Total Qty,Avg Rate']
     for (const g of report.groups) {
       lines.push(
-        [g.label, g.openCount, g.count, g.balance, g.qty, avgRate(g).toFixed(2), g.openValue, g.total]
+        [g.label, g.openCount, g.count, g.balance, g.qty, avgRate(g).toFixed(2)]
           .map(csvCell)
           .join(',')
       )
     }
     const t = report.grand
     lines.push(
-      ['GRAND TOTAL', t.openCount, t.count, t.balance, t.qty, avgRate(t).toFixed(2), t.openValue, t.total]
+      ['GRAND TOTAL', t.openCount, t.count, t.balance, t.qty, avgRate(t).toFixed(2)]
         .map(csvCell)
         .join(',')
     )
@@ -444,17 +468,15 @@ export function Bargains(): React.JSX.Element {
                     <TableHead className="text-amber-900">Oil</TableHead>
                     <TableHead className="text-center text-amber-900">Open bargains</TableHead>
                     <TableHead className="text-center text-amber-900">Total bargains</TableHead>
-                    <TableHead className="text-right text-amber-900">Open qty</TableHead>
+                    <TableHead className="text-right text-amber-900">Bal Qty</TableHead>
                     <TableHead className="text-right text-amber-900">Total qty</TableHead>
                     <TableHead className="text-right text-amber-900">Avg rate</TableHead>
-                    <TableHead className="text-right text-amber-900">Open value</TableHead>
-                    <TableHead className="text-right text-amber-900">Total value</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {report.groups.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">No bargains yet.</TableCell>
+                      <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">No bargains yet.</TableCell>
                     </TableRow>
                   ) : (
                     <>
@@ -468,8 +490,6 @@ export function Bargains(): React.JSX.Element {
                           <TableCell className="text-right tabular-nums">{formatNum(g.balance)}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatNum(g.qty)}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatINR(avgRate(g))}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatINR(g.openValue)}</TableCell>
-                          <TableCell className="text-right font-medium tabular-nums">{formatINR(g.total)}</TableCell>
                         </TableRow>
                       ))}
                       <TableRow className="bg-muted/50 font-semibold">
@@ -479,8 +499,6 @@ export function Bargains(): React.JSX.Element {
                         <TableCell className="text-right tabular-nums">{formatNum(report.grand.balance)}</TableCell>
                         <TableCell className="text-right tabular-nums">{formatNum(report.grand.qty)}</TableCell>
                         <TableCell className="text-right tabular-nums">{formatINR(avgRate(report.grand))}</TableCell>
-                        <TableCell className="text-right tabular-nums">{formatINR(report.grand.openValue)}</TableCell>
-                        <TableCell className="text-right tabular-nums">{formatINR(report.grand.total)}</TableCell>
                       </TableRow>
                     </>
                   )}
@@ -488,24 +506,36 @@ export function Bargains(): React.JSX.Element {
               </Table>
             </div>
             <p className="text-xs text-muted-foreground">
-              Open = bargains with balance quantity left. Avg rate is weighted (total value ÷ total qty). Open value = balance qty × bargain rate.
+              Open = bargains with balance quantity left. Bal Qty is the quantity still open. Avg rate is weighted (total value ÷ total qty).
             </p>
           </div>
         ) : (
           <>
-            <div className="mb-4 inline-flex flex-wrap gap-1 rounded-lg border bg-muted/40 p-1">
-              {TYPE_FILTERS.map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setTypeFilter(t)}
-                  className={cn(
-                    'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-                    typeFilter === t ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
-                  )}
-                >
-                  {t === 'ALL' ? 'All' : t}
-                </button>
-              ))}
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="inline-flex flex-wrap gap-1 rounded-lg border bg-muted/40 p-1">
+                {TYPE_FILTERS.map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setTypeFilter(t)}
+                    className={cn(
+                      'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                      typeFilter === t ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    {t === 'ALL' ? 'All' : t}
+                  </button>
+                ))}
+              </div>
+              <div className="relative w-full sm:w-72">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="search"
+                  className="h-9 pl-8"
+                  placeholder="Search bargain no, supplier, oil, broker…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </div>
             </div>
 
             <div className="rounded-lg border bg-card">
@@ -562,11 +592,27 @@ export function Bargains(): React.JSX.Element {
                       </TableCell>
                     </TableRow>
                   ) : (
-                    sortedRows.map((row, i) => {
+                    <>
+                    <TableRow className="border-y-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
+                      <TableCell colSpan={5} className="py-2 text-xs font-bold uppercase tracking-wide text-amber-900">
+                        Grand total
+                        <span className="ml-1 font-medium normal-case tracking-normal text-amber-700">
+                          · {grandVisible.count} bargain{grandVisible.count === 1 ? '' : 's'}
+                        </span>
+                      </TableCell>
+                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.qty)} MT</TableCell>
+                      <TableCell className="py-2" />
+                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.bal)} MT</TableCell>
+                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatINR(grandVisible.balValue)}</TableCell>
+                      <TableCell className="py-2" />
+                    </TableRow>
+                    {sortedRows.map((row, i) => {
                       const oil = oilOf(row)
                       const newGroup =
                         groupedByOil && (i === 0 || oil !== oilOf(sortedRows[i - 1]))
-                      const isCollapsed = groupedByOil && collapsed.has(oil)
+                      // Groups are collapsed unless the user opened them; while
+                      // searching, always reveal matches.
+                      const isCollapsed = groupedByOil && !q && !openGroups.has(oil)
                       const g = groupStats.get(oil)
                       return (
                         <Fragment key={row.id as number}>
@@ -755,7 +801,8 @@ export function Bargains(): React.JSX.Element {
                           )}
                         </Fragment>
                       )
-                    })
+                    })}
+                    </>
                   )}
                 </TableBody>
               </Table>

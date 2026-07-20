@@ -87,7 +87,10 @@ export interface Api {
     liveUsers: () => Promise<Row[]>
     ips: () => Promise<Row[]>
     setIp: (id: number, active: boolean) => Promise<{ id: number }>
-    logs: () => Promise<Row[]>
+    logs: (filter?: Row) => Promise<{ rows: Row[]; users: string[]; entities: string[] }>
+  }
+  session: {
+    setUser: (id: number | null, username: string) => Promise<{ ok: true }>
   }
   users: {
     list: () => Promise<Row[]>
