@@ -110,6 +110,7 @@ function SalesTab({
       rate: '',
       status: 'pending',
       gst_pct: '',
+      gst_type: 'CGST_SGST',
       sale_type: 'LOOSE',
       packaging_id: '',
       boxes: '',
@@ -150,6 +151,7 @@ function SalesTab({
       rate: row.rate ?? '',
       status: row.status ?? 'pending',
       gst_pct: row.gst_pct ?? '',
+      gst_type: row.gst_type ?? 'CGST_SGST',
       sale_type: row.sale_type ?? 'LOOSE',
       packaging_id: row.packaging_id ? String(row.packaging_id) : '',
       boxes: row.boxes ?? '',
@@ -182,6 +184,7 @@ function SalesTab({
       sales_bargain_id: v,
       rate: p.rate || b?.rate || '',
       gst_pct: p.gst_pct || (b && Number(b.gst_pct) > 0 ? b.gst_pct : p.gst_pct),
+      gst_type: b?.gst_type || p.gst_type || 'CGST_SGST',
       sale_type: b?.sale_type || p.sale_type || 'LOOSE',
       packaging_id: b?.packaging_id ? String(b.packaging_id) : p.packaging_id,
       freight_term: b?.freight_term || p.freight_term || 'FREIGHT_ON_GOODS'
@@ -531,7 +534,7 @@ function SalesTab({
               </div>
             )}
 
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <div className="grid gap-1.5">
                 <Label>{isPacked ? `Qty (${selPack?.base_uom || 'base'})` : 'Qty'}</Label>
                 {isPacked ? (
@@ -548,6 +551,16 @@ function SalesTab({
                 <Label>GST %</Label>
                 <Input type="number" value={form.gst_pct ?? ''} onChange={(e) => setField('gst_pct', e.target.value)} />
               </div>
+              <div className="grid gap-1.5">
+                <Label>GST type</Label>
+                <Select value={form.gst_type || 'CGST_SGST'} onValueChange={(v) => setField('gst_type', v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="CGST_SGST">CGST + SGST</SelectItem>
+                    <SelectItem value="IGST">IGST</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
 
             <div className="rounded-lg border bg-muted/30 p-3 text-sm">
@@ -555,10 +568,23 @@ function SalesTab({
                 <span className="text-muted-foreground">Taxable value</span>
                 <span className="tabular-nums">{formatINR(amount)}</span>
               </div>
-              <div className="flex items-center justify-between py-0.5">
-                <span className="text-muted-foreground">Output GST ({gstPct || 0}%)</span>
-                <span className="tabular-nums">{formatINR(gstAmt)}</span>
-              </div>
+              {form.gst_type === 'IGST' ? (
+                <div className="flex items-center justify-between py-0.5">
+                  <span className="text-muted-foreground">IGST ({gstPct || 0}%)</span>
+                  <span className="tabular-nums">{formatINR(gstAmt)}</span>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between py-0.5">
+                    <span className="text-muted-foreground">CGST ({(gstPct || 0) / 2}%)</span>
+                    <span className="tabular-nums">{formatINR(gstAmt / 2)}</span>
+                  </div>
+                  <div className="flex items-center justify-between py-0.5">
+                    <span className="text-muted-foreground">SGST ({(gstPct || 0) / 2}%)</span>
+                    <span className="tabular-nums">{formatINR(gstAmt / 2)}</span>
+                  </div>
+                </>
+              )}
               <div className="mt-1 flex items-center justify-between border-t pt-1 font-semibold">
                 <span>Invoice total</span>
                 <span className="tabular-nums">{formatINR(netAmt)}</span>
@@ -770,6 +796,7 @@ function SalesBargainsTab(): React.JSX.Element {
       uom: 'MT',
       rate: '',
       gst_pct: '',
+      gst_type: 'CGST_SGST',
       rate_expiry_date: '',
       note: '',
       sale_type: 'LOOSE',
@@ -793,6 +820,7 @@ function SalesBargainsTab(): React.JSX.Element {
       uom: row.uom ?? 'MT',
       rate: row.rate ?? '',
       gst_pct: row.gst_pct ?? '',
+      gst_type: row.gst_type ?? 'CGST_SGST',
       rate_expiry_date: row.rate_expiry_date ?? '',
       note: row.note ?? '',
       sale_type: row.sale_type ?? 'LOOSE',
@@ -1052,6 +1080,16 @@ function SalesBargainsTab(): React.JSX.Element {
             <div className="grid gap-1.5">
               <Label>GST %</Label>
               <Input type="number" value={form.gst_pct ?? ''} onChange={(e) => setField('gst_pct', e.target.value)} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label>GST type</Label>
+              <Select value={form.gst_type || 'CGST_SGST'} onValueChange={(v) => setField('gst_type', v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="CGST_SGST">CGST + SGST</SelectItem>
+                  <SelectItem value="IGST">IGST</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             <div className="grid gap-1.5">
               <Label>Rate expiry</Label>

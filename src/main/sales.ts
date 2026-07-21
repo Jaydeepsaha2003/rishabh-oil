@@ -180,8 +180,8 @@ export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_
     String(v.bargain_date)
   )
   const res = await getClient().execute({
-    sql: `INSERT INTO sales_bargains (company_id, bargain_no, bargain_date, customer, product_id, qty, uom, rate, rate_expiry_date, status, note, sale_type, packaging_id, freight_term, gst_pct)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO sales_bargains (company_id, bargain_no, bargain_date, customer, product_id, qty, uom, rate, rate_expiry_date, status, note, sale_type, packaging_id, freight_term, gst_pct, gst_type)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       bargain_no,
@@ -196,7 +196,8 @@ export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_
       v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
       v.packaging_id ? n(v.packaging_id) : null,
       v.freight_term === 'DLD' ? 'DLD' : 'FREIGHT_ON_GOODS',
-      n(v.gst_pct)
+      n(v.gst_pct),
+      v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST'
     ]
   })
   return { id: Number(res.lastInsertRowid), bargain_no }
@@ -225,7 +226,7 @@ export async function updateSalesBargain(id: number, v: Row): Promise<{ id: numb
   }
   await getClient().execute({
     sql: `UPDATE sales_bargains SET bargain_date = ?, customer = ?, product_id = ?, qty = ?, uom = ?,
-          rate = ?, rate_expiry_date = ?, note = ?, sale_type = ?, packaging_id = ?, freight_term = ?, gst_pct = ? WHERE id = ?`,
+          rate = ?, rate_expiry_date = ?, note = ?, sale_type = ?, packaging_id = ?, freight_term = ?, gst_pct = ?, gst_type = ? WHERE id = ?`,
     args: [
       v.bargain_date,
       v.customer || null,
@@ -239,6 +240,7 @@ export async function updateSalesBargain(id: number, v: Row): Promise<{ id: numb
       v.packaging_id ? n(v.packaging_id) : null,
       v.freight_term === 'DLD' ? 'DLD' : 'FREIGHT_ON_GOODS',
       n(v.gst_pct),
+      v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
       id
     ]
   })
@@ -359,9 +361,9 @@ export async function createSale(v: Row): Promise<{ id: number }> {
     : 0
   const res = await getClient().execute({
     sql: `INSERT INTO sales (company_id, sale_date, invoice_no, customer, customer_id, product_id, sales_bargain_id,
-            qty, uom, rate, amount, gst_pct, gst_amount, status, note, sale_type, packaging_id, boxes, pouches, freight_term,
+            qty, uom, rate, amount, gst_pct, gst_amount, gst_type, status, note, sale_type, packaging_id, boxes, pouches, freight_term,
             transporter_id, transport_rate, transport_amount)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       v.sale_date,
@@ -376,6 +378,7 @@ export async function createSale(v: Row): Promise<{ id: number }> {
       amount,
       gstPct,
       gstAmount,
+      v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
       v.status || 'pending',
       v.note || null,
       v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
@@ -414,7 +417,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
     : 0
   await getClient().execute({
     sql: `UPDATE sales SET sale_date = ?, invoice_no = ?, customer = ?, customer_id = ?, product_id = ?, sales_bargain_id = ?,
-          qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, status = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
+          qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, status = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
           pouches = ?, freight_term = ?, transporter_id = ?, transport_rate = ?, transport_amount = ? WHERE id = ?`,
     args: [
       v.sale_date,
@@ -429,6 +432,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       amount,
       gstPct,
       gstAmount,
+      v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
       v.status || 'pending',
       v.note || null,
       v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',

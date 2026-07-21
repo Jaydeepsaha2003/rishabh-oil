@@ -7,7 +7,7 @@ import { backfillJournal } from './journal'
 import { backfillOrderStatuses } from './orders'
 import { backfillSalesGst } from './sales'
 import { seedDefaultAdmin } from './auth'
-import { seedProducts, seedFormulations } from './seed'
+import { seedProducts, seedFormulations, seedPackagings } from './seed'
 import { cleanupLogs } from './access'
 
 let mainWindow: BrowserWindow | null = null
@@ -52,6 +52,7 @@ app.whenReady().then(async () => {
   await seedDefaultAdmin().catch((e) => console.error('[auth] seed failed:', e))
   await seedProducts().catch((e) => console.error('[seed] products failed:', e))
   await seedFormulations().catch((e) => console.error('[seed] formulations failed:', e))
+  await seedPackagings().catch((e) => console.error('[seed] packagings failed:', e))
   await cleanupLogs().catch(() => {})
   registerIpc()
   registerUpdater(() => mainWindow)

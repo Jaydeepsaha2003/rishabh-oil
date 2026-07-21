@@ -55,6 +55,55 @@ const RECIPES: { out: string; items: [string, number][] }[] = [
   { out: 'FATTY OIL', items: [['FATTY ACID', 100]] }
 ]
 
+// Sample packaging SKUs from the client's list — inserted once, only when the
+// packagings table is empty. Each is N units per case of a given unit size; the
+// base stock quantity (KG/L) is derived from the unit size/UOM.
+const PACKAGINGS: {
+  name: string
+  pouch_label: string
+  unit_size: number
+  unit_uom: 'KG' | 'GM' | 'L' | 'ML'
+  pouches_per_box: number
+}[] = [
+  { name: 'DALDA JAR 4.2 KG × 4', pouch_label: 'Jar', unit_size: 4.2, unit_uom: 'KG', pouches_per_box: 4 },
+  { name: 'DALDA JAR 15 KG × 1', pouch_label: 'Jar', unit_size: 15, unit_uom: 'KG', pouches_per_box: 1 },
+  { name: 'DALDA PCH 1 KG × 15', pouch_label: 'Pch', unit_size: 1, unit_uom: 'KG', pouches_per_box: 15 },
+  { name: 'GAGAN ND 420 G POUCH × 40', pouch_label: 'Pouch', unit_size: 420, unit_uom: 'GM', pouches_per_box: 40 },
+  { name: 'BANSARI NEW PCH 750 G × 20', pouch_label: 'Pch', unit_size: 750, unit_uom: 'GM', pouches_per_box: 20 },
+  { name: 'BANSARI PCH 200 ML × 90', pouch_label: 'Pch', unit_size: 200, unit_uom: 'ML', pouches_per_box: 90 },
+  { name: 'PANGHAT TIN 15 L × 1', pouch_label: 'Tin', unit_size: 15, unit_uom: 'L', pouches_per_box: 1 },
+  { name: 'SWAD BOTTLE 1 L × 12', pouch_label: 'Bottle', unit_size: 1, unit_uom: 'L', pouches_per_box: 12 }
+]
+
+// Add the sample packaging SKUs — idempotent per SKU name, so it tops up the
+// samples without duplicating them or touching the user's own SKUs. Guarded by
+// a settings flag so it only ever runs once (users can freely delete samples).
+export async function seedPackagings(): Promise<void> {
+  const c = getClient()
+  const done = await c.execute("SELECT value FROM app_settings WHERE key = 'sample_packagings_seeded' LIMIT 1")
+  if (done.rows.length && String(done.rows[0].value) === '1') return
+  let added = 0
+  for (const p of PACKAGINGS) {
+    const exists = await c.execute({
+      sql: 'SELECT 1 FROM packagings WHERE upper(name) = upper(?) LIMIT 1',
+      args: [p.name]
+    })
+    if (exists.rows.length) continue
+    const u = p.unit_uom
+    const baseUom = u === 'ML' || u === 'L' ? 'L' : 'KG'
+    const perPouch = u === 'GM' || u === 'ML' ? p.unit_size / 1000 : p.unit_size
+    const basePerPouch = Math.round(perPouch * 1e6) / 1e6
+    await c.execute({
+      sql: `INSERT INTO packagings (name, box_label, pouch_label, pouches_per_box, unit_size, unit_uom, base_per_pouch, base_uom, active)
+            VALUES (?, 'Case', ?, ?, ?, ?, ?, ?, 1)`,
+      args: [p.name, p.pouch_label, p.pouches_per_box, p.unit_size, p.unit_uom, basePerPouch, baseUom]
+    })
+    added++
+  }
+  await c.execute("INSERT INTO app_settings (key, value) VALUES ('sample_packagings_seeded', '1') ON CONFLICT(key) DO UPDATE SET value = '1'")
+  console.log(`[seed] sample packagings seeded (${added} added)`)
+}
+
 async function findProductId(name: string): Promise<number | null> {
   const res = await getClient().execute({
     sql: 'SELECT id FROM products WHERE upper(name) = upper(?) LIMIT 1',

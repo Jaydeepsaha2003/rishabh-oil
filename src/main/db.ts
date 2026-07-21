@@ -161,8 +161,10 @@ const MIGRATIONS = [
   // Output GST on sales (bargain carries the default rate; the sale stores the
   // rate applied and the computed amount).
   'ALTER TABLE sales_bargains ADD COLUMN gst_pct REAL NOT NULL DEFAULT 0',
+  "ALTER TABLE sales_bargains ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
   'ALTER TABLE sales ADD COLUMN gst_pct REAL NOT NULL DEFAULT 0',
   'ALTER TABLE sales ADD COLUMN gst_amount REAL NOT NULL DEFAULT 0',
+  "ALTER TABLE sales ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
   // Consignment stock: supplier goods lying at our place, off-books until
   // invoiced. Created here (not in SCHEMA_SQL) so it also lands on existing DBs.
   `CREATE TABLE IF NOT EXISTS consignment_stock (
