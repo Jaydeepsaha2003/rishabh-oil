@@ -109,6 +109,7 @@ function SalesTab({
       qty: '',
       rate: '',
       status: 'pending',
+      gst_pct: '',
       sale_type: 'LOOSE',
       packaging_id: '',
       boxes: '',
@@ -148,6 +149,7 @@ function SalesTab({
       qty: row.qty ?? '',
       rate: row.rate ?? '',
       status: row.status ?? 'pending',
+      gst_pct: row.gst_pct ?? '',
       sale_type: row.sale_type ?? 'LOOSE',
       packaging_id: row.packaging_id ? String(row.packaging_id) : '',
       boxes: row.boxes ?? '',
@@ -179,6 +181,7 @@ function SalesTab({
       ...p,
       sales_bargain_id: v,
       rate: p.rate || b?.rate || '',
+      gst_pct: p.gst_pct || (b && Number(b.gst_pct) > 0 ? b.gst_pct : p.gst_pct),
       sale_type: b?.sale_type || p.sale_type || 'LOOSE',
       packaging_id: b?.packaging_id ? String(b.packaging_id) : p.packaging_id,
       freight_term: b?.freight_term || p.freight_term || 'FREIGHT_ON_GOODS'
@@ -196,6 +199,9 @@ function SalesTab({
   const effQty = isPacked ? packQty : Number(form.qty) || 0
   const sel = form.product_id ? stock[Number(form.product_id)] : null
   const amount = effQty * (Number(form.rate) || 0)
+  const gstPct = Number(form.gst_pct) || 0
+  const gstAmt = Math.round(amount * (gstPct / 100) * 100) / 100
+  const netAmt = amount + gstAmt
   const transportAmt = isDld ? effQty * (Number(form.transport_rate) || 0) : 0
   const productBargains = bargains.filter(
     (b) =>
@@ -410,7 +416,12 @@ function SalesTab({
                 value={form.customer_id ? String(form.customer_id) : ''}
                 onValueChange={(v) => {
                   const cust = customers.find((c) => String(c.id) === v)
-                  setForm((p) => ({ ...p, customer_id: v, customer: cust?.name ?? p.customer }))
+                  setForm((p) => ({
+                    ...p,
+                    customer_id: v,
+                    customer: cust?.name ?? p.customer,
+                    gst_pct: p.gst_pct || (cust && Number(cust.gst_pct) > 0 ? cust.gst_pct : p.gst_pct)
+                  }))
                 }}
               >
                 <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
@@ -486,8 +497,8 @@ function SalesTab({
                 <Select value={form.freight_term || 'FREIGHT_ON_GOODS'} onValueChange={(v) => setField('freight_term', v)}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="FREIGHT_ON_GOODS">Freight on goods (customer pays)</SelectItem>
-                    <SelectItem value="DLD">DLD — delivered (we manage)</SelectItem>
+                    <SelectItem value="FREIGHT_ON_GOODS">Ex (customer lifts — no transporter)</SelectItem>
+                    <SelectItem value="DLD">FOR (we deliver — transporter)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -533,11 +544,24 @@ function SalesTab({
                 <Label>Rate {isPacked ? `/${selPack?.base_uom || 'base'}` : ''}</Label>
                 <Input type="number" value={form.rate ?? ''} onChange={(e) => setField('rate', e.target.value)} />
               </div>
-              <div className="grid content-end gap-1.5">
-                <Label>Amount</Label>
-                <div className="flex h-9 items-center rounded-md bg-muted px-3 text-sm font-medium tabular-nums">
-                  {formatINR(amount)}
-                </div>
+              <div className="grid gap-1.5">
+                <Label>GST %</Label>
+                <Input type="number" value={form.gst_pct ?? ''} onChange={(e) => setField('gst_pct', e.target.value)} />
+              </div>
+            </div>
+
+            <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+              <div className="flex items-center justify-between py-0.5">
+                <span className="text-muted-foreground">Taxable value</span>
+                <span className="tabular-nums">{formatINR(amount)}</span>
+              </div>
+              <div className="flex items-center justify-between py-0.5">
+                <span className="text-muted-foreground">Output GST ({gstPct || 0}%)</span>
+                <span className="tabular-nums">{formatINR(gstAmt)}</span>
+              </div>
+              <div className="mt-1 flex items-center justify-between border-t pt-1 font-semibold">
+                <span>Invoice total</span>
+                <span className="tabular-nums">{formatINR(netAmt)}</span>
               </div>
             </div>
 
@@ -745,6 +769,7 @@ function SalesBargainsTab(): React.JSX.Element {
       qty: '',
       uom: 'MT',
       rate: '',
+      gst_pct: '',
       rate_expiry_date: '',
       note: '',
       sale_type: 'LOOSE',
@@ -767,6 +792,7 @@ function SalesBargainsTab(): React.JSX.Element {
       qty: row.qty ?? '',
       uom: row.uom ?? 'MT',
       rate: row.rate ?? '',
+      gst_pct: row.gst_pct ?? '',
       rate_expiry_date: row.rate_expiry_date ?? '',
       note: row.note ?? '',
       sale_type: row.sale_type ?? 'LOOSE',
@@ -1024,6 +1050,10 @@ function SalesBargainsTab(): React.JSX.Element {
               <Input type="number" value={form.rate ?? ''} onChange={(e) => setField('rate', e.target.value)} />
             </div>
             <div className="grid gap-1.5">
+              <Label>GST %</Label>
+              <Input type="number" value={form.gst_pct ?? ''} onChange={(e) => setField('gst_pct', e.target.value)} />
+            </div>
+            <div className="grid gap-1.5">
               <Label>Rate expiry</Label>
               <DatePicker value={form.rate_expiry_date ?? ''} onChange={(v) => setField('rate_expiry_date', v)} />
             </div>
@@ -1042,8 +1072,8 @@ function SalesBargainsTab(): React.JSX.Element {
               <Select value={form.freight_term || 'FREIGHT_ON_GOODS'} onValueChange={(v) => setField('freight_term', v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="FREIGHT_ON_GOODS">Freight on goods</SelectItem>
-                  <SelectItem value="DLD">DLD — delivered</SelectItem>
+                  <SelectItem value="FREIGHT_ON_GOODS">Ex (customer lifts)</SelectItem>
+                  <SelectItem value="DLD">FOR (we deliver)</SelectItem>
                 </SelectContent>
               </Select>
             </div>

@@ -154,6 +154,15 @@ const MIGRATIONS = [
   'ALTER TABLE sales ADD COLUMN transport_amount REAL NOT NULL DEFAULT 0',
   // Sale-linked freight lives in the transporter ledger (DLD deliveries).
   'ALTER TABLE transporter_ledger ADD COLUMN sale_id INTEGER',
+  // Packaging SKUs: capture the unit size in its natural unit (KG/GM/L/ML);
+  // base_per_pouch/base_uom are derived from these for stock conversion.
+  'ALTER TABLE packagings ADD COLUMN unit_size REAL NOT NULL DEFAULT 0',
+  "ALTER TABLE packagings ADD COLUMN unit_uom TEXT NOT NULL DEFAULT 'KG'",
+  // Output GST on sales (bargain carries the default rate; the sale stores the
+  // rate applied and the computed amount).
+  'ALTER TABLE sales_bargains ADD COLUMN gst_pct REAL NOT NULL DEFAULT 0',
+  'ALTER TABLE sales ADD COLUMN gst_pct REAL NOT NULL DEFAULT 0',
+  'ALTER TABLE sales ADD COLUMN gst_amount REAL NOT NULL DEFAULT 0',
   // Consignment stock: supplier goods lying at our place, off-books until
   // invoiced. Created here (not in SCHEMA_SQL) so it also lands on existing DBs.
   `CREATE TABLE IF NOT EXISTS consignment_stock (

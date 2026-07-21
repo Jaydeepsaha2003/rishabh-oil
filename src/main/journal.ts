@@ -302,6 +302,9 @@ export async function postPaymentJournal(v: {
 
 // Sale:  Dr {Customer}   amount
 //          Cr {FG} SALE A/C amount
+// Sale:  Dr {Customer}          net (taxable + output GST)
+//          Cr {FG} SALE A/C      taxable
+//          Cr GST OUTPUT A/C     gst
 export async function postSaleJournal(v: {
   saleId: number
   date: string
@@ -309,10 +312,13 @@ export async function postSaleJournal(v: {
   productCode: string
   customerName: string
   amount: number
+  gst?: number
   companyId?: number
 }): Promise<void> {
   await deleteJournalByRef('sale_id', v.saleId)
-  if (n(v.amount) <= 0) return
+  const taxable = n(v.amount)
+  const gst = n(v.gst)
+  if (taxable <= 0 && gst <= 0) return
   await postJournal({
     date: v.date,
     vchType: 'SALE',
@@ -320,8 +326,9 @@ export async function postSaleJournal(v: {
     saleId: v.saleId,
     companyId: v.companyId,
     lines: [
-      { account: v.customerName || 'CASH CUSTOMER A/C', group: 'Sundry Debtors', dr: v.amount },
-      { account: `${v.productCode} SALE A/C`, group: 'Sales Accounts', cr: v.amount }
+      { account: v.customerName || 'CASH CUSTOMER A/C', group: 'Sundry Debtors', dr: taxable + gst },
+      { account: `${v.productCode} SALE A/C`, group: 'Sales Accounts', cr: taxable },
+      { account: 'GST OUTPUT A/C', group: 'Duties & Taxes', cr: gst }
     ]
   })
 }
@@ -335,6 +342,7 @@ export async function backfillJournal(): Promise<void> {
   await getOrCreateAccount('ROUND OFF A/C', 'Indirect Expenses').catch(() => {})
   await getOrCreateAccount('INTEREST A/C', 'Indirect Expenses').catch(() => {})
   await getOrCreateAccount('GST INPUT A/C', 'Duties & Taxes').catch(() => {})
+  await getOrCreateAccount('GST OUTPUT A/C', 'Duties & Taxes').catch(() => {})
   await getOrCreateAccount('TDS PAYABLE A/C', 'Duties & Taxes').catch(() => {})
   await getOrCreateAccount('BANK A/C', 'Bank Accounts').catch(() => {})
 

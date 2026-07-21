@@ -56,7 +56,7 @@ const TABLES: Record<string, string[]> = {
   uoms: ['name', 'active'],
   brokers: ['name', 'contact_person', 'phone', 'brokerage_pct', 'address', 'note', 'active'],
   companies: ['name', 'active'],
-  packagings: ['name', 'box_label', 'pouch_label', 'pouches_per_box', 'base_per_pouch', 'base_uom', 'active']
+  packagings: ['name', 'box_label', 'pouch_label', 'pouches_per_box', 'unit_size', 'unit_uom', 'base_per_pouch', 'base_uom', 'active']
 }
 
 type Row = Record<string, unknown>

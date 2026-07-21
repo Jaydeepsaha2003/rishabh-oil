@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, Eye, Pencil, Plus, Trash2, Truck } from 'lucide-react'
+import { ArrowLeft, BarChart3, Eye, Pencil, Plus, Trash2, Truck } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -130,6 +130,10 @@ export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX
     { qty: number; balance: number; mode: 'new' | 'existing'; diffRate: boolean; rate: string; targetBargainId: string } | null
   >(null)
   const [detailRow, setDetailRow] = useState<Row | null>(null)
+  // Tanker-count + quantity report, grouped by product/oil.
+  const [reportOpen, setReportOpen] = useState(false)
+  const [repFrom, setRepFrom] = useState('')
+  const [repTo, setRepTo] = useState('')
   const [gateEntries, setGateEntries] = useState<Row[]>([])
   const [editTanker, setEditTanker] = useState<Row | null>(null)
   const [editTankerForm, setEditTankerForm] = useState<Row>({})
@@ -756,6 +760,33 @@ export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX
     }
   }
 
+  // Tanker count + quantity per product (oil), within an optional loaded-date range.
+  const tankerReport = useMemo(() => {
+    const inRange = tankers.filter((t) => {
+      const d = String(t.loaded_date || '').slice(0, 10)
+      if (repFrom && (!d || d < repFrom)) return false
+      if (repTo && (!d || d > repTo)) return false
+      return Number(t.loaded_qty) > 0 || !!d
+    })
+    const m = new Map<string, { count: number; loaded: number; received: number }>()
+    for (const t of inRange) {
+      const k = String(t.oil_code || t.oil_name || '—')
+      if (!m.has(k)) m.set(k, { count: 0, loaded: 0, received: 0 })
+      const g = m.get(k)!
+      g.count += 1
+      g.loaded += Number(t.loaded_qty) || 0
+      g.received += Number(t.received_qty) || 0
+    }
+    const rows = [...m.entries()]
+      .map(([oil, g]) => ({ oil, ...g }))
+      .sort((a, b) => a.oil.localeCompare(b.oil))
+    const grand = rows.reduce(
+      (s, r) => ({ count: s.count + r.count, loaded: s.loaded + r.loaded, received: s.received + r.received }),
+      { count: 0, loaded: 0, received: 0 }
+    )
+    return { rows, grand }
+  }, [tankers, repFrom, repTo])
+
   const target = actionRow ? nextTankerStage(actionRow.status) : null
   const shortage = actionRow ? computeShortage({
     orderedQty: Number(actionRow.loaded_qty) || 0,
@@ -779,6 +810,9 @@ export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX
           hint="Tanker lifecycle: To be loaded → Loaded → In transit → Outside factory → Inside factory → Empty. Pick the transporter when sending tankers to the supplier. At Empty, record received qty plus the KRFL and outside-factory weighment slips."
           actions={
             <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setReportOpen(true)}>
+                <BarChart3 className="h-4 w-4" /> Report
+              </Button>
               <Button variant="outline" size="sm" onClick={() => setLoadingOpen(true)}>
                 <Truck className="h-4 w-4" /> Send tankers to supplier
               </Button>
@@ -1314,7 +1348,7 @@ export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX
                         String(b.supplier_id) === String(actionRow.supplier_id) &&
                         String(b.oil_type_id) === String(actionRow.oil_type_id)
                     )
-                    .sort((a, b) => String(a.bargain_date || '').localeCompare(String(b.bargain_date || '')))
+                    .sort((a, b) => String(a.bargain_no || '').localeCompare(String(b.bargain_no || '')))
                     .map((b) => (
                       <SelectItem key={b.id} value={String(b.id)}>
                         {b.bargain_no} · BAL {formatNum(b.balance_qty)}
@@ -1654,6 +1688,62 @@ export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX
               </p>
             )}
           </div>}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={reportOpen} onOpenChange={setReportOpen}>
+        <DialogContent className="max-h-[90vh] w-[calc(100vw-2rem)] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><BarChart3 className="h-5 w-5 text-muted-foreground" /> Tankers by product</DialogTitle>
+          </DialogHeader>
+          <div className="mb-3 flex flex-wrap items-end gap-3">
+            <div className="grid gap-1.5">
+              <Label className="text-xs text-muted-foreground">Loaded from</Label>
+              <DatePicker value={repFrom} onChange={setRepFrom} className="w-40" />
+            </div>
+            <div className="grid gap-1.5">
+              <Label className="text-xs text-muted-foreground">To</Label>
+              <DatePicker value={repTo} onChange={setRepTo} className="w-40" />
+            </div>
+            {(repFrom || repTo) && (
+              <Button variant="ghost" size="sm" onClick={() => { setRepFrom(''); setRepTo('') }}>Clear</Button>
+            )}
+          </div>
+          <div className="overflow-hidden rounded-lg border">
+            <Table className="text-[13px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Product</TableHead>
+                  <TableHead className="text-right">Tankers</TableHead>
+                  <TableHead className="text-right">Loaded qty</TableHead>
+                  <TableHead className="text-right">Received qty</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {tankerReport.rows.length === 0 ? (
+                  <TableRow><TableCell colSpan={4} className="py-8 text-center text-muted-foreground">No tankers in this range.</TableCell></TableRow>
+                ) : (
+                  <>
+                    {tankerReport.rows.map((r) => (
+                      <TableRow key={r.oil}>
+                        <TableCell className="font-medium">{r.oil}</TableCell>
+                        <TableCell className="text-right tabular-nums">{r.count}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatNum(r.loaded)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatNum(r.received)}</TableCell>
+                      </TableRow>
+                    ))}
+                    <TableRow className="border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
+                      <TableCell className="font-bold uppercase tracking-wide text-amber-900">Grand total</TableCell>
+                      <TableCell className="text-right font-bold tabular-nums text-amber-900">{tankerReport.grand.count}</TableCell>
+                      <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(tankerReport.grand.loaded)}</TableCell>
+                      <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(tankerReport.grand.received)}</TableCell>
+                    </TableRow>
+                  </>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">Counts every tanker (any stage) for the active company; filter by loaded date. Loaded = dispatched quantity, Received = weighed-in at gate.</p>
         </DialogContent>
       </Dialog>
     </>

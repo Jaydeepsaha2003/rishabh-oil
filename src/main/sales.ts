@@ -42,8 +42,9 @@ async function postCustomerReceivable(
   }
 }
 
-// Tally journal for a sale: Dr Customer, Cr {FG} SALE A/C.
-async function postSaleEntry(saleId: number, v: Row, amount: number): Promise<void> {
+// Tally journal for a sale: Dr Customer (incl. GST), Cr {FG} SALE A/C (taxable),
+// Cr GST OUTPUT A/C (output gst).
+async function postSaleEntry(saleId: number, v: Row, taxable: number, gst: number): Promise<void> {
   const prod = await getClient().execute({
     sql: 'SELECT code, name FROM products WHERE id = ?',
     args: [n(v.product_id)]
@@ -55,7 +56,8 @@ async function postSaleEntry(saleId: number, v: Row, amount: number): Promise<vo
     invoiceNo: v.invoice_no ? String(v.invoice_no) : null,
     productCode: code,
     customerName: String(v.customer || '').trim(),
-    amount
+    amount: taxable,
+    gst
   }).catch((e) => console.error('[journal] sale post failed:', (e as Error).message))
 }
 
@@ -103,19 +105,17 @@ function dayMonth(dateStr: string): string {
 }
 
 export async function listSalesBargains(): Promise<Row[]> {
-  const res = await getClient().execute({
-    args: [getActiveCompanyId()],
-    sql: `
+  // Sales bargains are GENERAL — shared across every company, like purchase
+  // bargains (no company filter; sold sums sales from all companies).
+  const res = await getClient().execute(`
     SELECT b.*, pr.name AS product_name, pk.name AS packaging_name,
       COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id), 0) AS sold_qty,
       b.qty - COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id), 0) AS balance_qty
     FROM sales_bargains b
     LEFT JOIN products pr ON pr.id = b.product_id
     LEFT JOIN packagings pk ON pk.id = b.packaging_id
-    WHERE b.company_id = ?
     ORDER BY b.id DESC
-  `
-  })
+  `)
   return toPlain(res)
 }
 
@@ -138,11 +138,12 @@ async function nextSalesBargainNo(
     .toUpperCase()
   const party = String(customer || 'PARTY').replace(/\s+/g, '').toUpperCase() || 'PARTY'
 
-  // Serial resets every calendar month per company, mirroring purchase bargains.
+  // Serial resets every calendar month, GLOBAL across companies (bargains are
+  // general), mirroring purchase bargains.
   const monthKey = String(dateStr).slice(0, 7) // yyyy-mm
   const res = await c.execute({
-    sql: 'SELECT bargain_no FROM sales_bargains WHERE substr(bargain_date, 1, 7) = ? AND company_id = ?',
-    args: [monthKey, getActiveCompanyId()]
+    sql: 'SELECT bargain_no FROM sales_bargains WHERE substr(bargain_date, 1, 7) = ?',
+    args: [monthKey]
   })
   let maxSeq = 0
   for (const r of res.rows) {
@@ -179,8 +180,8 @@ export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_
     String(v.bargain_date)
   )
   const res = await getClient().execute({
-    sql: `INSERT INTO sales_bargains (company_id, bargain_no, bargain_date, customer, product_id, qty, uom, rate, rate_expiry_date, status, note, sale_type, packaging_id, freight_term)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`,
+    sql: `INSERT INTO sales_bargains (company_id, bargain_no, bargain_date, customer, product_id, qty, uom, rate, rate_expiry_date, status, note, sale_type, packaging_id, freight_term, gst_pct)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       bargain_no,
@@ -194,7 +195,8 @@ export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_
       v.note || null,
       v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
       v.packaging_id ? n(v.packaging_id) : null,
-      v.freight_term === 'DLD' ? 'DLD' : 'FREIGHT_ON_GOODS'
+      v.freight_term === 'DLD' ? 'DLD' : 'FREIGHT_ON_GOODS',
+      n(v.gst_pct)
     ]
   })
   return { id: Number(res.lastInsertRowid), bargain_no }
@@ -223,7 +225,7 @@ export async function updateSalesBargain(id: number, v: Row): Promise<{ id: numb
   }
   await getClient().execute({
     sql: `UPDATE sales_bargains SET bargain_date = ?, customer = ?, product_id = ?, qty = ?, uom = ?,
-          rate = ?, rate_expiry_date = ?, note = ?, sale_type = ?, packaging_id = ?, freight_term = ? WHERE id = ?`,
+          rate = ?, rate_expiry_date = ?, note = ?, sale_type = ?, packaging_id = ?, freight_term = ?, gst_pct = ? WHERE id = ?`,
     args: [
       v.bargain_date,
       v.customer || null,
@@ -236,6 +238,7 @@ export async function updateSalesBargain(id: number, v: Row): Promise<{ id: numb
       v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
       v.packaging_id ? n(v.packaging_id) : null,
       v.freight_term === 'DLD' ? 'DLD' : 'FREIGHT_ON_GOODS',
+      n(v.gst_pct),
       id
     ]
   })
@@ -340,6 +343,9 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   const { qty, uom } = await resolveSaleQty(v)
   const rate = n(v.rate)
   const amount = qty * rate
+  const gstPct = n(v.gst_pct)
+  const gstAmount = Math.round(amount * (gstPct / 100) * 100) / 100
+  const net = amount + gstAmount
   const customerId = v.customer_id ? n(v.customer_id) : null
   // Can't dispatch more than the chosen sales bargain still has open.
   if (v.sales_bargain_id) {
@@ -353,9 +359,9 @@ export async function createSale(v: Row): Promise<{ id: number }> {
     : 0
   const res = await getClient().execute({
     sql: `INSERT INTO sales (company_id, sale_date, invoice_no, customer, customer_id, product_id, sales_bargain_id,
-            qty, uom, rate, amount, status, note, sale_type, packaging_id, boxes, pouches, freight_term,
+            qty, uom, rate, amount, gst_pct, gst_amount, status, note, sale_type, packaging_id, boxes, pouches, freight_term,
             transporter_id, transport_rate, transport_amount)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       v.sale_date,
@@ -368,6 +374,8 @@ export async function createSale(v: Row): Promise<{ id: number }> {
       uom,
       rate,
       amount,
+      gstPct,
+      gstAmount,
       v.status || 'pending',
       v.note || null,
       v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
@@ -381,8 +389,8 @@ export async function createSale(v: Row): Promise<{ id: number }> {
     ]
   })
   const id = Number(res.lastInsertRowid)
-  await postCustomerReceivable(id, customerId, amount, String(v.sale_date))
-  await postSaleEntry(id, v, amount)
+  await postCustomerReceivable(id, customerId, net, String(v.sale_date))
+  await postSaleEntry(id, v, amount, gstAmount)
   await postSaleFreight(id, v, qty)
   return { id }
 }
@@ -391,6 +399,9 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   const { qty, uom } = await resolveSaleQty(v)
   const rate = n(v.rate)
   const amount = qty * rate
+  const gstPct = n(v.gst_pct)
+  const gstAmount = Math.round(amount * (gstPct / 100) * 100) / 100
+  const net = amount + gstAmount
   const customerId = v.customer_id ? n(v.customer_id) : null
   if (v.sales_bargain_id) {
     const bal = await salesBargainBalanceFor(n(v.sales_bargain_id), id)
@@ -403,7 +414,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
     : 0
   await getClient().execute({
     sql: `UPDATE sales SET sale_date = ?, invoice_no = ?, customer = ?, customer_id = ?, product_id = ?, sales_bargain_id = ?,
-          qty = ?, uom = ?, rate = ?, amount = ?, status = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
+          qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, status = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
           pouches = ?, freight_term = ?, transporter_id = ?, transport_rate = ?, transport_amount = ? WHERE id = ?`,
     args: [
       v.sale_date,
@@ -416,6 +427,8 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       uom,
       rate,
       amount,
+      gstPct,
+      gstAmount,
       v.status || 'pending',
       v.note || null,
       v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
@@ -429,8 +442,8 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       id
     ]
   })
-  await postCustomerReceivable(id, customerId, amount, String(v.sale_date))
-  await postSaleEntry(id, v, amount)
+  await postCustomerReceivable(id, customerId, net, String(v.sale_date))
+  await postSaleEntry(id, v, amount, gstAmount)
   await postSaleFreight(id, v, qty)
   return { id }
 }
@@ -448,4 +461,57 @@ export async function deleteSale(id: number): Promise<{ id: number }> {
   await c.execute({ sql: 'DELETE FROM transporter_ledger WHERE sale_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM sales WHERE id = ?', args: [id] })
   return { id }
+}
+
+// One-time backfill: apply output GST to sales booked before GST existed. The
+// rate is taken from the sale's bargain, else the customer master; sales with
+// no derivable rate are left untouched. Each affected sale is re-posted
+// (journal GST OUTPUT leg + customer receivable at net incl. GST). Guarded by
+// a settings flag so it runs only once.
+export async function backfillSalesGst(): Promise<void> {
+  const c = getClient()
+  const done = await c.execute("SELECT value FROM app_settings WHERE key = 'sales_gst_backfilled'")
+  if (done.rows.length && String(done.rows[0].value) === '1') return
+
+  const sales = await c.execute(`
+    SELECT s.id, s.company_id, s.sale_date, s.invoice_no, s.customer, s.customer_id, s.amount,
+           pr.code AS product_code, pr.name AS product_name,
+           sb.gst_pct AS bargain_gst, cu.gst_pct AS customer_gst
+    FROM sales s
+    LEFT JOIN products pr ON pr.id = s.product_id
+    LEFT JOIN sales_bargains sb ON sb.id = s.sales_bargain_id
+    LEFT JOIN customers cu ON cu.id = s.customer_id
+    WHERE COALESCE(s.gst_pct, 0) = 0 AND COALESCE(s.gst_amount, 0) = 0
+  `)
+  let applied = 0
+  for (const r of toPlain(sales)) {
+    const gstPct = n(r.bargain_gst) > 0 ? n(r.bargain_gst) : n(r.customer_gst)
+    if (gstPct <= 0) continue
+    const amount = n(r.amount)
+    const gstAmount = Math.round(amount * (gstPct / 100) * 100) / 100
+    if (gstAmount <= 0) continue
+    await c.execute({
+      sql: 'UPDATE sales SET gst_pct = ?, gst_amount = ? WHERE id = ?',
+      args: [gstPct, gstAmount, n(r.id)]
+    })
+    const code = String(r.product_code || r.product_name || 'FG').toUpperCase()
+    await postSaleJournal({
+      saleId: n(r.id),
+      date: String(r.sale_date),
+      invoiceNo: r.invoice_no ? String(r.invoice_no) : null,
+      productCode: code,
+      customerName: String(r.customer || '').trim(),
+      amount,
+      gst: gstAmount,
+      companyId: n(r.company_id) || 1
+    }).catch(() => {})
+    if (r.customer_id) {
+      await postCustomerReceivable(n(r.id), n(r.customer_id), amount + gstAmount, String(r.sale_date)).catch(() => {})
+    }
+    applied++
+  }
+  await c.execute(
+    "INSERT INTO app_settings (key, value) VALUES ('sales_gst_backfilled', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"
+  )
+  if (applied > 0) console.log(`[sales] backfilled output GST on ${applied} sales`)
 }
