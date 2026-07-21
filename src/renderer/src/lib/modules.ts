@@ -18,12 +18,14 @@ export const MODULES: ModuleDef[] = [
   { key: 'formulation', label: 'Formulation' },
   { key: 'production', label: 'Production' },
   { key: 'stock', label: 'Stock' },
+  { key: 'salesBargains', label: 'Sales Bargain' },
   { key: 'sales', label: 'Sales' },
   { key: 'suppliers', label: 'Suppliers' },
   { key: 'transporters', label: 'Transporters' },
   { key: 'customers', label: 'Customers' },
   { key: 'ports', label: 'Ports' },
   { key: 'brokers', label: 'Brokers' },
+  { key: 'packaging', label: 'Packaging' },
   { key: 'settings', label: 'Settings' }
 ]
 

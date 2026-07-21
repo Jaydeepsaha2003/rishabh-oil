@@ -124,6 +124,36 @@ const MIGRATIONS = [
   // Consignment purchase: goods were already at our site (no tanker movement,
   // no transporter, booked straight to received) — drawn from consignment stock.
   'ALTER TABLE orders ADD COLUMN is_consignment INTEGER NOT NULL DEFAULT 0',
+  // Packaging master: reusable pack definitions with Box -> Pouch -> base
+  // nesting. base per box = pouches_per_box * base_per_pouch.
+  `CREATE TABLE IF NOT EXISTS packagings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    box_label TEXT NOT NULL DEFAULT 'Box',
+    pouch_label TEXT NOT NULL DEFAULT 'Pouch',
+    pouches_per_box REAL NOT NULL DEFAULT 1,
+    base_per_pouch REAL NOT NULL DEFAULT 1,
+    base_uom TEXT NOT NULL DEFAULT 'L',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  // Sales bargains carry a default sale type (LOOSE/PACKED), packaging and
+  // freight term (FREIGHT_ON_GOODS = customer arranges; DLD = we deliver).
+  "ALTER TABLE sales_bargains ADD COLUMN sale_type TEXT NOT NULL DEFAULT 'LOOSE'",
+  'ALTER TABLE sales_bargains ADD COLUMN packaging_id INTEGER',
+  "ALTER TABLE sales_bargains ADD COLUMN freight_term TEXT NOT NULL DEFAULT 'FREIGHT_ON_GOODS'",
+  // Each sale can override the bargain's type/freight; PACKED stores boxes +
+  // loose pouches, DLD stores the transporter and freight.
+  "ALTER TABLE sales ADD COLUMN sale_type TEXT NOT NULL DEFAULT 'LOOSE'",
+  'ALTER TABLE sales ADD COLUMN packaging_id INTEGER',
+  'ALTER TABLE sales ADD COLUMN boxes REAL NOT NULL DEFAULT 0',
+  'ALTER TABLE sales ADD COLUMN pouches REAL NOT NULL DEFAULT 0',
+  "ALTER TABLE sales ADD COLUMN freight_term TEXT NOT NULL DEFAULT 'FREIGHT_ON_GOODS'",
+  'ALTER TABLE sales ADD COLUMN transporter_id INTEGER',
+  'ALTER TABLE sales ADD COLUMN transport_rate REAL NOT NULL DEFAULT 0',
+  'ALTER TABLE sales ADD COLUMN transport_amount REAL NOT NULL DEFAULT 0',
+  // Sale-linked freight lives in the transporter ledger (DLD deliveries).
+  'ALTER TABLE transporter_ledger ADD COLUMN sale_id INTEGER',
   // Consignment stock: supplier goods lying at our place, off-books until
   // invoiced. Created here (not in SCHEMA_SQL) so it also lands on existing DBs.
   `CREATE TABLE IF NOT EXISTS consignment_stock (

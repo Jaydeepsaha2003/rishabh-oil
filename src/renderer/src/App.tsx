@@ -17,12 +17,13 @@ import { Products } from './pages/Products'
 import { Formulation } from './pages/Formulation'
 import { Production } from './pages/Production'
 import { Stock } from './pages/Stock'
-import { Sales } from './pages/Sales'
+import { Sales, SalesBargains } from './pages/Sales'
 import { Suppliers } from './pages/Suppliers'
 import { Transporters } from './pages/Transporters'
 import { Customers } from './pages/Customers'
 import { Ports } from './pages/Ports'
 import { Brokers } from './pages/Brokers'
+import { Packaging } from './pages/Packaging'
 import { clearUser, loadUser, saveUser, type AppUser } from './lib/session'
 import { MODULES, canAccess } from './lib/modules'
 
@@ -227,6 +228,7 @@ function App(): React.JSX.Element {
         {view === 'formulation' && <Formulation />}
         {view === 'production' && <Production />}
         {view === 'stock' && <Stock />}
+        {view === 'salesBargains' && <SalesBargains />}
         {view === 'sales' && (
           <Sales
             focusId={focus?.page === 'sales' ? focus.id : null}
@@ -238,6 +240,7 @@ function App(): React.JSX.Element {
         {view === 'customers' && <Customers />}
         {view === 'ports' && <Ports />}
         {view === 'brokers' && <Brokers />}
+        {view === 'packaging' && <Packaging />}
         {view === 'settings' && <Settings user={user} />}
       </main>
       <UpdateBanner />

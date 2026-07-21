@@ -12,6 +12,7 @@ import {
   Pencil,
   Plus,
   Search,
+  SlidersHorizontal,
   Trash2
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -127,6 +128,55 @@ export function Bargains(): React.JSX.Element {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Add/remove balance quantity on a bargain.
+  const [adjustRow, setAdjustRow] = useState<Row | null>(null)
+  const [adjustForm, setAdjustForm] = useState<{ mode: 'add' | 'remove'; amount: string; note: string }>({
+    mode: 'add',
+    amount: '',
+    note: ''
+  })
+  const [adjustSaving, setAdjustSaving] = useState(false)
+  const [adjustError, setAdjustError] = useState<string | null>(null)
+
+  function openAdjust(row: Row): void {
+    setAdjustRow(row)
+    setAdjustForm({ mode: 'add', amount: '', note: '' })
+    setAdjustError(null)
+  }
+
+  async function saveAdjust(): Promise<void> {
+    if (!adjustRow) return
+    const amt = Number(adjustForm.amount)
+    if (!amt || amt <= 0) {
+      setAdjustError('Enter a quantity greater than zero')
+      return
+    }
+    const delta = adjustForm.mode === 'add' ? amt : -amt
+    setAdjustSaving(true)
+    setAdjustError(null)
+    try {
+      await window.api.bargains.adjust(Number(adjustRow.id), delta, adjustForm.note || undefined)
+      toast.success(
+        adjustForm.mode === 'add'
+          ? `Added ${amt} ${adjustRow.uom || 'MT'} to ${adjustRow.bargain_no}`
+          : `Removed ${amt} ${adjustRow.uom || 'MT'} from ${adjustRow.bargain_no}`
+      )
+      setAdjustRow(null)
+      await load()
+    } catch (e) {
+      setAdjustError((e as Error).message)
+    } finally {
+      setAdjustSaving(false)
+    }
+  }
+
+  // How much of the bargain being edited is already loaded/consumed. When > 0
+  // the supplier and oil are locked and qty can't drop below it.
+  const editConsumed = editing
+    ? Math.max(0, (Number(editing.qty) || 0) - (Number(editing.balance_qty) || 0))
+    : 0
+  const editLocked = editConsumed > 1e-4
+
   const load = useCallback(async () => {
     setLoading(true)
     const [b, s, o, br, pt, settings] = await Promise.all([
@@ -196,6 +246,9 @@ export function Bargains(): React.JSX.Element {
     if (!form.oil_type_id) return setError('Oil type is required')
     if (!form.qty || Number(form.qty) <= 0) return setError('Quantity must be greater than 0')
     if (bgRate <= 0) return setError('Base rate must be greater than 0')
+    if (editLocked && Number(form.qty) < editConsumed - 1e-4) {
+      return setError(`Quantity cannot be below the ${formatNum(editConsumed)} already loaded/consumed`)
+    }
 
     setSaving(true)
     setError(null)
@@ -538,8 +591,8 @@ export function Bargains(): React.JSX.Element {
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card">
-              <Table className="text-[13px]">
+            <div className="overflow-x-auto rounded-lg border bg-card">
+              <Table className="min-w-[820px] text-[13px]">
                 <TableHeader>
                   <TableRow>
                     {(
@@ -679,6 +732,9 @@ export function Bargains(): React.JSX.Element {
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-1">
+                              <Button variant="ghost" size="icon" className="h-8 w-8" title="Add / remove balance qty" onClick={(e) => { e.stopPropagation(); openAdjust(row) }}>
+                                <SlidersHorizontal className="h-4 w-4" />
+                              </Button>
                               <Button variant="ghost" size="icon" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); openEdit(row) }}>
                                 <Pencil className="h-4 w-4" />
                               </Button>
@@ -812,12 +868,19 @@ export function Bargains(): React.JSX.Element {
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-xl">
+        <DialogContent className="max-h-[90vh] w-[calc(100vw-2rem)] max-w-xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editing ? `Edit ${editing.bargain_no}` : 'New bargain'}</DialogTitle>
           </DialogHeader>
 
-          <div className="grid grid-cols-2 gap-3 py-1">
+          {editLocked && (
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              {formatNum(editConsumed)} {editing?.uom || 'MT'} is already loaded/consumed on this bargain — supplier and oil are
+              locked, and the quantity can&apos;t go below {formatNum(editConsumed)}.
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 gap-3 py-1 sm:grid-cols-2">
             <div className="grid gap-1.5">
               <Label>Bargain date *</Label>
               <DatePicker
@@ -832,7 +895,7 @@ export function Bargains(): React.JSX.Element {
 
             <div className="grid gap-1.5">
               <Label>Supplier *</Label>
-              <Select value={String(form.supplier_id)} onValueChange={(v) => setField('supplier_id', v)}>
+              <Select value={String(form.supplier_id)} onValueChange={(v) => setField('supplier_id', v)} disabled={editLocked}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select supplier" />
                 </SelectTrigger>
@@ -847,7 +910,7 @@ export function Bargains(): React.JSX.Element {
             </div>
             <div className="grid gap-1.5">
               <Label>Oil type *</Label>
-              <Select value={String(form.oil_type_id)} onValueChange={(v) => setField('oil_type_id', v)}>
+              <Select value={String(form.oil_type_id)} onValueChange={(v) => setField('oil_type_id', v)} disabled={editLocked}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select oil type" />
                 </SelectTrigger>
@@ -896,7 +959,10 @@ export function Bargains(): React.JSX.Element {
 
             <div className="grid gap-1.5">
               <Label>Bargain qty *</Label>
-              <Input type="number" value={form.qty} onChange={(e) => setField('qty', e.target.value)} />
+              <Input type="number" min={editLocked ? editConsumed : 0} value={form.qty} onChange={(e) => setField('qty', e.target.value)} />
+              {editLocked && Number(form.qty) < editConsumed - 1e-4 && (
+                <span className="text-[11px] text-red-600">Cannot be below {formatNum(editConsumed)} already loaded.</span>
+              )}
             </div>
 
             <div className="grid gap-1.5">
@@ -954,6 +1020,80 @@ export function Bargains(): React.JSX.Element {
             <Button onClick={save} disabled={saving}>
               {saving ? 'Saving…' : 'Save bargain'}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!adjustRow} onOpenChange={(o) => !o && setAdjustRow(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Adjust balance — {adjustRow?.bargain_no}</DialogTitle>
+          </DialogHeader>
+          {adjustRow && (() => {
+            const qty = Number(adjustRow.qty) || 0
+            const bal = Number(adjustRow.balance_qty) || 0
+            const consumed = qty - bal
+            const amt = Number(adjustForm.amount) || 0
+            const delta = adjustForm.mode === 'add' ? amt : -amt
+            const newBal = bal + delta
+            const uom = adjustRow.uom || 'MT'
+            return (
+              <div className="grid gap-4">
+                <div className="grid grid-cols-3 gap-2 rounded-lg border bg-muted/30 p-3 text-center text-sm">
+                  <div><div className="text-[11px] text-muted-foreground">Bargain qty</div><div className="font-semibold tabular-nums">{formatNum(qty)}</div></div>
+                  <div><div className="text-[11px] text-muted-foreground">Loaded</div><div className="font-semibold tabular-nums">{formatNum(consumed)}</div></div>
+                  <div><div className="text-[11px] text-muted-foreground">Balance</div><div className="font-semibold tabular-nums">{formatNum(bal)} {uom}</div></div>
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAdjustForm((p) => ({ ...p, mode: 'add' }))}
+                    className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'add' ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'hover:bg-muted/40')}
+                  >
+                    + Add to balance
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAdjustForm((p) => ({ ...p, mode: 'remove' }))}
+                    className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'remove' ? 'border-red-500 bg-red-50 text-red-700' : 'hover:bg-muted/40')}
+                  >
+                    − Remove from balance
+                  </button>
+                </div>
+
+                <div className="grid gap-1.5">
+                  <Label>Quantity to {adjustForm.mode === 'add' ? 'add' : 'remove'} ({uom})</Label>
+                  <Input
+                    type="number"
+                    autoFocus
+                    value={adjustForm.amount}
+                    onChange={(e) => setAdjustForm((p) => ({ ...p, amount: e.target.value }))}
+                  />
+                </div>
+
+                <div className="grid gap-1.5">
+                  <Label>Note (optional)</Label>
+                  <Input value={adjustForm.note} onChange={(e) => setAdjustForm((p) => ({ ...p, note: e.target.value }))} placeholder="Reason for the adjustment" />
+                </div>
+
+                <div className="rounded-md bg-muted px-3 py-2 text-sm">
+                  New balance:{' '}
+                  <span className={cn('font-semibold tabular-nums', newBal < -1e-9 && 'text-red-600')}>
+                    {formatNum(newBal)} {uom}
+                  </span>
+                  {amt > 0 && adjustForm.mode === 'remove' && newBal < -1e-9 && (
+                    <span className="ml-2 text-red-600">— more than the available balance</span>
+                  )}
+                </div>
+
+                {adjustError && <p className="text-sm text-destructive">{adjustError}</p>}
+              </div>
+            )
+          })()}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAdjustRow(null)} disabled={adjustSaving}>Cancel</Button>
+            <Button onClick={saveAdjust} disabled={adjustSaving}>{adjustSaving ? 'Saving…' : 'Apply'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

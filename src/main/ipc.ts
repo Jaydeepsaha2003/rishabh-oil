@@ -13,7 +13,7 @@ import {
   setSetting,
   allSettings
 } from './repos'
-import { listBargains, createBargain, updateBargain, deleteBargain } from './bargains'
+import { listBargains, createBargain, updateBargain, deleteBargain, adjustBargainQty } from './bargains'
 import {
   listOrders,
   createOrder,
@@ -107,6 +107,7 @@ import {
   createSalesBargain,
   updateSalesBargain,
   deleteSalesBargain,
+  adjustSalesBargainQty,
   listCustomerLedger
 } from './sales'
 
@@ -279,6 +280,9 @@ export function registerIpc(): void {
     updateBargain(id, values)
   )
   handle('bargains:delete', (_e, { id }: { id: number }) => deleteBargain(id))
+  handle('bargains:adjust', (_e, { id, delta, note }: { id: number; delta: number; note?: string }) =>
+    adjustBargainQty(id, delta, note)
+  )
 
   handle('orders:list', () => listOrders())
   handle('tankers:list', (_e, args?: { all?: boolean }) => listPurchaseTankers(!!args?.all))
@@ -410,6 +414,9 @@ export function registerIpc(): void {
     updateSalesBargain(id, values)
   )
   handle('salesBargains:delete', (_e, { id }: { id: number }) => deleteSalesBargain(id))
+  handle('salesBargains:adjust', (_e, { id, delta, note }: { id: number; delta: number; note?: string }) =>
+    adjustSalesBargainQty(id, delta, note)
+  )
 
   handle('gate:list', () => listGateEntries())
   handle('gate:nextNo', () => nextGateEntryNo())

@@ -105,9 +105,33 @@ function landedRate(v: Row): number {
   return (Number(v.base_rate) || 0) + (Number(v.duty) || 0)
 }
 
-export async function createBargain(v: Row): Promise<{ id: number; bargain_no: string }> {
+// Total quantity already committed against a bargain: loaded on its own
+// tankers + excess allocated to it + consignment purchases booked against it.
+async function bargainConsumed(id: number): Promise<number> {
+  const r = await getClient().execute({
+    sql: `SELECT
+            COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = ?), 0)
+            + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = ?), 0)
+            + COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = ? AND is_consignment = 1), 0)
+          AS consumed`,
+    args: [id, id, id]
+  })
+  return Number(r.rows[0]?.consumed) || 0
+}
+
+// Shared field checks for creating/editing a bargain.
+function validateBargainInput(v: Row): { qty: number; rate: number } {
+  if (!v.supplier_id) throw new Error('Supplier is required')
+  if (!v.oil_type_id) throw new Error('Oil type is required')
   const qty = Number(v.qty) || 0
+  if (qty <= 0) throw new Error('Quantity must be greater than zero')
   const rate = landedRate(v)
+  if (rate <= 0) throw new Error('Bargain rate (base + duty) must be greater than zero')
+  return { qty, rate }
+}
+
+export async function createBargain(v: Row): Promise<{ id: number; bargain_no: string }> {
+  const { qty, rate } = validateBargainInput(v)
   const total = qty * rate
   const bargain_no = await nextBargainNo(
     Number(v.oil_type_id),
@@ -147,9 +171,25 @@ export async function createBargain(v: Row): Promise<{ id: number; bargain_no: s
 }
 
 export async function updateBargain(id: number, v: Row): Promise<{ id: number }> {
-  const qty = Number(v.qty) || 0
-  const rate = landedRate(v)
+  const { qty, rate } = validateBargainInput(v)
   const total = qty * rate
+  // Once anything has been loaded/consumed against the bargain, its supplier
+  // and oil are locked (linked tankers/purchases depend on them) and the
+  // quantity can't drop below what's already committed.
+  const cur = await getClient().execute({ sql: 'SELECT supplier_id, oil_type_id FROM bargains WHERE id = ?', args: [id] })
+  if (!cur.rows.length) throw new Error('Bargain not found')
+  const consumed = await bargainConsumed(id)
+  if (consumed > 1e-6) {
+    if (Number(v.supplier_id) !== Number(cur.rows[0].supplier_id)) {
+      throw new Error('Cannot change the supplier — this bargain already has loaded tankers or purchases')
+    }
+    if (Number(v.oil_type_id) !== Number(cur.rows[0].oil_type_id)) {
+      throw new Error('Cannot change the oil — this bargain already has loaded tankers or purchases')
+    }
+    if (qty < consumed - 1e-6) {
+      throw new Error(`Quantity cannot be below the ${consumed.toFixed(3)} already loaded/consumed on this bargain`)
+    }
+  }
   await ensureOilType(Number(v.oil_type_id))
   await getClient().execute({
     sql: `UPDATE bargains SET
@@ -179,6 +219,36 @@ export async function updateBargain(id: number, v: Row): Promise<{ id: number }>
     ]
   })
   return { id }
+}
+
+// Add to (delta > 0) or remove from (delta < 0) a bargain's quantity, which
+// moves its open balance by the same amount. Can't drop below what has already
+// been loaded / consumed. Keeps total_amount in step with the new quantity.
+export async function adjustBargainQty(
+  id: number,
+  delta: number,
+  note?: string
+): Promise<{ id: number; qty: number }> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT * FROM bargains WHERE id = ?', args: [id] })
+  if (!res.rows.length) throw new Error('Bargain not found')
+  const b = toPlain(res)[0]
+  const d = Number(delta) || 0
+  if (d === 0) throw new Error('Enter a quantity to add or remove')
+
+  const consumed = await bargainConsumed(id)
+  const newQty = Math.round((Number(b.qty) + d) * 1000) / 1000
+  if (newQty <= 0) throw new Error('The resulting quantity must be greater than zero')
+  if (newQty < consumed - 1e-6) {
+    throw new Error(`Cannot remove below the ${consumed.toFixed(3)} already loaded/consumed on this bargain`)
+  }
+  const rate = Number(b.rate_per_uom) || 0
+  const remarks = note ? `${b.remarks ? String(b.remarks) + '\n' : ''}${String(note).trim()}` : b.remarks
+  await c.execute({
+    sql: 'UPDATE bargains SET qty = ?, total_amount = ?, remarks = ? WHERE id = ?',
+    args: [newQty, newQty * rate, remarks || null, id]
+  })
+  return { id, qty: newQty }
 }
 
 export async function deleteBargain(id: number): Promise<{ id: number }> {

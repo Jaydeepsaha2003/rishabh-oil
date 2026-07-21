@@ -35,7 +35,9 @@ const api = {
       ipcRenderer.invoke('bargains:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('bargains:update', { id, values }),
-    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bargains:delete', { id })
+    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bargains:delete', { id }),
+    adjust: (id: number, delta: number, note?: string): Promise<{ id: number; qty: number }> =>
+      ipcRenderer.invoke('bargains:adjust', { id, delta, note })
   },
   orders: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('orders:list'),
@@ -185,7 +187,9 @@ const api = {
     update: (id: number, values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('salesBargains:update', { id, values }),
     remove: (id: number): Promise<{ id: number }> =>
-      ipcRenderer.invoke('salesBargains:delete', { id })
+      ipcRenderer.invoke('salesBargains:delete', { id }),
+    adjust: (id: number, delta: number, note?: string): Promise<{ id: number; qty: number }> =>
+      ipcRenderer.invoke('salesBargains:adjust', { id, delta, note })
   },
   gate: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('gate:list'),

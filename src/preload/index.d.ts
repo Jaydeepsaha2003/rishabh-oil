@@ -25,6 +25,7 @@ export interface Api {
     create: (values: Row) => Promise<{ id: number; bargain_no: string }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
+    adjust: (id: number, delta: number, note?: string) => Promise<{ id: number; qty: number }>
   }
   orders: {
     list: () => Promise<Row[]>
@@ -135,6 +136,7 @@ export interface Api {
     create: (values: Row) => Promise<{ id: number; bargain_no: string }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
+    adjust: (id: number, delta: number, note?: string) => Promise<{ id: number; qty: number }>
   }
   gate: {
     list: () => Promise<Row[]>

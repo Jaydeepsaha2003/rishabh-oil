@@ -13,7 +13,9 @@ import {
   FlaskConical,
   LayoutDashboard,
   LogOut,
+  Package,
   PackageOpen,
+  ScrollText,
   Settings as SettingsIcon,
   ShoppingCart,
   Tag,
@@ -41,12 +43,14 @@ export type Page =
   | 'formulation'
   | 'production'
   | 'stock'
+  | 'salesBargains'
   | 'sales'
   | 'suppliers'
   | 'transporters'
   | 'customers'
   | 'ports'
   | 'brokers'
+  | 'packaging'
 
 const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   dashboard: { label: 'Dashboard', icon: LayoutDashboard },
@@ -60,12 +64,14 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   formulation: { label: 'Formulation', icon: FlaskConical },
   production: { label: 'Production', icon: Factory },
   stock: { label: 'Stock', icon: Warehouse },
+  salesBargains: { label: 'Sales Bargain', icon: ScrollText },
   sales: { label: 'Sales', icon: Tag },
   suppliers: { label: 'Suppliers', icon: Building2 },
   transporters: { label: 'Transporters', icon: Truck },
   customers: { label: 'Customers', icon: Contact },
   ports: { label: 'Ports', icon: Anchor },
   brokers: { label: 'Brokers', icon: Briefcase },
+  packaging: { label: 'Packaging', icon: Package },
   settings: { label: 'Settings', icon: SettingsIcon }
 }
 
@@ -73,9 +79,9 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Overview', ids: ['dashboard'] },
   { label: 'Purchase', ids: ['bargains', 'orders', 'consignment', 'gateEntry'] },
   { label: 'Production', ids: ['products', 'formulation', 'production', 'stock'] },
-  { label: 'Sales', ids: ['sales'] },
+  { label: 'Sales', ids: ['salesBargains', 'sales'] },
   { label: 'Accounts', ids: ['payments', 'ledgers'] },
-  { label: 'Masters', ids: ['suppliers', 'transporters', 'customers', 'ports', 'brokers'] },
+  { label: 'Masters', ids: ['suppliers', 'transporters', 'customers', 'ports', 'brokers', 'packaging'] },
   { label: 'System', ids: ['settings'] }
 ]
 
