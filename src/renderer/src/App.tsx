@@ -64,10 +64,28 @@ function App(): React.JSX.Element {
   const [companyReady, setCompanyReady] = useState(false)
   // Deep-link from the Ledgers page to a specific source document.
   const [focus, setFocus] = useState<{ page: Page; id: number } | null>(null)
+  // Where "Back" returns to after a drill-through (e.g. Ledgers → the source
+  // document → Back → Ledgers, with the ledger it opened from still showing).
+  const [returnTo, setReturnTo] = useState<Page | null>(null)
 
-  function openRecord(page: 'orders' | 'sales' | 'payments', id: number): void {
-    setFocus({ page, id })
-    setPage(page)
+  function openRecord(target: 'orders' | 'sales' | 'payments', id: number): void {
+    setReturnTo(page)
+    setFocus({ page: target, id })
+    setPage(target)
+  }
+
+  // Manual navigation (sidebar) always clears any pending drill-through context.
+  function navigate(p: Page): void {
+    setReturnTo(null)
+    setFocus(null)
+    setPage(p)
+  }
+
+  function goBack(): void {
+    const t = returnTo || 'ledgers'
+    setReturnTo(null)
+    setFocus(null)
+    setPage(t)
   }
 
   // On launch, test the (auto-configured) connection; show setup only if it fails.
@@ -199,7 +217,7 @@ function App(): React.JSX.Element {
     <div className="flex h-screen overflow-hidden bg-muted/30 text-foreground">
       <Sidebar
         page={view}
-        onNavigate={setPage}
+        onNavigate={navigate}
         user={user}
         onLogout={handleLogout}
         companies={companies}
@@ -213,6 +231,7 @@ function App(): React.JSX.Element {
           <Orders
             focusId={focus?.page === 'orders' ? focus.id : null}
             onFocusHandled={() => setFocus(null)}
+            onBack={view === 'orders' && returnTo ? goBack : undefined}
           />
         )}
         {view === 'consignment' && <Consignment />}
@@ -221,6 +240,7 @@ function App(): React.JSX.Element {
           <Payments
             focusId={focus?.page === 'payments' ? focus.id : null}
             onFocusHandled={() => setFocus(null)}
+            onBack={view === 'payments' && returnTo ? goBack : undefined}
           />
         )}
         {view === 'ledgers' && <Ledgers onOpenRecord={openRecord} />}
@@ -233,6 +253,7 @@ function App(): React.JSX.Element {
           <Sales
             focusId={focus?.page === 'sales' ? focus.id : null}
             onFocusHandled={() => setFocus(null)}
+            onBack={view === 'sales' && returnTo ? goBack : undefined}
           />
         )}
         {view === 'suppliers' && <Suppliers />}
@@ -244,7 +265,7 @@ function App(): React.JSX.Element {
         {view === 'settings' && <Settings user={user} />}
       </main>
       <UpdateBanner />
-      <Toaster richColors position="top-right" />
+      <Toaster richColors position="bottom-right" />
     </div>
   )
 }

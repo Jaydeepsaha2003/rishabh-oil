@@ -104,9 +104,10 @@ function MoneyRow({ label, value, strong }: { label: string; value: string; stro
 interface OrdersProps {
   focusId?: number | null
   onFocusHandled?: () => void
+  onBack?: () => void
 }
 
-export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX.Element {
+export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): React.JSX.Element {
   const [tab, setTab] = useState('tankers')
   const [rows, setRows] = useState<Row[]>([])
   const [tankers, setTankers] = useState<Row[]>([])
@@ -200,7 +201,7 @@ export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX
     const end = pivotEnd < pivotStart ? pivotStart : pivotEnd
     const dstr = (d: unknown): string => String(d || '').slice(0, 10)
     type Item = { bargain_no: string; supplier_name: string; tanker_no: string }
-    type Cell = { count: number; items: Item[] }
+    type Cell = { count: number; qty: number; items: Item[] }
     const map = new Map<string, { label: string; cells: Record<string, Cell>; total: number }>()
     const totals: Record<string, number> = {}
     let grand = 0
@@ -217,8 +218,9 @@ export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX
       const label = key
       if (!map.has(key)) map.set(key, { label, cells: {}, total: 0 })
       const row = map.get(key)!
-      const cell = (row.cells[stage] ??= { count: 0, items: [] })
+      const cell = (row.cells[stage] ??= { count: 0, qty: 0, items: [] })
       cell.count += 1
+      cell.qty += Number(t.loaded_qty) || Number(t.received_qty) || 0
       cell.items.push({
         bargain_no: String(t.bargain_no || '—'),
         supplier_name: String(t.supplier_name || '—'),
@@ -827,8 +829,8 @@ export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX
       {formPage ? (
         <div className="p-6">
           <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 border-b pb-3">
-            <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground" onClick={() => setFormPage(false)}>
-              <ArrowLeft className="h-4 w-4" /> Back
+            <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground" onClick={() => { if (onBack) { onBack() } else { setFormPage(false) } }}>
+              <ArrowLeft className="h-4 w-4" /> {onBack ? 'Back to ledger' : 'Back'}
             </button>
             <div className="h-4 border-l" />
             <h2 className="text-base font-semibold">{editing ? `Edit purchase ${editing.invoice_no}` : 'Create purchase invoice'}</h2>
@@ -1086,7 +1088,7 @@ export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX
                   <div>
                     <h3 className="font-medium">Tanker movement by oil type</h3>
                     <p className="text-xs text-muted-foreground">
-                      Status as of {formatDate(pivotEnd)} · each tanker in its current stage · hover a count for details
+                      Status as of {formatDate(pivotEnd)} · each tanker in its current stage · hover a count for tankers &amp; qty
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1124,15 +1126,13 @@ export function Orders({ focusId, onFocusHandled }: OrdersProps = {}): React.JSX
                                           {cell.count}
                                         </span>
                                       </TooltipTrigger>
-                                      <TooltipContent className="max-w-xs">
-                                        <div className="mb-1 font-semibold">{s.label} · {row.label}</div>
-                                        <div className="space-y-0.5">
-                                          {cell.items.map((it, i) => (
-                                            <div key={i}>
-                                              {it.supplier_name} · {it.bargain_no}
-                                              {it.tanker_no ? ` · ${it.tanker_no}` : ''}
-                                            </div>
-                                          ))}
+                                      <TooltipContent>
+                                        <div className="mb-1 font-semibold">{row.label} · {s.label}</div>
+                                        <div className="grid grid-cols-[auto_auto] gap-x-4 gap-y-0.5 tabular-nums">
+                                          <span className="text-muted-foreground">Tankers</span>
+                                          <span className="text-right font-medium">{cell.count}</span>
+                                          <span className="text-muted-foreground">Qty</span>
+                                          <span className="text-right font-medium">{formatNum(cell.qty)}</span>
                                         </div>
                                       </TooltipContent>
                                     </Tooltip>

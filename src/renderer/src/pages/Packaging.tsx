@@ -69,7 +69,7 @@ export function Packaging(): React.JSX.Element {
   return (
     <>
       <PageHeader
-        title="Packaging"
+        title="Packed SKU"
         subtitle="Packed-sale SKUs — N units per case, each a given size (base qty computed for stock)"
         hint="Add each SKU like ‘DALDA JAR 4.2 KG × 4’: pick the pack type, enter the unit size in its own unit (KG/GM/L/ML) and units per case. The base quantity drawn from stock is computed automatically (grams/millilitres convert to KG/L). Packed sales pick a SKU and enter cases + loose units."
       />

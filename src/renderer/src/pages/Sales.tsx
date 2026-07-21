@@ -42,11 +42,13 @@ type Row = Record<string, any>
 function SalesTab({
   focusId,
   onFocusHandled,
-  onRegister
+  onRegister,
+  onBack
 }: {
   focusId?: number | null
   onFocusHandled?: () => void
   onRegister?: (a: { open: () => void; canAdd: boolean }) => void
+  onBack?: () => void
 }): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
@@ -206,9 +208,15 @@ function SalesTab({
   const gstAmt = Math.round(amount * (gstPct / 100) * 100) / 100
   const netAmt = amount + gstAmt
   const transportAmt = isDld ? effQty * (Number(form.transport_rate) || 0) : 0
+  // Only offer bargains for the selected customer (match by name); when no
+  // customer is chosen yet, show all so the user isn't blocked.
+  const custName = String(form.customer || '').trim().toLowerCase()
+  const matchesCustomer = (b: Row): boolean =>
+    !custName || String(b.customer || '').trim().toLowerCase() === custName
   const productBargains = bargains.filter(
     (b) =>
       String(b.product_id) === String(form.product_id) &&
+      matchesCustomer(b) &&
       (Number(b.balance_qty) > 0 || String(b.id) === String(form.sales_bargain_id))
   )
   const selBargain = form.sales_bargain_id
@@ -223,6 +231,7 @@ function SalesTab({
   const switchBargains = bargains.filter(
     (b) =>
       String(b.product_id) === String(form.product_id) &&
+      matchesCustomer(b) &&
       String(b.id) !== String(form.sales_bargain_id) &&
       Number(b.balance_qty) >= effQty - 1e-6
   )
@@ -395,8 +404,8 @@ function SalesTab({
       {formPage && (
       <div className="mx-auto max-w-3xl">
         <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 border-b pb-3">
-          <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground" onClick={() => setFormPage(false)}>
-            <ArrowLeft className="h-4 w-4" /> Back
+          <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground" onClick={() => { if (onBack) { onBack() } else { setFormPage(false) } }}>
+            <ArrowLeft className="h-4 w-4" /> {onBack ? 'Back to ledger' : 'Back'}
           </button>
           <div className="h-4 border-l" />
           <h2 className="text-base font-semibold">{editing ? 'Edit sale' : 'New sale'}</h2>
@@ -419,12 +428,20 @@ function SalesTab({
                 value={form.customer_id ? String(form.customer_id) : ''}
                 onValueChange={(v) => {
                   const cust = customers.find((c) => String(c.id) === v)
-                  setForm((p) => ({
-                    ...p,
-                    customer_id: v,
-                    customer: cust?.name ?? p.customer,
-                    gst_pct: p.gst_pct || (cust && Number(cust.gst_pct) > 0 ? cust.gst_pct : p.gst_pct)
-                  }))
+                  const name = String(cust?.name || '').trim().toLowerCase()
+                  setExcess(null)
+                  setForm((p) => {
+                    // Drop a selected bargain that belongs to a different customer.
+                    const curB = bargains.find((b) => String(b.id) === String(p.sales_bargain_id))
+                    const keepB = curB && String(curB.customer || '').trim().toLowerCase() === name
+                    return {
+                      ...p,
+                      customer_id: v,
+                      customer: cust?.name ?? p.customer,
+                      sales_bargain_id: keepB ? p.sales_bargain_id : '',
+                      gst_pct: p.gst_pct || (cust && Number(cust.gst_pct) > 0 ? cust.gst_pct : p.gst_pct)
+                    }
+                  })
                 }}
               >
                 <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
@@ -1195,7 +1212,7 @@ function SalesBargainsTab(): React.JSX.Element {
 
 // ---------------- page ----------------
 
-export function Sales({ focusId, onFocusHandled }: { focusId?: number | null; onFocusHandled?: () => void } = {}): React.JSX.Element {
+export function Sales({ focusId, onFocusHandled, onBack }: { focusId?: number | null; onFocusHandled?: () => void; onBack?: () => void } = {}): React.JSX.Element {
   const [needs, setNeeds] = useState<Row[]>([])
   const [needsOpen, setNeedsOpen] = useState(false)
   const [salesAdd, setSalesAdd] = useState<{ open: () => void; canAdd: boolean } | null>(null)
@@ -1239,7 +1256,7 @@ export function Sales({ focusId, onFocusHandled }: { focusId?: number | null; on
         }
       />
       <div className="px-4 py-4">
-        <SalesTab focusId={focusId} onFocusHandled={onFocusHandled} onRegister={setSalesAdd} />
+        <SalesTab focusId={focusId} onFocusHandled={onFocusHandled} onRegister={setSalesAdd} onBack={onBack} />
       </div>
 
       <Dialog open={needsOpen} onOpenChange={setNeedsOpen}>

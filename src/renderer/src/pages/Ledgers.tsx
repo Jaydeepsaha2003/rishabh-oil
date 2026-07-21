@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, BookOpen, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -53,7 +53,9 @@ interface Props {
 // automatically as: Dr {OIL} PUR A/C + Dr GST INPUT — Cr TDS PAYABLE + Cr Supplier.
 export function Ledgers({ onOpenRecord }: Props): React.JSX.Element {
   const [accounts, setAccounts] = useState<Row[]>([])
-  const [accountId, setAccountId] = useState('')
+  // Remember the open ledger so returning from a drill-through (or re-opening
+  // the page) restores the last statement the user was viewing.
+  const [accountId, setAccountId] = useState(() => localStorage.getItem('ledgerAccountId') || '')
   const [statement, setStatement] = useState<Row[]>([])
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState<Row>({})
@@ -75,6 +77,12 @@ export function Ledgers({ onOpenRecord }: Props): React.JSX.Element {
   }, [accountId])
   useEffect(() => { loadStatement() }, [loadStatement])
   useLiveRefresh(loadStatement)
+
+  // Persist the open ledger (or clear it when back on the blank main page).
+  useEffect(() => {
+    if (accountId) localStorage.setItem('ledgerAccountId', accountId)
+    else localStorage.removeItem('ledgerAccountId')
+  }, [accountId])
 
   const totals = useMemo(() => {
     const dr = statement.reduce((s, l) => s + (Number(l.dr) || 0), 0)
@@ -185,32 +193,32 @@ export function Ledgers({ onOpenRecord }: Props): React.JSX.Element {
         </div>
 
         {!accountId ? (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {accounts.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No accounts yet — they are created automatically when you book a purchase, payment or sale.
-              </p>
-            ) : (
-              accounts.map((a) => (
-                <button
-                  key={a.id}
-                  onClick={() => setAccountId(String(a.id))}
-                  className="rounded-lg border bg-card p-3 text-left shadow-sm transition-colors hover:bg-muted/40"
-                >
-                  <div className="truncate text-sm font-medium">{a.name}</div>
-                  <div className="text-[11px] text-muted-foreground">Ledger No. {a.id} · {a.acc_group}</div>
-                  <div className={cn('mt-1 text-sm font-semibold tabular-nums', balClass(Number(a.balance) || 0))}>{balText(Number(a.balance) || 0)}</div>
-                </button>
-              ))
-            )}
+          <div className="flex min-h-[320px] flex-col items-center justify-center rounded-xl border border-dashed bg-card/40 p-10 text-center">
+            <BookOpen className="mb-3 h-8 w-8 text-muted-foreground/60" />
+            <p className="text-sm font-medium">
+              {accounts.length === 0 ? 'No accounts yet' : 'Select a ledger to view its statement'}
+            </p>
+            <p className="mt-1 max-w-md text-xs text-muted-foreground">
+              {accounts.length === 0
+                ? 'Accounts are created automatically when you book a purchase, payment or sale.'
+                : 'Use the search box above to pick any account — supplier, customer, GST, purchase/sale or a manual account — and open its ledger.'}
+            </p>
           </div>
         ) : (
           <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-muted/40 px-4 py-2.5">
-              <div>
-                <div className="text-sm font-semibold">{selected?.name}</div>
-                <div className="text-[11px] text-muted-foreground">
-                  Ledger No. {selected?.id} · {selected?.acc_group} · {statement.length} vouchers
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setAccountId('')}
+                  className="inline-flex items-center gap-1.5 rounded-md border bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" /> Back
+                </button>
+                <div>
+                  <div className="text-sm font-semibold">{selected?.name}</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Ledger No. {selected?.id} · {selected?.acc_group} · {statement.length} vouchers
+                  </div>
                 </div>
               </div>
               <div className="text-right">
