@@ -86,6 +86,42 @@ async function productStockForCompany(companyId: number, productId: number): Pro
   return rec + prod + tIn - cons - sld - tOut
 }
 
+// Available stock of ONE product in the ACTIVE company, using the same formula
+// as stockLevels. A specific sale or production run can be excluded from the
+// maths so an edit/toggle/delete doesn't count its own (pre-change) effect.
+export async function productStockAvailable(
+  productId: number,
+  opts: { excludeSaleId?: number; excludeProductionId?: number } = {}
+): Promise<number> {
+  const c = getClient()
+  const cid = getActiveCompanyId()
+  const one = async (sql: string, args: number[]): Promise<number> => {
+    const r = await c.execute({ sql, args })
+    return Number(r.rows[0]?.q) || 0
+  }
+  const exP = opts.excludeProductionId
+  const exS = opts.excludeSaleId
+  const rec = await one(
+    "SELECT COALESCE(SUM(received_qty), 0) AS q FROM orders WHERE status = 'received' AND company_id = ? AND oil_type_id = ?",
+    [cid, productId]
+  )
+  const prod = await one(
+    `SELECT COALESCE(SUM(qty), 0) AS q FROM production WHERE company_id = ? AND product_id = ?${exP ? ' AND id <> ?' : ''}`,
+    exP ? [cid, productId, exP] : [cid, productId]
+  )
+  const cons = await one(
+    `SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE p.company_id = ? AND i.product_id = ?${exP ? ' AND p.id <> ?' : ''}`,
+    exP ? [cid, productId, exP] : [cid, productId]
+  )
+  const sld = await one(
+    `SELECT COALESCE(SUM(qty), 0) AS q FROM sales WHERE status = 'done' AND company_id = ? AND product_id = ?${exS ? ' AND id <> ?' : ''}`,
+    exS ? [cid, productId, exS] : [cid, productId]
+  )
+  const tIn = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE to_company_id = ? AND product_id = ?', [cid, productId])
+  const tOut = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE from_company_id = ? AND product_id = ?', [cid, productId])
+  return rec + prod + tIn - cons - sld - tOut
+}
+
 // Transfers involving the active company (either direction), newest first.
 export async function listStockTransfers(): Promise<Row[]> {
   const cid = getActiveCompanyId()

@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronRight, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Pencil, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -36,6 +36,20 @@ import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
+
+// Dispatch lifecycle: a sale is a pending commitment until the tanker is
+// loaded, then tracked in transit and finally unloaded at the customer. Any
+// dispatched stage means the finished stock has left the factory.
+const DISPATCH_STAGES = [
+  { value: 'pending', label: 'Pending', badge: 'warning' as const },
+  { value: 'loaded', label: 'Loaded', badge: 'default' as const },
+  { value: 'transit', label: 'In transit', badge: 'default' as const },
+  { value: 'unloaded', label: 'Unloaded', badge: 'success' as const }
+]
+function stageInfo(row: Row): (typeof DISPATCH_STAGES)[number] {
+  const s = String(row.dispatch_stage || (row.status === 'done' ? 'unloaded' : 'pending'))
+  return DISPATCH_STAGES.find((x) => x.value === s) || DISPATCH_STAGES[0]
+}
 
 // ---------------- Sales tab ----------------
 
@@ -110,7 +124,7 @@ function SalesTab({
       sales_bargain_id: '',
       qty: '',
       rate: '',
-      status: 'pending',
+      dispatch_stage: 'pending',
       gst_pct: '',
       gst_type: 'CGST_SGST',
       sale_type: 'LOOSE',
@@ -151,7 +165,7 @@ function SalesTab({
       sales_bargain_id: row.sales_bargain_id ? String(row.sales_bargain_id) : '',
       qty: row.qty ?? '',
       rate: row.rate ?? '',
-      status: row.status ?? 'pending',
+      dispatch_stage: row.dispatch_stage ?? (row.status === 'done' ? 'unloaded' : 'pending'),
       gst_pct: row.gst_pct ?? '',
       gst_type: row.gst_type ?? 'CGST_SGST',
       sale_type: row.sale_type ?? 'LOOSE',
@@ -296,11 +310,11 @@ function SalesTab({
     }
   }
 
-  async function toggleStatus(row: Row): Promise<void> {
-    const next = row.status === 'done' ? 'pending' : 'done'
+  async function changeStage(row: Row, stage: string): Promise<void> {
     try {
-      await window.api.sales.setStatus(row.id as number, next)
-      toast.success(next === 'done' ? 'Marked fully done' : 'Marked pending')
+      await window.api.sales.setStage(row.id as number, stage)
+      const label = DISPATCH_STAGES.find((x) => x.value === stage)?.label || stage
+      toast.success(`Marked ${label}`)
       await load()
     } catch (e) {
       toast.error((e as Error).message)
@@ -333,8 +347,8 @@ function SalesTab({
               <TableHead className="text-right">Qty</TableHead>
               <TableHead className="text-right">In stock</TableHead>
               <TableHead className="text-right">Amount</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead className="w-[130px] text-right">Actions</TableHead>
+              <TableHead className="w-[150px]">Dispatch</TableHead>
+              <TableHead className="w-[100px] text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -353,7 +367,8 @@ function SalesTab({
             ) : (
               rows.map((row) => {
                 const inStock = stock[row.product_id as number]?.stock ?? 0
-                const short = row.status !== 'done' && Number(row.qty) > Number(inStock)
+                const stg = stageInfo(row)
+                const short = stg.value === 'pending' && Number(row.qty) > Number(inStock)
                 return (
                   <TableRow key={row.id as number}>
                     <TableCell>{formatDate(row.sale_date)}</TableCell>
@@ -367,25 +382,19 @@ function SalesTab({
                     </TableCell>
                     <TableCell className="text-right tabular-nums">{formatINR(row.amount)}</TableCell>
                     <TableCell>
-                      <Badge variant={row.status === 'done' ? 'success' : 'warning'}>
-                        {row.status === 'done' ? 'Fully done' : 'Pending'}
-                      </Badge>
+                      <Select value={stg.value} onValueChange={(v) => changeStage(row, v)}>
+                        <SelectTrigger className="h-8">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {DISPATCH_STAGES.map((s) => (
+                            <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
-                          title={row.status === 'done' ? 'Mark pending' : 'Mark fully done'}
-                          onClick={() => toggleStatus(row)}
-                        >
-                          {row.status === 'done' ? (
-                            <RotateCcw className="h-4 w-4" />
-                          ) : (
-                            <Check className="h-4 w-4 text-emerald-600" />
-                          )}
-                        </Button>
                         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(row)}>
                           <Pencil className="h-4 w-4" />
                         </Button>
@@ -687,18 +696,19 @@ function SalesTab({
             )}
 
             <div className="grid gap-1.5">
-              <Label>Status</Label>
-              <Select value={form.status} onValueChange={(v) => setField('status', v)}>
+              <Label>Dispatch stage</Label>
+              <Select value={form.dispatch_stage || 'pending'} onValueChange={(v) => setField('dispatch_stage', v)}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="pending">Pending</SelectItem>
-                  <SelectItem value="done">Fully done</SelectItem>
+                  {DISPATCH_STAGES.map((s) => (
+                    <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                Marking &quot;Fully done&quot; deducts the quantity from finished-goods stock.
+                Pending is a commitment. Loaded / In transit / Unloaded mean the goods have left the factory — that deducts finished-goods stock (checked against availability).
               </p>
             </div>
           </div>

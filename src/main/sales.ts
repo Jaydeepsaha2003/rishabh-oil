@@ -2,6 +2,43 @@ import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { deleteJournalByRef, postSaleJournal } from './journal'
 import { getActiveCompanyId } from './company'
+import { productStockAvailable } from './stock'
+
+// Guard: a dispatched (done) sale physically draws finished-goods stock, so the
+// available stock (excluding this sale's own effect) must cover the quantity.
+// Pending sales are commitments and don't deduct, so they aren't blocked here.
+async function assertFinishedStock(
+  productId: number,
+  qty: number,
+  productName: string,
+  excludeSaleId?: number
+): Promise<void> {
+  const avail = await productStockAvailable(productId, { excludeSaleId })
+  if (qty > avail + 1e-6) {
+    throw new Error(
+      `Not enough ${productName || 'finished'} stock to dispatch: need ${qty.toFixed(3)}, only ${Math.max(avail, 0).toFixed(3)} available. Produce more first, or keep the sale as pending.`
+    )
+  }
+}
+
+async function productLabel(productId: number): Promise<string> {
+  const r = await getClient().execute({ sql: 'SELECT name FROM products WHERE id = ?', args: [productId] })
+  return r.rows.length ? String(r.rows[0].name || '') : ''
+}
+
+export type DispatchStage = 'pending' | 'loaded' | 'transit' | 'unloaded'
+
+// A dispatch moves through loaded → transit → unloaded; any of those three
+// means the goods have left the factory (accounting/stock status 'done').
+// 'pending' = committed but not yet dispatched (no stock drawn).
+function stageOf(v: Row): DispatchStage {
+  const s = String(v.dispatch_stage || '').toLowerCase()
+  if (s === 'loaded' || s === 'transit' || s === 'unloaded' || s === 'pending') return s
+  // Legacy fallback: a sale carrying only status 'done' is treated as delivered.
+  return String(v.status) === 'done' ? 'unloaded' : 'pending'
+}
+const isDispatched = (stage: DispatchStage): boolean => stage !== 'pending'
+const statusForStage = (stage: DispatchStage): 'pending' | 'done' => (isDispatched(stage) ? 'done' : 'pending')
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -357,8 +394,12 @@ async function postSaleFreight(saleId: number, v: Row, qty: number): Promise<num
 }
 
 export async function createSale(v: Row): Promise<{ id: number }> {
+  const productId = n(v.product_id)
+  if (!productId) throw new Error('Select a product')
   const { qty, uom } = await resolveSaleQty(v)
+  if (qty <= 0) throw new Error('Quantity must be greater than zero')
   const rate = n(v.rate)
+  if (rate < 0) throw new Error('Rate cannot be negative')
   const amount = qty * rate
   const gstPct = n(v.gst_pct)
   const gstAmount = Math.round(amount * (gstPct / 100) * 100) / 100
@@ -371,14 +412,20 @@ export async function createSale(v: Row): Promise<{ id: number }> {
       throw new Error(`Sale qty exceeds the sales bargain balance (${bal.toFixed(3)})`)
     }
   }
+  const stage = stageOf(v)
+  const status = statusForStage(stage)
+  // A sale created already-dispatched must have the finished stock to back it.
+  if (isDispatched(stage)) {
+    await assertFinishedStock(productId, qty, await productLabel(productId))
+  }
   const transportAmount = String(v.freight_term) === 'DLD'
     ? (n(v.transport_amount) > 0 ? n(v.transport_amount) : qty * n(v.transport_rate))
     : 0
   const res = await getClient().execute({
     sql: `INSERT INTO sales (company_id, sale_date, invoice_no, customer, customer_id, product_id, sales_bargain_id,
-            qty, uom, rate, amount, gst_pct, gst_amount, gst_type, status, note, sale_type, packaging_id, boxes, pouches, freight_term,
+            qty, uom, rate, amount, gst_pct, gst_amount, gst_type, status, dispatch_stage, note, sale_type, packaging_id, boxes, pouches, freight_term,
             transporter_id, transport_rate, transport_amount)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       v.sale_date,
@@ -394,7 +441,8 @@ export async function createSale(v: Row): Promise<{ id: number }> {
       gstPct,
       gstAmount,
       v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
-      v.status || 'pending',
+      status,
+      stage,
       v.note || null,
       v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
       v.packaging_id ? n(v.packaging_id) : null,
@@ -414,8 +462,12 @@ export async function createSale(v: Row): Promise<{ id: number }> {
 }
 
 export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
+  const productId = n(v.product_id)
+  if (!productId) throw new Error('Select a product')
   const { qty, uom } = await resolveSaleQty(v)
+  if (qty <= 0) throw new Error('Quantity must be greater than zero')
   const rate = n(v.rate)
+  if (rate < 0) throw new Error('Rate cannot be negative')
   const amount = qty * rate
   const gstPct = n(v.gst_pct)
   const gstAmount = Math.round(amount * (gstPct / 100) * 100) / 100
@@ -427,12 +479,19 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       throw new Error(`Sale qty exceeds the sales bargain balance (${bal.toFixed(3)})`)
     }
   }
+  const stage = stageOf(v)
+  const status = statusForStage(stage)
+  // Keeping/putting this sale in a dispatched stage must be backed by finished
+  // stock (excluding this sale's own prior deduction).
+  if (isDispatched(stage)) {
+    await assertFinishedStock(productId, qty, await productLabel(productId), id)
+  }
   const transportAmount = String(v.freight_term) === 'DLD'
     ? (n(v.transport_amount) > 0 ? n(v.transport_amount) : qty * n(v.transport_rate))
     : 0
   await getClient().execute({
     sql: `UPDATE sales SET sale_date = ?, invoice_no = ?, customer = ?, customer_id = ?, product_id = ?, sales_bargain_id = ?,
-          qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, status = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
+          qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, status = ?, dispatch_stage = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
           pouches = ?, freight_term = ?, transporter_id = ?, transport_rate = ?, transport_amount = ? WHERE id = ?`,
     args: [
       v.sale_date,
@@ -448,7 +507,8 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       gstPct,
       gstAmount,
       v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
-      v.status || 'pending',
+      status,
+      stage,
       v.note || null,
       v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
       v.packaging_id ? n(v.packaging_id) : null,
@@ -467,9 +527,33 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   return { id }
 }
 
-export async function setSaleStatus(id: number, status: string): Promise<{ id: number }> {
-  await getClient().execute({ sql: 'UPDATE sales SET status = ? WHERE id = ?', args: [status, id] })
+// Move a dispatch through its stages (pending → loaded → transit → unloaded).
+// Advancing from pending into any dispatched stage draws finished stock (guarded);
+// dropping back to pending releases it. Moving between dispatched stages is free.
+export async function setSaleStage(id: number, stageIn: string): Promise<{ id: number }> {
+  const stage = stageOf({ dispatch_stage: stageIn })
+  const status = statusForStage(stage)
+  const r = await getClient().execute({
+    sql: 'SELECT product_id, qty, status FROM sales WHERE id = ?',
+    args: [id]
+  })
+  if (!r.rows.length) throw new Error('Sale not found')
+  const row = r.rows[0]
+  // Only re-check stock when transitioning from not-dispatched into dispatched.
+  if (isDispatched(stage) && String(row.status) !== 'done') {
+    const pid = n(row.product_id)
+    await assertFinishedStock(pid, n(row.qty), await productLabel(pid), id)
+  }
+  await getClient().execute({
+    sql: 'UPDATE sales SET status = ?, dispatch_stage = ? WHERE id = ?',
+    args: [status, stage, id]
+  })
   return { id }
+}
+
+// Backwards-compatible status toggle (pending/done) — maps done → unloaded.
+export async function setSaleStatus(id: number, status: string): Promise<{ id: number }> {
+  return setSaleStage(id, status === 'done' ? 'unloaded' : 'pending')
 }
 
 export async function deleteSale(id: number): Promise<{ id: number }> {

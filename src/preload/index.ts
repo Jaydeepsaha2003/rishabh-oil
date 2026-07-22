@@ -178,6 +178,8 @@ const api = {
       ipcRenderer.invoke('sales:update', { id, values }),
     setStatus: (id: number, status: string): Promise<{ id: number }> =>
       ipcRenderer.invoke('sales:setStatus', { id, status }),
+    setStage: (id: number, stage: string): Promise<{ id: number }> =>
+      ipcRenderer.invoke('sales:setStage', { id, stage }),
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('sales:delete', { id })
   },
   salesBargains: {

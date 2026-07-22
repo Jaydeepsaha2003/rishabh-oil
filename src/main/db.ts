@@ -168,6 +168,12 @@ const MIGRATIONS = [
   'ALTER TABLE sales ADD COLUMN gst_pct REAL NOT NULL DEFAULT 0',
   'ALTER TABLE sales ADD COLUMN gst_amount REAL NOT NULL DEFAULT 0',
   "ALTER TABLE sales ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
+  // Three-stage dispatch tracking for sales (loaded → transit → unloaded),
+  // mirroring purchase tankers. Any of the three means the goods have left the
+  // factory (status 'done'); 'pending' = not yet dispatched. Existing fulfilled
+  // sales are treated as already unloaded/delivered.
+  'ALTER TABLE sales ADD COLUMN dispatch_stage TEXT',
+  "UPDATE sales SET dispatch_stage = 'unloaded' WHERE status = 'done' AND dispatch_stage IS NULL",
   // Consignment stock: supplier goods lying at our place, off-books until
   // invoiced. Created here (not in SCHEMA_SQL) so it also lands on existing DBs.
   `CREATE TABLE IF NOT EXISTS consignment_stock (

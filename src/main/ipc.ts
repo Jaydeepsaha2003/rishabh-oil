@@ -102,6 +102,7 @@ import {
   createSale,
   updateSale,
   setSaleStatus,
+  setSaleStage,
   deleteSale,
   listSalesBargains,
   createSalesBargain,
@@ -405,6 +406,9 @@ export function registerIpc(): void {
   handle('sales:update', (_e, { id, values }: { id: number; values: Row }) => updateSale(id, values))
   handle('sales:setStatus', (_e, { id, status }: { id: number; status: string }) =>
     setSaleStatus(id, status)
+  )
+  handle('sales:setStage', (_e, { id, stage }: { id: number; stage: string }) =>
+    setSaleStage(id, stage)
   )
   handle('sales:delete', (_e, { id }: { id: number }) => deleteSale(id))
 
