@@ -208,11 +208,18 @@ function SalesTab({
   const gstAmt = Math.round(amount * (gstPct / 100) * 100) / 100
   const netAmt = amount + gstAmt
   const transportAmt = isDld ? effQty * (Number(form.transport_rate) || 0) : 0
-  // Only offer bargains for the selected customer (match by name); when no
-  // customer is chosen yet, show all so the user isn't blocked.
+  // Only offer bargains for the selected customer. Prefer the master id (so
+  // renames don't break the link); fall back to the name for legacy bargains
+  // not yet linked to the master. No customer chosen → show all.
+  const custId = String(form.customer_id || '')
   const custName = String(form.customer || '').trim().toLowerCase()
-  const matchesCustomer = (b: Row): boolean =>
-    !custName || String(b.customer || '').trim().toLowerCase() === custName
+  const matchesCustomer = (b: Row): boolean => {
+    if (!custId && !custName) return true
+    if (custId && b.customer_id != null && String(b.customer_id) !== '') {
+      return String(b.customer_id) === custId
+    }
+    return String(b.customer || '').trim().toLowerCase() === custName
+  }
   const productBargains = bargains.filter(
     (b) =>
       String(b.product_id) === String(form.product_id) &&
@@ -431,9 +438,14 @@ function SalesTab({
                   const name = String(cust?.name || '').trim().toLowerCase()
                   setExcess(null)
                   setForm((p) => {
-                    // Drop a selected bargain that belongs to a different customer.
+                    // Drop a selected bargain that belongs to a different customer
+                    // (match by master id when linked, else by name).
                     const curB = bargains.find((b) => String(b.id) === String(p.sales_bargain_id))
-                    const keepB = curB && String(curB.customer || '').trim().toLowerCase() === name
+                    const keepB =
+                      curB &&
+                      (curB.customer_id != null && String(curB.customer_id) !== ''
+                        ? String(curB.customer_id) === v
+                        : String(curB.customer || '').trim().toLowerCase() === name)
                     return {
                       ...p,
                       customer_id: v,
@@ -808,6 +820,7 @@ function SalesBargainsTab(): React.JSX.Element {
     return {
       bargain_date: todayISO(),
       customer: '',
+      customer_id: '',
       product_id: '',
       qty: '',
       uom: 'MT',
@@ -832,6 +845,7 @@ function SalesBargainsTab(): React.JSX.Element {
     setForm({
       bargain_date: row.bargain_date ?? todayISO(),
       customer: row.customer ?? '',
+      customer_id: row.customer_id ? String(row.customer_id) : '',
       product_id: String(row.product_id ?? ''),
       qty: row.qty ?? '',
       uom: row.uom ?? 'MT',
@@ -921,13 +935,6 @@ function SalesBargainsTab(): React.JSX.Element {
       setAdjustSaving(false)
     }
   }
-
-  // Customer options (from master) plus the current value if it isn't listed.
-  const customerNames = customers.map((c) => String(c.name))
-  const customerOptions =
-    form.customer && !customerNames.includes(String(form.customer))
-      ? [String(form.customer), ...customerNames]
-      : customerNames
 
   return (
     <div>
@@ -1063,10 +1070,26 @@ function SalesBargainsTab(): React.JSX.Element {
             </div>
             <div className="grid gap-1.5">
               <Label>Customer *</Label>
-              <Select value={String(form.customer || '')} onValueChange={(v) => setField('customer', v)} disabled={editLocked}>
+              <Select
+                value={form.customer_id ? String(form.customer_id) : (form.customer ? 'legacy' : '')}
+                onValueChange={(v) => {
+                  if (v === 'legacy') return
+                  const cust = customers.find((c) => String(c.id) === v)
+                  setForm((p) => ({
+                    ...p,
+                    customer_id: v,
+                    customer: cust?.name ?? p.customer,
+                    gst_pct: p.gst_pct || (cust && Number(cust.gst_pct) > 0 ? cust.gst_pct : p.gst_pct)
+                  }))
+                }}
+                disabled={editLocked}
+              >
                 <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
                 <SelectContent>
-                  {customerOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}
+                  {!form.customer_id && form.customer && (
+                    <SelectItem value="legacy">{String(form.customer)} (unlinked — re-select to link)</SelectItem>
+                  )}
+                  {customers.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>

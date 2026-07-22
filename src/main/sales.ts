@@ -81,17 +81,19 @@ export async function listSales(): Promise<Row[]> {
     args: [getActiveCompanyId()],
     sql: `
     SELECT s.*, pr.name AS product_name, pr.category AS product_category, sb.bargain_no AS sales_bargain_no,
-           pk.name AS packaging_name, tr.name AS transporter_name
+           pk.name AS packaging_name, tr.name AS transporter_name, cu.name AS customer_master
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id
     LEFT JOIN sales_bargains sb ON sb.id = s.sales_bargain_id
     LEFT JOIN packagings pk ON pk.id = s.packaging_id
     LEFT JOIN transporters tr ON tr.id = s.transporter_id
+    LEFT JOIN customers cu ON cu.id = s.customer_id
     WHERE s.company_id = ?
     ORDER BY s.sale_date DESC, s.id DESC
   `
   })
-  return toPlain(res)
+  // Show the customer master's current name when the sale is linked to it.
+  return toPlain(res).map((r) => ({ ...r, customer: r.customer_master || r.customer }))
 }
 
 // --- sales bargains (rate contracts for finished goods) ---
@@ -108,15 +110,18 @@ export async function listSalesBargains(): Promise<Row[]> {
   // Sales bargains are GENERAL — shared across every company, like purchase
   // bargains (no company filter; sold sums sales from all companies).
   const res = await getClient().execute(`
-    SELECT b.*, pr.name AS product_name, pk.name AS packaging_name,
+    SELECT b.*, pr.name AS product_name, pk.name AS packaging_name, cu.name AS customer_master,
       COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id), 0) AS sold_qty,
       b.qty - COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id), 0) AS balance_qty
     FROM sales_bargains b
     LEFT JOIN products pr ON pr.id = b.product_id
     LEFT JOIN packagings pk ON pk.id = b.packaging_id
+    LEFT JOIN customers cu ON cu.id = b.customer_id
     ORDER BY b.id DESC
   `)
-  return toPlain(res)
+  // When linked to the master, always show the master's current name (renames
+  // propagate); otherwise fall back to the free-text name stored on the bargain.
+  return toPlain(res).map((r) => ({ ...r, customer: r.customer_master || r.customer }))
 }
 
 // Format: FGCODE/DD-MM/PARTY/SERIAL (mirrors the purchase bargain number).
@@ -180,13 +185,14 @@ export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_
     String(v.bargain_date)
   )
   const res = await getClient().execute({
-    sql: `INSERT INTO sales_bargains (company_id, bargain_no, bargain_date, customer, product_id, qty, uom, rate, rate_expiry_date, status, note, sale_type, packaging_id, freight_term, gst_pct, gst_type)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO sales_bargains (company_id, bargain_no, bargain_date, customer, customer_id, product_id, qty, uom, rate, rate_expiry_date, status, note, sale_type, packaging_id, freight_term, gst_pct, gst_type)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       bargain_no,
       v.bargain_date,
       v.customer || null,
+      v.customer_id ? n(v.customer_id) : null,
       n(v.product_id),
       n(v.qty),
       v.uom || 'MT',
@@ -208,13 +214,21 @@ export async function updateSalesBargain(id: number, v: Row): Promise<{ id: numb
   // Once anything is sold against it, the customer and product are locked and
   // the quantity can't drop below what's already been sold.
   const cur = await getClient().execute({
-    sql: 'SELECT customer, product_id FROM sales_bargains WHERE id = ?',
+    sql: 'SELECT customer, customer_id, product_id FROM sales_bargains WHERE id = ?',
     args: [id]
   })
   if (!cur.rows.length) throw new Error('Sales bargain not found')
   const sold = await salesBargainSold(id)
   if (sold > 1e-6) {
-    if (String(v.customer || '').trim() !== String(cur.rows[0].customer || '').trim()) {
+    // Compare by master id when linked (so a rename isn't seen as a change);
+    // fall back to the free-text name for un-linked legacy bargains.
+    const curId = n(cur.rows[0].customer_id)
+    const newId = n(v.customer_id)
+    const changed =
+      curId > 0 || newId > 0
+        ? curId !== newId
+        : String(v.customer || '').trim() !== String(cur.rows[0].customer || '').trim()
+    if (changed) {
       throw new Error('Cannot change the customer — this bargain already has sales')
     }
     if (n(v.product_id) !== n(cur.rows[0].product_id)) {
@@ -225,11 +239,12 @@ export async function updateSalesBargain(id: number, v: Row): Promise<{ id: numb
     }
   }
   await getClient().execute({
-    sql: `UPDATE sales_bargains SET bargain_date = ?, customer = ?, product_id = ?, qty = ?, uom = ?,
+    sql: `UPDATE sales_bargains SET bargain_date = ?, customer = ?, customer_id = ?, product_id = ?, qty = ?, uom = ?,
           rate = ?, rate_expiry_date = ?, note = ?, sale_type = ?, packaging_id = ?, freight_term = ?, gst_pct = ?, gst_type = ? WHERE id = ?`,
     args: [
       v.bargain_date,
       v.customer || null,
+      v.customer_id ? n(v.customer_id) : null,
       n(v.product_id),
       n(v.qty),
       v.uom || 'MT',
@@ -518,4 +533,30 @@ export async function backfillSalesGst(): Promise<void> {
     "INSERT INTO app_settings (key, value) VALUES ('sales_gst_backfilled', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"
   )
   if (applied > 0) console.log(`[sales] backfilled output GST on ${applied} sales`)
+}
+
+// One-time backfill: link existing sales bargains to the customer master by
+// name (trimmed, case-insensitive), so a customer rename thereafter propagates
+// everywhere. Bargains whose name has no exact master match (typos, or
+// customers not in the master) are left unlinked and keep their stored name —
+// re-picking the customer on the bargain links them. Runs once (per new links).
+export async function backfillSalesBargainCustomers(): Promise<void> {
+  const c = getClient()
+  const rows = await c.execute(
+    'SELECT id, customer FROM sales_bargains WHERE customer_id IS NULL AND customer IS NOT NULL'
+  )
+  if (!rows.rows.length) return
+  const custs = await c.execute('SELECT id, name FROM customers')
+  const byName = new Map<string, number>()
+  for (const cu of custs.rows) {
+    byName.set(String(cu.name || '').trim().toLowerCase(), Number(cu.id))
+  }
+  let linked = 0
+  for (const r of rows.rows) {
+    const id = byName.get(String(r.customer || '').trim().toLowerCase())
+    if (!id) continue
+    await c.execute({ sql: 'UPDATE sales_bargains SET customer_id = ? WHERE id = ?', args: [id, Number(r.id)] })
+    linked++
+  }
+  if (linked > 0) console.log(`[sales] linked ${linked} sales bargains to the customer master`)
 }

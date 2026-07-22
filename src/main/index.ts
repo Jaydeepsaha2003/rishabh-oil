@@ -5,7 +5,7 @@ import { registerUpdater } from './updater'
 import { initDb } from './db'
 import { backfillJournal } from './journal'
 import { backfillOrderStatuses } from './orders'
-import { backfillSalesGst } from './sales'
+import { backfillSalesGst, backfillSalesBargainCustomers } from './sales'
 import { seedDefaultAdmin } from './auth'
 import { seedProducts, seedFormulations, seedPackagings } from './seed'
 import { cleanupLogs } from './access'
@@ -48,6 +48,7 @@ app.whenReady().then(async () => {
   await initDb()
   await backfillJournal().catch((e) => console.error('[journal] backfill failed:', e))
   await backfillSalesGst().catch((e) => console.error('[sales] GST backfill failed:', e))
+  await backfillSalesBargainCustomers().catch((e) => console.error('[sales] bargain-customer link failed:', e))
   await backfillOrderStatuses().catch((e) => console.error('[orders] status backfill failed:', e))
   await seedDefaultAdmin().catch((e) => console.error('[auth] seed failed:', e))
   await seedProducts().catch((e) => console.error('[seed] products failed:', e))

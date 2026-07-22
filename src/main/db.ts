@@ -162,6 +162,9 @@ const MIGRATIONS = [
   // rate applied and the computed amount).
   'ALTER TABLE sales_bargains ADD COLUMN gst_pct REAL NOT NULL DEFAULT 0',
   "ALTER TABLE sales_bargains ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
+  // Link the sales bargain to the customer master by id, so renaming a customer
+  // reflects everywhere (the stored name is kept only as a fallback label).
+  'ALTER TABLE sales_bargains ADD COLUMN customer_id INTEGER',
   'ALTER TABLE sales ADD COLUMN gst_pct REAL NOT NULL DEFAULT 0',
   'ALTER TABLE sales ADD COLUMN gst_amount REAL NOT NULL DEFAULT 0',
   "ALTER TABLE sales ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
