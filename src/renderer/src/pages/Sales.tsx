@@ -735,6 +735,17 @@ function SalesTab({
                   <div className="flex h-9 items-center rounded-md bg-white px-3 text-sm font-medium tabular-nums">{formatINR(transportAmt)}</div>
                 </div>
                 <p className="col-span-3 text-[11px] text-sky-800">Posted to the transporter ledger (we owe them) and recovered from the customer.</p>
+                {(() => {
+                  const t = transporters.find((x) => String(x.id) === String(form.transporter_id))
+                  if (!t || !Number(t.reverse_charge)) return null
+                  const rcmGst = Math.round(transportAmt * (Number(t.gst_pct) || 0) / 100 * 100) / 100
+                  return (
+                    <p className="col-span-3 rounded border border-orange-300 bg-orange-50 px-2 py-1.5 text-[11px] text-orange-800">
+                      <b>Reverse charge (RCM)</b> — this transporter is billed without GST. GST of
+                      {' '}<b>{formatINR(rcmGst)}</b> ({Number(t.gst_pct) || 0}%) is self-accounted by you under RCM, not paid to the transporter.
+                    </p>
+                  )
+                })()}
               </div>
             )}
 

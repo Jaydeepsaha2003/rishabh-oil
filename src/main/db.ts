@@ -183,6 +183,9 @@ const MIGRATIONS = [
   'ALTER TABLE sales ADD COLUMN unloaded_date TEXT',
   // Existing delivered sales: assume unloaded on the sale date.
   "UPDATE sales SET unloaded_date = sale_date WHERE dispatch_stage = 'unloaded' AND unloaded_date IS NULL",
+  // Reverse-charge (RCM) flag for individual transporters (GTA). Informational
+  // for now — freight is billed without GST and GST is self-accounted by us.
+  'ALTER TABLE transporters ADD COLUMN reverse_charge INTEGER NOT NULL DEFAULT 0',
   // Consignment stock: supplier goods lying at our place, off-books until
   // invoiced. Created here (not in SCHEMA_SQL) so it also lands on existing DBs.
   `CREATE TABLE IF NOT EXISTS consignment_stock (

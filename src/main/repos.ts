@@ -35,6 +35,7 @@ const TABLES: Record<string, string[]> = {
     'tds_threshold',
     'tds_pct_above',
     'default_rate_per_ton',
+    'reverse_charge',
     'active'
   ],
   customers: [
