@@ -26,3 +26,12 @@ export function formatDate(value: string | null | undefined): string {
 export function todayISO(): string {
   return new Date().toISOString().slice(0, 10)
 }
+
+// Electron wraps IPC rejections as: Error invoking remote method 'x:y': Error: …
+// Strip that plumbing so users see only the meaningful message.
+export function errText(e: unknown): string {
+  let m = e instanceof Error ? e.message : String(e)
+  m = m.replace(/^Error invoking remote method '[^']*':\s*/i, '')
+  m = m.replace(/^(?:Uncaught \(in promise\)\s*)?Error:\s*/i, '')
+  return m.trim()
+}

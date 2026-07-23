@@ -59,9 +59,12 @@ interface SelectProps {
   onValueChange?: (value: string) => void
   disabled?: boolean
   children?: React.ReactNode
+  // Show the search box. Defaults to auto: only when the list is long enough to
+  // warrant it (short lists like a status/type picker don't need a search box).
+  searchable?: boolean
 }
 
-function Select({ value, onValueChange, disabled, children }: SelectProps): React.JSX.Element {
+function Select({ value, onValueChange, disabled, children, searchable }: SelectProps): React.JSX.Element {
   const [open, setOpen] = React.useState(false)
   const [query, setQuery] = React.useState('')
   const [highlight, setHighlight] = React.useState(0)
@@ -86,6 +89,7 @@ function Select({ value, onValueChange, disabled, children }: SelectProps): Reac
   const items: ItemDef[] = []
   collectItems(contentChildren, items)
   const current = String(value ?? '')
+  const showSearch = searchable ?? items.length > 8
 
   const toggle = React.useCallback(() => {
     if (!disabled) setOpen((o) => !o)
@@ -106,9 +110,10 @@ function Select({ value, onValueChange, disabled, children }: SelectProps): Reac
     if (!open) return
     setQuery('')
     setHighlight(0)
+    if (!showSearch) return
     const id = setTimeout(() => inputRef.current?.focus(), 0)
     return () => clearTimeout(id)
-  }, [open])
+  }, [open, showSearch])
 
   const q = query.trim().toLowerCase()
   const filtered = q
@@ -148,21 +153,23 @@ function Select({ value, onValueChange, disabled, children }: SelectProps): Reac
               contentClassName
             )}
           >
-            <div className="flex items-center gap-2 border-b px-3">
-              <Search className="h-4 w-4 shrink-0 opacity-50" />
-              <input
-                ref={inputRef}
-                autoFocus
-                value={query}
-                onChange={(e) => {
-                  setQuery(e.target.value)
-                  setHighlight(0)
-                }}
-                onKeyDown={onKeyDown}
-                placeholder="Search…"
-                className="h-10 w-full bg-transparent py-2 text-sm normal-case outline-none placeholder:text-muted-foreground"
-              />
-            </div>
+            {showSearch && (
+              <div className="flex items-center gap-2 border-b px-3">
+                <Search className="h-4 w-4 shrink-0 opacity-50" />
+                <input
+                  ref={inputRef}
+                  autoFocus
+                  value={query}
+                  onChange={(e) => {
+                    setQuery(e.target.value)
+                    setHighlight(0)
+                  }}
+                  onKeyDown={onKeyDown}
+                  placeholder="Search…"
+                  className="h-10 w-full bg-transparent py-2 text-sm normal-case outline-none placeholder:text-muted-foreground"
+                />
+              </div>
+            )}
             <div className="max-h-[min(16rem,50vh)] overflow-y-auto p-1">
               {filtered.length === 0 ? (
                 <div className="py-6 text-center text-sm text-muted-foreground">No results.</div>

@@ -34,7 +34,7 @@ export async function stockLevels(): Promise<Row[]> {
      JOIN production p ON p.id = i.production_id WHERE p.company_id = ? GROUP BY i.product_id`
   )
   const sold = await sumMap(
-    "SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status = 'done' AND company_id = ? GROUP BY product_id"
+    "SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status = 'done' AND track_stock = 1 AND company_id = ? GROUP BY product_id"
   )
   // Inter-company transfers: in = received from another company, out = sent away.
   const transferredIn = await sumMap(
@@ -80,7 +80,7 @@ async function productStockForCompany(companyId: number, productId: number): Pro
   const rec = await one("SELECT COALESCE(SUM(received_qty), 0) AS q FROM orders WHERE status = 'received' AND company_id = ? AND oil_type_id = ?")
   const prod = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM production WHERE company_id = ? AND product_id = ?')
   const cons = await one('SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE p.company_id = ? AND i.product_id = ?')
-  const sld = await one("SELECT COALESCE(SUM(qty), 0) AS q FROM sales WHERE status = 'done' AND company_id = ? AND product_id = ?")
+  const sld = await one("SELECT COALESCE(SUM(qty), 0) AS q FROM sales WHERE status = 'done' AND track_stock = 1 AND company_id = ? AND product_id = ?")
   const tIn = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE to_company_id = ? AND product_id = ?')
   const tOut = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE from_company_id = ? AND product_id = ?')
   return rec + prod + tIn - cons - sld - tOut
@@ -114,7 +114,7 @@ export async function productStockAvailable(
     exP ? [cid, productId, exP] : [cid, productId]
   )
   const sld = await one(
-    `SELECT COALESCE(SUM(qty), 0) AS q FROM sales WHERE status = 'done' AND company_id = ? AND product_id = ?${exS ? ' AND id <> ?' : ''}`,
+    `SELECT COALESCE(SUM(qty), 0) AS q FROM sales WHERE status = 'done' AND track_stock = 1 AND company_id = ? AND product_id = ?${exS ? ' AND id <> ?' : ''}`,
     exS ? [cid, productId, exS] : [cid, productId]
   )
   const tIn = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE to_company_id = ? AND product_id = ?', [cid, productId])
@@ -203,7 +203,7 @@ export async function productionNeeds(): Promise<Row[]> {
   }
 
   const pending = await num(
-    "SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status != 'done' AND company_id = ? GROUP BY product_id",
+    "SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status != 'done' AND track_stock = 1 AND company_id = ? GROUP BY product_id",
     'pid'
   )
 

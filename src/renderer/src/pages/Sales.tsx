@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Pencil, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, Pencil, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -31,7 +31,7 @@ import {
 import { PageHeader } from '@/components/PageHeader'
 import { UomSelect } from '@/components/UomSelect'
 import { DatePicker } from '@/components/ui/date-picker'
-import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
+import { errText, formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -125,6 +125,9 @@ function SalesTab({
       qty: '',
       rate: '',
       dispatch_stage: 'pending',
+      loaded_date: '',
+      transit_date: '',
+      unloaded_date: '',
       gst_pct: '',
       gst_type: 'CGST_SGST',
       sale_type: 'LOOSE',
@@ -166,6 +169,9 @@ function SalesTab({
       qty: row.qty ?? '',
       rate: row.rate ?? '',
       dispatch_stage: row.dispatch_stage ?? (row.status === 'done' ? 'unloaded' : 'pending'),
+      loaded_date: row.loaded_date ?? '',
+      transit_date: row.transit_date ?? '',
+      unloaded_date: row.unloaded_date ?? '',
       gst_pct: row.gst_pct ?? '',
       gst_type: row.gst_type ?? 'CGST_SGST',
       sale_type: row.sale_type ?? 'LOOSE',
@@ -293,8 +299,26 @@ function SalesTab({
         }
       }
       const payload = { ...form, product_id: Number(form.product_id), sales_bargain_id: bargainId }
-      if (editing) await window.api.sales.update(editing.id as number, payload)
-      else await window.api.sales.create(payload)
+      const submit = async (force: boolean): Promise<void> => {
+        const p = force ? { ...payload, force_no_stock: true } : payload
+        if (editing) await window.api.sales.update(editing.id as number, p)
+        else await window.api.sales.create(p)
+      }
+      try {
+        await submit(false)
+      } catch (e) {
+        const msg = errText(e)
+        // Dispatched but no stock → offer an off-stock (untracked) save.
+        if (/stock/i.test(msg)) {
+          const go = window.confirm(
+            `${msg}\n\nSave and dispatch anyway WITHOUT booking stock? This sale won't draw from or affect finished-goods stock (untracked).`
+          )
+          if (!go) { setSaving(false); return }
+          await submit(true)
+        } else {
+          throw e
+        }
+      }
       toast.success(
         excess?.mode === 'extend'
           ? `Sale saved — bargain extended by ${formatNum(excess.shortfall)}`
@@ -304,20 +328,37 @@ function SalesTab({
       setExcess(null)
       await load()
     } catch (e) {
-      toast.error((e as Error).message)
+      toast.error(errText(e))
     } finally {
       setSaving(false)
     }
   }
 
   async function changeStage(row: Row, stage: string): Promise<void> {
+    const label = DISPATCH_STAGES.find((x) => x.value === stage)?.label || stage
+    const today = todayISO()
     try {
-      await window.api.sales.setStage(row.id as number, stage)
-      const label = DISPATCH_STAGES.find((x) => x.value === stage)?.label || stage
+      await window.api.sales.setStage(row.id as number, stage, false, today)
       toast.success(`Marked ${label}`)
       await load()
     } catch (e) {
-      toast.error((e as Error).message)
+      const msg = errText(e)
+      // Not enough stock → offer an off-stock (untracked) dispatch on confirm.
+      if (/stock/i.test(msg)) {
+        const go = window.confirm(
+          `${msg}\n\nDispatch anyway WITHOUT booking stock? This sale will be marked "${label}" but won't draw from or affect finished-goods stock (untracked).`
+        )
+        if (!go) return
+        try {
+          await window.api.sales.setStage(row.id as number, stage, true, today)
+          toast.success(`Marked ${label} — off-stock (untracked)`)
+          await load()
+        } catch (e2) {
+          toast.error(errText(e2))
+        }
+        return
+      }
+      toast.error(msg)
     }
   }
 
@@ -328,7 +369,7 @@ function SalesTab({
       toast.success('Deleted')
       await load()
     } catch (e) {
-      toast.error((e as Error).message)
+      toast.error(errText(e))
     }
   }
 
@@ -336,31 +377,28 @@ function SalesTab({
     <div>
       {!formPage && (
       <div className="overflow-x-auto rounded-lg border bg-card">
-        <Table className="min-w-[900px]">
+        <Table className="min-w-[800px]">
           <TableHeader>
             <TableRow>
-              <TableHead>Date</TableHead>
-              <TableHead>Invoice</TableHead>
-              <TableHead>Customer</TableHead>
-              <TableHead>Product</TableHead>
-              <TableHead>Bargain</TableHead>
-              <TableHead className="text-right">Qty</TableHead>
-              <TableHead className="text-right">In stock</TableHead>
-              <TableHead className="text-right">Amount</TableHead>
-              <TableHead className="w-[150px]">Dispatch</TableHead>
-              <TableHead className="w-[100px] text-right">Actions</TableHead>
+              <TableHead className="w-[130px]">Date / Invoice</TableHead>
+              <TableHead>Customer &amp; bargain</TableHead>
+              <TableHead className="w-[110px]">Product</TableHead>
+              <TableHead className="w-[110px] text-right">Qty</TableHead>
+              <TableHead className="w-[130px] text-right">Amount</TableHead>
+              <TableHead className="w-[220px]">Dispatch</TableHead>
+              <TableHead className="w-[84px] text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
                   Loading…
                 </TableCell>
               </TableRow>
             ) : rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
                   No sales yet.
                 </TableCell>
               </TableRow>
@@ -368,33 +406,81 @@ function SalesTab({
               rows.map((row) => {
                 const inStock = stock[row.product_id as number]?.stock ?? 0
                 const stg = stageInfo(row)
+                const idx = DISPATCH_STAGES.findIndex((x) => x.value === stg.value)
+                const prevStage = idx > 0 ? DISPATCH_STAGES[idx - 1] : null
+                const nextStage = idx < DISPATCH_STAGES.length - 1 ? DISPATCH_STAGES[idx + 1] : null
                 const short = stg.value === 'pending' && Number(row.qty) > Number(inStock)
+                const untracked = Number(row.track_stock) === 0
+                const stageDate =
+                  stg.value === 'loaded' ? row.loaded_date
+                  : stg.value === 'transit' ? row.transit_date
+                  : stg.value === 'unloaded' ? row.unloaded_date
+                  : null
                 return (
                   <TableRow key={row.id as number}>
-                    <TableCell>{formatDate(row.sale_date)}</TableCell>
-                    <TableCell>{row.invoice_no || '—'}</TableCell>
-                    <TableCell>{row.customer || '—'}</TableCell>
-                    <TableCell className="font-medium">{row.product_name}</TableCell>
-                    <TableCell className="text-muted-foreground">{row.sales_bargain_no || '—'}</TableCell>
-                    <TableCell className="text-right tabular-nums">{formatNum(row.qty)}</TableCell>
-                    <TableCell className={`text-right tabular-nums ${short ? 'text-amber-700' : 'text-muted-foreground'}`}>
-                      {formatNum(inStock)}
+                    <TableCell className="align-top">
+                      <div className="whitespace-nowrap">{formatDate(row.sale_date)}</div>
+                      <div className="truncate text-xs text-muted-foreground">{row.invoice_no || '—'}</div>
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">{formatINR(row.amount)}</TableCell>
-                    <TableCell>
-                      <Select value={stg.value} onValueChange={(v) => changeStage(row, v)}>
-                        <SelectTrigger className="h-8">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {DISPATCH_STAGES.map((s) => (
-                            <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                    <TableCell className="align-top">
+                      <div className="truncate font-medium" title={row.customer || ''}>{row.customer || '—'}</div>
+                      <div className="truncate text-xs text-muted-foreground" title={row.sales_bargain_no || ''}>
+                        {row.sales_bargain_no || 'No bargain'}
+                      </div>
                     </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-1">
+                    <TableCell className="align-top">
+                      <div className="truncate font-medium" title={row.product_name}>{row.product_name}</div>
+                    </TableCell>
+                    <TableCell className="align-top text-right tabular-nums">
+                      <div>{formatNum(row.qty)}</div>
+                      <div className={`text-xs ${short ? 'text-amber-700' : 'text-muted-foreground'}`} title="Finished stock in hand">
+                        stk {formatNum(inStock)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="align-top text-right tabular-nums">{formatINR(row.amount)}</TableCell>
+                    <TableCell className="align-top">
+                      {/* Step-by-step dispatch: advance one stage at a time. */}
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          disabled={!prevStage}
+                          onClick={() => prevStage && changeStage(row, prevStage.value)}
+                          title={prevStage ? `Back to ${prevStage.label}` : 'At the first stage'}
+                          className="flex h-7 w-6 items-center justify-center rounded text-muted-foreground hover:bg-muted disabled:opacity-30"
+                        >
+                          <ChevronLeft className="h-4 w-4" />
+                        </button>
+                        <Badge variant={stg.badge} className="min-w-[76px] justify-center">{stg.label}</Badge>
+                        {nextStage ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 gap-1 px-2 text-xs"
+                            title={`Mark ${nextStage.label}`}
+                            onClick={() => changeStage(row, nextStage.value)}
+                          >
+                            {nextStage.label}
+                            <ChevronRight className="h-3.5 w-3.5" />
+                          </Button>
+                        ) : (
+                          <span className="flex items-center gap-0.5 pl-1 text-xs font-medium text-emerald-600" title="Delivered">
+                            <Check className="h-3.5 w-3.5" /> Done
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1 flex items-center gap-2">
+                        {stageDate && (
+                          <span className="text-[11px] text-muted-foreground">{stg.label} {formatDate(stageDate)}</span>
+                        )}
+                        {untracked && (
+                          <span className="text-[10px] font-medium uppercase tracking-wide text-orange-600" title="Dispatched without booking stock — not tracked">
+                            Off-stock
+                          </span>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell className="align-top text-right">
+                      <div className="flex justify-end gap-0.5">
                         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(row)}>
                           <Pencil className="h-4 w-4" />
                         </Button>
@@ -711,6 +797,30 @@ function SalesTab({
                 Pending is a commitment. Loaded / In transit / Unloaded mean the goods have left the factory — that deducts finished-goods stock (checked against availability).
               </p>
             </div>
+
+            {form.dispatch_stage && form.dispatch_stage !== 'pending' && (
+              <div className="grid grid-cols-1 gap-3 rounded-md border bg-muted/30 p-3 sm:grid-cols-3">
+                <div className="grid gap-1.5">
+                  <Label>Loaded date</Label>
+                  <DatePicker value={form.loaded_date ?? ''} onChange={(v) => setField('loaded_date', v)} />
+                </div>
+                {(form.dispatch_stage === 'transit' || form.dispatch_stage === 'unloaded') && (
+                  <div className="grid gap-1.5">
+                    <Label>In-transit date</Label>
+                    <DatePicker value={form.transit_date ?? ''} onChange={(v) => setField('transit_date', v)} />
+                  </div>
+                )}
+                {form.dispatch_stage === 'unloaded' && (
+                  <div className="grid gap-1.5">
+                    <Label>Unloaded date</Label>
+                    <DatePicker value={form.unloaded_date ?? ''} onChange={(v) => setField('unloaded_date', v)} />
+                  </div>
+                )}
+                <p className="text-[11px] text-muted-foreground sm:col-span-3">
+                  Left blank, each reached stage is stamped with today&apos;s date.
+                </p>
+              </div>
+            )}
           </div>
           <div className="mt-5 flex justify-end gap-2 border-t pt-4">
             <Button variant="outline" onClick={() => setFormPage(false)} disabled={saving}>
@@ -898,7 +1008,7 @@ function SalesBargainsTab(): React.JSX.Element {
       setOpen(false)
       await load()
     } catch (e) {
-      setError((e as Error).message)
+      setError(errText(e))
     } finally {
       setSaving(false)
     }
@@ -911,7 +1021,7 @@ function SalesBargainsTab(): React.JSX.Element {
       toast.success('Deleted')
       await load()
     } catch (e) {
-      toast.error((e as Error).message)
+      toast.error(errText(e))
     }
   }
 
@@ -940,7 +1050,7 @@ function SalesBargainsTab(): React.JSX.Element {
       setAdjustRow(null)
       await load()
     } catch (e) {
-      setAdjustError((e as Error).message)
+      setAdjustError(errText(e))
     } finally {
       setAdjustSaving(false)
     }

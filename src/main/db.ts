@@ -174,6 +174,15 @@ const MIGRATIONS = [
   // sales are treated as already unloaded/delivered.
   'ALTER TABLE sales ADD COLUMN dispatch_stage TEXT',
   "UPDATE sales SET dispatch_stage = 'unloaded' WHERE status = 'done' AND dispatch_stage IS NULL",
+  // Allow dispatching a sale without booking stock (off-stock / untracked) after
+  // an explicit confirmation. Such a sale does not draw from or affect stock.
+  'ALTER TABLE sales ADD COLUMN track_stock INTEGER NOT NULL DEFAULT 1',
+  // Date stamped at each dispatch stage (loaded → in transit → unloaded).
+  'ALTER TABLE sales ADD COLUMN loaded_date TEXT',
+  'ALTER TABLE sales ADD COLUMN transit_date TEXT',
+  'ALTER TABLE sales ADD COLUMN unloaded_date TEXT',
+  // Existing delivered sales: assume unloaded on the sale date.
+  "UPDATE sales SET unloaded_date = sale_date WHERE dispatch_stage = 'unloaded' AND unloaded_date IS NULL",
   // Consignment stock: supplier goods lying at our place, off-books until
   // invoiced. Created here (not in SCHEMA_SQL) so it also lands on existing DBs.
   `CREATE TABLE IF NOT EXISTS consignment_stock (

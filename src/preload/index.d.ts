@@ -129,7 +129,7 @@ export interface Api {
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     setStatus: (id: number, status: string) => Promise<{ id: number }>
-    setStage: (id: number, stage: string) => Promise<{ id: number }>
+    setStage: (id: number, stage: string, force?: boolean, date?: string) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
   }
   salesBargains: {

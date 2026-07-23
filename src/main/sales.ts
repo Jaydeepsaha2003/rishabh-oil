@@ -40,6 +40,33 @@ function stageOf(v: Row): DispatchStage {
 const isDispatched = (stage: DispatchStage): boolean => stage !== 'pending'
 const statusForStage = (stage: DispatchStage): 'pending' | 'done' => (isDispatched(stage) ? 'done' : 'pending')
 
+const STAGE_ORDER: DispatchStage[] = ['pending', 'loaded', 'transit', 'unloaded']
+
+// Resolve the three stage dates for a target stage: keep/carry any dates for
+// stages up to the target (stamping `today` where missing), clear dates for
+// stages beyond it. `src` supplies any explicitly-provided dates (edit form).
+function resolveStageDates(
+  stage: DispatchStage,
+  src: Record<string, unknown>,
+  today: string
+): { loaded_date: string | null; transit_date: string | null; unloaded_date: string | null } {
+  const t = STAGE_ORDER.indexOf(stage)
+  const val = (x: unknown): string | null => (x ? String(x) : null)
+  let loaded = t >= 1 ? val(src.loaded_date) : null
+  let transit = t >= 2 ? val(src.transit_date) : null
+  let unloaded = t >= 3 ? val(src.unloaded_date) : null
+  if (t >= 1 && !loaded) loaded = today
+  if (t >= 2 && !transit) transit = today
+  if (t >= 3 && !unloaded) unloaded = today
+  return { loaded_date: loaded, transit_date: transit, unloaded_date: unloaded }
+}
+
+// Today in local time (YYYY-MM-DD). Fine in the main process (not a workflow).
+function todayLocal(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
 
@@ -414,8 +441,11 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   }
   const stage = stageOf(v)
   const status = statusForStage(stage)
-  // A sale created already-dispatched must have the finished stock to back it.
-  if (isDispatched(stage)) {
+  const dates = resolveStageDates(stage, v, todayLocal())
+  // Off-stock: dispatch is allowed without booking stock only when explicitly
+  // forced (confirmed in the UI). Such a sale is not stock-tracked.
+  const trackStock = isDispatched(stage) && v.force_no_stock ? 0 : 1
+  if (isDispatched(stage) && trackStock === 1) {
     await assertFinishedStock(productId, qty, await productLabel(productId))
   }
   const transportAmount = String(v.freight_term) === 'DLD'
@@ -423,9 +453,9 @@ export async function createSale(v: Row): Promise<{ id: number }> {
     : 0
   const res = await getClient().execute({
     sql: `INSERT INTO sales (company_id, sale_date, invoice_no, customer, customer_id, product_id, sales_bargain_id,
-            qty, uom, rate, amount, gst_pct, gst_amount, gst_type, status, dispatch_stage, note, sale_type, packaging_id, boxes, pouches, freight_term,
+            qty, uom, rate, amount, gst_pct, gst_amount, gst_type, status, dispatch_stage, track_stock, loaded_date, transit_date, unloaded_date, note, sale_type, packaging_id, boxes, pouches, freight_term,
             transporter_id, transport_rate, transport_amount)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       v.sale_date,
@@ -443,6 +473,10 @@ export async function createSale(v: Row): Promise<{ id: number }> {
       v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
       status,
       stage,
+      trackStock,
+      dates.loaded_date,
+      dates.transit_date,
+      dates.unloaded_date,
       v.note || null,
       v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
       v.packaging_id ? n(v.packaging_id) : null,
@@ -481,9 +515,11 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   }
   const stage = stageOf(v)
   const status = statusForStage(stage)
+  const dates = resolveStageDates(stage, v, todayLocal())
   // Keeping/putting this sale in a dispatched stage must be backed by finished
-  // stock (excluding this sale's own prior deduction).
-  if (isDispatched(stage)) {
+  // stock unless explicitly forced off-stock (untracked).
+  const trackStock = isDispatched(stage) && v.force_no_stock ? 0 : 1
+  if (isDispatched(stage) && trackStock === 1) {
     await assertFinishedStock(productId, qty, await productLabel(productId), id)
   }
   const transportAmount = String(v.freight_term) === 'DLD'
@@ -491,7 +527,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
     : 0
   await getClient().execute({
     sql: `UPDATE sales SET sale_date = ?, invoice_no = ?, customer = ?, customer_id = ?, product_id = ?, sales_bargain_id = ?,
-          qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, status = ?, dispatch_stage = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
+          qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, status = ?, dispatch_stage = ?, track_stock = ?, loaded_date = ?, transit_date = ?, unloaded_date = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
           pouches = ?, freight_term = ?, transporter_id = ?, transport_rate = ?, transport_amount = ? WHERE id = ?`,
     args: [
       v.sale_date,
@@ -509,6 +545,10 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
       status,
       stage,
+      trackStock,
+      dates.loaded_date,
+      dates.transit_date,
+      dates.unloaded_date,
       v.note || null,
       v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
       v.packaging_id ? n(v.packaging_id) : null,
@@ -530,23 +570,33 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
 // Move a dispatch through its stages (pending → loaded → transit → unloaded).
 // Advancing from pending into any dispatched stage draws finished stock (guarded);
 // dropping back to pending releases it. Moving between dispatched stages is free.
-export async function setSaleStage(id: number, stageIn: string): Promise<{ id: number }> {
+export async function setSaleStage(id: number, stageIn: string, force = false, dateIn?: string): Promise<{ id: number }> {
   const stage = stageOf({ dispatch_stage: stageIn })
   const status = statusForStage(stage)
   const r = await getClient().execute({
-    sql: 'SELECT product_id, qty, status FROM sales WHERE id = ?',
+    sql: 'SELECT product_id, qty, status, track_stock, loaded_date, transit_date, unloaded_date FROM sales WHERE id = ?',
     args: [id]
   })
   if (!r.rows.length) throw new Error('Sale not found')
   const row = r.rows[0]
-  // Only re-check stock when transitioning from not-dispatched into dispatched.
-  if (isDispatched(stage) && String(row.status) !== 'done') {
-    const pid = n(row.product_id)
-    await assertFinishedStock(pid, n(row.qty), await productLabel(pid), id)
+  const wasDispatched = String(row.status) === 'done'
+  let trackStock = n(row.track_stock)
+  if (!isDispatched(stage)) {
+    // Back to pending → release stock and re-enable tracking for next time.
+    trackStock = 1
+  } else if (!wasDispatched) {
+    // Dispatching now: force → off-stock (untracked); otherwise require stock.
+    trackStock = force ? 0 : 1
+    if (trackStock === 1) {
+      const pid = n(row.product_id)
+      await assertFinishedStock(pid, n(row.qty), await productLabel(pid), id)
+    }
   }
+  // Stamp the reached stage's date (carrying earlier ones, clearing later ones).
+  const dates = resolveStageDates(stage, row as unknown as Record<string, unknown>, dateIn || todayLocal())
   await getClient().execute({
-    sql: 'UPDATE sales SET status = ?, dispatch_stage = ? WHERE id = ?',
-    args: [status, stage, id]
+    sql: 'UPDATE sales SET status = ?, dispatch_stage = ?, track_stock = ?, loaded_date = ?, transit_date = ?, unloaded_date = ? WHERE id = ?',
+    args: [status, stage, trackStock, dates.loaded_date, dates.transit_date, dates.unloaded_date, id]
   })
   return { id }
 }

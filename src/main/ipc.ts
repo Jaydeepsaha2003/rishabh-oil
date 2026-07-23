@@ -407,8 +407,8 @@ export function registerIpc(): void {
   handle('sales:setStatus', (_e, { id, status }: { id: number; status: string }) =>
     setSaleStatus(id, status)
   )
-  handle('sales:setStage', (_e, { id, stage }: { id: number; stage: string }) =>
-    setSaleStage(id, stage)
+  handle('sales:setStage', (_e, { id, stage, force, date }: { id: number; stage: string; force?: boolean; date?: string }) =>
+    setSaleStage(id, stage, force, date)
   )
   handle('sales:delete', (_e, { id }: { id: number }) => deleteSale(id))
 
