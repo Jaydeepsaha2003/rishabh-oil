@@ -191,6 +191,26 @@ const MIGRATIONS = [
   // out entries link the sale being dispatched.
   "ALTER TABLE gate_entries ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'",
   'ALTER TABLE gate_entries ADD COLUMN sale_id INTEGER',
+  // Approval queue: master-list creations by non-admins park here (on hold)
+  // until an admin approves (inserts into the real table) or rejects (reason
+  // shown back to the requester). Real master tables only ever hold approved
+  // rows, so existing dropdowns/consumers need no filtering.
+  `CREATE TABLE IF NOT EXISTS approval_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_name TEXT NOT NULL,
+    action TEXT NOT NULL DEFAULT 'create',
+    payload TEXT NOT NULL,
+    label TEXT,
+    requested_by INTEGER,
+    requested_by_name TEXT,
+    requested_at TEXT NOT NULL DEFAULT (datetime('now')),
+    status TEXT NOT NULL DEFAULT 'pending',
+    decided_by INTEGER,
+    decided_by_name TEXT,
+    decided_at TEXT,
+    reason TEXT,
+    created_id INTEGER
+  )`,
   // Consignment stock: supplier goods lying at our place, off-books until
   // invoiced. Created here (not in SCHEMA_SQL) so it also lands on existing DBs.
   `CREATE TABLE IF NOT EXISTS consignment_stock (

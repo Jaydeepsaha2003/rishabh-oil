@@ -26,6 +26,7 @@ export const MODULES: ModuleDef[] = [
   { key: 'ports', label: 'Ports' },
   { key: 'brokers', label: 'Brokers' },
   { key: 'packaging', label: 'Packed SKU' },
+  { key: 'approvals', label: 'Approvals' },
   { key: 'settings', label: 'Settings' }
 ]
 
@@ -34,6 +35,9 @@ type PermUser = Pick<AppUser, 'role' | 'permissions'> | null | undefined
 // 'write' (full) > 'read' (view only) > 'none'. Admin is always 'write'.
 export function permLevel(user: PermUser, key: string): 'none' | 'read' | 'write' {
   if (!user) return 'none'
+  // Everyone can see Approvals: admins act on the queue, others track their
+  // own submitted masters (and see rejection reasons).
+  if (key === 'approvals') return 'write'
   if (user.role === 'admin') return 'write'
   const p = user.permissions
   if (Array.isArray(p)) return p.includes(key) ? 'write' : 'none'

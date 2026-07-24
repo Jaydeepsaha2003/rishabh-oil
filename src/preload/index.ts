@@ -16,12 +16,21 @@ const api = {
     list: (table: string): Promise<Row[]> => ipcRenderer.invoke('data:list', { table }),
     get: (table: string, id: number): Promise<Row | null> =>
       ipcRenderer.invoke('data:get', { table, id }),
-    create: (table: string, values: Row): Promise<{ id: number }> =>
+    create: (table: string, values: Row): Promise<{ id?: number; pending?: boolean }> =>
       ipcRenderer.invoke('data:create', { table, values }),
     update: (table: string, id: number, values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('data:update', { table, id, values }),
     remove: (table: string, id: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('data:delete', { table, id })
+  },
+  approvals: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('approvals:list'),
+    mine: (): Promise<Row[]> => ipcRenderer.invoke('approvals:mine'),
+    pendingCount: (): Promise<number> => ipcRenderer.invoke('approvals:pendingCount'),
+    approve: (id: number): Promise<{ id: number; createdId: number }> =>
+      ipcRenderer.invoke('approvals:approve', { id }),
+    reject: (id: number, reason: string): Promise<{ id: number }> =>
+      ipcRenderer.invoke('approvals:reject', { id, reason })
   },
   settings: {
     get: (key: string): Promise<string | null> => ipcRenderer.invoke('settings:get', { key }),

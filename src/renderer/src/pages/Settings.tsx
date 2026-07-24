@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { Pencil, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, Pencil, Plus, Trash2 } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -23,13 +23,6 @@ import {
   TableHeader,
   TableRow
 } from '@/components/ui/table'
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
 import { PageHeader } from '@/components/PageHeader'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
@@ -151,6 +144,105 @@ function UsersManager(): React.JSX.Element {
     }
   }
 
+  function setAllPerms(level: 'none' | 'read' | 'write'): void {
+    setForm((p) => {
+      if (level === 'none') return { ...p, permissions: {} }
+      const perms: Record<string, string> = {}
+      for (const m of MODULES) perms[m.key] = level
+      return { ...p, permissions: perms }
+    })
+  }
+
+  // Full-page user access form (replaces the old modal for more room).
+  if (open) {
+    return (
+      <div>
+        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 border-b pb-3">
+          <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground" onClick={() => setOpen(false)}>
+            <ArrowLeft className="h-4 w-4" /> Back
+          </button>
+          <div className="h-4 border-l" />
+          <h2 className="text-base font-semibold">{editing ? `Edit user · ${editing.username}` : 'Create user & access'}</h2>
+        </div>
+
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,360px)_1fr]">
+          {/* Account details */}
+          <div className="space-y-4 rounded-xl border bg-card p-5">
+            <h3 className="text-sm font-semibold">Account</h3>
+            <div className="grid gap-1.5">
+              <Label>Full name</Label>
+              <Input value={form.full_name ?? ''} onChange={(e) => setField('full_name', e.target.value)} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Username *</Label>
+              <Input value={form.username ?? ''} onChange={(e) => setField('username', e.target.value)} disabled={!!editing} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Role</Label>
+              <Select value={form.role} onValueChange={(v) => setField('role', v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {ROLES.map((r) => <SelectItem key={r} value={r} className="capitalize">{r}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label>{editing ? 'New password (leave blank to keep)' : 'Password *'}</Label>
+              <Input type="password" value={form.password ?? ''} onChange={(e) => setField('password', e.target.value)} />
+            </div>
+            <div className="flex items-center justify-between rounded-md border px-3 py-1.5">
+              <span className="text-sm">Active</span>
+              <Switch checked={!!form.active} onCheckedChange={(v) => setField('active', v)} />
+            </div>
+          </div>
+
+          {/* Module access */}
+          <div className="space-y-3 rounded-xl border bg-card p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold">Module access</h3>
+              {form.role !== 'admin' && (
+                <div className="flex gap-1.5">
+                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setAllPerms('read')}>All read</Button>
+                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setAllPerms('write')}>All write</Button>
+                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setAllPerms('none')}>Clear</Button>
+                </div>
+              )}
+            </div>
+            {form.role === 'admin' ? (
+              <p className="rounded-md bg-muted px-3 py-6 text-center text-sm text-muted-foreground">
+                Admins have full read &amp; write access to every module.
+              </p>
+            ) : (
+              <>
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                  {MODULES.map((m) => (
+                    <div key={m.key} className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
+                      <span className="truncate">{m.label}</span>
+                      <Select value={(form.permissions || {})[m.key] || 'none'} onValueChange={(v) => setPerm(m.key, v)}>
+                        <SelectTrigger className="h-8 w-28 shrink-0"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">No access</SelectItem>
+                          <SelectItem value="read">Read</SelectItem>
+                          <SelectItem value="write">Read &amp; write</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">Read lets them view; Read &amp; write lets them add, edit and delete.</p>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2 border-t pt-4">
+          <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>Cancel</Button>
+          <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save user'}</Button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div>
       <div className="mb-3 flex items-center justify-between">
@@ -214,97 +306,6 @@ function UsersManager(): React.JSX.Element {
         </Table>
       </div>
 
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{editing ? `Edit ${editing.username}` : 'Add user'}</DialogTitle>
-          </DialogHeader>
-          <div className="grid gap-3">
-            <div className="grid gap-1.5">
-              <Label>Full name</Label>
-              <Input value={form.full_name ?? ''} onChange={(e) => setField('full_name', e.target.value)} />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5">
-                <Label>Username *</Label>
-                <Input
-                  value={form.username ?? ''}
-                  onChange={(e) => setField('username', e.target.value)}
-                  disabled={!!editing}
-                />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Role</Label>
-                <Select value={form.role} onValueChange={(v) => setField('role', v)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ROLES.map((r) => (
-                      <SelectItem key={r} value={r} className="capitalize">
-                        {r}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="grid gap-1.5">
-              <Label>{editing ? 'New password (leave blank to keep)' : 'Password *'}</Label>
-              <Input
-                type="password"
-                value={form.password ?? ''}
-                onChange={(e) => setField('password', e.target.value)}
-              />
-            </div>
-            <div className="flex items-center justify-between rounded-md border px-3 py-1.5">
-              <span className="text-sm">Active</span>
-              <Switch checked={!!form.active} onCheckedChange={(v) => setField('active', v)} />
-            </div>
-
-            {form.role === 'admin' ? (
-              <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
-                Admins have full read &amp; write access to every module.
-              </p>
-            ) : (
-              <div className="grid gap-1.5">
-                <Label>Module access</Label>
-                <div className="max-h-56 overflow-y-auto rounded-md border p-2">
-                  {MODULES.map((m) => (
-                    <div key={m.key} className="flex items-center justify-between gap-2 px-1 py-1 text-sm">
-                      <span>{m.label}</span>
-                      <Select
-                        value={(form.permissions || {})[m.key] || 'none'}
-                        onValueChange={(v) => setPerm(m.key, v)}
-                      >
-                        <SelectTrigger className="h-8 w-28">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">No access</SelectItem>
-                          <SelectItem value="read">Read</SelectItem>
-                          <SelectItem value="write">Read &amp; write</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  ))}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Read lets them view; Read &amp; write lets them add, edit and delete.
-                </p>
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>
-              Cancel
-            </Button>
-            <Button onClick={save} disabled={saving}>
-              {saving ? 'Saving…' : 'Save'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }
@@ -644,7 +645,7 @@ function UpdatePanel(): React.JSX.Element {
     <Card className="max-w-xl p-6">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="font-medium">Rishabh Oil</h3>
+          <h3 className="font-medium">Database Management Software</h3>
           <p className="text-sm text-muted-foreground">Current version {version || '—'}</p>
         </div>
         <Button onClick={check} disabled={checking || st === 'downloading'}>

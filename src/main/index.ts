@@ -18,7 +18,7 @@ function createWindow(): void {
     height: 800,
     show: false,
     autoHideMenuBar: true,
-    title: 'Rishabh Oil',
+    title: 'Database Management Software',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,

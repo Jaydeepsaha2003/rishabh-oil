@@ -152,10 +152,19 @@ export function EntityManager({
         if (fd.type === 'switch') v = v ? 1 : 0
         payload[fd.key] = v
       }
-      if (editingId == null) await window.api.data.create(table, payload)
-      else await window.api.data.update(table, editingId, payload)
-      setOpen(false)
-      toast.success(`${title} saved`)
+      if (editingId == null) {
+        const res = await window.api.data.create(table, payload)
+        setOpen(false)
+        if (res && res.pending) {
+          toast.success(`${title} submitted for admin approval — it will appear here once approved.`)
+        } else {
+          toast.success(`${title} saved`)
+        }
+      } else {
+        await window.api.data.update(table, editingId, payload)
+        setOpen(false)
+        toast.success(`${title} saved`)
+      }
       await load()
     } catch (e) {
       setError((e as Error).message)

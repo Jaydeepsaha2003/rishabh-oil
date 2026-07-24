@@ -11,9 +11,16 @@ export interface Api {
   data: {
     list: (table: string) => Promise<Row[]>
     get: (table: string, id: number) => Promise<Row | null>
-    create: (table: string, values: Row) => Promise<{ id: number }>
+    create: (table: string, values: Row) => Promise<{ id?: number; pending?: boolean }>
     update: (table: string, id: number, values: Row) => Promise<{ id: number }>
     remove: (table: string, id: number) => Promise<{ id: number }>
+  }
+  approvals: {
+    list: () => Promise<Row[]>
+    mine: () => Promise<Row[]>
+    pendingCount: () => Promise<number>
+    approve: (id: number) => Promise<{ id: number; createdId: number }>
+    reject: (id: number, reason: string) => Promise<{ id: number }>
   }
   settings: {
     get: (key: string) => Promise<string | null>

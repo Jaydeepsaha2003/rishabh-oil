@@ -10,7 +10,7 @@ interface Props {
 
 export function PageHeader({ title, subtitle, hint, actions }: Props): React.JSX.Element {
   return (
-    <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b bg-background/80 px-8 py-5 backdrop-blur">
+    <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b bg-background/80 px-8 py-5 pr-20 backdrop-blur">
       <div>
         <div className="flex items-center gap-1.5">
           <h2 className="text-xl font-semibold tracking-tight">{title}</h2>

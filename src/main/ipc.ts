@@ -83,6 +83,15 @@ import {
 } from './gate'
 import { listCompanies, setActiveCompany, getActiveCompanyId } from './company'
 import {
+  needsApproval,
+  submitApprovalRequest,
+  listApprovalRequests,
+  myApprovalRequests,
+  pendingApprovalCount,
+  approveRequest,
+  rejectRequest
+} from './approvals'
+import {
   listAccounts,
   createAccount,
   accountStatement,
@@ -221,7 +230,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^company:setActive$|^company:getActive$|^session:setUser$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^company:setActive$|^company:getActive$|^session:setUser$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -258,8 +267,8 @@ export function registerIpc(): void {
 
   handle('data:list', (_e, { table }: { table: string }) => list(table))
   handle('data:get', (_e, { table, id }: { table: string; id: number }) => get(table, id))
-  handle('data:create', (_e, { table, values }: { table: string; values: Row }) =>
-    create(table, values)
+  handle('data:create', async (_e, { table, values }: { table: string; values: Row }) =>
+    (await needsApproval(table)) ? submitApprovalRequest(table, values) : create(table, values)
   )
   handle(
     'data:update',
@@ -268,6 +277,14 @@ export function registerIpc(): void {
   )
   handle('data:delete', (_e, { table, id }: { table: string; id: number }) =>
     remove(table, id)
+  )
+
+  handle('approvals:list', () => listApprovalRequests())
+  handle('approvals:mine', () => myApprovalRequests())
+  handle('approvals:pendingCount', () => pendingApprovalCount())
+  handle('approvals:approve', (_e, { id }: { id: number }) => approveRequest(id))
+  handle('approvals:reject', (_e, { id, reason }: { id: number; reason: string }) =>
+    rejectRequest(id, reason)
   )
 
   handle('settings:get', (_e, { key }: { key: string }) => getSetting(key))

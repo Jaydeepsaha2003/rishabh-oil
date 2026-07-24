@@ -40,7 +40,7 @@ export function LoginScreen({ onLogin }: { onLogin: (u: AppUser) => void }): Rea
           <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-500 text-white shadow-lg">
             <Droplets className="h-7 w-7" />
           </div>
-          <h1 className="text-xl font-semibold text-slate-900">Welcome to Rishabh Oil</h1>
+          <h1 className="text-xl font-semibold text-slate-900">Database Management Software</h1>
           <p className="mt-1 text-sm text-slate-500">Sign in to your production workspace</p>
         </div>
 

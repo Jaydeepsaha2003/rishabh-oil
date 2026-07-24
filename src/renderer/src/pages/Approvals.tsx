@@ -1,0 +1,224 @@
+import { useCallback, useEffect, useState } from 'react'
+import { toast } from 'sonner'
+import { Check, Clock, X } from 'lucide-react'
+import { PageHeader } from '@/components/PageHeader'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Label } from '@/components/ui/label'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { formatDate, errText } from '@/lib/format'
+import { loadUser } from '@/lib/session'
+import { useLiveRefresh } from '@/lib/useLiveRefresh'
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Row = Record<string, any>
+
+// Friendly names for the master tables.
+const TABLE_LABEL: Record<string, string> = {
+  oil_types: 'Oil type',
+  products: 'Product',
+  suppliers: 'Supplier',
+  transporters: 'Transporter',
+  customers: 'Customer',
+  sources: 'Port',
+  uoms: 'UOM',
+  brokers: 'Broker',
+  packagings: 'Packed SKU'
+}
+const labelFor = (t: string): string => TABLE_LABEL[t] || t
+
+function statusBadge(status: string): React.JSX.Element {
+  if (status === 'approved') return <Badge variant="success">Approved</Badge>
+  if (status === 'rejected') return <Badge variant="destructive">Rejected</Badge>
+  return <Badge variant="warning">On hold</Badge>
+}
+
+// Compact preview of the parked payload (the fields entered).
+function payloadPreview(payload: string): string {
+  try {
+    const o = JSON.parse(payload) as Row
+    return Object.entries(o)
+      .filter(([k, v]) => k !== 'active' && v !== '' && v != null && v !== false)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(' · ')
+  } catch {
+    return ''
+  }
+}
+
+export function Approvals(): React.JSX.Element {
+  const user = loadUser()
+  const isAdmin = user?.role === 'admin'
+  const [rows, setRows] = useState<Row[]>([])
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState<number | null>(null)
+  const [rejectRow, setRejectRow] = useState<Row | null>(null)
+  const [reason, setReason] = useState('')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setRows(isAdmin ? await window.api.approvals.list() : await window.api.approvals.mine())
+    setLoading(false)
+  }, [isAdmin])
+
+  useEffect(() => { load() }, [load])
+  useLiveRefresh(load)
+
+  async function approve(row: Row): Promise<void> {
+    setBusy(row.id)
+    try {
+      await window.api.approvals.approve(row.id)
+      toast.success(`${labelFor(row.table_name)} “${row.label || ''}” approved`)
+      await load()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function doReject(): Promise<void> {
+    if (!rejectRow) return
+    if (!reason.trim()) return void toast.error('Enter a reason')
+    setBusy(rejectRow.id)
+    try {
+      await window.api.approvals.reject(rejectRow.id, reason.trim())
+      toast.success('Request rejected')
+      setRejectRow(null)
+      setReason('')
+      await load()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const pending = rows.filter((r) => r.status === 'pending')
+  const decided = rows.filter((r) => r.status !== 'pending')
+
+  return (
+    <>
+      <PageHeader
+        title="Approvals"
+        subtitle={isAdmin ? 'Review master-list creations submitted by users' : 'Your submitted master-list creations and their status'}
+        hint={isAdmin
+          ? 'When a non-admin adds a master (Products, Customers, Suppliers, Ports, etc.) it is held here until you approve (adds it to the database) or reject with a reason (shown back to the user).'
+          : 'Masters you add are held for admin approval. Approved items appear in their normal list; rejected ones show the reason here.'}
+      />
+      <div className="w-full space-y-6 p-6">
+        {/* Pending */}
+        <section>
+          <div className="mb-2 flex items-center gap-2">
+            <Clock className="h-4 w-4 text-amber-600" />
+            <h3 className="text-sm font-semibold">On hold</h3>
+            <Badge variant={pending.length ? 'warning' : 'muted'}>{pending.length}</Badge>
+          </div>
+          <div className="overflow-x-auto rounded-lg border bg-card">
+            <Table className="min-w-[720px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[120px]">Type</TableHead>
+                  <TableHead>Item</TableHead>
+                  <TableHead className="w-[150px]">Requested by</TableHead>
+                  <TableHead className="w-[110px]">When</TableHead>
+                  {isAdmin && <TableHead className="w-[110px] text-right">Decision</TableHead>}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {loading ? (
+                  <TableRow><TableCell colSpan={isAdmin ? 5 : 4} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+                ) : pending.length === 0 ? (
+                  <TableRow><TableCell colSpan={isAdmin ? 5 : 4} className="py-10 text-center text-muted-foreground">Nothing waiting for approval.</TableCell></TableRow>
+                ) : (
+                  pending.map((row) => (
+                    <TableRow key={row.id}>
+                      <TableCell><Badge variant="secondary">{labelFor(row.table_name)}</Badge></TableCell>
+                      <TableCell>
+                        <div className="font-medium">{row.label || '—'}</div>
+                        <div className="truncate text-xs text-muted-foreground" title={payloadPreview(row.payload)}>{payloadPreview(row.payload)}</div>
+                      </TableCell>
+                      <TableCell>{row.requested_by_name || '—'}</TableCell>
+                      <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(row.requested_at)}</TableCell>
+                      {isAdmin && (
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
+                            <Button size="icon" variant="ghost" className="h-8 w-8 text-emerald-600 hover:bg-emerald-50" title="Approve" disabled={busy === row.id} onClick={() => approve(row)}>
+                              <Check className="h-4 w-4" />
+                            </Button>
+                            <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive hover:bg-red-50" title="Reject" disabled={busy === row.id} onClick={() => { setRejectRow(row); setReason('') }}>
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </section>
+
+        {/* Decided history */}
+        <section>
+          <h3 className="mb-2 text-sm font-semibold text-muted-foreground">Recently decided</h3>
+          <div className="overflow-x-auto rounded-lg border bg-card">
+            <Table className="min-w-[720px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[120px]">Type</TableHead>
+                  <TableHead>Item</TableHead>
+                  <TableHead className="w-[110px]">Status</TableHead>
+                  <TableHead>Reason (if rejected)</TableHead>
+                  {isAdmin && <TableHead className="w-[150px]">Requested by</TableHead>}
+                  <TableHead className="w-[110px]">Decided</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {decided.length === 0 ? (
+                  <TableRow><TableCell colSpan={isAdmin ? 6 : 5} className="py-8 text-center text-muted-foreground">No decisions yet.</TableCell></TableRow>
+                ) : (
+                  decided.map((row) => (
+                    <TableRow key={row.id}>
+                      <TableCell><Badge variant="secondary">{labelFor(row.table_name)}</Badge></TableCell>
+                      <TableCell className="font-medium">{row.label || '—'}</TableCell>
+                      <TableCell>{statusBadge(row.status)}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{row.status === 'rejected' ? (row.reason || '—') : '—'}</TableCell>
+                      {isAdmin && <TableCell>{row.requested_by_name || '—'}</TableCell>}
+                      <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(row.decided_at)}</TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </section>
+      </div>
+
+      {/* Reject reason */}
+      <Dialog open={!!rejectRow} onOpenChange={(o) => { if (!o) { setRejectRow(null); setReason('') } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reject {rejectRow ? labelFor(rejectRow.table_name) : ''} “{rejectRow?.label || ''}”</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-1.5">
+            <Label>Reason *</Label>
+            <textarea
+              className="min-h-[90px] rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+              placeholder="Why is this being rejected? The requester will see this."
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setRejectRow(null); setReason('') }}>Cancel</Button>
+            <Button variant="destructive" onClick={doReject} disabled={busy === rejectRow?.id}>Reject</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}

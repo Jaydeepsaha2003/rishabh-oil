@@ -4,6 +4,7 @@ import {
   Boxes,
   Briefcase,
   Building2,
+  ClipboardCheck,
   Contact,
   CreditCard,
   DoorOpen,
@@ -51,6 +52,7 @@ export type Page =
   | 'ports'
   | 'brokers'
   | 'packaging'
+  | 'approvals'
 
 const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   dashboard: { label: 'Dashboard', icon: LayoutDashboard },
@@ -72,6 +74,7 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   ports: { label: 'Ports', icon: Anchor },
   brokers: { label: 'Brokers', icon: Briefcase },
   packaging: { label: 'Packaging', icon: Package },
+  approvals: { label: 'Approvals', icon: ClipboardCheck },
   settings: { label: 'Settings', icon: SettingsIcon }
 }
 
@@ -82,7 +85,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Sales', ids: ['salesBargains', 'sales'] },
   { label: 'Accounts', ids: ['payments', 'ledgers'] },
   { label: 'Masters', ids: ['suppliers', 'transporters', 'customers', 'ports', 'brokers', 'packaging'] },
-  { label: 'System', ids: ['settings'] }
+  { label: 'System', ids: ['approvals', 'settings'] }
 ]
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -172,8 +175,8 @@ export function Sidebar({
           </div>
           {expanded && (
             <div className="leading-tight">
-              <div className="text-sm font-semibold">Rishabh Oil</div>
-              <div className="text-[11px] text-muted-foreground">Production system</div>
+              <div className="text-sm font-semibold leading-tight">Database Management</div>
+              <div className="text-[11px] text-muted-foreground">Software</div>
             </div>
           )}
         </div>

@@ -24,6 +24,8 @@ import { Customers } from './pages/Customers'
 import { Ports } from './pages/Ports'
 import { Brokers } from './pages/Brokers'
 import { Packaging } from './pages/Packaging'
+import { Approvals } from './pages/Approvals'
+import { NotificationBell } from './components/NotificationBell'
 import { clearUser, loadUser, saveUser, type AppUser } from './lib/session'
 import { MODULES, canAccess } from './lib/modules'
 
@@ -262,8 +264,10 @@ function App(): React.JSX.Element {
         {view === 'ports' && <Ports />}
         {view === 'brokers' && <Brokers />}
         {view === 'packaging' && <Packaging />}
+        {view === 'approvals' && <Approvals />}
         {view === 'settings' && <Settings user={user} />}
       </main>
+      <NotificationBell user={user} onNavigate={(p) => navigate(p as Page)} />
       <UpdateBanner />
       <Toaster richColors position="bottom-right" />
     </div>
