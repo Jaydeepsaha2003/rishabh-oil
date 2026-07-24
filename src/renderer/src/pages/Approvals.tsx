@@ -58,8 +58,13 @@ export function Approvals(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    setRows(isAdmin ? await window.api.approvals.list() : await window.api.approvals.mine())
-    setLoading(false)
+    try {
+      setRows(isAdmin ? await window.api.approvals.list() : await window.api.approvals.mine())
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setLoading(false)
+    }
   }, [isAdmin])
 
   useEffect(() => { load() }, [load])

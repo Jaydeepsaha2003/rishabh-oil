@@ -61,7 +61,7 @@ export async function submitApprovalRequest(
 // Admin view: every request, newest first.
 export async function listApprovalRequests(): Promise<Row[]> {
   const res = await getClient().execute(
-    'SELECT * FROM approval_requests ORDER BY (status = "pending") DESC, id DESC'
+    "SELECT * FROM approval_requests ORDER BY (status = 'pending') DESC, id DESC"
   )
   return toPlain(res)
 }
