@@ -191,6 +191,13 @@ const MIGRATIONS = [
   // out entries link the sale being dispatched.
   "ALTER TABLE gate_entries ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'",
   'ALTER TABLE gate_entries ADD COLUMN sale_id INTEGER',
+  // Receipt classification + gross/tare weighment. Net (received_qty) = gross − tare.
+  "ALTER TABLE gate_entries ADD COLUMN rec_type TEXT NOT NULL DEFAULT 'OIL'",
+  'ALTER TABLE gate_entries ADD COLUMN gross_weight REAL',
+  'ALTER TABLE gate_entries ADD COLUMN tare_weight REAL',
+  // Optional manual gate no (the physical gate-register number) — the system
+  // serial (gate_entry_no) is always auto-assigned; this can be typed or blank.
+  'ALTER TABLE gate_entries ADD COLUMN ref_no TEXT',
   // Approval queue: master-list creations by non-admins park here (on hold)
   // until an admin approves (inserts into the real table) or rejects (reason
   // shown back to the requester). Real master tables only ever hold approved

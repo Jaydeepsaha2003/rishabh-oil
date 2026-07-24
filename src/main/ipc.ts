@@ -447,8 +447,8 @@ export function registerIpc(): void {
   handle('gate:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateGateEntry(id, values)
   )
-  handle('gate:complete', (_e, { id, receivedQty }: { id: number; receivedQty: number }) =>
-    completeGateEntry(id, receivedQty)
+  handle('gate:complete', (_e, { id, gross, tare }: { id: number; gross: number; tare: number }) =>
+    completeGateEntry(id, gross, tare)
   )
   handle('gate:delete', (_e, { id }: { id: number }) => deleteGateEntry(id))
 

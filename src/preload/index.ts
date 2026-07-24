@@ -209,8 +209,8 @@ const api = {
     create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('gate:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('gate:update', { id, values }),
-    complete: (id: number, receivedQty: number): Promise<{ id: number }> =>
-      ipcRenderer.invoke('gate:complete', { id, receivedQty }),
+    complete: (id: number, gross: number, tare: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('gate:complete', { id, gross, tare }),
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('gate:delete', { id })
   },
   lc: {

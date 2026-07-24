@@ -86,16 +86,19 @@ export async function createGateEntry(v: Row): Promise<{ id: number }> {
   const c = getClient()
   const direction = v.direction === 'out' ? 'out' : 'in'
   if (direction === 'out' && !v.sale_id) throw new Error('Select the sale being dispatched')
-  const gateNo = String(v.gate_entry_no || '').trim() || (await nextGateEntryNo(direction))
+  // The system serial is always auto-assigned fresh (authoritative, no stale
+  // preview / duplicates). The user's optional manual number lives in ref_no.
+  const gateNo = await nextGateEntryNo(direction)
   // Two-step flow: an entry without a weighed quantity stays 'pending' until
   // the weighbridge figure is entered, which completes the transaction.
   const status = v.status || (n(v.received_qty) > 0 ? 'completed' : 'pending')
   const res = await c.execute({
     sql: `INSERT INTO gate_entries
-      (gate_entry_no, entry_date, tanker_id, tanker_no, oil_type_id, dispatch_qty, received_qty, uom, status, note, direction, sale_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (gate_entry_no, ref_no, entry_date, tanker_id, tanker_no, oil_type_id, dispatch_qty, received_qty, uom, status, note, direction, sale_id, rec_type, gross_weight, tare_weight)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       gateNo,
+      v.ref_no ? String(v.ref_no).trim() : null,
       v.entry_date,
       v.tanker_id ? n(v.tanker_id) : null,
       v.tanker_no || null,
@@ -106,41 +109,61 @@ export async function createGateEntry(v: Row): Promise<{ id: number }> {
       status,
       v.note || null,
       direction,
-      v.sale_id ? n(v.sale_id) : null
+      v.sale_id ? n(v.sale_id) : null,
+      String(v.rec_type || 'OIL'),
+      v.gross_weight != null && v.gross_weight !== '' ? n(v.gross_weight) : null,
+      v.tare_weight != null && v.tare_weight !== '' ? n(v.tare_weight) : null
     ]
   })
   return { id: Number(res.lastInsertRowid) }
 }
 
-// Step 2 for the gateman: enter the weighed quantity and finish the entry.
-export async function completeGateEntry(id: number, receivedQty: number): Promise<{ id: number }> {
-  if (!Number.isFinite(receivedQty) || receivedQty <= 0) {
-    throw new Error('Enter the weighed quantity')
-  }
+// Step 2 for the gateman: enter gross & tare from the weighbridge; the net
+// (received qty) is gross − tare. Completes the entry.
+export async function completeGateEntry(
+  id: number,
+  gross: number,
+  tare: number
+): Promise<{ id: number }> {
+  const g = Number(gross)
+  const t = Number(tare) || 0
+  if (!Number.isFinite(g) || g <= 0) throw new Error('Enter the gross weight')
+  if (t < 0) throw new Error('Tare weight cannot be negative')
+  const net = Math.round((g - t) * 1000) / 1000
+  if (net <= 0) throw new Error('Net weight (gross − tare) must be greater than zero')
   await getClient().execute({
-    sql: "UPDATE gate_entries SET received_qty = ?, status = 'completed' WHERE id = ?",
-    args: [receivedQty, id]
+    sql: "UPDATE gate_entries SET gross_weight = ?, tare_weight = ?, received_qty = ?, status = 'completed' WHERE id = ?",
+    args: [g, t, net, id]
   })
   return { id }
 }
 
 export async function updateGateEntry(id: number, v: Row): Promise<{ id: number }> {
-  const status = n(v.received_qty) > 0 ? 'completed' : 'pending'
+  // If gross is provided, derive net from gross − tare; else use received_qty.
+  const gross = v.gross_weight != null && v.gross_weight !== '' ? n(v.gross_weight) : null
+  const tare = v.tare_weight != null && v.tare_weight !== '' ? n(v.tare_weight) : null
+  const received = gross != null ? Math.round((gross - (tare || 0)) * 1000) / 1000 : n(v.received_qty)
+  const status = received > 0 ? 'completed' : 'pending'
   await getClient().execute({
-    sql: `UPDATE gate_entries SET gate_entry_no = ?, entry_date = ?, tanker_id = ?, tanker_no = ?,
-          oil_type_id = ?, dispatch_qty = ?, received_qty = ?, uom = ?, status = ?, note = ?, sale_id = ? WHERE id = ?`,
+    sql: `UPDATE gate_entries SET gate_entry_no = ?, ref_no = ?, entry_date = ?, tanker_id = ?, tanker_no = ?,
+          oil_type_id = ?, dispatch_qty = ?, received_qty = ?, uom = ?, status = ?, note = ?, sale_id = ?,
+          rec_type = ?, gross_weight = ?, tare_weight = ? WHERE id = ?`,
     args: [
       String(v.gate_entry_no || '').trim(),
+      v.ref_no ? String(v.ref_no).trim() : null,
       v.entry_date,
       v.tanker_id ? n(v.tanker_id) : null,
       v.tanker_no || null,
       v.oil_type_id ? n(v.oil_type_id) : null,
       n(v.dispatch_qty),
-      n(v.received_qty),
+      received,
       v.uom || 'MT',
       status,
       v.note || null,
       v.sale_id ? n(v.sale_id) : null,
+      String(v.rec_type || 'OIL'),
+      gross,
+      tare,
       id
     ]
   })
