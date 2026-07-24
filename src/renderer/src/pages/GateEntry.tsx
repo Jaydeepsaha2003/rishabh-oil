@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { Pencil, Scale, Trash2, Truck } from 'lucide-react'
+import { LogOut, Pencil, Scale, Trash2, Truck } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -25,12 +25,24 @@ const blankArrival = (): Row => ({
   uom: 'MT'
 })
 
+const blankGateOut = (): Row => ({
+  gate_entry_no: '',
+  entry_date: todayISO(),
+  sale_id: '',
+  tanker_no: '',
+  dispatch_qty: '',
+  uom: 'MT'
+})
+
 export function GateEntry(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [tankers, setTankers] = useState<Row[]>([])
+  const [sales, setSales] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [arrival, setArrival] = useState<Row>(blankArrival())
   const [savingArrival, setSavingArrival] = useState(false)
+  const [gateOut, setGateOut] = useState<Row>(blankGateOut())
+  const [savingOut, setSavingOut] = useState(false)
   // per-pending-entry weight inputs
   const [weights, setWeights] = useState<Record<number, string>>({})
   const [editRow, setEditRow] = useState<Row | null>(null)
@@ -38,15 +50,19 @@ export function GateEntry(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [g, pt, nextNo] = await Promise.all([
+    const [g, pt, sl, nextNo, nextOutNo] = await Promise.all([
       window.api.gate.list(),
       // the gate serves every company — list tankers across all of them
       window.api.tankers.list(true),
-      window.api.gate.nextNo().catch(() => '')
+      window.api.gate.dispatchableSales().catch(() => [] as Row[]),
+      window.api.gate.nextNo('in').catch(() => ''),
+      window.api.gate.nextNo('out').catch(() => '')
     ])
     setRows(g)
     setTankers(pt)
+    setSales(sl)
     setArrival((p) => (p.gate_entry_no ? p : { ...p, gate_entry_no: nextNo }))
+    setGateOut((p) => (p.gate_entry_no ? p : { ...p, gate_entry_no: nextOutNo }))
     setLoading(false)
   }, [])
 
@@ -74,6 +90,47 @@ export function GateEntry(): React.JSX.Element {
       uom: t?.uom || 'MT',
       dispatch_qty: t?.loaded_qty ? String(t.loaded_qty) : p.dispatch_qty
     }))
+  }
+
+  // Dispatched sales that haven't gone out through the gate yet.
+  const outgoable = useMemo(
+    () => sales.filter((s) => Number(s.gate_outs) === 0 || String(s.id) === String(gateOut.sale_id)),
+    [sales, gateOut.sale_id]
+  )
+
+  function chooseSale(id: string): void {
+    const s = sales.find((x) => String(x.id) === id)
+    setGateOut((p) => ({
+      ...p,
+      sale_id: id,
+      uom: s?.uom || 'MT',
+      dispatch_qty: s?.qty ? String(s.qty) : p.dispatch_qty
+    }))
+  }
+
+  // Gate OUT — the vehicle leaves with a sale dispatch; weight completes it.
+  async function recordGateOut(): Promise<void> {
+    if (!gateOut.sale_id) return void toast.error('Select the sale being dispatched')
+    if (!String(gateOut.tanker_no || '').trim()) return void toast.error('Enter the vehicle number')
+    setSavingOut(true)
+    try {
+      await window.api.gate.create({
+        ...gateOut,
+        direction: 'out',
+        sale_id: Number(gateOut.sale_id),
+        tanker_id: null,
+        dispatch_qty: Number(gateOut.dispatch_qty) || 0,
+        received_qty: 0,
+        status: 'pending'
+      })
+      toast.success(`Vehicle ${gateOut.tanker_no} out — waiting for weight`)
+      setGateOut(blankGateOut())
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setSavingOut(false)
+    }
   }
 
   // Step 1 — the guard records the tanker coming in; weight comes later.
@@ -167,8 +224,8 @@ export function GateEntry(): React.JSX.Element {
     <>
       <PageHeader
         title="Gate Entry"
-        subtitle="Step 1: record the tanker coming in · Step 2: enter the weight to complete"
-        hint="Made for the gate: record the arrival the moment a tanker comes in (no weight needed). It waits under 'Waiting for weighment' until the weighbridge figure is entered, which completes the entry. The Empty step in Purchases checks against this weight."
+        subtitle="Inbound tankers and outgoing sale dispatches — weight completes each entry"
+        hint="Made for the gate: record a tanker the moment it comes IN (green), or a sale vehicle the moment it goes OUT (blue) — no weight needed at that point. Entries wait under 'Waiting for weighment' until the weighbridge figure is entered, which completes them. The Empty step in Purchases checks against the inbound weight; gate-outs link to the sale being dispatched."
       />
       <div className="w-full space-y-4 p-6">
         {/* Step 1 — arrival */}
@@ -220,6 +277,61 @@ export function GateEntry(): React.JSX.Element {
           </p>
         </section>
 
+        {/* Gate OUT — sale dispatch leaving the factory */}
+        <section className="rounded-xl border border-sky-200 bg-card p-4 shadow-sm">
+          <div className="mb-3 flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-sky-100 text-sky-700">
+              <LogOut className="h-4 w-4" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold">Gate out · sale dispatch leaving</h3>
+              <p className="text-xs text-muted-foreground">Pick the sale, note the vehicle and press the blue button. The exit weight completes it.</p>
+            </div>
+          </div>
+          <div className="grid items-end gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
+            <div className="grid min-w-0 gap-1.5">
+              <Label>Sale (dispatched) *</Label>
+              <Select value={String(gateOut.sale_id || '')} onValueChange={chooseSale}>
+                <SelectTrigger><SelectValue placeholder="Select outgoing sale" /></SelectTrigger>
+                <SelectContent>
+                  {outgoable.map((s) => (
+                    <SelectItem key={s.id} value={String(s.id)}>
+                      {s.invoice_no || `Sale #${s.id}`} · {s.customer || '—'} · {s.product_name} · {formatNum(s.qty)} {s.uom}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid min-w-0 gap-1.5">
+              <Label>Vehicle number *</Label>
+              <Input value={gateOut.tanker_no || ''} onChange={(e) => setGateOut((p) => ({ ...p, tanker_no: e.target.value }))} />
+            </div>
+            <div className="grid min-w-0 gap-1.5">
+              <Label>Gate out no</Label>
+              <Input value={gateOut.gate_entry_no || ''} onChange={(e) => setGateOut((p) => ({ ...p, gate_entry_no: e.target.value }))} />
+            </div>
+            <div className="grid min-w-0 gap-1.5">
+              <Label>Qty</Label>
+              <Input type="number" value={gateOut.dispatch_qty ?? ''} onChange={(e) => setGateOut((p) => ({ ...p, dispatch_qty: e.target.value }))} />
+            </div>
+            <div className="grid min-w-0 gap-1.5">
+              <Label>Date</Label>
+              <DatePicker value={gateOut.entry_date || ''} onChange={(v) => setGateOut((p) => ({ ...p, entry_date: v }))} />
+            </div>
+            <Button
+              className="h-9 bg-sky-600 px-5 font-semibold hover:bg-sky-700"
+              onClick={recordGateOut}
+              disabled={savingOut}
+            >
+              <LogOut className="h-4 w-4" />
+              {savingOut ? 'Saving…' : 'Vehicle out'}
+            </Button>
+          </div>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Only dispatched sales (Loaded / In transit / Unloaded) that haven&apos;t gone out yet are listed.
+          </p>
+        </section>
+
         {/* Step 2 — waiting for weighment */}
         <section>
           <div className="mb-2 flex items-center gap-2">
@@ -244,10 +356,14 @@ export function GateEntry(): React.JSX.Element {
                     <div className="min-w-0">
                       <div className="truncate text-sm font-semibold">{row.tanker_no}</div>
                       <div className="truncate text-xs text-muted-foreground">
-                        {row.supplier_name || '—'}{row.bargain_no ? ` · ${row.bargain_no}` : ''}
+                        {row.direction === 'out'
+                          ? <>{row.sale_customer || '—'}{row.sale_invoice ? ` · ${row.sale_invoice}` : ''}</>
+                          : <>{row.supplier_name || '—'}{row.bargain_no ? ` · ${row.bargain_no}` : ''}</>}
                       </div>
                     </div>
-                    <Badge variant="warning">Pending</Badge>
+                    <Badge variant={row.direction === 'out' ? 'default' : 'warning'}>
+                      {row.direction === 'out' ? 'Out · pending' : 'Pending'}
+                    </Badge>
                   </div>
                   <div className="mt-0.5 text-xs text-muted-foreground">
                     {row.gate_entry_no} · arrived {formatDate(row.entry_date)}
@@ -278,8 +394,9 @@ export function GateEntry(): React.JSX.Element {
           <Table className="text-[13px]">
             <TableHeader><TableRow>
               <TableHead>Gate entry no</TableHead>
+              <TableHead>In / Out</TableHead>
               <TableHead>Date</TableHead>
-              <TableHead>Tanker</TableHead>
+              <TableHead>Vehicle · party</TableHead>
               <TableHead className="text-right">Dispatch qty</TableHead>
               <TableHead className="text-right">Received qty</TableHead>
               <TableHead className="text-right">Difference</TableHead>
@@ -288,20 +405,30 @@ export function GateEntry(): React.JSX.Element {
             </TableRow></TableHeader>
             <TableBody>
               {loading ? (
-                <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+                <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
               ) : rows.length === 0 ? (
-                <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No gate entries yet.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">No gate entries yet.</TableCell></TableRow>
               ) : (
                 rows.map((row) => {
                   const done = row.status !== 'pending'
+                  const isOut = row.direction === 'out'
                   const diff = Number(row.dispatch_qty || 0) - Number(row.received_qty || 0)
                   return (
                     <TableRow key={row.id}>
                       <TableCell className="font-medium">{row.gate_entry_no}</TableCell>
+                      <TableCell>
+                        <Badge variant={isOut ? 'default' : 'muted'}>{isOut ? 'OUT' : 'IN'}</Badge>
+                      </TableCell>
                       <TableCell>{formatDate(row.entry_date)}</TableCell>
                       <TableCell>
                         <div>{row.tanker_no}</div>
-                        {row.supplier_name && <div className="text-xs text-muted-foreground">{row.supplier_name}{row.bargain_no ? ` · ${row.bargain_no}` : ''}</div>}
+                        {isOut ? (
+                          <div className="text-xs text-muted-foreground">
+                            {row.sale_customer || '—'}{row.sale_invoice ? ` · ${row.sale_invoice}` : ''}{row.sale_product ? ` · ${row.sale_product}` : ''}
+                          </div>
+                        ) : (
+                          row.supplier_name && <div className="text-xs text-muted-foreground">{row.supplier_name}{row.bargain_no ? ` · ${row.bargain_no}` : ''}</div>
+                        )}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">{formatNum(row.dispatch_qty)} {row.uom}</TableCell>
                       <TableCell className="text-right tabular-nums">{done ? <>{formatNum(row.received_qty)} {row.uom}</> : <span className="text-muted-foreground">—</span>}</TableCell>

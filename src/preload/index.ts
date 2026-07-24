@@ -195,7 +195,8 @@ const api = {
   },
   gate: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('gate:list'),
-    nextNo: (): Promise<string> => ipcRenderer.invoke('gate:nextNo'),
+    nextNo: (direction?: 'in' | 'out'): Promise<string> => ipcRenderer.invoke('gate:nextNo', { direction }),
+    dispatchableSales: (): Promise<Row[]> => ipcRenderer.invoke('gate:dispatchableSales'),
     create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('gate:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('gate:update', { id, values }),

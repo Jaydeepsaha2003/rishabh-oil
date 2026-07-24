@@ -240,11 +240,17 @@ function SalesTab({
     }
     return String(b.customer || '').trim().toLowerCase() === custName
   }
+  // Only AVAILABLE bargains: open balance and rate not expired (the currently
+  // selected one always stays visible so an edit doesn't lose its bargain).
+  const notExpired = (b: Row): boolean =>
+    !b.rate_expiry_date || String(b.rate_expiry_date) >= todayISO()
   const productBargains = bargains.filter(
     (b) =>
-      String(b.product_id) === String(form.product_id) &&
-      matchesCustomer(b) &&
-      (Number(b.balance_qty) > 0 || String(b.id) === String(form.sales_bargain_id))
+      String(b.id) === String(form.sales_bargain_id) ||
+      (String(b.product_id) === String(form.product_id) &&
+        matchesCustomer(b) &&
+        Number(b.balance_qty) > 0 &&
+        notExpired(b))
   )
   const selBargain = form.sales_bargain_id
     ? bargains.find((b) => String(b.id) === String(form.sales_bargain_id))
@@ -259,6 +265,7 @@ function SalesTab({
     (b) =>
       String(b.product_id) === String(form.product_id) &&
       matchesCustomer(b) &&
+      notExpired(b) &&
       String(b.id) !== String(form.sales_bargain_id) &&
       Number(b.balance_qty) >= effQty - 1e-6
   )

@@ -2,7 +2,7 @@ import { app, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { registerIpc } from './ipc'
 import { registerUpdater } from './updater'
-import { initDb } from './db'
+import { initDb, startRevisionWatcher } from './db'
 import { backfillJournal } from './journal'
 import { backfillOrderStatuses } from './orders'
 import { backfillSalesGst, backfillSalesBargainCustomers } from './sales'
@@ -55,6 +55,7 @@ app.whenReady().then(async () => {
   await seedFormulations().catch((e) => console.error('[seed] formulations failed:', e))
   await seedPackagings().catch((e) => console.error('[seed] packagings failed:', e))
   await cleanupLogs().catch(() => {})
+  startRevisionWatcher()
   registerIpc()
   registerUpdater(() => mainWindow)
   createWindow()

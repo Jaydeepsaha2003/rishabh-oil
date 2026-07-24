@@ -141,7 +141,8 @@ export interface Api {
   }
   gate: {
     list: () => Promise<Row[]>
-    nextNo: () => Promise<string>
+    nextNo: (direction?: 'in' | 'out') => Promise<string>
+    dispatchableSales: () => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     complete: (id: number, receivedQty: number) => Promise<{ id: number }>

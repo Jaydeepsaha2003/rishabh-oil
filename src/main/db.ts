@@ -186,6 +186,11 @@ const MIGRATIONS = [
   // Reverse-charge (RCM) flag for individual transporters (GTA). Informational
   // for now — freight is billed without GST and GST is self-accounted by us.
   'ALTER TABLE transporters ADD COLUMN reverse_charge INTEGER NOT NULL DEFAULT 0',
+  // Gate OUT entries: outgoing sale dispatches tracked at the gate, alongside
+  // the existing inbound (purchase tanker) entries. direction 'in' | 'out';
+  // out entries link the sale being dispatched.
+  "ALTER TABLE gate_entries ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'",
+  'ALTER TABLE gate_entries ADD COLUMN sale_id INTEGER',
   // Consignment stock: supplier goods lying at our place, off-books until
   // invoiced. Created here (not in SCHEMA_SQL) so it also lands on existing DBs.
   `CREATE TABLE IF NOT EXISTS consignment_stock (
@@ -357,20 +362,46 @@ export async function initDb(): Promise<void> {
 
 // Global change counter for live multi-user refresh. Every write bumps it;
 // clients poll getRevision() and refetch only when the number changes.
+//
+// The revision is CACHED in the main process and refreshed by ONE background
+// watcher. Previously every mounted page polled it straight through to Turso
+// every 3s — on a slow connection those round-trips piled up and the whole UI
+// stalled until they timed out. Now renderer polls are answered instantly from
+// memory and only the single watcher touches the network (never overlapping).
+let cachedRevision = 0
+let revisionInFlight = false
+let revisionTimer: ReturnType<typeof setInterval> | null = null
+
+async function fetchRevision(): Promise<void> {
+  if (revisionInFlight) return // a slow request never stacks another behind it
+  revisionInFlight = true
+  try {
+    const res = await getClient().execute("SELECT value FROM app_settings WHERE key = 'db_revision'")
+    cachedRevision = res.rows.length ? Number(res.rows[0].value) : 0
+  } catch {
+    // keep the last known value; next tick retries
+  } finally {
+    revisionInFlight = false
+  }
+}
+
+export function startRevisionWatcher(): void {
+  if (revisionTimer) return
+  fetchRevision()
+  revisionTimer = setInterval(fetchRevision, 4000)
+}
+
 export async function bumpRevision(): Promise<void> {
   await getClient().execute(
     `INSERT INTO app_settings (key, value) VALUES ('db_revision', '1')
      ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1`
   )
+  // Reflect our own write immediately so this device's pages refresh at once.
+  cachedRevision += 1
 }
 
-export async function getRevision(): Promise<number> {
-  try {
-    const res = await getClient().execute("SELECT value FROM app_settings WHERE key = 'db_revision'")
-    return res.rows.length ? Number(res.rows[0].value) : 0
-  } catch {
-    return 0
-  }
+export function getRevision(): number {
+  return cachedRevision
 }
 
 export async function ping(): Promise<{ ok: boolean; message: string }> {

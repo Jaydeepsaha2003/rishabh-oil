@@ -75,6 +75,7 @@ import {
 import {
   listGateEntries,
   nextGateEntryNo,
+  listDispatchableSales,
   createGateEntry,
   updateGateEntry,
   completeGateEntry,
@@ -220,7 +221,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:nextNo$|:liveUsers$|:ips$|:logs$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^company:setActive$|^company:getActive$|^session:setUser$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^company:setActive$|^company:getActive$|^session:setUser$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -423,7 +424,8 @@ export function registerIpc(): void {
   )
 
   handle('gate:list', () => listGateEntries())
-  handle('gate:nextNo', () => nextGateEntryNo())
+  handle('gate:nextNo', (_e, args?: { direction?: 'in' | 'out' }) => nextGateEntryNo(args?.direction))
+  handle('gate:dispatchableSales', () => listDispatchableSales())
   handle('gate:create', (_e, { values }: { values: Row }) => createGateEntry(values))
   handle('gate:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateGateEntry(id, values)
