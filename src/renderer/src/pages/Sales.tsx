@@ -61,7 +61,7 @@ function SalesTab({
 }: {
   focusId?: number | null
   onFocusHandled?: () => void
-  onRegister?: (a: { open: () => void; canAdd: boolean }) => void
+  onRegister?: (a: { open: () => void; canAdd: boolean; formOpen: boolean }) => void
   onBack?: () => void
 }): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
@@ -152,8 +152,8 @@ function SalesTab({
     setFormPage(true)
   }
   useEffect(() => {
-    onRegister?.({ open: openAdd, canAdd: products.length > 0 })
-  }, [products.length]) // eslint-disable-line react-hooks/exhaustive-deps
+    onRegister?.({ open: openAdd, canAdd: products.length > 0, formOpen: formPage })
+  }, [products.length, formPage]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function openEditInvoice(inv: { group: string; lines: Row[]; first: Row }): void {
     setEditingGroup(inv.group)
@@ -493,7 +493,7 @@ function SalesTab({
       )}
 
       {formPage && (
-      <div className="mx-auto max-w-5xl">
+      <div className="w-full">
         <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 border-b pb-3">
           <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground" onClick={() => { if (onBack) { onBack() } else { setFormPage(false) } }}>
             <ArrowLeft className="h-4 w-4" /> {onBack ? 'Back to ledger' : 'Back'}
@@ -1225,7 +1225,7 @@ function SalesBargainsTab(): React.JSX.Element {
 export function Sales({ focusId, onFocusHandled, onBack }: { focusId?: number | null; onFocusHandled?: () => void; onBack?: () => void } = {}): React.JSX.Element {
   const [needs, setNeeds] = useState<Row[]>([])
   const [needsOpen, setNeedsOpen] = useState(false)
-  const [salesAdd, setSalesAdd] = useState<{ open: () => void; canAdd: boolean } | null>(null)
+  const [salesAdd, setSalesAdd] = useState<{ open: () => void; canAdd: boolean; formOpen: boolean } | null>(null)
   const loadNeeds = useCallback(async () => {
     setNeeds(await window.api.stock.needs())
   }, [])
@@ -1244,25 +1244,27 @@ export function Sales({ focusId, onFocusHandled, onBack }: { focusId?: number | 
         subtitle="Finished-goods dispatches drawn against sales bargains"
         hint="Each dispatch draws down a sales bargain and reduces finished-goods stock. Short stock can be produced on the spot. Book the rate contracts under Sales Bargain."
         actions={
-          <>
-            <Button
-              size="sm"
-              variant={needs.length === 0 ? 'outline' : rawShort > 0 ? 'destructive' : 'default'}
-              onClick={() => setNeedsOpen(true)}
-              className={cn(needs.length > 0 && rawShort > 0 && 'animate-pulse')}
-            >
-              <AlertTriangle className="h-4 w-4" />
-              Production needs
-              {needs.length > 0 && (
-                <span className="ml-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-white/25 px-1.5 text-xs font-bold">
-                  {needs.length}
-                </span>
-              )}
-            </Button>
-            <Button size="sm" onClick={() => salesAdd?.open()} disabled={!salesAdd?.canAdd}>
-              <Plus className="h-4 w-4" /> New sale
-            </Button>
-          </>
+          salesAdd?.formOpen ? undefined : (
+            <>
+              <Button
+                size="sm"
+                variant={needs.length === 0 ? 'outline' : rawShort > 0 ? 'destructive' : 'default'}
+                onClick={() => setNeedsOpen(true)}
+                className={cn(needs.length > 0 && rawShort > 0 && 'animate-pulse')}
+              >
+                <AlertTriangle className="h-4 w-4" />
+                Production needs
+                {needs.length > 0 && (
+                  <span className="ml-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-white/25 px-1.5 text-xs font-bold">
+                    {needs.length}
+                  </span>
+                )}
+              </Button>
+              <Button size="sm" onClick={() => salesAdd?.open()} disabled={!salesAdd?.canAdd}>
+                <Plus className="h-4 w-4" /> New sale
+              </Button>
+            </>
+          )
         }
       />
       <div className="px-4 py-4">
