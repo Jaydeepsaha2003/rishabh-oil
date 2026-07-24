@@ -27,6 +27,24 @@ export function todayISO(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
+// Convert a quantity between units of the SAME dimension (mass or volume).
+// Mismatched dimensions (e.g. L → MT, needs density) are returned unchanged.
+const UNIT_FACTOR: Record<string, { dim: 'mass' | 'vol'; f: number }> = {
+  KG: { dim: 'mass', f: 1 },
+  QUINTAL: { dim: 'mass', f: 100 },
+  MT: { dim: 'mass', f: 1000 },
+  TON: { dim: 'mass', f: 1000 },
+  ML: { dim: 'vol', f: 0.001 },
+  L: { dim: 'vol', f: 1 },
+  KL: { dim: 'vol', f: 1000 }
+}
+export function convertQty(qty: number, from: string, to: string): number {
+  const a = UNIT_FACTOR[String(from || '').toUpperCase()]
+  const b = UNIT_FACTOR[String(to || '').toUpperCase()]
+  if (!a || !b || a.dim !== b.dim) return qty
+  return (qty * a.f) / b.f
+}
+
 // Electron wraps IPC rejections as: Error invoking remote method 'x:y': Error: …
 // Strip that plumbing so users see only the meaningful message.
 export function errText(e: unknown): string {

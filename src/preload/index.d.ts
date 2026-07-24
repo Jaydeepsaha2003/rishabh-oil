@@ -138,6 +138,10 @@ export interface Api {
     setStatus: (id: number, status: string) => Promise<{ id: number }>
     setStage: (id: number, stage: string, force?: boolean, date?: string) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
+    createInvoice: (values: Row) => Promise<{ group: string; ids: number[] }>
+    updateInvoice: (group: string, values: Row) => Promise<{ group: string; ids: number[] }>
+    setInvoiceStage: (group: string, stage: string, force?: boolean, date?: string) => Promise<{ group: string }>
+    removeInvoice: (group: string) => Promise<{ group: string }>
   }
   salesBargains: {
     list: () => Promise<Row[]>

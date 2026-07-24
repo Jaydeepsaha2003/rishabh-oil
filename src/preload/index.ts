@@ -189,7 +189,15 @@ const api = {
       ipcRenderer.invoke('sales:setStatus', { id, status }),
     setStage: (id: number, stage: string, force?: boolean, date?: string): Promise<{ id: number }> =>
       ipcRenderer.invoke('sales:setStage', { id, stage, force, date }),
-    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('sales:delete', { id })
+    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('sales:delete', { id }),
+    createInvoice: (values: Row): Promise<{ group: string; ids: number[] }> =>
+      ipcRenderer.invoke('sales:createInvoice', { values }),
+    updateInvoice: (group: string, values: Row): Promise<{ group: string; ids: number[] }> =>
+      ipcRenderer.invoke('sales:updateInvoice', { group, values }),
+    setInvoiceStage: (group: string, stage: string, force?: boolean, date?: string): Promise<{ group: string }> =>
+      ipcRenderer.invoke('sales:setInvoiceStage', { group, stage, force, date }),
+    removeInvoice: (group: string): Promise<{ group: string }> =>
+      ipcRenderer.invoke('sales:deleteInvoice', { group })
   },
   salesBargains: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('salesBargains:list'),

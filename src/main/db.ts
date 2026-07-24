@@ -198,6 +198,11 @@ const MIGRATIONS = [
   // Optional manual gate no (the physical gate-register number) — the system
   // serial (gate_entry_no) is always auto-assigned; this can be typed or blank.
   'ALTER TABLE gate_entries ADD COLUMN ref_no TEXT',
+  // Multi-item sales invoices: line items share an invoice_group. Existing
+  // single sales each become their own group. gate-out links the group.
+  'ALTER TABLE sales ADD COLUMN invoice_group TEXT',
+  "UPDATE sales SET invoice_group = 'LEGACY-' || id WHERE invoice_group IS NULL",
+  'ALTER TABLE gate_entries ADD COLUMN invoice_group TEXT',
   // Approval queue: master-list creations by non-admins park here (on hold)
   // until an admin approves (inserts into the real table) or rejects (reason
   // shown back to the requester). Real master tables only ever hold approved

@@ -36,7 +36,7 @@ const blankGateOut = (): Row => ({
   ref_no: '',
   entry_date: todayISO(),
   rec_type: 'OIL',
-  sale_id: '',
+  invoice_group: '',
   tanker_no: '',
   dispatch_qty: '',
   uom: 'MT'
@@ -100,32 +100,32 @@ export function GateEntry(): React.JSX.Element {
     }))
   }
 
-  // Dispatched sales that haven't gone out through the gate yet.
+  // Dispatched sale invoices that haven't gone out through the gate yet.
   const outgoable = useMemo(
-    () => sales.filter((s) => Number(s.gate_outs) === 0 || String(s.id) === String(gateOut.sale_id)),
-    [sales, gateOut.sale_id]
+    () => sales.filter((s) => Number(s.gate_outs) === 0 || String(s.invoice_group) === String(gateOut.invoice_group)),
+    [sales, gateOut.invoice_group]
   )
 
-  function chooseSale(id: string): void {
-    const s = sales.find((x) => String(x.id) === id)
+  function chooseSale(group: string): void {
+    const s = sales.find((x) => String(x.invoice_group) === group)
     setGateOut((p) => ({
       ...p,
-      sale_id: id,
+      invoice_group: group,
       uom: s?.uom || 'MT',
       dispatch_qty: s?.qty ? String(s.qty) : p.dispatch_qty
     }))
   }
 
-  // Gate OUT — the vehicle leaves with a sale dispatch; weight completes it.
+  // Gate OUT — the vehicle leaves with a sale invoice; weight completes it.
   async function recordGateOut(): Promise<void> {
-    if (!gateOut.sale_id) return void toast.error('Select the sale being dispatched')
+    if (!gateOut.invoice_group) return void toast.error('Select the sale invoice being dispatched')
     if (!String(gateOut.tanker_no || '').trim()) return void toast.error('Enter the vehicle number')
     setSavingOut(true)
     try {
       await window.api.gate.create({
         ...gateOut,
         direction: 'out',
-        sale_id: Number(gateOut.sale_id),
+        invoice_group: gateOut.invoice_group,
         tanker_id: null,
         dispatch_qty: Number(gateOut.dispatch_qty) || 0,
         received_qty: 0,
@@ -306,13 +306,13 @@ export function GateEntry(): React.JSX.Element {
           </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div className="grid min-w-0 gap-1.5 sm:col-span-2 lg:col-span-1">
-              <Label>Sale (dispatched) *</Label>
-              <Select value={String(gateOut.sale_id || '')} onValueChange={chooseSale}>
-                <SelectTrigger><SelectValue placeholder="Select outgoing sale" /></SelectTrigger>
+              <Label>Sale invoice (dispatched) *</Label>
+              <Select value={String(gateOut.invoice_group || '')} onValueChange={chooseSale}>
+                <SelectTrigger><SelectValue placeholder="Select outgoing invoice" /></SelectTrigger>
                 <SelectContent>
                   {outgoable.map((s) => (
-                    <SelectItem key={s.id} value={String(s.id)}>
-                      {s.invoice_no || `Sale #${s.id}`} · {s.customer || '—'} · {s.product_name} · {formatNum(s.qty)} {s.uom}
+                    <SelectItem key={s.invoice_group} value={String(s.invoice_group)}>
+                      {s.invoice_no || 'No invoice no'} · {s.customer || '—'} · {s.product_name} · {formatNum(s.qty)} {s.uom}
                     </SelectItem>
                   ))}
                 </SelectContent>

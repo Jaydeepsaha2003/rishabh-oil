@@ -21,15 +21,14 @@ export async function listGateEntries(): Promise<Row[]> {
   const res = await getClient().execute(`
     SELECT g.*, p.code AS oil_code, p.name AS oil_name,
            b.bargain_no, s.name AS supplier_name,
-           sl.invoice_no AS sale_invoice, sl.customer AS sale_customer,
-           sl.dispatch_stage AS sale_stage, spr.name AS sale_product
+           COALESCE(sl.invoice_no, (SELECT invoice_no FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_invoice,
+           COALESCE(sl.customer,  (SELECT customer  FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer
     FROM gate_entries g
     LEFT JOIN products p ON p.id = g.oil_type_id
     LEFT JOIN purchase_tankers pt ON pt.id = g.tanker_id
     LEFT JOIN bargains b ON b.id = pt.bargain_id
     LEFT JOIN suppliers s ON s.id = pt.supplier_id
     LEFT JOIN sales sl ON sl.id = g.sale_id
-    LEFT JOIN products spr ON spr.id = sl.product_id
     ORDER BY g.id DESC
   `)
   return toPlain(res)
@@ -52,18 +51,25 @@ export async function nextGateEntryNo(direction: 'in' | 'out' = 'in'): Promise<s
   return `${direction === 'out' ? 'GO' : 'GE'}/${String(maxSeq + 1).padStart(4, '0')}`
 }
 
-// Dispatched sales (any company — the gate is shared) for the gate-out picker,
-// with how many gate-out entries each already has. Recent first.
+// Dispatched sale INVOICES (grouped, any company — the gate is shared) for the
+// gate-out picker, with how many gate-out entries each already has. A whole
+// invoice leaves together, so items are rolled up per invoice_group.
 export async function listDispatchableSales(): Promise<Row[]> {
   const res = await getClient().execute(`
-    SELECT s.id, s.sale_date, s.invoice_no, s.customer, s.qty, s.uom, s.dispatch_stage,
-           pr.name AS product_name, co.name AS company_name,
-           (SELECT COUNT(*) FROM gate_entries g WHERE g.sale_id = s.id AND g.direction = 'out') AS gate_outs
+    SELECT s.invoice_group,
+           MAX(s.sale_date) AS sale_date,
+           MAX(s.invoice_no) AS invoice_no,
+           MAX(s.customer) AS customer,
+           SUM(s.qty) AS qty,
+           MAX(s.uom) AS uom,
+           COUNT(*) AS item_count,
+           GROUP_CONCAT(pr.name, ', ') AS product_name,
+           (SELECT COUNT(*) FROM gate_entries g WHERE g.invoice_group = s.invoice_group AND g.direction = 'out') AS gate_outs
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id
-    LEFT JOIN companies co ON co.id = s.company_id
-    WHERE s.status = 'done'
-    ORDER BY s.sale_date DESC, s.id DESC
+    WHERE s.status = 'done' AND s.invoice_group IS NOT NULL
+    GROUP BY s.invoice_group
+    ORDER BY MAX(s.sale_date) DESC, MAX(s.id) DESC
     LIMIT 300
   `)
   return toPlain(res)
@@ -85,7 +91,7 @@ export async function tankerGateReceived(tankerId: number): Promise<number | nul
 export async function createGateEntry(v: Row): Promise<{ id: number }> {
   const c = getClient()
   const direction = v.direction === 'out' ? 'out' : 'in'
-  if (direction === 'out' && !v.sale_id) throw new Error('Select the sale being dispatched')
+  if (direction === 'out' && !v.invoice_group && !v.sale_id) throw new Error('Select the sale invoice being dispatched')
   // The system serial is always auto-assigned fresh (authoritative, no stale
   // preview / duplicates). The user's optional manual number lives in ref_no.
   const gateNo = await nextGateEntryNo(direction)
@@ -94,8 +100,8 @@ export async function createGateEntry(v: Row): Promise<{ id: number }> {
   const status = v.status || (n(v.received_qty) > 0 ? 'completed' : 'pending')
   const res = await c.execute({
     sql: `INSERT INTO gate_entries
-      (gate_entry_no, ref_no, entry_date, tanker_id, tanker_no, oil_type_id, dispatch_qty, received_qty, uom, status, note, direction, sale_id, rec_type, gross_weight, tare_weight)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (gate_entry_no, ref_no, entry_date, tanker_id, tanker_no, oil_type_id, dispatch_qty, received_qty, uom, status, note, direction, sale_id, invoice_group, rec_type, gross_weight, tare_weight)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       gateNo,
       v.ref_no ? String(v.ref_no).trim() : null,
@@ -110,6 +116,7 @@ export async function createGateEntry(v: Row): Promise<{ id: number }> {
       v.note || null,
       direction,
       v.sale_id ? n(v.sale_id) : null,
+      v.invoice_group ? String(v.invoice_group) : null,
       String(v.rec_type || 'OIL'),
       v.gross_weight != null && v.gross_weight !== '' ? n(v.gross_weight) : null,
       v.tare_weight != null && v.tare_weight !== '' ? n(v.tare_weight) : null

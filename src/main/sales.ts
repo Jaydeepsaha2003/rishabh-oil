@@ -373,10 +373,40 @@ async function salesBargainBalanceFor(bargainId: number, excludeSaleId: number):
   return n(b.rows[0].qty) - n(sold.rows[0]?.q)
 }
 
-// Base quantity a sale actually draws from stock. For PACKED sales it comes
-// from the packaging nesting: boxes × pouches_per_box × base_per_pouch, plus
-// any loose pouches × base_per_pouch. LOOSE sales use the entered qty.
+// Convert a quantity between units of the SAME dimension (mass or volume).
+// Mismatched dimensions (e.g. L → MT, which needs density) are left as-is.
+const UNIT_FACTOR: Record<string, { dim: 'mass' | 'vol'; f: number }> = {
+  KG: { dim: 'mass', f: 1 },
+  QUINTAL: { dim: 'mass', f: 100 },
+  MT: { dim: 'mass', f: 1000 },
+  TON: { dim: 'mass', f: 1000 },
+  ML: { dim: 'vol', f: 0.001 },
+  L: { dim: 'vol', f: 1 },
+  KL: { dim: 'vol', f: 1000 }
+}
+export function convertQty(qty: number, from: string, to: string): number {
+  const a = UNIT_FACTOR[String(from || '').toUpperCase()]
+  const b = UNIT_FACTOR[String(to || '').toUpperCase()]
+  if (!a || !b || a.dim !== b.dim) return qty
+  return (qty * a.f) / b.f
+}
+
+// Base quantity a sale actually draws from stock, IN THE SALE/BARGAIN UNIT. For
+// PACKED sales the packaging nesting (boxes × pouches_per_box × base_per_pouch
+// + loose pouches × base_per_pouch) is computed in the packaging's base unit,
+// then converted to the sale unit (e.g. 1000 cases × 15 KG = 15,000 KG = 15 MT).
 async function resolveSaleQty(v: Row): Promise<{ qty: number; uom: string }> {
+  // The sale's unit follows its bargain (falls back to the entered uom, then MT).
+  let target = String(v.uom || '').trim()
+  if (v.sales_bargain_id) {
+    const b = await getClient().execute({
+      sql: 'SELECT uom FROM sales_bargains WHERE id = ?',
+      args: [n(v.sales_bargain_id)]
+    })
+    if (b.rows.length && b.rows[0].uom) target = String(b.rows[0].uom)
+  }
+  if (!target) target = 'MT'
+
   if (String(v.sale_type) === 'PACKED' && v.packaging_id) {
     const p = await getClient().execute({
       sql: 'SELECT pouches_per_box, base_per_pouch, base_uom FROM packagings WHERE id = ?',
@@ -385,11 +415,13 @@ async function resolveSaleQty(v: Row): Promise<{ qty: number; uom: string }> {
     if (p.rows.length) {
       const ppb = n(p.rows[0].pouches_per_box)
       const bpp = n(p.rows[0].base_per_pouch)
-      const qty = n(v.boxes) * ppb * bpp + n(v.pouches) * bpp
-      return { qty, uom: String(p.rows[0].base_uom || v.uom || 'L') }
+      const baseUom = String(p.rows[0].base_uom || 'KG')
+      const baseQty = n(v.boxes) * ppb * bpp + n(v.pouches) * bpp
+      const qty = Math.round(convertQty(baseQty, baseUom, target) * 1e6) / 1e6
+      return { qty, uom: target }
     }
   }
-  return { qty: n(v.qty), uom: String(v.uom || 'MT') }
+  return { qty: n(v.qty), uom: target }
 }
 
 // DLD deliveries: we manage the transporter, so post the freight to the
@@ -452,14 +484,15 @@ export async function createSale(v: Row): Promise<{ id: number }> {
     ? (n(v.transport_amount) > 0 ? n(v.transport_amount) : qty * n(v.transport_rate))
     : 0
   const res = await getClient().execute({
-    sql: `INSERT INTO sales (company_id, sale_date, invoice_no, customer, customer_id, product_id, sales_bargain_id,
+    sql: `INSERT INTO sales (company_id, sale_date, invoice_no, invoice_group, customer, customer_id, product_id, sales_bargain_id,
             qty, uom, rate, amount, gst_pct, gst_amount, gst_type, status, dispatch_stage, track_stock, loaded_date, transit_date, unloaded_date, note, sale_type, packaging_id, boxes, pouches, freight_term,
             transporter_id, transport_rate, transport_amount)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       v.sale_date,
       v.invoice_no || null,
+      v.invoice_group || null,
       v.customer || null,
       customerId,
       n(v.product_id),
@@ -614,6 +647,93 @@ export async function deleteSale(id: number): Promise<{ id: number }> {
   await c.execute({ sql: 'DELETE FROM transporter_ledger WHERE sale_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM sales WHERE id = ?', args: [id] })
   return { id }
+}
+
+// --- multi-item sale invoices ---
+// An invoice is one or more line items (each a sales row) sharing an
+// invoice_group plus a common header (date, invoice no, customer, freight,
+// dispatch stage). Each item is created through createSale so all the per-line
+// guards (stock, bargain balance, packaging conversion, GST, journal, ledger)
+// still apply.
+
+let invoiceSeq = 0
+function newInvoiceGroup(): string {
+  invoiceSeq += 1
+  return `INV-${Date.now().toString(36)}-${invoiceSeq}`
+}
+
+// Merge the shared invoice header onto each line item.
+function mergeInvoiceItem(header: Row, item: Row, group: string): Row {
+  return {
+    ...item,
+    invoice_group: group,
+    sale_date: header.sale_date,
+    invoice_no: header.invoice_no,
+    customer: header.customer,
+    customer_id: header.customer_id,
+    freight_term: header.freight_term,
+    transporter_id: header.transporter_id,
+    transport_rate: header.transport_rate,
+    dispatch_stage: header.dispatch_stage,
+    loaded_date: header.loaded_date,
+    transit_date: header.transit_date,
+    unloaded_date: header.unloaded_date,
+    force_no_stock: header.force_no_stock
+  }
+}
+
+export async function createSaleInvoice(v: Row): Promise<{ group: string; ids: number[] }> {
+  const items: Row[] = Array.isArray(v.items) ? v.items : []
+  if (!items.length) throw new Error('Add at least one item to the invoice')
+  const group = newInvoiceGroup()
+  const ids: number[] = []
+  for (const item of items) {
+    const res = await createSale(mergeInvoiceItem(v, item, group))
+    ids.push(res.id)
+  }
+  return { group, ids }
+}
+
+// Edit an invoice: reverse its existing lines and recreate from the new set
+// (keeps the same group). Simpler and always consistent versus diffing.
+export async function updateSaleInvoice(group: string, v: Row): Promise<{ group: string; ids: number[] }> {
+  const items: Row[] = Array.isArray(v.items) ? v.items : []
+  if (!items.length) throw new Error('Add at least one item to the invoice')
+  const existing = await getClient().execute({
+    sql: 'SELECT id FROM sales WHERE invoice_group = ?',
+    args: [group]
+  })
+  for (const r of existing.rows) await deleteSale(Number(r.id))
+  const ids: number[] = []
+  for (const item of items) {
+    const res = await createSale(mergeInvoiceItem(v, item, group))
+    ids.push(res.id)
+  }
+  return { group, ids }
+}
+
+// Move a whole invoice through a dispatch stage (all its line items together).
+export async function setInvoiceStage(
+  group: string,
+  stage: string,
+  force = false,
+  date?: string
+): Promise<{ group: string }> {
+  const rows = await getClient().execute({
+    sql: 'SELECT id FROM sales WHERE invoice_group = ? ORDER BY id',
+    args: [group]
+  })
+  for (const r of rows.rows) await setSaleStage(Number(r.id), stage, force, date)
+  return { group }
+}
+
+export async function deleteSaleInvoice(group: string): Promise<{ group: string }> {
+  const rows = await getClient().execute({
+    sql: 'SELECT id FROM sales WHERE invoice_group = ?',
+    args: [group]
+  })
+  for (const r of rows.rows) await deleteSale(Number(r.id))
+  return { group }
 }
 
 // One-time backfill: apply output GST to sales booked before GST existed. The
