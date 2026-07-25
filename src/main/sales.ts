@@ -185,14 +185,17 @@ export async function listSalesBargains(from?: string, to?: string): Promise<Row
       b.qty - COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id), 0) AS balance_qty,
       COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id AND substr(sale_date, 1, 10) < ?), 0) AS disp_before,
       COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id AND substr(sale_date, 1, 10) >= ? AND substr(sale_date, 1, 10) <= ?), 0) AS disp_period,
-      (SELECT MAX(substr(sale_date, 1, 10)) FROM sales WHERE sales_bargain_id = b.id) AS last_dispatch_date
+      (SELECT MAX(substr(sale_date, 1, 10)) FROM sales WHERE sales_bargain_id = b.id) AS last_dispatch_date,
+      COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'sales' AND bargain_id = b.id AND substr(adj_date, 1, 10) < ?), 0) AS adj_before,
+      COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'sales' AND bargain_id = b.id AND substr(adj_date, 1, 10) >= ? AND substr(adj_date, 1, 10) <= ?), 0) AS adj_in,
+      COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'sales' AND bargain_id = b.id AND substr(adj_date, 1, 10) > ?), 0) AS adj_after
     FROM sales_bargains b
     LEFT JOIN products pr ON pr.id = b.product_id
     LEFT JOIN packagings pk ON pk.id = b.packaging_id
     LEFT JOIN customers cu ON cu.id = b.customer_id
     ORDER BY b.id DESC
   `,
-    args: [f, f, t]
+    args: [f, f, t, f, f, t, t]
   })
   // When linked to the master, always show the master's current name (renames
   // propagate); otherwise fall back to the free-text name stored on the bargain.
@@ -350,7 +353,8 @@ export async function deleteSalesBargain(id: number): Promise<{ id: number }> {
 export async function adjustSalesBargainQty(
   id: number,
   delta: number,
-  note?: string
+  note?: string,
+  date?: string
 ): Promise<{ id: number; qty: number }> {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT * FROM sales_bargains WHERE id = ?', args: [id] })
@@ -368,6 +372,12 @@ export async function adjustSalesBargainQty(
   await c.execute({
     sql: 'UPDATE sales_bargains SET qty = ?, note = ? WHERE id = ?',
     args: [newQty, newNote || null, id]
+  })
+  // Dated log so the top-up shows under "Addition" for its month in the register.
+  const adjDate = (date && String(date).slice(0, 10)) || new Date().toISOString().slice(0, 10)
+  await c.execute({
+    sql: "INSERT INTO bargain_adjustments (kind, bargain_id, delta, adj_date, note) VALUES ('sales', ?, ?, ?, ?)",
+    args: [id, d, adjDate, note ? String(note).trim() : null]
   })
   return { id, qty: newQty }
 }

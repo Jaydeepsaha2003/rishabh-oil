@@ -33,7 +33,7 @@ desktop ERP). Follow it to spin up **another** software with the same foundation
 | Dates | **date-fns** + **react-day-picker** | ^3.6 / ^8.10 | Formatting + calendar |
 | Class utils | **clsx** + **tailwind-merge** (`cn()`), **class-variance-authority** | — | Variant styling |
 | Font | **@fontsource-variable/inter** | — | Inter Variable |
-| Database client | **@libsql/client** | ^0.14 | Turso/libSQL over HTTP |
+| Database client | **@libsql/client/web** | ^0.14 | Turso/libSQL over HTTP (fetch-based — import the `/web` entry, never the default, so no native `.node` addon ships) |
 | Auto-update | **electron-updater** | ^6.8 | Background download + install |
 | Packaging | **electron-builder** | ^26 | NSIS installer, publish to GitHub |
 | CI | **GitHub Actions** | — | Build + release on tag push |

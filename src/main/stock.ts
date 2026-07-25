@@ -69,6 +69,68 @@ export async function stockLevels(): Promise<Row[]> {
   })
 }
 
+// Weighted-average cost (₹ per stock unit) for every product, for valuing the
+// physical count. Raw products are valued at the weighted-average landed rate of
+// their received purchases; produced goods (intermediate / finished) at the
+// input cost consumed to make them, spread over the quantity produced. Because a
+// produced good may itself be made from other produced goods, we resolve the
+// costs iteratively over a few passes so intermediate→finished chains settle.
+export async function productValuationRates(): Promise<Map<number, number>> {
+  const c = getClient()
+  const cid = getActiveCompanyId()
+  const cost = new Map<number, number>()
+
+  // Raw / purchased: weighted average of adjusted landed rate over received qty.
+  const raw = await c.execute({
+    sql: `SELECT oil_type_id AS pid, SUM(adjusted_rate * received_qty) AS v, SUM(received_qty) AS q
+          FROM orders WHERE status = 'received' AND company_id = ?
+          GROUP BY oil_type_id`,
+    args: [cid]
+  })
+  for (const r of raw.rows) {
+    const q = Number(r.q) || 0
+    if (q > 0) cost.set(Number(r.pid), (Number(r.v) || 0) / q)
+  }
+
+  // Production batches (output product + qty) and the inputs each consumed.
+  const batches = await c.execute({
+    sql: 'SELECT id, product_id, qty FROM production WHERE company_id = ?',
+    args: [cid]
+  })
+  const items = await c.execute({
+    sql: `SELECT i.production_id AS bid, i.product_id AS pid, i.qty AS qty
+          FROM production_items i JOIN production p ON p.id = i.production_id
+          WHERE p.company_id = ?`,
+    args: [cid]
+  })
+  const itemsByBatch = new Map<number, Array<{ pid: number; qty: number }>>()
+  for (const it of items.rows) {
+    const bid = Number(it.bid)
+    if (!itemsByBatch.has(bid)) itemsByBatch.set(bid, [])
+    itemsByBatch.get(bid)!.push({ pid: Number(it.pid), qty: Number(it.qty) || 0 })
+  }
+  // Group batches by output product.
+  const byOutput = new Map<number, Array<{ qty: number; items: Array<{ pid: number; qty: number }> }>>()
+  for (const b of batches.rows) {
+    const pid = Number(b.product_id)
+    if (!byOutput.has(pid)) byOutput.set(pid, [])
+    byOutput.get(pid)!.push({ qty: Number(b.qty) || 0, items: itemsByBatch.get(Number(b.id)) || [] })
+  }
+  // Iterate so multi-stage (raw→intermediate→finished) costs propagate.
+  for (let pass = 0; pass < 5; pass++) {
+    for (const [outPid, bs] of byOutput) {
+      let inCost = 0
+      let outQty = 0
+      for (const b of bs) {
+        for (const it of b.items) inCost += it.qty * (cost.get(it.pid) || 0)
+        outQty += b.qty
+      }
+      if (outQty > 0) cost.set(outPid, inCost / outQty)
+    }
+  }
+  return cost
+}
+
 // Current stock of one product for a specific company (used to validate
 // transfers in either direction, independent of the active company).
 async function productStockForCompany(companyId: number, productId: number): Promise<number> {

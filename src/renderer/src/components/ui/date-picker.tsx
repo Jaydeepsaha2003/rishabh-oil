@@ -23,12 +23,12 @@ function toDate(iso?: string): Date | undefined {
   return isValid(d) ? d : undefined
 }
 
-// Date picker that displays DD/MM/YYYY but stores an ISO (yyyy-mm-dd) string,
+// Date picker that displays DD-MM-YYYY but stores an ISO (yyyy-mm-dd) string,
 // so it's a drop-in replacement for <input type="date">.
 export function DatePicker({
   value,
   onChange,
-  placeholder = 'DD/MM/YYYY',
+  placeholder = 'DD-MM-YYYY',
   disabled,
   min,
   max,
@@ -60,7 +60,7 @@ export function DatePicker({
           )}
         >
           <CalendarIcon className="mr-2 h-4 w-4 shrink-0 opacity-70" />
-          {selected ? format(selected, 'dd/MM/yyyy') : <span>{placeholder}</span>}
+          {selected ? format(selected, 'dd-MM-yyyy') : <span>{placeholder}</span>}
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-auto p-0" align="start">

@@ -52,6 +52,7 @@ export interface MoneyInput {
   addsInterest: boolean
   interestPct: number
   interestDays: number
+  additionalInterest?: number // manual per-unit interest added to the adjusted rate
   // Slab TDS (cumulative per financial year): base % up to threshold, then above %.
   tdsThreshold?: number
   tdsPctAbove?: number
@@ -132,7 +133,8 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   // e.g. 122800 @ 5% GST, 15% for 15d → 128940 × 15% × 15/365 = 794.8356.
   const interestPerUnit =
     i.bargainRate * (1 + (i.gstPct || 0) / 100) * (interestPct / 100) * (interestDays / 365)
-  const adjustedRate = i.invoiceRate + interestPerUnit
+  // Manual additional interest (₹ per unit) folds into the adjusted rate too.
+  const adjustedRate = i.invoiceRate + interestPerUnit + (i.additionalInterest || 0)
 
   // Provisional (invoice) block.
   const threshold = i.tdsThreshold || 0
@@ -273,6 +275,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       v.interest_pct !== undefined && v.interest_pct !== '' ? n(v.interest_pct) : n(supplier?.interest_pct),
     interestDays:
       v.interest_days !== undefined && v.interest_days !== '' ? n(v.interest_days) : n(supplier?.interest_days),
+    additionalInterest: n(v.additional_interest),
     tdsThreshold: n(supplier?.tds_threshold),
     tdsPctAbove: n(v.tds_pct),
     tdsPrior: prior
@@ -280,12 +283,12 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   const res = await getClient().execute({
     sql: `INSERT INTO orders
       (company_id, invoice_no, order_date, bargain_id, supplier_id, oil_type_id, bargain_type, ordered_qty, uom,
-       bargain_rate, invoice_rate, interest_pct, interest_days, adjusted_rate, taxable_value,
+       bargain_rate, invoice_rate, interest_pct, interest_days, additional_interest, adjusted_rate, taxable_value,
        gst_pct, gst_type, gst_amount, tds_pct, tds_amount, round_off, net_amount,
        final_taxable_value, final_gst_amount, final_tds_amount, final_net_amount,
        tanker_no, transporter_id, allowed_shortage_pct, is_registered_transporter, posting, financed_by_party,
        payment_cleared_date, remarks, freight_paid_to_supplier, is_consignment, received_qty, received_date, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       v.invoice_no,
@@ -300,6 +303,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       n(v.invoice_rate),
       m.interest_pct,
       m.interest_days,
+      n(v.additional_interest),
       m.adjusted_rate,
       m.taxable_value,
       n(v.gst_pct),
@@ -408,6 +412,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       v.interest_pct !== undefined && v.interest_pct !== '' ? n(v.interest_pct) : n(supplier?.interest_pct),
     interestDays:
       v.interest_days !== undefined && v.interest_days !== '' ? n(v.interest_days) : n(supplier?.interest_days),
+    additionalInterest: n(v.additional_interest),
     tdsThreshold: n(supplier?.tds_threshold),
     tdsPctAbove: n(v.tds_pct),
     tdsPrior: prior
@@ -415,7 +420,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
   await getClient().execute({
     sql: `UPDATE orders SET
       invoice_no = ?, order_date = ?, bargain_id = ?, supplier_id = ?, oil_type_id = ?, bargain_type = ?,
-      ordered_qty = ?, uom = ?, bargain_rate = ?, invoice_rate = ?, interest_pct = ?, interest_days = ?,
+      ordered_qty = ?, uom = ?, bargain_rate = ?, invoice_rate = ?, interest_pct = ?, interest_days = ?, additional_interest = ?,
       adjusted_rate = ?, taxable_value = ?, gst_pct = ?, gst_type = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, round_off = ?, net_amount = ?,
       final_taxable_value = ?, final_gst_amount = ?, final_tds_amount = ?, final_net_amount = ?,
       tanker_no = ?, transporter_id = ?, allowed_shortage_pct = ?, is_registered_transporter = ?, posting = 1, financed_by_party = ?,
@@ -434,6 +439,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       n(v.invoice_rate),
       m.interest_pct,
       m.interest_days,
+      n(v.additional_interest),
       m.adjusted_rate,
       m.taxable_value,
       n(v.gst_pct),

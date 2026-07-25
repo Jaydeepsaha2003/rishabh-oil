@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { formatDate, errText } from '@/lib/format'
+import { formatDateTime, errText } from '@/lib/format'
 import { loadUser } from '@/lib/session'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
@@ -178,7 +178,7 @@ export function Approvals(): React.JSX.Element {
                         <PayloadChips payload={row.payload} />
                       </TableCell>
                       <TableCell>{row.requested_by_name || '—'}</TableCell>
-                      <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(row.requested_at)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-muted-foreground">{formatDateTime(row.requested_at)}</TableCell>
                       {isAdmin && (
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-1">
@@ -225,7 +225,7 @@ export function Approvals(): React.JSX.Element {
                       <TableCell>{statusBadge(row.status)}</TableCell>
                       <TableCell className="text-sm text-muted-foreground">{row.status === 'rejected' ? (row.reason || '—') : '—'}</TableCell>
                       {isAdmin && <TableCell>{row.requested_by_name || '—'}</TableCell>}
-                      <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(row.decided_at)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-muted-foreground">{formatDateTime(row.decided_at)}</TableCell>
                     </TableRow>
                   ))
                 )}

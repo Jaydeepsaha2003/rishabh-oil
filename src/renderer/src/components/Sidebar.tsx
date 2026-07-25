@@ -58,7 +58,7 @@ export type Page =
 
 const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   dashboard: { label: 'Dashboard', icon: LayoutDashboard },
-  bargains: { label: 'Bargain', icon: FileText },
+  bargains: { label: 'Pur Bargain', icon: FileText },
   orders: { label: 'Purchases', icon: ShoppingCart },
   consignment: { label: 'Consignment', icon: PackageOpen },
   gateEntry: { label: 'Gate Entry', icon: DoorOpen },
@@ -76,7 +76,7 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   customers: { label: 'Customers', icon: Contact },
   ports: { label: 'Ports', icon: Anchor },
   brokers: { label: 'Brokers', icon: Briefcase },
-  packaging: { label: 'Packaging', icon: Package },
+  packaging: { label: 'Packed SKU', icon: Package },
   approvals: { label: 'Approvals', icon: ClipboardCheck },
   settings: { label: 'Settings', icon: SettingsIcon }
 }

@@ -16,11 +16,32 @@ export function formatNum(value: number | null | undefined): string {
   return num.format(value)
 }
 
+// App-wide date format: dd-mm-yyyy. Handles plain 'YYYY-MM-DD' strings directly
+// (no timezone shift) and full datetimes by taking their date part.
 export function formatDate(value: string | null | undefined): string {
   if (!value) return '—'
-  const d = new Date(value)
+  const s = String(value)
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s)
+  if (m) return `${m[3]}-${m[2]}-${m[1]}`
+  const d = new Date(s)
+  if (Number.isNaN(d.getTime())) return s
+  return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`
+}
+
+// dd-mm-yy hh:mm (local time). SQLite datetime('now') is stored as UTC
+// 'YYYY-MM-DD HH:MM:SS' — treated as UTC and converted to local for display.
+export function formatDateTime(value: string | null | undefined): string {
+  if (!value) return '—'
+  let s = String(value).trim()
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(s)) s = s.replace(' ', 'T') + 'Z'
+  const d = new Date(s)
   if (Number.isNaN(d.getTime())) return String(value)
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const yy = String(d.getFullYear()).slice(-2)
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mi = String(d.getMinutes()).padStart(2, '0')
+  return `${dd}-${mm}-${yy} ${hh}:${mi}`
 }
 
 export function todayISO(): string {

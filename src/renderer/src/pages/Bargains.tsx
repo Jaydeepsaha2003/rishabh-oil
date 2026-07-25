@@ -82,10 +82,19 @@ function bargainRegister(r: Row, from: string, to: string): { opening: number; a
   const qty = Number(r.qty) || 0
   const before = Number(r.disp_before) || 0
   const inP = Number(r.disp_period) || 0
+  const adjBefore = Number(r.adj_before) || 0
+  const adjIn = Number(r.adj_in) || 0
+  const adjAfter = Number(r.adj_after) || 0
   const bdate = String(r.bargain_date || '').slice(0, 10)
   const createdInRange = bdate >= from && bdate <= to
-  const opening = bdate < from ? Math.max(0, qty - before) : 0
-  const addition = createdInRange ? qty : 0
+  const createdBefore = bdate < from
+  // Original booked qty, stripped of every dated top-up (those are shown as Addition
+  // in the month they were made, not folded into Opening).
+  const baseQty = qty - adjBefore - adjIn - adjAfter
+  // Opening = base created before + top-ups dated before the period − dispatched before.
+  const opening = createdBefore ? Math.max(0, baseQty + adjBefore - before) : 0
+  // Addition = base booked this period (if created here) + top-ups dated in the period.
+  const addition = (createdInRange ? baseQty : 0) + adjIn
   return { opening, addition, dispatch: inP, closing: opening + addition - inP }
 }
 
@@ -167,17 +176,18 @@ export function Bargains(): React.JSX.Element {
 
   // Add/remove balance quantity on a bargain.
   const [adjustRow, setAdjustRow] = useState<Row | null>(null)
-  const [adjustForm, setAdjustForm] = useState<{ mode: 'add' | 'remove'; amount: string; note: string }>({
+  const [adjustForm, setAdjustForm] = useState<{ mode: 'add' | 'remove'; amount: string; note: string; date: string }>({
     mode: 'add',
     amount: '',
-    note: ''
+    note: '',
+    date: todayISO()
   })
   const [adjustSaving, setAdjustSaving] = useState(false)
   const [adjustError, setAdjustError] = useState<string | null>(null)
 
   function openAdjust(row: Row): void {
     setAdjustRow(row)
-    setAdjustForm({ mode: 'add', amount: '', note: '' })
+    setAdjustForm({ mode: 'add', amount: '', note: '', date: todayISO() })
     setAdjustError(null)
   }
 
@@ -192,7 +202,7 @@ export function Bargains(): React.JSX.Element {
     setAdjustSaving(true)
     setAdjustError(null)
     try {
-      await window.api.bargains.adjust(Number(adjustRow.id), delta, adjustForm.note || undefined)
+      await window.api.bargains.adjust(Number(adjustRow.id), delta, adjustForm.note || undefined, adjustForm.date || undefined)
       toast.success(
         adjustForm.mode === 'add'
           ? `Added ${amt} ${adjustRow.uom || 'MT'} to ${adjustRow.bargain_no}`
@@ -649,8 +659,8 @@ export function Bargains(): React.JSX.Element {
               </div>
             </div>
 
-            <div className="overflow-x-auto rounded-lg border bg-card">
-              <Table className="min-w-[820px] text-[13px]">
+            <div className="overflow-x-auto rounded-xl border bg-card shadow-sm">
+              <Table className="min-w-[860px] text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:px-3 [&_th]:h-9">
                 <TableHeader>
                   <TableRow>
                     {(
@@ -668,7 +678,7 @@ export function Bargains(): React.JSX.Element {
                         { id: 'total', label: 'Total', right: true }
                       ] as { id: string; label: string; right?: boolean }[]
                     ).map((c) => (
-                      <TableHead key={c.id} className={c.right ? 'text-right' : ''}>
+                      <TableHead key={c.id} className={cn('text-[11px] font-medium uppercase tracking-wide text-muted-foreground', c.right && 'text-right')}>
                         <button
                           onClick={() => toggleSort(c.id)}
                           className={cn(
@@ -760,7 +770,7 @@ export function Bargains(): React.JSX.Element {
                           )}
                           {!isCollapsed && (
                           <>
-                          <TableRow className="cursor-pointer" onClick={() => toggleExpand(Number(row.id))}>
+                          <TableRow className="cursor-pointer transition-colors hover:bg-muted/40" onClick={() => toggleExpand(Number(row.id))}>
                           <TableCell className="font-medium">
                             <ChevronRight
                               className={cn(
@@ -771,13 +781,11 @@ export function Bargains(): React.JSX.Element {
                             <span className="mr-1 tabular-nums text-muted-foreground">{seq}.</span>
                             {row.bargain_no}
                           </TableCell>
-                          <TableCell>{formatDate(row.bargain_date)}</TableCell>
-                          <TableCell>{row.supplier_name ?? '—'}</TableCell>
+                          <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(row.bargain_date)}</TableCell>
+                          <TableCell className="max-w-[160px] truncate" title={row.supplier_name ?? ''}>{row.supplier_name ?? '—'}</TableCell>
+                          <TableCell className="text-muted-foreground">{row.oil_code}</TableCell>
                           <TableCell>
-                            <span className="font-medium">{row.oil_code}</span>
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={row.bargain_type === 'DLD' || row.bargain_type === 'Delivered' ? 'secondary' : 'muted'}>
+                            <Badge variant={row.bargain_type === 'DLD' || row.bargain_type === 'Delivered' ? 'secondary' : 'muted'} className="text-[10px]">
                               {row.bargain_type}
                             </Badge>
                           </TableCell>
@@ -785,12 +793,12 @@ export function Bargains(): React.JSX.Element {
                           <TableCell className="text-right tabular-nums">{Number(row._addition) ? formatNum(row._addition) : '—'}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatINR(row.rate_per_uom)}</TableCell>
                           <TableCell className="text-right tabular-nums">{Number(row._dispatch) ? formatNum(row._dispatch) : '—'}</TableCell>
-                          <TableCell className="text-right font-medium tabular-nums">
+                          <TableCell className="text-right font-semibold tabular-nums">
                             <span className={Number(row._closing) < -1e-9 ? 'text-red-600' : ''}>
                               {formatNum(row._closing)} {row.uom}
                             </span>
                           </TableCell>
-                          <TableCell className="text-right font-medium tabular-nums">
+                          <TableCell className="text-right tabular-nums">
                             {formatINR(row.total_amount)}
                           </TableCell>
                           <TableCell className="text-right">
@@ -828,7 +836,7 @@ export function Bargains(): React.JSX.Element {
                                   ) : null
                                   if (!list.length) {
                                     return (
-                                      <div className="px-8 py-3">
+                                      <div className="bg-muted/20 px-6 py-3">
                                         {remarksLine}
                                         <p className="text-xs text-muted-foreground">No tankers on this bargain yet.</p>
                                       </div>
@@ -860,7 +868,7 @@ export function Bargains(): React.JSX.Element {
                                     { dis: 0, rec: 0, shortage: 0, allowed: 0 }
                                   )
                                   return (
-                                    <div className="px-8 py-3">
+                                    <div className="bg-muted/20 px-6 py-3">
                                       {remarksLine}
                                       <table className="w-full text-xs">
                                         <thead>
@@ -1133,6 +1141,12 @@ export function Bargains(): React.JSX.Element {
                     value={adjustForm.amount}
                     onChange={(e) => setAdjustForm((p) => ({ ...p, amount: e.target.value }))}
                   />
+                </div>
+
+                <div className="grid gap-1.5">
+                  <Label>Date</Label>
+                  <DatePicker value={adjustForm.date} onChange={(v) => setAdjustForm((p) => ({ ...p, date: v || '' }))} />
+                  <p className="text-xs text-muted-foreground">Shown under "Addition" for this date's month in the register.</p>
                 </div>
 
                 <div className="grid gap-1.5">

@@ -8,7 +8,7 @@ export interface ModuleDef {
 // Modules an admin can grant per user. (User management stays admin-only.)
 export const MODULES: ModuleDef[] = [
   { key: 'dashboard', label: 'Dashboard' },
-  { key: 'bargains', label: 'Bargains' },
+  { key: 'bargains', label: 'Pur Bargain' },
   { key: 'orders', label: 'Purchases' },
   { key: 'consignment', label: 'Consignment' },
   { key: 'gateEntry', label: 'Gate Entry' },

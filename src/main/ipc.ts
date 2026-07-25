@@ -305,8 +305,8 @@ export function registerIpc(): void {
     updateBargain(id, values)
   )
   handle('bargains:delete', (_e, { id }: { id: number }) => deleteBargain(id))
-  handle('bargains:adjust', (_e, { id, delta, note }: { id: number; delta: number; note?: string }) =>
-    adjustBargainQty(id, delta, note)
+  handle('bargains:adjust', (_e, { id, delta, note, date }: { id: number; delta: number; note?: string; date?: string }) =>
+    adjustBargainQty(id, delta, note, date)
   )
 
   handle('orders:list', () => listOrders())
@@ -450,8 +450,8 @@ export function registerIpc(): void {
     updateSalesBargain(id, values)
   )
   handle('salesBargains:delete', (_e, { id }: { id: number }) => deleteSalesBargain(id))
-  handle('salesBargains:adjust', (_e, { id, delta, note }: { id: number; delta: number; note?: string }) =>
-    adjustSalesBargainQty(id, delta, note)
+  handle('salesBargains:adjust', (_e, { id, delta, note, date }: { id: number; delta: number; note?: string; date?: string }) =>
+    adjustSalesBargainQty(id, delta, note, date)
   )
 
   handle('gate:list', () => listGateEntries())

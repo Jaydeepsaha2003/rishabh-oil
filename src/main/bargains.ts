@@ -63,14 +63,17 @@ export async function listBargains(from?: string, to?: string): Promise<Row[]> {
               SELECT MAX(substr(loaded_date, 1, 10)) AS d FROM purchase_tankers WHERE bargain_id = b.id
               UNION ALL SELECT MAX(substr(loaded_date, 1, 10)) FROM purchase_tankers WHERE extra_bargain_id = b.id
               UNION ALL SELECT MAX(substr(order_date, 1, 10)) FROM orders WHERE bargain_id = b.id AND is_consignment = 1
-           )) AS last_dispatch_date
+           )) AS last_dispatch_date,
+           COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'purchase' AND bargain_id = b.id AND substr(adj_date, 1, 10) < ?), 0) AS adj_before,
+           COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'purchase' AND bargain_id = b.id AND substr(adj_date, 1, 10) >= ? AND substr(adj_date, 1, 10) <= ?), 0) AS adj_in,
+           COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'purchase' AND bargain_id = b.id AND substr(adj_date, 1, 10) > ?), 0) AS adj_after
     FROM bargains b
     LEFT JOIN suppliers s ON s.id = b.supplier_id
     LEFT JOIN products o ON o.id = b.oil_type_id
     LEFT JOIN brokers br ON br.id = b.broker_id
     ORDER BY b.id DESC
   `,
-    args: [f, f, f, f, t, f, t, f, t]
+    args: [f, f, f, f, t, f, t, f, t, f, f, t, t]
   })
   return toPlain(res)
 }
@@ -245,7 +248,8 @@ export async function updateBargain(id: number, v: Row): Promise<{ id: number }>
 export async function adjustBargainQty(
   id: number,
   delta: number,
-  note?: string
+  note?: string,
+  date?: string
 ): Promise<{ id: number; qty: number }> {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT * FROM bargains WHERE id = ?', args: [id] })
@@ -265,6 +269,12 @@ export async function adjustBargainQty(
   await c.execute({
     sql: 'UPDATE bargains SET qty = ?, total_amount = ?, remarks = ? WHERE id = ?',
     args: [newQty, newQty * rate, remarks || null, id]
+  })
+  // Dated log so the top-up shows under "Addition" for its month in the register.
+  const adjDate = (date && String(date).slice(0, 10)) || new Date().toISOString().slice(0, 10)
+  await c.execute({
+    sql: "INSERT INTO bargain_adjustments (kind, bargain_id, delta, adj_date, note) VALUES ('purchase', ?, ?, ?, ?)",
+    args: [id, d, adjDate, note ? String(note).trim() : null]
   })
   return { id, qty: newQty }
 }

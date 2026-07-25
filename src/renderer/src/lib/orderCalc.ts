@@ -10,6 +10,7 @@ export interface MoneyInput {
   addsInterest: boolean
   interestPct: number
   interestDays: number
+  additionalInterest?: number // manual per-unit interest added to the adjusted rate
   tdsThreshold?: number
   tdsPctAbove?: number
   tdsPrior?: number
@@ -48,7 +49,8 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   // I = BG rate × (1 + GST%) × Int% × days / 365
   const interestPerUnit =
     i.bargainRate * (1 + (i.gstPct || 0) / 100) * (interestPct / 100) * (interestDays / 365)
-  const adjustedRate = i.invoiceRate + interestPerUnit
+  // Manual additional interest (₹ per unit) folds into the adjusted rate too.
+  const adjustedRate = i.invoiceRate + interestPerUnit + (i.additionalInterest || 0)
   const threshold = i.tdsThreshold || 0
   const abovePct = i.tdsPctAbove || 0
   const prior = i.tdsPrior || 0

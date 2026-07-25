@@ -21,44 +21,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
-
-// Minimal CSV helpers (handles quoted fields, commas, newlines).
-function csvCell(v: unknown): string {
-  const s = String(v ?? '')
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-}
-
-function parseCsv(text: string): string[][] {
-  const rows: string[][] = []
-  let row: string[] = []
-  let field = ''
-  let inQuotes = false
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    if (inQuotes) {
-      if (ch === '"') {
-        if (text[i + 1] === '"') {
-          field += '"'
-          i++
-        } else inQuotes = false
-      } else field += ch
-    } else if (ch === '"') inQuotes = true
-    else if (ch === ',') {
-      row.push(field)
-      field = ''
-    } else if (ch === '\n') {
-      row.push(field)
-      rows.push(row)
-      row = []
-      field = ''
-    } else if (ch !== '\r') field += ch
-  }
-  if (field.length || row.length) {
-    row.push(field)
-    rows.push(row)
-  }
-  return rows
-}
+import { downloadDayCloseExcel, parseDayCloseExcel } from '@/lib/dayCloseExcel'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -177,14 +140,23 @@ function StatCard({ label, value, tone }: { label: string; value: string; tone?:
   )
 }
 
+// The two work-sections of the day-close sheet — one person owns each. Actual
+// value is auto-valued at the weighted-average cost (never hand-typed).
+const DAY_SECTIONS: Array<{ key: string; title: string; cats: string[] }> = [
+  { key: 'raw-intermediate', title: 'Raw + Intermediate', cats: ['raw', 'intermediate'] },
+  { key: 'finished', title: 'Finished', cats: ['finished'] }
+]
+
 // Daily physical-count sheet: enter actual closing stock and compare with the
-// computed book stock to see the difference (for tally / reconciliation).
+// computed book stock to see the difference (for tally / reconciliation). Split
+// into two owners — Raw/Intermediate and Finished — each with its own protected
+// Excel download/upload; actual value = actual qty × weighted-average cost.
 function DayClose(): React.JSX.Element {
   const [date, setDate] = useState(todayISO())
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const fileRef = useRef<HTMLInputElement>(null)
+  const [section, setSection] = useState<string>(DAY_SECTIONS[0].key)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -200,11 +172,9 @@ function DayClose(): React.JSX.Element {
     setRows((rs) => rs.map((r) => (r.product_id === pid ? { ...r, [key]: value } : r)))
   }
 
-  const counted = rows.filter((r) => r.actual_qty !== null && r.actual_qty !== '')
+  const rateOf = (r: Row): number => Number(r.rate) || 0
+  const actualValueOf = (r: Row): number => (Number(r.actual_qty) || 0) * rateOf(r)
   const diffOf = (r: Row): number => Number(r.book_qty || 0) - Number(r.actual_qty || 0)
-  const totalDiff = counted.reduce((s, r) => s + diffOf(r), 0)
-  const totalActualValue = rows.reduce((s, r) => s + (Number(r.actual_value) || 0), 0)
-  const mismatches = counted.filter((r) => Math.abs(diffOf(r)) > 0.0005).length
 
   async function save(): Promise<void> {
     setSaving(true)
@@ -219,77 +189,114 @@ function DayClose(): React.JSX.Element {
     }
   }
 
-  // Download a CSV template pre-filled with every product and its book qty.
-  function downloadTemplate(): void {
-    const headers = ['Product ID', 'Product', 'Category', 'Book Qty', 'Actual Qty', 'Actual Value', 'Note']
-    const lines = [headers.join(',')]
-    for (const r of rows) {
-      lines.push(
-        [
-          r.product_id,
-          r.name,
-          CAT_LABEL[r.category] || r.category,
-          r.book_qty,
-          '',
-          r.actual_value ?? '',
-          r.note ?? ''
-        ]
-          .map(csvCell)
-          .join(',')
-      )
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="grid gap-1.5">
+          <Label className="text-xs text-muted-foreground">Closing date</Label>
+          <DatePicker max={todayISO()} value={date} onChange={(v) => setDate(v || todayISO())} className="w-44" />
+        </div>
+        <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save day close'}</Button>
+      </div>
+
+      <Tabs value={section} onValueChange={setSection}>
+        <TabsList>
+          {DAY_SECTIONS.map((s) => (
+            <TabsTrigger key={s.key} value={s.key}>{s.title}</TabsTrigger>
+          ))}
+        </TabsList>
+        {DAY_SECTIONS.map((s) => (
+          <TabsContent key={s.key} value={s.key} className="mt-4">
+            <DayCloseSection
+              section={s}
+              date={date}
+              loading={loading}
+              rows={rows.filter((r) => s.cats.includes(r.category))}
+              setField={setField}
+              setRows={setRows}
+              rateOf={rateOf}
+              actualValueOf={actualValueOf}
+              diffOf={diffOf}
+            />
+          </TabsContent>
+        ))}
+      </Tabs>
+
+      <p className="text-xs text-muted-foreground">
+        Book qty is the system-computed stock (received + produced − consumed − sold). Difference = book − actual; a positive value means physical stock is short of the books. Actual value is valued automatically at the weighted-average cost (rate × actual qty). Download a protected Excel per section — only the Actual qty and Note cells are editable — hand it to the person counting, then upload it back.
+      </p>
+    </div>
+  )
+}
+
+// One section (Raw+Intermediate or Finished): its own download/upload + grid.
+function DayCloseSection({
+  section,
+  date,
+  loading,
+  rows,
+  setField,
+  setRows,
+  rateOf,
+  actualValueOf,
+  diffOf
+}: {
+  section: { key: string; title: string; cats: string[] }
+  date: string
+  loading: boolean
+  rows: Row[]
+  setField: (pid: number, key: string, value: unknown) => void
+  setRows: React.Dispatch<React.SetStateAction<Row[]>>
+  rateOf: (r: Row) => number
+  actualValueOf: (r: Row) => number
+  diffOf: (r: Row) => number
+}): React.JSX.Element {
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const counted = rows.filter((r) => r.actual_qty !== null && r.actual_qty !== '')
+  const totalDiff = counted.reduce((s, r) => s + diffOf(r), 0)
+  const totalActualValue = rows.reduce((s, r) => s + actualValueOf(r), 0)
+  const mismatches = counted.filter((r) => Math.abs(diffOf(r)) > 0.0005).length
+
+  async function onDownload(): Promise<void> {
+    try {
+      await downloadDayCloseExcel(rows, section, date)
+      toast.success(`Downloaded the protected ${section.title} sheet`)
+    } catch (e) {
+      toast.error((e as Error).message)
     }
-    const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `day-close-${date}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
   }
 
-  // Import a filled template — match by Product ID (or product name) and fill the grid.
+  // Upload a filled Excel — match by Product ID (or name) into this section's rows.
   async function onUpload(file: File | undefined): Promise<void> {
     if (!file) return
     try {
-      const grid = parseCsv(await file.text()).filter((r) => r.some((c) => c.trim() !== ''))
-      if (grid.length < 2) {
-        toast.error('The file has no data rows')
+      const parsed = await parseDayCloseExcel(file)
+      if (!parsed.length) {
+        toast.error('No data rows found in the file')
         return
       }
-      const header = grid[0].map((h) => h.trim().toLowerCase())
-      const idx = (...names: string[]): number =>
-        header.findIndex((h) => names.some((nm) => h.includes(nm)))
-      const pidI = idx('product id', 'productid')
-      const nameI = idx('product', 'name')
-      const qtyI = idx('actual qty', 'actual quantity')
-      const valI = idx('actual value')
-      const noteI = idx('note')
-      if (qtyI < 0 && valI < 0) {
-        toast.error('No "Actual Qty" or "Actual Value" column found')
-        return
+      const byId = new Map<string, (typeof parsed)[number]>()
+      const byName = new Map<string, (typeof parsed)[number]>()
+      for (const p of parsed) {
+        if (p.product_id != null) byId.set(String(p.product_id), p)
+        if (p.name) byName.set(p.name.trim().toLowerCase(), p)
       }
-      const byId = new Map<string, string[]>()
-      const byName = new Map<string, string[]>()
-      for (let i = 1; i < grid.length; i++) {
-        const c = grid[i]
-        if (pidI >= 0 && c[pidI]?.trim()) byId.set(String(Number(c[pidI])), c)
-        if (nameI >= 0 && c[nameI]?.trim()) byName.set(c[nameI].trim().toLowerCase(), c)
-      }
+      const allowed = new Set(rows.map((r) => Number(r.product_id)))
       let applied = 0
-      const merged = rows.map((r) => {
-        const c = byId.get(String(r.product_id)) || byName.get(String(r.name).toLowerCase())
-        if (!c) return r
-        applied++
-        const pick = (i: number, cur: unknown): unknown =>
-          i >= 0 && c[i] != null && c[i].trim() !== '' ? c[i].trim() : cur
-        return {
-          ...r,
-          actual_qty: pick(qtyI, r.actual_qty),
-          actual_value: pick(valI, r.actual_value),
-          note: pick(noteI, r.note)
-        }
-      })
-      setRows(merged)
+      setRows((all) =>
+        all.map((r) => {
+          if (!allowed.has(Number(r.product_id))) return r
+          const p = byId.get(String(r.product_id)) || byName.get(String(r.name).toLowerCase())
+          if (!p) return r
+          applied++
+          return {
+            ...r,
+            actual_qty: p.actual_qty != null && p.actual_qty !== '' ? p.actual_qty : r.actual_qty,
+            note: p.note != null && p.note !== '' ? p.note : r.note
+          }
+        })
+      )
       toast.success(`Imported ${applied} ${applied === 1 ? 'row' : 'rows'} — review and Save day close`)
     } catch (e) {
       toast.error((e as Error).message)
@@ -299,45 +306,39 @@ function DayClose(): React.JSX.Element {
   }
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="grid gap-1.5">
-          <Label className="text-xs text-muted-foreground">Closing date</Label>
-          <DatePicker max={todayISO()} value={date} onChange={(v) => setDate(v || todayISO())} className="w-44" />
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 flex-1">
+          <StatCard label="Products counted" value={`${counted.length} / ${rows.length}`} />
+          <StatCard label="Mismatches" value={String(mismatches)} tone={mismatches ? 'text-amber-700' : 'text-emerald-700'} />
+          <StatCard label="Net difference (book − actual)" value={`${formatNum(totalDiff)}`} tone={Math.abs(totalDiff) > 0.0005 ? 'text-amber-700' : ''} />
+          <StatCard label="Section actual value" value={formatINR(totalActualValue)} />
         </div>
         <div className="flex items-center gap-2">
           <input
             ref={fileRef}
             type="file"
-            accept=".csv,text/csv"
+            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             className="hidden"
             onChange={(e) => onUpload(e.target.files?.[0])}
           />
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="outline" size="icon" onClick={downloadTemplate} aria-label="Download template">
-                <Download className="h-4 w-4" />
+              <Button variant="outline" size="sm" onClick={onDownload}>
+                <Download className="mr-2 h-4 w-4" /> Excel
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Download a CSV template (all products + book qty) to fill in</TooltipContent>
+            <TooltipContent>Download the protected {section.title} sheet (only Actual qty + Note editable)</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="outline" size="icon" onClick={() => fileRef.current?.click()} aria-label="Upload filled template">
-                <Upload className="h-4 w-4" />
+              <Button variant="outline" size="sm" onClick={() => fileRef.current?.click()}>
+                <Upload className="mr-2 h-4 w-4" /> Upload
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Upload a filled template to fill the actual counts below</TooltipContent>
+            <TooltipContent>Upload the filled {section.title} sheet to fill the counts below</TooltipContent>
           </Tooltip>
-          <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save day close'}</Button>
         </div>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Products counted" value={`${counted.length} / ${rows.length}`} />
-        <StatCard label="Mismatches" value={String(mismatches)} tone={mismatches ? 'text-amber-700' : 'text-emerald-700'} />
-        <StatCard label="Net difference (book − actual)" value={`${formatNum(totalDiff)}`} tone={Math.abs(totalDiff) > 0.0005 ? 'text-amber-700' : ''} />
-        <StatCard label="Total actual value" value={formatINR(totalActualValue)} />
       </div>
 
       <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
@@ -349,15 +350,16 @@ function DayClose(): React.JSX.Element {
               <TableHead className="text-right">Book qty</TableHead>
               <TableHead className="w-[130px] text-right">Actual qty</TableHead>
               <TableHead className="text-right">Difference</TableHead>
-              <TableHead className="w-[150px] text-right">Actual value (₹)</TableHead>
+              <TableHead className="text-right">Rate (₹)</TableHead>
+              <TableHead className="text-right">Actual value (₹)</TableHead>
               <TableHead className="w-[180px]">Note</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
             ) : rows.length === 0 ? (
-              <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No products.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No products in this section.</TableCell></TableRow>
             ) : (
               rows.map((r) => {
                 const has = r.actual_qty !== null && r.actual_qty !== ''
@@ -380,15 +382,8 @@ function DayClose(): React.JSX.Element {
                     <TableCell className={cn('text-right tabular-nums', off ? (diff > 0 ? 'text-amber-700' : 'text-red-600') : 'text-muted-foreground')}>
                       {has ? formatNum(diff) : '—'}
                     </TableCell>
-                    <TableCell className="text-right">
-                      <Input
-                        type="number"
-                        className="h-8 w-36 text-right"
-                        placeholder="—"
-                        value={r.actual_value ?? ''}
-                        onChange={(e) => setField(r.product_id, 'actual_value', e.target.value)}
-                      />
-                    </TableCell>
+                    <TableCell className="text-right tabular-nums text-muted-foreground">{rateOf(r) ? formatNum(rateOf(r)) : '—'}</TableCell>
+                    <TableCell className="text-right tabular-nums font-medium">{has ? formatINR(actualValueOf(r)) : '—'}</TableCell>
                     <TableCell>
                       <Input
                         className="h-8"
@@ -404,9 +399,6 @@ function DayClose(): React.JSX.Element {
           </TableBody>
         </Table>
       </div>
-      <p className="text-xs text-muted-foreground">
-        Book qty is the system-computed stock (received + produced − consumed − sold). Difference = book − actual; a positive value means physical stock is short of the books.
-      </p>
     </div>
   )
 }

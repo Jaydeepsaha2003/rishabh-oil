@@ -63,10 +63,17 @@ function bargainRegister(r: Row, from: string, to: string): { opening: number; a
   const qty = Number(r.qty) || 0
   const before = Number(r.disp_before) || 0
   const inP = Number(r.disp_period) || 0
+  const adjBefore = Number(r.adj_before) || 0
+  const adjIn = Number(r.adj_in) || 0
+  const adjAfter = Number(r.adj_after) || 0
   const bdate = String(r.bargain_date || '').slice(0, 10)
   const createdInRange = bdate >= from && bdate <= to
-  const opening = bdate < from ? Math.max(0, qty - before) : 0
-  const addition = createdInRange ? qty : 0
+  const createdBefore = bdate < from
+  // Original booked qty minus every dated top-up (top-ups belong in Addition of
+  // the month they were made, not in Opening).
+  const baseQty = qty - adjBefore - adjIn - adjAfter
+  const opening = createdBefore ? Math.max(0, baseQty + adjBefore - before) : 0
+  const addition = (createdInRange ? baseQty : 0) + adjIn
   const dispatch = inP
   return { opening, addition, dispatch, closing: opening + addition - dispatch }
 }
@@ -111,6 +118,9 @@ function SalesTab({
   const [items, setItems] = useState<Row[]>([])
   const [saving, setSaving] = useState(false)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [search, setSearch] = useState('')
+  const [dateFrom, setDateFrom] = useState(monthStartISO())
+  const [dateTo, setDateTo] = useState(todayISO())
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -156,6 +166,28 @@ function SalesTab({
       })
       .sort((a, b) => Number(b.first.id) - Number(a.first.id))
   }, [rows])
+
+  // Invoice list filtered by the sale date range and a free-text search over
+  // invoice no, customer and product names.
+  const filteredInvoices = useMemo(() => {
+    const f = dateFrom || '0000-01-01'
+    const t = dateTo || '9999-12-31'
+    const q = search.trim().toLowerCase()
+    return invoices.filter((inv) => {
+      const d = String(inv.first.sale_date || '').slice(0, 10)
+      if (d < f || d > t) return false
+      if (!q) return true
+      const hay = [
+        inv.first.invoice_no,
+        inv.first.customer,
+        ...inv.lines.map((r) => r.product_name)
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+      return hay.includes(q)
+    })
+  }, [invoices, dateFrom, dateTo, search])
 
   function blankHeader(): Row {
     return {
@@ -412,6 +444,33 @@ function SalesTab({
   return (
     <div>
       {!formPage && (
+      <>
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="relative w-full sm:w-72">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="search"
+            className="h-9 pl-8"
+            placeholder="Search invoice no, customer, product…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <div className="flex items-center gap-1.5 text-sm">
+          <span className="text-muted-foreground">Date</span>
+          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="w-36" />
+          <span className="text-muted-foreground">to</span>
+          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="w-36" />
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 text-muted-foreground"
+            onClick={() => { setDateFrom(monthStartISO()); setDateTo(todayISO()); setSearch('') }}
+          >
+            This month
+          </Button>
+        </div>
+      </div>
       <div className="overflow-x-auto rounded-lg border bg-card">
         <Table className="min-w-[1040px]">
           <TableHeader>
@@ -428,10 +487,10 @@ function SalesTab({
           <TableBody>
             {loading ? (
               <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
-            ) : invoices.length === 0 ? (
-              <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No sales yet.</TableCell></TableRow>
+            ) : filteredInvoices.length === 0 ? (
+              <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">{invoices.length === 0 ? 'No sales yet.' : 'No sales in this period / search.'}</TableCell></TableRow>
             ) : (
-              invoices.map((inv) => {
+              filteredInvoices.map((inv) => {
                 const stg = stageInfo(inv.first)
                 const idx = DISPATCH_STAGES.findIndex((x) => x.value === stg.value)
                 const prevStage = idx > 0 ? DISPATCH_STAGES[idx - 1] : null
@@ -521,6 +580,7 @@ function SalesTab({
           </TableBody>
         </Table>
       </div>
+      </>
       )}
 
       {formPage && (
@@ -656,7 +716,7 @@ function SalesTab({
                 {c.isPacked && (
                   <div className="mt-3 grid grid-cols-2 gap-3 rounded-md border border-violet-200 bg-violet-50/60 p-3 sm:grid-cols-3">
                     <div className="grid gap-1.5 sm:col-span-3">
-                      <Label>Packaging *</Label>
+                      <Label>Packed SKU *</Label>
                       <Select value={item.packaging_id ? String(item.packaging_id) : ''} onValueChange={(v) => setItem(i, { packaging_id: v })}>
                         <SelectTrigger className="bg-white"><SelectValue placeholder="Select packaging" /></SelectTrigger>
                         <SelectContent>{packagings.map((p) => <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>)}</SelectContent>
@@ -760,10 +820,11 @@ function SalesBargainsTab(): React.JSX.Element {
 
   // add/remove balance qty
   const [adjustRow, setAdjustRow] = useState<Row | null>(null)
-  const [adjustForm, setAdjustForm] = useState<{ mode: 'add' | 'remove'; amount: string; note: string }>({
+  const [adjustForm, setAdjustForm] = useState<{ mode: 'add' | 'remove'; amount: string; note: string; date: string }>({
     mode: 'add',
     amount: '',
-    note: ''
+    note: '',
+    date: todayISO()
   })
   const [adjustSaving, setAdjustSaving] = useState(false)
   const [adjustError, setAdjustError] = useState<string | null>(null)
@@ -942,7 +1003,7 @@ function SalesBargainsTab(): React.JSX.Element {
 
   function openAdjust(row: Row): void {
     setAdjustRow(row)
-    setAdjustForm({ mode: 'add', amount: '', note: '' })
+    setAdjustForm({ mode: 'add', amount: '', note: '', date: todayISO() })
     setAdjustError(null)
   }
   async function saveAdjust(): Promise<void> {
@@ -956,7 +1017,7 @@ function SalesBargainsTab(): React.JSX.Element {
     setAdjustSaving(true)
     setAdjustError(null)
     try {
-      await window.api.salesBargains.adjust(Number(adjustRow.id), delta, adjustForm.note || undefined)
+      await window.api.salesBargains.adjust(Number(adjustRow.id), delta, adjustForm.note || undefined, adjustForm.date || undefined)
       toast.success(
         adjustForm.mode === 'add'
           ? `Added ${amt} ${adjustRow.uom || 'MT'} to ${adjustRow.bargain_no}`
@@ -1283,6 +1344,11 @@ function SalesBargainsTab(): React.JSX.Element {
                 <div className="grid gap-1.5">
                   <Label>Quantity to {adjustForm.mode === 'add' ? 'add' : 'remove'} ({uom})</Label>
                   <Input type="number" autoFocus value={adjustForm.amount} onChange={(e) => setAdjustForm((p) => ({ ...p, amount: e.target.value }))} />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label>Date</Label>
+                  <DatePicker value={adjustForm.date} onChange={(v) => setAdjustForm((p) => ({ ...p, date: v || '' }))} />
+                  <p className="text-xs text-muted-foreground">Shown under "Addition" for this date's month in the register.</p>
                 </div>
                 <div className="grid gap-1.5">
                   <Label>Note (optional)</Label>

@@ -1,5 +1,5 @@
 import { getClient } from './db'
-import { stockLevels } from './stock'
+import { stockLevels, productValuationRates } from './stock'
 import { getActiveCompanyId } from './company'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -14,6 +14,7 @@ function n(v: unknown): number {
 // actual count already saved for that date.
 export async function stockCountSheet(date: string): Promise<Row[]> {
   const levels = await stockLevels()
+  const rates = await productValuationRates()
   const saved = await getClient().execute({
     sql: 'SELECT * FROM stock_counts WHERE count_date = ? AND company_id = ?',
     args: [date, getActiveCompanyId()]
@@ -22,14 +23,21 @@ export async function stockCountSheet(date: string): Promise<Row[]> {
   for (const r of saved.rows) byProduct.set(Number(r.product_id), r as unknown as Row)
   return levels.map((l) => {
     const s = byProduct.get(Number(l.id))
+    // Use the snapshot rate saved with a prior count if present, otherwise the
+    // current weighted-average cost. Actual value is always rate × actual qty.
+    const rate =
+      s && s.rate != null && Number(s.rate) > 0 ? Number(s.rate) : rates.get(Number(l.id)) || 0
+    const actualQty = s && s.actual_qty != null ? Number(s.actual_qty) : null
     return {
       product_id: l.id,
       code: l.code,
       name: l.name,
       category: l.category,
       book_qty: l.stock,
-      actual_qty: s && s.actual_qty != null ? Number(s.actual_qty) : null,
-      actual_value: s && s.actual_value != null ? Number(s.actual_value) : null,
+      rate,
+      book_value: (Number(l.stock) || 0) * rate,
+      actual_qty: actualQty,
+      actual_value: actualQty != null ? actualQty * rate : null,
       note: s ? s.note : null
     }
   })
@@ -52,26 +60,33 @@ export async function listStockCounts(date: string): Promise<Row[]> {
 
 export async function saveStockCounts(date: string, items: Row[]): Promise<{ count: number }> {
   const c = getClient()
+  // Value the count with the current weighted-average cost — actual value is
+  // never hand-typed; it is rate × actual qty and the rate is snapshotted.
+  const rates = await productValuationRates()
   let count = 0
   for (const it of items || []) {
     const hasActual = it.actual_qty !== '' && it.actual_qty != null
-    const hasValue = it.actual_value !== '' && it.actual_value != null
-    if (!hasActual && !hasValue) continue
+    if (!hasActual) continue
+    const pid = n(it.product_id)
+    const actualQty = n(it.actual_qty)
+    const rate = rates.get(pid) || 0
     await c.execute({
-      sql: `INSERT INTO stock_counts (company_id, count_date, product_id, book_qty, actual_qty, actual_value, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+      sql: `INSERT INTO stock_counts (company_id, count_date, product_id, book_qty, actual_qty, rate, actual_value, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(company_id, count_date, product_id) DO UPDATE SET
               book_qty = excluded.book_qty,
               actual_qty = excluded.actual_qty,
+              rate = excluded.rate,
               actual_value = excluded.actual_value,
               note = excluded.note`,
       args: [
         getActiveCompanyId(),
         date,
-        n(it.product_id),
+        pid,
         n(it.book_qty),
-        hasActual ? n(it.actual_qty) : 0,
-        hasValue ? n(it.actual_value) : null,
+        actualQty,
+        rate,
+        actualQty * rate,
         it.note || null
       ]
     })

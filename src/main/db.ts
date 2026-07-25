@@ -1,4 +1,10 @@
-import { createClient, type Client } from '@libsql/client'
+// Use the pure-HTTP web client (fetch-based) rather than the default Node entry.
+// The default entry pulls in the native `libsql` addon (@libsql/win32-x64-msvc/
+// index.node), which fails to load on a fresh machine that lacks the matching
+// runtime — "The specified module could not be found." on first launch. We only
+// ever talk to a REMOTE Turso database (libsql://…), which the web client fully
+// supports, so there is no need for the native embedded driver at all.
+import { createClient, type Client } from '@libsql/client/web'
 import { SCHEMA_SQL } from './schema'
 import { getStoredConfig } from './config'
 
@@ -203,6 +209,21 @@ const MIGRATIONS = [
   'ALTER TABLE sales ADD COLUMN invoice_group TEXT',
   "UPDATE sales SET invoice_group = 'LEGACY-' || id WHERE invoice_group IS NULL",
   'ALTER TABLE gate_entries ADD COLUMN invoice_group TEXT',
+  // Manual additional interest (₹ per unit) on a purchase invoice — folds into
+  // the adjusted bargain rate.
+  'ALTER TABLE orders ADD COLUMN additional_interest REAL NOT NULL DEFAULT 0',
+  // Dated log of bargain balance top-ups / removals, so an addition made in a
+  // month shows under "Addition" in the bargain register for that month.
+  // kind = 'purchase' | 'sales'; delta > 0 add, < 0 remove.
+  `CREATE TABLE IF NOT EXISTS bargain_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    bargain_id INTEGER NOT NULL,
+    delta REAL NOT NULL,
+    adj_date TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
   // Approval queue: master-list creations by non-admins park here (on hold)
   // until an admin approves (inserts into the real table) or rejects (reason
   // shown back to the requester). Real master tables only ever hold approved
@@ -312,7 +333,10 @@ const MIGRATIONS = [
   // leftovers from the earlier order lifecycle; the OLD 'loaded'→'at_port'
   // remap is gone — it ran every boot and corrupted freshly created purchases.
   "UPDATE orders SET status = 'received' WHERE status = 'delivered'",
-  "UPDATE orders SET status = 'loaded' WHERE status IN ('at_port', 'ordered', 'payment_cleared', 'in_transit', 'outside_factory', 'inside_factory')"
+  "UPDATE orders SET status = 'loaded' WHERE status IN ('at_port', 'ordered', 'payment_cleared', 'in_transit', 'outside_factory', 'inside_factory')",
+  // Snapshot of the weighted-average valuation rate used for a day's physical
+  // count, so a saved count keeps the value it was booked at.
+  'ALTER TABLE stock_counts ADD COLUMN rate REAL'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

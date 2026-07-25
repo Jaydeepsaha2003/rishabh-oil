@@ -80,6 +80,12 @@ const PIVOT_STAGES = [
 
 // The stage a tanker is in as of `asOf` (its current/last stage on that date),
 // so each tanker is counted once — a tanker in transit is NOT also "to be loaded".
+// First day of the current month, YYYY-MM-DD.
+function monthStartISO(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+}
+
 function stageAsOf(t: Row, asOf: string): string {
   const on = (d: unknown): boolean => {
     const s = String(d || '').slice(0, 10)
@@ -117,7 +123,7 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
   const [transporters, setTransporters] = useState<Row[]>([])
   const [settings, setSettings] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
-  const [pivotStart, setPivotStart] = useState(todayISO())
+  const [pivotStart, setPivotStart] = useState(monthStartISO())
   const [pivotEnd, setPivotEnd] = useState(todayISO())
 
   const [loadingOpen, setLoadingOpen] = useState(false)
@@ -232,6 +238,17 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
     }
     const rows = Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label))
     return { rows, totals, grand }
+  }, [tankers, pivotStart, pivotEnd])
+
+  // The tanker list below the pivot follows the same date range — a tanker
+  // belongs to the window if its loaded (or gate-entry) date falls within it.
+  const visibleTankers = useMemo(() => {
+    const start = pivotStart
+    const end = pivotEnd < pivotStart ? pivotStart : pivotEnd
+    return tankers.filter((t) => {
+      const d = String(t.loaded_date || t.factory_entry_date || t.created_at || '').slice(0, 10)
+      return !!d && d >= start && d <= end
+    })
   }, [tankers, pivotStart, pivotEnd])
 
   // Row fields derived from a bargain (auto or manual pick).
@@ -592,6 +609,7 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
       // prefer the values stored on the invoice; fall back to the supplier's
       interest_pct: Number(row.interest_pct) > 0 ? row.interest_pct : (supplier?.interest_pct ?? 0),
       interest_days: Number(row.interest_days) > 0 ? row.interest_days : (supplier?.interest_days ?? 0),
+      additional_interest: row.additional_interest ?? '',
       charge_interest: Number(row.interest_pct) > 0 && Number(row.interest_days) > 0,
       interest_touched: true,
       transporter_id: row.transporter_id || '',
@@ -680,6 +698,7 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
     addsInterest: !!form.charge_interest,
     interestPct: Number(form.interest_pct) || 0,
     interestDays: Number(form.interest_days) || 0,
+    additionalInterest: Number(form.additional_interest) || 0,
     tdsThreshold: Number(form.tds_threshold) || 0,
     tdsPctAbove: Number(form.tds_pct) || 0,
     tdsPrior: Number(form.tds_prior) || 0
@@ -944,6 +963,19 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                         onChange={(e) => setForm((p) => ({ ...p, interest_days: e.target.value }))}
                       />
                     </div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1">
+                        <Label className="text-xs">Additional interest (₹/{form.uom || 'MT'})</Label>
+                        <InfoTip text="A manual per-unit interest you can add on top; it is included in the adjusted invoice rate (and therefore the taxable value, GST and net)." />
+                      </div>
+                      <Input
+                        type="number"
+                        className="h-8 w-24 text-right"
+                        placeholder="0"
+                        value={form.additional_interest ?? ''}
+                        onChange={(e) => setForm((p) => ({ ...p, additional_interest: e.target.value }))}
+                      />
+                    </div>
                   </div>
 
                   {Number(form.bargain_rate) > 0 && Number(form.invoice_rate) > Number(form.bargain_rate) && (
@@ -1035,6 +1067,12 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                   value={formatINR(calc.interestPerUnit * totalQty)}
                 />
               )}
+              {Number(form.additional_interest) > 0 && (
+                <MoneyRow
+                  label={`Additional interest (${formatINR(Number(form.additional_interest))}/${form.uom || 'MT'})`}
+                  value={formatINR((Number(form.additional_interest) || 0) * totalQty)}
+                />
+              )}
               <MoneyRow label="Adjusted invoice rate" value={formatINR(calc.adjustedRate)} />
               <MoneyRow label="Taxable value" value={formatINR(calc.taxableValue)} />
               {form.gst_type === 'IGST' ? (
@@ -1045,6 +1083,7 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                   <MoneyRow label={`SGST${form.gst_pct ? ` @ ${(Number(form.gst_pct) || 0) / 2}%` : ''}`} value={formatINR(calc.gstAmount / 2)} />
                 </>
               )}
+              <MoneyRow label="Total value (excl. TDS)" value={formatINR(calc.taxableValue + calc.gstAmount)} strong />
               <MoneyRow label="TDS" value={`− ${formatINR(calc.tdsAmount)}`} />
               <div className="flex items-center justify-between py-1.5 text-sm">
                 <span className="text-muted-foreground" title="Auto-rounds the net to the nearest rupee. Type to override; clear to go back to auto.">
@@ -1096,8 +1135,8 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                     <DatePicker max={pivotEnd} value={pivotStart} onChange={(v) => setPivotStart(v || todayISO())} className="w-40" />
                     <Label className="text-xs text-muted-foreground">To</Label>
                     <DatePicker min={pivotStart} max={todayISO()} value={pivotEnd} onChange={(v) => setPivotEnd(v || todayISO())} className="w-40" />
-                    {(pivotStart !== todayISO() || pivotEnd !== todayISO()) && (
-                      <Button variant="ghost" size="sm" onClick={() => { setPivotStart(todayISO()); setPivotEnd(todayISO()) }}>Today</Button>
+                    {(pivotStart !== monthStartISO() || pivotEnd !== todayISO()) && (
+                      <Button variant="ghost" size="sm" onClick={() => { setPivotStart(monthStartISO()); setPivotEnd(todayISO()) }}>This month</Button>
                     )}
                   </div>
                 </div>
@@ -1165,8 +1204,8 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                   </TableRow></TableHeader>
                   <TableBody>
                     {loading ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
-                      : tankers.length === 0 ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No tankers yet. Add the first loaded tanker.</TableCell></TableRow>
-                        : tankers.map((row) => {
+                      : visibleTankers.length === 0 ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">{tankers.length === 0 ? 'No tankers yet. Add the first loaded tanker.' : 'No tankers in this date range.'}</TableCell></TableRow>
+                        : visibleTankers.map((row) => {
                           const next = nextTankerStage(row.status)
                           return <TableRow key={row.id}>
                             <TableCell><div className="font-medium">{row.tanker_no}</div><div className="text-xs text-muted-foreground">{row.status === 'supplier_factory' ? `Entered ${formatDate(row.loaded_date)}` : `Loaded ${formatDate(row.loaded_date)}`}</div></TableCell>
@@ -1258,7 +1297,7 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
               <Input type="number" min="1" max="20" value={loadingForm.tanker_count} onChange={(e) => setTankerCount(e.target.value)} />
             </div>
             <div className="grid gap-1.5">
-              <Label>Factory entry date</Label>
+              <Label>Tanker placement date</Label>
               <DatePicker value={loadingForm.factory_entry_date || ''} onChange={(v) => setLoadingForm((p) => ({ ...p, factory_entry_date: v }))} />
             </div>
           </div>
@@ -1566,7 +1605,7 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
 
                 <div className="grid grid-cols-2 gap-3">
                   <div className="grid gap-1.5">
-                    <Label>{eIdx <= 0 ? 'Factory entry date' : 'Loaded date'}</Label>
+                    <Label>{eIdx <= 0 ? 'Tanker placement date' : 'Loaded date'}</Label>
                     <DatePicker value={editTankerForm.loaded_date || ''} onChange={(v) => setEditTankerForm((p) => ({ ...p, loaded_date: v }))} />
                   </div>
                   {eIdx >= 2 && (
