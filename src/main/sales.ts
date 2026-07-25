@@ -2,7 +2,13 @@ import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { deleteJournalByRef, postSaleJournal } from './journal'
 import { getActiveCompanyId } from './company'
-import { productStockAvailable } from './stock'
+import { productStockAvailable, stockMap } from './stock'
+import {
+  productHasFormulation,
+  formulationConsumption,
+  createSaleProduction,
+  deleteSaleProductions
+} from './production'
 
 // Guard: a dispatched (done) sale physically draws finished-goods stock, so the
 // available stock (excluding this sale's own effect) must cover the quantity.
@@ -24,6 +30,41 @@ async function assertFinishedStock(
 async function productLabel(productId: number): Promise<string> {
   const r = await getClient().execute({ sql: 'SELECT name FROM products WHERE id = ?', args: [productId] })
   return r.rows.length ? String(r.rows[0].name || '') : ''
+}
+
+// Guard for dispatching a made-to-order finished good: the formulation's inputs
+// must be in stock to make the dispatched qty. When editing an already-linked
+// sale, that sale's existing auto-production consumption is added back first so
+// the check reflects availability as if this dispatch weren't already booked.
+async function assertRawForFinished(
+  productId: number,
+  qty: number,
+  existingSaleId?: number
+): Promise<void> {
+  const consumption = await formulationConsumption(productId, qty)
+  if (!consumption.length) return
+  const levels = await stockMap()
+  if (existingSaleId) {
+    const ex = await getClient().execute({
+      sql: `SELECT i.product_id AS pid, i.qty AS q FROM production_items i
+            JOIN production p ON p.id = i.production_id WHERE p.sale_id = ?`,
+      args: [existingSaleId]
+    })
+    for (const r of ex.rows) {
+      const pid = Number(r.pid)
+      levels[pid] = (Number(levels[pid]) || 0) + (Number(r.q) || 0)
+    }
+  }
+  const names = await getClient().execute('SELECT id, name FROM products')
+  const nameOf = new Map<number, string>()
+  for (const r of names.rows) nameOf.set(Number(r.id), String(r.name || ''))
+  const short = consumption.filter((cn) => cn.qty > (Number(levels[cn.product_id]) || 0) + 1e-6)
+  if (short.length) {
+    const detail = short
+      .map((s) => `${nameOf.get(s.product_id) || 'component'} (need ${s.qty.toFixed(3)}, have ${Math.max(Number(levels[s.product_id]) || 0, 0).toFixed(3)})`)
+      .join('; ')
+    throw new Error(`Not enough input stock to make this dispatch: ${detail}. Purchase/produce those first, or dispatch off-stock.`)
+  }
 }
 
 export type DispatchStage = 'pending' | 'loaded' | 'transit' | 'unloaded'
@@ -495,11 +536,19 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   const stage = stageOf(v)
   const status = statusForStage(stage)
   const dates = resolveStageDates(stage, v, todayLocal())
+  // A finished good WITH a formulation is made-to-order: dispatching it consumes
+  // the recipe's raw/intermediate inputs (via a linked auto-production), not
+  // finished stock. Without a formulation it draws finished stock as before.
+  const hasFormula = await productHasFormulation(productId)
   // Off-stock: dispatch is allowed without booking stock only when explicitly
   // forced (confirmed in the UI). Such a sale is not stock-tracked.
   const trackStock = isDispatched(stage) && v.force_no_stock ? 0 : 1
-  if (isDispatched(stage) && trackStock === 1) {
-    await assertFinishedStock(productId, qty, await productLabel(productId))
+  if (isDispatched(stage)) {
+    if (hasFormula) {
+      if (!v.force_no_stock) await assertRawForFinished(productId, qty)
+    } else if (trackStock === 1) {
+      await assertFinishedStock(productId, qty, await productLabel(productId))
+    }
   }
   const transportAmount = String(v.freight_term) === 'DLD'
     ? (n(v.transport_amount) > 0 ? n(v.transport_amount) : qty * n(v.transport_rate))
@@ -543,6 +592,11 @@ export async function createSale(v: Row): Promise<{ id: number }> {
     ]
   })
   const id = Number(res.lastInsertRowid)
+  // Made-to-order dispatch → draw the raw inputs via a linked auto-production.
+  if (isDispatched(stage) && hasFormula) {
+    const prodDate = dates.loaded_date || dates.transit_date || dates.unloaded_date || String(v.sale_date) || todayLocal()
+    await createSaleProduction(id, productId, qty, prodDate, uom)
+  }
   await postCustomerReceivable(id, customerId, net, String(v.sale_date))
   await postSaleEntry(id, v, amount, gstAmount)
   await postSaleFreight(id, v, qty)
@@ -570,11 +624,17 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   const stage = stageOf(v)
   const status = statusForStage(stage)
   const dates = resolveStageDates(stage, v, todayLocal())
-  // Keeping/putting this sale in a dispatched stage must be backed by finished
-  // stock unless explicitly forced off-stock (untracked).
+  const hasFormula = await productHasFormulation(productId)
+  // Keeping/putting this sale in a dispatched stage must be backed by stock:
+  // formulation goods by their raw inputs, plain goods by finished stock —
+  // unless explicitly forced off-stock.
   const trackStock = isDispatched(stage) && v.force_no_stock ? 0 : 1
-  if (isDispatched(stage) && trackStock === 1) {
-    await assertFinishedStock(productId, qty, await productLabel(productId), id)
+  if (isDispatched(stage)) {
+    if (hasFormula) {
+      if (!v.force_no_stock) await assertRawForFinished(productId, qty, id)
+    } else if (trackStock === 1) {
+      await assertFinishedStock(productId, qty, await productLabel(productId), id)
+    }
   }
   const transportAmount = String(v.freight_term) === 'DLD'
     ? (n(v.transport_amount) > 0 ? n(v.transport_amount) : qty * n(v.transport_rate))
@@ -615,6 +675,14 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       id
     ]
   })
+  // Sync the linked auto-production to the edited state: (re)create it while
+  // dispatched with a formulation, otherwise drop it (reverses the raw draw).
+  if (isDispatched(stage) && hasFormula) {
+    const prodDate = dates.loaded_date || dates.transit_date || dates.unloaded_date || String(v.sale_date) || todayLocal()
+    await createSaleProduction(id, productId, qty, prodDate, uom)
+  } else {
+    await deleteSaleProductions(id)
+  }
   await postCustomerReceivable(id, customerId, net, String(v.sale_date))
   await postSaleEntry(id, v, amount, gstAmount)
   await postSaleFreight(id, v, qty)
@@ -628,22 +696,27 @@ export async function setSaleStage(id: number, stageIn: string, force = false, d
   const stage = stageOf({ dispatch_stage: stageIn })
   const status = statusForStage(stage)
   const r = await getClient().execute({
-    sql: 'SELECT product_id, qty, status, track_stock, loaded_date, transit_date, unloaded_date FROM sales WHERE id = ?',
+    sql: 'SELECT product_id, qty, uom, status, track_stock, loaded_date, transit_date, unloaded_date FROM sales WHERE id = ?',
     args: [id]
   })
   if (!r.rows.length) throw new Error('Sale not found')
   const row = r.rows[0]
+  const pid = n(row.product_id)
+  const saleQty = n(row.qty)
+  const hasFormula = await productHasFormulation(pid)
   const wasDispatched = String(row.status) === 'done'
   let trackStock = n(row.track_stock)
   if (!isDispatched(stage)) {
     // Back to pending → release stock and re-enable tracking for next time.
     trackStock = 1
   } else if (!wasDispatched) {
-    // Dispatching now: force → off-stock (untracked); otherwise require stock.
+    // Dispatching now: force → off-stock; otherwise require stock — raw inputs
+    // for a formulation good, finished stock for a plain one.
     trackStock = force ? 0 : 1
-    if (trackStock === 1) {
-      const pid = n(row.product_id)
-      await assertFinishedStock(pid, n(row.qty), await productLabel(pid), id)
+    if (hasFormula) {
+      if (!force) await assertRawForFinished(pid, saleQty, id)
+    } else if (trackStock === 1) {
+      await assertFinishedStock(pid, saleQty, await productLabel(pid), id)
     }
   }
   // Stamp the reached stage's date (carrying earlier ones, clearing later ones).
@@ -652,6 +725,13 @@ export async function setSaleStage(id: number, stageIn: string, force = false, d
     sql: 'UPDATE sales SET status = ?, dispatch_stage = ?, track_stock = ?, loaded_date = ?, transit_date = ?, unloaded_date = ? WHERE id = ?',
     args: [status, stage, trackStock, dates.loaded_date, dates.transit_date, dates.unloaded_date, id]
   })
+  // Keep the linked auto-production in step with the sale's dispatch state.
+  if (isDispatched(stage) && hasFormula) {
+    const prodDate = dates.loaded_date || dates.transit_date || dates.unloaded_date || dateIn || todayLocal()
+    await createSaleProduction(id, pid, saleQty, prodDate, String(row.uom || 'MT'))
+  } else if (!isDispatched(stage)) {
+    await deleteSaleProductions(id)
+  }
   return { id }
 }
 
@@ -662,6 +742,8 @@ export async function setSaleStatus(id: number, status: string): Promise<{ id: n
 
 export async function deleteSale(id: number): Promise<{ id: number }> {
   const c = getClient()
+  // Reverse the linked auto-production first (releases the raw it consumed).
+  await deleteSaleProductions(id)
   await deleteJournalByRef('sale_id', id)
   await c.execute({ sql: 'DELETE FROM payment_allocations WHERE sale_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM customer_ledger WHERE sale_id = ?', args: [id] })

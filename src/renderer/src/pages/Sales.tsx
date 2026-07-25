@@ -388,7 +388,7 @@ function SalesTab({
       } catch (e) {
         const msg = errText(e)
         if (/stock/i.test(msg)) {
-          const go = window.confirm(`${msg}\n\nDispatch anyway WITHOUT booking stock? These items won't draw from or affect finished-goods stock (untracked).`)
+          const go = window.confirm(`${msg}\n\nDispatch anyway (off-stock)? The finished-goods stock will still be reduced by this dispatch and may go negative — this only skips the "enough stock" check.`)
           if (!go) { setSaving(false); return }
           await submit(true)
         } else {
@@ -415,11 +415,11 @@ function SalesTab({
     } catch (e) {
       const msg = errText(e)
       if (/stock/i.test(msg)) {
-        const go = window.confirm(`${msg}\n\nDispatch anyway WITHOUT booking stock? This invoice won't draw from or affect finished-goods stock (untracked).`)
+        const go = window.confirm(`${msg}\n\nDispatch anyway (off-stock)? The finished-goods stock will still be reduced by this invoice and may go negative — this only skips the "enough stock" check.`)
         if (!go) return
         try {
           await window.api.sales.setInvoiceStage(group, stage, true, today)
-          toast.success(`Invoice marked ${label} — off-stock (untracked)`)
+          toast.success(`Invoice marked ${label} — off-stock (stock still reduced)`)
           await load()
         } catch (e2) {
           toast.error(errText(e2))

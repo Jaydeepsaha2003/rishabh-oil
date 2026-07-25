@@ -336,7 +336,12 @@ const MIGRATIONS = [
   "UPDATE orders SET status = 'loaded' WHERE status IN ('at_port', 'ordered', 'payment_cleared', 'in_transit', 'outside_factory', 'inside_factory')",
   // Snapshot of the weighted-average valuation rate used for a day's physical
   // count, so a saved count keeps the value it was booked at.
-  'ALTER TABLE stock_counts ADD COLUMN rate REAL'
+  'ALTER TABLE stock_counts ADD COLUMN rate REAL',
+  // Links an auto-generated production run to the sale whose dispatch triggered
+  // it. When a finished good that has a formulation is dispatched, we record a
+  // production (consumes the recipe's raw/intermediate inputs, outputs the
+  // dispatched qty) so raw stock is drawn down at dispatch. NULL = manual run.
+  'ALTER TABLE production ADD COLUMN sale_id INTEGER'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

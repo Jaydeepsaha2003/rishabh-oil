@@ -106,6 +106,75 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
   return { id }
 }
 
+// Does this product have an active formulation (recipe)? A finished good with a
+// formulation is treated as made-to-order: dispatching it consumes its inputs.
+export async function productHasFormulation(productId: number): Promise<boolean> {
+  const r = await getClient().execute({
+    sql: 'SELECT 1 FROM formulations WHERE product_id = ? AND active = 1 LIMIT 1',
+    args: [productId]
+  })
+  return r.rows.length > 0
+}
+
+// Resolve a product's active formulation into absolute component quantities for
+// a given output qty (formulation_items.qty is a PERCENTAGE of the output).
+// Empty when the product has no active formulation.
+export async function formulationConsumption(
+  productId: number,
+  qty: number
+): Promise<{ product_id: number; qty: number }[]> {
+  const c = getClient()
+  const fRes = await c.execute({
+    sql: 'SELECT id FROM formulations WHERE product_id = ? AND active = 1 ORDER BY id DESC LIMIT 1',
+    args: [productId]
+  })
+  if (!fRes.rows.length) return []
+  const items = await c.execute({
+    sql: 'SELECT product_id, qty FROM formulation_items WHERE formulation_id = ?',
+    args: [Number(fRes.rows[0].id)]
+  })
+  return items.rows.map((it) => ({ product_id: Number(it.product_id), qty: (qty * n(it.qty)) / 100 }))
+}
+
+// Remove the auto-production(s) linked to a sale (used when a dispatch is
+// reversed, edited or deleted). Bypasses the manual-delete guard on purpose.
+export async function deleteSaleProductions(saleId: number): Promise<void> {
+  const c = getClient()
+  await c.execute({
+    sql: 'DELETE FROM production_items WHERE production_id IN (SELECT id FROM production WHERE sale_id = ?)',
+    args: [saleId]
+  })
+  await c.execute({ sql: 'DELETE FROM production WHERE sale_id = ?', args: [saleId] })
+}
+
+// (Re)create the auto-production for a dispatched sale: consumes the finished
+// product's formulation inputs and outputs the dispatched qty. No stock guard
+// here — the caller decides whether to enforce raw availability. A no-op when
+// the product has no formulation.
+export async function createSaleProduction(
+  saleId: number,
+  productId: number,
+  qty: number,
+  prodDate: string,
+  uom: string
+): Promise<void> {
+  const c = getClient()
+  await deleteSaleProductions(saleId)
+  const consumption = await formulationConsumption(productId, qty)
+  if (!consumption.length) return
+  const ins = await c.execute({
+    sql: 'INSERT INTO production (company_id, prod_date, product_id, qty, uom, note, sale_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    args: [getActiveCompanyId(), prodDate, productId, qty, uom || 'MT', 'Auto — finished dispatch', saleId]
+  })
+  const id = Number(ins.lastInsertRowid)
+  for (const cn of consumption) {
+    await c.execute({
+      sql: 'INSERT INTO production_items (production_id, product_id, qty) VALUES (?, ?, ?)',
+      args: [id, cn.product_id, cn.qty]
+    })
+  }
+}
+
 export async function deleteProduction(id: number): Promise<{ id: number }> {
   const c = getClient()
   const cur = await c.execute({ sql: 'SELECT product_id FROM production WHERE id = ?', args: [id] })
