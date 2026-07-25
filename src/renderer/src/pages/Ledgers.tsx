@@ -28,6 +28,7 @@ import {
 } from '@/components/ui/dialog'
 import { DatePicker } from '@/components/ui/date-picker'
 import { PageHeader } from '@/components/PageHeader'
+import { ExcelButton } from '@/components/ExcelButton'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
@@ -221,9 +222,26 @@ export function Ledgers({ onOpenRecord }: Props): React.JSX.Element {
                   </div>
                 </div>
               </div>
-              <div className="text-right">
-                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Closing balance</div>
-                <div className={cn('text-base font-bold tabular-nums', balClass(totals.bal))}>{balText(totals.bal)}</div>
+              <div className="flex items-center gap-3">
+                <ExcelButton
+                  filename={`ledger-${(selected?.name || 'account').replace(/[^a-z0-9]+/gi, '-')}-${todayISO()}`}
+                  sheetName="Ledger"
+                  title={`${selected?.name || 'Ledger'} — statement`}
+                  columns={[
+                    { header: 'Date', key: 'entry_date', value: (r) => formatDate(r.entry_date) },
+                    { header: 'Particulars', key: 'particulars', value: (r) => `${Number(r.dr) > 0 ? 'Dr ' : 'Cr '}${r.particulars || r.narration || ''}` },
+                    { header: 'Vch Type', key: 'vch_type', value: (r) => r.vch_type || '' },
+                    { header: 'Voucher', key: 'voucher_code', value: (r) => r.voucher_code || '' },
+                    { header: 'Ref No', key: 'vch_no', value: (r) => r.vch_no || '' },
+                    { header: 'Debit', key: 'dr', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.dr) || 0 },
+                    { header: 'Credit', key: 'cr', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.cr) || 0 }
+                  ]}
+                  rows={statement}
+                />
+                <div className="text-right">
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Closing balance</div>
+                  <div className={cn('text-base font-bold tabular-nums', balClass(totals.bal))}>{balText(totals.bal)}</div>
+                </div>
               </div>
             </div>
             <Table className="text-xs">

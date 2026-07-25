@@ -23,6 +23,7 @@ import {
   TableRow
 } from '@/components/ui/table'
 import { PageHeader } from '@/components/PageHeader'
+import { ExcelButton } from '@/components/ExcelButton'
 import { formatDate, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
@@ -242,10 +243,25 @@ export function Production(): React.JSX.Element {
         subtitle="Daily production runs"
         hint="Recording a run consumes the formula's input products from stock and adds the produced output. The formula must total 100%."
         actions={
-          <Button size="sm" onClick={openAdd} disabled={outputs.length === 0}>
-            <Plus className="h-4 w-4" />
-            Record production
-          </Button>
+          <div className="flex items-center gap-2">
+            <ExcelButton
+              filename={`production-${todayISO()}`}
+              sheetName="Production"
+              title="Production runs"
+              columns={[
+                { header: 'Date', key: 'prod_date', value: (r) => formatDate(r.prod_date) },
+                { header: 'Product', key: 'product_name', value: (r) => r.product_name || '' },
+                { header: 'Category', key: 'product_category', value: (r) => CAT_LABEL[r.product_category] ?? r.product_category ?? '' },
+                { header: 'Qty', key: 'qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.qty) || 0 },
+                { header: 'UOM', key: 'uom', value: (r) => r.uom || '' }
+              ]}
+              rows={rows}
+            />
+            <Button size="sm" onClick={openAdd} disabled={outputs.length === 0}>
+              <Plus className="h-4 w-4" />
+              Record production
+            </Button>
+          </div>
         }
       />
       <div className="p-8">

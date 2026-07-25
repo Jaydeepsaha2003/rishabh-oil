@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { ArrowLeft, BarChart3, Eye, Pencil, Plus, Trash2, Truck } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { ExcelButton } from '@/components/ExcelButton'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -831,6 +832,24 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
           hint="Tanker lifecycle: To be loaded → Loaded → In transit → Outside factory → Inside factory → Empty. Pick the transporter when sending tankers to the supplier. At Empty, record received qty plus the KRFL and outside-factory weighment slips."
           actions={
             <div className="flex gap-2">
+              <ExcelButton
+                filename={`purchases-tankers-${todayISO()}`}
+                sheetName="Purchases"
+                title="Purchase tankers"
+                columns={[
+                  { header: 'Tanker', key: 'tanker_no', value: (r) => r.tanker_no || '' },
+                  { header: 'Loaded date', key: 'loaded_date', value: (r) => formatDate(r.loaded_date) },
+                  { header: 'Supplier', key: 'supplier_name', value: (r) => r.supplier_name || '' },
+                  { header: 'Bargain', key: 'bargain_no', value: (r) => r.bargain_no || '' },
+                  { header: 'Loaded qty', key: 'loaded_qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.loaded_qty) || 0 },
+                  { header: 'Received qty', key: 'received_qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.received_qty) || 0 },
+                  { header: 'UOM', key: 'uom', value: (r) => r.uom || '' },
+                  { header: 'Payment', key: 'payment_mode', value: (r) => (r.payment_mode === 'supplier_finance' ? 'Supplier financed' : r.payment_mode === 'paid_by_us' ? 'Paid by us' : 'Not decided') },
+                  { header: 'Invoice', key: 'invoice_no', value: (r) => r.invoice_no || '' },
+                  { header: 'Stage', key: 'status', value: (r) => r.status || '' }
+                ]}
+                rows={visibleTankers}
+              />
               <Button variant="outline" size="sm" onClick={() => setReportOpen(true)}>
                 <BarChart3 className="h-4 w-4" /> Report
               </Button>

@@ -30,6 +30,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { PageHeader } from '@/components/PageHeader'
+import { ExcelButton } from '@/components/ExcelButton'
 import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -197,7 +198,21 @@ function PaymentsTab(): React.JSX.Element {
   if (!recording) {
     return (
       <div>
-        <div className="mb-4 flex justify-end">
+        <div className="mb-4 flex justify-end gap-2">
+          <ExcelButton
+            filename={`payments-${todayISO()}`}
+            sheetName="Payments"
+            title="Payments & receipts"
+            columns={[
+              { header: 'Date', key: 'payment_date', value: (r) => formatDate(r.payment_date) },
+              { header: 'Party', key: 'party_name', value: (r) => r.party_name || '' },
+              { header: 'Type', key: 'party_type', value: (r) => r.party_type || '' },
+              { header: 'Source', key: 'source', value: (r) => r.source || '' },
+              { header: 'Method', key: 'method', value: (r) => (r.is_advance ? 'Excess' : (METHODS.find((m) => m.v === r.method)?.l ?? r.method ?? '')) },
+              { header: 'Amount', key: 'amount', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.amount) || 0 }
+            ]}
+            rows={payments}
+          />
           <Button size="sm" onClick={openAdd}>
             <Plus className="h-4 w-4" />
             Record payment / receipt

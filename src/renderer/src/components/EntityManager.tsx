@@ -30,6 +30,8 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { ExcelButton } from '@/components/ExcelButton'
+import { todayISO } from '@/lib/format'
 
 export type FieldType = 'text' | 'number' | 'switch' | 'select' | 'date'
 export type ColumnType = FieldType
@@ -201,11 +203,32 @@ export function EntityManager({
           <h3 className="text-base font-medium">{title}</h3>
           {description && <p className="text-xs text-muted-foreground">{description}</p>}
         </div>
-        {!readOnly && (
-          <Button size="sm" onClick={openAdd}>
-            <Plus /> Add
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          <ExcelButton
+            filename={`${table}-${todayISO()}`}
+            sheetName={title}
+            title={title}
+            columns={columns.map((c) => ({
+              header: c.label,
+              key: c.key,
+              align: c.align,
+              value: (r: Row) => {
+                // Keep real numbers numeric in the sheet; format switch/date as text.
+                if (c.type !== 'switch' && c.type !== 'date' && c.align === 'right') {
+                  const num = Number(r[c.key])
+                  if (r[c.key] !== '' && r[c.key] != null && Number.isFinite(num)) return num
+                }
+                return renderCell(r, c)
+              }
+            }))}
+            rows={rows}
+          />
+          {!readOnly && (
+            <Button size="sm" onClick={openAdd}>
+              <Plus /> Add
+            </Button>
+          )}
+        </div>
       </div>
 
       <div className="rounded-lg border">

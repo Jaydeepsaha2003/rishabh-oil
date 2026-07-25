@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Pencil, Plus, Trash2 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { ExcelButton } from '@/components/ExcelButton'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -287,9 +288,25 @@ export function Consignment(): React.JSX.Element {
         subtitle="Supplier goods lying at your place but not yet in your books — invoice them to make them yours"
         hint="Log stock a supplier deposits at your place. It shows here as supplier-owned (off-books). When you set a bargain and book a purchase invoice against it, the invoiced quantity becomes your owned stock and enters your books — no transporter, no tanker stages."
         actions={
-          <Button size="sm" onClick={openAddDeposit}>
-            <Plus className="h-4 w-4" /> Log consignment stock
-          </Button>
+          <div className="flex items-center gap-2">
+            <ExcelButton
+              filename={`consignment-${todayISO()}`}
+              sheetName="Consignment"
+              title="Consignment deposits"
+              columns={[
+                { header: 'Date', key: 'deposit_date', value: (r) => formatDate(r.deposit_date) },
+                { header: 'Supplier', key: 'supplier_name', value: (r) => r.supplier_name || '' },
+                { header: 'Product', key: 'product', value: (r) => r.product_code || r.product_name || '' },
+                { header: 'Quantity', key: 'qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.qty) || 0 },
+                { header: 'UOM', key: 'uom', value: (r) => r.uom || '' },
+                { header: 'Note', key: 'note', value: (r) => r.note || '' }
+              ]}
+              rows={deposits}
+            />
+            <Button size="sm" onClick={openAddDeposit}>
+              <Plus className="h-4 w-4" /> Log consignment stock
+            </Button>
+          </div>
         }
       />
 

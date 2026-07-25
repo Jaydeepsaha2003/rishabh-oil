@@ -45,6 +45,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { UomSelect } from '@/components/UomSelect'
 import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
+import { exportRowsToExcel } from '@/lib/excel'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
@@ -116,22 +117,6 @@ function defaultCompare(a: Row, b: Row): number {
   const byDate = String(a.bargain_date || '').localeCompare(String(b.bargain_date || ''))
   if (byDate !== 0) return byDate
   return (Number(a.id) || 0) - (Number(b.id) || 0)
-}
-
-function csvCell(v: unknown): string {
-  const s = String(v ?? '')
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-}
-
-function downloadCsv(filename: string, lines: string[]): void {
-  // BOM so Excel opens it with the right encoding (₹, Unicode names)
-  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
 }
 
 function emptyForm(uom: string): Row {
@@ -492,34 +477,52 @@ export function Bargains(): React.JSX.Element {
   const avgRate = (g: { total: number; qty: number }): number => (g.qty > 0 ? g.total / g.qty : 0)
 
   function downloadExcel(): void {
-    const headers = ['Bargain No', 'Date', 'Supplier', 'Oil', 'Condition', 'Op Qty', 'UOM', 'BG Rate', 'Bal Qty', 'Total Amount']
-    const lines = [headers.join(',')]
-    for (const r of sortedRows) {
-      lines.push(
-        [r.bargain_no, r.bargain_date, r.supplier_name, oilOf(r), r.bargain_type, r.qty, r.uom, r.rate_per_uom, r.balance_qty, r.total_amount]
-          .map(csvCell)
-          .join(',')
-      )
-    }
-    downloadCsv(`bargains-${typeFilter.toLowerCase()}-${todayISO()}.csv`, lines)
+    void exportRowsToExcel({
+      filename: `bargains-${typeFilter.toLowerCase()}-${todayISO()}`,
+      sheetName: 'Pur bargains',
+      title: 'Purchase bargains',
+      columns: [
+        { header: 'Bargain no', key: 'bargain_no', value: (r) => r.bargain_no || '' },
+        { header: 'Date', key: 'bargain_date', value: (r) => formatDate(r.bargain_date) },
+        { header: 'Supplier', key: 'supplier_name', value: (r) => r.supplier_name || '' },
+        { header: 'Oil', key: 'oil', value: (r) => oilOf(r) },
+        { header: 'Condition', key: 'bargain_type', value: (r) => r.bargain_type || '' },
+        { header: 'Opening', key: '_opening', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r._opening) || 0 },
+        { header: 'Addition', key: '_addition', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r._addition) || 0 },
+        { header: 'BG rate', key: 'rate_per_uom', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.rate_per_uom) || 0 },
+        { header: 'Dispatch', key: '_dispatch', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r._dispatch) || 0 },
+        { header: 'Balance', key: '_closing', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r._closing) || 0 },
+        { header: 'Total', key: 'total_amount', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.total_amount) || 0 }
+      ],
+      rows: sortedRows
+    })
   }
 
   function downloadReportExcel(): void {
-    const lines = ['Oil,Open Bargains,Total Bargains,Bal Qty,Total Qty,Avg Rate']
-    for (const g of report.groups) {
-      lines.push(
-        [g.label, g.openCount, g.count, g.balance, g.qty, avgRate(g).toFixed(2)]
-          .map(csvCell)
-          .join(',')
-      )
-    }
+    const rows = report.groups.map((g) => ({
+      label: g.label,
+      openCount: g.openCount,
+      count: g.count,
+      balance: g.balance,
+      qty: g.qty,
+      avg: avgRate(g)
+    }))
     const t = report.grand
-    lines.push(
-      ['GRAND TOTAL', t.openCount, t.count, t.balance, t.qty, avgRate(t).toFixed(2)]
-        .map(csvCell)
-        .join(',')
-    )
-    downloadCsv(`bargain-report-by-oil-${todayISO()}.csv`, lines)
+    rows.push({ label: 'GRAND TOTAL', openCount: t.openCount, count: t.count, balance: t.balance, qty: t.qty, avg: avgRate(t) })
+    void exportRowsToExcel({
+      filename: `bargain-report-by-oil-${todayISO()}`,
+      sheetName: 'Bargain report',
+      title: 'Bargain report by oil',
+      columns: [
+        { header: 'Oil', key: 'label' },
+        { header: 'Open bargains', key: 'openCount', align: 'right', numFmt: '#,##0' },
+        { header: 'Total bargains', key: 'count', align: 'right', numFmt: '#,##0' },
+        { header: 'Bal qty', key: 'balance', align: 'right', numFmt: '#,##0.000' },
+        { header: 'Total qty', key: 'qty', align: 'right', numFmt: '#,##0.000' },
+        { header: 'Avg rate', key: 'avg', align: 'right', numFmt: '#,##0.00' }
+      ],
+      rows
+    })
   }
 
   return (
@@ -873,6 +876,7 @@ export function Bargains(): React.JSX.Element {
                                       <table className="w-full text-xs">
                                         <thead>
                                           <tr className="border-b text-left text-muted-foreground">
+                                            <th className="py-1.5 pr-3 font-semibold w-8">#</th>
                                             <th className="py-1.5 pr-3 font-semibold">Tanker</th>
                                             <th className="py-1.5 pr-3 font-semibold">Loading Date</th>
                                             <th className="py-1.5 pr-3 font-semibold">Receipt Date</th>
@@ -883,7 +887,7 @@ export function Bargains(): React.JSX.Element {
                                           </tr>
                                         </thead>
                                         <tbody>
-                                          {list.map((t) => {
+                                          {list.map((t, ti) => {
                                             const loaded = Number(t.loaded_qty) || 0
                                             const dis = disOf(t)
                                             const share = shareOf(t)
@@ -892,6 +896,7 @@ export function Bargains(): React.JSX.Element {
                                             const shortage = rec != null ? Math.max(0, loaded - Number(t.received_qty)) * share : null
                                             return (
                                               <tr key={t.id as number} className="border-b last:border-0">
+                                                <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{ti + 1}</td>
                                                 <td className="py-1.5 pr-3 font-medium">
                                                   {t.tanker_no}
                                                   {split && <span className="ml-1 text-[10px] font-normal text-muted-foreground">(split)</span>}
@@ -910,7 +915,7 @@ export function Bargains(): React.JSX.Element {
                                             )
                                           })}
                                           <tr className="font-semibold">
-                                            <td className="py-1.5 pr-3" colSpan={3}>Total</td>
+                                            <td className="py-1.5 pr-3" colSpan={4}>Total</td>
                                             <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(tot.dis)}</td>
                                             <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(tot.rec)}</td>
                                             <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(tot.shortage)}</td>

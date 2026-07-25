@@ -29,6 +29,7 @@ import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { downloadDayCloseExcel, parseDayCloseExcel } from '@/lib/dayCloseExcel'
+import { ExcelButton } from '@/components/ExcelButton'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -66,7 +67,7 @@ function PartyCell({ value, parties, uom }: { value: number; parties: Row[]; uom
   )
 }
 
-function StockTable({ rows, breakdown }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[] }> }): React.JSX.Element {
+function StockTable({ rows, breakdown, label = 'stock' }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[] }>; label?: string }): React.JSX.Element {
   const sum = (k: string): number => rows.reduce((s, r) => s + (Number(r[k]) || 0), 0)
   const totals = {
     received: sum('received'),
@@ -78,6 +79,25 @@ function StockTable({ rows, breakdown }: { rows: Row[]; breakdown: Record<number
     stock: sum('stock')
   }
   return (
+    <div className="space-y-3">
+    <div className="flex justify-end">
+      <ExcelButton
+        filename={`${label}-stock-${todayISO()}`}
+        sheetName={`${label} stock`}
+        title={`${label.charAt(0).toUpperCase()}${label.slice(1)} stock`}
+        columns={[
+          { header: 'Product', key: 'name', value: (r) => r.name || '' },
+          { header: 'Receipt', key: 'received', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.received) || 0 },
+          { header: 'Produced', key: 'produced', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.produced) || 0 },
+          { header: 'Transfer in', key: 'transferred_in', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.transferred_in) || 0 },
+          { header: 'Transfer out', key: 'transferred_out', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.transferred_out) || 0 },
+          { header: 'Consumed', key: 'consumed', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.consumed) || 0 },
+          { header: 'Dispatch', key: 'sold', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.sold) || 0 },
+          { header: 'In stock', key: 'stock', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.stock) || 0 }
+        ]}
+        rows={rows}
+      />
+    </div>
     <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
       <Table>
         <TableHeader>
@@ -134,6 +154,7 @@ function StockTable({ rows, breakdown }: { rows: Row[]; breakdown: Record<number
           )}
         </TableBody>
       </Table>
+    </div>
     </div>
   )
 }
@@ -470,6 +491,21 @@ function SkuStock(): React.JSX.Element {
 
   return (
     <div className="space-y-5">
+      <div className="flex justify-end">
+        <ExcelButton
+          filename={`packed-sku-stock-${todayISO()}`}
+          sheetName="Packed SKU stock"
+          title="Packed SKU stock"
+          columns={[
+            { header: 'SKU', key: 'name', value: (r) => r.name || '' },
+            { header: 'Pack size', key: 'size', value: (r) => unitLabel(r) },
+            { header: 'Packed in', key: 'added', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.added) || 0 },
+            { header: 'Sold (packed)', key: 'sold', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.sold) || 0 },
+            { header: 'On hand', key: 'on_hand', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.on_hand) || 0 }
+          ]}
+          rows={rows}
+        />
+      </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard label="SKUs" value={String(rows.length)} />
         <StatCard label="Total packs on hand" value={formatNum(totalOnHand)} />
@@ -761,13 +797,13 @@ export function Stock(): React.JSX.Element {
             <TabsTrigger value="dayclose">Day close (actual vs book)</TabsTrigger>
           </TabsList>
           <TabsContent value="raw" className="mt-6">
-            <StockTable rows={byCat('raw')} breakdown={breakdown} />
+            <StockTable rows={byCat('raw')} breakdown={breakdown} label="raw" />
           </TabsContent>
           <TabsContent value="intermediate" className="mt-6">
-            <StockTable rows={byCat('intermediate')} breakdown={breakdown} />
+            <StockTable rows={byCat('intermediate')} breakdown={breakdown} label="intermediate" />
           </TabsContent>
           <TabsContent value="finished" className="mt-6">
-            <StockTable rows={byCat('finished')} breakdown={breakdown} />
+            <StockTable rows={byCat('finished')} breakdown={breakdown} label="finished" />
           </TabsContent>
           <TabsContent value="sku" className="mt-6">
             <SkuStock />

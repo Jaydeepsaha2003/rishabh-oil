@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { InfoTip } from '@/components/ui/tooltip'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { errText, formatDate, formatNum, todayISO } from '@/lib/format'
+import { ExcelButton } from '@/components/ExcelButton'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -238,6 +239,26 @@ export function GateEntry(): React.JSX.Element {
       <PageHeader
         title="Gate Entry"
         hint="Record a tanker the moment it comes IN (green) or a sale vehicle when it goes OUT (blue) — no weight needed yet. Entries wait under 'Waiting for weighment' until the weighbridge Gross & Tare are entered (net = gross − tare), which completes them. The Empty step in Purchases checks against the inbound weight; gate-outs link to the sale being dispatched."
+        actions={
+          <ExcelButton
+            filename={`gate-entries-${todayISO()}`}
+            sheetName="Gate entries"
+            title="Gate entries"
+            columns={[
+              { header: 'Gate no', key: 'gate_entry_no', value: (r) => r.gate_entry_no || '' },
+              { header: 'Date', key: 'entry_date', value: (r) => formatDate(r.entry_date) },
+              { header: 'In / Out', key: 'direction', value: (r) => (r.direction === 'out' ? 'OUT' : 'IN') },
+              { header: 'Rec type', key: 'rec_type', value: (r) => r.rec_type || 'OIL' },
+              { header: 'Vehicle', key: 'tanker_no', value: (r) => r.tanker_no || '' },
+              { header: 'Party', key: 'party', value: (r) => r.party || r.supplier_name || r.customer || '' },
+              { header: 'Gross', key: 'gross_weight', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.gross_weight) || 0 },
+              { header: 'Tare', key: 'tare_weight', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.tare_weight) || 0 },
+              { header: 'Net qty', key: 'qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.qty) || 0 },
+              { header: 'Status', key: 'status', value: (r) => (r.status === 'completed' ? 'Done' : 'Pending') }
+            ]}
+            rows={rows}
+          />
+        }
       />
       <div className="w-full space-y-6 p-6">
         {/* Tanker IN */}

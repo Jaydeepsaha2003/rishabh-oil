@@ -32,6 +32,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { UomSelect } from '@/components/UomSelect'
 import { DatePicker } from '@/components/ui/date-picker'
 import { convertQty, errText, formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
+import { ExcelButton } from '@/components/ExcelButton'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -470,6 +471,22 @@ function SalesTab({
             This month
           </Button>
         </div>
+        <ExcelButton
+          className="ml-auto"
+          filename={`sales-invoices-${todayISO()}`}
+          sheetName="Sales invoices"
+          title="Sales invoices"
+          columns={[
+            { header: 'Date', key: 'date', value: (r) => formatDate(r.first.sale_date) },
+            { header: 'Invoice no', key: 'inv', value: (r) => r.first.invoice_no || '' },
+            { header: 'Customer', key: 'cust', value: (r) => r.first.customer || '' },
+            { header: 'Items', key: 'items', value: (r) => r.lines.map((l: Row) => l.product_name).join(', ') },
+            { header: 'Qty', key: 'qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.qty) || 0 },
+            { header: 'Invoice total', key: 'net', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.net) || 0 },
+            { header: 'Stage', key: 'stage', value: (r) => stageInfo(r.first).label }
+          ]}
+          rows={filteredInvoices}
+        />
       </div>
       <div className="overflow-x-auto rounded-lg border bg-card">
         <Table className="min-w-[1040px]">
@@ -799,6 +816,7 @@ function SalesTab({
 
 function SalesBargainsTab(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
+  const [sales, setSales] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
   const [customers, setCustomers] = useState<Row[]>([])
   const [packagings, setPackagings] = useState<Row[]>([])
@@ -830,17 +848,32 @@ function SalesBargainsTab(): React.JSX.Element {
   const [adjustError, setAdjustError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    const [b, pr, cu, pk] = await Promise.all([
+    const [b, s, pr, cu, pk] = await Promise.all([
       window.api.salesBargains.list(F, T),
+      window.api.sales.list(),
       window.api.data.list('products'),
       window.api.data.list('customers'),
       window.api.data.list('packagings')
     ])
     setRows(b)
+    setSales(s)
     setProducts(pr.filter((x) => x.active && x.category === 'finished'))
     setCustomers(cu.filter((x) => x.active))
     setPackagings(pk.filter((x) => x.active))
   }, [F, T])
+
+  // Dispatches (sales) grouped by the bargain they drew down, for the expand row.
+  const dispatchesByBargain = useMemo(() => {
+    const m = new Map<number, Row[]>()
+    for (const s of sales) {
+      const bid = Number(s.sales_bargain_id)
+      if (!bid) continue
+      if (!m.has(bid)) m.set(bid, [])
+      m.get(bid)!.push(s)
+    }
+    for (const arr of m.values()) arr.sort((a, b) => String(a.sale_date).localeCompare(String(b.sale_date)))
+    return m
+  }, [sales])
 
   useEffect(() => {
     load()
@@ -1054,9 +1087,28 @@ function SalesBargainsTab(): React.JSX.Element {
             <Button variant="ghost" size="sm" className="h-8 text-muted-foreground" onClick={() => { setDateFrom(''); setDateTo('') }}>Clear</Button>
           )}
         </div>
-        <Button size="sm" className="ml-auto" onClick={openAdd} disabled={products.length === 0}>
-          <Plus className="h-4 w-4" /> New sales bargain
-        </Button>
+        <div className="ml-auto flex items-center gap-2">
+          <ExcelButton
+            filename={`sales-bargains-${todayISO()}`}
+            sheetName="Sales bargains"
+            title="Sales bargains"
+            columns={[
+              { header: 'Bargain no', key: 'bargain_no', value: (r) => r.bargain_no || '' },
+              { header: 'Date', key: 'date', value: (r) => formatDate(r.bargain_date) },
+              { header: 'Customer', key: 'customer', value: (r) => r.customer || '' },
+              { header: 'Product', key: 'product', value: (r) => r.product_name || '' },
+              { header: 'Opening', key: 'opening', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).opening },
+              { header: 'Addition', key: 'addition', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).addition },
+              { header: 'Rate', key: 'rate', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.rate) || 0 },
+              { header: 'Dispatch', key: 'dispatch', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).dispatch },
+              { header: 'Balance', key: 'balance', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).closing }
+            ]}
+            rows={sortedRows}
+          />
+          <Button size="sm" onClick={openAdd} disabled={products.length === 0}>
+            <Plus className="h-4 w-4" /> New sales bargain
+          </Button>
+        </div>
       </div>
 
       <div className="overflow-x-auto rounded-lg border bg-card">
@@ -1166,18 +1218,60 @@ function SalesBargainsTab(): React.JSX.Element {
                         )
                       })()}
                       {!isCollapsed && bgOpen && (
-                        <TableRow className="bg-muted/30">
-                          <TableCell />
-                          <TableCell colSpan={8} className="py-2 text-xs text-muted-foreground">
-                            <div className="flex flex-wrap gap-x-6 gap-y-1">
-                              <span>Rate: <span className="font-medium text-foreground">{formatINR(row.rate)}</span></span>
-                              <span>GST: <span className="font-medium text-foreground">{formatNum(row.gst_pct)}% {row.gst_type === 'IGST' ? 'IGST' : 'CGST+SGST'}</span></span>
-                              <span>Sale type: <span className="font-medium text-foreground">{row.sale_type === 'PACKED' ? `Packed${row.packaging_name ? ` · ${row.packaging_name}` : ''}` : 'Loose'}</span></span>
-                              <span>Freight: <span className="font-medium text-foreground">{row.freight_term === 'DLD' ? 'FOR (we deliver)' : 'Ex (customer lifts)'}</span></span>
-                              {row.rate_expiry_date && <span>Rate expiry: <span className="font-medium text-foreground">{formatDate(row.rate_expiry_date)}</span></span>}
-                              <span>Sold: <span className="font-medium text-foreground">{formatNum(row.sold_qty)} {row.uom}</span> · Balance: <span className="font-medium text-foreground">{formatNum(row.balance_qty)} {row.uom}</span></span>
-                              {row.note && <span>Note: <span className="font-medium text-foreground">{row.note}</span></span>}
-                            </div>
+                        <TableRow className="bg-muted/20 hover:bg-muted/20">
+                          <TableCell colSpan={9} className="p-0">
+                            {(() => {
+                              const disp = dispatchesByBargain.get(Number(row.id)) || []
+                              const tot = disp.reduce(
+                                (s, d) => {
+                                  s.qty += Number(d.qty) || 0
+                                  s.amount += (Number(d.amount) || 0) + (Number(d.gst_amount) || 0)
+                                  return s
+                                },
+                                { qty: 0, amount: 0 }
+                              )
+                              return (
+                                <div className="bg-muted/20 px-6 py-3">
+                                  {row.note && <p className="pb-2 text-xs text-muted-foreground"><span className="font-semibold">Note:</span> {row.note}</p>}
+                                  {disp.length === 0 ? (
+                                    <p className="text-xs text-muted-foreground">No dispatches on this bargain yet.</p>
+                                  ) : (
+                                    <table className="w-full text-xs">
+                                      <thead>
+                                        <tr className="border-b text-left text-muted-foreground">
+                                          <th className="py-1.5 pr-3 font-semibold w-8">#</th>
+                                          <th className="py-1.5 pr-3 font-semibold">Invoice</th>
+                                          <th className="py-1.5 pr-3 font-semibold">Date</th>
+                                          <th className="py-1.5 pr-3 font-semibold">Stage</th>
+                                          <th className="py-1.5 pr-3 text-right font-semibold">Qty</th>
+                                          <th className="py-1.5 pr-3 text-right font-semibold">Rate</th>
+                                          <th className="py-1.5 text-right font-semibold">Amount</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {disp.map((d, di) => (
+                                          <tr key={d.id as number} className="border-b last:border-0">
+                                            <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{di + 1}</td>
+                                            <td className="py-1.5 pr-3 font-medium">{d.invoice_no || '—'}</td>
+                                            <td className="py-1.5 pr-3 whitespace-nowrap">{formatDate(d.sale_date)}</td>
+                                            <td className="py-1.5 pr-3">{stageInfo(d).label}</td>
+                                            <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(d.qty)} {d.uom}</td>
+                                            <td className="py-1.5 pr-3 text-right tabular-nums">{formatINR(d.rate)}</td>
+                                            <td className="py-1.5 text-right tabular-nums">{formatINR((Number(d.amount) || 0) + (Number(d.gst_amount) || 0))}</td>
+                                          </tr>
+                                        ))}
+                                        <tr className="font-semibold">
+                                          <td className="py-1.5 pr-3" colSpan={4}>Total</td>
+                                          <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(tot.qty)} {row.uom}</td>
+                                          <td className="py-1.5" />
+                                          <td className="py-1.5 text-right tabular-nums">{formatINR(tot.amount)}</td>
+                                        </tr>
+                                      </tbody>
+                                    </table>
+                                  )}
+                                </div>
+                              )
+                            })()}
                           </TableCell>
                         </TableRow>
                       )}

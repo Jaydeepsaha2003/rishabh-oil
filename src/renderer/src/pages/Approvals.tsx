@@ -2,12 +2,13 @@ import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Check, Clock, X } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { ExcelButton } from '@/components/ExcelButton'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { formatDateTime, errText } from '@/lib/format'
+import { formatDateTime, errText, todayISO } from '@/lib/format'
 import { loadUser } from '@/lib/session'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
@@ -144,6 +145,24 @@ export function Approvals(): React.JSX.Element {
         hint={isAdmin
           ? 'When a non-admin adds a master (Products, Customers, Suppliers, Ports, etc.) it is held here until you approve (adds it to the database) or reject with a reason (shown back to the user).'
           : 'Masters you add are held for admin approval. Approved items appear in their normal list; rejected ones show the reason here.'}
+        actions={
+          <ExcelButton
+            filename={`approvals-${todayISO()}`}
+            sheetName="Approvals"
+            title="Approval requests"
+            columns={[
+              { header: 'Type', key: 'table_name', value: (r) => labelFor(r.table_name) },
+              { header: 'Item', key: 'label', value: (r) => r.label || '' },
+              { header: 'Requested by', key: 'requested_by_name', value: (r) => r.requested_by_name || '' },
+              { header: 'Requested at', key: 'requested_at', value: (r) => formatDateTime(r.requested_at) },
+              { header: 'Status', key: 'status', value: (r) => r.status || '' },
+              { header: 'Decided by', key: 'decided_by_name', value: (r) => r.decided_by_name || '' },
+              { header: 'Decided at', key: 'decided_at', value: (r) => (r.decided_at ? formatDateTime(r.decided_at) : '') },
+              { header: 'Reason', key: 'reason', value: (r) => r.reason || '' }
+            ]}
+            rows={rows}
+          />
+        }
       />
       <div className="w-full space-y-4 p-5">
         {/* Pending */}
