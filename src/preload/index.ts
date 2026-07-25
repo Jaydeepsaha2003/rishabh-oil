@@ -173,6 +173,11 @@ const api = {
     save: (date: string, items: Row[]): Promise<{ count: number }> =>
       ipcRenderer.invoke('stockCount:save', { date, items })
   },
+  skuStock: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('skuStock:list'),
+    adjust: (id: number, delta: number, note?: string, date?: string): Promise<{ id: number; on_hand: number }> =>
+      ipcRenderer.invoke('skuStock:adjust', { id, delta, note, date })
+  },
   production: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('production:list'),
     items: (id: number): Promise<Row[]> => ipcRenderer.invoke('production:items', { id }),

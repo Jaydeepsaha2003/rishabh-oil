@@ -341,7 +341,19 @@ const MIGRATIONS = [
   // it. When a finished good that has a formulation is dispatched, we record a
   // production (consumes the recipe's raw/intermediate inputs, outputs the
   // dispatched qty) so raw stock is drawn down at dispatch. NULL = manual run.
-  'ALTER TABLE production ADD COLUMN sale_id INTEGER'
+  'ALTER TABLE production ADD COLUMN sale_id INTEGER',
+  // Packed finished stock per SKU (packaging): a lightweight, company-scoped
+  // count. on-hand = SUM(delta) − packed units sold. delta > 0 packs in,
+  // < 0 removes. Dated so the balance reflects when it changed.
+  `CREATE TABLE IF NOT EXISTS sku_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    packaging_id INTEGER NOT NULL,
+    delta REAL NOT NULL,
+    adj_date TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

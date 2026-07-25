@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowRightLeft, Download, Trash2, Upload } from 'lucide-react'
+import { ArrowRightLeft, Download, SlidersHorizontal, Trash2, Upload } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -403,6 +410,160 @@ function DayCloseSection({
   )
 }
 
+// Packed finished stock per SKU (packaging). A lightweight, manually-maintained
+// count: add packs in / remove, and it's reduced automatically by dispatched
+// PACKED sales of that SKU. on-hand = packed in − packed sold (in units).
+function SkuStock(): React.JSX.Element {
+  const [rows, setRows] = useState<Row[]>([])
+  const [loading, setLoading] = useState(true)
+  const [adjustRow, setAdjustRow] = useState<Row | null>(null)
+  const [adjustForm, setAdjustForm] = useState<{ mode: 'add' | 'remove'; amount: string; note: string; date: string }>({
+    mode: 'add',
+    amount: '',
+    note: '',
+    date: todayISO()
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setRows(await window.api.skuStock.list())
+    setLoading(false)
+  }, [])
+  useEffect(() => { load() }, [load])
+  useLiveRefresh(load)
+
+  const unitLabel = (r: Row): string => {
+    const size = Number(r.unit_size) || 0
+    if (size > 0) return `${formatNum(size)} ${r.unit_uom || ''}`.trim()
+    const bpp = Number(r.base_per_pouch) || 0
+    return bpp > 0 ? `${formatNum(bpp)} ${r.base_uom || ''}`.trim() : '—'
+  }
+
+  function openAdjust(row: Row): void {
+    setAdjustRow(row)
+    setAdjustForm({ mode: 'add', amount: '', note: '', date: todayISO() })
+    setError(null)
+  }
+
+  async function saveAdjust(): Promise<void> {
+    if (!adjustRow) return
+    const amt = Number(adjustForm.amount)
+    if (!amt || amt <= 0) { setError('Enter a quantity greater than zero'); return }
+    const delta = adjustForm.mode === 'add' ? amt : -amt
+    setSaving(true)
+    setError(null)
+    try {
+      await window.api.skuStock.adjust(Number(adjustRow.id), delta, adjustForm.note || undefined, adjustForm.date || undefined)
+      toast.success(`${adjustForm.mode === 'add' ? 'Added' : 'Removed'} ${amt} × ${adjustRow.name}`)
+      setAdjustRow(null)
+      await load()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const totalOnHand = rows.reduce((s, r) => s + (Number(r.on_hand) || 0), 0)
+
+  return (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <StatCard label="SKUs" value={String(rows.length)} />
+        <StatCard label="Total packs on hand" value={formatNum(totalOnHand)} />
+        <StatCard label="Below zero" value={String(rows.filter((r) => Number(r.on_hand) < -1e-6).length)} tone={rows.some((r) => Number(r.on_hand) < -1e-6) ? 'text-red-600' : 'text-emerald-700'} />
+      </div>
+
+      <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>SKU</TableHead>
+              <TableHead>Pack size</TableHead>
+              <TableHead className="text-right">Packed in</TableHead>
+              <TableHead className="text-right">Sold (packed)</TableHead>
+              <TableHead className="text-right">On hand</TableHead>
+              <TableHead className="w-[80px] text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading ? (
+              <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+            ) : rows.length === 0 ? (
+              <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">No SKUs. Add packagings under Masters → Packed SKU first.</TableCell></TableRow>
+            ) : (
+              rows.map((r) => {
+                const onHand = Number(r.on_hand) || 0
+                return (
+                  <TableRow key={r.id as number}>
+                    <TableCell className="font-medium">{r.name}</TableCell>
+                    <TableCell className="text-muted-foreground">{unitLabel(r)}</TableCell>
+                    <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.added) ? formatNum(r.added) : '—'}</TableCell>
+                    <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.sold) ? formatNum(r.sold) : '—'}</TableCell>
+                    <TableCell className={cn('text-right font-semibold tabular-nums', onHand < -1e-6 && 'text-red-600')}>{formatNum(onHand)}</TableCell>
+                    <TableCell className="text-right">
+                      <Button variant="ghost" size="icon" className="h-8 w-8" title="Add / remove packs" onClick={() => openAdjust(r)}>
+                        <SlidersHorizontal className="h-4 w-4" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                )
+              })
+            )}
+          </TableBody>
+        </Table>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        On hand = packs added here − packs sold on dispatched PACKED sales of this SKU. Add packs after packing; it drops automatically as packed sales are dispatched. This is a per-SKU count and is separate from the loose finished-goods balance.
+      </p>
+
+      <Dialog open={!!adjustRow} onOpenChange={(o) => !o && setAdjustRow(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Update packed stock — {adjustRow?.name}</DialogTitle>
+          </DialogHeader>
+          {adjustRow && (() => {
+            const onHand = Number(adjustRow.on_hand) || 0
+            const amt = Number(adjustForm.amount) || 0
+            const delta = adjustForm.mode === 'add' ? amt : -amt
+            const newHand = onHand + delta
+            return (
+              <div className="space-y-3">
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setAdjustForm((p) => ({ ...p, mode: 'add' }))} className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'add' ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'hover:bg-muted/40')}>+ Add packs</button>
+                  <button type="button" onClick={() => setAdjustForm((p) => ({ ...p, mode: 'remove' }))} className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'remove' ? 'border-red-500 bg-red-50 text-red-700' : 'hover:bg-muted/40')}>− Remove packs</button>
+                </div>
+                <div className="grid gap-1.5">
+                  <Label>Packs to {adjustForm.mode === 'add' ? 'add' : 'remove'}</Label>
+                  <Input type="number" autoFocus value={adjustForm.amount} onChange={(e) => setAdjustForm((p) => ({ ...p, amount: e.target.value }))} />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label>Date</Label>
+                  <DatePicker value={adjustForm.date} onChange={(v) => setAdjustForm((p) => ({ ...p, date: v || '' }))} />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label>Note (optional)</Label>
+                  <Input value={adjustForm.note} onChange={(e) => setAdjustForm((p) => ({ ...p, note: e.target.value }))} placeholder="e.g. packed today / stock correction" />
+                </div>
+                <div className="rounded-md bg-muted px-3 py-2 text-sm">
+                  On hand: <span className="tabular-nums">{formatNum(onHand)}</span> → <span className={cn('font-semibold tabular-nums', newHand < -1e-9 && 'text-red-600')}>{formatNum(newHand)}</span>
+                </div>
+                {error && <p className="text-sm text-red-600">{error}</p>}
+              </div>
+            )
+          })()}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAdjustRow(null)} disabled={saving}>Cancel</Button>
+            <Button onClick={saveAdjust} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
 // Move stock from the active (current) company to another company.
 function Transfers(): React.JSX.Element {
   const [stock, setStock] = useState<Row[]>([])
@@ -595,6 +756,7 @@ export function Stock(): React.JSX.Element {
             <TabsTrigger value="raw">Raw ({byCat('raw').length})</TabsTrigger>
             <TabsTrigger value="intermediate">Intermediate ({byCat('intermediate').length})</TabsTrigger>
             <TabsTrigger value="finished">Finished ({byCat('finished').length})</TabsTrigger>
+            <TabsTrigger value="sku">Packed SKU</TabsTrigger>
             <TabsTrigger value="transfers">Transfers</TabsTrigger>
             <TabsTrigger value="dayclose">Day close (actual vs book)</TabsTrigger>
           </TabsList>
@@ -606,6 +768,9 @@ export function Stock(): React.JSX.Element {
           </TabsContent>
           <TabsContent value="finished" className="mt-6">
             <StockTable rows={byCat('finished')} breakdown={breakdown} />
+          </TabsContent>
+          <TabsContent value="sku" className="mt-6">
+            <SkuStock />
           </TabsContent>
           <TabsContent value="transfers" className="mt-6">
             <Transfers />

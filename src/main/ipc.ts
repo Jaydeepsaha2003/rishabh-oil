@@ -67,6 +67,7 @@ import {
   deleteStockTransfer
 } from './stock'
 import { stockCountSheet, listStockCounts, saveStockCounts } from './stockcount'
+import { listSkuStock, adjustSkuStock } from './skustock'
 import { daybook } from './daybook'
 import {
   listProduction,
@@ -151,6 +152,7 @@ const NS_ENTITY: Record<string, string> = {
   formulation: 'Formulation',
   stock: 'Stock',
   stockCount: 'Stock count',
+  skuStock: 'Packed SKU stock',
   gate: 'Gate entry',
   users: 'User',
   access: 'Access',
@@ -420,6 +422,11 @@ export function registerIpc(): void {
   handle('stockCount:list', (_e, { date }: { date: string }) => listStockCounts(date))
   handle('stockCount:save', (_e, { date, items }: { date: string; items: Row[] }) =>
     saveStockCounts(date, items)
+  )
+
+  handle('skuStock:list', () => listSkuStock())
+  handle('skuStock:adjust', (_e, { id, delta, note, date }: { id: number; delta: number; note?: string; date?: string }) =>
+    adjustSkuStock(id, delta, note, date)
   )
 
   handle('production:list', () => listProduction())

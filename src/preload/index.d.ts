@@ -127,6 +127,10 @@ export interface Api {
     list: (date: string) => Promise<Row[]>
     save: (date: string, items: Row[]) => Promise<{ count: number }>
   }
+  skuStock: {
+    list: () => Promise<Row[]>
+    adjust: (id: number, delta: number, note?: string, date?: string) => Promise<{ id: number; on_hand: number }>
+  }
   production: {
     list: () => Promise<Row[]>
     items: (id: number) => Promise<Row[]>
