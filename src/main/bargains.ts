@@ -34,10 +34,15 @@ function dayMonth(dateStr: string): string {
   return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
-export async function listBargains(): Promise<Row[]> {
+export async function listBargains(from?: string, to?: string): Promise<Row[]> {
   // Bargains are GENERAL — shared across every company, not company-scoped.
-  // loaded_qty = total dispatched across this bargain's orders; balance = qty − loaded.
-  const res = await getClient().execute(`
+  // loaded_qty = total dispatched (received in) across this bargain's tankers +
+  // consignment orders; balance = qty − loaded. Period register fields (relative
+  // to [from,to]) split that "loaded" by the tanker loaded_date / order_date.
+  const f = from || '0000-01-01'
+  const t = to || '9999-12-31'
+  const res = await getClient().execute({
+    sql: `
     SELECT b.*, s.name AS supplier_name, s.supplier_type AS supplier_type,
            br.name AS broker_name,
            o.code AS oil_code, o.name AS oil_name,
@@ -47,13 +52,26 @@ export async function listBargains(): Promise<Row[]> {
            b.qty
              - COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id), 0)
              - COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id), 0)
-             - COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id AND is_consignment = 1), 0) AS balance_qty
+             - COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id AND is_consignment = 1), 0) AS balance_qty,
+           COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND substr(loaded_date, 1, 10) < ?), 0)
+             + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id AND substr(loaded_date, 1, 10) < ?), 0)
+             + COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id AND is_consignment = 1 AND substr(order_date, 1, 10) < ?), 0) AS disp_before,
+           COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND substr(loaded_date, 1, 10) >= ? AND substr(loaded_date, 1, 10) <= ?), 0)
+             + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id AND substr(loaded_date, 1, 10) >= ? AND substr(loaded_date, 1, 10) <= ?), 0)
+             + COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id AND is_consignment = 1 AND substr(order_date, 1, 10) >= ? AND substr(order_date, 1, 10) <= ?), 0) AS disp_period,
+           (SELECT MAX(d) FROM (
+              SELECT MAX(substr(loaded_date, 1, 10)) AS d FROM purchase_tankers WHERE bargain_id = b.id
+              UNION ALL SELECT MAX(substr(loaded_date, 1, 10)) FROM purchase_tankers WHERE extra_bargain_id = b.id
+              UNION ALL SELECT MAX(substr(order_date, 1, 10)) FROM orders WHERE bargain_id = b.id AND is_consignment = 1
+           )) AS last_dispatch_date
     FROM bargains b
     LEFT JOIN suppliers s ON s.id = b.supplier_id
     LEFT JOIN products o ON o.id = b.oil_type_id
     LEFT JOIN brokers br ON br.id = b.broker_id
     ORDER BY b.id DESC
-  `)
+  `,
+    args: [f, f, f, f, t, f, t, f, t]
+  })
   return toPlain(res)
 }
 

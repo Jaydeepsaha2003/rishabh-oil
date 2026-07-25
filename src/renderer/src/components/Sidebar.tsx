@@ -4,6 +4,7 @@ import {
   Boxes,
   Briefcase,
   Building2,
+  BookOpenText,
   ClipboardCheck,
   Contact,
   CreditCard,
@@ -39,6 +40,7 @@ export type Page =
   | 'consignment'
   | 'gateEntry'
   | 'ledgers'
+  | 'daybook'
   | 'payments'
   | 'products'
   | 'formulation'
@@ -62,6 +64,7 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   gateEntry: { label: 'Gate Entry', icon: DoorOpen },
   payments: { label: 'Payments', icon: CreditCard },
   ledgers: { label: 'Ledgers', icon: Wallet },
+  daybook: { label: 'Daybook', icon: BookOpenText },
   products: { label: 'Products', icon: Boxes },
   formulation: { label: 'Formulation', icon: FlaskConical },
   production: { label: 'Production', icon: Factory },
@@ -83,7 +86,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Purchase', ids: ['bargains', 'orders', 'consignment', 'gateEntry'] },
   { label: 'Production', ids: ['products', 'formulation', 'production', 'stock'] },
   { label: 'Sales', ids: ['salesBargains', 'sales'] },
-  { label: 'Accounts', ids: ['payments', 'ledgers'] },
+  { label: 'Accounts', ids: ['payments', 'ledgers', 'daybook'] },
   { label: 'Masters', ids: ['suppliers', 'transporters', 'customers', 'ports', 'brokers', 'packaging'] },
   { label: 'System', ids: ['approvals', 'settings'] }
 ]

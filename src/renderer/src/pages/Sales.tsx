@@ -51,6 +51,37 @@ function stageInfo(row: Row): (typeof DISPATCH_STAGES)[number] {
   return DISPATCH_STAGES.find((x) => x.value === s) || DISPATCH_STAGES[0]
 }
 
+// First day of the current month, YYYY-MM-DD.
+function monthStartISO(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+}
+
+// Period register figures for a bargain, relative to [from,to].
+// opening (b/f) + addition (created in period) − dispatch (in period) = closing.
+function bargainRegister(r: Row, from: string, to: string): { opening: number; addition: number; dispatch: number; closing: number } {
+  const qty = Number(r.qty) || 0
+  const before = Number(r.disp_before) || 0
+  const inP = Number(r.disp_period) || 0
+  const bdate = String(r.bargain_date || '').slice(0, 10)
+  const createdInRange = bdate >= from && bdate <= to
+  const opening = bdate < from ? Math.max(0, qty - before) : 0
+  const addition = createdInRange ? qty : 0
+  const dispatch = inP
+  return { opening, addition, dispatch, closing: opening + addition - dispatch }
+}
+
+// Whether a bargain belongs in the register for [from,to]: created on/before the
+// period, and either still open at period end OR finished within the period.
+function inRegister(r: Row, from: string, to: string): boolean {
+  const bdate = String(r.bargain_date || '').slice(0, 10)
+  if (bdate > to) return false
+  const { closing } = bargainRegister(r, from, to)
+  if (closing > 1e-6) return true
+  const fin = String(r.last_dispatch_date || '').slice(0, 10)
+  return !!fin && fin >= from && fin <= to
+}
+
 // ---------------- Sales tab ----------------
 
 function SalesTab({
@@ -382,7 +413,7 @@ function SalesTab({
     <div>
       {!formPage && (
       <div className="overflow-x-auto rounded-lg border bg-card">
-        <Table className="min-w-[820px]">
+        <Table className="min-w-[1040px]">
           <TableHeader>
             <TableRow>
               <TableHead className="w-[150px]">Date / Invoice</TableHead>
@@ -503,8 +534,8 @@ function SalesTab({
         </div>
 
         {/* Invoice header */}
-        <div className="rounded-xl border bg-card p-5">
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="rounded-xl border bg-card p-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div className="grid gap-1.5">
               <Label>Date</Label>
               <DatePicker value={header.sale_date} onChange={(v) => setHeaderField('sale_date', v)} />
@@ -713,6 +744,13 @@ function SalesBargainsTab(): React.JSX.Element {
   const [packagings, setPackagings] = useState<Row[]>([])
   const [search, setSearch] = useState('')
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set())
+  const [expandedBg, setExpandedBg] = useState<Set<number>>(new Set())
+  // Period register range — defaults to the current month. Opening / Addition /
+  // Dispatch / Balance are computed relative to this range.
+  const [dateFrom, setDateFrom] = useState(monthStartISO())
+  const [dateTo, setDateTo] = useState(todayISO())
+  const F = dateFrom || '0000-01-01'
+  const T = dateTo || todayISO()
 
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Row | null>(null)
@@ -732,7 +770,7 @@ function SalesBargainsTab(): React.JSX.Element {
 
   const load = useCallback(async () => {
     const [b, pr, cu, pk] = await Promise.all([
-      window.api.salesBargains.list(),
+      window.api.salesBargains.list(F, T),
       window.api.data.list('products'),
       window.api.data.list('customers'),
       window.api.data.list('packagings')
@@ -741,7 +779,7 @@ function SalesBargainsTab(): React.JSX.Element {
     setProducts(pr.filter((x) => x.active && x.category === 'finished'))
     setCustomers(cu.filter((x) => x.active))
     setPackagings(pk.filter((x) => x.active))
-  }, [])
+  }, [F, T])
 
   useEffect(() => {
     load()
@@ -757,13 +795,23 @@ function SalesBargainsTab(): React.JSX.Element {
     })
   }
 
+  function toggleBg(id: number): void {
+    setExpandedBg((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   const q = search.trim().toLowerCase()
   const visibleRows = rows.filter(
     (r) =>
-      !q ||
-      [r.bargain_no, r.customer, r.product_name, r.note].some((f) =>
-        String(f || '').toLowerCase().includes(q)
-      )
+      inRegister(r, F, T) &&
+      (!q ||
+        [r.bargain_no, r.customer, r.product_name, r.note].some((f) =>
+          String(f || '').toLowerCase().includes(q)
+        ))
   )
   const sortedRows = useMemo(
     () =>
@@ -776,31 +824,31 @@ function SalesBargainsTab(): React.JSX.Element {
   )
 
   const groupStats = useMemo(() => {
-    const m = new Map<string, { count: number; qty: number; sold: number; bal: number; uom: string }>()
+    const m = new Map<string, { count: number; opening: number; addition: number; dispatch: number; closing: number; uom: string }>()
     for (const r of visibleRows) {
       const k = String(r.customer || '—')
-      if (!m.has(k)) m.set(k, { count: 0, qty: 0, sold: 0, bal: 0, uom: String(r.uom || 'MT') })
+      if (!m.has(k)) m.set(k, { count: 0, opening: 0, addition: 0, dispatch: 0, closing: 0, uom: String(r.uom || 'MT') })
       const g = m.get(k)!
+      const reg = bargainRegister(r, F, T)
       g.count += 1
-      g.qty += Number(r.qty) || 0
-      g.sold += Number(r.sold_qty) || 0
-      g.bal += Number(r.balance_qty) || 0
+      g.opening += reg.opening
+      g.addition += reg.addition
+      g.dispatch += reg.dispatch
+      g.closing += reg.closing
     }
     return m
-  }, [visibleRows])
+  }, [visibleRows, F, T])
 
   const grand = useMemo(() => {
-    let count = 0
-    let qty = 0
-    let sold = 0
-    let bal = 0
+    let count = 0, opening = 0, addition = 0, dispatch = 0, closing = 0
     for (const g of groupStats.values()) {
       count += g.count
-      qty += g.qty
-      sold += g.sold
-      bal += g.bal
+      opening += g.opening
+      addition += g.addition
+      dispatch += g.dispatch
+      closing += g.closing
     }
-    return { count, qty, sold, bal }
+    return { count, opening, addition, dispatch, closing }
   }, [groupStats])
 
   function blank(): Row {
@@ -925,8 +973,8 @@ function SalesBargainsTab(): React.JSX.Element {
 
   return (
     <div>
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="relative w-full sm:w-72">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="relative w-full sm:w-64">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             type="search"
@@ -936,30 +984,40 @@ function SalesBargainsTab(): React.JSX.Element {
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <Button size="sm" onClick={openAdd} disabled={products.length === 0}>
+        <div className="flex items-center gap-1.5 text-sm">
+          <span className="text-muted-foreground">Date</span>
+          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="w-36" />
+          <span className="text-muted-foreground">to</span>
+          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="w-36" />
+          {(dateFrom || dateTo) && (
+            <Button variant="ghost" size="sm" className="h-8 text-muted-foreground" onClick={() => { setDateFrom(''); setDateTo('') }}>Clear</Button>
+          )}
+        </div>
+        <Button size="sm" className="ml-auto" onClick={openAdd} disabled={products.length === 0}>
           <Plus className="h-4 w-4" /> New sales bargain
         </Button>
       </div>
 
       <div className="overflow-x-auto rounded-lg border bg-card">
-        <Table className="min-w-[760px] text-[13px]">
+        <Table className="min-w-[920px] text-[13px]">
           <TableHeader>
             <TableRow>
               <TableHead>Bargain no</TableHead>
               <TableHead>Date</TableHead>
               <TableHead>Product</TableHead>
-              <TableHead className="text-right">Op Qty</TableHead>
+              <TableHead className="text-right">Opening</TableHead>
+              <TableHead className="text-right">Addition</TableHead>
               <TableHead className="text-right">Rate</TableHead>
-              <TableHead className="text-right">Sold</TableHead>
-              <TableHead className="text-right">Bal Qty</TableHead>
+              <TableHead className="text-right">Dispatch</TableHead>
+              <TableHead className="text-right">Balance</TableHead>
               <TableHead className="w-[110px] text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {sortedRows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
-                  {rows.length === 0 ? 'No sales bargains yet.' : 'No sales bargains match your search.'}
+                <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
+                  {rows.length === 0 ? 'No sales bargains yet.' : 'No sales bargains in this period.'}
                 </TableCell>
               </TableRow>
             ) : (
@@ -971,10 +1029,11 @@ function SalesBargainsTab(): React.JSX.Element {
                       · {grand.count} bargain{grand.count === 1 ? '' : 's'}
                     </span>
                   </TableCell>
-                  <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.qty)} MT</TableCell>
+                  <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.opening)}</TableCell>
+                  <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.addition)}</TableCell>
                   <TableCell className="py-2" />
-                  <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.sold)} MT</TableCell>
-                  <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.bal)} MT</TableCell>
+                  <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.dispatch)}</TableCell>
+                  <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.closing)} MT</TableCell>
                   <TableCell className="py-2" />
                 </TableRow>
                 {sortedRows.map((row, i) => {
@@ -982,6 +1041,9 @@ function SalesBargainsTab(): React.JSX.Element {
                   const newGroup = i === 0 || grp !== String(sortedRows[i - 1].customer || '—')
                   const isCollapsed = !q && !openGroups.has(grp)
                   const g = groupStats.get(grp)
+                  // Serial number within the customer group (1-based).
+                  const seq = sortedRows.slice(0, i + 1).filter((r) => String(r.customer || '—') === grp).length
+                  const bgOpen = expandedBg.has(Number(row.id))
                   return (
                     <Fragment key={row.id as number}>
                       {newGroup && (
@@ -998,25 +1060,35 @@ function SalesBargainsTab(): React.JSX.Element {
                               </span>
                             </span>
                           </TableCell>
-                          <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.qty ?? 0)} {g?.uom || 'MT'}</TableCell>
+                          <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.opening ?? 0)}</TableCell>
+                          <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.addition ?? 0)}</TableCell>
                           <TableCell className="py-1.5" />
-                          <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.sold ?? 0)}</TableCell>
-                          <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.bal ?? 0)}</TableCell>
+                          <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.dispatch ?? 0)}</TableCell>
+                          <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.closing ?? 0)} {g?.uom || 'MT'}</TableCell>
                           <TableCell className="py-1.5" />
                         </TableRow>
                       )}
-                      {!isCollapsed && (
-                        <TableRow>
-                          <TableCell className="font-medium">{row.bargain_no}</TableCell>
+                      {!isCollapsed && (() => {
+                        const reg = bargainRegister(row, F, T)
+                        return (
+                        <TableRow className="cursor-pointer" onClick={() => toggleBg(Number(row.id))}>
+                          <TableCell className="font-medium">
+                            <span className="inline-flex items-center gap-1.5">
+                              {bgOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                              <span className="tabular-nums text-muted-foreground">{seq}.</span>
+                              {row.bargain_no}
+                            </span>
+                          </TableCell>
                           <TableCell>{formatDate(row.bargain_date)}</TableCell>
                           <TableCell>{row.product_name || '—'}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNum(row.qty)}</TableCell>
+                          <TableCell className="text-right tabular-nums text-muted-foreground">{reg.opening ? formatNum(reg.opening) : '—'}</TableCell>
+                          <TableCell className="text-right tabular-nums">{reg.addition ? formatNum(reg.addition) : '—'}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatINR(row.rate)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNum(row.sold_qty)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{reg.dispatch ? formatNum(reg.dispatch) : '—'}</TableCell>
                           <TableCell className="text-right font-medium tabular-nums">
-                            <span className={Number(row.balance_qty) < -1e-9 ? 'text-red-600' : ''}>{formatNum(row.balance_qty)}</span>
+                            <span className={reg.closing < -1e-9 ? 'text-red-600' : ''}>{formatNum(reg.closing)}</span>
                           </TableCell>
-                          <TableCell className="text-right">
+                          <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                             <div className="flex justify-end gap-1">
                               <Button variant="ghost" size="icon" className="h-8 w-8" title="Add / remove balance qty" onClick={() => openAdjust(row)}>
                                 <SlidersHorizontal className="h-4 w-4" />
@@ -1027,6 +1099,23 @@ function SalesBargainsTab(): React.JSX.Element {
                               <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => del(row)}>
                                 <Trash2 className="h-4 w-4" />
                               </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                        )
+                      })()}
+                      {!isCollapsed && bgOpen && (
+                        <TableRow className="bg-muted/30">
+                          <TableCell />
+                          <TableCell colSpan={8} className="py-2 text-xs text-muted-foreground">
+                            <div className="flex flex-wrap gap-x-6 gap-y-1">
+                              <span>Rate: <span className="font-medium text-foreground">{formatINR(row.rate)}</span></span>
+                              <span>GST: <span className="font-medium text-foreground">{formatNum(row.gst_pct)}% {row.gst_type === 'IGST' ? 'IGST' : 'CGST+SGST'}</span></span>
+                              <span>Sale type: <span className="font-medium text-foreground">{row.sale_type === 'PACKED' ? `Packed${row.packaging_name ? ` · ${row.packaging_name}` : ''}` : 'Loose'}</span></span>
+                              <span>Freight: <span className="font-medium text-foreground">{row.freight_term === 'DLD' ? 'FOR (we deliver)' : 'Ex (customer lifts)'}</span></span>
+                              {row.rate_expiry_date && <span>Rate expiry: <span className="font-medium text-foreground">{formatDate(row.rate_expiry_date)}</span></span>}
+                              <span>Sold: <span className="font-medium text-foreground">{formatNum(row.sold_qty)} {row.uom}</span> · Balance: <span className="font-medium text-foreground">{formatNum(row.balance_qty)} {row.uom}</span></span>
+                              {row.note && <span>Note: <span className="font-medium text-foreground">{row.note}</span></span>}
                             </div>
                           </TableCell>
                         </TableRow>

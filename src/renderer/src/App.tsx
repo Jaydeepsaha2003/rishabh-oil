@@ -12,6 +12,7 @@ import { Orders } from './pages/Orders'
 import { Consignment } from './pages/Consignment'
 import { GateEntry } from './pages/GateEntry'
 import { Ledgers } from './pages/Ledgers'
+import { Daybook } from './pages/Daybook'
 import { Payments } from './pages/Payments'
 import { Products } from './pages/Products'
 import { Formulation } from './pages/Formulation'
@@ -246,6 +247,7 @@ function App(): React.JSX.Element {
           />
         )}
         {view === 'ledgers' && <Ledgers onOpenRecord={openRecord} />}
+        {view === 'daybook' && <Daybook />}
         {view === 'products' && <Products />}
         {view === 'formulation' && <Formulation />}
         {view === 'production' && <Production />}

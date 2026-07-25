@@ -61,11 +61,13 @@ import {
 import {
   stockLevels,
   productionNeeds,
+  stockPartyBreakdown,
   listStockTransfers,
   createStockTransfer,
   deleteStockTransfer
 } from './stock'
 import { stockCountSheet, listStockCounts, saveStockCounts } from './stockcount'
+import { daybook } from './daybook'
 import {
   listProduction,
   getProductionItems,
@@ -234,7 +236,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^company:setActive$|^company:getActive$|^session:setUser$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^company:setActive$|^company:getActive$|^session:setUser$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -297,7 +299,7 @@ export function registerIpc(): void {
   )
   handle('settings:all', () => allSettings())
 
-  handle('bargains:list', () => listBargains())
+  handle('bargains:list', (_e, args?: { from?: string; to?: string }) => listBargains(args?.from, args?.to))
   handle('bargains:create', (_e, { values }: { values: Row }) => createBargain(values))
   handle('bargains:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateBargain(id, values)
@@ -409,6 +411,8 @@ export function registerIpc(): void {
 
   handle('stock:list', () => stockLevels())
   handle('stock:needs', () => productionNeeds())
+  handle('stock:breakdown', () => stockPartyBreakdown())
+  handle('daybook:list', (_e, { from, to }: { from: string; to: string }) => daybook(from, to))
   handle('stock:transfers', () => listStockTransfers())
   handle('stock:transfer', (_e, { values }: { values: Row }) => createStockTransfer(values))
   handle('stock:deleteTransfer', (_e, { id }: { id: number }) => deleteStockTransfer(id))
@@ -440,7 +444,7 @@ export function registerIpc(): void {
   )
   handle('sales:delete', (_e, { id }: { id: number }) => deleteSale(id))
 
-  handle('salesBargains:list', () => listSalesBargains())
+  handle('salesBargains:list', (_e, args?: { from?: string; to?: string }) => listSalesBargains(args?.from, args?.to))
   handle('salesBargains:create', (_e, { values }: { values: Row }) => createSalesBargain(values))
   handle('salesBargains:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateSalesBargain(id, values)

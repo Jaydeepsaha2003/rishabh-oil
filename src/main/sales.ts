@@ -170,19 +170,30 @@ function dayMonth(dateStr: string): string {
   return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
-export async function listSalesBargains(): Promise<Row[]> {
+export async function listSalesBargains(from?: string, to?: string): Promise<Row[]> {
   // Sales bargains are GENERAL — shared across every company, like purchase
   // bargains (no company filter; sold sums sales from all companies).
-  const res = await getClient().execute(`
+  // Period register fields (relative to [from,to]): disp_before = dispatched
+  // before the period, disp_period = dispatched within it, last_dispatch_date =
+  // the date the last dispatch happened (used for the "finished this period" rule).
+  const f = from || '0000-01-01'
+  const t = to || '9999-12-31'
+  const res = await getClient().execute({
+    sql: `
     SELECT b.*, pr.name AS product_name, pk.name AS packaging_name, cu.name AS customer_master,
       COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id), 0) AS sold_qty,
-      b.qty - COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id), 0) AS balance_qty
+      b.qty - COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id), 0) AS balance_qty,
+      COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id AND substr(sale_date, 1, 10) < ?), 0) AS disp_before,
+      COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id AND substr(sale_date, 1, 10) >= ? AND substr(sale_date, 1, 10) <= ?), 0) AS disp_period,
+      (SELECT MAX(substr(sale_date, 1, 10)) FROM sales WHERE sales_bargain_id = b.id) AS last_dispatch_date
     FROM sales_bargains b
     LEFT JOIN products pr ON pr.id = b.product_id
     LEFT JOIN packagings pk ON pk.id = b.packaging_id
     LEFT JOIN customers cu ON cu.id = b.customer_id
     ORDER BY b.id DESC
-  `)
+  `,
+    args: [f, f, t]
+  })
   // When linked to the master, always show the master's current name (renames
   // propagate); otherwise fall back to the free-text name stored on the bargain.
   return toPlain(res).map((r) => ({ ...r, customer: r.customer_master || r.customer }))

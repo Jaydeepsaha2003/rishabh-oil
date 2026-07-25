@@ -60,13 +60,45 @@ const SORT_ACCESSORS: Record<string, (r: Row) => string | number> = {
   supplier: (r) => String(r.supplier_name || ''),
   oil: (r) => String(r.oil_code || r.oil_name || ''),
   condition: (r) => String(r.bargain_type || ''),
-  qty: (r) => Number(r.qty) || 0,
+  qty: (r) => Number(r._opening) || 0,
+  addition: (r) => Number(r._addition) || 0,
   rate: (r) => Number(r.rate_per_uom) || 0,
-  balance: (r) => Number(r.balance_qty) || 0,
+  dispatch: (r) => Number(r._dispatch) || 0,
+  balance: (r) => Number(r._closing) || 0,
   total: (r) => Number(r.total_amount) || 0
 }
 
 const oilOf = (r: Row): string => String(r.oil_code || r.oil_name || '—')
+
+// First day of the current month, YYYY-MM-DD.
+function monthStartISO(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+}
+
+// Period register for a purchase bargain relative to [from,to]:
+// opening (b/f) + addition (opened in period) − dispatch (received in period) = closing.
+function bargainRegister(r: Row, from: string, to: string): { opening: number; addition: number; dispatch: number; closing: number } {
+  const qty = Number(r.qty) || 0
+  const before = Number(r.disp_before) || 0
+  const inP = Number(r.disp_period) || 0
+  const bdate = String(r.bargain_date || '').slice(0, 10)
+  const createdInRange = bdate >= from && bdate <= to
+  const opening = bdate < from ? Math.max(0, qty - before) : 0
+  const addition = createdInRange ? qty : 0
+  return { opening, addition, dispatch: inP, closing: opening + addition - inP }
+}
+
+// Show a bargain in the register for [from,to]: created on/before the period end,
+// and either still open at period end OR finished (last receipt) within the period.
+function inRegister(r: Row, from: string, to: string): boolean {
+  const bdate = String(r.bargain_date || '').slice(0, 10)
+  if (bdate > to) return false
+  const { closing } = bargainRegister(r, from, to)
+  if (closing > 1e-6) return true
+  const fin = String(r.last_dispatch_date || '').slice(0, 10)
+  return !!fin && fin >= from && fin <= to
+}
 
 // Default order: grouped by oil (A→Z), oldest first inside each group.
 function defaultCompare(a: Row, b: Row): number {
@@ -121,6 +153,11 @@ export function Bargains(): React.JSX.Element {
   const [defaultUom, setDefaultUom] = useState('MT')
   const [typeFilter, setTypeFilter] = useState('OIL')
   const [search, setSearch] = useState('')
+  // Period register range — defaults to the current month.
+  const [dateFrom, setDateFrom] = useState(monthStartISO())
+  const [dateTo, setDateTo] = useState(todayISO())
+  const F = dateFrom || '0000-01-01'
+  const T = dateTo || todayISO()
 
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Row | null>(null)
@@ -180,7 +217,7 @@ export function Bargains(): React.JSX.Element {
   const load = useCallback(async () => {
     setLoading(true)
     const [b, s, o, br, pt, settings] = await Promise.all([
-      window.api.bargains.list(),
+      window.api.bargains.list(F, T),
       window.api.data.list('suppliers'),
       window.api.data.list('products'),
       window.api.data.list('brokers'),
@@ -200,7 +237,7 @@ export function Bargains(): React.JSX.Element {
     )
     setDefaultUom(settings.default_uom ?? 'MT')
     setLoading(false)
-  }, [])
+  }, [F, T])
 
   useEffect(() => {
     load()
@@ -296,9 +333,20 @@ export function Bargains(): React.JSX.Element {
 
   const noMasters = suppliers.length === 0 || oilTypes.length === 0
   const TYPE_FILTERS = ['OIL', 'HUSK', 'PACKAGING', 'CHEMICAL', 'ALL']
+  // Enrich each bargain with its period register figures (used for the columns
+  // and for sorting via the _opening/_addition/_dispatch/_closing accessors).
+  const regRows = useMemo<Row[]>(
+    () =>
+      rows.map((r): Row => {
+        const reg = bargainRegister(r, F, T)
+        return { ...r, _opening: reg.opening, _addition: reg.addition, _dispatch: reg.dispatch, _closing: reg.closing }
+      }),
+    [rows, F, T]
+  )
   const q = search.trim().toLowerCase()
-  const visibleRows = rows
+  const visibleRows = regRows
     .filter((r) => typeFilter === 'ALL' || String(r.supplier_type || '').toUpperCase() === typeFilter)
+    .filter((r) => inRegister(r, F, T))
     .filter(
       (r) =>
         !q ||
@@ -356,32 +404,33 @@ export function Bargains(): React.JSX.Element {
 
   // Per-oil totals shown on the group band, aligned to the table columns.
   const groupStats = useMemo(() => {
-    const m = new Map<string, { count: number; qty: number; bal: number; balValue: number; uom: string }>()
+    const m = new Map<string, { count: number; opening: number; addition: number; dispatch: number; closing: number; balValue: number; uom: string }>()
     for (const r of visibleRows) {
       const k = oilOf(r)
-      if (!m.has(k)) m.set(k, { count: 0, qty: 0, bal: 0, balValue: 0, uom: String(r.uom || 'MT') })
+      if (!m.has(k)) m.set(k, { count: 0, opening: 0, addition: 0, dispatch: 0, closing: 0, balValue: 0, uom: String(r.uom || 'MT') })
       const g = m.get(k)!
       g.count += 1
-      g.qty += Number(r.qty) || 0
-      g.bal += Number(r.balance_qty) || 0
-      g.balValue += (Number(r.balance_qty) || 0) * (Number(r.rate_per_uom) || 0)
+      g.opening += Number(r._opening) || 0
+      g.addition += Number(r._addition) || 0
+      g.dispatch += Number(r._dispatch) || 0
+      g.closing += Number(r._closing) || 0
+      g.balValue += (Number(r._closing) || 0) * (Number(r.rate_per_uom) || 0)
     }
     return m
   }, [visibleRows])
 
   // Grand total across the currently visible groups (matches the group bands).
   const grandVisible = useMemo(() => {
-    let count = 0
-    let qty = 0
-    let bal = 0
-    let balValue = 0
+    let count = 0, opening = 0, addition = 0, dispatch = 0, closing = 0, balValue = 0
     for (const g of groupStats.values()) {
       count += g.count
-      qty += g.qty
-      bal += g.bal
+      opening += g.opening
+      addition += g.addition
+      dispatch += g.dispatch
+      closing += g.closing
       balValue += g.balValue
     }
-    return { count, qty, bal, balValue }
+    return { count, opening, addition, dispatch, closing, balValue }
   }, [groupStats])
 
   // Report: one summary line per oil type — open bargains (balance left), total
@@ -579,7 +628,7 @@ export function Bargains(): React.JSX.Element {
                   </button>
                 ))}
               </div>
-              <div className="relative w-full sm:w-72">
+              <div className="relative w-full sm:w-64">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   type="search"
@@ -588,6 +637,15 @@ export function Bargains(): React.JSX.Element {
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                 />
+              </div>
+              <div className="flex items-center gap-1.5 text-sm">
+                <span className="text-muted-foreground">Date</span>
+                <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="w-36" />
+                <span className="text-muted-foreground">to</span>
+                <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="w-36" />
+                {(dateFrom || dateTo) && (
+                  <Button variant="ghost" size="sm" className="h-8 text-muted-foreground" onClick={() => { setDateFrom(''); setDateTo('') }}>Clear</Button>
+                )}
               </div>
             </div>
 
@@ -602,9 +660,11 @@ export function Bargains(): React.JSX.Element {
                         { id: 'supplier', label: 'Supplier' },
                         { id: 'oil', label: 'Oil' },
                         { id: 'condition', label: 'Condition' },
-                        { id: 'qty', label: 'Op Qty', right: true },
+                        { id: 'qty', label: 'Opening', right: true },
+                        { id: 'addition', label: 'Addition', right: true },
                         { id: 'rate', label: 'BG rate', right: true },
-                        { id: 'balance', label: 'Bal Qty', right: true },
+                        { id: 'dispatch', label: 'Dispatch', right: true },
+                        { id: 'balance', label: 'Balance', right: true },
                         { id: 'total', label: 'Total', right: true }
                       ] as { id: string; label: string; right?: boolean }[]
                     ).map((c) => (
@@ -632,13 +692,13 @@ export function Bargains(): React.JSX.Element {
                 <TableBody>
                   {loading ? (
                     <TableRow>
-                      <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                      <TableCell colSpan={12} className="py-10 text-center text-muted-foreground">
                         Loading…
                       </TableCell>
                     </TableRow>
                   ) : sortedRows.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                      <TableCell colSpan={12} className="py-10 text-center text-muted-foreground">
                         {rows.length === 0
                           ? 'No bargains yet. Click “New bargain” to add one.'
                           : `No ${typeFilter === 'ALL' ? '' : typeFilter + ' '}bargains to show.`}
@@ -653,9 +713,11 @@ export function Bargains(): React.JSX.Element {
                           · {grandVisible.count} bargain{grandVisible.count === 1 ? '' : 's'}
                         </span>
                       </TableCell>
-                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.qty)} MT</TableCell>
+                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.opening)}</TableCell>
+                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.addition)}</TableCell>
                       <TableCell className="py-2" />
-                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.bal)} MT</TableCell>
+                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.dispatch)}</TableCell>
+                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.closing)} MT</TableCell>
                       <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatINR(grandVisible.balValue)}</TableCell>
                       <TableCell className="py-2" />
                     </TableRow>
@@ -667,6 +729,10 @@ export function Bargains(): React.JSX.Element {
                       // searching, always reveal matches.
                       const isCollapsed = groupedByOil && !q && !openGroups.has(oil)
                       const g = groupStats.get(oil)
+                      // Serial number within the oil group (1-based).
+                      const seq = groupedByOil
+                        ? sortedRows.slice(0, i + 1).filter((r) => oilOf(r) === oil).length
+                        : i + 1
                       return (
                         <Fragment key={row.id as number}>
                           {newGroup && (
@@ -683,16 +749,12 @@ export function Bargains(): React.JSX.Element {
                                   </span>
                                 </span>
                               </TableCell>
-                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">
-                                {formatNum(g?.qty ?? 0)} {g?.uom || 'MT'}
-                              </TableCell>
+                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.opening ?? 0)}</TableCell>
+                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.addition ?? 0)}</TableCell>
                               <TableCell className="py-1.5" />
-                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">
-                                {formatNum(g?.bal ?? 0)} {g?.uom || 'MT'}
-                              </TableCell>
-                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">
-                                {formatINR(g?.balValue ?? 0)}
-                              </TableCell>
+                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.dispatch ?? 0)}</TableCell>
+                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.closing ?? 0)} {g?.uom || 'MT'}</TableCell>
+                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatINR(g?.balValue ?? 0)}</TableCell>
                               <TableCell className="py-1.5" />
                             </TableRow>
                           )}
@@ -706,6 +768,7 @@ export function Bargains(): React.JSX.Element {
                                 expanded.has(Number(row.id)) && 'rotate-90'
                               )}
                             />
+                            <span className="mr-1 tabular-nums text-muted-foreground">{seq}.</span>
                             {row.bargain_no}
                           </TableCell>
                           <TableCell>{formatDate(row.bargain_date)}</TableCell>
@@ -718,13 +781,13 @@ export function Bargains(): React.JSX.Element {
                               {row.bargain_type}
                             </Badge>
                           </TableCell>
-                          <TableCell className="text-right tabular-nums">
-                            {formatNum(row.qty)} {row.uom}
-                          </TableCell>
+                          <TableCell className="text-right tabular-nums text-muted-foreground">{Number(row._opening) ? formatNum(row._opening) : '—'}</TableCell>
+                          <TableCell className="text-right tabular-nums">{Number(row._addition) ? formatNum(row._addition) : '—'}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatINR(row.rate_per_uom)}</TableCell>
-                          <TableCell className="text-right tabular-nums">
-                            <span className={Number(row.balance_qty) < 0 ? 'text-red-600' : ''}>
-                              {formatNum(row.balance_qty)} {row.uom}
+                          <TableCell className="text-right tabular-nums">{Number(row._dispatch) ? formatNum(row._dispatch) : '—'}</TableCell>
+                          <TableCell className="text-right font-medium tabular-nums">
+                            <span className={Number(row._closing) < -1e-9 ? 'text-red-600' : ''}>
+                              {formatNum(row._closing)} {row.uom}
                             </span>
                           </TableCell>
                           <TableCell className="text-right font-medium tabular-nums">
@@ -751,7 +814,7 @@ export function Bargains(): React.JSX.Element {
                           </TableRow>
                           {expanded.has(Number(row.id)) && (
                             <TableRow className="bg-muted/20 hover:bg-muted/20">
-                              <TableCell colSpan={10} className="p-0">
+                              <TableCell colSpan={12} className="p-0">
                                 {(() => {
                                   // A tanker may be split across two bargains (excess loading):
                                   // its bargain gets loaded − extra, the auto-created line gets extra.

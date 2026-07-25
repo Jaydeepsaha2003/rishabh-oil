@@ -14,6 +14,7 @@ export const MODULES: ModuleDef[] = [
   { key: 'gateEntry', label: 'Gate Entry' },
   { key: 'payments', label: 'Payments' },
   { key: 'ledgers', label: 'Ledgers' },
+  { key: 'daybook', label: 'Daybook' },
   { key: 'products', label: 'Products' },
   { key: 'formulation', label: 'Formulation' },
   { key: 'production', label: 'Production' },

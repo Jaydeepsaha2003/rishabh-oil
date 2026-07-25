@@ -39,7 +39,7 @@ const api = {
     all: (): Promise<Record<string, string>> => ipcRenderer.invoke('settings:all')
   },
   bargains: {
-    list: (): Promise<Row[]> => ipcRenderer.invoke('bargains:list'),
+    list: (from?: string, to?: string): Promise<Row[]> => ipcRenderer.invoke('bargains:list', { from, to }),
     create: (values: Row): Promise<{ id: number; bargain_no: string }> =>
       ipcRenderer.invoke('bargains:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>
@@ -159,6 +159,8 @@ const api = {
   stock: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('stock:list'),
     needs: (): Promise<Row[]> => ipcRenderer.invoke('stock:needs'),
+    breakdown: (): Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>> => ipcRenderer.invoke('stock:breakdown'),
+    daybook: (from: string, to: string): Promise<{ vouchers: Row[]; material: Row[] }> => ipcRenderer.invoke('daybook:list', { from, to }),
     transfers: (): Promise<Row[]> => ipcRenderer.invoke('stock:transfers'),
     transfer: (values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('stock:transfer', { values }),
@@ -200,7 +202,7 @@ const api = {
       ipcRenderer.invoke('sales:deleteInvoice', { group })
   },
   salesBargains: {
-    list: (): Promise<Row[]> => ipcRenderer.invoke('salesBargains:list'),
+    list: (from?: string, to?: string): Promise<Row[]> => ipcRenderer.invoke('salesBargains:list', { from, to }),
     create: (values: Row): Promise<{ id: number; bargain_no: string }> =>
       ipcRenderer.invoke('salesBargains:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>

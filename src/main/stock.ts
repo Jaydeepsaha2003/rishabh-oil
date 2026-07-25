@@ -86,6 +86,41 @@ async function productStockForCompany(companyId: number, productId: number): Pro
   return rec + prod + tIn - cons - sld - tOut
 }
 
+// Party-wise breakdown per product for the active company: who we RECEIVED
+// each raw product from (suppliers, on received purchases) and who we
+// DISPATCHED each product to (customers, on done stock-tracked sales). Used for
+// the hover detail on the Stock page's Receipt / Dispatch columns.
+export async function stockPartyBreakdown(): Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>> {
+  const c = getClient()
+  const cid = getActiveCompanyId()
+  const out: Record<number, { receipt: Row[]; dispatch: Row[] }> = {}
+  const ensure = (pid: number): { receipt: Row[]; dispatch: Row[] } => (out[pid] ??= { receipt: [], dispatch: [] })
+
+  const rec = await c.execute({
+    sql: `SELECT o.oil_type_id AS pid, COALESCE(s.name, 'Unknown') AS party, SUM(o.received_qty) AS qty
+          FROM orders o LEFT JOIN suppliers s ON s.id = o.supplier_id
+          WHERE o.status = 'received' AND o.company_id = ?
+          GROUP BY o.oil_type_id, s.name
+          HAVING SUM(o.received_qty) > 0
+          ORDER BY qty DESC`,
+    args: [cid]
+  })
+  for (const r of rec.rows) ensure(Number(r.pid)).receipt.push({ party: String(r.party), qty: Number(r.qty) || 0 })
+
+  const disp = await c.execute({
+    sql: `SELECT s.product_id AS pid, COALESCE(cu.name, s.customer, 'Unknown') AS party, SUM(s.qty) AS qty
+          FROM sales s LEFT JOIN customers cu ON cu.id = s.customer_id
+          WHERE s.status = 'done' AND s.track_stock = 1 AND s.company_id = ?
+          GROUP BY s.product_id, COALESCE(cu.name, s.customer)
+          HAVING SUM(s.qty) > 0
+          ORDER BY qty DESC`,
+    args: [cid]
+  })
+  for (const r of disp.rows) ensure(Number(r.pid)).dispatch.push({ party: String(r.party), qty: Number(r.qty) || 0 })
+
+  return out
+}
+
 // Available stock of ONE product in the ACTIVE company, using the same formula
 // as stockLevels. A specific sale or production run can be excluded from the
 // maths so an edit/toggle/delete doesn't count its own (pre-change) effect.

@@ -69,7 +69,34 @@ const CAT_LABEL: Record<string, string> = {
   finished: 'Finished'
 }
 
-function StockTable({ rows }: { rows: Row[] }): React.JSX.Element {
+// A number cell that reveals a party-wise breakdown on hover.
+function PartyCell({ value, parties, uom }: { value: number; parties: Row[]; uom?: string }): React.JSX.Element {
+  const cell = <span className="tabular-nums">{formatNum(value)}</span>
+  if (!parties || parties.length === 0) {
+    return <TableCell className="text-right tabular-nums text-muted-foreground">{value ? cell : '—'}</TableCell>
+  }
+  return (
+    <TableCell className="text-right tabular-nums text-muted-foreground">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="cursor-default underline decoration-dotted decoration-muted-foreground/50 underline-offset-4">{cell}</span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs">
+          <div className="space-y-0.5">
+            {parties.map((p, i) => (
+              <div key={i} className="flex justify-between gap-4">
+                <span>{p.party}</span>
+                <span className="tabular-nums font-medium">{formatNum(p.qty)} {uom || 'MT'}</span>
+              </div>
+            ))}
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TableCell>
+  )
+}
+
+function StockTable({ rows, breakdown }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[] }> }): React.JSX.Element {
   const sum = (k: string): number => rows.reduce((s, r) => s + (Number(r[k]) || 0), 0)
   const totals = {
     received: sum('received'),
@@ -86,12 +113,12 @@ function StockTable({ rows }: { rows: Row[] }): React.JSX.Element {
         <TableHeader>
           <TableRow>
             <TableHead>Product</TableHead>
-            <TableHead className="text-right">Received</TableHead>
+            <TableHead className="text-right">Receipt</TableHead>
             <TableHead className="text-right">Produced</TableHead>
             <TableHead className="text-right">Transfer in</TableHead>
             <TableHead className="text-right">Transfer out</TableHead>
             <TableHead className="text-right">Consumed</TableHead>
-            <TableHead className="text-right">Sold</TableHead>
+            <TableHead className="text-right">Dispatch</TableHead>
             <TableHead className="text-right">In stock</TableHead>
           </TableRow>
         </TableHeader>
@@ -107,12 +134,12 @@ function StockTable({ rows }: { rows: Row[] }): React.JSX.Element {
               {rows.map((r) => (
                 <TableRow key={r.id as number}>
                   <TableCell className="font-medium">{r.name}</TableCell>
-                  <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.received)}</TableCell>
+                  <PartyCell value={Number(r.received)} parties={breakdown[r.id as number]?.receipt || []} />
                   <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.produced)}</TableCell>
                   <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.transferred_in) > 0 ? formatNum(r.transferred_in) : '—'}</TableCell>
                   <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.transferred_out) > 0 ? formatNum(r.transferred_out) : '—'}</TableCell>
                   <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.consumed)}</TableCell>
-                  <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.sold)}</TableCell>
+                  <PartyCell value={Number(r.sold)} parties={breakdown[r.id as number]?.dispatch || []} />
                   <TableCell
                     className={cn(
                       'text-right font-semibold tabular-nums',
@@ -551,9 +578,12 @@ function Transfers(): React.JSX.Element {
 
 export function Stock(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
+  const [breakdown, setBreakdown] = useState<Record<number, { receipt: Row[]; dispatch: Row[] }>>({})
 
   const load = useCallback(async () => {
-    setRows(await window.api.stock.list())
+    const [s, b] = await Promise.all([window.api.stock.list(), window.api.stock.breakdown()])
+    setRows(s)
+    setBreakdown(b)
   }, [])
 
   useEffect(() => {
@@ -567,7 +597,7 @@ export function Stock(): React.JSX.Element {
   return (
     <>
       <PageHeader title="Stock" subtitle="Live balance per product, and daily book-vs-actual reconciliation" hint="Book balances update automatically (purchases add raw oil, production consumes inputs and adds outputs, sales reduce finished goods). Use Day close to enter the actual physical count each day and see the difference." />
-      <div className="p-8">
+      <div className="p-5">
         <Tabs defaultValue="raw">
           <TabsList>
             <TabsTrigger value="raw">Raw ({byCat('raw').length})</TabsTrigger>
@@ -577,13 +607,13 @@ export function Stock(): React.JSX.Element {
             <TabsTrigger value="dayclose">Day close (actual vs book)</TabsTrigger>
           </TabsList>
           <TabsContent value="raw" className="mt-6">
-            <StockTable rows={byCat('raw')} />
+            <StockTable rows={byCat('raw')} breakdown={breakdown} />
           </TabsContent>
           <TabsContent value="intermediate" className="mt-6">
-            <StockTable rows={byCat('intermediate')} />
+            <StockTable rows={byCat('intermediate')} breakdown={breakdown} />
           </TabsContent>
           <TabsContent value="finished" className="mt-6">
-            <StockTable rows={byCat('finished')} />
+            <StockTable rows={byCat('finished')} breakdown={breakdown} />
           </TabsContent>
           <TabsContent value="transfers" className="mt-6">
             <Transfers />

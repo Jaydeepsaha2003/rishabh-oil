@@ -34,17 +34,50 @@ function statusBadge(status: string): React.JSX.Element {
   return <Badge variant="warning">On hold</Badge>
 }
 
-// Compact preview of the parked payload (the fields entered).
-function payloadPreview(payload: string): string {
+// Friendly labels for the master fields shown in an approval request.
+const FIELD_LABEL: Record<string, string> = {
+  name: 'Name', code: 'Code', company_type: 'Company type', supplier_type: 'Supplier type',
+  gstin: 'GSTIN', state: 'State', gst_pct: 'GST %', tds_pct: 'TDS %', tds_threshold: 'TDS threshold',
+  tds_pct_above: 'TDS % above', tds_above_only: 'TDS above only', credit_period_days: 'Credit days',
+  adds_interest: 'Adds interest', interest_pct: 'Interest %', interest_days: 'Interest days',
+  opening_purchase_amount: 'Opening purchase', opening_purchase_date: 'Opening date',
+  transit_days: 'Transit days', brokerage_pct: 'Brokerage %', contact_person: 'Contact person',
+  phone: 'Phone', contact: 'Contact', address: 'Address', note: 'Note',
+  box_label: 'Case label', pouch_label: 'Pack type', pouches_per_box: 'Per case',
+  unit_size: 'Unit size', unit_uom: 'Unit UOM', base_per_pouch: 'Base / unit', base_uom: 'Base unit',
+  default_rate_per_ton: 'Default rate/ton', category: 'Category'
+}
+function humanizeKey(k: string): string {
+  return FIELD_LABEL[k] || k.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+// Meaningful entered fields (drops empty/zero/false and internal flags), nicely
+// labelled — so an admin can read exactly what was submitted at a glance.
+function detailEntries(payload: string): [string, string][] {
   try {
     const o = JSON.parse(payload) as Row
     return Object.entries(o)
-      .filter(([k, v]) => k !== 'active' && v !== '' && v != null && v !== false)
-      .map(([k, v]) => `${k}: ${v}`)
-      .join(' · ')
+      .filter(([k, v]) => k !== 'active' && k !== 'name' && k !== 'code' && v !== '' && v != null && v !== false && Number(v) !== 0)
+      .map(([k, v]) => [humanizeKey(k), String(v)] as [string, string])
   } catch {
-    return ''
+    return []
   }
+}
+
+// A wrapping set of labelled chips describing the submitted master.
+function PayloadChips({ payload }: { payload: string }): React.JSX.Element | null {
+  const entries = detailEntries(payload)
+  if (entries.length === 0) return null
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1.5">
+      {entries.map(([label, value]) => (
+        <span key={label} className="inline-flex items-center gap-1 rounded-md border bg-muted/40 px-2 py-0.5 text-[11px]">
+          <span className="text-muted-foreground">{label}</span>
+          <span className="font-medium text-foreground">{value}</span>
+        </span>
+      ))}
+    </div>
+  )
 }
 
 export function Approvals(): React.JSX.Element {
@@ -112,7 +145,7 @@ export function Approvals(): React.JSX.Element {
           ? 'When a non-admin adds a master (Products, Customers, Suppliers, Ports, etc.) it is held here until you approve (adds it to the database) or reject with a reason (shown back to the user).'
           : 'Masters you add are held for admin approval. Approved items appear in their normal list; rejected ones show the reason here.'}
       />
-      <div className="w-full space-y-6 p-6">
+      <div className="w-full space-y-4 p-5">
         {/* Pending */}
         <section>
           <div className="mb-2 flex items-center gap-2">
@@ -121,7 +154,7 @@ export function Approvals(): React.JSX.Element {
             <Badge variant={pending.length ? 'warning' : 'muted'}>{pending.length}</Badge>
           </div>
           <div className="overflow-x-auto rounded-lg border bg-card">
-            <Table className="min-w-[720px]">
+            <Table className="min-w-[640px] text-[13px] [&_td]:py-2 [&_th]:h-9">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[120px]">Type</TableHead>
@@ -142,7 +175,7 @@ export function Approvals(): React.JSX.Element {
                       <TableCell><Badge variant="secondary">{labelFor(row.table_name)}</Badge></TableCell>
                       <TableCell>
                         <div className="font-medium">{row.label || '—'}</div>
-                        <div className="truncate text-xs text-muted-foreground" title={payloadPreview(row.payload)}>{payloadPreview(row.payload)}</div>
+                        <PayloadChips payload={row.payload} />
                       </TableCell>
                       <TableCell>{row.requested_by_name || '—'}</TableCell>
                       <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(row.requested_at)}</TableCell>
@@ -170,7 +203,7 @@ export function Approvals(): React.JSX.Element {
         <section>
           <h3 className="mb-2 text-sm font-semibold text-muted-foreground">Recently decided</h3>
           <div className="overflow-x-auto rounded-lg border bg-card">
-            <Table className="min-w-[720px]">
+            <Table className="min-w-[640px] text-[13px] [&_td]:py-2 [&_th]:h-9">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[120px]">Type</TableHead>

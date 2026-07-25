@@ -28,7 +28,7 @@ export interface Api {
     all: () => Promise<Record<string, string>>
   }
   bargains: {
-    list: () => Promise<Row[]>
+    list: (from?: string, to?: string) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number; bargain_no: string }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
@@ -116,6 +116,8 @@ export interface Api {
   stock: {
     list: () => Promise<Row[]>
     needs: () => Promise<Row[]>
+    breakdown: () => Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>>
+    daybook: (from: string, to: string) => Promise<{ vouchers: Row[]; material: Row[] }>
     transfers: () => Promise<Row[]>
     transfer: (values: Row) => Promise<{ id: number }>
     deleteTransfer: (id: number) => Promise<{ id: number }>
@@ -144,7 +146,7 @@ export interface Api {
     removeInvoice: (group: string) => Promise<{ group: string }>
   }
   salesBargains: {
-    list: () => Promise<Row[]>
+    list: (from?: string, to?: string) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number; bargain_no: string }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
