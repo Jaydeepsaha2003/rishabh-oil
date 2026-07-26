@@ -2,7 +2,7 @@ import type { InValue, ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getSetting } from './repos'
 import { tankerGateReceived } from './gate'
-import { createBargain, ensureOilType } from './bargains'
+import { createBargain, ensureOilType, adjustBargainQty } from './bargains'
 import { consignmentAvailable } from './consignment'
 import { deleteJournalByRef, postPurchaseJournal } from './journal'
 import { getActiveCompanyId } from './company'
@@ -784,6 +784,11 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
   if (toStatus === 'loaded') {
     const qty = n(data.loaded_qty)
     if (qty <= 0) throw new Error('Enter the actual loaded quantity')
+    // Tanker number is mandatory at loading (it may have been left blank when the
+    // tanker was sent to the supplier). Take the value entered now, else keep any
+    // existing one; blank is not allowed past this stage.
+    const tankerNo = String(data.tanker_no ?? tanker.tanker_no ?? '').trim()
+    if (!tankerNo) throw new Error('Tanker number is required at loading')
     // The bargain may be switched at loading time (defaults to the one chosen
     // when the tanker was sent). Balance is validated against the final choice.
     const bargainId = data.bargain_id ? n(data.bargain_id) : n(tanker.bargain_id)
@@ -812,7 +817,19 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
       if (!oRes.rows.length) throw new Error('Bargain not found')
       const orig = toPlain(oRes)[0]
 
-      if (data.extra_bargain_id) {
+      if (data.expand_bargain) {
+        // (c) Grow THIS bargain by the excess so the whole load stays on one
+        // bargain (logged as a dated Addition at the bargain's own rate). No
+        // split — the full qty consumes from bargainId.
+        await adjustBargainQty(
+          bargainId,
+          extraQty,
+          `Extra ${extraQty.toFixed(3)} ${orig.uom} on tanker ${tanker.tanker_no || id} at loading`,
+          String(data.loaded_date || '').slice(0, 10) || undefined
+        )
+        extraBargainId = null
+        extraQty = 0
+      } else if (data.extra_bargain_id) {
         // (a) Use the next available bargain — must be a different bargain with
         // enough balance for the excess quantity.
         const chosenId = n(data.extra_bargain_id)
@@ -866,11 +883,12 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
       expected = d.toISOString().slice(0, 10)
     }
     await c.execute({
-      sql: `UPDATE purchase_tankers SET status = 'transit', bargain_id = ?, loaded_date = ?, loaded_qty = ?,
+      sql: `UPDATE purchase_tankers SET status = 'transit', tanker_no = ?, bargain_id = ?, loaded_date = ?, loaded_qty = ?,
             payment_mode = ?, transit_date = ?, source_id = ?, expected_delivery_date = ?,
             extra_bargain_id = ?, extra_qty = ?
             WHERE id = ?`,
       args: [
+        tankerNo,
         bargainId,
         data.loaded_date || null,
         qty,

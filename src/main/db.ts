@@ -377,6 +377,9 @@ const MIGRATIONS = [
     ledger_id INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
+  // Classification of a sales bargain (mirrors the purchase-bargain type tabs):
+  // FINISHED_OIL | FATTY | SCRAP | SPENT_EARTH | MISC.
+  "ALTER TABLE sales_bargains ADD COLUMN sale_category TEXT NOT NULL DEFAULT 'FINISHED_OIL'",
   // Optional item lines on a debit/credit note (product × qty × rate). When
   // present they compute the note's base amount; ledger-only (no stock move).
   `CREATE TABLE IF NOT EXISTS note_items (

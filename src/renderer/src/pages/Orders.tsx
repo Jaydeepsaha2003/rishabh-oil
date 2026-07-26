@@ -64,6 +64,26 @@ function nextTankerStage(status: string): string | null {
   return i >= 0 && i < TANKER_STAGES.length - 1 ? TANKER_STAGES[i + 1] : null
 }
 
+// Whole days between two YYYY-MM-DD dates (toISO − fromISO).
+function dayDiff(fromISO: string, toISO: string): number {
+  const a = new Date(`${fromISO.slice(0, 10)}T00:00:00`).getTime()
+  const b = new Date(`${toISO.slice(0, 10)}T00:00:00`).getTime()
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0
+  return Math.round((b - a) / 86400000)
+}
+
+// Delay status for a tanker still en route (transit / outside factory), based
+// on the expected delivery date computed from the port's transit days.
+function tankerDelay(row: Row): { label: string; tone: string } | null {
+  if (row.status !== 'transit' && row.status !== 'outside_factory') return null
+  const exp = String(row.expected_delivery_date || '').slice(0, 10)
+  if (!exp) return null
+  const days = dayDiff(exp, todayISO())
+  if (days > 0) return { label: `Delayed ${days} day${days === 1 ? '' : 's'}`, tone: 'text-red-600' }
+  if (days === 0) return { label: 'Due today', tone: 'text-amber-600' }
+  return { label: `ETA ${formatDate(exp)} · ${-days}d`, tone: 'text-muted-foreground' }
+}
+
 function StatusBadge({ status }: { status: string }): React.JSX.Element {
   const variant = status === 'empty' || status === 'received' ? 'success' : status === 'loaded' ? 'warning' : 'secondary'
   return <Badge variant={variant}>{TANKER_LABEL[status] ?? (status === 'received' ? 'Completed' : status)}</Badge>
@@ -135,7 +155,7 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
   // Loading more than the bargain balance: the excess is either booked as a new
   // bargain (optional rate) or allocated to an existing next bargain.
   const [excess, setExcess] = useState<
-    { qty: number; balance: number; mode: 'new' | 'existing'; diffRate: boolean; rate: string; targetBargainId: string } | null
+    { qty: number; balance: number; mode: 'new' | 'existing' | 'expand'; diffRate: boolean; rate: string; targetBargainId: string } | null
   >(null)
   const [detailRow, setDetailRow] = useState<Row | null>(null)
   // Tanker-count + quantity report, grouped by product/oil.
@@ -455,6 +475,10 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
     if (!actionRow) return
     const target = nextTankerStage(actionRow.status)
     if (!target) return
+    if (target === 'loaded' && !String(actionForm.tanker_no || '').trim()) {
+      toast.error('Enter the tanker number')
+      return
+    }
     if (target === 'loaded' && Number(actionForm.loaded_qty) <= 0) {
       toast.error('Enter the actual loaded quantity')
       return
@@ -495,6 +519,7 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
         ...actionForm,
         loaded_qty: Number(actionForm.loaded_qty) || 0,
         allow_excess: !!excess,
+        expand_bargain: !!excess && excess.mode === 'expand',
         excess_rate: excess && excess.mode === 'new' && excess.diffRate && Number(excess.rate) > 0 ? Number(excess.rate) : null,
         extra_bargain_id: excess && excess.mode === 'existing' && excess.targetBargainId ? Number(excess.targetBargainId) : null,
         bargain_id: actionForm.bargain_id ? Number(actionForm.bargain_id) : null,
@@ -511,7 +536,9 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
         toast.success(
           excess.mode === 'existing'
             ? `Loading confirmed — extra ${formatNum(excess.qty)} allocated to the selected bargain`
-            : `Loading confirmed — extra ${formatNum(excess.qty)} added as a new bargain`
+            : excess.mode === 'expand'
+              ? `Loading confirmed — bargain increased by ${formatNum(excess.qty)}`
+              : `Loading confirmed — extra ${formatNum(excess.qty)} added as a new bargain`
         )
       } else {
         toast.success(target === 'loaded' ? 'Loading confirmed and tanker moved to In transit' : `Tanker moved to ${TANKER_LABEL[target]}`)
@@ -1233,7 +1260,13 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                             <TableCell className="text-right tabular-nums">{Number(row.loaded_qty) > 0 ? `${formatNum(row.loaded_qty)} ${row.uom}` : 'Not loaded'}</TableCell>
                             <TableCell>{row.payment_mode === 'pending' ? <span className="text-muted-foreground">Not decided</span> : row.payment_mode === 'supplier_finance' ? <Badge variant="warning">Supplier financed</Badge> : <Badge variant="muted">Paid by us</Badge>}</TableCell>
                             <TableCell>{row.invoice_no || <span className="text-muted-foreground">Not entered</span>}</TableCell>
-                            <TableCell><StatusBadge status={row.status} /></TableCell>
+                            <TableCell>
+                              <StatusBadge status={row.status} />
+                              {(() => {
+                                const d = tankerDelay(row)
+                                return d ? <div className={cn('mt-1 text-[11px] font-medium', d.tone)}>{d.label}</div> : null
+                              })()}
+                            </TableCell>
                             <TableCell className="text-right"><div className="flex justify-end gap-1">
                               {next && <Button size="sm" variant="outline" onClick={() => openTankerAction(row)}>{TANKER_LABEL[next]}</Button>}
                               <Button size="icon" variant="ghost" className="h-8 w-8" title="Edit stage entries" onClick={() => openEditTanker(row)}><Pencil className="h-4 w-4" /></Button>
@@ -1394,7 +1427,7 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
           <DialogHeader><DialogTitle>{target ? `Move ${String(actionRow?.tanker_no || '').trim() || 'tanker'} to ${TANKER_LABEL[target]}` : 'Update tanker'}</DialogTitle></DialogHeader>
           {target === 'loaded' && actionRow && <div className="grid gap-4">
             <div className="grid gap-1.5">
-              <Label>Tanker number{String(actionRow.tanker_no || '').trim() ? '' : ' (set it now)'}</Label>
+              <Label>Tanker number *{String(actionRow.tanker_no || '').trim() ? '' : ' (set it now)'}</Label>
               <Input
                 placeholder="e.g. RJ04GD0469"
                 value={actionForm.tanker_no ?? ''}
@@ -1465,9 +1498,23 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                     >
                       Use the next available bargain
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setExcess((p) => (p ? { ...p, mode: 'expand' } : p))}
+                      className={cn(
+                        'rounded-md border px-3 py-1.5 text-xs font-medium',
+                        excess.mode === 'expand' ? 'border-amber-500 bg-amber-100' : 'border-amber-300 bg-white'
+                      )}
+                    >
+                      Add to this bargain
+                    </button>
                   </div>
 
-                  {excess.mode === 'new' ? (
+                  {excess.mode === 'expand' ? (
+                    <p className="text-[11px]">
+                      This bargain will be increased by <b>{formatNum(excess.qty)} {actionRow.uom}</b> (at its own rate) so the full load stays on it. The top-up is logged as an Addition on the bargain.
+                    </p>
+                  ) : excess.mode === 'new' ? (
                     <>
                       <p className="text-[11px]">A new bargain line will be created for {actionRow.supplier_name}.</p>
                       <div className="flex items-center gap-2">

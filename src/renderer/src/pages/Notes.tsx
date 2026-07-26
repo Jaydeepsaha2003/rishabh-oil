@@ -4,7 +4,6 @@ import { ArrowLeft, ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Badge } from '@/components/ui/badge'
 import { DatePicker } from '@/components/ui/date-picker'
 import {
   Select,
@@ -32,15 +31,14 @@ type Row = Record<string, any>
 
 type NoteType = 'debit' | 'credit'
 
-// Debit note → supplier (purchase return / reduce payable).
+// One page per kind. Debit note → supplier (purchase return / reduce payable);
 // Credit note → customer (sales return / reduce receivable).
-export function Notes(): React.JSX.Element {
+export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [suppliers, setSuppliers] = useState<Row[]>([])
   const [customers, setCustomers] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState<'all' | NoteType>('all')
   const [expanded, setExpanded] = useState<Record<number, Row[]>>({})
 
   const [formPage, setFormPage] = useState(false)
@@ -79,10 +77,7 @@ export function Notes(): React.JSX.Element {
     setExpanded((p) => ({ ...p, [id]: items }))
   }
 
-  const visible = useMemo(
-    () => (filter === 'all' ? rows : rows.filter((r) => r.note_type === filter)),
-    [rows, filter]
-  )
+  const visible = useMemo(() => rows.filter((r) => r.note_type === kind), [rows, kind])
 
   function openAdd(type: NoteType): void {
     setForm({
@@ -168,31 +163,30 @@ export function Notes(): React.JSX.Element {
     }
   }
 
-  const totals = useMemo(() => {
-    const dn = visible.filter((r) => r.note_type === 'debit').reduce((s, r) => s + (Number(r.total_amount) || 0), 0)
-    const cn = visible.filter((r) => r.note_type === 'credit').reduce((s, r) => s + (Number(r.total_amount) || 0), 0)
-    return { dn, cn }
-  }, [visible])
+  const totalValue = useMemo(() => visible.reduce((s, r) => s + (Number(r.total_amount) || 0), 0), [visible])
 
   return (
     <>
       {!formPage && (
       <>
       <PageHeader
-        title="Debit / Credit Notes"
-        subtitle="Tally-style adjustment notes that post to the ledger and the party balance"
-        hint="A Debit Note is raised against a supplier (purchase return / rate reduction — lowers what you owe). A Credit Note is raised against a customer (sales return / allowance — lowers what they owe). Each posts a double-entry voucher (visible on the Ledgers page) and adjusts the party's outstanding. GST, when entered, reverses Input (debit note) or Output (credit note) tax."
+        title={kind === 'debit' ? 'Debit Notes' : 'Credit Notes'}
+        subtitle={kind === 'debit'
+          ? 'Against a supplier — purchase return / rate reduction (lowers what you owe)'
+          : 'Against a customer — sales return / allowance (lowers what they owe)'}
+        hint={kind === 'debit'
+          ? "A Debit Note is raised against a supplier. It posts a double-entry voucher (visible on the Ledgers page) and reduces the supplier's outstanding; GST, when entered, reverses Input tax."
+          : "A Credit Note is raised against a customer. It posts a double-entry voucher (visible on the Ledgers page) and reduces the customer's outstanding; GST, when entered, reverses Output tax."}
         actions={
           <div className="flex items-center gap-2">
             <ExcelButton
-              filename={`debit-credit-notes-${todayISO()}`}
-              sheetName="Notes"
-              title="Debit / Credit notes"
+              filename={`${kind}-notes-${todayISO()}`}
+              sheetName={kind === 'debit' ? 'Debit notes' : 'Credit notes'}
+              title={kind === 'debit' ? 'Debit notes' : 'Credit notes'}
               columns={[
                 { header: 'No', key: 'note_no', value: (r) => r.note_no || '' },
-                { header: 'Type', key: 'note_type', value: (r) => (r.note_type === 'debit' ? 'Debit note' : 'Credit note') },
                 { header: 'Date', key: 'note_date', value: (r) => formatDate(r.note_date) },
-                { header: 'Party', key: 'party_name', value: (r) => r.party_name || '' },
+                { header: kind === 'debit' ? 'Supplier' : 'Customer', key: 'party_name', value: (r) => r.party_name || '' },
                 { header: 'Against', key: 'against_account', value: (r) => r.against_account || '' },
                 { header: 'Base', key: 'base_amount', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.base_amount) || 0 },
                 { header: 'GST %', key: 'gst_pct', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.gst_pct) || 0 },
@@ -202,45 +196,22 @@ export function Notes(): React.JSX.Element {
               ]}
               rows={visible}
             />
-            <Button size="sm" variant="outline" onClick={() => openAdd('debit')}>
-              <Plus className="h-4 w-4" /> Debit note
-            </Button>
-            <Button size="sm" onClick={() => openAdd('credit')}>
-              <Plus className="h-4 w-4" /> Credit note
+            <Button size="sm" onClick={() => openAdd(kind)}>
+              <Plus className="h-4 w-4" /> {kind === 'debit' ? 'New debit note' : 'New credit note'}
             </Button>
           </div>
         }
       />
       <div className="w-full space-y-4 p-4 sm:p-5">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3">
           <div className="rounded-xl border bg-card p-3 shadow-sm">
             <div className="text-xs text-muted-foreground">Notes</div>
             <div className="mt-1 text-lg font-semibold tabular-nums">{visible.length}</div>
           </div>
           <div className="rounded-xl border bg-card p-3 shadow-sm">
-            <div className="text-xs text-muted-foreground">Debit notes (supplier)</div>
-            <div className="mt-1 text-lg font-semibold tabular-nums text-amber-700">{formatINR(totals.dn)}</div>
+            <div className="text-xs text-muted-foreground">Total value</div>
+            <div className={cn('mt-1 text-lg font-semibold tabular-nums', kind === 'debit' ? 'text-amber-700' : 'text-emerald-700')}>{formatINR(totalValue)}</div>
           </div>
-          <div className="rounded-xl border bg-card p-3 shadow-sm">
-            <div className="text-xs text-muted-foreground">Credit notes (customer)</div>
-            <div className="mt-1 text-lg font-semibold tabular-nums text-emerald-700">{formatINR(totals.cn)}</div>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {(['all', 'debit', 'credit'] as const).map((f) => (
-            <button
-              key={f}
-              type="button"
-              onClick={() => setFilter(f)}
-              className={cn(
-                'rounded-md border px-3 py-1.5 text-sm font-medium capitalize',
-                filter === f ? 'border-primary bg-primary/10 text-primary' : 'hover:bg-muted/40'
-              )}
-            >
-              {f === 'all' ? 'All' : f === 'debit' ? 'Debit notes' : 'Credit notes'}
-            </button>
-          ))}
         </div>
 
         <div className="overflow-x-auto rounded-xl border bg-card shadow-sm">
@@ -248,9 +219,8 @@ export function Notes(): React.JSX.Element {
             <TableHeader>
               <TableRow>
                 <TableHead className="w-[80px]">No</TableHead>
-                <TableHead className="w-[110px]">Type</TableHead>
                 <TableHead className="w-[110px]">Date</TableHead>
-                <TableHead>Party</TableHead>
+                <TableHead>{kind === 'debit' ? 'Supplier' : 'Customer'}</TableHead>
                 <TableHead>Against</TableHead>
                 <TableHead className="text-right">Base</TableHead>
                 <TableHead className="text-right">GST</TableHead>
@@ -260,9 +230,9 @@ export function Notes(): React.JSX.Element {
             </TableHeader>
             <TableBody>
               {loading ? (
-                <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
               ) : visible.length === 0 ? (
-                <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">No notes yet. Raise a debit or credit note above.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No notes yet. Raise a debit or credit note above.</TableCell></TableRow>
               ) : (
                 visible.map((r) => {
                   const hasItems = Number(r.item_count) > 0
@@ -275,11 +245,6 @@ export function Notes(): React.JSX.Element {
                         {hasItems ? (isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />) : <span className="w-3.5" />}
                         {r.note_no}
                       </span>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={r.note_type === 'debit' ? 'warning' : 'success'}>
-                        {r.note_type === 'debit' ? 'Debit' : 'Credit'}
-                      </Badge>
                     </TableCell>
                     <TableCell className="whitespace-nowrap">{formatDate(r.note_date)}</TableCell>
                     <TableCell className="font-medium">{r.party_name || '—'}</TableCell>
@@ -297,7 +262,7 @@ export function Notes(): React.JSX.Element {
                   </TableRow>
                   {isOpen && (
                     <TableRow className="bg-muted/20 hover:bg-muted/20">
-                      <TableCell colSpan={9} className="p-0">
+                      <TableCell colSpan={8} className="p-0">
                         <div className="px-6 py-3">
                           <table className="w-full text-xs">
                             <thead>

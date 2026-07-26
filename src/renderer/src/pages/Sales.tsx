@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
+import { Switch } from '@/components/ui/switch'
 import {
   Select,
   SelectContent,
@@ -52,6 +53,16 @@ function stageInfo(row: Row): (typeof DISPATCH_STAGES)[number] {
   return DISPATCH_STAGES.find((x) => x.value === s) || DISPATCH_STAGES[0]
 }
 
+// Sale-bargain type classification (mirrors the purchase-bargain type tabs).
+const SALE_CATS: { v: string; label: string }[] = [
+  { v: 'FINISHED_OIL', label: 'Finished Oil' },
+  { v: 'FATTY', label: 'Fatty' },
+  { v: 'SCRAP', label: 'Scrap' },
+  { v: 'SPENT_EARTH', label: 'Spent Earth' },
+  { v: 'MISC', label: 'Misc' }
+]
+const saleCatLabel = (v: unknown): string => SALE_CATS.find((c) => c.v === String(v))?.label || 'Finished Oil'
+
 // First day of the current month, YYYY-MM-DD.
 function monthStartISO(): string {
   const d = new Date()
@@ -81,13 +92,21 @@ function bargainRegister(r: Row, from: string, to: string): { opening: number; a
 
 // Whether a bargain belongs in the register for [from,to]: created on/before the
 // period, and either still open at period end OR finished within the period.
-function inRegister(r: Row, from: string, to: string): boolean {
+// A bargain shows in the register when it still has an open balance. Fully
+// settled (0-balance) bargains are hidden unless `showZero` is on, in which case
+// they show only if they belong to the selected range (created / finished /
+// had activity in it).
+function inRegister(r: Row, from: string, to: string, showZero = false): boolean {
   const bdate = String(r.bargain_date || '').slice(0, 10)
   if (bdate > to) return false
-  const { closing } = bargainRegister(r, from, to)
-  if (closing > 1e-6) return true
+  const reg = bargainRegister(r, from, to)
+  if (reg.closing > 1e-6) return true
+  if (!showZero) return false
   const fin = String(r.last_dispatch_date || '').slice(0, 10)
-  return !!fin && fin >= from && fin <= to
+  const finishedInRange = !!fin && fin >= from && fin <= to
+  const createdInRange = bdate >= from && bdate <= to
+  const activityInRange = reg.opening + reg.addition + reg.dispatch > 1e-6
+  return finishedInRange || createdInRange || activityInRange
 }
 
 // ---------------- Sales tab ----------------
@@ -612,7 +631,7 @@ function SalesTab({
 
         {/* Invoice header */}
         <div className="rounded-xl border bg-card p-4">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 [&>div]:min-w-0">
             <div className="grid gap-1.5">
               <Label>Date</Label>
               <DatePicker value={header.sale_date} onChange={(v) => setHeaderField('sale_date', v)} />
@@ -700,7 +719,7 @@ function SalesTab({
                     </Button>
                   )}
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 [&>div]:min-w-0">
                   <div className="grid gap-1.5">
                     <Label>Product *</Label>
                     <Select value={String(item.product_id)} onValueChange={(v) => setItem(i, { product_id: v, sales_bargain_id: '' })}>
@@ -820,6 +839,11 @@ function SalesBargainsTab(): React.JSX.Element {
   const [products, setProducts] = useState<Row[]>([])
   const [customers, setCustomers] = useState<Row[]>([])
   const [packagings, setPackagings] = useState<Row[]>([])
+  // Type classification tab (Finished Oil / Fatty / …), Loose / Packed section,
+  // and whether to also show fully-settled (0-balance) bargains.
+  const [sectionCategory, setSectionCategory] = useState<string>('ALL')
+  const [sectionType, setSectionType] = useState<'LOOSE' | 'PACKED'>('LOOSE')
+  const [showZero, setShowZero] = useState(false)
   const [search, setSearch] = useState('')
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set())
   const [expandedBg, setExpandedBg] = useState<Set<number>>(new Set())
@@ -857,7 +881,9 @@ function SalesBargainsTab(): React.JSX.Element {
     ])
     setRows(b)
     setSales(s)
-    setProducts(pr.filter((x) => x.active && x.category === 'finished'))
+    // All active products (not just finished) so byproducts — fatty, scrap,
+    // spent earth, misc — can be sold under their sale-type bargains too.
+    setProducts(pr.filter((x) => x.active))
     setCustomers(cu.filter((x) => x.active))
     setPackagings(pk.filter((x) => x.active))
   }, [F, T])
@@ -901,7 +927,9 @@ function SalesBargainsTab(): React.JSX.Element {
   const q = search.trim().toLowerCase()
   const visibleRows = rows.filter(
     (r) =>
-      inRegister(r, F, T) &&
+      (sectionCategory === 'ALL' || String(r.sale_category || 'FINISHED_OIL') === sectionCategory) &&
+      (String(r.sale_type || 'LOOSE') === 'PACKED' ? 'PACKED' : 'LOOSE') === sectionType &&
+      inRegister(r, F, T, showZero) &&
       (!q ||
         [r.bargain_no, r.customer, r.product_name, r.note].some((f) =>
           String(f || '').toLowerCase().includes(q)
@@ -959,6 +987,7 @@ function SalesBargainsTab(): React.JSX.Element {
       rate_expiry_date: '',
       note: '',
       sale_type: 'LOOSE',
+      sale_category: sectionCategory === 'ALL' ? 'FINISHED_OIL' : sectionCategory,
       packaging_id: '',
       freight_term: 'FREIGHT_ON_GOODS'
     }
@@ -984,6 +1013,7 @@ function SalesBargainsTab(): React.JSX.Element {
       rate_expiry_date: row.rate_expiry_date ?? '',
       note: row.note ?? '',
       sale_type: row.sale_type ?? 'LOOSE',
+      sale_category: row.sale_category ?? 'FINISHED_OIL',
       packaging_id: row.packaging_id ? String(row.packaging_id) : '',
       freight_term: row.freight_term ?? 'FREIGHT_ON_GOODS'
     })
@@ -1067,6 +1097,42 @@ function SalesBargainsTab(): React.JSX.Element {
 
   return (
     <div>
+      <div className="mb-3 inline-flex flex-wrap gap-1 rounded-lg border bg-muted/40 p-1">
+        {[{ v: 'ALL', label: 'All' }, ...SALE_CATS].map((t) => (
+          <button
+            key={t.v}
+            type="button"
+            onClick={() => setSectionCategory(t.v)}
+            className={cn(
+              'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+              sectionCategory === t.v ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="inline-flex rounded-lg border p-0.5">
+          {(['LOOSE', 'PACKED'] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setSectionType(t)}
+              className={cn(
+                'rounded-md px-4 py-1.5 text-sm font-medium transition-colors',
+                sectionType === t ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {t === 'LOOSE' ? 'Loose' : 'Packed'}
+            </button>
+          ))}
+        </div>
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+          <Switch checked={showZero} onCheckedChange={setShowZero} />
+          Show settled (0 balance)
+        </label>
+      </div>
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative w-full sm:w-64">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -1095,6 +1161,7 @@ function SalesBargainsTab(): React.JSX.Element {
             columns={[
               { header: 'Bargain no', key: 'bargain_no', value: (r) => r.bargain_no || '' },
               { header: 'Date', key: 'date', value: (r) => formatDate(r.bargain_date) },
+              { header: 'Type', key: 'sale_category', value: (r) => saleCatLabel(r.sale_category) },
               { header: 'Customer', key: 'customer', value: (r) => r.customer || '' },
               { header: 'Product', key: 'product', value: (r) => r.product_name || '' },
               { header: 'Opening', key: 'opening', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).opening },
@@ -1324,10 +1391,19 @@ function SalesBargainsTab(): React.JSX.Element {
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5 sm:col-span-2">
+            <div className="grid gap-1.5">
+              <Label>Type</Label>
+              <Select value={form.sale_category || 'FINISHED_OIL'} onValueChange={(v) => setField('sale_category', v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {SALE_CATS.map((c) => <SelectItem key={c.v} value={c.v}>{c.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5">
               <Label>Product *</Label>
               <Select value={String(form.product_id)} onValueChange={(v) => setField('product_id', v)} disabled={editLocked}>
-                <SelectTrigger><SelectValue placeholder="Finished product" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Product" /></SelectTrigger>
                 <SelectContent>
                   {products.map((p) => <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>)}
                 </SelectContent>

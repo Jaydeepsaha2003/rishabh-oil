@@ -13,9 +13,10 @@ import {
   Factory,
   FileText,
   FlaskConical,
+  FileMinus2,
+  FilePlus2,
   LayoutDashboard,
   LogOut,
-  NotebookPen,
   Package,
   PackageOpen,
   ScrollText,
@@ -43,7 +44,8 @@ export type Page =
   | 'ledgers'
   | 'daybook'
   | 'payments'
-  | 'notes'
+  | 'debitNotes'
+  | 'creditNotes'
   | 'products'
   | 'formulation'
   | 'production'
@@ -65,7 +67,8 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   consignment: { label: 'Consignment', icon: PackageOpen },
   gateEntry: { label: 'Gate Entry', icon: DoorOpen },
   payments: { label: 'Payments', icon: CreditCard },
-  notes: { label: 'Debit/Credit Notes', icon: NotebookPen },
+  debitNotes: { label: 'Debit Note', icon: FileMinus2 },
+  creditNotes: { label: 'Credit Note', icon: FilePlus2 },
   ledgers: { label: 'Ledgers', icon: Wallet },
   daybook: { label: 'Daybook', icon: BookOpenText },
   products: { label: 'Products', icon: Boxes },
@@ -89,7 +92,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Purchase', ids: ['bargains', 'orders', 'consignment', 'gateEntry'] },
   { label: 'Production', ids: ['products', 'formulation', 'production', 'stock'] },
   { label: 'Sales', ids: ['salesBargains', 'sales'] },
-  { label: 'Accounts', ids: ['payments', 'notes', 'ledgers', 'daybook'] },
+  { label: 'Accounts', ids: ['payments', 'debitNotes', 'creditNotes', 'ledgers', 'daybook'] },
   { label: 'Masters', ids: ['suppliers', 'transporters', 'customers', 'ports', 'brokers', 'packaging'] },
   { label: 'System', ids: ['approvals', 'settings'] }
 ]

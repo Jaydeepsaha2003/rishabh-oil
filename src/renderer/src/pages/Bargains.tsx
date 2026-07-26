@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -99,15 +100,21 @@ function bargainRegister(r: Row, from: string, to: string): { opening: number; a
   return { opening, addition, dispatch: inP, closing: opening + addition - inP }
 }
 
-// Show a bargain in the register for [from,to]: created on/before the period end,
-// and either still open at period end OR finished (last receipt) within the period.
-function inRegister(r: Row, from: string, to: string): boolean {
+// A bargain shows in the register when it still has an open balance. Fully
+// settled (0-balance) bargains are hidden unless `showZero` is on, in which case
+// they show only if they belong to the selected range (created / finished /
+// had activity in it).
+function inRegister(r: Row, from: string, to: string, showZero = false): boolean {
   const bdate = String(r.bargain_date || '').slice(0, 10)
   if (bdate > to) return false
-  const { closing } = bargainRegister(r, from, to)
-  if (closing > 1e-6) return true
+  const reg = bargainRegister(r, from, to)
+  if (reg.closing > 1e-6) return true
+  if (!showZero) return false
   const fin = String(r.last_dispatch_date || '').slice(0, 10)
-  return !!fin && fin >= from && fin <= to
+  const finishedInRange = !!fin && fin >= from && fin <= to
+  const createdInRange = bdate >= from && bdate <= to
+  const activityInRange = reg.opening + reg.addition + reg.dispatch > 1e-6
+  return finishedInRange || createdInRange || activityInRange
 }
 
 // Default order: grouped by oil (A→Z), oldest first inside each group.
@@ -146,6 +153,7 @@ export function Bargains(): React.JSX.Element {
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [defaultUom, setDefaultUom] = useState('MT')
   const [typeFilter, setTypeFilter] = useState('OIL')
+  const [showZero, setShowZero] = useState(false)
   const [search, setSearch] = useState('')
   // Period register range — defaults to the current month.
   const [dateFrom, setDateFrom] = useState(monthStartISO())
@@ -341,7 +349,7 @@ export function Bargains(): React.JSX.Element {
   const q = search.trim().toLowerCase()
   const visibleRows = regRows
     .filter((r) => typeFilter === 'ALL' || String(r.supplier_type || '').toUpperCase() === typeFilter)
-    .filter((r) => inRegister(r, F, T))
+    .filter((r) => inRegister(r, F, T, showZero))
     .filter(
       (r) =>
         !q ||
@@ -660,9 +668,13 @@ export function Bargains(): React.JSX.Element {
                   <Button variant="ghost" size="sm" className="h-8 text-muted-foreground" onClick={() => { setDateFrom(''); setDateTo('') }}>Clear</Button>
                 )}
               </div>
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+                <Switch checked={showZero} onCheckedChange={setShowZero} />
+                Show settled (0 balance)
+              </label>
             </div>
 
-            <div className="overflow-x-auto rounded-xl border bg-card shadow-sm">
+            <div className="max-h-[calc(100vh-220px)] overflow-auto rounded-xl border bg-card shadow-sm">
               <Table className="min-w-[860px] text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:px-3 [&_th]:h-9">
                 <TableHeader>
                   <TableRow>
@@ -681,7 +693,7 @@ export function Bargains(): React.JSX.Element {
                         { id: 'total', label: 'Total', right: true }
                       ] as { id: string; label: string; right?: boolean }[]
                     ).map((c) => (
-                      <TableHead key={c.id} className={cn('text-[11px] font-medium uppercase tracking-wide text-muted-foreground', c.right && 'text-right')}>
+                      <TableHead key={c.id} className={cn('sticky top-0 z-20 bg-card text-[11px] font-semibold uppercase tracking-wide text-foreground', c.right && 'text-right')}>
                         <button
                           onClick={() => toggleSort(c.id)}
                           className={cn(
@@ -699,7 +711,7 @@ export function Bargains(): React.JSX.Element {
                         </button>
                       </TableHead>
                     ))}
-                    <TableHead className="w-[90px] text-right">Actions</TableHead>
+                    <TableHead className="sticky top-0 z-20 bg-card w-[90px] text-right text-[11px] font-semibold uppercase tracking-wide text-foreground">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>

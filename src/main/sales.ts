@@ -288,6 +288,13 @@ async function salesBargainSold(id: number): Promise<number> {
   return n(r.rows[0]?.q)
 }
 
+// Sale-bargain classification (mirrors the purchase-bargain type tabs).
+const SALE_CATEGORIES = ['FINISHED_OIL', 'FATTY', 'SCRAP', 'SPENT_EARTH', 'MISC']
+function saleCategory(v: unknown): string {
+  const s = String(v || '').toUpperCase()
+  return SALE_CATEGORIES.includes(s) ? s : 'FINISHED_OIL'
+}
+
 // Shared field checks (mirrors the purchase bargain validation).
 function validateSalesBargainInput(v: Row): void {
   if (!v.customer || !String(v.customer).trim()) throw new Error('Customer is required')
@@ -304,8 +311,8 @@ export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_
     String(v.bargain_date)
   )
   const res = await getClient().execute({
-    sql: `INSERT INTO sales_bargains (company_id, bargain_no, bargain_date, customer, customer_id, product_id, qty, uom, rate, rate_expiry_date, status, note, sale_type, packaging_id, freight_term, gst_pct, gst_type)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO sales_bargains (company_id, bargain_no, bargain_date, customer, customer_id, product_id, qty, uom, rate, rate_expiry_date, status, note, sale_type, sale_category, packaging_id, freight_term, gst_pct, gst_type)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       bargain_no,
@@ -319,6 +326,7 @@ export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_
       v.rate_expiry_date || null,
       v.note || null,
       v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
+      saleCategory(v.sale_category),
       v.packaging_id ? n(v.packaging_id) : null,
       v.freight_term === 'DLD' ? 'DLD' : 'FREIGHT_ON_GOODS',
       n(v.gst_pct),
@@ -359,7 +367,7 @@ export async function updateSalesBargain(id: number, v: Row): Promise<{ id: numb
   }
   await getClient().execute({
     sql: `UPDATE sales_bargains SET bargain_date = ?, customer = ?, customer_id = ?, product_id = ?, qty = ?, uom = ?,
-          rate = ?, rate_expiry_date = ?, note = ?, sale_type = ?, packaging_id = ?, freight_term = ?, gst_pct = ?, gst_type = ? WHERE id = ?`,
+          rate = ?, rate_expiry_date = ?, note = ?, sale_type = ?, sale_category = ?, packaging_id = ?, freight_term = ?, gst_pct = ?, gst_type = ? WHERE id = ?`,
     args: [
       v.bargain_date,
       v.customer || null,
@@ -371,6 +379,7 @@ export async function updateSalesBargain(id: number, v: Row): Promise<{ id: numb
       v.rate_expiry_date || null,
       v.note || null,
       v.sale_type === 'PACKED' ? 'PACKED' : 'LOOSE',
+      saleCategory(v.sale_category),
       v.packaging_id ? n(v.packaging_id) : null,
       v.freight_term === 'DLD' ? 'DLD' : 'FREIGHT_ON_GOODS',
       n(v.gst_pct),

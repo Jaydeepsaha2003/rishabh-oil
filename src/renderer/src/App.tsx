@@ -247,7 +247,8 @@ function App(): React.JSX.Element {
             onBack={view === 'payments' && returnTo ? goBack : undefined}
           />
         )}
-        {view === 'notes' && <Notes />}
+        {view === 'debitNotes' && <Notes kind="debit" />}
+        {view === 'creditNotes' && <Notes kind="credit" />}
         {view === 'ledgers' && <Ledgers onOpenRecord={openRecord} />}
         {view === 'daybook' && <Daybook />}
         {view === 'products' && <Products />}

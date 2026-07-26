@@ -229,7 +229,8 @@ export function Ledgers({ onOpenRecord }: Props): React.JSX.Element {
                   title={`${selected?.name || 'Ledger'} — statement`}
                   columns={[
                     { header: 'Date', key: 'entry_date', value: (r) => formatDate(r.entry_date) },
-                    { header: 'Particulars', key: 'particulars', value: (r) => `${Number(r.dr) > 0 ? 'Dr ' : 'Cr '}${r.particulars || r.narration || ''}` },
+                    { header: 'Dr/Cr', key: 'drcr', align: 'center', value: (r) => (Number(r.dr) > 0 ? 'Dr' : 'Cr') },
+                    { header: 'Particulars', key: 'particulars', value: (r) => r.particulars || r.narration || '' },
                     { header: 'Vch Type', key: 'vch_type', value: (r) => r.vch_type || '' },
                     { header: 'Voucher', key: 'voucher_code', value: (r) => r.voucher_code || '' },
                     { header: 'Ref No', key: 'vch_no', value: (r) => r.vch_no || '' },
