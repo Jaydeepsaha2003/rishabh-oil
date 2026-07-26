@@ -14,6 +14,7 @@ import { GateEntry } from './pages/GateEntry'
 import { Ledgers } from './pages/Ledgers'
 import { Daybook } from './pages/Daybook'
 import { Payments } from './pages/Payments'
+import { Notes } from './pages/Notes'
 import { Products } from './pages/Products'
 import { Formulation } from './pages/Formulation'
 import { Production } from './pages/Production'
@@ -246,6 +247,7 @@ function App(): React.JSX.Element {
             onBack={view === 'payments' && returnTo ? goBack : undefined}
           />
         )}
+        {view === 'notes' && <Notes />}
         {view === 'ledgers' && <Ledgers onOpenRecord={openRecord} />}
         {view === 'daybook' && <Daybook />}
         {view === 'products' && <Products />}

@@ -539,7 +539,9 @@ export async function listPurchaseTankers(allCompanies = false): Promise<Row[]> 
 }
 
 export async function createPurchaseTanker(v: Row): Promise<{ id: number }> {
-  if (!v.tanker_no || !v.bargain_id) throw new Error('Tanker number and bargain are required')
+  // Tanker number is often unknown when sending to the supplier — only the
+  // bargain is required now; the number is filled in at the Loaded stage.
+  if (!v.bargain_id) throw new Error('Bargain is required')
   // Transporter is optional at send time (for both EX and DLD); it can still be
   // set later — the Empty stage requires it for EX freight posting.
   const res = await getClient().execute({
@@ -549,7 +551,7 @@ export async function createPurchaseTanker(v: Row): Promise<{ id: number }> {
       VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, 'supplier_factory')`,
     args: [
       getActiveCompanyId(),
-      String(v.tanker_no).trim(),
+      String(v.tanker_no || '').trim(),
       v.factory_entry_date || v.loaded_date || null,
       n(v.bargain_id),
       n(v.supplier_id),

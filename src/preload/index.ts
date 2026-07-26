@@ -178,6 +178,13 @@ const api = {
     adjust: (id: number, delta: number, note?: string, date?: string): Promise<{ id: number; on_hand: number }> =>
       ipcRenderer.invoke('skuStock:adjust', { id, delta, note, date })
   },
+  notes: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('notes:list'),
+    items: (id: number): Promise<Row[]> => ipcRenderer.invoke('notes:items', { id }),
+    create: (values: Row): Promise<{ id: number; note_no: string }> =>
+      ipcRenderer.invoke('notes:create', { values }),
+    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('notes:delete', { id })
+  },
   production: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('production:list'),
     items: (id: number): Promise<Row[]> => ipcRenderer.invoke('production:items', { id }),

@@ -337,8 +337,8 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
   }
 
   async function createTanker(): Promise<void> {
-    if (loadingRows.some((row) => !row.bargain_id || !String(row.tanker_no || '').trim())) {
-      toast.error('Enter the tanker number and bargain for every tanker')
+    if (loadingRows.some((row) => !row.bargain_id)) {
+      toast.error('Select the bargain for every tanker (the tanker number can be set at loading)')
       return
     }
     try {
@@ -385,6 +385,7 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
       loaded_qty: '',
       payment_mode: 'paid_by_us',
       source_id: '',
+      tanker_no: String(row.tanker_no || ''),
       bargain_id: String(row.bargain_id || '')
     })
     if (target === 'transit') Object.assign(next, { transit_date: todayISO(), source_id: '' })
@@ -1227,7 +1228,7 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                         : visibleTankers.map((row) => {
                           const next = nextTankerStage(row.status)
                           return <TableRow key={row.id}>
-                            <TableCell><div className="font-medium">{row.tanker_no}</div><div className="text-xs text-muted-foreground">{row.status === 'supplier_factory' ? `Entered ${formatDate(row.loaded_date)}` : `Loaded ${formatDate(row.loaded_date)}`}</div></TableCell>
+                            <TableCell><div className={cn('font-medium', !String(row.tanker_no || '').trim() && 'italic text-muted-foreground')}>{String(row.tanker_no || '').trim() || 'No number yet'}</div><div className="text-xs text-muted-foreground">{row.status === 'supplier_factory' ? `Entered ${formatDate(row.loaded_date)}` : `Loaded ${formatDate(row.loaded_date)}`}</div></TableCell>
                             <TableCell><div>{row.supplier_name}</div><div className="text-xs text-muted-foreground">{row.bargain_no}</div></TableCell>
                             <TableCell className="text-right tabular-nums">{Number(row.loaded_qty) > 0 ? `${formatNum(row.loaded_qty)} ${row.uom}` : 'Not loaded'}</TableCell>
                             <TableCell>{row.payment_mode === 'pending' ? <span className="text-muted-foreground">Not decided</span> : row.payment_mode === 'supplier_finance' ? <Badge variant="warning">Supplier financed</Badge> : <Badge variant="muted">Paid by us</Badge>}</TableCell>
@@ -1330,8 +1331,8 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                   {index + 1}
                 </div>
                 <div className="grid min-w-0 gap-1.5">
-                  <Label>Tanker number *</Label>
-                  <Input value={row.tanker_no || ''} onChange={(e) => setLoadingRows((current) => current.map((item, i) => i === index ? { ...item, tanker_no: e.target.value } : item))} />
+                  <Label>Tanker number</Label>
+                  <Input placeholder="optional — set at loading" value={row.tanker_no || ''} onChange={(e) => setLoadingRows((current) => current.map((item, i) => i === index ? { ...item, tanker_no: e.target.value } : item))} />
                 </div>
                 <div className="grid min-w-0 gap-1.5">
                   <Label>Bargain (oldest auto) *</Label>
@@ -1390,8 +1391,16 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
 
       <Dialog open={!!actionRow} onOpenChange={(open) => { if (!open) { setActionRow(null); setExcess(null) } }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>{target ? `Move ${actionRow?.tanker_no} to ${TANKER_LABEL[target]}` : 'Update tanker'}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{target ? `Move ${String(actionRow?.tanker_no || '').trim() || 'tanker'} to ${TANKER_LABEL[target]}` : 'Update tanker'}</DialogTitle></DialogHeader>
           {target === 'loaded' && actionRow && <div className="grid gap-4">
+            <div className="grid gap-1.5">
+              <Label>Tanker number{String(actionRow.tanker_no || '').trim() ? '' : ' (set it now)'}</Label>
+              <Input
+                placeholder="e.g. RJ04GD0469"
+                value={actionForm.tanker_no ?? ''}
+                onChange={(e) => setActionForm((p) => ({ ...p, tanker_no: e.target.value }))}
+              />
+            </div>
             <div className="grid gap-1.5">
               <Label>Bargain (auto-selected — change if needed)</Label>
               <Select

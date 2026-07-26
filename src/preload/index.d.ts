@@ -131,6 +131,12 @@ export interface Api {
     list: () => Promise<Row[]>
     adjust: (id: number, delta: number, note?: string, date?: string) => Promise<{ id: number; on_hand: number }>
   }
+  notes: {
+    list: () => Promise<Row[]>
+    items: (id: number) => Promise<Row[]>
+    create: (values: Row) => Promise<{ id: number; note_no: string }>
+    remove: (id: number) => Promise<{ id: number }>
+  }
   production: {
     list: () => Promise<Row[]>
     items: (id: number) => Promise<Row[]>

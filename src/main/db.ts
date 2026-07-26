@@ -353,6 +353,40 @@ const MIGRATIONS = [
     adj_date TEXT NOT NULL,
     note TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  // Tally-style Debit / Credit notes. A debit note reduces a supplier payable
+  // (purchase return / rate cut); a credit note reduces a customer receivable
+  // (sales return / allowance). Each posts a double-entry journal voucher AND a
+  // signed party-ledger row; those ids are kept so a delete reverses both.
+  `CREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    note_type TEXT NOT NULL,
+    note_no TEXT NOT NULL,
+    note_date TEXT NOT NULL,
+    party_type TEXT NOT NULL,
+    party_id INTEGER NOT NULL,
+    against_account TEXT NOT NULL,
+    base_amount REAL NOT NULL DEFAULT 0,
+    gst_pct REAL NOT NULL DEFAULT 0,
+    gst_amount REAL NOT NULL DEFAULT 0,
+    total_amount REAL NOT NULL DEFAULT 0,
+    narration TEXT,
+    journal_entry_id INTEGER,
+    ledger_table TEXT,
+    ledger_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  // Optional item lines on a debit/credit note (product × qty × rate). When
+  // present they compute the note's base amount; ledger-only (no stock move).
+  `CREATE TABLE IF NOT EXISTS note_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id INTEGER NOT NULL,
+    product_id INTEGER,
+    description TEXT,
+    qty REAL NOT NULL DEFAULT 0,
+    rate REAL NOT NULL DEFAULT 0,
+    amount REAL NOT NULL DEFAULT 0
   )`
 ]
 
