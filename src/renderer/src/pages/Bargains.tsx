@@ -674,8 +674,8 @@ export function Bargains(): React.JSX.Element {
               </label>
             </div>
 
-            <div className="max-h-[calc(100vh-220px)] overflow-auto rounded-xl border bg-card shadow-sm">
-              <Table className="min-w-[860px] text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:px-3 [&_th]:h-9">
+            <div className="rounded-xl border bg-card shadow-sm">
+              <Table wrapperClassName="max-h-[calc(100vh-215px)] rounded-xl" className="min-w-[860px] text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:px-3 [&_th]:h-9">
                 <TableHeader>
                   <TableRow>
                     {(
@@ -693,7 +693,7 @@ export function Bargains(): React.JSX.Element {
                         { id: 'total', label: 'Total', right: true }
                       ] as { id: string; label: string; right?: boolean }[]
                     ).map((c) => (
-                      <TableHead key={c.id} className={cn('sticky top-0 z-20 bg-card text-[11px] font-semibold uppercase tracking-wide text-foreground', c.right && 'text-right')}>
+                      <TableHead key={c.id} className={cn('sticky top-0 z-20 bg-slate-100 text-[11px] font-semibold uppercase tracking-wide text-foreground', c.right && 'text-right')}>
                         <button
                           onClick={() => toggleSort(c.id)}
                           className={cn(
@@ -711,7 +711,7 @@ export function Bargains(): React.JSX.Element {
                         </button>
                       </TableHead>
                     ))}
-                    <TableHead className="sticky top-0 z-20 bg-card w-[90px] text-right text-[11px] font-semibold uppercase tracking-wide text-foreground">Actions</TableHead>
+                    <TableHead className="sticky top-0 z-20 bg-slate-100 w-[90px] text-right text-[11px] font-semibold uppercase tracking-wide text-foreground">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -742,7 +742,7 @@ export function Bargains(): React.JSX.Element {
                       <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.addition)}</TableCell>
                       <TableCell className="py-2" />
                       <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.dispatch)}</TableCell>
-                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.closing)} MT</TableCell>
+                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.closing)}</TableCell>
                       <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatINR(grandVisible.balValue)}</TableCell>
                       <TableCell className="py-2" />
                     </TableRow>
@@ -778,14 +778,14 @@ export function Bargains(): React.JSX.Element {
                               <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.addition ?? 0)}</TableCell>
                               <TableCell className="py-1.5" />
                               <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.dispatch ?? 0)}</TableCell>
-                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.closing ?? 0)} {g?.uom || 'MT'}</TableCell>
+                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.closing ?? 0)}</TableCell>
                               <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatINR(g?.balValue ?? 0)}</TableCell>
                               <TableCell className="py-1.5" />
                             </TableRow>
                           )}
                           {!isCollapsed && (
                           <>
-                          <TableRow className="cursor-pointer transition-colors hover:bg-muted/40" onClick={() => toggleExpand(Number(row.id))}>
+                          <TableRow className={cn('cursor-pointer transition-colors', expanded.has(Number(row.id)) ? 'bg-slate-100 hover:bg-slate-100' : 'hover:bg-muted/40')} onClick={() => toggleExpand(Number(row.id))}>
                           <TableCell className="font-medium">
                             <ChevronRight
                               className={cn(
@@ -807,10 +807,10 @@ export function Bargains(): React.JSX.Element {
                           <TableCell className="text-right tabular-nums text-muted-foreground">{Number(row._opening) ? formatNum(row._opening) : '—'}</TableCell>
                           <TableCell className="text-right tabular-nums">{Number(row._addition) ? formatNum(row._addition) : '—'}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatINR(row.rate_per_uom)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{Number(row._dispatch) ? formatNum(row._dispatch) : '—'}</TableCell>
+                          <TableCell className={cn('text-right tabular-nums', Number(row._dispatch) && 'font-bold text-red-600')}>{Number(row._dispatch) ? formatNum(row._dispatch) : '—'}</TableCell>
                           <TableCell className="text-right font-semibold tabular-nums">
                             <span className={Number(row._closing) < -1e-9 ? 'text-red-600' : ''}>
-                              {formatNum(row._closing)} {row.uom}
+                              {formatNum(row._closing)}
                             </span>
                           </TableCell>
                           <TableCell className="text-right tabular-nums">
@@ -836,7 +836,7 @@ export function Bargains(): React.JSX.Element {
                           </TableCell>
                           </TableRow>
                           {expanded.has(Number(row.id)) && (
-                            <TableRow className="bg-muted/20 hover:bg-muted/20">
+                            <TableRow className="bg-slate-200 hover:bg-slate-200">
                               <TableCell colSpan={12} className="p-0">
                                 {(() => {
                                   // A tanker may be split across two bargains (excess loading):
@@ -851,7 +851,7 @@ export function Bargains(): React.JSX.Element {
                                   ) : null
                                   if (!list.length) {
                                     return (
-                                      <div className="bg-muted/20 px-6 py-3">
+                                      <div className="bg-slate-200 px-6 py-4">
                                         {remarksLine}
                                         <p className="text-xs text-muted-foreground">No tankers on this bargain yet.</p>
                                       </div>
@@ -883,11 +883,11 @@ export function Bargains(): React.JSX.Element {
                                     { dis: 0, rec: 0, shortage: 0, allowed: 0 }
                                   )
                                   return (
-                                    <div className="bg-muted/20 px-6 py-3">
+                                    <div className="bg-slate-200 px-6 py-4">
                                       {remarksLine}
-                                      <table className="w-full text-xs">
+                                      <table className="overflow-hidden rounded-lg border border-slate-300 bg-card text-xs shadow-sm [&_td]:pl-3 [&_th]:pl-3">
                                         <thead>
-                                          <tr className="border-b text-left text-muted-foreground">
+                                          <tr className="border-b bg-slate-200/70 text-left text-slate-700">
                                             <th className="py-1.5 pr-3 font-semibold w-8">#</th>
                                             <th className="py-1.5 pr-3 font-semibold">Tanker</th>
                                             <th className="py-1.5 pr-3 font-semibold">Loading Date</th>
@@ -907,7 +907,7 @@ export function Bargains(): React.JSX.Element {
                                             const rec = t.status === 'empty' && t.received_qty != null ? Number(t.received_qty) * share : null
                                             const shortage = rec != null ? Math.max(0, loaded - Number(t.received_qty)) * share : null
                                             return (
-                                              <tr key={t.id as number} className="border-b last:border-0">
+                                              <tr key={t.id as number} className={cn('border-b', ti % 2 === 1 ? 'bg-muted/40' : 'bg-card')}>
                                                 <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{ti + 1}</td>
                                                 <td className="py-1.5 pr-3 font-medium">
                                                   {t.tanker_no}
@@ -915,7 +915,7 @@ export function Bargains(): React.JSX.Element {
                                                 </td>
                                                 <td className="py-1.5 pr-3">{loaded > 0 ? formatDate(t.loaded_date) : '—'}</td>
                                                 <td className="py-1.5 pr-3">{t.empty_date ? formatDate(t.empty_date) : '—'}</td>
-                                                <td className="py-1.5 pr-3 text-right tabular-nums">{loaded > 0 ? formatNum(dis) : '—'}</td>
+                                                <td className="py-1.5 pr-3 text-right tabular-nums font-medium text-red-600">{loaded > 0 ? formatNum(dis) : '—'}</td>
                                                 <td className="py-1.5 pr-3 text-right tabular-nums">{rec != null ? formatNum(rec) : '—'}</td>
                                                 <td className="py-1.5 pr-3 text-right tabular-nums">
                                                   {shortage != null ? (
@@ -926,9 +926,9 @@ export function Bargains(): React.JSX.Element {
                                               </tr>
                                             )
                                           })}
-                                          <tr className="font-semibold">
+                                          <tr className="border-t-2 border-amber-500 bg-amber-50 font-semibold text-amber-900">
                                             <td className="py-1.5 pr-3" colSpan={4}>Total</td>
-                                            <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(tot.dis)}</td>
+                                            <td className="py-1.5 pr-3 text-right tabular-nums text-red-600">{formatNum(tot.dis)}</td>
                                             <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(tot.rec)}</td>
                                             <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(tot.shortage)}</td>
                                             <td className="py-1.5 text-right tabular-nums">{formatNum(tot.allowed)}</td>

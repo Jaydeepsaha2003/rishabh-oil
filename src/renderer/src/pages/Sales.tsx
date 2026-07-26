@@ -1251,7 +1251,7 @@ function SalesBargainsTab(): React.JSX.Element {
                       {!isCollapsed && (() => {
                         const reg = bargainRegister(row, F, T)
                         return (
-                        <TableRow className="cursor-pointer" onClick={() => toggleBg(Number(row.id))}>
+                        <TableRow className={cn('cursor-pointer', bgOpen && 'bg-slate-100 hover:bg-slate-100')} onClick={() => toggleBg(Number(row.id))}>
                           <TableCell className="font-medium">
                             <span className="inline-flex items-center gap-1.5">
                               {bgOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
@@ -1264,7 +1264,7 @@ function SalesBargainsTab(): React.JSX.Element {
                           <TableCell className="text-right tabular-nums text-muted-foreground">{reg.opening ? formatNum(reg.opening) : '—'}</TableCell>
                           <TableCell className="text-right tabular-nums">{reg.addition ? formatNum(reg.addition) : '—'}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatINR(row.rate)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{reg.dispatch ? formatNum(reg.dispatch) : '—'}</TableCell>
+                          <TableCell className={cn('text-right tabular-nums', reg.dispatch && 'font-bold text-red-600')}>{reg.dispatch ? formatNum(reg.dispatch) : '—'}</TableCell>
                           <TableCell className="text-right font-medium tabular-nums">
                             <span className={reg.closing < -1e-9 ? 'text-red-600' : ''}>{formatNum(reg.closing)}</span>
                           </TableCell>
