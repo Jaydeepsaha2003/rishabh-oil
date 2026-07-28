@@ -1077,7 +1077,7 @@ function LcTab(): React.JSX.Element {
   )
 }
 
-export function Payments({ focusId, onFocusHandled, onBack }: { focusId?: number | null; onFocusHandled?: () => void; onBack?: () => void } = {}): React.JSX.Element {
+export function Payments({ focusId, onFocusHandled, onBack, backLabel }: { focusId?: number | null; onFocusHandled?: () => void; onBack?: () => void; backLabel?: string } = {}): React.JSX.Element {
   // Payments have no per-record form to open; a ledger drill-through simply
   // lands on this page. Acknowledge the deep-link so it doesn't linger.
   useEffect(() => {
@@ -1088,7 +1088,7 @@ export function Payments({ focusId, onFocusHandled, onBack }: { focusId?: number
       {onBack && (
         <div className="border-b bg-muted/30 px-8 py-2">
           <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground" onClick={onBack}>
-            <ArrowLeft className="h-4 w-4" /> Back to ledger
+            <ArrowLeft className="h-4 w-4" /> Back to {backLabel || 'previous page'}
           </button>
         </div>
       )}

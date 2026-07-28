@@ -92,6 +92,9 @@ function App(): React.JSX.Element {
     setPage(t)
   }
 
+  // Human label of the page a drill-through came from (for the Back button).
+  const backLabel = returnTo ? MODULES.find((m) => m.key === returnTo)?.label || 'previous page' : ''
+
   // On launch, test the (auto-configured) connection. No internet → a friendly
   // "check your connection" screen (NOT the credentials screen); any other
   // failure → setup. While offline, keep retrying so it recovers by itself.
@@ -274,6 +277,7 @@ function App(): React.JSX.Element {
             focusId={focus?.page === 'orders' ? focus.id : null}
             onFocusHandled={() => setFocus(null)}
             onBack={view === 'orders' && returnTo ? goBack : undefined}
+            backLabel={backLabel}
           />
         )}
         {view === 'consignment' && <Consignment />}
@@ -283,6 +287,7 @@ function App(): React.JSX.Element {
             focusId={focus?.page === 'payments' ? focus.id : null}
             onFocusHandled={() => setFocus(null)}
             onBack={view === 'payments' && returnTo ? goBack : undefined}
+            backLabel={backLabel}
           />
         )}
         {view === 'debitNotes' && <Notes kind="debit" />}
@@ -299,6 +304,7 @@ function App(): React.JSX.Element {
             focusId={focus?.page === 'sales' ? focus.id : null}
             onFocusHandled={() => setFocus(null)}
             onBack={view === 'sales' && returnTo ? goBack : undefined}
+            backLabel={backLabel}
           />
         )}
         {view === 'suppliers' && <Suppliers />}

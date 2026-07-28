@@ -525,10 +525,11 @@ export async function listPurchaseTankers(allCompanies = false): Promise<Row[]> 
            b.bargain_no, b.bargain_type, b.rate_per_uom AS bargain_rate,
            b.allowed_shortage_pct, s.name AS supplier_name,
            p.code AS oil_code, p.name AS oil_name, src.name AS source_name,
-           tr.name AS transporter_name
+           tr.name AS transporter_name, xb.bargain_no AS extra_bargain_no
     FROM purchase_tankers pt
     LEFT JOIN orders o ON o.id = pt.order_id
     LEFT JOIN bargains b ON b.id = pt.bargain_id
+    LEFT JOIN bargains xb ON xb.id = pt.extra_bargain_id
     LEFT JOIN suppliers s ON s.id = pt.supplier_id
     LEFT JOIN products p ON p.id = pt.oil_type_id
     LEFT JOIN sources src ON src.id = pt.source_id

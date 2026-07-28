@@ -132,9 +132,10 @@ interface OrdersProps {
   focusId?: number | null
   onFocusHandled?: () => void
   onBack?: () => void
+  backLabel?: string
 }
 
-export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): React.JSX.Element {
+export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersProps = {}): React.JSX.Element {
   const [tab, setTab] = useState('tankers')
   const [rows, setRows] = useState<Row[]>([])
   const [tankers, setTankers] = useState<Row[]>([])
@@ -912,7 +913,7 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
         <div className="p-6">
           <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 border-b pb-3">
             <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground" onClick={() => { if (onBack) { onBack() } else { setFormPage(false) } }}>
-              <ArrowLeft className="h-4 w-4" /> {onBack ? 'Back to ledger' : 'Back'}
+              <ArrowLeft className="h-4 w-4" /> {onBack ? `Back to ${backLabel || 'previous page'}` : 'Back'}
             </button>
             <div className="h-4 border-l" />
             <h2 className="text-base font-semibold">{editing ? `Edit purchase ${editing.invoice_no}` : 'Create purchase invoice'}</h2>
@@ -1304,7 +1305,17 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                           const next = nextTankerStage(row.status)
                           return <TableRow key={row.id}>
                             <TableCell><div className={cn('font-medium', !String(row.tanker_no || '').trim() && 'italic text-muted-foreground')}>{String(row.tanker_no || '').trim() || 'No number yet'}</div><div className="text-xs text-muted-foreground">{row.status === 'supplier_factory' ? `Entered ${formatDate(row.loaded_date)}` : `Loaded ${formatDate(row.loaded_date)}`}</div></TableCell>
-                            <TableCell><div>{row.supplier_name}</div><div className="text-xs text-muted-foreground">{row.bargain_no}</div></TableCell>
+                            <TableCell>
+                              <div>{row.supplier_name}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {row.bargain_no}
+                                {row.extra_bargain_no && (
+                                  <span title={`Split: ${formatNum((Number(row.loaded_qty) || 0) - (Number(row.extra_qty) || 0))} ${row.uom} + ${formatNum(row.extra_qty)} ${row.uom} excess`}>
+                                    {' '}+ {row.extra_bargain_no} <span className="text-sky-600">(split)</span>
+                                  </span>
+                                )}
+                              </div>
+                            </TableCell>
                             <TableCell className="text-right tabular-nums">{Number(row.loaded_qty) > 0 ? `${formatNum(row.loaded_qty)} ${row.uom}` : 'Not loaded'}</TableCell>
                             <TableCell>{row.payment_mode === 'pending' ? <span className="text-muted-foreground">Not decided</span> : row.payment_mode === 'supplier_finance' ? <Badge variant="warning">Supplier financed</Badge> : <Badge variant="muted">Paid by us</Badge>}</TableCell>
                             <TableCell>{row.invoice_no || <span className="text-muted-foreground">Not entered</span>}</TableCell>
@@ -1712,7 +1723,7 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                     <Input value={editTankerForm.tanker_no || ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, tanker_no: e.target.value }))} />
                   </div>
                   <div className="grid gap-1.5">
-                    <Label>Bargain</Label>
+                    <Label>{editTanker.extra_bargain_id ? 'Bargain (primary)' : 'Bargain'}</Label>
                     <Select value={String(editTankerForm.bargain_id || '')} onValueChange={(v) => setEditTankerForm((p) => ({ ...p, bargain_id: v }))}>
                       <SelectTrigger><SelectValue placeholder="Select bargain" /></SelectTrigger>
                       <SelectContent>
@@ -1725,6 +1736,44 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                     </Select>
                   </div>
                 </div>
+
+                {!!editTanker.extra_bargain_id && (() => {
+                  const loaded = Number(editTankerForm.loaded_qty ?? editTanker.loaded_qty) || 0
+                  const extra = Number(editTanker.extra_qty) || 0
+                  const primary = Math.max(0, loaded - extra)
+                  return (
+                    <div className="overflow-hidden rounded-md border border-sky-200">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b bg-sky-50 text-left text-sky-900">
+                            <th className="px-3 py-1.5 font-semibold">Bargain</th>
+                            <th className="px-3 py-1.5 font-semibold">Share</th>
+                            <th className="px-3 py-1.5 text-right font-semibold">Qty ({editTanker.uom})</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr className="border-b bg-card">
+                            <td className="px-3 py-1.5 font-medium">{editTanker.bargain_no}</td>
+                            <td className="px-3 py-1.5 text-muted-foreground">Primary</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">{formatNum(primary)}</td>
+                          </tr>
+                          <tr className="border-b bg-card">
+                            <td className="px-3 py-1.5 font-medium">{editTanker.extra_bargain_no || `Bargain #${editTanker.extra_bargain_id}`}</td>
+                            <td className="px-3 py-1.5 text-muted-foreground">Excess</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">{formatNum(extra)}</td>
+                          </tr>
+                          <tr className="bg-sky-50/60 font-semibold text-sky-900">
+                            <td className="px-3 py-1.5" colSpan={2}>Total loaded</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">{formatNum(loaded)}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      <p className="border-t bg-sky-50 px-3 py-1.5 text-[11px] text-sky-900">
+                        The excess allocation stays on {editTanker.extra_bargain_no || 'its bargain'} when you edit — changing the loaded qty adjusts only the primary share.
+                      </p>
+                    </div>
+                  )
+                })()}
 
                 <div className="grid grid-cols-2 gap-3">
                   <div className="grid gap-1.5">

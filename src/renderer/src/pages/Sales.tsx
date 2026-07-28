@@ -115,12 +115,14 @@ function SalesTab({
   focusId,
   onFocusHandled,
   onRegister,
-  onBack
+  onBack,
+  backLabel
 }: {
   focusId?: number | null
   onFocusHandled?: () => void
   onRegister?: (a: { open: () => void; canAdd: boolean; formOpen: boolean }) => void
   onBack?: () => void
+  backLabel?: string
 }): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
@@ -627,7 +629,7 @@ function SalesTab({
       <div className="w-full">
         <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 border-b pb-3">
           <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground" onClick={() => { if (onBack) { onBack() } else { setFormPage(false) } }}>
-            <ArrowLeft className="h-4 w-4" /> {onBack ? 'Back to ledger' : 'Back'}
+            <ArrowLeft className="h-4 w-4" /> {onBack ? `Back to ${backLabel || 'previous page'}` : 'Back'}
           </button>
           <div className="h-4 border-l" />
           <h2 className="text-base font-semibold">{editingGroup ? 'Edit invoice' : 'New sale invoice'}</h2>
@@ -1583,7 +1585,7 @@ function SalesBargainsTab(): React.JSX.Element {
 
 // ---------------- page ----------------
 
-export function Sales({ focusId, onFocusHandled, onBack }: { focusId?: number | null; onFocusHandled?: () => void; onBack?: () => void } = {}): React.JSX.Element {
+export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?: number | null; onFocusHandled?: () => void; onBack?: () => void; backLabel?: string } = {}): React.JSX.Element {
   const [needs, setNeeds] = useState<Row[]>([])
   const [needsOpen, setNeedsOpen] = useState(false)
   const [salesAdd, setSalesAdd] = useState<{ open: () => void; canAdd: boolean; formOpen: boolean } | null>(null)
@@ -1629,7 +1631,7 @@ export function Sales({ focusId, onFocusHandled, onBack }: { focusId?: number | 
         }
       />
       <div className="px-4 py-4">
-        <SalesTab focusId={focusId} onFocusHandled={onFocusHandled} onRegister={setSalesAdd} onBack={onBack} />
+        <SalesTab focusId={focusId} onFocusHandled={onFocusHandled} onRegister={setSalesAdd} onBack={onBack} backLabel={backLabel} />
       </div>
 
       <Dialog open={needsOpen} onOpenChange={setNeedsOpen}>
