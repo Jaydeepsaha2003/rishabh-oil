@@ -9,7 +9,9 @@ import {
   assignConsignmentLots,
   autoAssignConsignmentLots,
   releaseConsignmentLots,
-  validateConsignmentLots
+  validateConsignmentLots,
+  toLotPicks,
+  type LotAllocation
 } from './consignment'
 import { deleteJournalByRef, postPurchaseJournal } from './journal'
 import { getActiveCompanyId } from './company'
@@ -315,14 +317,18 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   // booked in one step (no transporter, straight to 'received'). Either an
   // explicit consignment draw or a supplier the master flags as direct.
   const isConsignment = !!v.is_consignment || !!supplier?.skip_tanker_stages
-  // Lots picked from Log Consignment Stock: the invoiced quantity is the sum of
-  // those tankers, exactly as a tanker-based invoice adds up its loaded qty.
-  const lotIds: number[] = Array.isArray(v.consignment_lot_ids)
-    ? v.consignment_lot_ids.map((x: unknown) => Number(x)).filter((x: number) => x > 0)
-    : []
-  // Validated up front so a bad pick never leaves a half-written invoice.
-  if (lotIds.length) {
-    v.ordered_qty = await validateConsignmentLots(lotIds, n(v.supplier_id), n(v.oil_type_id))
+  // Tankers picked from Log Consignment Stock, each with the bargain(s) it draws
+  // against. The invoiced quantity is their sum, exactly as a tanker-based
+  // invoice adds up its loaded qty. Validated up front so a bad pick never
+  // leaves a half-written invoice behind.
+  const picks = toLotPicks(v.consignment_lot_ids)
+  let lotAlloc: LotAllocation = { total: 0, lines: [], primaryBargainId: 0 }
+  if (picks.length) {
+    lotAlloc = await validateConsignmentLots(picks, n(v.supplier_id), n(v.oil_type_id))
+    v.ordered_qty = lotAlloc.total
+    // The invoice's own bargain_id is the first tanker's — the split lives on
+    // the tankers, as it does for loaded ones.
+    if (lotAlloc.primaryBargainId) v.bargain_id = lotAlloc.primaryBargainId
   }
   if (isConsignment) {
     if (n(v.ordered_qty) <= 0) throw new Error('Enter the quantity to invoice')
@@ -340,7 +346,11 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   }
   const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), 0)
   const roundOff = n(v.round_off)
-  const bargainLines = await bargainLinesForTankers(v.tanker_ids)
+  // Consignment tankers bring their own per-bargain split; otherwise the split
+  // comes from the loaded tankers on the invoice.
+  const bargainLines = lotAlloc.lines.length
+    ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty }))
+    : await bargainLinesForTankers(v.tanker_ids)
   const m = computeMoney({
     orderedQty: n(v.ordered_qty),
     invoiceRate: n(v.invoice_rate),
@@ -414,10 +424,10 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   })
   const id = Number(res.lastInsertRowid)
   if (isConsignment) {
-    if (lotIds.length) {
-      await assignConsignmentLots(id, lotIds, n(v.supplier_id), n(v.oil_type_id))
+    if (picks.length) {
+      await assignConsignmentLots(id, picks, n(v.supplier_id), n(v.oil_type_id))
     } else {
-      await autoAssignConsignmentLots(id, n(v.supplier_id), n(v.oil_type_id), n(v.ordered_qty))
+      await autoAssignConsignmentLots(id, n(v.supplier_id), n(v.oil_type_id), n(v.ordered_qty), n(v.bargain_id))
     }
   } else {
     await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
@@ -488,16 +498,19 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     args: [id]
   })
   const wasConsignment = !!cur.rows[0]?.is_consignment
-  const lotIds: number[] = Array.isArray(v.consignment_lot_ids)
-    ? v.consignment_lot_ids.map((x: unknown) => Number(x)).filter((x: number) => x > 0)
-    : []
+  const picks = toLotPicks(v.consignment_lot_ids)
   // Re-picked tankers redefine the invoiced quantity — checked before any write.
-  if (wasConsignment && lotIds.length) {
-    v.ordered_qty = await validateConsignmentLots(lotIds, n(v.supplier_id), n(v.oil_type_id), id)
+  let lotAlloc: LotAllocation = { total: 0, lines: [], primaryBargainId: 0 }
+  if (wasConsignment && picks.length) {
+    lotAlloc = await validateConsignmentLots(picks, n(v.supplier_id), n(v.oil_type_id), id)
+    v.ordered_qty = lotAlloc.total
+    if (lotAlloc.primaryBargainId) v.bargain_id = lotAlloc.primaryBargainId
   }
   const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), id)
   const roundOff = n(v.round_off)
-  const bargainLines = await bargainLinesForTankers(v.tanker_ids)
+  const bargainLines = lotAlloc.lines.length
+    ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty }))
+    : await bargainLinesForTankers(v.tanker_ids)
   const m = computeMoney({
     orderedQty: n(v.ordered_qty),
     invoiceRate: n(v.invoice_rate),
@@ -572,10 +585,10 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     })
     // Re-pick the consignment tankers this invoice draws.
     await releaseConsignmentLots(id)
-    if (lotIds.length) {
-      await assignConsignmentLots(id, lotIds, n(v.supplier_id), n(v.oil_type_id))
+    if (picks.length) {
+      await assignConsignmentLots(id, picks, n(v.supplier_id), n(v.oil_type_id))
     } else {
-      await autoAssignConsignmentLots(id, n(v.supplier_id), n(v.oil_type_id), n(v.ordered_qty))
+      await autoAssignConsignmentLots(id, n(v.supplier_id), n(v.oil_type_id), n(v.ordered_qty), n(v.bargain_id))
     }
   } else {
     await getClient().execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?', args: [id] })

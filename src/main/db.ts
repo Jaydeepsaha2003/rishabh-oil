@@ -398,6 +398,11 @@ const MIGRATIONS = [
   // Which purchase invoice drew this lot (NULL = still pending booking), so the
   // purchase form can list the exact tankers waiting to be invoiced.
   'ALTER TABLE consignment_stock ADD COLUMN order_id INTEGER',
+  // Per-tanker bargain allocation, mirroring purchase_tankers: one tanker can be
+  // split across two bargains (extra_qty goes to extra_bargain_id).
+  'ALTER TABLE consignment_stock ADD COLUMN bargain_id INTEGER',
+  'ALTER TABLE consignment_stock ADD COLUMN extra_bargain_id INTEGER',
+  'ALTER TABLE consignment_stock ADD COLUMN extra_qty REAL',
   // Parties whose goods are already at our site (consignment / MNC suppliers):
   // purchases from them skip the tanker movement entirely — no send-to-supplier,
   // no transit/outside/inside/empty. Booked straight to received.

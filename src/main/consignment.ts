@@ -59,12 +59,16 @@ export async function consignmentAvailable(supplierId: number, productId: number
 export async function listConsignment(): Promise<Row[]> {
   const res = await getClient().execute({
     sql: `SELECT cs.*, s.name AS supplier_name, p.code AS product_code, p.name AS product_name,
-                 ge.gate_entry_no, ge.entry_date AS gate_date, o.invoice_no, o.order_date
+                 ge.gate_entry_no, ge.entry_date AS gate_date, o.invoice_no, o.order_date,
+                 b.bargain_no, b.rate_per_uom AS bargain_rate,
+                 xb.bargain_no AS extra_bargain_no, xb.rate_per_uom AS extra_bargain_rate
           FROM consignment_stock cs
           LEFT JOIN suppliers s ON s.id = cs.supplier_id
           LEFT JOIN products p ON p.id = cs.product_id
           LEFT JOIN gate_entries ge ON ge.id = cs.gate_entry_id
           LEFT JOIN orders o ON o.id = cs.order_id
+          LEFT JOIN bargains b ON b.id = cs.bargain_id
+          LEFT JOIN bargains xb ON xb.id = cs.extra_bargain_id
           WHERE cs.company_id = ?
           ORDER BY cs.id DESC`,
     args: [getActiveCompanyId()]
@@ -81,7 +85,7 @@ export async function listUnbookedLots(supplierId?: number, productId?: number):
   if (productId) { where.push('cs.product_id = ?'); args.push(productId) }
   const res = await getClient().execute({
     sql: `SELECT cs.id, cs.supplier_id, cs.product_id, cs.qty, cs.uom, cs.deposit_date, cs.note,
-                 cs.tanker_no, cs.gate_entry_id,
+                 cs.tanker_no, cs.gate_entry_id, cs.bargain_id, cs.extra_bargain_id, cs.extra_qty,
                  s.name AS supplier_name, p.code AS product_code, p.name AS product_name,
                  ge.gate_entry_no, ge.entry_date AS gate_date, ge.received_qty AS gate_qty
           FROM consignment_stock cs
@@ -95,52 +99,152 @@ export async function listUnbookedLots(supplierId?: number, productId?: number):
   return toPlain(res)
 }
 
-// Check the picked lots and return their total quantity WITHOUT touching them.
-// Every lot must belong to the same supplier + product and must be free (or
-// already held by this same invoice). Callers run this before writing the
-// invoice, so a bad pick can never leave a half-booked order behind.
+// One picked tanker and the bargain(s) it draws against. A tanker may be split
+// across two bargains: extra_qty goes to extra_bargain_id, the remainder to
+// bargain_id — the same shape purchase_tankers uses for loaded tankers.
+export interface LotPick {
+  id: number
+  bargain_id?: number | null
+  extra_bargain_id?: number | null
+  extra_qty?: number | null
+}
+
+// Normalise whatever the renderer sent into LotPick[]. Plain ids are accepted so
+// a caller that does not care about bargains (auto FIFO) still works.
+export function toLotPicks(v: unknown): LotPick[] {
+  if (!Array.isArray(v)) return []
+  return v
+    .map((x) =>
+      typeof x === 'object' && x !== null
+        ? {
+            id: Number((x as LotPick).id),
+            bargain_id: (x as LotPick).bargain_id ? Number((x as LotPick).bargain_id) : null,
+            extra_bargain_id: (x as LotPick).extra_bargain_id ? Number((x as LotPick).extra_bargain_id) : null,
+            extra_qty: n((x as LotPick).extra_qty)
+          }
+        : { id: Number(x), bargain_id: null, extra_bargain_id: null, extra_qty: 0 }
+    )
+    .filter((x) => x.id > 0)
+}
+
+export interface LotAllocation {
+  total: number
+  // Per-bargain quantity + rate, ready for computeMoney's `lines`.
+  lines: { bargain_id: number; bargain_no: string; rate: number; qty: number }[]
+  primaryBargainId: number
+}
+
+// Check the picked tankers and work out what each bargain is drawing, WITHOUT
+// touching anything. Callers run this before writing the invoice, so a bad pick
+// can never leave a half-booked order behind.
 export async function validateConsignmentLots(
-  lotIds: unknown,
+  picks: unknown,
   supplierId: number,
   productId: number,
   orderId = 0
-): Promise<number> {
-  const ids = Array.isArray(lotIds) ? lotIds.map((x) => Number(x)).filter((x) => x > 0) : []
-  if (!ids.length) return 0
+): Promise<LotAllocation> {
+  const list = toLotPicks(picks)
+  if (!list.length) return { total: 0, lines: [], primaryBargainId: 0 }
+  const ids = list.map((p) => p.id)
   const res = await getClient().execute({
     sql: `SELECT id, supplier_id, product_id, qty, order_id, tanker_no
           FROM consignment_stock WHERE company_id = ? AND id IN (${ids.map(() => '?').join(',')})`,
     args: [getActiveCompanyId(), ...ids]
   })
   if (res.rows.length !== ids.length) throw new Error('One of the selected consignment tankers no longer exists')
-  let total = 0
-  for (const r of res.rows) {
-    if (r.order_id != null && Number(r.order_id) !== orderId) {
-      throw new Error(`Tanker ${r.tanker_no || r.id} is already booked on another purchase`)
+  const byId = new Map(res.rows.map((r) => [Number(r.id), r]))
+
+  // Every bargain named across the picks must belong to this supplier + product.
+  const bargainIds = Array.from(
+    new Set(list.flatMap((p) => [p.bargain_id, p.extra_bargain_id]).filter((x): x is number => !!x))
+  )
+  const bargains = new Map<number, Row>()
+  if (bargainIds.length) {
+    const bres = await getClient().execute({
+      sql: `SELECT id, bargain_no, supplier_id, oil_type_id, rate_per_uom
+            FROM bargains WHERE id IN (${bargainIds.map(() => '?').join(',')})`,
+      args: bargainIds
+    })
+    for (const b of toPlain(bres)) {
+      if (n(b.supplier_id) !== supplierId || n(b.oil_type_id) !== productId) {
+        throw new Error(`Bargain ${b.bargain_no} is not for this supplier and product`)
+      }
+      bargains.set(Number(b.id), b)
     }
-    if (n(r.supplier_id) !== supplierId || n(r.product_id) !== productId) {
+    if (bargains.size !== bargainIds.length) throw new Error('One of the selected bargains no longer exists')
+  }
+
+  const alloc = new Map<number, { bargain_id: number; bargain_no: string; rate: number; qty: number }>()
+  const add = (bid: number | null | undefined, qty: number): void => {
+    if (!bid || qty <= 1e-9) return
+    const b = bargains.get(bid) as Row
+    const cur = alloc.get(bid) || {
+      bargain_id: bid,
+      bargain_no: String(b?.bargain_no || ''),
+      rate: n(b?.rate_per_uom),
+      qty: 0
+    }
+    cur.qty += qty
+    alloc.set(bid, cur)
+  }
+
+  let total = 0
+  for (const p of list) {
+    const row = byId.get(p.id) as Row
+    if (row.order_id != null && Number(row.order_id) !== orderId) {
+      throw new Error(`Tanker ${row.tanker_no || row.id} is already booked on another purchase`)
+    }
+    if (n(row.supplier_id) !== supplierId || n(row.product_id) !== productId) {
       throw new Error('The selected tankers must all belong to this supplier and product')
     }
-    total += n(r.qty)
+    const qty = n(row.qty)
+    const extra = p.extra_bargain_id ? n(p.extra_qty) : 0
+    if (extra < 0) throw new Error(`Split quantity on tanker ${row.tanker_no || row.id} cannot be negative`)
+    if (extra > qty + 1e-6) {
+      throw new Error(
+        `Split quantity on tanker ${row.tanker_no || row.id} (${extra}) is more than the tanker itself (${qty})`
+      )
+    }
+    if (p.extra_bargain_id && p.extra_bargain_id === p.bargain_id) {
+      throw new Error(`Tanker ${row.tanker_no || row.id} is split across the same bargain twice`)
+    }
+    if (bargainIds.length && !p.bargain_id && extra < qty - 1e-6) {
+      throw new Error(`Assign a bargain to tanker ${row.tanker_no || row.id}`)
+    }
+    add(p.bargain_id, qty - extra)
+    add(p.extra_bargain_id, extra)
+    total += qty
   }
-  return total
+  const primary = list.find((p) => p.bargain_id)?.bargain_id || list.find((p) => p.extra_bargain_id)?.extra_bargain_id
+  return { total, lines: Array.from(alloc.values()), primaryBargainId: Number(primary) || 0 }
 }
 
-// Tie the picked lots to the invoice that drew them.
+// Tie the picked tankers, with their bargain split, to the invoice that drew them.
 export async function assignConsignmentLots(
   orderId: number,
-  lotIds: unknown,
+  picks: unknown,
   supplierId: number,
   productId: number
-): Promise<number> {
-  const ids = Array.isArray(lotIds) ? lotIds.map((x) => Number(x)).filter((x) => x > 0) : []
-  if (!ids.length) return 0
-  const total = await validateConsignmentLots(ids, supplierId, productId, orderId)
-  await getClient().execute({
-    sql: `UPDATE consignment_stock SET order_id = ? WHERE id IN (${ids.map(() => '?').join(',')})`,
-    args: [orderId, ...ids]
-  })
-  return total
+): Promise<LotAllocation> {
+  const list = toLotPicks(picks)
+  if (!list.length) return { total: 0, lines: [], primaryBargainId: 0 }
+  const alloc = await validateConsignmentLots(list, supplierId, productId, orderId)
+  const c = getClient()
+  for (const p of list) {
+    await c.execute({
+      sql: `UPDATE consignment_stock
+            SET order_id = ?, bargain_id = ?, extra_bargain_id = ?, extra_qty = ?
+            WHERE id = ?`,
+      args: [
+        orderId,
+        p.bargain_id || null,
+        p.extra_bargain_id || null,
+        p.extra_bargain_id ? n(p.extra_qty) : null,
+        p.id
+      ]
+    })
+  }
+  return alloc
 }
 
 // Booking that did not name its tankers (the Book purchase button on the
@@ -151,7 +255,8 @@ export async function autoAssignConsignmentLots(
   orderId: number,
   supplierId: number,
   productId: number,
-  qty: number
+  qty: number,
+  bargainId = 0
 ): Promise<number> {
   const free = await getClient().execute({
     sql: `SELECT id, qty FROM consignment_stock
@@ -166,10 +271,14 @@ export async function autoAssignConsignmentLots(
     take.push(Number(r.id))
     used += n(r.qty)
   }
-  if (!take.length) return 0
+  // Only claim tankers when they account for the invoice exactly. A partial
+  // match would leave part of the quantity with no tanker behind it, and the
+  // bargain register counts one or the other — never a mix.
+  if (!take.length || Math.abs(used - qty) > 1e-6) return 0
   await getClient().execute({
-    sql: `UPDATE consignment_stock SET order_id = ? WHERE id IN (${take.map(() => '?').join(',')})`,
-    args: [orderId, ...take]
+    sql: `UPDATE consignment_stock SET order_id = ?, bargain_id = ?
+          WHERE id IN (${take.map(() => '?').join(',')})`,
+    args: [orderId, bargainId || null, ...take]
   })
   return used
 }
@@ -177,7 +286,9 @@ export async function autoAssignConsignmentLots(
 // Free every lot an invoice held (on edit or delete) so they become pending again.
 export async function releaseConsignmentLots(orderId: number): Promise<void> {
   await getClient().execute({
-    sql: 'UPDATE consignment_stock SET order_id = NULL WHERE order_id = ?',
+    sql: `UPDATE consignment_stock
+          SET order_id = NULL, bargain_id = NULL, extra_bargain_id = NULL, extra_qty = NULL
+          WHERE order_id = ?`,
     args: [orderId]
   })
 }

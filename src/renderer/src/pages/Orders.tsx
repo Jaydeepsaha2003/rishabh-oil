@@ -617,6 +617,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     }))
     setSelected([])
     setLotIds([])
+    setLotBargains({})
   }
 
   function choosePurchaseBargain(id: string, keepSelection = false): void {
@@ -651,6 +652,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     setForm({ invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '', round_off: '', round_off_manual: false, charge_interest: false, interest_touched: false, remarks: '', freight_paid_to_supplier: false })
     setSelected([])
     setLotIds([])
+    setLotBargains({})
     setError(null)
     setFormPage(true)
     setTab('purchases')
@@ -774,6 +776,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         const mine = rows.filter((r) => Number(r.order_id) === Number(editing.id))
         setOwnLots(mine)
         setLotIds(mine.map((r) => Number(r.id)))
+        // Bring back each tanker's saved bargain split.
+        const saved: Record<number, Row> = {}
+        for (const r of mine) {
+          saved[Number(r.id)] = {
+            bargain_id: r.bargain_id ? String(r.bargain_id) : '',
+            extra_bargain_id: r.extra_bargain_id ? String(r.extra_bargain_id) : '',
+            extra_qty: r.extra_qty != null ? String(r.extra_qty) : '',
+            split: !!r.extra_bargain_id
+          }
+        }
+        setLotBargains(saved)
       })
       .catch(() => { if (active) setOwnLots([]) })
     return () => { active = false }
@@ -792,6 +805,51 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     [pickableLots, lotIds]
   )
   const lotQty = chosenLots.reduce((s, l) => s + Number(l.qty || 0), 0)
+  // Per-tanker bargain assignment, keyed by lot id: a tanker draws on one
+  // bargain, or is split across two (extra_qty on the second).
+  const [lotBargains, setLotBargains] = useState<Record<number, Row>>({})
+  const setLotBargain = (id: number, patch: Row): void =>
+    setLotBargains((p) => ({ ...p, [id]: { ...(p[id] || {}), ...patch } }))
+  // What each bargain ends up drawing across every ticked tanker.
+  const lotAlloc = useMemo(() => {
+    const m = new Map<string, { bargain_no: string; rate: number; qty: number }>()
+    const add = (id: unknown, qty: number): void => {
+      if (!id || qty <= 1e-9) return
+      const b = bargains.find((x) => String(x.id) === String(id))
+      const k = String(id)
+      const cur = m.get(k) || {
+        bargain_no: String(b?.bargain_no || '—'),
+        rate: Number(b?.rate_per_uom) || 0,
+        qty: 0
+      }
+      cur.qty += qty
+      m.set(k, cur)
+    }
+    for (const l of chosenLots) {
+      const a = lotBargains[Number(l.id)] || {}
+      const qty = Number(l.qty) || 0
+      const extra = a.extra_bargain_id ? Number(a.extra_qty) || 0 : 0
+      add(a.bargain_id, qty - extra)
+      add(a.extra_bargain_id, extra)
+    }
+    return Array.from(m.values())
+  }, [chosenLots, lotBargains, bargains])
+  // Tankers still missing a bargain, or with an impossible split.
+  const lotIssues = useMemo(
+    () =>
+      chosenLots
+        .filter((l) => {
+          const a = lotBargains[Number(l.id)] || {}
+          const qty = Number(l.qty) || 0
+          const extra = a.extra_bargain_id ? Number(a.extra_qty) || 0 : 0
+          if (!a.bargain_id && extra < qty - 1e-6) return true
+          if (extra > qty + 1e-6) return true
+          if (a.extra_bargain_id && String(a.extra_bargain_id) === String(a.bargain_id)) return true
+          return false
+        })
+        .map((l) => String(l.tanker_no || l.id)),
+    [chosenLots, lotBargains]
+  )
   // One invoice covers one product; the ticked tankers decide which bargains fit.
   const lotProducts = useMemo(
     () => Array.from(new Set(chosenLots.map((l) => String(l.product_id)))),
@@ -821,6 +879,19 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       choosePurchaseBargain(String(first.bargain_id), true)
     }
   }, [formPage, chosenTankers, form.bargain_id]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Same for a consignment invoice: it follows the first tanker's bargain.
+  const firstLotBargain = chosenLots
+    .map((l) => {
+      const a = lotBargains[Number(l.id)] || {}
+      return a.bargain_id || a.extra_bargain_id || ''
+    })
+    .find((x) => !!x)
+  useEffect(() => {
+    if (!formPage || !directMode || !firstLotBargain) return
+    if (String(form.bargain_id || '') !== String(firstLotBargain)) {
+      choosePurchaseBargain(String(firstLotBargain), true)
+    }
+  }, [formPage, directMode, firstLotBargain, form.bargain_id]) // eslint-disable-line react-hooks/exhaustive-deps
   const mixedRates = useMemo(
     () => new Set(chosenTankers.map((x) => Number(x.bargain_rate) || 0)).size > 1,
     [chosenTankers]
@@ -829,6 +900,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // contributes to BOTH its primary and its excess bargain. More than one entry
   // means the invoice spans multiple bargain rates.
   const rateAlloc = useMemo(() => {
+    // Consignment tankers carry their own per-bargain split.
+    if (directMode && chosenLots.length) return lotAlloc
     const m = new Map<string, { bargain_no: string; rate: number; qty: number }>()
     const add = (id: unknown, no: unknown, rate: number, qty: number): void => {
       if (!id || qty <= 0) return
@@ -844,7 +917,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       if (extra > 0) add(t.extra_bargain_id, t.extra_bargain_no, Number(t.extra_bargain_rate) || 0, extra)
     }
     return Array.from(m.values())
-  }, [chosenTankers])
+  }, [chosenTankers, directMode, chosenLots, lotAlloc])
   const directBalance = useMemo(() => {
     if (!directMode || !form.bargain_id) return null
     const b = bargains.find((x) => String(x.id) === String(form.bargain_id))
@@ -938,6 +1011,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       if (mixedLotProducts) {
         return setError('The ticked tankers are of different products — book them on separate invoices')
       }
+      if (lotIssues.length) {
+        return setError(`Assign a bargain (and a valid split quantity) to: ${lotIssues.join(', ')}`)
+      }
       if (!form.bargain_id) return setError('Assign a bargain to these tankers')
       if (lotProductId && String(form.oil_type_id) !== lotProductId) {
         return setError('The ticked tankers and the assigned bargain are for different products')
@@ -964,7 +1040,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       tds_pct: Number(form.tds_pct) || 0,
       tanker_ids: directMode ? [] : selected,
       is_consignment: directMode,
-      consignment_lot_ids: directMode ? chosenLots.map((l) => Number(l.id)) : [],
+      consignment_lot_ids: directMode
+        ? chosenLots.map((l) => {
+            const a = lotBargains[Number(l.id)] || {}
+            return {
+              id: Number(l.id),
+              bargain_id: a.bargain_id ? Number(a.bargain_id) : null,
+              extra_bargain_id: a.extra_bargain_id ? Number(a.extra_bargain_id) : null,
+              extra_qty: a.extra_bargain_id ? Number(a.extra_qty) || 0 : 0
+            }
+          })
+        : [],
       transporter_id: directMode || !form.transporter_id ? null : Number(form.transporter_id),
       allowed_shortage_pct:
         form.allowed_shortage_pct === '' || form.allowed_shortage_pct == null
@@ -1309,43 +1395,141 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                             </div>
                           )}
                           {pickableLots.map((lot) => {
-                            const checked = lotIds.includes(Number(lot.id))
+                            const id = Number(lot.id)
+                            const checked = lotIds.includes(id)
                             const off = !!lotProductId && String(lot.product_id) !== lotProductId
+                            const a = lotBargains[id] || {}
+                            const qty = Number(lot.qty) || 0
+                            const extra = a.extra_bargain_id ? Number(a.extra_qty) || 0 : 0
+                            // Bargains this tanker can draw on — its own product.
+                            const opts = bargains.filter(
+                              (b) =>
+                                String(b.supplier_id) === String(form.supplier_id || '') &&
+                                String(b.oil_type_id) === String(lot.product_id) &&
+                                (Number(b.balance_qty) > 0 ||
+                                  String(b.id) === String(a.bargain_id || '') ||
+                                  String(b.id) === String(a.extra_bargain_id || ''))
+                            )
                             return (
-                              <label
+                              <div
                                 key={lot.id}
                                 className={cn(
-                                  'flex cursor-pointer items-center gap-3 rounded-lg border bg-white p-2.5 transition',
+                                  'rounded-lg border bg-white p-2.5 transition',
                                   checked ? 'border-violet-400 bg-violet-50' : 'hover:bg-muted/40',
                                   off && !checked && 'opacity-50'
                                 )}
                               >
-                                <input
-                                  type="checkbox"
-                                  className="h-4 w-4 accent-violet-600"
-                                  checked={checked}
-                                  onChange={(e) =>
-                                    setLotIds((p) =>
-                                      e.target.checked
-                                        ? [...p, Number(lot.id)]
-                                        : p.filter((x) => x !== Number(lot.id))
-                                    )
-                                  }
-                                />
-                                <div className="min-w-0 flex-1">
-                                  <div className="text-sm font-medium">
-                                    {lot.tanker_no || <span className="text-muted-foreground">no tanker no.</span>}
+                                <label className="flex cursor-pointer items-center gap-3">
+                                  <input
+                                    type="checkbox"
+                                    className="h-4 w-4 accent-violet-600"
+                                    checked={checked}
+                                    onChange={(e) =>
+                                      setLotIds((p) =>
+                                        e.target.checked ? [...p, id] : p.filter((x) => x !== id)
+                                      )
+                                    }
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="text-sm font-medium">
+                                      {lot.tanker_no || <span className="text-muted-foreground">no tanker no.</span>}
+                                    </div>
+                                    <div className="text-[11px] text-muted-foreground">
+                                      {lot.product_code || lot.product_name} · logged {formatDate(lot.deposit_date)}
+                                      {lot.gate_entry_no ? ` · gate ${lot.gate_entry_no}` : ''}
+                                      {lot.note ? ` · ${lot.note}` : ''}
+                                    </div>
                                   </div>
-                                  <div className="text-[11px] text-muted-foreground">
-                                    {lot.product_code || lot.product_name} · logged {formatDate(lot.deposit_date)}
-                                    {lot.gate_entry_no ? ` · gate ${lot.gate_entry_no}` : ''}
-                                    {lot.note ? ` · ${lot.note}` : ''}
+                                  <div className="text-sm font-medium tabular-nums">
+                                    {formatNum(lot.qty)} {lot.uom}
                                   </div>
-                                </div>
-                                <div className="text-sm font-medium tabular-nums">
-                                  {formatNum(lot.qty)} {lot.uom}
-                                </div>
-                              </label>
+                                </label>
+
+                                {/* Per-tanker bargain: one, or split across two. */}
+                                {checked && (
+                                  <div className="mt-2.5 grid gap-2 border-t border-violet-200 pt-2.5">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <Label className="w-16 shrink-0 text-[11px] text-muted-foreground">Bargain</Label>
+                                      <div className="min-w-[220px] flex-1">
+                                        <Select
+                                          value={String(a.bargain_id || '')}
+                                          onValueChange={(val) => setLotBargain(id, { bargain_id: val })}
+                                        >
+                                          <SelectTrigger className="h-8 text-xs">
+                                            <SelectValue placeholder={opts.length ? 'Select bargain' : 'No open bargain'} />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            {opts.map((b) => (
+                                              <SelectItem key={b.id} value={String(b.id)}>
+                                                {b.bargain_no} · bal {formatNum(b.balance_qty)} {b.uom} @{' '}
+                                                {formatINR(b.rate_per_uom)}
+                                              </SelectItem>
+                                            ))}
+                                          </SelectContent>
+                                        </Select>
+                                      </div>
+                                      <span className="w-24 shrink-0 text-right text-xs font-medium tabular-nums">
+                                        {formatNum(qty - extra)} {lot.uom}
+                                      </span>
+                                      {!a.extra_bargain_id && (
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          className="h-8 shrink-0 text-xs"
+                                          onClick={() =>
+                                            setLotBargain(id, { extra_bargain_id: '', extra_qty: '', split: true })
+                                          }
+                                          disabled={!!a.split}
+                                        >
+                                          Split
+                                        </Button>
+                                      )}
+                                    </div>
+                                    {(a.split || a.extra_bargain_id) && (
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <Label className="w-16 shrink-0 text-[11px] text-muted-foreground">2nd BG</Label>
+                                        <div className="min-w-[220px] flex-1">
+                                          <Select
+                                            value={String(a.extra_bargain_id || '')}
+                                            onValueChange={(val) => setLotBargain(id, { extra_bargain_id: val })}
+                                          >
+                                            <SelectTrigger className="h-8 text-xs">
+                                              <SelectValue placeholder="Select the second bargain" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                              {opts
+                                                .filter((b) => String(b.id) !== String(a.bargain_id || ''))
+                                                .map((b) => (
+                                                  <SelectItem key={b.id} value={String(b.id)}>
+                                                    {b.bargain_no} · bal {formatNum(b.balance_qty)} {b.uom} @{' '}
+                                                    {formatINR(b.rate_per_uom)}
+                                                  </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                          </Select>
+                                        </div>
+                                        <Input
+                                          type="number"
+                                          className="h-8 w-24 shrink-0 text-right text-xs"
+                                          placeholder="qty"
+                                          value={a.extra_qty ?? ''}
+                                          onChange={(e) => setLotBargain(id, { extra_qty: e.target.value })}
+                                        />
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          className="h-8 shrink-0 text-xs text-destructive"
+                                          onClick={() =>
+                                            setLotBargain(id, { extra_bargain_id: '', extra_qty: '', split: false })
+                                          }
+                                        >
+                                          Remove
+                                        </Button>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
                             )
                           })}
                         </div>
@@ -1353,8 +1537,48 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     </div>
 
                     <div className="mb-2 text-sm font-medium text-violet-900">
-                      2 · Assign a bargain{chosenLots.length ? '' : ' and quantity'}
+                      {chosenLots.length ? '2 · Bargain allocation' : '2 · Assign a bargain and quantity'}
                     </div>
+                    {chosenLots.length > 0 ? (
+                      <div className="grid gap-2">
+                        {lotIssues.length > 0 && (
+                          <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                            Assign a bargain (and a valid split quantity) to: {lotIssues.join(', ')}
+                          </div>
+                        )}
+                        <div className="rounded-lg border bg-white">
+                          {lotAlloc.map((a, i) => (
+                            <div
+                              key={a.bargain_no + i}
+                              className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-3 py-2 text-xs last:border-b-0"
+                            >
+                              <span className="font-medium">{a.bargain_no}</span>
+                              <span className="text-muted-foreground">{formatINR(a.rate)}/{form.uom || 'MT'}</span>
+                              <span className="ml-auto font-semibold tabular-nums">
+                                {formatNum(a.qty)} {form.uom || 'MT'}
+                              </span>
+                              <span className="w-28 text-right font-semibold tabular-nums">
+                                {formatINR(a.rate * a.qty)}
+                              </span>
+                            </div>
+                          ))}
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t bg-muted/50 px-3 py-2 text-xs font-semibold">
+                            <span>Total</span>
+                            <span className="ml-auto tabular-nums">
+                              {formatNum(lotQty)} {form.uom || 'MT'}
+                            </span>
+                            <span className="w-28 text-right tabular-nums">
+                              {formatINR(lotAlloc.reduce((s, a) => s + a.rate * a.qty, 0))}
+                            </span>
+                          </div>
+                        </div>
+                        <span className="text-[11px] text-muted-foreground">
+                          {lotAlloc.length > 1
+                            ? `${lotAlloc.length} bargains on this invoice — it prices at the weighted-average rate ${formatINR(Number(form.bargain_rate) || 0)}/${form.uom || 'MT'}.`
+                            : 'Set each tanker’s bargain above; split a tanker to draw it from two bargains.'}
+                        </span>
+                      </div>
+                    ) : (
                     <div className="grid gap-4 md:grid-cols-2">
                       <div className="grid gap-1.5">
                         <Label>Bargain *</Label>
@@ -1385,33 +1609,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       </div>
                       <div className="grid gap-1.5">
                         <Label>Quantity to invoice * ({form.uom || 'MT'})</Label>
-                        {chosenLots.length ? (
-                          <>
-                            <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm font-medium tabular-nums">
-                              {formatNum(lotQty)} {form.uom || 'MT'}
-                            </div>
-                            <span className="text-[11px] text-muted-foreground">
-                              Sum of the {chosenLots.length} ticked tanker{chosenLots.length > 1 ? 's' : ''}
-                              {directBalance != null ? ` · bargain balance ${formatNum(directBalance)} ${form.uom || 'MT'}` : ''}.
-                            </span>
-                          </>
-                        ) : (
-                          <>
-                            <Input
-                              type="number"
-                              value={form.ordered_qty ?? ''}
-                              placeholder="0.000"
-                              onChange={(e) => setForm((p) => ({ ...p, ordered_qty: e.target.value }))}
-                            />
-                            <span className="text-[11px] text-muted-foreground">
-                              {directBalance != null
-                                ? `Bargain balance ${formatNum(directBalance)} ${form.uom || 'MT'}.`
-                                : 'Entered by hand — there is no weighment to take it from.'}
-                            </span>
-                          </>
-                        )}
+                        <Input
+                          type="number"
+                          value={form.ordered_qty ?? ''}
+                          placeholder="0.000"
+                          onChange={(e) => setForm((p) => ({ ...p, ordered_qty: e.target.value }))}
+                        />
+                        <span className="text-[11px] text-muted-foreground">
+                          {directBalance != null
+                            ? `Bargain balance ${formatNum(directBalance)} ${form.uom || 'MT'}.`
+                            : 'Entered by hand — there is no weighment to take it from.'}
+                        </span>
                       </div>
                     </div>
+                    )}
                     </>
                   )}
                 </section>

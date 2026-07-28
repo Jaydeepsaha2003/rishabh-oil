@@ -48,21 +48,30 @@ export async function listBargains(from?: string, to?: string): Promise<Row[]> {
            o.code AS oil_code, o.name AS oil_name,
            COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id), 0)
              + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id), 0)
-             + COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id AND is_consignment = 1), 0) AS loaded_qty,
+             + COALESCE((SELECT SUM(o2.ordered_qty) FROM orders o2 WHERE o2.bargain_id = b.id AND o2.is_consignment = 1 AND NOT EXISTS (SELECT 1 FROM consignment_stock cs WHERE cs.order_id = o2.id)), 0)
+             + COALESCE((SELECT SUM(cs.qty - COALESCE(cs.extra_qty, 0)) FROM consignment_stock cs WHERE cs.bargain_id = b.id AND cs.order_id IS NOT NULL), 0)
+             + COALESCE((SELECT SUM(cs.extra_qty) FROM consignment_stock cs WHERE cs.extra_bargain_id = b.id AND cs.order_id IS NOT NULL), 0) AS loaded_qty,
            b.qty
              - COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id), 0)
              - COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id), 0)
-             - COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id AND is_consignment = 1), 0) AS balance_qty,
+             - COALESCE((SELECT SUM(o2.ordered_qty) FROM orders o2 WHERE o2.bargain_id = b.id AND o2.is_consignment = 1 AND NOT EXISTS (SELECT 1 FROM consignment_stock cs WHERE cs.order_id = o2.id)), 0)
+             - COALESCE((SELECT SUM(cs.qty - COALESCE(cs.extra_qty, 0)) FROM consignment_stock cs WHERE cs.bargain_id = b.id AND cs.order_id IS NOT NULL), 0)
+             - COALESCE((SELECT SUM(cs.extra_qty) FROM consignment_stock cs WHERE cs.extra_bargain_id = b.id AND cs.order_id IS NOT NULL), 0) AS balance_qty,
            COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND substr(loaded_date, 1, 10) < ?), 0)
              + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id AND substr(loaded_date, 1, 10) < ?), 0)
-             + COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id AND is_consignment = 1 AND substr(order_date, 1, 10) < ?), 0) AS disp_before,
+             + COALESCE((SELECT SUM(o2.ordered_qty) FROM orders o2 WHERE o2.bargain_id = b.id AND o2.is_consignment = 1 AND substr(o2.order_date, 1, 10) < ? AND NOT EXISTS (SELECT 1 FROM consignment_stock cs WHERE cs.order_id = o2.id)), 0)
+             + COALESCE((SELECT SUM(cs.qty - COALESCE(cs.extra_qty, 0)) FROM consignment_stock cs JOIN orders o3 ON o3.id = cs.order_id WHERE cs.bargain_id = b.id AND substr(o3.order_date, 1, 10) < ?), 0)
+             + COALESCE((SELECT SUM(cs.extra_qty) FROM consignment_stock cs JOIN orders o3 ON o3.id = cs.order_id WHERE cs.extra_bargain_id = b.id AND substr(o3.order_date, 1, 10) < ?), 0) AS disp_before,
            COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND substr(loaded_date, 1, 10) >= ? AND substr(loaded_date, 1, 10) <= ?), 0)
              + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id AND substr(loaded_date, 1, 10) >= ? AND substr(loaded_date, 1, 10) <= ?), 0)
-             + COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id AND is_consignment = 1 AND substr(order_date, 1, 10) >= ? AND substr(order_date, 1, 10) <= ?), 0) AS disp_period,
+             + COALESCE((SELECT SUM(o2.ordered_qty) FROM orders o2 WHERE o2.bargain_id = b.id AND o2.is_consignment = 1 AND substr(o2.order_date, 1, 10) >= ? AND substr(o2.order_date, 1, 10) <= ? AND NOT EXISTS (SELECT 1 FROM consignment_stock cs WHERE cs.order_id = o2.id)), 0)
+             + COALESCE((SELECT SUM(cs.qty - COALESCE(cs.extra_qty, 0)) FROM consignment_stock cs JOIN orders o3 ON o3.id = cs.order_id WHERE cs.bargain_id = b.id AND substr(o3.order_date, 1, 10) >= ? AND substr(o3.order_date, 1, 10) <= ?), 0)
+             + COALESCE((SELECT SUM(cs.extra_qty) FROM consignment_stock cs JOIN orders o3 ON o3.id = cs.order_id WHERE cs.extra_bargain_id = b.id AND substr(o3.order_date, 1, 10) >= ? AND substr(o3.order_date, 1, 10) <= ?), 0) AS disp_period,
            (SELECT MAX(d) FROM (
               SELECT MAX(substr(loaded_date, 1, 10)) AS d FROM purchase_tankers WHERE bargain_id = b.id
               UNION ALL SELECT MAX(substr(loaded_date, 1, 10)) FROM purchase_tankers WHERE extra_bargain_id = b.id
               UNION ALL SELECT MAX(substr(order_date, 1, 10)) FROM orders WHERE bargain_id = b.id AND is_consignment = 1
+              UNION ALL SELECT MAX(substr(o3.order_date, 1, 10)) FROM consignment_stock cs JOIN orders o3 ON o3.id = cs.order_id WHERE cs.bargain_id = b.id OR cs.extra_bargain_id = b.id
            )) AS last_dispatch_date,
            COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'purchase' AND bargain_id = b.id AND substr(adj_date, 1, 10) < ?), 0) AS adj_before,
            COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'purchase' AND bargain_id = b.id AND substr(adj_date, 1, 10) >= ? AND substr(adj_date, 1, 10) <= ?), 0) AS adj_in,
@@ -73,7 +82,10 @@ export async function listBargains(from?: string, to?: string): Promise<Row[]> {
     LEFT JOIN brokers br ON br.id = b.broker_id
     ORDER BY b.id DESC
   `,
-    args: [f, f, f, f, t, f, t, f, t, f, f, t, t]
+    // disp_before: 5 x "< f" (tanker primary/extra, lot-less consignment orders,
+    // lot primary, lot extra) - disp_period: the same five as f..t pairs -
+    // then adj_before f, adj_in f..t, adj_after t.
+    args: [f, f, f, f, f, f, t, f, t, f, t, f, t, f, t, f, f, t, t]
   })
   return toPlain(res)
 }
@@ -133,9 +145,12 @@ async function bargainConsumed(id: number): Promise<number> {
     sql: `SELECT
             COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = ?), 0)
             + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = ?), 0)
-            + COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = ? AND is_consignment = 1), 0)
+            + COALESCE((SELECT SUM(o2.ordered_qty) FROM orders o2 WHERE o2.bargain_id = ? AND o2.is_consignment = 1
+                AND NOT EXISTS (SELECT 1 FROM consignment_stock cs WHERE cs.order_id = o2.id)), 0)
+            + COALESCE((SELECT SUM(qty - COALESCE(extra_qty, 0)) FROM consignment_stock WHERE bargain_id = ? AND order_id IS NOT NULL), 0)
+            + COALESCE((SELECT SUM(extra_qty) FROM consignment_stock WHERE extra_bargain_id = ? AND order_id IS NOT NULL), 0)
           AS consumed`,
-    args: [id, id, id]
+    args: [id, id, id, id, id]
   })
   return Number(r.rows[0]?.consumed) || 0
 }
