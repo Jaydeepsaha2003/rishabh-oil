@@ -119,10 +119,10 @@ function stageAsOf(t: Row, asOf: string): string {
   return 'supplier_factory'
 }
 
-function MoneyRow({ label, value, strong }: { label: string; value: string; strong?: boolean }): React.JSX.Element {
+function MoneyRow({ label, value, strong, title }: { label: string; value: string; strong?: boolean; title?: string }): React.JSX.Element {
   return (
-    <div className="flex items-center justify-between py-1.5 text-sm">
-      <span className={strong ? 'font-semibold text-foreground' : 'text-muted-foreground'}>{label}</span>
+    <div className="flex items-center justify-between py-1.5 text-sm" title={title}>
+      <span className={cn(strong ? 'font-semibold text-foreground' : 'text-muted-foreground', title && 'cursor-help underline decoration-dotted decoration-muted-foreground/50 underline-offset-4')}>{label}</span>
       <span className={strong ? 'font-semibold tabular-nums' : 'tabular-nums'}>{value}</span>
     </div>
   )
@@ -462,8 +462,22 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     })
   }
 
+  // Within the 1 MT gate buffer a shortfall is allowed, but only after the user
+  // explicitly confirms the variance. Returns false when the user backs out.
+  function confirmGateVariance(tankerId: unknown, receivedQty: number): boolean {
+    const gq = gateQtyFor(tankerId)
+    if (gq == null || !(receivedQty > 0)) return true
+    const diff = Math.abs(gq - receivedQty)
+    if (diff <= 0.005 || diff > 1) return true // exact match, or blocked by the backend anyway
+    return window.confirm(
+      `Received qty (${formatNum(receivedQty)}) differs from the gate weighment (${formatNum(gq)}) by ${formatNum(diff)} MT.\n\nThis is within the allowed 1 MT buffer — save anyway?`
+    )
+  }
+
   async function saveEditTanker(): Promise<void> {
     if (!editTanker) return
+    const recv = Number(editTankerForm.received_qty)
+    if (recv > 0 && !confirmGateVariance(editTanker.id, recv)) return
     try {
       await window.api.tankers.update(editTanker.id, {
         ...editTankerForm,
@@ -503,6 +517,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     }
     if (target === 'transit' && !actionForm.source_id) {
       toast.error('Select the source / port')
+      return
+    }
+    if (target === 'empty' && !confirmGateVariance(actionRow.id, Number(actionForm.received_qty))) {
       return
     }
     if (target === 'empty' && !['DLD', 'Delivered'].includes(String(actionRow.bargain_type)) && !actionForm.transporter_id) {
@@ -722,7 +739,50 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     () => new Set(chosenTankers.map((x) => Number(x.bargain_rate) || 0)).size > 1,
     [chosenTankers]
   )
+  // Per-bargain quantity shares across the selected tankers — a split tanker
+  // contributes to BOTH its primary and its excess bargain. More than one entry
+  // means the invoice spans multiple bargain rates.
+  const rateAlloc = useMemo(() => {
+    const m = new Map<string, { bargain_no: string; rate: number; qty: number }>()
+    const add = (id: unknown, no: unknown, rate: number, qty: number): void => {
+      if (!id || qty <= 0) return
+      const k = String(id)
+      const cur = m.get(k) || { bargain_no: String(no || '—'), rate, qty: 0 }
+      cur.qty += qty
+      m.set(k, cur)
+    }
+    for (const t of chosenTankers) {
+      const loaded = Number(t.loaded_qty) || 0
+      const extra = t.extra_bargain_id ? Number(t.extra_qty) || 0 : 0
+      add(t.bargain_id, t.bargain_no, Number(t.bargain_rate) || 0, loaded - extra)
+      if (extra > 0) add(t.extra_bargain_id, t.extra_bargain_no, Number(t.extra_bargain_rate) || 0, extra)
+    }
+    return Array.from(m.values())
+  }, [chosenTankers])
   const totalQty = chosenTankers.reduce((sum, x) => sum + Number(x.loaded_qty || 0), 0)
+  // Quantity-weighted average bargain rate across the allocation.
+  const blendedRate = useMemo(() => {
+    const q = rateAlloc.reduce((s, a) => s + a.qty, 0)
+    return q > 0 ? rateAlloc.reduce((s, a) => s + a.rate * a.qty, 0) / q : 0
+  }, [rateAlloc])
+  // Multi-bargain invoices price at the blended (weighted-average) rate — both
+  // the bargain rate (interest/final basis) and the default invoice rate.
+  useEffect(() => {
+    if (!formPage || rateAlloc.length < 2 || blendedRate <= 0) return
+    setForm((p) => {
+      const next: Row = { ...p }
+      let changed = false
+      if (Math.abs((Number(p.bargain_rate) || 0) - blendedRate) > 1e-6) {
+        next.bargain_rate = blendedRate
+        changed = true
+      }
+      if (!p.invoice_rate_touched && Math.abs((Number(p.invoice_rate) || 0) - blendedRate) > 1e-6) {
+        next.invoice_rate = blendedRate
+        changed = true
+      }
+      return changed ? next : p
+    })
+  }, [formPage, rateAlloc.length, blendedRate])
   const financedCount = chosenTankers.filter((x) => x.payment_mode === 'supplier_finance').length
   // Transporter is already chosen during tanker movement — reuse it here.
   const tankerTransporterIds = Array.from(
@@ -1124,13 +1184,36 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               <MoneyRow label="Paid by us" value={String(selected.length - financedCount)} />
               <MoneyRow label="Supplier financed" value={String(financedCount)} />
               <div className="my-3 border-t" />
-              <MoneyRow label="Bargain rate" value={formatINR(Number(form.bargain_rate) || 0)} />
-              {!!form.charge_interest && (
+              {rateAlloc.length > 1 ? (
+                rateAlloc.map((a, i) => (
+                  <MoneyRow
+                    key={a.bargain_no}
+                    label={`Bargain rate ${i + 1}`}
+                    title={`${a.bargain_no} · ${formatNum(a.qty)} ${form.uom || 'MT'}`}
+                    value={formatINR(a.rate)}
+                  />
+                ))
+              ) : (
+                <MoneyRow label="Bargain rate" value={formatINR(Number(form.bargain_rate) || 0)} />
+              )}
+              {!!form.charge_interest && (rateAlloc.length > 1 ? (
+                rateAlloc.map((a, i) => {
+                  const perUnit = a.rate * (1 + (Number(form.gst_pct) || 0) / 100) * ((Number(form.interest_pct) || 0) / 100) * ((Number(form.interest_days) || 0) / 365)
+                  return (
+                    <MoneyRow
+                      key={`${a.bargain_no}-int`}
+                      label={`Interest ${i + 1} @ ${Number(form.interest_pct) || 0}% · ${Number(form.interest_days) || 0}d`}
+                      title={`${a.bargain_no} · ${formatNum(a.qty)} ${form.uom || 'MT'}`}
+                      value={formatINR(perUnit * a.qty)}
+                    />
+                  )
+                })
+              ) : (
                 <MoneyRow
                   label={`Interest @ ${Number(form.interest_pct) || 0}% · ${Number(form.interest_days) || 0}d`}
                   value={formatINR(calc.interestPerUnit * totalQty)}
                 />
-              )}
+              ))}
               {/* T1 is the subtotal BEFORE additional interest — only meaningful
                   when additional interest is actually applied on top of it. */}
               {!!form.charge_interest && Number(form.additional_interest) > 0 && (
@@ -1145,7 +1228,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   value={formatINR((Number(form.additional_interest) || 0) * totalQty)}
                 />
               )}
-              <MoneyRow label="Adjusted invoice rate" value={formatINR(calc.adjustedRate)} strong />
+              <MoneyRow
+                label={rateAlloc.length > 1 ? 'Adjusted invoice rate (avg)' : 'Adjusted invoice rate'}
+                title={rateAlloc.length > 1 ? `Quantity-weighted average across ${rateAlloc.length} bargains` : undefined}
+                value={formatINR(calc.adjustedRate)}
+                strong
+              />
               <div className="my-2 border-t" />
               <MoneyRow label="Taxable value" value={formatINR(calc.taxableValue)} />
               {form.gst_type === 'IGST' ? (

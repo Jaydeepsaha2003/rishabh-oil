@@ -40,6 +40,21 @@ const CAT_LABEL: Record<string, string> = {
   finished: 'Finished'
 }
 
+// Pack size → MT per piece. Litres are treated 1 L ≈ 1 KG (the mill's despatch
+// reports total 15 Ltr and 15 Kg SKUs into one MT figure the same way).
+function packSizeMT(size: number, uom: string): number {
+  const u = String(uom || 'KG').toUpperCase()
+  const kg =
+    u === 'GM' || u === 'G' || u === 'ML'
+      ? size / 1000
+      : u === 'QUINTAL'
+        ? size * 100
+        : u === 'MT' || u === 'TON' || u === 'KL'
+          ? size * 1000
+          : size // KG or L
+  return kg / 1000
+}
+
 // A number cell that reveals a party-wise breakdown on hover.
 function PartyCell({ value, parties, uom }: { value: number; parties: Row[]; uom?: string }): React.JSX.Element {
   const cell = <span className="tabular-nums">{formatNum(value)}</span>
@@ -462,6 +477,17 @@ function SkuStock(): React.JSX.Element {
     return bpp > 0 ? `${formatNum(bpp)} ${r.base_uom || ''}`.trim() : '—'
   }
 
+  // Tonnage of one SKU's on-hand pieces (pieces × pack size → MT).
+  const skuMT = (r: Row): number => {
+    const size = Number(r.unit_size) > 0 ? Number(r.unit_size) : Number(r.base_per_pouch) || 0
+    const uom = Number(r.unit_size) > 0 ? String(r.unit_uom || 'KG') : String(r.base_uom || 'KG')
+    return (Number(r.on_hand) || 0) * packSizeMT(size, uom)
+  }
+
+  // Every SKU's tonnage, summed — the sheet's TOTAL (MT).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const totalMT = useMemo(() => rows.reduce((s, r) => s + skuMT(r), 0), [rows])
+
   function openAdjust(row: Row): void {
     setAdjustRow(row)
     setAdjustForm({ mode: 'add', amount: '', note: '', date: todayISO() })
@@ -501,14 +527,16 @@ function SkuStock(): React.JSX.Element {
             { header: 'Pack size', key: 'size', value: (r) => unitLabel(r) },
             { header: 'Packed in', key: 'added', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.added) || 0 },
             { header: 'Sold (packed)', key: 'sold', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.sold) || 0 },
-            { header: 'On hand', key: 'on_hand', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.on_hand) || 0 }
+            { header: 'On hand (pcs)', key: 'on_hand', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.on_hand) || 0 },
+            { header: 'On hand (MT)', key: 'mt', align: 'right', numFmt: '#,##0.000', value: (r) => skuMT(r) }
           ]}
           rows={rows}
         />
       </div>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="SKUs" value={String(rows.length)} />
         <StatCard label="Total packs on hand" value={formatNum(totalOnHand)} />
+        <StatCard label="Total packed (MT)" value={formatNum(totalMT)} />
         <StatCard label="Below zero" value={String(rows.filter((r) => Number(r.on_hand) < -1e-6).length)} tone={rows.some((r) => Number(r.on_hand) < -1e-6) ? 'text-red-600' : 'text-emerald-700'} />
       </div>
 
@@ -520,39 +548,49 @@ function SkuStock(): React.JSX.Element {
               <TableHead>Pack size</TableHead>
               <TableHead className="text-right">Packed in</TableHead>
               <TableHead className="text-right">Sold (packed)</TableHead>
-              <TableHead className="text-right">On hand</TableHead>
+              <TableHead className="text-right">On hand (pcs)</TableHead>
+              <TableHead className="text-right">On hand (MT)</TableHead>
               <TableHead className="w-[80px] text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
             ) : rows.length === 0 ? (
-              <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">No SKUs. Add packagings under Masters → Packed SKU first.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No SKUs. Add packagings under Masters → Packed SKU first.</TableCell></TableRow>
             ) : (
-              rows.map((r) => {
-                const onHand = Number(r.on_hand) || 0
-                return (
-                  <TableRow key={r.id as number}>
-                    <TableCell className="font-medium">{r.name}</TableCell>
-                    <TableCell className="text-muted-foreground">{unitLabel(r)}</TableCell>
-                    <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.added) ? formatNum(r.added) : '—'}</TableCell>
-                    <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.sold) ? formatNum(r.sold) : '—'}</TableCell>
-                    <TableCell className={cn('text-right font-semibold tabular-nums', onHand < -1e-6 && 'text-red-600')}>{formatNum(onHand)}</TableCell>
-                    <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" className="h-8 w-8" title="Add / remove packs" onClick={() => openAdjust(r)}>
-                        <SlidersHorizontal className="h-4 w-4" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                )
-              })
+              <>
+                {rows.map((r) => {
+                  const onHand = Number(r.on_hand) || 0
+                  return (
+                    <TableRow key={r.id as number}>
+                      <TableCell className="font-medium">{r.name}</TableCell>
+                      <TableCell className="text-muted-foreground">{unitLabel(r)}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.added) ? formatNum(r.added) : '—'}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.sold) ? formatNum(r.sold) : '—'}</TableCell>
+                      <TableCell className={cn('text-right font-semibold tabular-nums', onHand < -1e-6 && 'text-red-600')}>{formatNum(onHand)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{formatNum(skuMT(r))}</TableCell>
+                      <TableCell className="text-right">
+                        <Button variant="ghost" size="icon" className="h-8 w-8" title="Add / remove packs" onClick={() => openAdjust(r)}>
+                          <SlidersHorizontal className="h-4 w-4" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+                <TableRow className="border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
+                  <TableCell colSpan={4} className="font-bold uppercase tracking-wide text-amber-900">Total (MT)</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totalOnHand)}</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totalMT)}</TableCell>
+                  <TableCell />
+                </TableRow>
+              </>
             )}
           </TableBody>
         </Table>
       </div>
       <p className="text-xs text-muted-foreground">
-        On hand = packs added here − packs sold on dispatched PACKED sales of this SKU. Add packs after packing; it drops automatically as packed sales are dispatched. This is a per-SKU count and is separate from the loose finished-goods balance.
+        Update the on-hand pieces per SKU (sliders icon). On hand (pcs) = packs added − packs sold on dispatched PACKED sales. On hand (MT) = pieces × pack size (1 L counted as 1 KG), and the Total (MT) row sums every SKU — the packed closing balance in tonnage.
       </p>
 
       <Dialog open={!!adjustRow} onOpenChange={(o) => !o && setAdjustRow(null)}>

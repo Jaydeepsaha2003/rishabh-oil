@@ -387,6 +387,9 @@ const MIGRATIONS = [
   // above the existing raw/intermediate/finished classification, which becomes
   // the Sub-category. The DEFAULT backfills every existing product as OIL.
   "ALTER TABLE products ADD COLUMN material_type TEXT NOT NULL DEFAULT 'OIL'",
+  // A packed SKU belongs to a finished product (DALDA 15 KG TIN → DALDA), so
+  // packed pieces can be reconciled in tonnage against that product's stock.
+  'ALTER TABLE packagings ADD COLUMN product_id INTEGER',
   // Optional item lines on a debit/credit note (product × qty × rate). When
   // present they compute the note's base amount; ledger-only (no stock move).
   `CREATE TABLE IF NOT EXISTS note_items (
