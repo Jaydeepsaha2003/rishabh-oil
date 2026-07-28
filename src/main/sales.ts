@@ -149,7 +149,7 @@ async function postCustomerReceivable(
 
 // Tally journal for a sale: Dr Customer (incl. GST), Cr {FG} SALE A/C (taxable),
 // Cr GST OUTPUT A/C (output gst).
-async function postSaleEntry(saleId: number, v: Row, taxable: number, gst: number): Promise<void> {
+async function postSaleEntry(saleId: number, v: Row, taxable: number, gst: number, roundOff = 0): Promise<void> {
   const prod = await getClient().execute({
     sql: 'SELECT code, name FROM products WHERE id = ?',
     args: [n(v.product_id)]
@@ -162,7 +162,8 @@ async function postSaleEntry(saleId: number, v: Row, taxable: number, gst: numbe
     productCode: code,
     customerName: String(v.customer || '').trim(),
     amount: taxable,
-    gst
+    gst,
+    roundOff
   }).catch((e) => console.error('[journal] sale post failed:', (e as Error).message))
 }
 
@@ -533,7 +534,9 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   const amount = qty * rate
   const gstPct = n(v.gst_pct)
   const gstAmount = Math.round(amount * (gstPct / 100) * 100) / 100
-  const net = amount + gstAmount
+  // Invoice-level round off (carried on the first line of the group only).
+  const roundOff = Math.round((n(v.round_off) || 0) * 100) / 100
+  const net = amount + gstAmount + roundOff
   const customerId = v.customer_id ? n(v.customer_id) : null
   // Can't dispatch more than the chosen sales bargain still has open.
   if (v.sales_bargain_id) {
@@ -564,9 +567,9 @@ export async function createSale(v: Row): Promise<{ id: number }> {
     : 0
   const res = await getClient().execute({
     sql: `INSERT INTO sales (company_id, sale_date, invoice_no, invoice_group, customer, customer_id, product_id, sales_bargain_id,
-            qty, uom, rate, amount, gst_pct, gst_amount, gst_type, status, dispatch_stage, track_stock, loaded_date, transit_date, unloaded_date, note, sale_type, packaging_id, boxes, pouches, freight_term,
+            qty, uom, rate, amount, gst_pct, gst_amount, gst_type, round_off, status, dispatch_stage, track_stock, loaded_date, transit_date, unloaded_date, note, sale_type, packaging_id, boxes, pouches, freight_term,
             transporter_id, transport_rate, transport_amount)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       v.sale_date,
@@ -583,6 +586,7 @@ export async function createSale(v: Row): Promise<{ id: number }> {
       gstPct,
       gstAmount,
       v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
+      roundOff,
       status,
       stage,
       trackStock,
@@ -607,7 +611,7 @@ export async function createSale(v: Row): Promise<{ id: number }> {
     await createSaleProduction(id, productId, qty, prodDate, uom)
   }
   await postCustomerReceivable(id, customerId, net, String(v.sale_date))
-  await postSaleEntry(id, v, amount, gstAmount)
+  await postSaleEntry(id, v, amount, gstAmount, roundOff)
   await postSaleFreight(id, v, qty)
   return { id }
 }
@@ -622,7 +626,9 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   const amount = qty * rate
   const gstPct = n(v.gst_pct)
   const gstAmount = Math.round(amount * (gstPct / 100) * 100) / 100
-  const net = amount + gstAmount
+  // Invoice-level round off (carried on the first line of the group only).
+  const roundOff = Math.round((n(v.round_off) || 0) * 100) / 100
+  const net = amount + gstAmount + roundOff
   const customerId = v.customer_id ? n(v.customer_id) : null
   if (v.sales_bargain_id) {
     const bal = await salesBargainBalanceFor(n(v.sales_bargain_id), id)
@@ -650,7 +656,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
     : 0
   await getClient().execute({
     sql: `UPDATE sales SET sale_date = ?, invoice_no = ?, customer = ?, customer_id = ?, product_id = ?, sales_bargain_id = ?,
-          qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, status = ?, dispatch_stage = ?, track_stock = ?, loaded_date = ?, transit_date = ?, unloaded_date = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
+          qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, round_off = ?, status = ?, dispatch_stage = ?, track_stock = ?, loaded_date = ?, transit_date = ?, unloaded_date = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
           pouches = ?, freight_term = ?, transporter_id = ?, transport_rate = ?, transport_amount = ? WHERE id = ?`,
     args: [
       v.sale_date,
@@ -666,6 +672,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       gstPct,
       gstAmount,
       v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
+      roundOff,
       status,
       stage,
       trackStock,
@@ -693,7 +700,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
     await deleteSaleProductions(id)
   }
   await postCustomerReceivable(id, customerId, net, String(v.sale_date))
-  await postSaleEntry(id, v, amount, gstAmount)
+  await postSaleEntry(id, v, amount, gstAmount, roundOff)
   await postSaleFreight(id, v, qty)
   return { id }
 }
@@ -799,8 +806,9 @@ export async function createSaleInvoice(v: Row): Promise<{ group: string; ids: n
   if (!items.length) throw new Error('Add at least one item to the invoice')
   const group = newInvoiceGroup()
   const ids: number[] = []
-  for (const item of items) {
-    const res = await createSale(mergeInvoiceItem(v, item, group))
+  for (let i = 0; i < items.length; i++) {
+    // Invoice-level round off rides on the FIRST line only (others 0).
+    const res = await createSale({ ...mergeInvoiceItem(v, items[i], group), round_off: i === 0 ? v.round_off : 0 })
     ids.push(res.id)
   }
   return { group, ids }
@@ -817,8 +825,8 @@ export async function updateSaleInvoice(group: string, v: Row): Promise<{ group:
   })
   for (const r of existing.rows) await deleteSale(Number(r.id))
   const ids: number[] = []
-  for (const item of items) {
-    const res = await createSale(mergeInvoiceItem(v, item, group))
+  for (let i = 0; i < items.length; i++) {
+    const res = await createSale({ ...mergeInvoiceItem(v, items[i], group), round_off: i === 0 ? v.round_off : 0 })
     ids.push(res.id)
   }
   return { group, ids }
@@ -899,6 +907,68 @@ export async function backfillSalesGst(): Promise<void> {
     "INSERT INTO app_settings (key, value) VALUES ('sales_gst_backfilled', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"
   )
   if (applied > 0) console.log(`[sales] backfilled output GST on ${applied} sales`)
+}
+
+// One-time backfill: auto round-off on existing sale invoices (created before
+// the round_off column). For every invoice group whose lines all have 0 round
+// off and whose total isn't already a whole rupee, the "Auto" rounding is
+// applied: ro = round(total) − total, stored on the group's FIRST line, with
+// that line's journal voucher and customer receivable re-posted at the rounded
+// net. Guarded by a settings flag so it runs once.
+export async function backfillSalesRoundOff(): Promise<void> {
+  const c = getClient()
+  const done = await c.execute("SELECT value FROM app_settings WHERE key = 'sales_round_off_backfilled'")
+  if (done.rows.length && String(done.rows[0].value) === '1') return
+
+  const sales = await c.execute(`
+    SELECT s.id, s.company_id, s.invoice_group, s.sale_date, s.invoice_no, s.customer, s.customer_id,
+           s.amount, s.gst_amount, s.round_off, pr.code AS product_code, pr.name AS product_name
+    FROM sales s
+    LEFT JOIN products pr ON pr.id = s.product_id
+    ORDER BY s.id ASC
+  `)
+  // Group into invoices the same way the UI does (legacy rows stand alone).
+  const groups = new Map<string, Row[]>()
+  for (const r of toPlain(sales)) {
+    const g = String(r.invoice_group || `LEGACY-${r.id}`)
+    if (!groups.has(g)) groups.set(g, [])
+    groups.get(g)!.push(r)
+  }
+  let applied = 0
+  for (const lines of groups.values()) {
+    // Don't touch invoices that already carry a round off.
+    if (lines.some((l) => Math.abs(n(l.round_off)) > 0.004)) continue
+    const raw = lines.reduce((s, l) => s + n(l.amount) + n(l.gst_amount), 0)
+    const ro = Math.round((Math.round(raw) - raw) * 100) / 100
+    if (Math.abs(ro) < 0.005) continue
+    const first = lines[0]
+    await c.execute({ sql: 'UPDATE sales SET round_off = ? WHERE id = ?', args: [ro, n(first.id)] })
+    const code = String(first.product_code || first.product_name || 'FG').toUpperCase()
+    await postSaleJournal({
+      saleId: n(first.id),
+      date: String(first.sale_date),
+      invoiceNo: first.invoice_no ? String(first.invoice_no) : null,
+      productCode: code,
+      customerName: String(first.customer || '').trim(),
+      amount: n(first.amount),
+      gst: n(first.gst_amount),
+      roundOff: ro,
+      companyId: n(first.company_id) || 1
+    }).catch(() => {})
+    if (first.customer_id) {
+      await postCustomerReceivable(
+        n(first.id),
+        n(first.customer_id),
+        n(first.amount) + n(first.gst_amount) + ro,
+        String(first.sale_date)
+      ).catch(() => {})
+    }
+    applied++
+  }
+  await c.execute(
+    "INSERT INTO app_settings (key, value) VALUES ('sales_round_off_backfilled', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"
+  )
+  if (applied > 0) console.log(`[sales] backfilled round off on ${applied} invoices`)
 }
 
 // One-time backfill: link existing sales bargains to the customer master by

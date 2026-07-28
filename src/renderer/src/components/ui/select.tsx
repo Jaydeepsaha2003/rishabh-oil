@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { createPortal } from 'react-dom'
 import { Check, ChevronDown, Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -69,7 +70,13 @@ function Select({ value, onValueChange, disabled, children, searchable }: Select
   const [query, setQuery] = React.useState('')
   const [highlight, setHighlight] = React.useState(0)
   const wrapRef = React.useRef<HTMLDivElement>(null)
+  const panelRef = React.useRef<HTMLDivElement>(null)
   const inputRef = React.useRef<HTMLInputElement>(null)
+  // Inside a dialog, the panel is PORTALED into the dialog content element:
+  // it stays within the Radix focus trap (portaling to <body> broke typing in
+  // the packaged app) but escapes the dialog's scrollable body, which clipped
+  // inline panels. It flips upward when there's more room above the trigger.
+  const [portal, setPortal] = React.useState<{ target: HTMLElement; style: React.CSSProperties; listMaxH: number } | null>(null)
 
   let trigger: React.ReactNode = null
   let contentChildren: React.ReactNode = null
@@ -95,11 +102,47 @@ function Select({ value, onValueChange, disabled, children, searchable }: Select
     if (!disabled) setOpen((o) => !o)
   }, [disabled])
 
-  // Close when clicking anywhere outside this dropdown.
+  // Compute the portal position when opening inside a dialog.
+  React.useLayoutEffect(() => {
+    if (!open) {
+      setPortal(null)
+      return
+    }
+    const wrap = wrapRef.current
+    const dialog = wrap?.closest('[role="dialog"]') as HTMLElement | null
+    if (!wrap || !dialog) {
+      setPortal(null) // not in a dialog → keep the inline panel
+      return
+    }
+    const t = wrap.getBoundingClientRect()
+    const c = dialog.getBoundingClientRect()
+    const spaceBelow = c.bottom - t.bottom
+    const spaceAbove = t.top - c.top
+    const openUp = spaceBelow < 240 && spaceAbove > spaceBelow
+    const listMaxH = Math.max(120, Math.min(320, (openUp ? spaceAbove : spaceBelow) - 12))
+    setPortal({
+      target: dialog,
+      listMaxH,
+      style: {
+        position: 'absolute',
+        left: t.left - c.left + dialog.scrollLeft,
+        width: t.width,
+        ...(openUp
+          ? { top: t.top - c.top + dialog.scrollTop - 4, transform: 'translateY(-100%)' }
+          : { top: t.bottom - c.top + dialog.scrollTop + 4 })
+      }
+    })
+  }, [open])
+
+  // Close when clicking anywhere outside this dropdown (trigger OR panel —
+  // the panel may live in a portal outside the trigger's subtree).
   React.useEffect(() => {
     if (!open) return
     function onDown(e: MouseEvent): void {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
+      const n = e.target as Node
+      if (wrapRef.current?.contains(n)) return
+      if (panelRef.current?.contains(n)) return
+      setOpen(false)
     }
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
@@ -142,57 +185,65 @@ function Select({ value, onValueChange, disabled, children, searchable }: Select
     }
   }
 
+  const panelEl = open ? (
+    <div
+      ref={panelRef}
+      style={portal?.style}
+      className={cn(
+        'rounded-md border bg-popover text-popover-foreground shadow-md uppercase',
+        portal ? 'z-[70]' : 'absolute left-0 top-full z-50 mt-1 w-full min-w-[10rem]',
+        contentClassName
+      )}
+    >
+      {showSearch && (
+        <div className="flex items-center gap-2 border-b px-3">
+          <Search className="h-4 w-4 shrink-0 opacity-50" />
+          <input
+            ref={inputRef}
+            autoFocus
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value)
+              setHighlight(0)
+            }}
+            onKeyDown={onKeyDown}
+            placeholder="Search…"
+            className="h-10 w-full bg-transparent py-2 text-sm normal-case outline-none placeholder:text-muted-foreground"
+          />
+        </div>
+      )}
+      <div
+        className="max-h-[min(16rem,50vh)] overflow-y-auto p-1"
+        style={portal ? { maxHeight: Math.max(96, portal.listMaxH - (showSearch ? 45 : 0)) } : undefined}
+      >
+        {filtered.length === 0 ? (
+          <div className="py-6 text-center text-sm text-muted-foreground">No results.</div>
+        ) : (
+          filtered.map((it, i) => (
+            <button
+              key={it.value}
+              type="button"
+              onClick={() => choose(it.value)}
+              onMouseEnter={() => setHighlight(i)}
+              className={cn(
+                'flex w-full items-center rounded-sm px-2 py-1.5 text-left text-sm',
+                i === highlight ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60'
+              )}
+            >
+              <Check className={cn('mr-2 h-4 w-4 shrink-0', current === it.value ? 'opacity-100' : 'opacity-0')} />
+              <span className="flex-1">{it.label}</span>
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  ) : null
+
   return (
     <SelectContext.Provider value={{ value: current, items, disabled, open, toggle }}>
       <div ref={wrapRef} className="relative">
         {trigger}
-        {open && (
-          <div
-            className={cn(
-              'absolute left-0 top-full z-50 mt-1 w-full min-w-[10rem] rounded-md border bg-popover text-popover-foreground shadow-md uppercase',
-              contentClassName
-            )}
-          >
-            {showSearch && (
-              <div className="flex items-center gap-2 border-b px-3">
-                <Search className="h-4 w-4 shrink-0 opacity-50" />
-                <input
-                  ref={inputRef}
-                  autoFocus
-                  value={query}
-                  onChange={(e) => {
-                    setQuery(e.target.value)
-                    setHighlight(0)
-                  }}
-                  onKeyDown={onKeyDown}
-                  placeholder="Search…"
-                  className="h-10 w-full bg-transparent py-2 text-sm normal-case outline-none placeholder:text-muted-foreground"
-                />
-              </div>
-            )}
-            <div className="max-h-[min(16rem,50vh)] overflow-y-auto p-1">
-              {filtered.length === 0 ? (
-                <div className="py-6 text-center text-sm text-muted-foreground">No results.</div>
-              ) : (
-                filtered.map((it, i) => (
-                  <button
-                    key={it.value}
-                    type="button"
-                    onClick={() => choose(it.value)}
-                    onMouseEnter={() => setHighlight(i)}
-                    className={cn(
-                      'flex w-full items-center rounded-sm px-2 py-1.5 text-left text-sm',
-                      i === highlight ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60'
-                    )}
-                  >
-                    <Check className={cn('mr-2 h-4 w-4 shrink-0', current === it.value ? 'opacity-100' : 'opacity-0')} />
-                    <span className="flex-1">{it.label}</span>
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-        )}
+        {portal ? createPortal(panelEl, portal.target) : panelEl}
       </div>
     </SelectContext.Provider>
   )

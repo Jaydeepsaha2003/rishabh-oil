@@ -142,7 +142,7 @@ function emptyForm(uom: string): Row {
   }
 }
 
-export function Bargains(): React.JSX.Element {
+export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => void } = {}): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [suppliers, setSuppliers] = useState<Row[]>([])
@@ -907,7 +907,16 @@ export function Bargains(): React.JSX.Element {
                                             const rec = t.status === 'empty' && t.received_qty != null ? Number(t.received_qty) * share : null
                                             const shortage = rec != null ? Math.max(0, loaded - Number(t.received_qty)) * share : null
                                             return (
-                                              <tr key={t.id as number} className={cn('border-b', ti % 2 === 1 ? 'bg-muted/40' : 'bg-card')}>
+                                              <tr
+                                                key={t.id as number}
+                                                className={cn(
+                                                  'border-b',
+                                                  ti % 2 === 1 ? 'bg-muted/40' : 'bg-card',
+                                                  t.order_id && onOpenOrder && 'cursor-pointer hover:bg-sky-50'
+                                                )}
+                                                title={t.order_id ? 'Open the purchase invoice' : 'Not billed yet'}
+                                                onClick={() => t.order_id && onOpenOrder?.(Number(t.order_id))}
+                                              >
                                                 <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{ti + 1}</td>
                                                 <td className="py-1.5 pr-3 font-medium">
                                                   {t.tanker_no}

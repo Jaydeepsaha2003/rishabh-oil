@@ -2,7 +2,7 @@
 type Row = Record<string, any>
 
 export interface Api {
-  dbPing: () => Promise<{ ok: boolean; message: string }>
+  dbPing: () => Promise<{ ok: boolean; message: string; offline?: boolean }>
   revision: () => Promise<number>
   config: {
     get: () => Promise<{ url: string }>

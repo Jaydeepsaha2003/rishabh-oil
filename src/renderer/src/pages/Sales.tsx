@@ -180,7 +180,7 @@ function SalesTab({
       .map(([group, lines]) => {
         const first = lines[0]
         const amount = lines.reduce((s, r) => s + (Number(r.amount) || 0), 0)
-        const net = lines.reduce((s, r) => s + (Number(r.amount) || 0) + (Number(r.gst_amount) || 0), 0)
+        const net = lines.reduce((s, r) => s + (Number(r.amount) || 0) + (Number(r.gst_amount) || 0) + (Number(r.round_off) || 0), 0)
         const qty = lines.reduce((s, r) => s + (Number(r.qty) || 0), 0)
         return { group, lines, first, amount, net, qty }
       })
@@ -221,7 +221,8 @@ function SalesTab({
       dispatch_stage: 'pending',
       loaded_date: '',
       transit_date: '',
-      unloaded_date: ''
+      unloaded_date: '',
+      round_off: ''
     }
   }
   function blankItem(): Row {
@@ -252,7 +253,9 @@ function SalesTab({
       dispatch_stage: f.dispatch_stage ?? (f.status === 'done' ? 'unloaded' : 'pending'),
       loaded_date: f.loaded_date ?? '',
       transit_date: f.transit_date ?? '',
-      unloaded_date: f.unloaded_date ?? ''
+      unloaded_date: f.unloaded_date ?? '',
+      // Round off lives on the first line of the group; sum is safe either way.
+      round_off: inv.lines.reduce((s, r) => s + (Number(r.round_off) || 0), 0) || ''
     })
     setItems(inv.lines.map((r) => ({
       product_id: String(r.product_id ?? ''),
@@ -382,6 +385,7 @@ function SalesTab({
       ...header,
       customer_id: header.customer_id ? Number(header.customer_id) : null,
       transporter_id: header.transporter_id ? Number(header.transporter_id) : null,
+      round_off: Number(header.round_off) || 0,
       items: items.map((it) => ({
         product_id: Number(it.product_id),
         sales_bargain_id: it.sales_bargain_id ? Number(it.sales_bargain_id) : null,
@@ -719,7 +723,7 @@ function SalesTab({
                     </Button>
                   )}
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 [&>div]:min-w-0">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.7fr)_minmax(0,1fr)] [&>div]:min-w-0">
                   <div className="grid gap-1.5">
                     <Label>Product *</Label>
                     <Select value={String(item.product_id)} onValueChange={(v) => setItem(i, { product_id: v, sales_bargain_id: '' })}>
@@ -733,7 +737,12 @@ function SalesTab({
                       <SelectTrigger><SelectValue placeholder="No bargain" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="none">No bargain</SelectItem>
-                        {prodBargains.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.bargain_no} · bal {formatNum(b.balance_qty)} @ {formatINR(b.rate)}</SelectItem>)}
+                        {prodBargains.map((b) => (
+                          <SelectItem key={b.id} value={String(b.id)}>
+                            <span className="font-medium">{b.bargain_no}</span>
+                            <span className="text-muted-foreground"> · Bal {formatNum(b.balance_qty)} · {formatINR(b.rate)}</span>
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
@@ -818,7 +827,34 @@ function SalesTab({
         <div className="mt-4 rounded-xl border bg-muted/30 p-4 text-sm">
           <div className="flex items-center justify-between py-0.5"><span className="text-muted-foreground">Taxable value</span><span className="tabular-nums">{formatINR(totals.amount)}</span></div>
           <div className="flex items-center justify-between py-0.5"><span className="text-muted-foreground">Total GST</span><span className="tabular-nums">{formatINR(totals.gst)}</span></div>
-          <div className="mt-1 flex items-center justify-between border-t pt-1 text-base font-semibold"><span>Invoice total</span><span className="tabular-nums">{formatINR(totals.amount + totals.gst)}</span></div>
+          <div className="flex items-center justify-between py-0.5">
+            <span className="text-muted-foreground">Round off</span>
+            <span className="flex items-center gap-1.5">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                title="Round the invoice total to the nearest rupee"
+                onClick={() => {
+                  const raw = totals.amount + totals.gst
+                  const ro = Math.round((Math.round(raw) - raw) * 100) / 100
+                  setHeaderField('round_off', ro === 0 ? '' : String(ro))
+                }}
+              >
+                Auto
+              </Button>
+              <Input
+                type="number"
+                step="0.01"
+                className="h-7 w-24 bg-white text-right"
+                placeholder="0.00"
+                value={header.round_off ?? ''}
+                onChange={(e) => setHeaderField('round_off', e.target.value)}
+              />
+            </span>
+          </div>
+          <div className="mt-1 flex items-center justify-between border-t pt-1 text-base font-semibold"><span>Invoice total</span><span className="tabular-nums">{formatINR(totals.amount + totals.gst + (Number(header.round_off) || 0))}</span></div>
         </div>
 
         <div className="mt-5 flex justify-end gap-2 border-t pt-4">
@@ -1322,14 +1358,14 @@ function SalesBargainsTab(): React.JSX.Element {
                                             <td className="py-1.5 pr-3 font-medium">{d.invoice_no || '—'}</td>
                                             <td className="py-1.5 pr-3 whitespace-nowrap">{formatDate(d.sale_date)}</td>
                                             <td className="py-1.5 pr-3">{stageInfo(d).label}</td>
-                                            <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(d.qty)} {d.uom}</td>
+                                            <td className="py-1.5 pr-3 text-right tabular-nums font-medium text-red-600">{formatNum(d.qty)} {d.uom}</td>
                                             <td className="py-1.5 pr-3 text-right tabular-nums">{formatINR(d.rate)}</td>
                                             <td className="py-1.5 text-right tabular-nums">{formatINR((Number(d.amount) || 0) + (Number(d.gst_amount) || 0))}</td>
                                           </tr>
                                         ))}
                                         <tr className="font-semibold">
                                           <td className="py-1.5 pr-3" colSpan={4}>Total</td>
-                                          <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(tot.qty)} {row.uom}</td>
+                                          <td className="py-1.5 pr-3 text-right tabular-nums text-red-600">{formatNum(tot.qty)} {row.uom}</td>
                                           <td className="py-1.5" />
                                           <td className="py-1.5 text-right tabular-nums">{formatINR(tot.amount)}</td>
                                         </tr>

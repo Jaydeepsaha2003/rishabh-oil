@@ -19,6 +19,10 @@ const STAGES = [
 
 const TANKER_STAGES = ['supplier_factory', 'loaded', 'transit', 'outside_factory', 'inside_factory', 'empty']
 
+// The Empty-stage received qty must match the gate weighment, but weighbridge
+// readings drift — allow this much difference (in MT) before blocking.
+const GATE_MATCH_BUFFER = 1
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
 
@@ -614,12 +618,13 @@ export async function updateTankerDetails(id: number, v: Row): Promise<{ id: num
     }
   }
 
-  // Changing the received qty of an emptied tanker must still match the gate.
+  // Changing the received qty of an emptied tanker must still match the gate
+  // weighment — within a 1 MT operational buffer.
   if (String(t.status) === 'empty' && Math.abs(receivedQty - n(t.received_qty)) > 1e-9) {
     const gateQty = await tankerGateReceived(id)
     if (gateQty == null) throw new Error('No completed gate entry for this tanker')
-    if (Math.abs(gateQty - receivedQty) > 0.001) {
-      throw new Error(`Received qty (${receivedQty}) does not match the gate received qty (${gateQty})`)
+    if (Math.abs(gateQty - receivedQty) > GATE_MATCH_BUFFER) {
+      throw new Error(`Received qty (${receivedQty}) is more than ${GATE_MATCH_BUFFER} MT away from the gate received qty (${gateQty})`)
     }
   }
 
@@ -936,14 +941,15 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
   } else if (toStatus === 'empty') {
     const receivedQty = n(data.received_qty)
     if (receivedQty <= 0 || receivedQty > n(tanker.loaded_qty) + 1e-6) throw new Error('Enter a valid empty quantity')
-    // Cross-check against the gate-recorded received quantity for this tanker.
+    // Cross-check against the gate-recorded received quantity for this tanker,
+    // allowing a 1 MT operational buffer between weighbridge and receipt.
     const gateQty = await tankerGateReceived(id)
     if (gateQty == null) {
       throw new Error('No gate entry found for this tanker. Record the gate receipt first.')
     }
-    if (Math.abs(gateQty - receivedQty) > 0.001) {
+    if (Math.abs(gateQty - receivedQty) > GATE_MATCH_BUFFER) {
       throw new Error(
-        `Received qty (${receivedQty}) does not match the gate received qty (${gateQty}) for this tanker.`
+        `Received qty (${receivedQty}) is more than ${GATE_MATCH_BUFFER} MT away from the gate received qty (${gateQty}) for this tanker.`
       )
     }
     const bargain = await c.execute({

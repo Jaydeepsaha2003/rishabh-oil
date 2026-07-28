@@ -7,14 +7,27 @@ const fields: FieldDef[] = [
   { key: 'name', label: 'Name', type: 'text', required: true, placeholder: 'CPO' },
   { key: 'code', label: 'Code', type: 'text' },
   {
-    key: 'category',
+    key: 'material_type',
     label: 'Category',
+    type: 'select',
+    default: 'OIL',
+    options: [
+      { value: 'OIL', label: 'OIL' },
+      { value: 'HUSK', label: 'HUSK' },
+      { value: 'PACKAGING', label: 'PACKAGING' },
+      { value: 'CHEMICAL', label: 'CHEMICAL' },
+      { value: 'MISC', label: 'MISC' }
+    ]
+  },
+  {
+    key: 'category',
+    label: 'Sub-category',
     type: 'select',
     default: 'raw',
     options: [
-      { value: 'raw', label: 'Raw oil' },
+      { value: 'raw', label: 'Raw' },
       { value: 'intermediate', label: 'Intermediate' },
-      { value: 'finished', label: 'Finished product' }
+      { value: 'finished', label: 'Finished' }
     ]
   },
   { key: 'active', label: 'Active', type: 'switch', default: true }
@@ -23,7 +36,8 @@ const fields: FieldDef[] = [
 const columns: ColumnDef[] = [
   { key: 'name', label: 'Name' },
   { key: 'code', label: 'Code' },
-  { key: 'category', label: 'Category', type: 'select' },
+  { key: 'material_type', label: 'Category', type: 'select' },
+  { key: 'category', label: 'Sub-category', type: 'select' },
   { key: 'active', label: 'Active', type: 'switch' },
   { key: 'created_at', label: 'Created', type: 'date' }
 ]

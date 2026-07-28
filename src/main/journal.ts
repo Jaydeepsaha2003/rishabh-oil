@@ -313,11 +313,15 @@ export async function postSaleJournal(v: {
   customerName: string
   amount: number
   gst?: number
+  roundOff?: number
   companyId?: number
 }): Promise<void> {
   await deleteJournalByRef('sale_id', v.saleId)
   const taxable = n(v.amount)
   const gst = n(v.gst)
+  // Round off shifts the customer's net: +ve rounds the invoice up (customer
+  // owes more, Cr ROUND OFF), −ve rounds down (Dr ROUND OFF).
+  const ro = n(v.roundOff)
   if (taxable <= 0 && gst <= 0) return
   await postJournal({
     date: v.date,
@@ -326,9 +330,10 @@ export async function postSaleJournal(v: {
     saleId: v.saleId,
     companyId: v.companyId,
     lines: [
-      { account: v.customerName || 'CASH CUSTOMER A/C', group: 'Sundry Debtors', dr: taxable + gst },
+      { account: v.customerName || 'CASH CUSTOMER A/C', group: 'Sundry Debtors', dr: taxable + gst + ro },
       { account: `${v.productCode} SALE A/C`, group: 'Sales Accounts', cr: taxable },
-      { account: 'GST OUTPUT A/C', group: 'Duties & Taxes', cr: gst }
+      { account: 'GST OUTPUT A/C', group: 'Duties & Taxes', cr: gst },
+      { account: 'ROUND OFF A/C', group: 'Indirect Expenses', cr: ro > 0 ? ro : 0, dr: ro < 0 ? -ro : 0 }
     ]
   })
 }

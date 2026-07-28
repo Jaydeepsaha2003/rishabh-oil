@@ -5,7 +5,7 @@ type Row = Record<string, any>
 
 // The single, controlled surface the UI is allowed to call.
 const api = {
-  dbPing: (): Promise<{ ok: boolean; message: string }> => ipcRenderer.invoke('db:ping'),
+  dbPing: (): Promise<{ ok: boolean; message: string; offline?: boolean }> => ipcRenderer.invoke('db:ping'),
   revision: (): Promise<number> => ipcRenderer.invoke('app:revision'),
   config: {
     get: (): Promise<{ url: string }> => ipcRenderer.invoke('config:get'),

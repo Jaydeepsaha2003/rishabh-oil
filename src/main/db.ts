@@ -380,6 +380,13 @@ const MIGRATIONS = [
   // Classification of a sales bargain (mirrors the purchase-bargain type tabs):
   // FINISHED_OIL | FATTY | SCRAP | SPENT_EARTH | MISC.
   "ALTER TABLE sales_bargains ADD COLUMN sale_category TEXT NOT NULL DEFAULT 'FINISHED_OIL'",
+  // Invoice-level round off on sales (mirrors purchases). Stored on the FIRST
+  // line of the invoice group (others 0) so summing lines never double-counts.
+  'ALTER TABLE sales ADD COLUMN round_off REAL NOT NULL DEFAULT 0',
+  // Products get a material Category (OIL / HUSK / PACKAGING / CHEMICAL / MISC)
+  // above the existing raw/intermediate/finished classification, which becomes
+  // the Sub-category. The DEFAULT backfills every existing product as OIL.
+  "ALTER TABLE products ADD COLUMN material_type TEXT NOT NULL DEFAULT 'OIL'",
   // Optional item lines on a debit/credit note (product × qty × rate). When
   // present they compute the note's base amount; ledger-only (no stock move).
   `CREATE TABLE IF NOT EXISTS note_items (
@@ -514,12 +521,24 @@ export function getRevision(): number {
   return cachedRevision
 }
 
-export async function ping(): Promise<{ ok: boolean; message: string }> {
+// Distinguish "no internet" from a real config/auth problem so the UI can ask
+// the user to check their connection instead of showing the credentials screen.
+function isNetworkError(err: unknown): boolean {
+  const msg = `${(err as Error)?.message || ''} ${((err as { cause?: Error })?.cause?.message) || ''}`
+  return /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|ENETDOWN|socket hang up|UND_ERR|network|getaddrinfo/i.test(msg)
+}
+
+export async function ping(): Promise<{ ok: boolean; message: string; offline?: boolean }> {
   try {
     const c = getClient()
     await c.execute('SELECT 1')
     return { ok: true, message: 'Connected to Turso' }
   } catch (err) {
+    if (isNetworkError(err)) {
+      // The connection may recover; don't cache a client built mid-outage.
+      resetClient()
+      return { ok: false, offline: true, message: 'No internet connection' }
+    }
     return { ok: false, message: (err as Error).message }
   }
 }

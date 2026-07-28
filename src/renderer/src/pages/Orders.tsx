@@ -122,7 +122,7 @@ function stageAsOf(t: Row, asOf: string): string {
 function MoneyRow({ label, value, strong }: { label: string; value: string; strong?: boolean }): React.JSX.Element {
   return (
     <div className="flex items-center justify-between py-1.5 text-sm">
-      <span className="text-muted-foreground">{label}</span>
+      <span className={strong ? 'font-semibold text-foreground' : 'text-muted-foreground'}>{label}</span>
       <span className={strong ? 'font-semibold tabular-nums' : 'tabular-nums'}>{value}</span>
     </div>
   )
@@ -146,6 +146,8 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
   const [loading, setLoading] = useState(true)
   const [pivotStart, setPivotStart] = useState(monthStartISO())
   const [pivotEnd, setPivotEnd] = useState(todayISO())
+  // Clicking a pivot count filters the tanker list below to that oil × stage.
+  const [pivotSel, setPivotSel] = useState<{ oil: string; stage: string } | null>(null)
 
   const [loadingOpen, setLoadingOpen] = useState(false)
   const [loadingForm, setLoadingForm] = useState<Row>({ tanker_count: 1, factory_entry_date: todayISO() })
@@ -263,14 +265,29 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
 
   // The tanker list below the pivot follows the same date range — a tanker
   // belongs to the window if its loaded (or gate-entry) date falls within it.
+  // When a pivot count is clicked, the list instead shows EXACTLY the tankers
+  // that count includes (same oil × stage-as-of-window-end membership rule).
   const visibleTankers = useMemo(() => {
     const start = pivotStart
     const end = pivotEnd < pivotStart ? pivotStart : pivotEnd
+    if (pivotSel) {
+      return tankers.filter((t) => {
+        const created = String(t.created_at || '').slice(0, 10)
+        if (created && created > end) return false
+        const stage = stageAsOf(t, end)
+        if (stage !== pivotSel.stage) return false
+        if (stage === 'empty') {
+          const ed = String(t.empty_date || '').slice(0, 10)
+          if (!(ed >= start && ed <= end)) return false
+        }
+        return String(t.oil_code || t.oil_name || '—') === pivotSel.oil
+      })
+    }
     return tankers.filter((t) => {
       const d = String(t.loaded_date || t.factory_entry_date || t.created_at || '').slice(0, 10)
       return !!d && d >= start && d <= end
     })
-  }, [tankers, pivotStart, pivotEnd])
+  }, [tankers, pivotStart, pivotEnd, pivotSel])
 
   // Row fields derived from a bargain (auto or manual pick).
   function bargainDefaults(b: Row): Row {
@@ -856,7 +873,6 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
       {!formPage && (
         <PageHeader
           title="Purchases"
-          subtitle="Load tankers first, then combine one or more tankers into a purchase invoice"
           hint="Tanker lifecycle: To be loaded → Loaded → In transit → Outside factory → Inside factory → Empty. Pick the transporter when sending tankers to the supplier. At Empty, record received qty plus the KRFL and outside-factory weighment slips."
           actions={
             <div className="flex gap-2">
@@ -1114,13 +1130,22 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                   value={formatINR(calc.interestPerUnit * totalQty)}
                 />
               )}
+              {/* T1 is the subtotal BEFORE additional interest — only meaningful
+                  when additional interest is actually applied on top of it. */}
+              {!!form.charge_interest && Number(form.additional_interest) > 0 && (
+                <>
+                  <div className="border-t" />
+                  <MoneyRow label="T1 (rate + interest)" value={formatINR(calc.adjustedRate - (Number(form.additional_interest) || 0))} strong />
+                </>
+              )}
               {Number(form.additional_interest) > 0 && (
                 <MoneyRow
                   label={`Additional interest (${formatINR(Number(form.additional_interest))}/${form.uom || 'MT'})`}
                   value={formatINR((Number(form.additional_interest) || 0) * totalQty)}
                 />
               )}
-              <MoneyRow label="Adjusted invoice rate" value={formatINR(calc.adjustedRate)} />
+              <MoneyRow label="Adjusted invoice rate" value={formatINR(calc.adjustedRate)} strong />
+              <div className="my-2 border-t" />
               <MoneyRow label="Taxable value" value={formatINR(calc.taxableValue)} />
               {form.gst_type === 'IGST' ? (
                 <MoneyRow label={`IGST${form.gst_pct ? ` @ ${form.gst_pct}%` : ''}`} value={formatINR(calc.gstAmount)} />
@@ -1130,6 +1155,7 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                   <MoneyRow label={`SGST${form.gst_pct ? ` @ ${(Number(form.gst_pct) || 0) / 2}%` : ''}`} value={formatINR(calc.gstAmount / 2)} />
                 </>
               )}
+              <div className="border-t" />
               <MoneyRow label="Total value (excl. TDS)" value={formatINR(calc.taxableValue + calc.gstAmount)} strong />
               <MoneyRow label="TDS" value={`− ${formatINR(calc.tdsAmount)}`} />
               <div className="flex items-center justify-between py-1.5 text-sm">
@@ -1161,9 +1187,9 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
           </div>
         </div>
       ) : (
-        <div className="p-8">
+        <div className="px-8 pb-8 pt-3">
           <Tabs value={tab} onValueChange={setTab}>
-            <TabsList className="mb-6">
+            <TabsList className="mb-4">
               <TabsTrigger value="tankers">Tanker movement</TabsTrigger>
               <TabsTrigger value="purchases">Purchase entries</TabsTrigger>
             </TabsList>
@@ -1208,9 +1234,21 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                                   {cell && cell.count > 0 ? (
                                     <Tooltip>
                                       <TooltipTrigger asChild>
-                                        <span className="cursor-default font-medium underline decoration-dotted decoration-muted-foreground/50 underline-offset-4">
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setPivotSel((p) =>
+                                              p && p.oil === row.label && p.stage === s.key ? null : { oil: row.label, stage: s.key }
+                                            )
+                                          }
+                                          className={cn(
+                                            'cursor-pointer rounded px-1.5 py-0.5 font-medium underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 hover:bg-sky-100',
+                                            pivotSel && pivotSel.oil === row.label && pivotSel.stage === s.key && 'bg-sky-600 text-white no-underline hover:bg-sky-600'
+                                          )}
+                                          title="Show these tankers below"
+                                        >
                                           {cell.count}
-                                        </span>
+                                        </button>
                                       </TooltipTrigger>
                                       <TooltipContent>
                                         <div className="mb-1 font-semibold">{row.label} · {s.label}</div>
@@ -1243,6 +1281,16 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                   </TableBody>
                 </Table>
               </div>
+              {pivotSel && (
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900">
+                  <span>
+                    Showing <b>{visibleTankers.length}</b> tanker{visibleTankers.length === 1 ? '' : 's'} — <b>{pivotSel.oil}</b> · {PIVOT_STAGES.find((s) => s.key === pivotSel.stage)?.label || pivotSel.stage}
+                  </span>
+                  <Button variant="outline" size="sm" className="h-7 border-sky-300 bg-white text-sky-900" onClick={() => setPivotSel(null)}>
+                    Clear
+                  </Button>
+                </div>
+              )}
               <div className="overflow-hidden rounded-xl border bg-card">
                 <Table>
                   <TableHeader><TableRow>
@@ -1251,7 +1299,7 @@ export function Orders({ focusId, onFocusHandled, onBack }: OrdersProps = {}): R
                   </TableRow></TableHeader>
                   <TableBody>
                     {loading ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
-                      : visibleTankers.length === 0 ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">{tankers.length === 0 ? 'No tankers yet. Add the first loaded tanker.' : 'No tankers in this date range.'}</TableCell></TableRow>
+                      : visibleTankers.length === 0 ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">{tankers.length === 0 ? 'No tankers yet. Add the first loaded tanker.' : pivotSel ? 'No tankers match the selected cell.' : 'No tankers in this date range.'}</TableCell></TableRow>
                         : visibleTankers.map((row) => {
                           const next = nextTankerStage(row.status)
                           return <TableRow key={row.id}>

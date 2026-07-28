@@ -6,7 +6,7 @@ import { getClient } from './db'
 // is safe — all *values* are passed as bound parameters.
 const TABLES: Record<string, string[]> = {
   oil_types: ['code', 'name', 'active'],
-  products: ['code', 'name', 'category', 'active'],
+  products: ['code', 'name', 'category', 'material_type', 'active'],
   suppliers: [
     'name',
     'supplier_type',

@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Toaster, toast } from 'sonner'
-import { Download, LogOut } from 'lucide-react'
+import { Download, LogOut, RefreshCw, WifiOff } from 'lucide-react'
 import { Sidebar, type Page } from './components/Sidebar'
 import { LoginScreen } from './components/LoginScreen'
 import { LoadingSplash } from './components/LoadingSplash'
@@ -62,7 +62,7 @@ function App(): React.JSX.Element {
   const [user, setUser] = useState<AppUser | null>(() => loadUser())
   const [booting, setBooting] = useState(false)
   const [page, setPage] = useState<Page>('dashboard')
-  const [dbState, setDbState] = useState<'checking' | 'ok' | 'setup'>('checking')
+  const [dbState, setDbState] = useState<'checking' | 'ok' | 'setup' | 'offline'>('checking')
   const [companies, setCompanies] = useState<CompanyRow[]>([])
   const [companyId, setCompanyId] = useState<number>(0)
   const [companyReady, setCompanyReady] = useState(false)
@@ -92,10 +92,29 @@ function App(): React.JSX.Element {
     setPage(t)
   }
 
-  // On launch, test the (auto-configured) connection; show setup only if it fails.
-  useEffect(() => {
-    window.api.dbPing().then((r) => setDbState(r.ok ? 'ok' : 'setup'))
+  // On launch, test the (auto-configured) connection. No internet → a friendly
+  // "check your connection" screen (NOT the credentials screen); any other
+  // failure → setup. While offline, keep retrying so it recovers by itself.
+  const checkDb = useCallback(async () => {
+    if (!navigator.onLine) {
+      setDbState('offline')
+      return
+    }
+    const r = await window.api.dbPing().catch(() => ({ ok: false, offline: true, message: '' }))
+    setDbState(r.ok ? 'ok' : (r as { offline?: boolean }).offline ? 'offline' : 'setup')
   }, [])
+  useEffect(() => {
+    checkDb()
+  }, [checkDb])
+  useEffect(() => {
+    if (dbState !== 'offline') return
+    const timer = setInterval(checkDb, 5000)
+    window.addEventListener('online', checkDb)
+    return () => {
+      clearInterval(timer)
+      window.removeEventListener('online', checkDb)
+    }
+  }, [dbState, checkDb])
 
   // Pick the active company (remembered per machine) BEFORE any page loads data
   // — every scoped query in the main process filters by it.
@@ -189,6 +208,25 @@ function App(): React.JSX.Element {
   }
 
   if (dbState === 'checking') return <LoadingSplash />
+  if (dbState === 'offline') {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background p-8 text-center">
+        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-100 text-red-600">
+          <WifiOff className="h-8 w-8" />
+        </div>
+        <h2 className="text-xl font-semibold">No internet connection</h2>
+        <p className="max-w-sm text-sm text-muted-foreground">
+          This app needs the internet to reach your data. Please turn on Wi-Fi or check your network — it will reconnect automatically.
+        </p>
+        <button
+          onClick={() => { setDbState('checking'); checkDb() }}
+          className="inline-flex items-center gap-2 rounded-md border bg-card px-4 py-2 text-sm font-medium shadow-sm hover:bg-muted"
+        >
+          <RefreshCw className="h-4 w-4" /> Try again
+        </button>
+      </div>
+    )
+  }
   if (dbState === 'setup') return <DbSetupScreen onReady={() => setDbState('ok')} />
 
   if (!user) return <LoginScreen onLogin={handleLogin} />
@@ -230,7 +268,7 @@ function App(): React.JSX.Element {
       />
       <main key={companyId} className="relative flex-1 overflow-auto">
         {view === 'dashboard' && <Dashboard onNavigate={setPage} />}
-        {view === 'bargains' && <Bargains />}
+        {view === 'bargains' && <Bargains onOpenOrder={(id) => openRecord('orders', id)} />}
         {view === 'orders' && (
           <Orders
             focusId={focus?.page === 'orders' ? focus.id : null}
