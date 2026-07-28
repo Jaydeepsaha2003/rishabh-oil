@@ -72,6 +72,9 @@ const SORT_ACCESSORS: Record<string, (r: Row) => string | number> = {
 
 const oilOf = (r: Row): string => String(r.oil_code || r.oil_name || '—')
 
+// Product categories (products.material_type), in display order.
+const MATERIAL_TYPES = ['OIL', 'HUSK', 'PACKAGING', 'CHEMICAL', 'MISC']
+
 // First day of the current month, YYYY-MM-DD.
 function monthStartISO(): string {
   const d = new Date()
@@ -131,6 +134,7 @@ function emptyForm(uom: string): Row {
     bargain_date: todayISO(),
     supplier_id: '',
     broker_id: '',
+    product_category: '',
     oil_type_id: '',
     bargain_type: 'EX',
     qty: '',
@@ -250,7 +254,9 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
 
   function openAdd(): void {
     setEditing(null)
-    setForm(emptyForm(defaultUom))
+    // With a single product category there's nothing to choose — preselect it.
+    const only = productCategories.length === 1 ? productCategories[0] : ''
+    setForm({ ...emptyForm(defaultUom), product_category: only })
     setError(null)
     setOpen(true)
   }
@@ -261,6 +267,10 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
       bargain_date: row.bargain_date ?? todayISO(),
       supplier_id: String(row.supplier_id ?? ''),
       broker_id: row.broker_id ? String(row.broker_id) : '',
+      // Derive the category from the saved product so the cascade shows it.
+      product_category: String(
+        oilTypes.find((o) => String(o.id) === String(row.oil_type_id))?.material_type || 'OIL'
+      ),
       oil_type_id: String(row.oil_type_id ?? ''),
       bargain_type: row.bargain_type ?? 'EX',
       qty: row.qty ?? '',
@@ -275,15 +285,37 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
   }
 
   function setField(key: string, value: unknown): void {
-    setForm((prev) => ({ ...prev, [key]: value }))
+    setForm((prev) => {
+      const next = { ...prev, [key]: value }
+      // Switching the product category clears a product that no longer fits it.
+      if (key === 'product_category') {
+        const stillValid = oilTypes.some(
+          (o) => String(o.id) === String(prev.oil_type_id) && String(o.material_type || 'OIL') === String(value)
+        )
+        if (!stillValid) next.oil_type_id = ''
+      }
+      return next
+    })
   }
+
+  // Categories that actually have purchasable products, and the products inside
+  // the chosen category (the cascade behind Product category → Product).
+  const productCategories = useMemo(() => {
+    const set = new Set(oilTypes.map((o) => String(o.material_type || 'OIL')))
+    return MATERIAL_TYPES.filter((t) => set.has(t))
+  }, [oilTypes])
+  const categoryProducts = useMemo(
+    () => oilTypes.filter((o) => String(o.material_type || 'OIL') === String(form.product_category || '')),
+    [oilTypes, form.product_category]
+  )
 
   const bgRate = (Number(form.base_rate) || 0) + (Number(form.duty) || 0)
   const total = (Number(form.qty) || 0) * bgRate
 
   async function save(): Promise<void> {
     if (!form.supplier_id) return setError('Supplier is required')
-    if (!form.oil_type_id) return setError('Oil type is required')
+    if (!form.product_category) return setError('Product category is required')
+    if (!form.oil_type_id) return setError('Product is required')
     if (!form.qty || Number(form.qty) <= 0) return setError('Quantity must be greater than 0')
     if (bgRate <= 0) return setError('Base rate must be greater than 0')
     if (editLocked && Number(form.qty) < editConsumed - 1e-4) {
@@ -1006,19 +1038,41 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
               </Select>
             </div>
             <div className="grid gap-1.5">
-              <Label>Oil type *</Label>
-              <Select value={String(form.oil_type_id)} onValueChange={(v) => setField('oil_type_id', v)} disabled={editLocked}>
+              <Label>Product category *</Label>
+              <Select value={String(form.product_category || '')} onValueChange={(v) => setField('product_category', v)} disabled={editLocked}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select oil type" />
+                  <SelectValue placeholder="Select category" />
                 </SelectTrigger>
                 <SelectContent>
-                  {oilTypes.map((o) => (
+                  {productCategories.map((t) => (
+                    <SelectItem key={t} value={t}>
+                      {t}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Product *</Label>
+              <Select
+                value={String(form.oil_type_id)}
+                onValueChange={(v) => setField('oil_type_id', v)}
+                disabled={editLocked || !form.product_category}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={form.product_category ? 'Select product' : 'Pick a category first'} />
+                </SelectTrigger>
+                <SelectContent>
+                  {categoryProducts.map((o) => (
                     <SelectItem key={o.id} value={String(o.id)}>
                       {o.code || o.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {!!form.product_category && categoryProducts.length === 0 && (
+                <span className="text-[11px] text-amber-700">No {String(form.product_category)} products yet — add one under Products.</span>
+              )}
             </div>
 
             <div className="grid gap-1.5">

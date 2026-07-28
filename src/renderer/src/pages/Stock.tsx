@@ -232,6 +232,40 @@ function DayClose(): React.JSX.Element {
     }
   }
 
+  // Merge an uploaded sheet into this section's rows and SAVE it straight away —
+  // an uploaded count sheet is meant to be recorded, so it must not sit unsaved
+  // in the grid (where a reload or date change would silently discard it).
+  async function applyImport(
+    cats: string[],
+    parsed: Array<{ product_id?: number; name?: string; actual_qty?: string; note?: string }>
+  ): Promise<{ applied: number; saved: number }> {
+    const byId = new Map<string, (typeof parsed)[number]>()
+    const byName = new Map<string, (typeof parsed)[number]>()
+    for (const p of parsed) {
+      if (p.product_id != null) byId.set(String(p.product_id), p)
+      if (p.name) byName.set(p.name.trim().toLowerCase(), p)
+    }
+    let applied = 0
+    const merged = rows.map((r) => {
+      if (!cats.includes(String(r.category))) return r
+      const p = byId.get(String(r.product_id)) || byName.get(String(r.name).toLowerCase())
+      if (!p) return r
+      const hasQty = p.actual_qty != null && p.actual_qty !== ''
+      const hasNote = p.note != null && p.note !== ''
+      if (!hasQty && !hasNote) return r
+      applied++
+      return {
+        ...r,
+        actual_qty: hasQty ? p.actual_qty : r.actual_qty,
+        note: hasNote ? p.note : r.note
+      }
+    })
+    setRows(merged)
+    const res = await window.api.stockCount.save(date, merged)
+    await load()
+    return { applied, saved: res.count }
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -256,7 +290,7 @@ function DayClose(): React.JSX.Element {
               loading={loading}
               rows={rows.filter((r) => s.cats.includes(r.category))}
               setField={setField}
-              setRows={setRows}
+              onImport={applyImport}
               rateOf={rateOf}
               actualValueOf={actualValueOf}
               diffOf={diffOf}
@@ -266,7 +300,7 @@ function DayClose(): React.JSX.Element {
       </Tabs>
 
       <p className="text-xs text-muted-foreground">
-        Book qty is the system-computed stock (received + produced − consumed − sold). Difference = book − actual; a positive value means physical stock is short of the books. Actual value is valued automatically at the weighted-average cost (rate × actual qty). Download a protected Excel per section — only the Actual qty and Note cells are editable — hand it to the person counting, then upload it back.
+        Book qty is the system-computed stock (received + produced − consumed − sold). Difference = book − actual; a positive value means physical stock is short of the books. Actual value is valued automatically at the weighted-average cost (rate × actual qty). Download a protected Excel per section — only the Actual qty and Note cells are editable — hand it to the person counting, then upload it back — uploading records the counts immediately.
       </p>
     </div>
   )
@@ -279,7 +313,7 @@ function DayCloseSection({
   loading,
   rows,
   setField,
-  setRows,
+  onImport,
   rateOf,
   actualValueOf,
   diffOf
@@ -289,7 +323,7 @@ function DayCloseSection({
   loading: boolean
   rows: Row[]
   setField: (pid: number, key: string, value: unknown) => void
-  setRows: React.Dispatch<React.SetStateAction<Row[]>>
+  onImport: (cats: string[], parsed: Array<{ product_id?: number; name?: string; actual_qty?: string; note?: string }>) => Promise<{ applied: number; saved: number }>
   rateOf: (r: Row) => number
   actualValueOf: (r: Row) => number
   diffOf: (r: Row) => number
@@ -325,22 +359,12 @@ function DayCloseSection({
         if (p.product_id != null) byId.set(String(p.product_id), p)
         if (p.name) byName.set(p.name.trim().toLowerCase(), p)
       }
-      const allowed = new Set(rows.map((r) => Number(r.product_id)))
-      let applied = 0
-      setRows((all) =>
-        all.map((r) => {
-          if (!allowed.has(Number(r.product_id))) return r
-          const p = byId.get(String(r.product_id)) || byName.get(String(r.name).toLowerCase())
-          if (!p) return r
-          applied++
-          return {
-            ...r,
-            actual_qty: p.actual_qty != null && p.actual_qty !== '' ? p.actual_qty : r.actual_qty,
-            note: p.note != null && p.note !== '' ? p.note : r.note
-          }
-        })
-      )
-      toast.success(`Imported ${applied} ${applied === 1 ? 'row' : 'rows'} — review and Save day close`)
+      const { applied, saved } = await onImport(section.cats, parsed)
+      if (applied === 0) {
+        toast.error('No matching products in this section — check you uploaded the right sheet')
+      } else {
+        toast.success(`Imported ${applied} ${applied === 1 ? 'row' : 'rows'} and saved (${saved} counts recorded)`)
+      }
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -379,7 +403,7 @@ function DayCloseSection({
                 <Upload className="mr-2 h-4 w-4" /> Upload
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Upload the filled {section.title} sheet to fill the counts below</TooltipContent>
+            <TooltipContent>Upload the filled {section.title} sheet — the counts are recorded straight away</TooltipContent>
           </Tooltip>
         </div>
       </div>
