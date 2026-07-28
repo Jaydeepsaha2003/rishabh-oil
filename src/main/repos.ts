@@ -24,6 +24,7 @@ const TABLES: Record<string, string[]> = {
     'interest_days',
     'opening_purchase_amount',
     'opening_purchase_date',
+    'skip_tanker_stages',
     'active'
   ],
   transporters: [

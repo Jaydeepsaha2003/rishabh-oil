@@ -3,7 +3,14 @@ import { getClient } from './db'
 import { getSetting } from './repos'
 import { tankerGateReceived } from './gate'
 import { createBargain, ensureOilType, adjustBargainQty } from './bargains'
-import { consignmentAvailable } from './consignment'
+import {
+  consignmentAvailable,
+  consignmentDeposited,
+  assignConsignmentLots,
+  autoAssignConsignmentLots,
+  releaseConsignmentLots,
+  validateConsignmentLots
+} from './consignment'
 import { deleteJournalByRef, postPurchaseJournal } from './journal'
 import { getActiveCompanyId } from './company'
 
@@ -303,17 +310,34 @@ async function bargainLinesForTankers(tankerIds: unknown): Promise<{ rate: numbe
 
 export async function createOrder(v: Row): Promise<{ id: number }> {
   await ensureOilType(n(v.oil_type_id))
-  // Consignment purchase: goods already at our site, drawn from consignment
-  // stock — no tankers, no transporter, booked straight to 'received'.
-  const isConsignment = !!v.is_consignment
+  const supplier = await getSupplier(n(v.supplier_id))
+  // No tanker movement: the goods are already at our site, so the invoice is
+  // booked in one step (no transporter, straight to 'received'). Either an
+  // explicit consignment draw or a supplier the master flags as direct.
+  const isConsignment = !!v.is_consignment || !!supplier?.skip_tanker_stages
+  // Lots picked from Log Consignment Stock: the invoiced quantity is the sum of
+  // those tankers, exactly as a tanker-based invoice adds up its loaded qty.
+  const lotIds: number[] = Array.isArray(v.consignment_lot_ids)
+    ? v.consignment_lot_ids.map((x: unknown) => Number(x)).filter((x: number) => x > 0)
+    : []
+  // Validated up front so a bad pick never leaves a half-written invoice.
+  if (lotIds.length) {
+    v.ordered_qty = await validateConsignmentLots(lotIds, n(v.supplier_id), n(v.oil_type_id))
+  }
   if (isConsignment) {
-    const avail = await consignmentAvailable(n(v.supplier_id), n(v.oil_type_id))
     if (n(v.ordered_qty) <= 0) throw new Error('Enter the quantity to invoice')
-    if (n(v.ordered_qty) > avail + 1e-6) {
-      throw new Error(`Only ${avail.toFixed(3)} of consigned stock is available for this supplier and product`)
+    // Whenever the party actually holds stock with us, the invoice can never
+    // draw more than its balance — whether the tankers were named or the
+    // quantity typed. A plain direct-purchase supplier holds nothing, so it is
+    // unrestricted.
+    const deposited = await consignmentDeposited(n(v.supplier_id), n(v.oil_type_id))
+    if (deposited > 0) {
+      const avail = await consignmentAvailable(n(v.supplier_id), n(v.oil_type_id))
+      if (n(v.ordered_qty) > avail + 1e-6) {
+        throw new Error(`Only ${avail.toFixed(3)} of consigned stock is available for this supplier and product`)
+      }
     }
   }
-  const supplier = await getSupplier(n(v.supplier_id))
   const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), 0)
   const roundOff = n(v.round_off)
   const bargainLines = await bargainLinesForTankers(v.tanker_ids)
@@ -389,7 +413,13 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     ]
   })
   const id = Number(res.lastInsertRowid)
-  if (!isConsignment) {
+  if (isConsignment) {
+    if (lotIds.length) {
+      await assignConsignmentLots(id, lotIds, n(v.supplier_id), n(v.oil_type_id))
+    } else {
+      await autoAssignConsignmentLots(id, n(v.supplier_id), n(v.oil_type_id), n(v.ordered_qty))
+    }
+  } else {
     await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
     await applySupplierFreight(id, v)
   }
@@ -453,6 +483,18 @@ async function postOrderJournal(
 export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
   await ensureOilType(n(v.oil_type_id))
   const supplier = await getSupplier(n(v.supplier_id))
+  const cur = await getClient().execute({
+    sql: 'SELECT is_consignment FROM orders WHERE id = ? LIMIT 1',
+    args: [id]
+  })
+  const wasConsignment = !!cur.rows[0]?.is_consignment
+  const lotIds: number[] = Array.isArray(v.consignment_lot_ids)
+    ? v.consignment_lot_ids.map((x: unknown) => Number(x)).filter((x: number) => x > 0)
+    : []
+  // Re-picked tankers redefine the invoiced quantity — checked before any write.
+  if (wasConsignment && lotIds.length) {
+    v.ordered_qty = await validateConsignmentLots(lotIds, n(v.supplier_id), n(v.oil_type_id), id)
+  }
   const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), id)
   const roundOff = n(v.round_off)
   const bargainLines = await bargainLinesForTankers(v.tanker_ids)
@@ -521,9 +563,25 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       id
     ]
   })
-  await getClient().execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?', args: [id] })
-  await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
-  await applySupplierFreight(id, v)
+  // A direct/consignment invoice has no tankers of its own; keep the received
+  // qty locked to the invoiced qty instead of walking the movement stages.
+  if (wasConsignment) {
+    await getClient().execute({
+      sql: 'UPDATE orders SET received_qty = ? WHERE id = ?',
+      args: [n(v.ordered_qty), id]
+    })
+    // Re-pick the consignment tankers this invoice draws.
+    await releaseConsignmentLots(id)
+    if (lotIds.length) {
+      await assignConsignmentLots(id, lotIds, n(v.supplier_id), n(v.oil_type_id))
+    } else {
+      await autoAssignConsignmentLots(id, n(v.supplier_id), n(v.oil_type_id), n(v.ordered_qty))
+    }
+  } else {
+    await getClient().execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?', args: [id] })
+    await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
+    await applySupplierFreight(id, v)
+  }
   await setSupplierPayable(id, n(v.supplier_id), m.net_amount + roundOff, String(v.order_date))
   await postOrderJournal(id, v, m, supplier, roundOff)
   return { id }
@@ -535,6 +593,8 @@ export async function deleteOrder(id: number): Promise<{ id: number }> {
   await c.execute({ sql: 'DELETE FROM supplier_ledger WHERE order_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM transporter_ledger WHERE order_id = ?', args: [id] })
   await c.execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?', args: [id] })
+  // Consignment tankers this invoice drew go back to pending.
+  await releaseConsignmentLots(id)
   await c.execute({ sql: 'DELETE FROM orders WHERE id = ?', args: [id] })
   return { id }
 }

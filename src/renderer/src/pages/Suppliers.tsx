@@ -30,6 +30,9 @@ const fields: FieldDef[] = [
   { key: 'credit_period_days', label: 'Credit period (days)', type: 'number', default: 0 },
   { key: 'opening_purchase_amount', label: 'Purchase bill amount (as on)', type: 'number', default: 0 },
   { key: 'opening_purchase_date', label: 'As on date', type: 'date' },
+  // Goods already lie at our site (consignment / MNC parties): there is no
+  // tanker to send, so the purchase is booked in one step.
+  { key: 'skip_tanker_stages', label: 'Direct purchase — no tanker movement', type: 'switch', default: false },
   { key: 'active', label: 'Active', type: 'switch', default: true }
 ]
 
@@ -49,13 +52,14 @@ const columns: ColumnDef[] = [
   { key: 'gst_pct', label: 'GST %', align: 'right' },
   { key: 'tds_pct', label: 'TDS %', align: 'right' },
   { key: 'credit_period_days', label: 'Credit days', align: 'right' },
+  { key: 'skip_tanker_stages', label: 'Direct purchase', type: 'switch' },
   { key: 'created_at', label: 'Created', type: 'date' }
 ]
 
 export function Suppliers(): React.JSX.Element {
   return (
     <>
-      <PageHeader title="Suppliers" subtitle="GST, TDS slab, credit period and interest rule per supplier" hint="Slab TDS is cumulative per financial year: a base % up to the threshold, then a higher % above it. 'Below slab no TDS' charges TDS only above the threshold." />
+      <PageHeader title="Suppliers" subtitle="GST, TDS slab, credit period, interest rule and purchase flow per supplier" hint="Slab TDS is cumulative per financial year: a base % up to the threshold, then a higher % above it. 'Below slab no TDS' charges TDS only above the threshold. 'Direct purchase' suppliers keep their goods at our site, so no tanker is sent to them — the purchase is booked in one step against the bargain." />
       <div className="p-8">
         <EntityManager
           table="suppliers"

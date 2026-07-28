@@ -29,6 +29,16 @@ async function invoicedMap(companyId: number): Promise<Map<string, number>> {
   return m
 }
 
+// Total qty this party has ever deposited with us for a product. Zero means
+// they hold no stock at our place, so there is nothing to draw against.
+export async function consignmentDeposited(supplierId: number, productId: number): Promise<number> {
+  const res = await getClient().execute({
+    sql: 'SELECT COALESCE(SUM(qty), 0) AS q FROM consignment_stock WHERE company_id = ? AND supplier_id = ? AND product_id = ?',
+    args: [getActiveCompanyId(), supplierId, productId]
+  })
+  return n(res.rows[0]?.q)
+}
+
 // Consigned qty still lying at our place (deposited − invoiced) for a
 // supplier+product in the active company.
 export async function consignmentAvailable(supplierId: number, productId: number): Promise<number> {
@@ -48,16 +58,130 @@ export async function consignmentAvailable(supplierId: number, productId: number
 // Individual deposit lots for the active company.
 export async function listConsignment(): Promise<Row[]> {
   const res = await getClient().execute({
-    sql: `SELECT cs.*, s.name AS supplier_name, p.code AS product_code, p.name AS product_name
+    sql: `SELECT cs.*, s.name AS supplier_name, p.code AS product_code, p.name AS product_name,
+                 ge.gate_entry_no, ge.entry_date AS gate_date, o.invoice_no, o.order_date
           FROM consignment_stock cs
           LEFT JOIN suppliers s ON s.id = cs.supplier_id
           LEFT JOIN products p ON p.id = cs.product_id
+          LEFT JOIN gate_entries ge ON ge.id = cs.gate_entry_id
+          LEFT JOIN orders o ON o.id = cs.order_id
           WHERE cs.company_id = ?
           ORDER BY cs.id DESC`,
     args: [getActiveCompanyId()]
   })
   return toPlain(res)
 }
+
+// Logged lots still waiting to be booked into a purchase invoice — the tankers
+// the purchase form offers first. Optionally narrowed to one supplier/product.
+export async function listUnbookedLots(supplierId?: number, productId?: number): Promise<Row[]> {
+  const where = ['cs.company_id = ?', 'cs.order_id IS NULL']
+  const args: (number | string)[] = [getActiveCompanyId()]
+  if (supplierId) { where.push('cs.supplier_id = ?'); args.push(supplierId) }
+  if (productId) { where.push('cs.product_id = ?'); args.push(productId) }
+  const res = await getClient().execute({
+    sql: `SELECT cs.id, cs.supplier_id, cs.product_id, cs.qty, cs.uom, cs.deposit_date, cs.note,
+                 cs.tanker_no, cs.gate_entry_id,
+                 s.name AS supplier_name, p.code AS product_code, p.name AS product_name,
+                 ge.gate_entry_no, ge.entry_date AS gate_date, ge.received_qty AS gate_qty
+          FROM consignment_stock cs
+          LEFT JOIN suppliers s ON s.id = cs.supplier_id
+          LEFT JOIN products p ON p.id = cs.product_id
+          LEFT JOIN gate_entries ge ON ge.id = cs.gate_entry_id
+          WHERE ${where.join(' AND ')}
+          ORDER BY cs.deposit_date, cs.id`,
+    args
+  })
+  return toPlain(res)
+}
+
+// Check the picked lots and return their total quantity WITHOUT touching them.
+// Every lot must belong to the same supplier + product and must be free (or
+// already held by this same invoice). Callers run this before writing the
+// invoice, so a bad pick can never leave a half-booked order behind.
+export async function validateConsignmentLots(
+  lotIds: unknown,
+  supplierId: number,
+  productId: number,
+  orderId = 0
+): Promise<number> {
+  const ids = Array.isArray(lotIds) ? lotIds.map((x) => Number(x)).filter((x) => x > 0) : []
+  if (!ids.length) return 0
+  const res = await getClient().execute({
+    sql: `SELECT id, supplier_id, product_id, qty, order_id, tanker_no
+          FROM consignment_stock WHERE company_id = ? AND id IN (${ids.map(() => '?').join(',')})`,
+    args: [getActiveCompanyId(), ...ids]
+  })
+  if (res.rows.length !== ids.length) throw new Error('One of the selected consignment tankers no longer exists')
+  let total = 0
+  for (const r of res.rows) {
+    if (r.order_id != null && Number(r.order_id) !== orderId) {
+      throw new Error(`Tanker ${r.tanker_no || r.id} is already booked on another purchase`)
+    }
+    if (n(r.supplier_id) !== supplierId || n(r.product_id) !== productId) {
+      throw new Error('The selected tankers must all belong to this supplier and product')
+    }
+    total += n(r.qty)
+  }
+  return total
+}
+
+// Tie the picked lots to the invoice that drew them.
+export async function assignConsignmentLots(
+  orderId: number,
+  lotIds: unknown,
+  supplierId: number,
+  productId: number
+): Promise<number> {
+  const ids = Array.isArray(lotIds) ? lotIds.map((x) => Number(x)).filter((x) => x > 0) : []
+  if (!ids.length) return 0
+  const total = await validateConsignmentLots(ids, supplierId, productId, orderId)
+  await getClient().execute({
+    sql: `UPDATE consignment_stock SET order_id = ? WHERE id IN (${ids.map(() => '?').join(',')})`,
+    args: [orderId, ...ids]
+  })
+  return total
+}
+
+// Booking that did not name its tankers (the Book purchase button on the
+// Consignment page) still has to take them out of the pending list, or the same
+// tankers could be picked again on the purchase form. Oldest first, whole lots
+// only, never past the invoiced quantity.
+export async function autoAssignConsignmentLots(
+  orderId: number,
+  supplierId: number,
+  productId: number,
+  qty: number
+): Promise<number> {
+  const free = await getClient().execute({
+    sql: `SELECT id, qty FROM consignment_stock
+          WHERE company_id = ? AND supplier_id = ? AND product_id = ? AND order_id IS NULL
+          ORDER BY deposit_date, id`,
+    args: [getActiveCompanyId(), supplierId, productId]
+  })
+  const take: number[] = []
+  let used = 0
+  for (const r of free.rows) {
+    if (used + n(r.qty) > qty + 1e-6) continue
+    take.push(Number(r.id))
+    used += n(r.qty)
+  }
+  if (!take.length) return 0
+  await getClient().execute({
+    sql: `UPDATE consignment_stock SET order_id = ? WHERE id IN (${take.map(() => '?').join(',')})`,
+    args: [orderId, ...take]
+  })
+  return used
+}
+
+// Free every lot an invoice held (on edit or delete) so they become pending again.
+export async function releaseConsignmentLots(orderId: number): Promise<void> {
+  await getClient().execute({
+    sql: 'UPDATE consignment_stock SET order_id = NULL WHERE order_id = ?',
+    args: [orderId]
+  })
+}
+
 
 // Consigned stock rolled up per supplier+product: deposited, invoiced, balance.
 export async function consignmentSummary(): Promise<Row[]> {
@@ -80,12 +204,49 @@ export async function consignmentSummary(): Promise<Row[]> {
   })
 }
 
+// Gate-in entries that aren't tied to a purchase tanker and haven't been
+// validated into consignment stock yet — the accountant's to-do list. The
+// gateman only records the vehicle (and later the weighment); everything else
+// is filled in at validation.
+export async function listPendingGateArrivals(): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT ge.id, ge.gate_entry_no, ge.ref_no, ge.entry_date, ge.tanker_no, ge.rec_type,
+                 ge.received_qty, ge.gross_weight, ge.tare_weight, ge.uom, ge.status, ge.note,
+                 ge.oil_type_id, p.code AS product_code, p.name AS product_name
+          FROM gate_entries ge
+          LEFT JOIN products p ON p.id = ge.oil_type_id
+          WHERE ge.direction = 'in'
+            AND ge.tanker_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM consignment_stock cs WHERE cs.gate_entry_id = ge.id)
+          ORDER BY ge.entry_date DESC, ge.id DESC`,
+    args: []
+  })
+  return toPlain(res)
+}
+
 export async function createConsignment(v: Row): Promise<{ id: number }> {
   if (!v.supplier_id || !v.product_id) throw new Error('Supplier and product are required')
   if (n(v.qty) <= 0) throw new Error('Quantity must be greater than zero')
-  const res = await getClient().execute({
-    sql: `INSERT INTO consignment_stock (company_id, supplier_id, product_id, qty, uom, deposit_date, note)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  const c = getClient()
+  const gateId = v.gate_entry_id ? n(v.gate_entry_id) : null
+  let tankerNo = v.tanker_no ? String(v.tanker_no).trim() : null
+  if (gateId) {
+    // Validating a gate arrival: it must exist and not already be booked.
+    const ge = await c.execute({
+      sql: 'SELECT id, tanker_no, direction FROM gate_entries WHERE id = ?',
+      args: [gateId]
+    })
+    if (!ge.rows.length) throw new Error('That gate entry no longer exists')
+    const dup = await c.execute({
+      sql: 'SELECT id FROM consignment_stock WHERE gate_entry_id = ?',
+      args: [gateId]
+    })
+    if (dup.rows.length) throw new Error('This gate entry has already been validated into consignment stock')
+    if (!tankerNo) tankerNo = ge.rows[0].tanker_no ? String(ge.rows[0].tanker_no) : null
+  }
+  const res = await c.execute({
+    sql: `INSERT INTO consignment_stock (company_id, supplier_id, product_id, qty, uom, deposit_date, note, gate_entry_id, tanker_no)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       n(v.supplier_id),
@@ -93,7 +254,9 @@ export async function createConsignment(v: Row): Promise<{ id: number }> {
       n(v.qty),
       v.uom || 'MT',
       v.deposit_date,
-      v.note ? String(v.note).trim() : null
+      v.note ? String(v.note).trim() : null,
+      gateId,
+      tankerNo
     ]
   })
   return { id: Number(res.lastInsertRowid) }
@@ -108,6 +271,9 @@ export async function updateConsignment(id: number, v: Row): Promise<{ id: numbe
   const row = cur.rows[0]
   const newQty = n(v.qty)
   if (newQty <= 0) throw new Error('Quantity must be greater than zero')
+  if (row.order_id != null) {
+    throw new Error('This tanker is already booked on a purchase invoice — edit or delete that purchase first')
+  }
   const avail = await consignmentAvailable(n(row.supplier_id), n(row.product_id))
   // available already reflects the current qty; adding the delta must stay ≥ 0
   if (avail + (newQty - n(row.qty)) < -1e-6) {
@@ -125,6 +291,9 @@ export async function deleteConsignment(id: number): Promise<{ id: number }> {
   const cur = await c.execute({ sql: 'SELECT * FROM consignment_stock WHERE id = ?', args: [id] })
   if (!cur.rows.length) return { id }
   const row = cur.rows[0]
+  if (row.order_id != null) {
+    throw new Error('This tanker is already booked on a purchase invoice — delete that purchase first')
+  }
   const avail = await consignmentAvailable(n(row.supplier_id), n(row.product_id))
   // Removing this lot drops availability by its qty; it can't go negative.
   if (avail - n(row.qty) < -1e-6) {

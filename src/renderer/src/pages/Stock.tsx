@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowRightLeft, Download, SlidersHorizontal, Trash2, Upload } from 'lucide-react'
+import { ArrowRightLeft, ChevronDown, ChevronRight, Download, SlidersHorizontal, Trash2, Upload } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -55,14 +55,33 @@ function packSizeMT(size: number, uom: string): number {
   return kg / 1000
 }
 
+// Compact, colour-coded stat tile used across the Stock tabs.
+const STAT_TONES: Record<string, string> = {
+  slate: 'border-slate-200 bg-slate-50 text-slate-700',
+  emerald: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+  rose: 'border-rose-200 bg-rose-50 text-rose-800',
+  sky: 'border-sky-200 bg-sky-50 text-sky-800',
+  amber: 'border-amber-200 bg-amber-50 text-amber-900',
+  violet: 'border-violet-200 bg-violet-50 text-violet-800'
+}
+function MiniStat({ label, value, tone = 'slate' }: { label: string; value: string; tone?: string }): React.JSX.Element {
+  return (
+    <div className={cn('rounded-lg border px-3 py-2', STAT_TONES[tone] || STAT_TONES.slate)}>
+      <div className="text-[10px] font-medium uppercase tracking-wide opacity-70">{label}</div>
+      <div className="mt-0.5 text-[15px] font-semibold tabular-nums">{value}</div>
+    </div>
+  )
+}
+
 // A number cell that reveals a party-wise breakdown on hover.
-function PartyCell({ value, parties, uom }: { value: number; parties: Row[]; uom?: string }): React.JSX.Element {
+function PartyCell({ value, parties, uom, tone }: { value: number; parties: Row[]; uom?: string; tone?: string }): React.JSX.Element {
   const cell = <span className="tabular-nums">{formatNum(value)}</span>
+  const cls = cn('text-right tabular-nums', tone || 'text-emerald-700')
   if (!parties || parties.length === 0) {
-    return <TableCell className="text-right tabular-nums text-muted-foreground">{value ? cell : '—'}</TableCell>
+    return <TableCell className={cls}>{value ? cell : '—'}</TableCell>
   }
   return (
-    <TableCell className="text-right tabular-nums text-muted-foreground">
+    <TableCell className={cls}>
       <Tooltip>
         <TooltipTrigger asChild>
           <span className="cursor-default underline decoration-dotted decoration-muted-foreground/50 underline-offset-4">{cell}</span>
@@ -93,8 +112,17 @@ function StockTable({ rows, breakdown, label = 'stock' }: { rows: Row[]; breakdo
     sold: sum('sold'),
     stock: sum('stock')
   }
+  const negatives = rows.filter((r) => Number(r.stock) < -1e-9).length
+  const inFlow = totals.received + totals.produced + totals.transferred_in
+  const outFlow = totals.consumed + totals.sold + totals.transferred_out
   return (
     <div className="space-y-3">
+    <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+      <MiniStat label="Products" value={String(rows.length)} tone="slate" />
+      <MiniStat label="Total in" value={formatNum(inFlow)} tone="emerald" />
+      <MiniStat label="Total out" value={formatNum(outFlow)} tone="rose" />
+      <MiniStat label={negatives ? `In stock · ${negatives} negative` : 'In stock'} value={formatNum(totals.stock)} tone={negatives ? 'amber' : 'sky'} />
+    </div>
     <div className="flex justify-end">
       <ExcelButton
         filename={`${label}-stock-${todayISO()}`}
@@ -113,18 +141,34 @@ function StockTable({ rows, breakdown, label = 'stock' }: { rows: Row[]; breakdo
         rows={rows}
       />
     </div>
-    <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
-      <Table>
+    <div className="rounded-xl border bg-card shadow-sm">
+      <Table
+        wrapperClassName="max-h-[calc(100vh-330px)] rounded-xl"
+        className="min-w-[820px] text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3"
+      >
         <TableHeader>
           <TableRow>
-            <TableHead>Product</TableHead>
-            <TableHead className="text-right">Receipt</TableHead>
-            <TableHead className="text-right">Produced</TableHead>
-            <TableHead className="text-right">Transfer in</TableHead>
-            <TableHead className="text-right">Transfer out</TableHead>
-            <TableHead className="text-right">Consumed</TableHead>
-            <TableHead className="text-right">Dispatch</TableHead>
-            <TableHead className="text-right">In stock</TableHead>
+            {([
+              { l: 'Product' },
+              { l: 'Receipt', r: true, tone: 'text-emerald-700' },
+              { l: 'Produced', r: true, tone: 'text-emerald-700' },
+              { l: 'Transfer in', r: true, tone: 'text-emerald-700' },
+              { l: 'Transfer out', r: true, tone: 'text-rose-700' },
+              { l: 'Consumed', r: true, tone: 'text-rose-700' },
+              { l: 'Dispatch', r: true, tone: 'text-rose-700' },
+              { l: 'In stock', r: true, tone: 'text-sky-800' }
+            ] as { l: string; r?: boolean; tone?: string }[]).map((h) => (
+              <TableHead
+                key={h.l}
+                className={cn(
+                  'sticky top-0 z-20 bg-slate-100 text-[10px] font-semibold uppercase tracking-wide',
+                  h.tone || 'text-slate-700',
+                  h.r && 'text-right'
+                )}
+              >
+                {h.l}
+              </TableHead>
+            ))}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -136,19 +180,19 @@ function StockTable({ rows, breakdown, label = 'stock' }: { rows: Row[]; breakdo
             </TableRow>
           ) : (
             <>
-              {rows.map((r) => (
-                <TableRow key={r.id as number}>
+              {rows.map((r, i) => (
+                <TableRow key={r.id as number} className={cn('border-b', i % 2 === 1 && 'bg-muted/30')}>
                   <TableCell className="font-medium">{r.name}</TableCell>
                   <PartyCell value={Number(r.received)} parties={breakdown[r.id as number]?.receipt || []} />
-                  <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.produced)}</TableCell>
-                  <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.transferred_in) > 0 ? formatNum(r.transferred_in) : '—'}</TableCell>
-                  <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.transferred_out) > 0 ? formatNum(r.transferred_out) : '—'}</TableCell>
-                  <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.consumed)}</TableCell>
-                  <PartyCell value={Number(r.sold)} parties={breakdown[r.id as number]?.dispatch || []} />
+                  <TableCell className="text-right tabular-nums text-emerald-700">{Number(r.produced) ? formatNum(r.produced) : '—'}</TableCell>
+                  <TableCell className="text-right tabular-nums text-emerald-700">{Number(r.transferred_in) > 0 ? formatNum(r.transferred_in) : '—'}</TableCell>
+                  <TableCell className="text-right tabular-nums text-rose-700">{Number(r.transferred_out) > 0 ? formatNum(r.transferred_out) : '—'}</TableCell>
+                  <TableCell className="text-right tabular-nums text-rose-700">{Number(r.consumed) ? formatNum(r.consumed) : '—'}</TableCell>
+                  <PartyCell value={Number(r.sold)} parties={breakdown[r.id as number]?.dispatch || []} tone="text-rose-700" />
                   <TableCell
                     className={cn(
-                      'text-right font-semibold tabular-nums',
-                      Number(r.stock) < -1e-9 ? 'text-red-600' : ''
+                      'text-right font-bold tabular-nums',
+                      Number(r.stock) < -1e-9 ? 'text-red-600' : 'text-sky-900'
                     )}
                   >
                     {formatNum(r.stock)}
@@ -156,7 +200,7 @@ function StockTable({ rows, breakdown, label = 'stock' }: { rows: Row[]; breakdo
                 </TableRow>
               ))}
               <TableRow className="border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
-                <TableCell className="font-bold uppercase tracking-wide text-amber-900">Grand total</TableCell>
+                <TableCell className="text-[11px] font-bold uppercase tracking-wide text-amber-900">Grand total</TableCell>
                 <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.received)}</TableCell>
                 <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.produced)}</TableCell>
                 <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.transferred_in)}</TableCell>
@@ -714,6 +758,190 @@ function SkuStock(): React.JSX.Element {
   )
 }
 
+// MNC / consignment stock: goods a supplier (e.g. BUNGE) keeps at our place.
+// It is NOT our stock until invoiced, so it is shown separately here —
+// deposited − invoiced = balance still owned by the supplier.
+function MncStock(): React.JSX.Element {
+  const [rows, setRows] = useState<Row[]>([])
+  const [lots, setLots] = useState<Row[]>([])
+  const [loading, setLoading] = useState(true)
+  const [open, setOpen] = useState<Set<string>>(new Set())
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const [sm, ls] = await Promise.all([window.api.consignment.summary(), window.api.consignment.list()])
+    setRows(sm)
+    setLots(ls)
+    setLoading(false)
+  }, [])
+  useEffect(() => { load() }, [load])
+  useLiveRefresh(load)
+
+  const key = (r: Row): string => `${r.supplier_id}:${r.product_id}`
+  function toggle(k: string): void {
+    setOpen((p) => {
+      const next = new Set(p)
+      if (next.has(k)) next.delete(k)
+      else next.add(k)
+      return next
+    })
+  }
+
+  // Roll up per supplier — the "MNC" view (all of Bunge's stock with us).
+  const byParty = useMemo(() => {
+    const m = new Map<string, { name: string; deposited: number; invoiced: number; balance: number; rows: Row[] }>()
+    for (const r of rows) {
+      const k = String(r.supplier_name || '—')
+      if (!m.has(k)) m.set(k, { name: k, deposited: 0, invoiced: 0, balance: 0, rows: [] })
+      const g = m.get(k)!
+      g.deposited += Number(r.deposited) || 0
+      g.invoiced += Number(r.invoiced) || 0
+      g.balance += Number(r.balance) || 0
+      g.rows.push(r)
+    }
+    return Array.from(m.values()).sort((a, b) => a.name.localeCompare(b.name))
+  }, [rows])
+
+  const tot = rows.reduce(
+    (s, r) => ({
+      deposited: s.deposited + (Number(r.deposited) || 0),
+      invoiced: s.invoiced + (Number(r.invoiced) || 0),
+      balance: s.balance + (Number(r.balance) || 0)
+    }),
+    { deposited: 0, invoiced: 0, balance: 0 }
+  )
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+        <MiniStat label="Parties" value={String(byParty.length)} tone="violet" />
+        <MiniStat label="Deposited" value={formatNum(tot.deposited)} tone="emerald" />
+        <MiniStat label="Invoiced (became ours)" value={formatNum(tot.invoiced)} tone="rose" />
+        <MiniStat label="Balance (supplier owned)" value={formatNum(tot.balance)} tone="violet" />
+      </div>
+      <div className="flex justify-end">
+        <ExcelButton
+          filename={`mnc-consignment-stock-${todayISO()}`}
+          sheetName="MNC stock"
+          title="MNC / consignment stock"
+          columns={[
+            { header: 'Party', key: 'supplier_name', value: (r) => r.supplier_name || '' },
+            { header: 'Product', key: 'product', value: (r) => r.product_code || r.product_name || '' },
+            { header: 'Deposited', key: 'deposited', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.deposited) || 0 },
+            { header: 'Invoiced', key: 'invoiced', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.invoiced) || 0 },
+            { header: 'Balance', key: 'balance', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.balance) || 0 },
+            { header: 'UOM', key: 'uom', value: (r) => r.uom || 'MT' }
+          ]}
+          rows={rows}
+        />
+      </div>
+      <div className="rounded-xl border bg-card shadow-sm">
+        <Table
+          wrapperClassName="max-h-[calc(100vh-330px)] rounded-xl"
+          className="min-w-[720px] text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3"
+        >
+          <TableHeader>
+            <TableRow>
+              <TableHead className="sticky top-0 z-20 bg-violet-100 text-[10px] font-semibold uppercase tracking-wide text-violet-900">Party / product</TableHead>
+              <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-emerald-700">Deposited</TableHead>
+              <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-rose-700">Invoiced</TableHead>
+              <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-violet-900">Balance</TableHead>
+              <TableHead className="sticky top-0 z-20 bg-violet-100 text-[10px] font-semibold uppercase tracking-wide text-violet-900">UOM</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading ? (
+              <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+            ) : rows.length === 0 ? (
+              <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">No consignment stock. Log a deposit under Consignment.</TableCell></TableRow>
+            ) : (
+              <>
+                {byParty.map((g) => (
+                  <Fragment key={g.name}>
+                    <TableRow className="border-y-2 border-violet-300 bg-violet-50 hover:bg-violet-50">
+                      <TableCell className="text-[11px] font-bold uppercase tracking-wide text-violet-900">
+                        {g.name}
+                        <span className="ml-1 font-medium normal-case tracking-normal text-violet-500">· {g.rows.length} product{g.rows.length === 1 ? '' : 's'}</span>
+                      </TableCell>
+                      <TableCell className="text-right text-[11px] font-bold tabular-nums text-violet-900">{formatNum(g.deposited)}</TableCell>
+                      <TableCell className="text-right text-[11px] font-bold tabular-nums text-violet-900">{formatNum(g.invoiced)}</TableCell>
+                      <TableCell className="text-right text-[11px] font-bold tabular-nums text-violet-900">{formatNum(g.balance)}</TableCell>
+                      <TableCell />
+                    </TableRow>
+                    {g.rows.map((r) => {
+                      const k = key(r)
+                      const isOpen = open.has(k)
+                      const myLots = lots.filter((l) => String(l.supplier_id) === String(r.supplier_id) && String(l.product_id) === String(r.product_id))
+                      return (
+                        <Fragment key={k}>
+                          <TableRow className={cn('cursor-pointer border-b', isOpen && 'bg-slate-100')} onClick={() => toggle(k)}>
+                            <TableCell className="font-medium">
+                              <span className="inline-flex items-center gap-1.5">
+                                {isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                                {r.product_code || r.product_name}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums text-emerald-700">{formatNum(r.deposited)}</TableCell>
+                            <TableCell className="text-right tabular-nums text-rose-700">{Number(r.invoiced) ? formatNum(r.invoiced) : '—'}</TableCell>
+                            <TableCell className={cn('text-right font-bold tabular-nums', Number(r.balance) < -1e-9 ? 'text-red-600' : 'text-violet-900')}>{formatNum(r.balance)}</TableCell>
+                            <TableCell className="text-muted-foreground">{r.uom || 'MT'}</TableCell>
+                          </TableRow>
+                          {isOpen && (
+                            <TableRow className="bg-slate-100 hover:bg-slate-100">
+                              <TableCell colSpan={5} className="p-0">
+                                <div className="px-6 py-3">
+                                  {myLots.length === 0 ? (
+                                    <p className="text-xs text-muted-foreground">No deposit lots recorded.</p>
+                                  ) : (
+                                    <table className="overflow-hidden rounded-lg border border-slate-300 bg-card text-xs shadow-sm [&_td]:pl-3 [&_th]:pl-3">
+                                      <thead>
+                                        <tr className="border-b bg-slate-200/70 text-left text-slate-700">
+                                          <th className="w-8 py-1.5 pr-3 font-semibold">#</th>
+                                          <th className="py-1.5 pr-3 font-semibold">Deposit date</th>
+                                          <th className="py-1.5 pr-3 text-right font-semibold">Qty</th>
+                                          <th className="py-1.5 pr-3 font-semibold">Note</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {myLots.map((l, li) => (
+                                          <tr key={l.id as number} className={cn('border-b', li % 2 === 1 ? 'bg-muted/40' : 'bg-card')}>
+                                            <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{li + 1}</td>
+                                            <td className="py-1.5 pr-3 whitespace-nowrap">{formatDate(l.deposit_date)}</td>
+                                            <td className="py-1.5 pr-3 text-right font-medium tabular-nums text-emerald-700">{formatNum(l.qty)} {l.uom}</td>
+                                            <td className="py-1.5 pr-3 text-muted-foreground">{l.note || '—'}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  )}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </Fragment>
+                      )
+                    })}
+                  </Fragment>
+                ))}
+                <TableRow className="border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
+                  <TableCell className="text-[11px] font-bold uppercase tracking-wide text-amber-900">Grand total</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(tot.deposited)}</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(tot.invoiced)}</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(tot.balance)}</TableCell>
+                  <TableCell />
+                </TableRow>
+              </>
+            )}
+          </TableBody>
+        </Table>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Consigned stock belongs to the supplier until you invoice it, so it is kept out of your own stock figures above. Deposited − Invoiced = Balance still owned by the party. Booking a consignment purchase against a bargain moves that quantity into your books and reduces this balance automatically. Expand a product to see its deposit lots.
+      </p>
+    </div>
+  )
+}
+
 // Move stock from the active (current) company to another company.
 function Transfers(): React.JSX.Element {
   const [stock, setStock] = useState<Row[]>([])
@@ -907,6 +1135,7 @@ export function Stock(): React.JSX.Element {
             <TabsTrigger value="intermediate">Intermediate ({byCat('intermediate').length})</TabsTrigger>
             <TabsTrigger value="finished">Finished ({byCat('finished').length})</TabsTrigger>
             <TabsTrigger value="sku">Packed SKU</TabsTrigger>
+            <TabsTrigger value="mnc">MNC / Consignment</TabsTrigger>
             <TabsTrigger value="transfers">Transfers</TabsTrigger>
             <TabsTrigger value="dayclose">Day close (actual vs book)</TabsTrigger>
           </TabsList>
@@ -921,6 +1150,9 @@ export function Stock(): React.JSX.Element {
           </TabsContent>
           <TabsContent value="sku" className="mt-6">
             <SkuStock />
+          </TabsContent>
+          <TabsContent value="mnc" className="mt-4">
+            <MncStock />
           </TabsContent>
           <TabsContent value="transfers" className="mt-6">
             <Transfers />

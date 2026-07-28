@@ -323,10 +323,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     return Array.from(m.entries()).sort((a, b) => a[1].localeCompare(b[1]))
   }, [bargains])
 
-  // Suppliers with bargains for the picked oil (route step 2).
+  // Suppliers with bargains for the picked oil (route step 2). Suppliers marked
+  // "Direct purchase" in the master never receive a tanker, so they are left out.
   function suppliersForOil(oilId: string): { id: string; name: string }[] {
     const m = new Map<string, string>()
+    const direct = new Set(
+      suppliers.filter((s) => s.skip_tanker_stages).map((s) => String(s.id))
+    )
     for (const b of bargains.filter((x) => String(x.oil_type_id) === oilId)) {
+      if (direct.has(String(b.supplier_id))) continue
       m.set(String(b.supplier_id), String(b.supplier_name || '—'))
     }
     return Array.from(m.entries())
@@ -611,6 +616,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       interest_days: s.interest_days ?? 0
     }))
     setSelected([])
+    setLotIds([])
   }
 
   function choosePurchaseBargain(id: string, keepSelection = false): void {
@@ -644,6 +650,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     setEditing(null)
     setForm({ invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '', round_off: '', round_off_manual: false, charge_interest: false, interest_touched: false, remarks: '', freight_paid_to_supplier: false })
     setSelected([])
+    setLotIds([])
     setError(null)
     setFormPage(true)
     setTab('purchases')
@@ -661,6 +668,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       supplier_name: row.supplier_name,
       oil_label: String(row.oil_code || row.oil_name || ''),
       uom: row.uom,
+      // direct/consignment invoices carry their own quantity (no tankers)
+      ordered_qty: row.ordered_qty,
       invoice_no: row.invoice_no,
       order_date: row.order_date,
       invoice_rate: row.invoice_rate,
@@ -722,9 +731,86 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         .map((x) => String(x.supplier_id))
     )
     return suppliers.filter(
-      (s) => billable.has(String(s.id)) || String(s.id) === String(form.supplier_id || '')
+      (s) =>
+        billable.has(String(s.id)) ||
+        !!s.skip_tanker_stages ||
+        String(s.id) === String(form.supplier_id || '')
     )
   }, [suppliers, tankers, editing, form.supplier_id])
+  // A supplier flagged "Direct purchase" in the master keeps its goods at our
+  // site already, so there is no send-to-supplier → transit → outside → inside
+  // → empty cycle: the invoice is booked in one step against a bargain with the
+  // quantity typed in by hand. Invoices already booked that way stay in this
+  // mode when reopened.
+  const directMode = useMemo(
+    () =>
+      !!editing?.is_consignment ||
+      !!suppliers.find((s) => String(s.id) === String(form.supplier_id || ''))?.skip_tanker_stages,
+    [suppliers, form.supplier_id, editing]
+  )
+  // Consignment tankers logged for this supplier that no purchase has drawn yet
+  // — the purchase form offers these first, then a bargain is assigned to them.
+  const [lots, setLots] = useState<Row[]>([])
+  const [lotIds, setLotIds] = useState<number[]>([])
+  useEffect(() => {
+    if (!formPage || !directMode || !form.supplier_id) { setLots([]); return }
+    let active = true
+    window.api.consignment
+      .lots(Number(form.supplier_id))
+      .then((rows) => { if (active) setLots(rows) })
+      .catch(() => { if (active) setLots([]) })
+    return () => { active = false }
+  }, [formPage, directMode, form.supplier_id, editing])
+  // Tankers already on the invoice being edited are not "pending", so pull the
+  // invoice's own lots in separately and pre-tick them.
+  const [ownLots, setOwnLots] = useState<Row[]>([])
+  useEffect(() => {
+    if (!formPage || !editing?.is_consignment) { setOwnLots([]); return }
+    let active = true
+    window.api.consignment
+      .list()
+      .then((rows) => {
+        if (!active) return
+        const mine = rows.filter((r) => Number(r.order_id) === Number(editing.id))
+        setOwnLots(mine)
+        setLotIds(mine.map((r) => Number(r.id)))
+      })
+      .catch(() => { if (active) setOwnLots([]) })
+    return () => { active = false }
+  }, [formPage, editing])
+  // Every pending tanker of the supplier — the tankers come first and the
+  // bargain is assigned afterwards, so these are NOT pre-filtered by product.
+  const pickableLots = useMemo(
+    () =>
+      [...ownLots, ...lots.filter((l) => !ownLots.some((o) => Number(o.id) === Number(l.id)))].sort((a, b) =>
+        String(a.deposit_date || '').localeCompare(String(b.deposit_date || ''))
+      ),
+    [lots, ownLots]
+  )
+  const chosenLots = useMemo(
+    () => pickableLots.filter((l) => lotIds.includes(Number(l.id))),
+    [pickableLots, lotIds]
+  )
+  const lotQty = chosenLots.reduce((s, l) => s + Number(l.qty || 0), 0)
+  // One invoice covers one product; the ticked tankers decide which bargains fit.
+  const lotProducts = useMemo(
+    () => Array.from(new Set(chosenLots.map((l) => String(l.product_id)))),
+    [chosenLots]
+  )
+  const lotProductId = lotProducts.length === 1 ? lotProducts[0] : ''
+  const mixedLotProducts = lotProducts.length > 1
+  // Open bargains of that supplier (plus whichever one this invoice already
+  // uses), narrowed to the product of the tankers that have been ticked.
+  const directBargains = useMemo(
+    () =>
+      bargains.filter(
+        (b) =>
+          String(b.supplier_id) === String(form.supplier_id || '') &&
+          (!lotProductId || String(b.oil_type_id) === lotProductId) &&
+          (Number(b.balance_qty) > 0 || String(b.id) === String(form.bargain_id || ''))
+      ),
+    [bargains, form.supplier_id, form.bargain_id, lotProductId]
+  )
   const chosenTankers = useMemo(() => tankers.filter((x) => selected.includes(Number(x.id))), [tankers, selected])
   // The invoice's bargain follows the first selected tanker automatically.
   useEffect(() => {
@@ -759,7 +845,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     }
     return Array.from(m.values())
   }, [chosenTankers])
-  const totalQty = chosenTankers.reduce((sum, x) => sum + Number(x.loaded_qty || 0), 0)
+  const directBalance = useMemo(() => {
+    if (!directMode || !form.bargain_id) return null
+    const b = bargains.find((x) => String(x.id) === String(form.bargain_id))
+    return b ? Number(b.balance_qty) || 0 : null
+  }, [directMode, bargains, form.bargain_id])
+  // Direct purchases add up the consignment tankers they draw; with no tankers
+  // logged the quantity is typed in instead.
+  const totalQty = directMode
+    ? chosenLots.length
+      ? lotQty
+      : Number(form.ordered_qty) || 0
+    : chosenTankers.reduce((sum, x) => sum + Number(x.loaded_qty || 0), 0)
   // Quantity-weighted average bargain rate across the allocation.
   const blendedRate = useMemo(() => {
     const q = rateAlloc.reduce((s, a) => s + a.qty, 0)
@@ -837,8 +934,23 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
 
   async function savePurchase(): Promise<void> {
     if (!form.supplier_id) return setError('Select the supplier')
-    if (!selected.length) return setError('Select at least one loaded tanker')
-    if (!form.bargain_id) return setError('Select at least one loaded tanker')
+    if (directMode) {
+      if (mixedLotProducts) {
+        return setError('The ticked tankers are of different products — book them on separate invoices')
+      }
+      if (!form.bargain_id) return setError('Assign a bargain to these tankers')
+      if (lotProductId && String(form.oil_type_id) !== lotProductId) {
+        return setError('The ticked tankers and the assigned bargain are for different products')
+      }
+      if (totalQty <= 0) {
+        return setError(
+          pickableLots.length ? 'Tick the tankers being booked' : 'Enter the quantity being invoiced'
+        )
+      }
+    } else {
+      if (!selected.length) return setError('Select at least one loaded tanker')
+      if (!form.bargain_id) return setError('Select at least one loaded tanker')
+    }
     if (!form.invoice_no) return setError('Invoice number is required')
     if (Number(form.invoice_rate) <= 0) return setError('Invoice rate must be greater than zero')
     setSaving(true)
@@ -850,14 +962,16 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       bargain_rate: Number(form.bargain_rate),
       gst_pct: Number(form.gst_pct) || 0,
       tds_pct: Number(form.tds_pct) || 0,
-      tanker_ids: selected,
-      transporter_id: form.transporter_id ? Number(form.transporter_id) : null,
+      tanker_ids: directMode ? [] : selected,
+      is_consignment: directMode,
+      consignment_lot_ids: directMode ? chosenLots.map((l) => Number(l.id)) : [],
+      transporter_id: directMode || !form.transporter_id ? null : Number(form.transporter_id),
       allowed_shortage_pct:
         form.allowed_shortage_pct === '' || form.allowed_shortage_pct == null
           ? null
           : Number(form.allowed_shortage_pct),
       round_off: Number(form.round_off) || 0,
-      financed_by_party: financedCount === selected.length,
+      financed_by_party: !directMode && selected.length > 0 && financedCount === selected.length,
       payment_date: form.order_date
     }
     try {
@@ -978,7 +1092,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             </button>
             <div className="h-4 border-l" />
             <h2 className="text-base font-semibold">{editing ? `Edit purchase ${editing.invoice_no}` : 'Create purchase invoice'}</h2>
-            <p className="text-sm text-muted-foreground">Select all loaded tankers covered by this single supplier invoice.</p>
+            <p className="text-sm text-muted-foreground">
+              {directMode
+                ? 'Direct purchase — book the bargain quantity straight into the books, no tanker movement.'
+                : 'Select all loaded tankers covered by this single supplier invoice.'}
+            </p>
           </div>
 
           <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
@@ -995,13 +1113,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     >
                       <SelectTrigger><SelectValue placeholder="Select the supplier — its loaded tankers appear below" /></SelectTrigger>
                       <SelectContent>
-                        {invoiceSuppliers.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
+                        {invoiceSuppliers.map((s) => (
+                          <SelectItem key={s.id} value={String(s.id)}>
+                            {s.name}
+                            {s.skip_tanker_stages ? ' · direct' : ''}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                     <span className="text-[11px] text-muted-foreground">
-                      {form.bargain_id
-                        ? `Bargain ${bargains.find((b) => String(b.id) === String(form.bargain_id))?.bargain_no || ''} — taken from the selected tankers.`
-                        : 'The bargain is picked up automatically from the tankers you select.'}
+                      {directMode
+                        ? 'Direct-purchase supplier — pick the bargain and quantity below; no tankers are involved.'
+                        : form.bargain_id
+                          ? `Bargain ${bargains.find((b) => String(b.id) === String(form.bargain_id))?.bargain_no || ''} — taken from the selected tankers.`
+                          : 'The bargain is picked up automatically from the tankers you select.'}
                     </span>
                   </div>
                   <div className="grid gap-1.5">
@@ -1039,11 +1164,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm">
                       {tankerTransporterName || (
                         <span className="text-muted-foreground">
-                          {chosenTankers.length ? 'Supplier-delivered / from tankers' : 'Select tankers first'}
+                          {directMode
+                            ? 'Not applicable — direct purchase'
+                            : chosenTankers.length
+                              ? 'Supplier-delivered / from tankers'
+                              : 'Select tankers first'}
                         </span>
                       )}
                     </div>
-                    <span className="text-[11px] text-muted-foreground">Taken from the selected tankers.</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {directMode ? 'No tanker movement, so no transporter.' : 'Taken from the selected tankers.'}
+                    </span>
                   </div>
                   <div className={cn('grid gap-1.5', !tankerTransporterId && 'opacity-50')}>
                     <Label>Allowed shortage %</Label>
@@ -1134,6 +1265,157 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 </div>
               </section>
 
+              {directMode ? (
+                <section className="rounded-xl border border-violet-200 bg-violet-50/40 p-5">
+                  <div className="mb-4 flex items-center justify-between">
+                    <div>
+                      <h3 className="font-medium text-violet-900">Direct purchase — no tanker movement</h3>
+                      <p className="text-xs text-violet-800/80">
+                        {form.supplier_name || 'This supplier'} keeps the goods at our site, so nothing is sent to
+                        the supplier: no in transit, outside factory, inside factory or empty stage. Pick the
+                        bargain and the quantity being invoiced — it is booked as received straight away.
+                      </p>
+                    </div>
+                    <Badge className="bg-violet-600 hover:bg-violet-600">Direct</Badge>
+                  </div>
+                  {!form.supplier_id ? (
+                    <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
+                      Select the supplier first.
+                    </div>
+                  ) : (
+                    <>
+                    {/* Step 1 — the tankers logged in Consignment Stock and not yet booked. */}
+                    <div className="mb-4">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-sm font-medium text-violet-900">
+                          1 · Tankers pending booking
+                          <span className="ml-2 font-normal text-violet-800/70">from Log Consignment Stock</span>
+                        </div>
+                        <Badge variant="secondary">
+                          {chosenLots.length} of {pickableLots.length} ticked · {formatNum(lotQty)} {form.uom || 'MT'}
+                        </Badge>
+                      </div>
+                      {pickableLots.length === 0 ? (
+                        <div className="rounded-lg border border-dashed bg-white/60 px-3 py-6 text-center text-xs text-muted-foreground">
+                          No consignment tanker is waiting to be booked for this supplier. Validate its gate arrivals
+                          on the Consignment page first, or enter the quantity by hand below.
+                        </div>
+                      ) : (
+                        <div className="grid gap-2">
+                          {mixedLotProducts && (
+                            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                              The ticked tankers are of different products — one invoice covers one product, so book
+                              them separately.
+                            </div>
+                          )}
+                          {pickableLots.map((lot) => {
+                            const checked = lotIds.includes(Number(lot.id))
+                            const off = !!lotProductId && String(lot.product_id) !== lotProductId
+                            return (
+                              <label
+                                key={lot.id}
+                                className={cn(
+                                  'flex cursor-pointer items-center gap-3 rounded-lg border bg-white p-2.5 transition',
+                                  checked ? 'border-violet-400 bg-violet-50' : 'hover:bg-muted/40',
+                                  off && !checked && 'opacity-50'
+                                )}
+                              >
+                                <input
+                                  type="checkbox"
+                                  className="h-4 w-4 accent-violet-600"
+                                  checked={checked}
+                                  onChange={(e) =>
+                                    setLotIds((p) =>
+                                      e.target.checked
+                                        ? [...p, Number(lot.id)]
+                                        : p.filter((x) => x !== Number(lot.id))
+                                    )
+                                  }
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-sm font-medium">
+                                    {lot.tanker_no || <span className="text-muted-foreground">no tanker no.</span>}
+                                  </div>
+                                  <div className="text-[11px] text-muted-foreground">
+                                    {lot.product_code || lot.product_name} · logged {formatDate(lot.deposit_date)}
+                                    {lot.gate_entry_no ? ` · gate ${lot.gate_entry_no}` : ''}
+                                    {lot.note ? ` · ${lot.note}` : ''}
+                                  </div>
+                                </div>
+                                <div className="text-sm font-medium tabular-nums">
+                                  {formatNum(lot.qty)} {lot.uom}
+                                </div>
+                              </label>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mb-2 text-sm font-medium text-violet-900">
+                      2 · Assign a bargain{chosenLots.length ? '' : ' and quantity'}
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="grid gap-1.5">
+                        <Label>Bargain *</Label>
+                        <Select
+                          value={String(form.bargain_id || '')}
+                          onValueChange={(v) => choosePurchaseBargain(v, true)}
+                          disabled={!!editing}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder={directBargains.length ? 'Select the bargain' : 'No open bargain for this supplier'} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {directBargains.map((b) => (
+                              <SelectItem key={b.id} value={String(b.id)}>
+                                {b.bargain_no} · {String(b.oil_code || b.oil_name || '')} · bal{' '}
+                                {formatNum(b.balance_qty)} {b.uom} @ {formatINR(b.rate_per_uom)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <span className="text-[11px] text-muted-foreground">
+                          {form.bargain_id
+                            ? `${form.oil_label || ''} · bargain rate ${formatINR(Number(form.bargain_rate) || 0)}/${form.uom || 'MT'}`
+                            : lotProductId
+                              ? 'Only this product’s bargains with a balance are listed.'
+                              : 'Tick the tankers first to narrow this to their product.'}
+                        </span>
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label>Quantity to invoice * ({form.uom || 'MT'})</Label>
+                        {chosenLots.length ? (
+                          <>
+                            <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm font-medium tabular-nums">
+                              {formatNum(lotQty)} {form.uom || 'MT'}
+                            </div>
+                            <span className="text-[11px] text-muted-foreground">
+                              Sum of the {chosenLots.length} ticked tanker{chosenLots.length > 1 ? 's' : ''}
+                              {directBalance != null ? ` · bargain balance ${formatNum(directBalance)} ${form.uom || 'MT'}` : ''}.
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <Input
+                              type="number"
+                              value={form.ordered_qty ?? ''}
+                              placeholder="0.000"
+                              onChange={(e) => setForm((p) => ({ ...p, ordered_qty: e.target.value }))}
+                            />
+                            <span className="text-[11px] text-muted-foreground">
+                              {directBalance != null
+                                ? `Bargain balance ${formatNum(directBalance)} ${form.uom || 'MT'}.`
+                                : 'Entered by hand — there is no weighment to take it from.'}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    </>
+                  )}
+                </section>
+              ) : (
               <section className="rounded-xl border bg-card p-5">
                 <div className="mb-4 flex items-center justify-between">
                   <div>
@@ -1176,14 +1458,34 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   </div>
                 )}
               </section>
+              )}
             </div>
 
             <aside className="h-fit rounded-xl border bg-card p-5 xl:sticky xl:top-6">
               <h3 className="mb-3 font-medium">Purchase summary</h3>
-              <MoneyRow label="Tankers" value={String(selected.length)} />
-              <MoneyRow label="Total loaded quantity" value={`${formatNum(totalQty)} ${form.uom || 'MT'}`} strong />
-              <MoneyRow label="Paid by us" value={String(selected.length - financedCount)} />
-              <MoneyRow label="Supplier financed" value={String(financedCount)} />
+              {directMode ? (
+                <>
+                  <MoneyRow
+                    label="Purchase type"
+                    value={chosenLots.length ? 'Consignment — from logged stock' : 'Direct — no tankers'}
+                  />
+                  {chosenLots.length > 0 && (
+                    <MoneyRow
+                      label="Consignment tankers"
+                      title={chosenLots.map((l) => String(l.tanker_no || l.id)).join(', ')}
+                      value={String(chosenLots.length)}
+                    />
+                  )}
+                  <MoneyRow label="Quantity invoiced" value={`${formatNum(totalQty)} ${form.uom || 'MT'}`} strong />
+                </>
+              ) : (
+                <>
+                  <MoneyRow label="Tankers" value={String(selected.length)} />
+                  <MoneyRow label="Total loaded quantity" value={`${formatNum(totalQty)} ${form.uom || 'MT'}`} strong />
+                  <MoneyRow label="Paid by us" value={String(selected.length - financedCount)} />
+                  <MoneyRow label="Supplier financed" value={String(financedCount)} />
+                </>
+              )}
               <div className="my-3 border-t" />
               {rateAlloc.length > 1 ? (
                 rateAlloc.map((a, i) => (

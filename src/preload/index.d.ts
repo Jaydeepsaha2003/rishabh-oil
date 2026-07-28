@@ -50,6 +50,8 @@ export interface Api {
   consignment: {
     list: () => Promise<Row[]>
     summary: () => Promise<Row[]>
+    pending: () => Promise<Row[]>
+    lots: (supplierId?: number, productId?: number) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>

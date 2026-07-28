@@ -32,6 +32,7 @@ function SummaryLine({ label, value, strong }: { label: string; value: string; s
 
 export function Consignment(): React.JSX.Element {
   const [deposits, setDeposits] = useState<Row[]>([])
+  const [pending, setPending] = useState<Row[]>([])
   const [summary, setSummary] = useState<Row[]>([])
   const [suppliers, setSuppliers] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
@@ -54,9 +55,10 @@ export function Consignment(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [d, sm, s, p, b, cfg] = await Promise.all([
+    const [d, sm, pg, s, p, b, cfg] = await Promise.all([
       window.api.consignment.list(),
       window.api.consignment.summary(),
+      window.api.consignment.pending(),
       window.api.data.list('suppliers'),
       window.api.data.list('products'),
       window.api.bargains.list(),
@@ -64,6 +66,7 @@ export function Consignment(): React.JSX.Element {
     ])
     setDeposits(d)
     setSummary(sm)
+    setPending(pg)
     setSuppliers(s.filter((x) => x.active))
     setProducts(p.filter((x) => x.active && x.category === 'raw'))
     setBargains(b)
@@ -81,6 +84,25 @@ export function Consignment(): React.JSX.Element {
   function openAddDeposit(): void {
     setEditing(null)
     setDepForm({ supplier_id: '', product_id: '', qty: '', uom: defaultUom, deposit_date: todayISO(), note: '' })
+    setDepError(null)
+    setDepOpen(true)
+  }
+
+  // Validate a gate arrival into consignment stock: the gateman already logged
+  // the vehicle (and its weighment), the accountant confirms whose stock it is.
+  function openValidate(g: Row): void {
+    setEditing(null)
+    setDepForm({
+      gate_entry_id: g.id,
+      gate_entry_no: g.gate_entry_no,
+      tanker_no: g.tanker_no || '',
+      supplier_id: '',
+      product_id: g.oil_type_id ? String(g.oil_type_id) : '',
+      qty: Number(g.received_qty) > 0 ? g.received_qty : '',
+      uom: g.uom || defaultUom,
+      deposit_date: g.entry_date ?? todayISO(),
+      note: g.note || ''
+    })
     setDepError(null)
     setDepOpen(true)
   }
@@ -111,7 +133,9 @@ export function Consignment(): React.JSX.Element {
       qty: Number(depForm.qty),
       uom: depForm.uom || defaultUom,
       deposit_date: depForm.deposit_date,
-      note: depForm.note || null
+      note: depForm.note || null,
+      gate_entry_id: depForm.gate_entry_id ? Number(depForm.gate_entry_id) : null,
+      tanker_no: depForm.tanker_no || null
     }
     try {
       if (editing) {
@@ -119,7 +143,11 @@ export function Consignment(): React.JSX.Element {
         toast.success('Consignment stock updated')
       } else {
         await window.api.consignment.create(payload)
-        toast.success('Consignment stock added')
+        toast.success(
+          depForm.gate_entry_id
+            ? `Gate entry ${depForm.gate_entry_no} validated into consignment stock`
+            : 'Consignment stock added'
+        )
       }
       setDepOpen(false)
       await load()
@@ -281,6 +309,45 @@ export function Consignment(): React.JSX.Element {
 
   const totalBalance = summary.reduce((s, r) => s + (Number(r.balance) || 0), 0)
 
+  // The stock register: one band per supplier, a line per product inside it,
+  // and the individual tankers under each product. Numbers come from the roll-up
+  // so they always agree with what the purchase side draws against.
+  const stockBands = useMemo(() => {
+    const bands = new Map<string, Row>()
+    for (const r of summary) {
+      const key = String(r.supplier_id)
+      if (!bands.has(key)) {
+        bands.set(key, {
+          supplier_id: r.supplier_id,
+          supplier_name: r.supplier_name,
+          uom: r.uom || 'MT',
+          deposited: 0,
+          invoiced: 0,
+          balance: 0,
+          products: [] as Row[]
+        })
+      }
+      const band = bands.get(key) as Row
+      band.deposited += Number(r.deposited) || 0
+      band.invoiced += Number(r.invoiced) || 0
+      band.balance += Number(r.balance) || 0
+      band.products.push({
+        ...r,
+        lots: deposits
+          .filter(
+            (d) =>
+              String(d.supplier_id) === String(r.supplier_id) &&
+              String(d.product_id) === String(r.product_id)
+          )
+          .sort((a, b) => String(a.deposit_date || '').localeCompare(String(b.deposit_date || '')))
+      })
+    }
+    return Array.from(bands.values()).sort((a, b) =>
+      String(a.supplier_name || '').localeCompare(String(b.supplier_name || ''))
+    )
+  }, [summary, deposits])
+  const pendingLotCount = deposits.filter((d) => d.order_id == null).length
+
   return (
     <>
       <PageHeader
@@ -292,13 +359,17 @@ export function Consignment(): React.JSX.Element {
             <ExcelButton
               filename={`consignment-${todayISO()}`}
               sheetName="Consignment"
-              title="Consignment deposits"
+              title="Consignment stock"
               columns={[
                 { header: 'Date', key: 'deposit_date', value: (r) => formatDate(r.deposit_date) },
                 { header: 'Supplier', key: 'supplier_name', value: (r) => r.supplier_name || '' },
+                { header: 'Tanker', key: 'tanker_no', value: (r) => r.tanker_no || '' },
+                { header: 'Gate no', key: 'gate_entry_no', value: (r) => r.gate_entry_no || '' },
                 { header: 'Product', key: 'product', value: (r) => r.product_code || r.product_name || '' },
                 { header: 'Quantity', key: 'qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.qty) || 0 },
                 { header: 'UOM', key: 'uom', value: (r) => r.uom || '' },
+                { header: 'Status', key: 'status', value: (r) => (r.order_id != null ? 'Booked' : 'In stock') },
+                { header: 'Invoice no', key: 'invoice_no', value: (r) => r.invoice_no || '' },
                 { header: 'Note', key: 'note', value: (r) => r.note || '' }
               ]}
               rows={deposits}
@@ -311,109 +382,250 @@ export function Consignment(): React.JSX.Element {
       />
 
       <div className="space-y-6 p-6">
-        <section className="rounded-xl border bg-card">
-          <div className="flex items-center justify-between border-b px-5 py-3">
-            <div>
-              <h3 className="font-medium">Consigned stock (supplier-owned)</h3>
-              <p className="text-xs text-muted-foreground">Balance still lying at your place, per supplier and product.</p>
+        {/* Step 1 of the flow: tankers passed at the gate, waiting for the
+            accountant to say whose stock they are. */}
+        {pending.length > 0 && (
+          <section className="overflow-hidden rounded-xl border-2 border-amber-300 bg-amber-50/40">
+            <div className="flex items-center justify-between border-b border-amber-200 bg-amber-100/70 px-5 py-3">
+              <div>
+                <h3 className="font-medium text-amber-900">Gate arrivals awaiting validation</h3>
+                <p className="text-xs text-amber-800">
+                  Tankers passed at the gate that aren&apos;t linked to a purchase. Validate one to start maintaining its consignment stock.
+                </p>
+              </div>
+              <Badge variant="warning">{pending.length} pending</Badge>
             </div>
-            <Badge variant="secondary">{formatNum(totalBalance)} MT total</Badge>
-          </div>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Supplier</TableHead>
-                <TableHead>Product</TableHead>
-                <TableHead className="text-right">Deposited</TableHead>
-                <TableHead className="text-right">Invoiced</TableHead>
-                <TableHead className="text-right">Balance</TableHead>
-                <TableHead className="text-right">Action</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loading ? (
-                <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
-              ) : summary.length === 0 ? (
-                <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">No consignment stock yet.</TableCell></TableRow>
-              ) : (
-                summary.map((r) => (
-                  <TableRow key={`${r.supplier_id}:${r.product_id}`}>
-                    <TableCell className="font-medium">{r.supplier_name}</TableCell>
-                    <TableCell>{r.product_code || r.product_name}</TableCell>
-                    <TableCell className="text-right tabular-nums">{formatNum(r.deposited)} {r.uom}</TableCell>
-                    <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.invoiced)} {r.uom}</TableCell>
-                    <TableCell className="text-right font-semibold tabular-nums">{formatNum(r.balance)} {r.uom}</TableCell>
-                    <TableCell className="text-right">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={Number(r.balance) <= 0.0001}
-                        onClick={() => openBooking(r)}
-                      >
-                        Book purchase
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </section>
+            <Table className="text-[12px] [&_td]:px-4 [&_td]:py-2 [&_th]:h-9 [&_th]:px-4">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Gate no</TableHead>
+                  <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Date</TableHead>
+                  <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Tanker</TableHead>
+                  <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Type</TableHead>
+                  <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-amber-900">Net qty</TableHead>
+                  <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Weighment</TableHead>
+                  <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-amber-900">Action</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {pending.map((g, i) => {
+                  const weighed = g.status === 'completed' && Number(g.received_qty) > 0
+                  return (
+                    <TableRow key={g.id as number} className={cn('border-b', i % 2 === 1 && 'bg-amber-50/60')}>
+                      <TableCell className="font-medium tabular-nums">{g.gate_entry_no}</TableCell>
+                      <TableCell className="whitespace-nowrap">{formatDate(g.entry_date)}</TableCell>
+                      <TableCell className="font-medium">{g.tanker_no || <span className="italic text-muted-foreground">no number</span>}</TableCell>
+                      <TableCell className="text-muted-foreground">{g.rec_type || 'OIL'}</TableCell>
+                      <TableCell className="text-right font-semibold tabular-nums text-emerald-700">
+                        {weighed ? `${formatNum(g.received_qty)} ${g.uom || 'MT'}` : '—'}
+                      </TableCell>
+                      <TableCell>
+                        {weighed ? (
+                          <Badge variant="success">Weighed</Badge>
+                        ) : (
+                          <Badge variant="warning">Awaiting weighment</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button size="sm" onClick={() => openValidate(g)}>Validate</Button>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </section>
+        )}
 
-        <section className="rounded-xl border bg-card">
-          <div className="border-b px-5 py-3">
-            <h3 className="font-medium">Deposit entries</h3>
-            <p className="text-xs text-muted-foreground">Each time a supplier drops stock at your place.</p>
+        {/* The stock register: what each supplier is holding at our place, the
+            tankers it is made of, and what has already been invoiced. */}
+        <section className="overflow-hidden rounded-xl border-2 border-violet-200 bg-card">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-violet-200 bg-violet-50 px-5 py-3">
+            <div>
+              <h3 className="font-medium text-violet-900">Stock</h3>
+              <p className="text-xs text-violet-800/80">
+                Supplier-owned stock lying at your place, tanker by tanker. Booking a purchase moves it into your books.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {pendingLotCount > 0 && (
+                <Badge variant="warning">{pendingLotCount} tanker{pendingLotCount > 1 ? 's' : ''} pending booking</Badge>
+              )}
+              <Badge className="bg-violet-600 hover:bg-violet-600">{formatNum(totalBalance)} MT in stock</Badge>
+            </div>
           </div>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Supplier</TableHead>
-                <TableHead>Product</TableHead>
-                <TableHead className="text-right">Quantity</TableHead>
-                <TableHead>Note</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loading ? (
-                <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
-              ) : deposits.length === 0 ? (
-                <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">No deposits recorded.</TableCell></TableRow>
-              ) : (
-                deposits.map((d) => (
-                  <TableRow key={d.id as number}>
-                    <TableCell>{formatDate(d.deposit_date)}</TableCell>
-                    <TableCell className="font-medium">{d.supplier_name}</TableCell>
-                    <TableCell>{d.product_code || d.product_name}</TableCell>
-                    <TableCell className="text-right tabular-nums">{formatNum(d.qty)} {d.uom}</TableCell>
-                    <TableCell className="max-w-[220px] truncate text-muted-foreground">{d.note || '—'}</TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditDeposit(d)}>
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => deleteDeposit(d)}>
-                          <Trash2 className="h-4 w-4" />
+
+          {loading ? (
+            <div className="py-12 text-center text-sm text-muted-foreground">Loading…</div>
+          ) : stockBands.length === 0 ? (
+            <div className="px-5 py-12 text-center text-sm text-muted-foreground">
+              No consignment stock yet. Validate a gate arrival above, or use{' '}
+              <span className="font-medium">Log consignment stock</span> to enter one.
+            </div>
+          ) : (
+            <div className="divide-y-2 divide-violet-100">
+              {stockBands.map((band) => (
+                <div key={String(band.supplier_id)}>
+                  {/* Party band */}
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-1 bg-violet-100/60 px-5 py-2">
+                    <div className="text-sm font-semibold text-violet-900">{band.supplier_name}</div>
+                    <div className="ml-auto flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px]">
+                      <span className="text-violet-900/70">
+                        In <span className="font-semibold tabular-nums text-violet-900">{formatNum(band.deposited)}</span>
+                      </span>
+                      <span className="text-violet-900/70">
+                        Booked <span className="font-semibold tabular-nums text-violet-900">{formatNum(band.invoiced)}</span>
+                      </span>
+                      <span className="text-violet-900/70">
+                        In stock{' '}
+                        <span className="font-bold tabular-nums text-violet-900">
+                          {formatNum(band.balance)} {band.uom}
+                        </span>
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Products of that party, each with its tankers */}
+                  {(band.products as Row[]).map((p) => (
+                    <div key={`${band.supplier_id}:${p.product_id}`} className="px-5 py-2.5">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                        <div className="text-[13px] font-medium">{p.product_code || p.product_name}</div>
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+                          <span>
+                            In <span className="tabular-nums">{formatNum(p.deposited)}</span>
+                          </span>
+                          <span>
+                            Booked <span className="tabular-nums">{formatNum(p.invoiced)}</span>
+                          </span>
+                          <span
+                            className={cn(
+                              'font-semibold',
+                              Number(p.balance) > 0.0001 ? 'text-emerald-700' : 'text-muted-foreground'
+                            )}
+                          >
+                            In stock <span className="tabular-nums">{formatNum(p.balance)} {p.uom}</span>
+                          </span>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="ml-auto h-7 text-xs"
+                          disabled={Number(p.balance) <= 0.0001}
+                          onClick={() => openBooking(p)}
+                        >
+                          Book purchase
                         </Button>
                       </div>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+
+                      {(p.lots as Row[]).length > 0 && (
+                        <Table
+                          className="mt-2 text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-8 [&_th]:px-3"
+                          wrapperClassName="rounded-lg border"
+                        >
+                          <TableHeader>
+                            <TableRow className="bg-muted/60">
+                              <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Date</TableHead>
+                              <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Tanker</TableHead>
+                              <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Gate no</TableHead>
+                              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Qty</TableHead>
+                              <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Status</TableHead>
+                              <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Note</TableHead>
+                              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Actions</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {(p.lots as Row[]).map((d) => {
+                              const booked = d.order_id != null
+                              return (
+                                <TableRow key={d.id as number} className={cn('border-b', !booked && 'bg-emerald-50/40')}>
+                                  <TableCell className="whitespace-nowrap">{formatDate(d.deposit_date)}</TableCell>
+                                  <TableCell className="font-medium">
+                                    {d.tanker_no || <span className="italic text-muted-foreground">no number</span>}
+                                  </TableCell>
+                                  <TableCell className="tabular-nums text-muted-foreground">
+                                    {d.gate_entry_no || '—'}
+                                  </TableCell>
+                                  <TableCell
+                                    className={cn(
+                                      'text-right font-semibold tabular-nums',
+                                      booked ? 'text-muted-foreground' : 'text-emerald-700'
+                                    )}
+                                  >
+                                    {formatNum(d.qty)} {d.uom}
+                                  </TableCell>
+                                  <TableCell>
+                                    {booked ? (
+                                      <Badge variant="secondary" className="font-normal">
+                                        Booked · {String(d.invoice_no || '—')}
+                                      </Badge>
+                                    ) : (
+                                      <Badge variant="warning">In stock</Badge>
+                                    )}
+                                  </TableCell>
+                                  <TableCell className="max-w-[200px] truncate text-muted-foreground">
+                                    {d.note || '—'}
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    <div className="flex justify-end gap-1">
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-7 w-7"
+                                        disabled={booked}
+                                        title={booked ? 'Booked on a purchase — edit that invoice instead' : 'Edit'}
+                                        onClick={() => openEditDeposit(d)}
+                                      >
+                                        <Pencil className="h-3.5 w-3.5" />
+                                      </Button>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-7 w-7 text-destructive"
+                                        disabled={booked}
+                                        title={booked ? 'Booked on a purchase — delete that invoice first' : 'Delete'}
+                                        onClick={() => deleteDeposit(d)}
+                                      >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                      </Button>
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                              )
+                            })}
+                          </TableBody>
+                        </Table>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
         </section>
+
       </div>
 
       {/* Deposit intake dialog */}
       <Dialog open={depOpen} onOpenChange={(o) => !o && setDepOpen(false)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editing ? 'Edit consignment stock' : 'Log consignment stock'}</DialogTitle>
+            <DialogTitle>
+              {editing
+                ? 'Edit consignment stock'
+                : depForm.gate_entry_id
+                  ? 'Validate gate arrival'
+                  : 'Log consignment stock'}
+            </DialogTitle>
           </DialogHeader>
           <div className="grid gap-4">
+            {!!depForm.gate_entry_id && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                From gate entry <b>{depForm.gate_entry_no}</b>
+                {depForm.tanker_no ? <> · tanker <b>{depForm.tanker_no}</b></> : null}
+                {Number(depForm.qty) > 0 ? <> · weighed net <b>{formatNum(depForm.qty)} {depForm.uom}</b></> : <> · <b>not weighed yet</b> — enter the quantity manually</>}
+                <div className="mt-0.5 opacity-80">Confirm whose stock this is; the quantity starts being maintained once saved.</div>
+              </div>
+            )}
             <div className="grid gap-1.5">
               <Label>Supplier *</Label>
               <Select value={String(depForm.supplier_id || '')} onValueChange={(v) => setDepForm((p) => ({ ...p, supplier_id: v }))}>

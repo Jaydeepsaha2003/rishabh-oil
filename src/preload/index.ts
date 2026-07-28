@@ -69,6 +69,9 @@ const api = {
   consignment: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('consignment:list'),
     summary: (): Promise<Row[]> => ipcRenderer.invoke('consignment:summary'),
+    pending: (): Promise<Row[]> => ipcRenderer.invoke('consignment:pending'),
+    lots: (supplierId?: number, productId?: number): Promise<Row[]> =>
+      ipcRenderer.invoke('consignment:lots', { supplierId, productId }),
     create: (values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('consignment:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>

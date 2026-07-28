@@ -390,6 +390,18 @@ const MIGRATIONS = [
   // A packed SKU belongs to a finished product (DALDA 15 KG TIN → DALDA), so
   // packed pieces can be reconciled in tonnage against that product's stock.
   'ALTER TABLE packagings ADD COLUMN product_id INTEGER',
+  // Consignment lots now start life as a GATE ENTRY: the gateman passes the
+  // tanker, the accountant validates it into consignment stock. This records
+  // which gate entry a lot came from so it can't be validated twice.
+  'ALTER TABLE consignment_stock ADD COLUMN gate_entry_id INTEGER',
+  'ALTER TABLE consignment_stock ADD COLUMN tanker_no TEXT',
+  // Which purchase invoice drew this lot (NULL = still pending booking), so the
+  // purchase form can list the exact tankers waiting to be invoiced.
+  'ALTER TABLE consignment_stock ADD COLUMN order_id INTEGER',
+  // Parties whose goods are already at our site (consignment / MNC suppliers):
+  // purchases from them skip the tanker movement entirely — no send-to-supplier,
+  // no transit/outside/inside/empty. Booked straight to received.
+  'ALTER TABLE suppliers ADD COLUMN skip_tanker_stages INTEGER NOT NULL DEFAULT 0',
   // Optional item lines on a debit/credit note (product × qty × rate). When
   // present they compute the note's base amount; ledger-only (no stock move).
   `CREATE TABLE IF NOT EXISTS note_items (
