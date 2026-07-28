@@ -808,8 +808,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     additionalInterest: Number(form.additional_interest) || 0,
     tdsThreshold: Number(form.tds_threshold) || 0,
     tdsPctAbove: Number(form.tds_pct) || 0,
-    tdsPrior: Number(form.tds_prior) || 0
-  }), [form, totalQty])
+    tdsPrior: Number(form.tds_prior) || 0,
+    lines: rateAlloc.map((a) => ({ rate: a.rate, qty: a.qty }))
+  }), [form, totalQty, rateAlloc])
 
   // Default the per-invoice interest toggle: ON when the supplier charges
   // interest AND the purchase is supplier-financed. A manual flip sticks.

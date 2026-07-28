@@ -23,9 +23,14 @@ function n(v: unknown): number {
 // PACKED sale of a packaging reduces its on-hand automatically.
 //   on_hand (units) = SUM(manual adjustments) − SUM(units sold on packed sales)
 // where units sold = boxes × pouches_per_box + loose pouches.
-export async function listSkuStock(): Promise<Row[]> {
+// When `date` is given the row is a DAY REGISTER for that date (mirrors the
+// mill's production & despatch sheet): opening b/f + packed in − despatched =
+// closing. Without a date the row carries the running to-date figures.
+export async function listSkuStock(date?: string): Promise<Row[]> {
   const c = getClient()
   const cid = getActiveCompanyId()
+  const d = date ? String(date).slice(0, 10) : null
+  const round = (x: number): number => Math.round((x + Number.EPSILON) * 1e6) / 1e6
   const res = await c.execute({
     sql: `
     SELECT pk.id, pk.name, pk.box_label, pk.pouch_label, pk.pouches_per_box,
@@ -34,16 +39,39 @@ export async function listSkuStock(): Promise<Row[]> {
                      WHERE packaging_id = pk.id AND company_id = ?), 0) AS added,
            COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
                      WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
-                       AND s.status = 'done' AND s.company_id = ?), 0) AS sold
+                       AND s.status = 'done' AND s.company_id = ?), 0) AS sold,
+           COALESCE((SELECT SUM(delta) FROM sku_adjustments
+                     WHERE packaging_id = pk.id AND company_id = ?
+                       AND (? IS NULL OR substr(adj_date, 1, 10) < ?)), 0) AS added_before,
+           COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
+                     WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
+                       AND s.status = 'done' AND s.company_id = ?
+                       AND (? IS NULL OR substr(s.sale_date, 1, 10) < ?)), 0) AS sold_before,
+           COALESCE((SELECT SUM(delta) FROM sku_adjustments
+                     WHERE packaging_id = pk.id AND company_id = ?
+                       AND substr(adj_date, 1, 10) = ?), 0) AS added_on,
+           COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
+                     WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
+                       AND s.status = 'done' AND s.company_id = ?
+                       AND substr(s.sale_date, 1, 10) = ?), 0) AS sold_on
     FROM packagings pk
     WHERE pk.active = 1
     ORDER BY pk.name COLLATE NOCASE ASC`,
-    args: [cid, cid]
+    args: [cid, cid, cid, d, d, cid, d, d, cid, d, cid, d]
   })
-  return toPlain(res).map((r) => ({
-    ...r,
-    on_hand: Math.round(((n(r.added) - n(r.sold)) + Number.EPSILON) * 1e6) / 1e6
-  }))
+  return toPlain(res).map((r) => {
+    const opening = round(n(r.added_before) - n(r.sold_before))
+    const addedOn = round(n(r.added_on))
+    const soldOn = round(n(r.sold_on))
+    return {
+      ...r,
+      opening,
+      added_on: addedOn,
+      sold_on: soldOn,
+      // Day view: closing for that date. Otherwise the running balance.
+      on_hand: d ? round(opening + addedOn - soldOn) : round(n(r.added) - n(r.sold))
+    }
+  })
 }
 
 // Add (delta > 0) or remove (delta < 0) packed units for one SKU, logged by

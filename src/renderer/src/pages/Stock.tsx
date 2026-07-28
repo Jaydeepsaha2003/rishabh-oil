@@ -462,11 +462,16 @@ function SkuStock(): React.JSX.Element {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Day register: pick a date to see/update that day's pieces (opening b/f +
+  // packed in − despatched = closing). "All time" shows running totals.
+  const [dayMode, setDayMode] = useState(true)
+  const [date, setDate] = useState(todayISO())
+
   const load = useCallback(async () => {
     setLoading(true)
-    setRows(await window.api.skuStock.list())
+    setRows(await window.api.skuStock.list(dayMode ? date : undefined))
     setLoading(false)
-  }, [])
+  }, [dayMode, date])
   useEffect(() => { load() }, [load])
   useLiveRefresh(load)
 
@@ -490,7 +495,8 @@ function SkuStock(): React.JSX.Element {
 
   function openAdjust(row: Row): void {
     setAdjustRow(row)
-    setAdjustForm({ mode: 'add', amount: '', note: '', date: todayISO() })
+    // Default the entry to the day being viewed, so day-wise updates land there.
+    setAdjustForm({ mode: 'add', amount: '', note: '', date: dayMode ? date : todayISO() })
     setError(null)
   }
 
@@ -517,19 +523,55 @@ function SkuStock(): React.JSX.Element {
 
   return (
     <div className="space-y-5">
-      <div className="flex justify-end">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="inline-flex rounded-lg border p-0.5">
+          <button
+            type="button"
+            onClick={() => setDayMode(true)}
+            className={cn('rounded-md px-3 py-1.5 text-sm font-medium', dayMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')}
+          >
+            Day wise
+          </button>
+          <button
+            type="button"
+            onClick={() => setDayMode(false)}
+            className={cn('rounded-md px-3 py-1.5 text-sm font-medium', !dayMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')}
+          >
+            All time
+          </button>
+        </div>
+        {dayMode && (
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Date</span>
+            <DatePicker max={todayISO()} value={date} onChange={(v) => setDate(v || todayISO())} className="w-40" />
+            <Button variant="ghost" size="sm" className="h-8 text-muted-foreground" onClick={() => setDate(todayISO())}>Today</Button>
+          </div>
+        )}
+        <div className="ml-auto" />
         <ExcelButton
-          filename={`packed-sku-stock-${todayISO()}`}
+          filename={`packed-sku-stock-${dayMode ? date : todayISO()}`}
           sheetName="Packed SKU stock"
           title="Packed SKU stock"
-          columns={[
-            { header: 'SKU', key: 'name', value: (r) => r.name || '' },
-            { header: 'Pack size', key: 'size', value: (r) => unitLabel(r) },
-            { header: 'Packed in', key: 'added', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.added) || 0 },
-            { header: 'Sold (packed)', key: 'sold', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.sold) || 0 },
-            { header: 'On hand (pcs)', key: 'on_hand', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.on_hand) || 0 },
-            { header: 'On hand (MT)', key: 'mt', align: 'right', numFmt: '#,##0.000', value: (r) => skuMT(r) }
-          ]}
+          columns={
+            dayMode
+              ? [
+                  { header: 'SKU', key: 'name', value: (r) => r.name || '' },
+                  { header: 'Pack size', key: 'size', value: (r) => unitLabel(r) },
+                  { header: 'Opening (pcs)', key: 'opening', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.opening) || 0 },
+                  { header: 'Packed in', key: 'added_on', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.added_on) || 0 },
+                  { header: 'Despatch', key: 'sold_on', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.sold_on) || 0 },
+                  { header: 'Closing (pcs)', key: 'on_hand', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.on_hand) || 0 },
+                  { header: 'Closing (MT)', key: 'mt', align: 'right' as const, numFmt: '#,##0.000', value: (r) => skuMT(r) }
+                ]
+              : [
+                  { header: 'SKU', key: 'name', value: (r) => r.name || '' },
+                  { header: 'Pack size', key: 'size', value: (r) => unitLabel(r) },
+                  { header: 'Packed in', key: 'added', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.added) || 0 },
+                  { header: 'Sold (packed)', key: 'sold', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.sold) || 0 },
+                  { header: 'On hand (pcs)', key: 'on_hand', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.on_hand) || 0 },
+                  { header: 'On hand (MT)', key: 'mt', align: 'right' as const, numFmt: '#,##0.000', value: (r) => skuMT(r) }
+                ]
+          }
           rows={rows}
         />
       </div>
@@ -546,32 +588,38 @@ function SkuStock(): React.JSX.Element {
             <TableRow>
               <TableHead>SKU</TableHead>
               <TableHead>Pack size</TableHead>
-              <TableHead className="text-right">Packed in</TableHead>
-              <TableHead className="text-right">Sold (packed)</TableHead>
-              <TableHead className="text-right">On hand (pcs)</TableHead>
-              <TableHead className="text-right">On hand (MT)</TableHead>
+              {dayMode && <TableHead className="text-right">Opening (pcs)</TableHead>}
+              <TableHead className="text-right">{dayMode ? 'Packed in' : 'Packed in (total)'}</TableHead>
+              <TableHead className="text-right">{dayMode ? 'Despatch' : 'Sold (packed)'}</TableHead>
+              <TableHead className="text-right">{dayMode ? 'Closing (pcs)' : 'On hand (pcs)'}</TableHead>
+              <TableHead className="text-right">{dayMode ? 'Closing (MT)' : 'On hand (MT)'}</TableHead>
               <TableHead className="w-[80px] text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={dayMode ? 8 : 7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
             ) : rows.length === 0 ? (
-              <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No SKUs. Add packagings under Masters → Packed SKU first.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={dayMode ? 8 : 7} className="py-10 text-center text-muted-foreground">No SKUs. Add packagings under Masters → Packed SKU first.</TableCell></TableRow>
             ) : (
               <>
                 {rows.map((r) => {
                   const onHand = Number(r.on_hand) || 0
+                  const inQty = dayMode ? Number(r.added_on) || 0 : Number(r.added) || 0
+                  const outQty = dayMode ? Number(r.sold_on) || 0 : Number(r.sold) || 0
                   return (
                     <TableRow key={r.id as number}>
                       <TableCell className="font-medium">{r.name}</TableCell>
                       <TableCell className="text-muted-foreground">{unitLabel(r)}</TableCell>
-                      <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.added) ? formatNum(r.added) : '—'}</TableCell>
-                      <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.sold) ? formatNum(r.sold) : '—'}</TableCell>
+                      {dayMode && (
+                        <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.opening) ? formatNum(r.opening) : '—'}</TableCell>
+                      )}
+                      <TableCell className="text-right tabular-nums text-emerald-700">{inQty ? formatNum(inQty) : '—'}</TableCell>
+                      <TableCell className="text-right tabular-nums text-red-600">{outQty ? formatNum(outQty) : '—'}</TableCell>
                       <TableCell className={cn('text-right font-semibold tabular-nums', onHand < -1e-6 && 'text-red-600')}>{formatNum(onHand)}</TableCell>
                       <TableCell className="text-right tabular-nums">{formatNum(skuMT(r))}</TableCell>
                       <TableCell className="text-right">
-                        <Button variant="ghost" size="icon" className="h-8 w-8" title="Add / remove packs" onClick={() => openAdjust(r)}>
+                        <Button variant="ghost" size="icon" className="h-8 w-8" title={dayMode ? `Add / remove packs on ${formatDate(date)}` : 'Add / remove packs'} onClick={() => openAdjust(r)}>
                           <SlidersHorizontal className="h-4 w-4" />
                         </Button>
                       </TableCell>
@@ -579,9 +627,11 @@ function SkuStock(): React.JSX.Element {
                   )
                 })}
                 <TableRow className="border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
-                  <TableCell colSpan={4} className="font-bold uppercase tracking-wide text-amber-900">Total (MT)</TableCell>
+                  <TableCell colSpan={dayMode ? 3 : 2} className="font-bold uppercase tracking-wide text-amber-900">Total</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(rows.reduce((s, r) => s + (dayMode ? Number(r.added_on) || 0 : Number(r.added) || 0), 0))}</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(rows.reduce((s, r) => s + (dayMode ? Number(r.sold_on) || 0 : Number(r.sold) || 0), 0))}</TableCell>
                   <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totalOnHand)}</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totalMT)}</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totalMT)} MT</TableCell>
                   <TableCell />
                 </TableRow>
               </>
@@ -590,7 +640,9 @@ function SkuStock(): React.JSX.Element {
         </Table>
       </div>
       <p className="text-xs text-muted-foreground">
-        Update the on-hand pieces per SKU (sliders icon). On hand (pcs) = packs added − packs sold on dispatched PACKED sales. On hand (MT) = pieces × pack size (1 L counted as 1 KG), and the Total (MT) row sums every SKU — the packed closing balance in tonnage.
+        {dayMode
+          ? 'Day wise: opening (brought forward) + packed in on this date − despatched on this date = closing. Use the sliders icon to enter that day\'s packed pieces (the entry is dated to the day you\'re viewing). Closing (MT) = pieces × pack size (1 L counted as 1 KG); the Total row gives the day\'s packed closing balance in tonnage.'
+          : 'All time: packs added − packs sold on dispatched PACKED sales = on hand. On hand (MT) = pieces × pack size (1 L counted as 1 KG), and the Total row sums every SKU.'}
       </p>
 
       <Dialog open={!!adjustRow} onOpenChange={(o) => !o && setAdjustRow(null)}>

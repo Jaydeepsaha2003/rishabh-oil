@@ -61,6 +61,9 @@ export interface MoneyInput {
   tdsThreshold?: number
   tdsPctAbove?: number
   tdsPrior?: number // taxable already billed to this party this FY (before this order)
+  // Per-bargain shares when the invoice spans more than one bargain rate. Each
+  // line is rated (and rounded) on its own, matching how suppliers bill.
+  lines?: { rate: number; qty: number }[]
 }
 
 // Tiered TDS: the part of `taxable` still under the threshold (given `prior`
@@ -138,14 +141,28 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   const interestPerUnit =
     i.bargainRate * (1 + (i.gstPct || 0) / 100) * (interestPct / 100) * (interestDays / 365)
   // Manual additional interest (₹ per unit) folds into the adjusted rate too.
-  const adjustedRate = i.invoiceRate + interestPerUnit + (i.additionalInterest || 0)
+  const rawAdjustedRate = i.invoiceRate + interestPerUnit + (i.additionalInterest || 0)
 
   // Provisional (invoice) block.
   const threshold = i.tdsThreshold || 0
   const abovePct = i.tdsPctAbove || 0
   const prior = i.tdsPrior || 0
 
-  const taxableValue = adjustedRate * i.orderedQty
+  // Suppliers bill each bargain line at a WHOLE-RUPEE rate (rounded up), so the
+  // taxable value is the sum of those line values — not one blended rate times
+  // the total quantity. With a single bargain this is just ceil(rate) × qty.
+  const kFactor = (1 + (i.gstPct || 0) / 100) * (interestPct / 100) * (interestDays / 365)
+  const lines = (i.lines || []).filter((l) => n(l.qty) > 0)
+  const lineQty = lines.reduce((s, l) => s + n(l.qty), 0)
+  const taxableValue =
+    lines.length > 1 && lineQty > 0
+      ? lines.reduce(
+          (s, l) => s + Math.ceil(n(l.rate) + n(l.rate) * kFactor + (i.additionalInterest || 0)) * n(l.qty),
+          0
+        )
+      : Math.ceil(rawAdjustedRate) * i.orderedQty
+  // The rate actually charged (taxable ÷ qty) — what the invoice shows per unit.
+  const adjustedRate = i.orderedQty > 0 ? taxableValue / i.orderedQty : Math.ceil(rawAdjustedRate)
   const gstAmount = (taxableValue * i.gstPct) / 100
   const tdsAmount = tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct)
   const netAmount = taxableValue + gstAmount - tdsAmount
@@ -252,6 +269,38 @@ export async function listOrders(): Promise<Row[]> {
   return toPlain(res)
 }
 
+// Per-bargain rate/qty shares for the tankers on an invoice. A split tanker
+// contributes to BOTH its primary and its excess bargain, so an invoice spanning
+// two bargains is priced line-wise (each at its own rate) like the supplier does.
+async function bargainLinesForTankers(tankerIds: unknown): Promise<{ rate: number; qty: number }[]> {
+  const ids = (Array.isArray(tankerIds) ? tankerIds : []).map((x) => n(x)).filter((x) => x > 0)
+  if (ids.length === 0) return []
+  const res = await getClient().execute({
+    sql: `SELECT pt.loaded_qty, pt.extra_qty, pt.bargain_id, pt.extra_bargain_id,
+                 b.rate_per_uom AS rate, xb.rate_per_uom AS extra_rate
+          FROM purchase_tankers pt
+          LEFT JOIN bargains b ON b.id = pt.bargain_id
+          LEFT JOIN bargains xb ON xb.id = pt.extra_bargain_id
+          WHERE pt.id IN (${ids.map(() => '?').join(',')})`,
+    args: ids
+  })
+  const m = new Map<string, { rate: number; qty: number }>()
+  const add = (id: unknown, rate: number, qty: number): void => {
+    if (!id || qty <= 0) return
+    const k = String(id)
+    const cur = m.get(k) || { rate, qty: 0 }
+    cur.qty += qty
+    m.set(k, cur)
+  }
+  for (const r of toPlain(res)) {
+    const loaded = n(r.loaded_qty)
+    const extra = r.extra_bargain_id ? n(r.extra_qty) : 0
+    add(r.bargain_id, n(r.rate), loaded - extra)
+    if (extra > 0) add(r.extra_bargain_id, n(r.extra_rate), extra)
+  }
+  return Array.from(m.values())
+}
+
 export async function createOrder(v: Row): Promise<{ id: number }> {
   await ensureOilType(n(v.oil_type_id))
   // Consignment purchase: goods already at our site, drawn from consignment
@@ -267,6 +316,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   const supplier = await getSupplier(n(v.supplier_id))
   const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), 0)
   const roundOff = n(v.round_off)
+  const bargainLines = await bargainLinesForTankers(v.tanker_ids)
   const m = computeMoney({
     orderedQty: n(v.ordered_qty),
     invoiceRate: n(v.invoice_rate),
@@ -282,7 +332,8 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     additionalInterest: n(v.additional_interest),
     tdsThreshold: n(supplier?.tds_threshold),
     tdsPctAbove: n(v.tds_pct),
-    tdsPrior: prior
+    tdsPrior: prior,
+    lines: bargainLines
   })
   const res = await getClient().execute({
     sql: `INSERT INTO orders
@@ -404,6 +455,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
   const supplier = await getSupplier(n(v.supplier_id))
   const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), id)
   const roundOff = n(v.round_off)
+  const bargainLines = await bargainLinesForTankers(v.tanker_ids)
   const m = computeMoney({
     orderedQty: n(v.ordered_qty),
     invoiceRate: n(v.invoice_rate),
@@ -419,7 +471,8 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     additionalInterest: n(v.additional_interest),
     tdsThreshold: n(supplier?.tds_threshold),
     tdsPctAbove: n(v.tds_pct),
-    tdsPrior: prior
+    tdsPrior: prior,
+    lines: bargainLines
   })
   await getClient().execute({
     sql: `UPDATE orders SET

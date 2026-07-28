@@ -426,7 +426,7 @@ export function registerIpc(): void {
     saveStockCounts(date, items)
   )
 
-  handle('skuStock:list', () => listSkuStock())
+  handle('skuStock:list', (_e, args?: { date?: string }) => listSkuStock(args?.date))
   handle('skuStock:adjust', (_e, { id, delta, note, date }: { id: number; delta: number; note?: string; date?: string }) =>
     adjustSkuStock(id, delta, note, date)
   )

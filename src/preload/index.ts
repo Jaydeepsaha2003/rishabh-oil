@@ -174,7 +174,7 @@ const api = {
       ipcRenderer.invoke('stockCount:save', { date, items })
   },
   skuStock: {
-    list: (): Promise<Row[]> => ipcRenderer.invoke('skuStock:list'),
+    list: (date?: string): Promise<Row[]> => ipcRenderer.invoke('skuStock:list', { date }),
     adjust: (id: number, delta: number, note?: string, date?: string): Promise<{ id: number; on_hand: number }> =>
       ipcRenderer.invoke('skuStock:adjust', { id, delta, note, date })
   },

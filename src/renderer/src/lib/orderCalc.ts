@@ -14,6 +14,8 @@ export interface MoneyInput {
   tdsThreshold?: number
   tdsPctAbove?: number
   tdsPrior?: number
+  // Per-bargain shares when the invoice spans more than one bargain rate.
+  lines?: { rate: number; qty: number }[]
 }
 
 function tierTds(
@@ -50,11 +52,24 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   const interestPerUnit =
     i.bargainRate * (1 + (i.gstPct || 0) / 100) * (interestPct / 100) * (interestDays / 365)
   // Manual additional interest (₹ per unit) folds into the adjusted rate too.
-  const adjustedRate = i.invoiceRate + interestPerUnit + (i.additionalInterest || 0)
+  const rawAdjustedRate = i.invoiceRate + interestPerUnit + (i.additionalInterest || 0)
   const threshold = i.tdsThreshold || 0
   const abovePct = i.tdsPctAbove || 0
   const prior = i.tdsPrior || 0
-  const taxableValue = adjustedRate * i.orderedQty
+  // Mirrors main: each bargain line is billed at a whole-rupee rate (rounded
+  // up), so taxable = Σ line values. One bargain → ceil(rate) × qty.
+  const num = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
+  const kFactor = (1 + (i.gstPct || 0) / 100) * (interestPct / 100) * (interestDays / 365)
+  const lines = (i.lines || []).filter((l) => num(l.qty) > 0)
+  const lineQty = lines.reduce((s, l) => s + num(l.qty), 0)
+  const taxableValue =
+    lines.length > 1 && lineQty > 0
+      ? lines.reduce(
+          (s, l) => s + Math.ceil(num(l.rate) + num(l.rate) * kFactor + (i.additionalInterest || 0)) * num(l.qty),
+          0
+        )
+      : Math.ceil(rawAdjustedRate) * i.orderedQty
+  const adjustedRate = i.orderedQty > 0 ? taxableValue / i.orderedQty : Math.ceil(rawAdjustedRate)
   const gstAmount = (taxableValue * i.gstPct) / 100
   const tdsAmount = tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct)
   const netAmount = taxableValue + gstAmount - tdsAmount

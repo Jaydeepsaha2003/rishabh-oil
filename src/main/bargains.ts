@@ -289,13 +289,35 @@ export async function deleteBargain(id: number): Promise<{ id: number }> {
   if (Number(ord.rows[0].n) > 0) {
     throw new Error('This bargain has purchases linked to it. Delete those purchases first.')
   }
-  // Clean up loose tankers (and their gate entries) before removing the bargain,
-  // otherwise the foreign-key constraints reject the delete.
+  // A tanker on this bargain may be billed on an invoice booked against a
+  // DIFFERENT bargain (e.g. a duplicate bargain, or an excess split). Deleting
+  // the bargain must never wipe such a tanker — that would orphan the invoice.
+  const billed = await c.execute({
+    sql: `SELECT pt.tanker_no, o.invoice_no
+          FROM purchase_tankers pt JOIN orders o ON o.id = pt.order_id
+          WHERE (pt.bargain_id = ? OR pt.extra_bargain_id = ?) AND pt.order_id IS NOT NULL`,
+    args: [id, id]
+  })
+  if (billed.rows.length) {
+    const detail = billed.rows
+      .map((r) => `${r.tanker_no || 'tanker'} → invoice ${r.invoice_no || '(no number)'}`)
+      .join('; ')
+    throw new Error(
+      `This bargain has billed tankers linked to it (${detail}). Re-link or delete those purchases first — deleting now would leave the invoice without its tanker.`
+    )
+  }
+  // Clean up loose (unbilled) tankers and their gate entries, then release any
+  // excess allocation pointing here, before removing the bargain.
   await c.execute({
-    sql: 'DELETE FROM gate_entries WHERE tanker_id IN (SELECT id FROM purchase_tankers WHERE bargain_id = ?)',
+    sql: 'DELETE FROM gate_entries WHERE tanker_id IN (SELECT id FROM purchase_tankers WHERE bargain_id = ? AND order_id IS NULL)',
     args: [id]
   })
-  await c.execute({ sql: 'DELETE FROM purchase_tankers WHERE bargain_id = ?', args: [id] })
+  await c.execute({ sql: 'DELETE FROM purchase_tankers WHERE bargain_id = ? AND order_id IS NULL', args: [id] })
+  await c.execute({
+    sql: 'UPDATE purchase_tankers SET extra_bargain_id = NULL, extra_qty = 0 WHERE extra_bargain_id = ?',
+    args: [id]
+  })
+  await c.execute({ sql: 'DELETE FROM bargain_adjustments WHERE kind = ? AND bargain_id = ?', args: ['purchase', id] })
   await c.execute({ sql: 'DELETE FROM bargains WHERE id = ?', args: [id] })
   return { id }
 }
