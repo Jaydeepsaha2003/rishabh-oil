@@ -337,9 +337,104 @@ export async function listPendingGateArrivals(): Promise<Row[]> {
   return toPlain(res)
 }
 
+// Every check a consignment lot has to pass, whether it is being logged for the
+// first time or edited afterwards. Kept in one place so both routes refuse the
+// same mistakes with the same wording.
+//
+// `existing` is the row being edited (absent when logging a new one). The gate
+// entry a lot came from is authoritative about the party and the weighed
+// quantity, so an edit cannot quietly contradict it.
+const CONSIGNMENT_UOMS = ['MT', 'KG', 'L']
+// Same tolerance the purchase side allows between a gate weighment and the books.
+const GATE_BUFFER = 1
+
+async function validateLot(v: Row, existing: Row | null): Promise<{
+  supplierId: number
+  productId: number
+  qty: number
+  uom: string
+  depositDate: string
+}> {
+  const c = getClient()
+  const supplierId = v.supplier_id ? n(v.supplier_id) : n(existing?.supplier_id)
+  const productId = v.product_id ? n(v.product_id) : n(existing?.product_id)
+  const qty = v.qty != null && v.qty !== '' ? n(v.qty) : n(existing?.qty)
+  const uom = String(v.uom || existing?.uom || 'MT').toUpperCase()
+  const depositDate = String(v.deposit_date || existing?.deposit_date || '').slice(0, 10)
+
+  if (!supplierId) throw new Error('Choose the supplier this stock belongs to')
+  if (!productId) throw new Error('Choose the product')
+  if (qty <= 0) throw new Error('Quantity must be greater than zero')
+  if (!Number.isFinite(qty)) throw new Error('Quantity must be a number')
+  if (!CONSIGNMENT_UOMS.includes(uom)) {
+    throw new Error(`Unit must be one of ${CONSIGNMENT_UOMS.join(', ')}`)
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(depositDate)) throw new Error('Enter the date this stock came in')
+  const today = new Date().toISOString().slice(0, 10)
+  if (depositDate > today) throw new Error('The date cannot be in the future')
+
+  // The party must be a real, live supplier.
+  const sup = await c.execute({
+    sql: 'SELECT id, name, active FROM suppliers WHERE id = ? LIMIT 1',
+    args: [supplierId]
+  })
+  if (!sup.rows.length) throw new Error('That supplier no longer exists')
+  if (!n(sup.rows[0].active)) throw new Error(`${sup.rows[0].name} is marked inactive — reactivate it first`)
+
+  // So must the product.
+  const prod = await c.execute({
+    sql: 'SELECT id, code, name, active FROM products WHERE id = ? LIMIT 1',
+    args: [productId]
+  })
+  if (!prod.rows.length) throw new Error('That product no longer exists')
+  if (!n(prod.rows[0].active)) {
+    throw new Error(`${prod.rows[0].code || prod.rows[0].name} is marked inactive — reactivate it first`)
+  }
+
+  // Anything the gate recorded wins: the party was named there and the vehicle
+  // was weighed there, so an edit cannot drift away from it.
+  const gateId = existing?.gate_entry_id ?? (v.gate_entry_id ? n(v.gate_entry_id) : null)
+  if (gateId) {
+    const ge = await c.execute({
+      sql: 'SELECT id, gate_entry_no, supplier_id, is_direct_mnc, received_qty, status FROM gate_entries WHERE id = ? LIMIT 1',
+      args: [n(gateId)]
+    })
+    if (!ge.rows.length) throw new Error('That gate entry no longer exists')
+    const g = toPlain(ge)[0]
+    if (n(g.is_direct_mnc) === 1 && n(g.supplier_id) && n(g.supplier_id) !== supplierId) {
+      const named = await c.execute({ sql: 'SELECT name FROM suppliers WHERE id = ?', args: [n(g.supplier_id)] })
+      throw new Error(
+        `Gate entry ${g.gate_entry_no} was booked in for ${named.rows[0]?.name || 'another party'} — change it at the gate if that is wrong`
+      )
+    }
+    const weighed = n(g.received_qty)
+    if (weighed > 0 && Math.abs(qty - weighed) > GATE_BUFFER + 1e-6) {
+      throw new Error(
+        `Gate entry ${g.gate_entry_no} weighed ${weighed.toFixed(3)} ${uom} — ${qty.toFixed(3)} is more than ${GATE_BUFFER} ${uom} away from it`
+      )
+    }
+  }
+
+  // Two lots of the same party, product, date and vehicle is almost always the
+  // same delivery entered twice.
+  const tankerNo = (v.tanker_no ?? existing?.tanker_no) ? String(v.tanker_no ?? existing?.tanker_no).trim() : null
+  if (tankerNo) {
+    const dup = await c.execute({
+      sql: `SELECT id FROM consignment_stock
+            WHERE company_id = ? AND supplier_id = ? AND product_id = ?
+              AND substr(deposit_date, 1, 10) = ? AND UPPER(TRIM(tanker_no)) = ?
+              AND id <> ? LIMIT 1`,
+      args: [getActiveCompanyId(), supplierId, productId, depositDate, tankerNo.toUpperCase(), n(existing?.id) || 0]
+    })
+    if (dup.rows.length) {
+      throw new Error(`Tanker ${tankerNo} is already logged for this party and product on ${depositDate}`)
+    }
+  }
+
+  return { supplierId, productId, qty, uom, depositDate }
+}
+
 export async function createConsignment(v: Row): Promise<{ id: number }> {
-  if (!v.supplier_id || !v.product_id) throw new Error('Supplier and product are required')
-  if (n(v.qty) <= 0) throw new Error('Quantity must be greater than zero')
   const c = getClient()
   const gateId = v.gate_entry_id ? n(v.gate_entry_id) : null
   let tankerNo = v.tanker_no ? String(v.tanker_no).trim() : null
@@ -357,17 +452,18 @@ export async function createConsignment(v: Row): Promise<{ id: number }> {
     if (dup.rows.length) throw new Error('This gate entry has already been validated into consignment stock')
     if (!tankerNo) tankerNo = ge.rows[0].tanker_no ? String(ge.rows[0].tanker_no) : null
   }
+  const ok = await validateLot({ ...v, tanker_no: tankerNo }, null)
   const res = await c.execute({
     sql: `INSERT INTO consignment_stock (company_id, supplier_id, product_id, qty, uom, deposit_date, note,
             gate_entry_id, tanker_no, is_opening)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
-      n(v.supplier_id),
-      n(v.product_id),
-      n(v.qty),
-      v.uom || 'MT',
-      v.deposit_date,
+      ok.supplierId,
+      ok.productId,
+      ok.qty,
+      ok.uom,
+      ok.depositDate,
       v.note ? String(v.note).trim() : null,
       gateId,
       tankerNo,
@@ -383,16 +479,25 @@ export async function updateConsignment(id: number, v: Row): Promise<{ id: numbe
   const c = getClient()
   const cur = await c.execute({ sql: 'SELECT * FROM consignment_stock WHERE id = ?', args: [id] })
   if (!cur.rows.length) throw new Error('Consignment entry not found')
-  const row = cur.rows[0]
-  const newQty = n(v.qty)
-  if (newQty <= 0) throw new Error('Quantity must be greater than zero')
+  const row = toPlain(cur)[0]
+  // Refuse first, before anything is written: a booked lot is frozen because its
+  // quantity is already inside a purchase invoice.
   if (row.order_id != null) {
-    throw new Error('This tanker is already booked on a purchase invoice — edit or delete that purchase first')
+    const inv = await c.execute({
+      sql: 'SELECT invoice_no FROM orders WHERE id = ? LIMIT 1',
+      args: [n(row.order_id)]
+    })
+    const no = inv.rows[0]?.invoice_no
+    throw new Error(
+      `This tanker is already booked on purchase invoice ${no || '(unknown)'} — edit or delete that purchase first`
+    )
   }
+  const ok = await validateLot(v, row)
+  const newQty = ok.qty
   // The party and the product are editable too, so a lot can be moved to the
   // pair it should have been logged against.
-  const newSupplier = v.supplier_id ? n(v.supplier_id) : n(row.supplier_id)
-  const newProduct = v.product_id ? n(v.product_id) : n(row.product_id)
+  const newSupplier = ok.supplierId
+  const newProduct = ok.productId
   const moved = newSupplier !== n(row.supplier_id) || newProduct !== n(row.product_id)
   const avail = await consignmentAvailable(n(row.supplier_id), n(row.product_id))
   if (moved) {
@@ -413,8 +518,8 @@ export async function updateConsignment(id: number, v: Row): Promise<{ id: numbe
       newSupplier,
       newProduct,
       newQty,
-      v.uom || 'MT',
-      v.deposit_date,
+      ok.uom,
+      ok.depositDate,
       v.note ? String(v.note).trim() : null,
       id
     ]
