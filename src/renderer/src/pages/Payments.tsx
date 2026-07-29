@@ -35,6 +35,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { Pagination, usePaged } from '@/components/Pagination'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -474,6 +475,7 @@ function emptyBd(): Row {
 
 function BillDiscountTab(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
+  const paged = usePaged(rows)
   const [suppliers, setSuppliers] = useState<Row[]>([])
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Row | null>(null)
@@ -587,7 +589,7 @@ function BillDiscountTab(): React.JSX.Element {
                 </TableCell>
               </TableRow>
             ) : (
-              rows.map((r) => {
+              paged.pageRows.map((r) => {
                 const days = daysBetween(r.maturity_date, r.payment_received_date)
                 return (
                   <TableRow key={r.id as number}>
@@ -625,6 +627,7 @@ function BillDiscountTab(): React.JSX.Element {
             )}
           </TableBody>
         </Table>
+        <Pagination {...paged} label="bill discounts" className="border-t px-3" />
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>

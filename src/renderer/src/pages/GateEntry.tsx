@@ -16,6 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { errText, formatDate, formatNum, todayISO } from '@/lib/format'
 import { ExcelButton } from '@/components/ExcelButton'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { Pagination, usePaged } from '@/components/Pagination'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -51,6 +52,7 @@ const blankGateOut = (): Row => ({
 
 export function GateEntry(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
+  const paged = usePaged(rows)
   const [tankers, setTankers] = useState<Row[]>([])
   const [suppliers, setSuppliers] = useState<Row[]>([])
   const [sales, setSales] = useState<Row[]>([])
@@ -522,7 +524,7 @@ export function GateEntry(): React.JSX.Element {
               ) : rows.length === 0 ? (
                 <TableRow><TableCell colSpan={10} className="py-10 text-center text-muted-foreground">No gate entries yet.</TableCell></TableRow>
               ) : (
-                rows.map((row) => {
+                paged.pageRows.map((row) => {
                   const done = row.status !== 'pending'
                   const isOut = row.direction === 'out'
                   const diff = Number(row.dispatch_qty || 0) - Number(row.received_qty || 0)
@@ -572,6 +574,7 @@ export function GateEntry(): React.JSX.Element {
               )}
             </TableBody>
           </Table>
+          <Pagination {...paged} label="gate entries" className="border-t px-3" />
         </section>
       </div>
 

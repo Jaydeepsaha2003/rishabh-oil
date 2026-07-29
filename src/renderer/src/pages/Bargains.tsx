@@ -47,6 +47,7 @@ import { UomSelect } from '@/components/UomSelect'
 import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { exportRowsToExcel } from '@/lib/excel'
+import { Pagination, usePaged, PAGE_SIZE } from '@/components/Pagination'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
@@ -153,6 +154,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
   const [brokers, setBrokers] = useState<Row[]>([])
   const [oilTypes, setOilTypes] = useState<Row[]>([])
   const [tankers, setTankers] = useState<Row[]>([])
+  const [draws, setDraws] = useState<Row[]>([])
   const [defaultShortagePct, setDefaultShortagePct] = useState('0.2')
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [defaultUom, setDefaultUom] = useState('MT')
@@ -223,19 +225,21 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [b, s, o, br, pt, settings] = await Promise.all([
+    const [b, s, o, br, pt, settings, cd] = await Promise.all([
       window.api.bargains.list(F, T),
       window.api.data.list('suppliers'),
       window.api.data.list('products'),
       window.api.data.list('brokers'),
       // bargains are general → show consumption from every company's tankers
       window.api.tankers.list(true),
-      window.api.settings.all()
+      window.api.settings.all(),
+      window.api.orders.consignmentDraws().catch(() => [] as Row[])
     ])
     setRows(b)
     setSuppliers(s.filter((x) => x.active))
     setBrokers(br.filter((x) => x.active))
     setTankers(pt)
+    setDraws(cd)
     setDefaultShortagePct(settings.allowed_shortage_pct ?? '0.2')
     setOilTypes(
       o
@@ -412,6 +416,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
     }
     return list
   }, [visibleRows, sort])
+  const paged = usePaged(sortedRows)
 
   // Oil-group separators only make sense while rows are grouped by oil.
   const groupedByOil = !sort || sort.key === 'oil'
@@ -557,7 +562,8 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
             { header: 'Split', key: 'split' }
           ],
           rows: tankerDetailRows(),
-          isGroup: (r) => !r.tanker_no
+          isGroup: (r) => !r.tanker_no,
+          outlineDetail: true
         }
       ]
     })
@@ -844,10 +850,13 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                       <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatINR(grandVisible.balValue)}</TableCell>
                       <TableCell className="py-2" />
                     </TableRow>
-                    {sortedRows.map((row, i) => {
+                    {paged.pageRows.map((row, pi) => {
+                      // Index in the full list, so serials and group breaks stay
+                      // correct across pages; a page always opens with its header.
+                      const i = (paged.page - 1) * PAGE_SIZE + pi
                       const oil = oilOf(row)
                       const newGroup =
-                        groupedByOil && (i === 0 || oil !== oilOf(sortedRows[i - 1]))
+                        groupedByOil && (pi === 0 || i === 0 || oil !== oilOf(sortedRows[i - 1]))
                       // Groups are collapsed unless the user opened them; while
                       // searching, always reveal matches.
                       const isCollapsed = groupedByOil && !q && !openGroups.has(oil)
@@ -944,6 +953,48 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                       Number(t.bargain_id) === Number(row.id) ||
                                       (Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) === Number(row.id))
                                   )
+                                  // Consignment / direct purchases draw on a bargain
+                                  // without a tanker of their own, so they are listed
+                                  // separately from the tanker table.
+                                  const drawn = draws.filter((d) => Number(d.bargain_id) === Number(row.id))
+                                  const drawnBlock = drawn.length ? (
+                                    <div className="mb-2 overflow-hidden rounded-md border border-violet-200">
+                                      <div className="flex items-center justify-between bg-violet-100/70 px-3 py-1">
+                                        <span className="text-[10px] font-semibold uppercase tracking-wide text-violet-900">
+                                          MNC / direct purchases on this bargain
+                                        </span>
+                                        <span className="text-[11px] font-bold tabular-nums text-violet-900">
+                                          {formatNum(drawn.reduce((a, d) => a + (Number(d.qty) || 0), 0))} {row.uom}
+                                        </span>
+                                      </div>
+                                      <table className="w-full bg-white text-[11px]">
+                                        <thead>
+                                          <tr className="border-b text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                                            <th className="px-3 py-1">Invoice</th>
+                                            <th className="px-3 py-1">Date</th>
+                                            <th className="px-3 py-1">Party</th>
+                                            <th className="px-3 py-1">Tanker(s)</th>
+                                            <th className="px-3 py-1 text-right">Drawn</th>
+                                            <th className="px-3 py-1 text-right">Invoice rate</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {drawn.map((d) => (
+                                            <tr key={`${d.order_id}-${d.bargain_id}`} className="border-b last:border-0">
+                                              <td className="px-3 py-1 font-medium">{d.invoice_no}</td>
+                                              <td className="whitespace-nowrap px-3 py-1">{formatDate(d.order_date)}</td>
+                                              <td className="px-3 py-1">{d.supplier_name}</td>
+                                              <td className="px-3 py-1 text-muted-foreground">{d.tanker_nos || '—'}</td>
+                                              <td className="px-3 py-1 text-right font-bold tabular-nums text-red-600">
+                                                {formatNum(d.qty)}
+                                              </td>
+                                              <td className="px-3 py-1 text-right tabular-nums">{formatINR(d.invoice_rate)}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  ) : null
                                   const remarksLine = row.remarks ? (
                                     <p className="pb-2 text-xs text-muted-foreground"><span className="font-semibold">Remarks:</span> {row.remarks}</p>
                                   ) : null
@@ -951,7 +1002,10 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                     return (
                                       <div className="bg-slate-200 px-6 py-4">
                                         {remarksLine}
-                                        <p className="text-xs text-muted-foreground">No tankers on this bargain yet.</p>
+                                        {drawnBlock}
+                                        {!drawn.length && (
+                                          <p className="text-xs text-muted-foreground">No tankers on this bargain yet.</p>
+                                        )}
                                       </div>
                                     )
                                   }
@@ -983,6 +1037,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                   return (
                                     <div className="bg-slate-200 px-6 py-4">
                                       {remarksLine}
+                                      {drawnBlock}
                                       <table className="overflow-hidden rounded-lg border border-slate-300 bg-card text-xs shadow-sm [&_td]:pl-3 [&_th]:pl-3">
                                         <thead>
                                           <tr className="border-b bg-slate-200/70 text-left text-slate-700">
@@ -1057,6 +1112,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   )}
                 </TableBody>
               </Table>
+              <Pagination {...paged} label="bargains" className="border-t px-3" />
             </div>
           </>
         )}

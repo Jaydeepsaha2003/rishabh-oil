@@ -22,6 +22,9 @@ export type ExcelSheet = {
   // Rows matching this get a tinted, bold-ish treatment — used to make the
   // parent rows stand out when a sheet interleaves parents and their detail.
   isGroup?: (row: Row) => boolean
+  // When set alongside isGroup, detail rows are put on outline level 1 so Excel
+  // shows the +/− handles in the margin and each parent can be collapsed.
+  outlineDetail?: boolean
 }
 
 function writeSheet(wb: ExcelJS.Workbook, spec: ExcelSheet, index: number): void {
@@ -58,6 +61,8 @@ function writeSheet(wb: ExcelJS.Workbook, spec: ExcelSheet, index: number): void
   rows.forEach((r, ri) => {
     const row = ws.getRow(headerRowIdx + 1 + ri)
     const group = spec.isGroup ? spec.isGroup(r) : false
+    // Detail rows sit one level in, so Excel groups them under their parent.
+    if (spec.outlineDetail && spec.isGroup) row.outlineLevel = group ? 0 : 1
     columns.forEach((c, ci) => {
       const raw = c.value ? c.value(r) : r[c.key]
       const cell = row.getCell(ci + 1)
@@ -84,6 +89,7 @@ export async function exportRowsToExcel(opts: {
   rows: Row[]
   title?: string
   isGroup?: (row: Row) => boolean
+  outlineDetail?: boolean
   extraSheets?: ExcelSheet[]
 }): Promise<void> {
   const { filename } = opts
@@ -95,11 +101,17 @@ export async function exportRowsToExcel(opts: {
       title: opts.title,
       columns: opts.columns,
       rows: opts.rows,
-      isGroup: opts.isGroup
+      isGroup: opts.isGroup,
+      outlineDetail: opts.outlineDetail
     },
     0
   )
   ;(opts.extraSheets || []).forEach((sh, i) => writeSheet(wb, sh, i + 1))
+  // Show the outline expanded, with the +/− summary handles above each group.
+  wb.eachSheet((ws) => {
+    ws.properties.outlineLevelRow = 1
+    ws.properties.outlineProperties = { summaryBelow: false, summaryRight: false }
+  })
 
   const buf = await wb.xlsx.writeBuffer()
   const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })

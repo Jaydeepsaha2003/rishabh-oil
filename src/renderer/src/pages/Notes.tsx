@@ -25,6 +25,7 @@ import { ExcelButton } from '@/components/ExcelButton'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { Pagination, usePaged } from '@/components/Pagination'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -78,6 +79,8 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
   }
 
   const visible = useMemo(() => rows.filter((r) => r.note_type === kind), [rows, kind])
+
+  const paged = usePaged(visible)
 
   function openAdd(type: NoteType): void {
     setForm({
@@ -234,7 +237,7 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
               ) : visible.length === 0 ? (
                 <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No notes yet. Raise a debit or credit note above.</TableCell></TableRow>
               ) : (
-                visible.map((r) => {
+                paged.pageRows.map((r) => {
                   const hasItems = Number(r.item_count) > 0
                   const isOpen = !!expanded[r.id as number]
                   return (
@@ -296,6 +299,7 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
               )}
             </TableBody>
           </Table>
+          <Pagination {...paged} label="notes" className="border-t px-3" />
         </div>
       </div>
       </>

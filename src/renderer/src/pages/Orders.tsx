@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { ArrowLeft, BarChart3, Eye, Pencil, Plus, Trash2, Truck } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { ExcelButton } from '@/components/ExcelButton'
+import { Pagination, usePaged } from '@/components/Pagination'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -139,6 +140,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const [tab, setTab] = useState('tankers')
   // Invoices with no live bargain link, and the mapping dialog state.
   const [unmapped, setUnmapped] = useState<Row[]>([])
+  const unmappedPaged = usePaged(unmapped)
   const [mapRow, setMapRow] = useState<Row | null>(null)
   const [mapLines, setMapLines] = useState<Row[]>([])
   const [mapError, setMapError] = useState<string | null>(null)
@@ -349,6 +351,41 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     return { rows, totals, grand }
   }, [tankers, pivotStart, pivotEnd])
 
+  // The pivot as Excel rows: one line per oil with its stage counts, then a line
+  // per party under it — the breakdown the UI only shows on hover. Detail rows
+  // are put on outline level 1 so Excel can collapse each oil.
+  const pivotSheetRows = useMemo(() => {
+    const out: Row[] = []
+    for (const row of pivot.rows) {
+      const r: Row = { oil: row.label, is_group: true, total: row.total }
+      for (const st of PIVOT_STAGES) r[st.key] = row.cells[st.key]?.count || 0
+      out.push(r)
+      // party × stage under this oil
+      const byParty = new Map<string, Row>()
+      for (const st of PIVOT_STAGES) {
+        for (const it of row.cells[st.key]?.items || []) {
+          const k = it.supplier_name
+          if (!byParty.has(k)) {
+            const blank: Row = { oil: row.label, party: k, is_group: false, total: 0, tankers: [] as string[] }
+            for (const x of PIVOT_STAGES) blank[x.key] = 0
+            byParty.set(k, blank)
+          }
+          const pr = byParty.get(k) as Row
+          pr[st.key] = (Number(pr[st.key]) || 0) + 1
+          pr.total = (Number(pr.total) || 0) + 1
+          ;(pr.tankers as string[]).push(`${it.tanker_no || '—'} (${it.bargain_no})`)
+        }
+      }
+      for (const pr of Array.from(byParty.values()).sort((a, b) => String(a.party).localeCompare(String(b.party)))) {
+        out.push({ ...pr, tanker_list: (pr.tankers as string[]).join(', ') })
+      }
+    }
+    const grand: Row = { oil: 'GRAND TOTAL', is_group: true, total: pivot.grand }
+    for (const st of PIVOT_STAGES) grand[st.key] = pivot.totals[st.key] || 0
+    out.push(grand)
+    return out
+  }, [pivot])
+
   // The tanker list below the pivot follows the same date range — a tanker
   // belongs to the window if its loaded (or gate-entry) date falls within it.
   // When a pivot count is clicked, the list instead shows EXACTLY the tankers
@@ -374,6 +411,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       return !!d && d >= start && d <= end
     })
   }, [tankers, pivotStart, pivotEnd, pivotSel])
+  const tankerPaged = usePaged(visibleTankers)
+  const orderPaged = usePaged(rows)
 
   // Row fields derived from a bargain (auto or manual pick).
   function bargainDefaults(b: Row): Row {
@@ -2008,6 +2047,27 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     {(pivotStart !== monthStartISO() || pivotEnd !== todayISO()) && (
                       <Button variant="ghost" size="sm" onClick={() => { setPivotStart(monthStartISO()); setPivotEnd(todayISO()) }}>This month</Button>
                     )}
+                    <ExcelButton
+                      filename={`tanker-movement-${pivotEnd}`}
+                      sheetName="Tanker movement"
+                      title={`Tanker movement by oil type — as on ${formatDate(pivotEnd)}`}
+                      columns={[
+                        { header: 'Oil type', key: 'oil' },
+                        { header: 'Party', key: 'party', value: (r) => r.party || '' },
+                        ...PIVOT_STAGES.map((st) => ({
+                          header: st.label,
+                          key: st.key,
+                          align: 'right' as const,
+                          numFmt: '#,##0',
+                          value: (r: Row) => Number(r[st.key]) || 0
+                        })),
+                        { header: 'Total', key: 'total', align: 'right' as const, numFmt: '#,##0', value: (r) => Number(r.total) || 0 },
+                        { header: 'Tankers', key: 'tanker_list', value: (r) => r.tanker_list || '' }
+                      ]}
+                      rows={pivotSheetRows}
+                      isGroup={(r) => !!r.is_group}
+                      outlineDetail
+                    />
                   </div>
                 </div>
                 <Table>
@@ -2097,10 +2157,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   <TableBody>
                     {loading ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
                       : visibleTankers.length === 0 ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">{tankers.length === 0 ? 'No tankers yet. Add the first loaded tanker.' : pivotSel ? 'No tankers match the selected cell.' : 'No tankers in this date range.'}</TableCell></TableRow>
-                        : visibleTankers.map((row) => {
+                        : tankerPaged.pageRows.map((row) => {
                           const next = nextTankerStage(row.status)
                           return <TableRow key={row.id}>
-                            <TableCell><div className={cn('font-medium', !String(row.tanker_no || '').trim() && 'italic text-muted-foreground')}>{String(row.tanker_no || '').trim() || 'No number yet'}</div><div className="text-xs text-muted-foreground">{row.status === 'supplier_factory' ? `Entered ${formatDate(row.loaded_date)}` : `Loaded ${formatDate(row.loaded_date)}`}</div></TableCell>
+                            <TableCell><div className={cn('font-medium', !String(row.tanker_no || '').trim() && 'italic text-muted-foreground')}>{String(row.tanker_no || '').trim() || 'No number yet'}</div><div className="text-xs text-muted-foreground">{row.status === 'supplier_factory' ? `Entered ${formatDate(row.loaded_date)}` : `Loaded ${formatDate(row.loaded_date)}`}</div>{!!row.gate_entry_no && (
+                              <div className="mt-0.5 text-[11px] text-sky-700">
+                                Gate {row.gate_entry_no}
+                                {row.gate_tanker_no && String(row.gate_tanker_no).trim() !== String(row.tanker_no || '').trim()
+                                  ? ` · vehicle ${row.gate_tanker_no}`
+                                  : ''}
+                                {Number(row.gate_qty) > 0 ? ` · weighed ${formatNum(row.gate_qty)}` : ''}
+                              </div>
+                            )}</TableCell>
                             <TableCell>
                               <div>{row.supplier_name}</div>
                               <div className="text-xs text-muted-foreground">
@@ -2131,6 +2199,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         })}
                   </TableBody>
                 </Table>
+                <Pagination {...tankerPaged} label="tankers" className="border-t px-3" />
               </div>
             </TabsContent>
 
@@ -2144,9 +2213,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   <TableBody>
                     {loading ? <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
                       : rows.length === 0 ? <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No purchase entries yet.</TableCell></TableRow>
-                        : rows.map((row) => <TableRow key={row.id}>
+                        : orderPaged.pageRows.map((row) => <TableRow key={row.id}>
                           <TableCell><div className="font-medium">{row.invoice_no}</div><div className="text-xs text-muted-foreground">{formatDate(row.order_date)}</div></TableCell>
-                          <TableCell>{row.supplier_name}</TableCell><TableCell>{row.oil_code}</TableCell>
+                          <TableCell>{row.supplier_name}</TableCell><TableCell>{row.oil_code || row.oil_name || '—'}</TableCell>
                           <TableCell className="text-center"><Badge variant="secondary">{row.tanker_count || 0}</Badge></TableCell>
                           <TableCell className="text-right tabular-nums">{formatNum(row.ordered_qty)} {row.uom}</TableCell>
                           <TableCell className="text-right font-medium tabular-nums">{formatINR(row.net_amount)}</TableCell>
@@ -2163,6 +2232,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         </TableRow>)}
                   </TableBody>
                 </Table>
+                <Pagination {...orderPaged} label="invoices" className="border-t px-3" />
               </div>
             </TabsContent>
 
@@ -2227,7 +2297,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         </TableCell>
                       </TableRow>
                     ) : (
-                      unmapped.map((r, i) => (
+                      unmappedPaged.pageRows.map((r, i) => (
                         <TableRow key={r.id as number} className={cn('border-b', i % 2 === 1 && 'bg-muted/30')}>
                           <TableCell className="font-medium">{r.invoice_no}</TableCell>
                           <TableCell className="whitespace-nowrap">{formatDate(r.order_date)}</TableCell>
@@ -2254,6 +2324,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     )}
                   </TableBody>
                 </Table>
+                <Pagination {...unmappedPaged} label="invoices" className="border-t px-3" />
               </div>
             </TabsContent>
           </Tabs>

@@ -261,13 +261,19 @@ export async function listOrders(): Promise<Row[]> {
     sql: `
     SELECT o.*,
            s.name AS supplier_name,
-           ot.code AS oil_code, ot.name AS oil_name,
+           -- Read the product master first; oil_types is only a legacy mirror kept
+           -- for the FK, and a product missing from it left the label blank.
+           -- A product may carry its label in name with a blank code, so empty
+           -- strings have to fall through as well as NULLs.
+           COALESCE(NULLIF(pr.code, ''), NULLIF(pr.name, ''), NULLIF(ot.code, ''), ot.name) AS oil_code,
+           COALESCE(NULLIF(pr.name, ''), NULLIF(pr.code, ''), ot.name) AS oil_name,
            src.name AS source_name,
            t.name AS transporter_name,
            (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_count,
            (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_nos
     FROM orders o
     LEFT JOIN suppliers s ON s.id = o.supplier_id
+    LEFT JOIN products pr ON pr.id = o.oil_type_id
     LEFT JOIN products ot ON ot.id = o.oil_type_id
     LEFT JOIN sources src ON src.id = o.source_id
     LEFT JOIN transporters t ON t.id = o.transporter_id
@@ -379,6 +385,26 @@ export async function listOrderBargains(orderId: number): Promise<Row[]> {
           FROM order_bargains ob LEFT JOIN bargains b ON b.id = ob.bargain_id
           WHERE ob.order_id = ? ORDER BY ob.id`,
     args: [orderId]
+  })
+  return toPlain(res)
+}
+
+// Consignment / direct draws across every bargain — the rows a bargain needs to
+// show alongside its tankers, since these purchases carry no tanker of their own.
+export async function listConsignmentDraws(): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT ob.bargain_id, ob.qty, o.id AS order_id, o.invoice_no, o.order_date, o.uom,
+                 o.invoice_rate, o.adjusted_rate, o.taxable_value, o.ordered_qty,
+                 s.name AS supplier_name, p.code AS oil_code, p.name AS oil_name,
+                 (SELECT GROUP_CONCAT(cs.tanker_no, ', ') FROM consignment_stock cs
+                   WHERE cs.order_id = o.id AND cs.tanker_no IS NOT NULL) AS tanker_nos
+          FROM order_bargains ob
+          JOIN orders o ON o.id = ob.order_id
+          LEFT JOIN suppliers s ON s.id = o.supplier_id
+          LEFT JOIN products p ON p.id = o.oil_type_id
+          WHERE o.company_id = ?
+          ORDER BY o.order_date, o.id`,
+    args: [getActiveCompanyId()]
   })
   return toPlain(res)
 }
@@ -769,7 +795,12 @@ export async function listPurchaseTankers(allCompanies = false): Promise<Row[]> 
            b.allowed_shortage_pct, s.name AS supplier_name,
            p.code AS oil_code, p.name AS oil_name, src.name AS source_name,
            tr.name AS transporter_name, xb.bargain_no AS extra_bargain_no,
-           xb.rate_per_uom AS extra_bargain_rate
+           xb.rate_per_uom AS extra_bargain_rate,
+           -- what the gate recorded for this tanker: its own entry number and
+           -- the vehicle number written down there, which is the number the
+           -- yard actually saw.
+           ge.gate_entry_no, ge.tanker_no AS gate_tanker_no, ge.entry_date AS gate_date,
+           ge.received_qty AS gate_qty
     FROM purchase_tankers pt
     LEFT JOIN orders o ON o.id = pt.order_id
     LEFT JOIN bargains b ON b.id = pt.bargain_id
@@ -778,6 +809,7 @@ export async function listPurchaseTankers(allCompanies = false): Promise<Row[]> 
     LEFT JOIN products p ON p.id = pt.oil_type_id
     LEFT JOIN sources src ON src.id = pt.source_id
     LEFT JOIN transporters tr ON tr.id = pt.transporter_id
+    LEFT JOIN gate_entries ge ON ge.tanker_id = pt.id AND ge.direction = 'in'
     ${allCompanies ? '' : 'WHERE pt.company_id = ?'}
     ORDER BY CASE pt.status
       WHEN 'supplier_factory' THEN 1 WHEN 'loaded' THEN 2 WHEN 'transit' THEN 3

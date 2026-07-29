@@ -32,6 +32,7 @@ import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { ExcelButton } from '@/components/ExcelButton'
 import { todayISO } from '@/lib/format'
+import { Pagination, usePaged } from '@/components/Pagination'
 
 export type FieldType = 'text' | 'number' | 'switch' | 'select' | 'date'
 export type ColumnType = FieldType
@@ -87,6 +88,8 @@ export function EntityManager({
   onFieldChange
 }: Props): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
+  // 10 per page with page numbers underneath, shared by every master list.
+  const paged = usePaged(rows)
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -263,7 +266,7 @@ export function EntityManager({
                 </TableCell>
               </TableRow>
             ) : (
-              rows.map((row) => (
+              paged.pageRows.map((row) => (
                 <TableRow key={row.id as number}>
                   {columns.map((c) => (
                     <TableCell
@@ -302,6 +305,7 @@ export function EntityManager({
             )}
           </TableBody>
         </Table>
+        <Pagination {...paged} label="records" className="border-t" />
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>

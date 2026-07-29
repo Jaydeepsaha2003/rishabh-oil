@@ -27,6 +27,7 @@ import { ExcelButton } from '@/components/ExcelButton'
 import { formatDate, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { Pagination, usePaged } from '@/components/Pagination'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -39,6 +40,7 @@ const CAT_LABEL: Record<string, string> = {
 
 export function Production(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
+  const paged = usePaged(rows)
   const [products, setProducts] = useState<Row[]>([])
   const [formulations, setFormulations] = useState<Row[]>([])
   const [stock, setStock] = useState<Record<number, number>>({})
@@ -290,7 +292,7 @@ export function Production(): React.JSX.Element {
                   </TableCell>
                 </TableRow>
               ) : (
-                rows.map((row) => (
+                paged.pageRows.map((row) => (
                   <TableRow key={row.id as number}>
                     <TableCell>{formatDate(row.prod_date)}</TableCell>
                     <TableCell className="font-medium">{row.product_name}</TableCell>
@@ -317,6 +319,7 @@ export function Production(): React.JSX.Element {
               )}
             </TableBody>
           </Table>
+          <Pagination {...paged} label="runs" className="border-t px-3" />
         </div>
       </div>
     </>

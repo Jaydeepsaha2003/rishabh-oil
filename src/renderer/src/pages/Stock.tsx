@@ -509,6 +509,30 @@ function DayCloseSection({
                 )
               })
             )}
+            {!loading && rows.length > 0 && (
+              <TableRow className="border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
+                <TableCell colSpan={2} className="font-bold uppercase tracking-wide text-amber-900">Total</TableCell>
+                <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                  {formatNum(rows.reduce((a, r) => a + (Number(r.book_qty) || 0), 0))}
+                </TableCell>
+                <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                  {formatNum(rows.reduce((a, r) => a + (Number(r.actual_qty) || 0), 0))}
+                </TableCell>
+                <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                  {formatNum(
+                    rows.reduce(
+                      (a, r) => a + (r.actual_qty !== null && r.actual_qty !== '' ? diffOf(r) : 0),
+                      0
+                    )
+                  )}
+                </TableCell>
+                <TableCell />
+                <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                  {formatINR(rows.reduce((a, r) => a + actualValueOf(r), 0))}
+                </TableCell>
+                <TableCell />
+              </TableRow>
+            )}
           </TableBody>
         </Table>
       </div>
@@ -1179,7 +1203,10 @@ function MncStock(): React.JSX.Element {
                                         <tr className="border-b bg-slate-200/70 text-left text-slate-700">
                                           <th className="w-8 py-1.5 pr-3 font-semibold">#</th>
                                           <th className="py-1.5 pr-3 font-semibold">Deposit date</th>
+                                          <th className="py-1.5 pr-3 font-semibold">Tanker</th>
+                                          <th className="py-1.5 pr-3 font-semibold">Gate no</th>
                                           <th className="py-1.5 pr-3 text-right font-semibold">Qty</th>
+                                          <th className="py-1.5 pr-3 font-semibold">Booking</th>
                                           <th className="py-1.5 pr-3 font-semibold">Note</th>
                                         </tr>
                                       </thead>
@@ -1188,7 +1215,23 @@ function MncStock(): React.JSX.Element {
                                           <tr key={l.id as number} className={cn('border-b', li % 2 === 1 ? 'bg-muted/40' : 'bg-card')}>
                                             <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{li + 1}</td>
                                             <td className="py-1.5 pr-3 whitespace-nowrap">{formatDate(l.deposit_date)}</td>
+                                            <td className="py-1.5 pr-3 font-medium">
+                                              {l.tanker_no ||
+                                                (Number(l.is_opening) === 1 ? (
+                                                  <span className="text-violet-700">Opening</span>
+                                                ) : (
+                                                  <span className="text-muted-foreground">—</span>
+                                                ))}
+                                            </td>
+                                            <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{l.gate_entry_no || '—'}</td>
                                             <td className="py-1.5 pr-3 text-right font-medium tabular-nums text-emerald-700">{formatNum(l.qty)} {l.uom}</td>
+                                            <td className="py-1.5 pr-3">
+                                              {l.order_id != null ? (
+                                                <span className="text-muted-foreground">{String(l.invoice_no || 'Booked')}</span>
+                                              ) : (
+                                                <span className="font-medium text-amber-700">Pending</span>
+                                              )}
+                                            </td>
                                             <td className="py-1.5 pr-3 text-muted-foreground">{l.note || '—'}</td>
                                           </tr>
                                         ))}

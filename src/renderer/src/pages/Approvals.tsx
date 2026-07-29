@@ -11,6 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { formatDateTime, errText, todayISO } from '@/lib/format'
 import { loadUser } from '@/lib/session'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { Pagination, usePaged } from '@/components/Pagination'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -136,6 +137,8 @@ export function Approvals(): React.JSX.Element {
 
   const pending = rows.filter((r) => r.status === 'pending')
   const decided = rows.filter((r) => r.status !== 'pending')
+  const pendingPaged = usePaged(pending)
+  const decidedPaged = usePaged(decided)
 
   return (
     <>
@@ -189,7 +192,7 @@ export function Approvals(): React.JSX.Element {
                 ) : pending.length === 0 ? (
                   <TableRow><TableCell colSpan={isAdmin ? 5 : 4} className="py-10 text-center text-muted-foreground">Nothing waiting for approval.</TableCell></TableRow>
                 ) : (
-                  pending.map((row) => (
+                  pendingPaged.pageRows.map((row) => (
                     <TableRow key={row.id}>
                       <TableCell><Badge variant="secondary">{labelFor(row.table_name)}</Badge></TableCell>
                       <TableCell>
@@ -215,6 +218,7 @@ export function Approvals(): React.JSX.Element {
                 )}
               </TableBody>
             </Table>
+            <Pagination {...pendingPaged} label="requests" className="border-t px-3" />
           </div>
         </section>
 
@@ -237,7 +241,7 @@ export function Approvals(): React.JSX.Element {
                 {decided.length === 0 ? (
                   <TableRow><TableCell colSpan={isAdmin ? 6 : 5} className="py-8 text-center text-muted-foreground">No decisions yet.</TableCell></TableRow>
                 ) : (
-                  decided.map((row) => (
+                  decidedPaged.pageRows.map((row) => (
                     <TableRow key={row.id}>
                       <TableCell><Badge variant="secondary">{labelFor(row.table_name)}</Badge></TableCell>
                       <TableCell className="font-medium">{row.label || '—'}</TableCell>
@@ -250,6 +254,7 @@ export function Approvals(): React.JSX.Element {
                 )}
               </TableBody>
             </Table>
+            <Pagination {...decidedPaged} label="decisions" className="border-t px-3" />
           </div>
         </section>
       </div>
