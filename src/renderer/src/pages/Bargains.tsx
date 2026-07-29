@@ -47,7 +47,6 @@ import { UomSelect } from '@/components/UomSelect'
 import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { exportRowsToExcel } from '@/lib/excel'
-import { Pagination, usePaged, PAGE_SIZE } from '@/components/Pagination'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
@@ -416,7 +415,6 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
     }
     return list
   }, [visibleRows, sort])
-  const paged = usePaged(sortedRows)
 
   // Oil-group separators only make sense while rows are grouped by oil.
   const groupedByOil = !sort || sort.key === 'oil'
@@ -738,14 +736,14 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
           </div>
         ) : (
           <>
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="inline-flex flex-wrap gap-1 rounded-lg border bg-muted/40 p-1">
+            <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
+              <div className="flex shrink-0 gap-1 overflow-x-auto rounded-lg border bg-muted/40 p-1">
                 {TYPE_FILTERS.map((t) => (
                   <button
                     key={t}
                     onClick={() => setTypeFilter(t)}
                     className={cn(
-                      'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                      'whitespace-nowrap rounded-md px-2.5 py-1.5 text-[13px] font-medium transition-colors',
                       typeFilter === t ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
                     )}
                   >
@@ -753,7 +751,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   </button>
                 ))}
               </div>
-              <div className="relative w-full sm:w-64">
+              <div className="relative min-w-[180px] flex-1 basis-56">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   type="search"
@@ -763,16 +761,16 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
-              <div className="flex items-center gap-1.5 text-sm">
+              <div className="flex shrink-0 flex-wrap items-center gap-1.5 text-[13px]">
                 <span className="text-muted-foreground">Date</span>
-                <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="w-36" />
+                <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="w-[8.5rem]" />
                 <span className="text-muted-foreground">to</span>
-                <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="w-36" />
+                <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="w-[8.5rem]" />
                 {(dateFrom || dateTo) && (
                   <Button variant="ghost" size="sm" className="h-8 text-muted-foreground" onClick={() => { setDateFrom(''); setDateTo('') }}>Clear</Button>
                 )}
               </div>
-              <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+              <label className="ml-auto flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[13px] text-muted-foreground">
                 <Switch checked={showZero} onCheckedChange={setShowZero} />
                 Show settled (0 balance)
               </label>
@@ -850,13 +848,10 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                       <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatINR(grandVisible.balValue)}</TableCell>
                       <TableCell className="py-2" />
                     </TableRow>
-                    {paged.pageRows.map((row, pi) => {
-                      // Index in the full list, so serials and group breaks stay
-                      // correct across pages; a page always opens with its header.
-                      const i = (paged.page - 1) * PAGE_SIZE + pi
+                    {sortedRows.map((row, i) => {
                       const oil = oilOf(row)
                       const newGroup =
-                        groupedByOil && (pi === 0 || i === 0 || oil !== oilOf(sortedRows[i - 1]))
+                        groupedByOil && (i === 0 || oil !== oilOf(sortedRows[i - 1]))
                       // Groups are collapsed unless the user opened them; while
                       // searching, always reveal matches.
                       const isCollapsed = groupedByOil && !q && !openGroups.has(oil)
@@ -1112,7 +1107,6 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   )}
                 </TableBody>
               </Table>
-              <Pagination {...paged} label="bargains" className="border-t px-3" />
             </div>
           </>
         )}

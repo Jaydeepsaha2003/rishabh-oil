@@ -34,7 +34,6 @@ import { UomSelect } from '@/components/UomSelect'
 import { DatePicker } from '@/components/ui/date-picker'
 import { convertQty, errText, formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { ExcelButton } from '@/components/ExcelButton'
-import { Pagination, usePaged, PAGE_SIZE } from '@/components/Pagination'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -983,7 +982,6 @@ function SalesBargainsTab(): React.JSX.Element {
       ),
     [visibleRows]
   )
-  const bgPaged = usePaged(sortedRows)
 
   const groupStats = useMemo(() => {
     const m = new Map<string, { count: number; opening: number; addition: number; dispatch: number; closing: number; uom: string }>()
@@ -1311,10 +1309,9 @@ function SalesBargainsTab(): React.JSX.Element {
                   <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.closing)} MT</TableCell>
                   <TableCell className="py-2" />
                 </TableRow>
-                {bgPaged.pageRows.map((row, pi) => {
-                  const i = (bgPaged.page - 1) * PAGE_SIZE + pi
+                {sortedRows.map((row, i) => {
                   const grp = String(row.customer || '—')
-                  const newGroup = pi === 0 || i === 0 || grp !== String(sortedRows[i - 1].customer || '—')
+                  const newGroup = i === 0 || grp !== String(sortedRows[i - 1].customer || '—')
                   const isCollapsed = !q && !openGroups.has(grp)
                   const g = groupStats.get(grp)
                   // Serial number within the customer group (1-based).
@@ -1445,7 +1442,6 @@ function SalesBargainsTab(): React.JSX.Element {
             )}
           </TableBody>
         </Table>
-        <Pagination {...bgPaged} label="sales bargains" className="border-t px-3" />
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
