@@ -458,6 +458,10 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     }
   }
   const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), 0)
+  // The company this purchase belongs to. It is chosen on the form, so a tanker
+  // recorded under the wrong company can be billed into the right one — the
+  // tankers move with the invoice (see assignTankers).
+  const bookInCompany = v.company_id ? n(v.company_id) : getActiveCompanyId()
   const roundOff = n(v.round_off)
   // Consignment tankers bring their own per-bargain split; otherwise the split
   // comes from the loaded tankers on the invoice.
@@ -494,7 +498,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
        payment_cleared_date, remarks, freight_paid_to_supplier, is_consignment, received_qty, received_date, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
-      getActiveCompanyId(),
+      bookInCompany,
       v.invoice_no,
       v.order_date,
       v.bargain_id ? n(v.bargain_id) : null,
@@ -551,7 +555,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       await autoAssignConsignmentLots(id, n(v.supplier_id), n(v.oil_type_id), n(v.ordered_qty), n(v.bargain_id))
     }
   } else {
-    await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
+    await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id), bookInCompany)
     await applySupplierFreight(id, v)
   }
   await setSupplierPayable(id, n(v.supplier_id), m.net_amount + roundOff, String(v.order_date))
@@ -733,7 +737,11 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     }
   } else {
     await getClient().execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?', args: [id] })
-    await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id))
+    const moveTo = v.company_id ? n(v.company_id) : 0
+    if (moveTo) {
+      await getClient().execute({ sql: 'UPDATE orders SET company_id = ? WHERE id = ?', args: [moveTo, id] })
+    }
+    await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id), moveTo)
     await applySupplierFreight(id, v)
   }
   await setSupplierPayable(id, n(v.supplier_id), m.net_amount + roundOff, String(v.order_date))
@@ -746,7 +754,15 @@ export async function deleteOrder(id: number): Promise<{ id: number }> {
   await deleteJournalByRef('order_id', id)
   await c.execute({ sql: 'DELETE FROM supplier_ledger WHERE order_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM transporter_ledger WHERE order_id = ?', args: [id] })
-  await c.execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?', args: [id] })
+  // Honour what the delete promises: the tankers return to the loaded queue, so
+  // the stages walked after loading are cleared along with the invoice link.
+  await c.execute({
+    sql: `UPDATE purchase_tankers
+          SET order_id = NULL, status = 'loaded', transit_date = NULL, outside_factory_date = NULL,
+              inside_factory_date = NULL, empty_date = NULL, received_qty = NULL
+          WHERE order_id = ?`,
+    args: [id]
+  })
   // Consignment tankers this invoice drew go back to pending, and its bargain
   // allocation goes with it.
   await releaseConsignmentLots(id)
@@ -759,7 +775,8 @@ async function assignTankers(
   orderId: number,
   tankerIds: unknown,
   bargainId: number,
-  transporterId: number
+  transporterId: number,
+  companyId = 0
 ): Promise<void> {
   const ids = Array.isArray(tankerIds) ? tankerIds.map(Number).filter((x) => x > 0) : []
   if (!ids.length) throw new Error('Select at least one loaded tanker')
@@ -778,9 +795,12 @@ async function assignTankers(
       throw new Error('All tankers on one purchase must belong to the selected bargain')
     }
     await c.execute({
+      // A tanker belongs to whichever company its invoice was booked in, so a
+      // clerical mix-up is corrected by re-billing rather than by editing rows.
       sql: `UPDATE purchase_tankers SET order_id = ?,
+            company_id = CASE WHEN ? > 0 THEN ? ELSE company_id END,
             transporter_id = CASE WHEN ? > 0 THEN ? ELSE transporter_id END WHERE id = ?`,
-      args: [orderId, transporterId, transporterId, tankerId]
+      args: [orderId, companyId, companyId, transporterId, transporterId, tankerId]
     })
   }
 }

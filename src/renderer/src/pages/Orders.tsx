@@ -139,6 +139,8 @@ interface OrdersProps {
 export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersProps = {}): React.JSX.Element {
   const [tab, setTab] = useState('tankers')
   // Invoices with no live bargain link, and the mapping dialog state.
+  const [companies, setCompanies] = useState<Row[]>([])
+  const [activeCompany, setActiveCompany] = useState<number>(0)
   const [unmapped, setUnmapped] = useState<Row[]>([])
   const unmappedPaged = usePaged(unmapped)
   const [mapRow, setMapRow] = useState<Row | null>(null)
@@ -188,7 +190,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [o, pt, b, s, src, tr, cfg, ge, um] = await Promise.all([
+    const [o, pt, b, s, src, tr, cfg, ge, um, co, act] = await Promise.all([
       window.api.orders.list(),
       window.api.tankers.list(),
       window.api.bargains.list(),
@@ -197,7 +199,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       window.api.data.list('transporters'),
       window.api.settings.all(),
       window.api.gate.list(),
-      window.api.orders.unmapped()
+      window.api.orders.unmapped(),
+      window.api.company.list(),
+      window.api.company.getActive()
     ])
     setRows(o)
     setTankers(pt)
@@ -208,6 +212,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     setSettings(cfg)
     setGateEntries(ge)
     setUnmapped(um)
+    setCompanies(co.filter((x) => x.active))
+    setActiveCompany(Number(act?.id) || 0)
     setLoading(false)
   }, [])
 
@@ -775,7 +781,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
 
   function openNewPurchase(): void {
     setEditing(null)
-    setForm({ invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '', round_off: '', round_off_manual: false, charge_interest: false, interest_touched: false, remarks: '', freight_paid_to_supplier: false })
+    setForm({ company_id: String(activeCompany || ''), invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '', round_off: '', round_off_manual: false, charge_interest: false, interest_touched: false, remarks: '', freight_paid_to_supplier: false })
     setSelected([])
     setLotIds([])
     setLotBargains({})
@@ -790,6 +796,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     const supplier = suppliers.find((x) => x.id === row.supplier_id)
     setEditing(row)
     setForm({
+      company_id: String(row.company_id || activeCompany || ''),
       bargain_id: row.bargain_id,
       supplier_id: row.supplier_id,
       oil_type_id: row.oil_type_id,
@@ -1273,6 +1280,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   }, [calc.netAmount, form.round_off_manual, form.round_off, formPage])
 
   async function savePurchase(): Promise<void> {
+    if (!form.company_id) return setError('Choose the company this purchase belongs to')
     if (!form.supplier_id) return setError('Select the supplier')
     if (directMode) {
       if (!form.oil_type_id) return setError('Choose the product being invoiced')
@@ -1306,6 +1314,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       bargain_rate: Number(form.bargain_rate),
       gst_pct: Number(form.gst_pct) || 0,
       tds_pct: Number(form.tds_pct) || 0,
+      company_id: Number(form.company_id) || undefined,
       tanker_ids: directMode ? [] : selected,
       is_consignment: directMode,
       consignment_lot_ids: [],
@@ -1453,7 +1462,27 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               <section className="rounded-xl border bg-card p-5">
                 <h3 className="mb-4 font-medium">Invoice details</h3>
                 <div className="grid gap-4 md:grid-cols-3">
-                  <div className="grid gap-1.5 md:col-span-3">
+                  <div className="grid gap-1.5">
+                    <Label>Book into company *</Label>
+                    <Select
+                      value={String(form.company_id || '')}
+                      onValueChange={(v) => setForm((p) => ({ ...p, company_id: v }))}
+                    >
+                      <SelectTrigger><SelectValue placeholder="Select the company" /></SelectTrigger>
+                      <SelectContent>
+                        {companies.map((cm) => (
+                          <SelectItem key={cm.id} value={String(cm.id)}>{cm.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {String(form.company_id || '') !== String(activeCompany) && !!form.company_id && (
+                      <span className="text-[11px] font-medium text-amber-700">
+                        This invoice and its tankers will move to{' '}
+                        {companies.find((cm) => String(cm.id) === String(form.company_id))?.name}.
+                      </span>
+                    )}
+                  </div>
+                  <div className="grid gap-1.5 md:col-span-2">
                     <Label>Supplier *</Label>
                     <Select
                       value={String(form.supplier_id || '')}
