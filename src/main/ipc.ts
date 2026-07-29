@@ -44,6 +44,7 @@ import {
   deleteBillDiscount
 } from './payments'
 import { listUnmappedOrders, unmappedCount, mapOrderToBargains } from './unmapped'
+import { assertAllowed, clearAccessCache } from './access-gate'
 import {
   listConsignment,
   consignmentSummary,
@@ -252,6 +253,9 @@ export function registerIpc(): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handle = (channel: string, fn: (...a: any[]) => unknown): void => {
     ipcMain.handle(channel, async (e, args) => {
+      // Writes pass the access gate first: the right itself, then the read-only
+      // window on the entry's own date. Unmapped channels are untouched.
+      if (!READONLY.test(channel)) await assertAllowed(channel, args)
       const result = await fn(e, args)
       if (!READONLY.test(channel)) {
         await bumpRevision().catch(() => {})
@@ -404,7 +408,10 @@ export function registerIpc(): void {
   )
   handle('users:list', () => listUsers())
   handle('users:create', (_e, { values }: { values: Row }) => createUser(values))
-  handle('users:update', (_e, { id, values }: { id: number; values: Row }) => updateUser(id, values))
+  handle('users:update', (_e, { id, values }: { id: number; values: Row }) => {
+    clearAccessCache()
+    return updateUser(id, values)
+  })
   handle('users:delete', (_e, { id }: { id: number }) => deleteUser(id))
 
   handle('access:heartbeat', (_e, { userId, username }: { userId: number; username: string }) =>

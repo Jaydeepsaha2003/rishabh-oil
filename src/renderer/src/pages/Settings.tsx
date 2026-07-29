@@ -27,6 +27,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import type { AppUser } from '@/lib/session'
+import { cn } from '@/lib/utils'
 import { MODULES, canWrite } from '@/lib/modules'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -144,11 +145,110 @@ function UsersManager(): React.JSX.Element {
     }
   }
 
+  // A module's rights, read from either the new object shape or the older
+  // 'read' / 'write' string so existing users edit without being reset.
+  type Rights = { view: boolean; create: boolean; edit: boolean; delete: boolean; editDays: string }
+  function rightsOf(key: string): Rights {
+    const raw = (form.permissions || {})[key]
+    if (raw === 'write') return { view: true, create: true, edit: true, delete: true, editDays: '' }
+    if (raw === 'read') return { view: true, create: false, edit: false, delete: false, editDays: '' }
+    if (raw && typeof raw === 'object') {
+      const o = raw as Record<string, unknown>
+      return {
+        view: !!o.view || !!o.create || !!o.edit || !!o.delete,
+        create: !!o.create,
+        edit: !!o.edit,
+        delete: !!o.delete,
+        editDays: o.editDays == null || o.editDays === '' ? '' : String(o.editDays)
+      }
+    }
+    return { view: false, create: false, edit: false, delete: false, editDays: '' }
+  }
+
+  function writeRights(key: string, next: Rights): void {
+    setForm((p) => {
+      const perms = { ...(p.permissions || {}) }
+      const any = next.view || next.create || next.edit || next.delete
+      if (!any) delete perms[key]
+      else {
+        const entry: Record<string, unknown> = {
+          view: true,
+          create: next.create,
+          edit: next.edit,
+          delete: next.delete
+        }
+        if (next.editDays !== '' && Number.isFinite(Number(next.editDays))) {
+          entry.editDays = Math.max(0, Number(next.editDays))
+        }
+        perms[key] = entry
+      }
+      return { ...p, permissions: perms }
+    })
+  }
+
+  function toggleRight(key: string, flag: 'view' | 'create' | 'edit' | 'delete', on: boolean): void {
+    const cur = rightsOf(key)
+    const next = { ...cur, [flag]: on }
+    // Nothing can be done to a module you cannot see.
+    if (flag === 'view' && !on) {
+      next.create = false
+      next.edit = false
+      next.delete = false
+    }
+    if (on && flag !== 'view') next.view = true
+    writeRights(key, next)
+  }
+
+  // Column-wise bulk set, and a whole-row preset.
+  function setColumn(flag: 'view' | 'create' | 'edit' | 'delete', on: boolean): void {
+    setForm((p) => {
+      const perms = { ...(p.permissions || {}) }
+      for (const m of MODULES) {
+        const cur = rightsOf(m.key)
+        const next = { ...cur, [flag]: on }
+        if (flag === 'view' && !on) {
+          next.create = false
+          next.edit = false
+          next.delete = false
+        }
+        if (on && flag !== 'view') next.view = true
+        const any = next.view || next.create || next.edit || next.delete
+        if (!any) delete perms[m.key]
+        else {
+          const entry: Record<string, unknown> = { view: true, create: next.create, edit: next.edit, delete: next.delete }
+          if (next.editDays !== '') entry.editDays = Math.max(0, Number(next.editDays))
+          perms[m.key] = entry
+        }
+      }
+      return { ...p, permissions: perms }
+    })
+  }
+
   function setAllPerms(level: 'none' | 'read' | 'write'): void {
     setForm((p) => {
       if (level === 'none') return { ...p, permissions: {} }
-      const perms: Record<string, string> = {}
-      for (const m of MODULES) perms[m.key] = level
+      const perms: Record<string, unknown> = {}
+      for (const m of MODULES) {
+        perms[m.key] =
+          level === 'read'
+            ? { view: true, create: false, edit: false, delete: false }
+            : { view: true, create: true, edit: true, delete: true }
+      }
+      return { ...p, permissions: perms }
+    })
+  }
+
+  // Apply one read-only window to every module the user can edit.
+  function setAllDays(days: string): void {
+    setForm((p) => {
+      const perms = { ...(p.permissions || {}) }
+      for (const m of MODULES) {
+        const cur = rightsOf(m.key)
+        if (!(cur.view || cur.create || cur.edit || cur.delete)) continue
+        const entry: Record<string, unknown> = { view: true, create: cur.create, edit: cur.edit, delete: cur.delete }
+        if (days !== '' && Number.isFinite(Number(days))) entry.editDays = Math.max(0, Number(days))
+        perms[m.key] = entry
+      }
       return { ...p, permissions: perms }
     })
   }
@@ -214,22 +314,77 @@ function UsersManager(): React.JSX.Element {
               </p>
             ) : (
               <>
-                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                  {MODULES.map((m) => (
-                    <div key={m.key} className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
-                      <span className="truncate">{m.label}</span>
-                      <Select value={(form.permissions || {})[m.key] || 'none'} onValueChange={(v) => setPerm(m.key, v)}>
-                        <SelectTrigger className="h-8 w-28 shrink-0"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">No access</SelectItem>
-                          <SelectItem value="read">Read</SelectItem>
-                          <SelectItem value="write">Read &amp; write</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  ))}
+                <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
+                  <span className="text-muted-foreground">Read-only after</span>
+                  <Input
+                    type="number"
+                    min="0"
+                    className="h-7 w-20 text-right"
+                    placeholder="days"
+                    onChange={(e) => setAllDays(e.target.value)}
+                  />
+                  <span className="text-muted-foreground">days, applied to every module below</span>
                 </div>
-                <p className="text-xs text-muted-foreground">Read lets them view; Read &amp; write lets them add, edit and delete.</p>
+                <div className="overflow-hidden rounded-lg border">
+                  <table className="w-full text-[12px]">
+                    <thead>
+                      <tr className="bg-muted/70 text-left">
+                        <th className="px-3 py-1.5 font-semibold">Page</th>
+                        {(['view', 'create', 'edit', 'delete'] as const).map((f) => (
+                          <th key={f} className="px-2 py-1.5 text-center font-semibold capitalize">
+                            {f}
+                            <div className="mt-0.5 flex justify-center gap-1 font-normal">
+                              <button type="button" className="text-[10px] text-sky-700 hover:underline" onClick={() => setColumn(f, true)}>all</button>
+                              <button type="button" className="text-[10px] text-muted-foreground hover:underline" onClick={() => setColumn(f, false)}>none</button>
+                            </div>
+                          </th>
+                        ))}
+                        <th className="px-3 py-1.5 text-right font-semibold">
+                          Read-only after
+                          <div className="font-normal text-muted-foreground">days (blank = never)</div>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {MODULES.map((m, i) => {
+                        const r = rightsOf(m.key)
+                        const granted = r.view || r.create || r.edit || r.delete
+                        return (
+                          <tr key={m.key} className={cn('border-b last:border-0', i % 2 === 1 && 'bg-muted/30', !granted && 'opacity-60')}>
+                            <td className="px-3 py-1.5 font-medium">{m.label}</td>
+                            {(['view', 'create', 'edit', 'delete'] as const).map((f) => (
+                              <td key={f} className="px-2 py-1.5 text-center">
+                                <input
+                                  type="checkbox"
+                                  className="h-3.5 w-3.5 accent-sky-600"
+                                  checked={r[f]}
+                                  onChange={(e) => toggleRight(m.key, f, e.target.checked)}
+                                />
+                              </td>
+                            ))}
+                            <td className="px-3 py-1.5 text-right">
+                              <Input
+                                type="number"
+                                min="0"
+                                className="ml-auto h-7 w-20 text-right text-[12px]"
+                                placeholder="never"
+                                disabled={!r.edit && !r.delete}
+                                value={r.editDays}
+                                onChange={(e) => writeRights(m.key, { ...r, editDays: e.target.value })}
+                              />
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Tick what this user may do on each page. <b>Create</b> without <b>Edit</b> means they can add entries
+                  but never change them afterwards. <b>Read-only after</b> N days locks an entry once its own date
+                  (invoice date, bargain date…) is more than N days old — 0 means the entry&apos;s own day only. The
+                  entry stays visible either way, so totals still reconcile, and it is enforced on save, not just here.
+                </p>
               </>
             )}
           </div>
