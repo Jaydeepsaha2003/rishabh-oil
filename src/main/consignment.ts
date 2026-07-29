@@ -389,14 +389,35 @@ export async function updateConsignment(id: number, v: Row): Promise<{ id: numbe
   if (row.order_id != null) {
     throw new Error('This tanker is already booked on a purchase invoice — edit or delete that purchase first')
   }
+  // The party and the product are editable too, so a lot can be moved to the
+  // pair it should have been logged against.
+  const newSupplier = v.supplier_id ? n(v.supplier_id) : n(row.supplier_id)
+  const newProduct = v.product_id ? n(v.product_id) : n(row.product_id)
+  const moved = newSupplier !== n(row.supplier_id) || newProduct !== n(row.product_id)
   const avail = await consignmentAvailable(n(row.supplier_id), n(row.product_id))
-  // available already reflects the current qty; adding the delta must stay ≥ 0
-  if (avail + (newQty - n(row.qty)) < -1e-6) {
+  if (moved) {
+    // The whole lot leaves its old supplier+product, so that pair loses all of
+    // it — it must still cover whatever has already been invoiced from it.
+    if (avail - n(row.qty) < -1e-6) {
+      throw new Error('Cannot move this stock — part of this supplier and product has already been invoiced')
+    }
+  } else if (avail + (newQty - n(row.qty)) < -1e-6) {
+    // available already reflects the current qty; adding the delta must stay ≥ 0
     throw new Error('Cannot reduce below the quantity already invoiced from this stock')
   }
   await c.execute({
-    sql: `UPDATE consignment_stock SET qty = ?, uom = ?, deposit_date = ?, note = ? WHERE id = ?`,
-    args: [newQty, v.uom || 'MT', v.deposit_date, v.note ? String(v.note).trim() : null, id]
+    sql: `UPDATE consignment_stock
+          SET supplier_id = ?, product_id = ?, qty = ?, uom = ?, deposit_date = ?, note = ?
+          WHERE id = ?`,
+    args: [
+      newSupplier,
+      newProduct,
+      newQty,
+      v.uom || 'MT',
+      v.deposit_date,
+      v.note ? String(v.note).trim() : null,
+      id
+    ]
   })
   return { id }
 }
