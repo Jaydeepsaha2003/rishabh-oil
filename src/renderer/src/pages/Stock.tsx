@@ -15,6 +15,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import {
   Table,
   TableBody,
@@ -29,6 +30,7 @@ import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { downloadDayCloseExcel, parseDayCloseExcel } from '@/lib/dayCloseExcel'
+import { downloadSkuCountExcel, parseSkuCountExcel } from '@/lib/skuCountExcel'
 import { ExcelButton } from '@/components/ExcelButton'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -588,118 +590,299 @@ function SkuStock(): React.JSX.Element {
   }
 
   const totalOnHand = rows.reduce((s, r) => s + (Number(r.on_hand) || 0), 0)
+  const negatives = rows.filter((r) => Number(r.on_hand) < -1e-6).length
+
+  // Search + hide-empty, so a long SKU list stays workable.
+  const [search, setSearch] = useState('')
+  const [hideEmpty, setHideEmpty] = useState(false)
+  const shown = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return rows.filter((r) => {
+      if (q && !String(r.name || '').toLowerCase().includes(q)) return false
+      if (hideEmpty) {
+        const moved = (Number(r.opening) || 0) + (Number(r.added_on ?? r.added) || 0) + (Number(r.sold_on ?? r.sold) || 0)
+        if (Math.abs(Number(r.on_hand) || 0) < 1e-6 && Math.abs(moved) < 1e-6) return false
+      }
+      return true
+    })
+  }, [rows, search, hideEmpty])
+  const shownMT = useMemo(() => shown.reduce((s, r) => s + skuMT(r), 0), [shown]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // --- Excel count sheet -------------------------------------------------
+  const fileRef = useRef<HTMLInputElement | null>(null)
+  const [importing, setImporting] = useState(false)
+
+  async function downloadCountSheet(): Promise<void> {
+    try {
+      await downloadSkuCountExcel(
+        shown.map((r) => ({ ...r, pack_label: unitLabel(r) })),
+        dayMode ? date : todayISO(),
+        skuMT
+      )
+      toast.success('Count sheet downloaded — only the Counted column is editable')
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  // A filled-in sheet is applied as dated adjustments: for each SKU the delta
+  // between the counted closing and what the system holds, dated to the day
+  // being viewed. Untouched rows come back equal, so they change nothing.
+  async function importCountSheet(file: File): Promise<void> {
+    setImporting(true)
+    try {
+      const parsed = await parseSkuCountExcel(file)
+      if (!parsed.length) {
+        toast.error('No counted rows found — use the downloaded count sheet')
+        return
+      }
+      const when = dayMode ? date : todayISO()
+      let applied = 0
+      let unchanged = 0
+      const missing: string[] = []
+      for (const p of parsed) {
+        const row =
+          rows.find((r) => Number(r.id) === p.id) ||
+          rows.find((r) => String(r.name || '').toLowerCase() === p.name.toLowerCase())
+        if (!row) {
+          missing.push(p.name)
+          continue
+        }
+        const delta = p.counted - (Number(row.on_hand) || 0)
+        if (Math.abs(delta) < 1e-6) {
+          unchanged++
+          continue
+        }
+        await window.api.skuStock.adjust(
+          Number(row.id),
+          delta,
+          p.note || `Closing count ${formatDate(when)}`,
+          when
+        )
+        applied++
+      }
+      await load()
+      toast.success(
+        `${applied} SKU${applied === 1 ? '' : 's'} updated${unchanged ? `, ${unchanged} already matched` : ''}` +
+          (missing.length ? ` · not found: ${missing.slice(0, 3).join(', ')}` : '')
+      )
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setImporting(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-3">
+    <div className="space-y-3">
+      {/* Controls: period, search, and the count-sheet round trip */}
+      <div className="flex flex-wrap items-center gap-2">
         <div className="inline-flex rounded-lg border p-0.5">
           <button
             type="button"
             onClick={() => setDayMode(true)}
-            className={cn('rounded-md px-3 py-1.5 text-sm font-medium', dayMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')}
+            className={cn(
+              'rounded-md px-3 py-1 text-[13px] font-medium transition',
+              dayMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
+            )}
           >
             Day wise
           </button>
           <button
             type="button"
             onClick={() => setDayMode(false)}
-            className={cn('rounded-md px-3 py-1.5 text-sm font-medium', !dayMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')}
+            className={cn(
+              'rounded-md px-3 py-1 text-[13px] font-medium transition',
+              !dayMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
+            )}
           >
             All time
           </button>
         </div>
         {dayMode && (
-          <div className="flex items-center gap-2 text-sm">
+          <div className="flex items-center gap-1.5 text-[13px]">
             <span className="text-muted-foreground">Date</span>
-            <DatePicker max={todayISO()} value={date} onChange={(v) => setDate(v || todayISO())} className="w-40" />
-            <Button variant="ghost" size="sm" className="h-8 text-muted-foreground" onClick={() => setDate(todayISO())}>Today</Button>
+            <DatePicker max={todayISO()} value={date} onChange={(v) => setDate(v || todayISO())} className="w-36" />
+            <Button variant="ghost" size="sm" className="h-8 px-2 text-muted-foreground" onClick={() => setDate(todayISO())}>
+              Today
+            </Button>
           </div>
         )}
-        <div className="ml-auto" />
-        <ExcelButton
-          filename={`packed-sku-stock-${dayMode ? date : todayISO()}`}
-          sheetName="Packed SKU stock"
-          title="Packed SKU stock"
-          columns={
-            dayMode
-              ? [
-                  { header: 'SKU', key: 'name', value: (r) => r.name || '' },
-                  { header: 'Pack size', key: 'size', value: (r) => unitLabel(r) },
-                  { header: 'Opening (pcs)', key: 'opening', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.opening) || 0 },
-                  { header: 'Packed in', key: 'added_on', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.added_on) || 0 },
-                  { header: 'Despatch', key: 'sold_on', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.sold_on) || 0 },
-                  { header: 'Closing (pcs)', key: 'on_hand', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.on_hand) || 0 },
-                  { header: 'Closing (MT)', key: 'mt', align: 'right' as const, numFmt: '#,##0.000', value: (r) => skuMT(r) }
-                ]
-              : [
-                  { header: 'SKU', key: 'name', value: (r) => r.name || '' },
-                  { header: 'Pack size', key: 'size', value: (r) => unitLabel(r) },
-                  { header: 'Packed in', key: 'added', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.added) || 0 },
-                  { header: 'Sold (packed)', key: 'sold', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.sold) || 0 },
-                  { header: 'On hand (pcs)', key: 'on_hand', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.on_hand) || 0 },
-                  { header: 'On hand (MT)', key: 'mt', align: 'right' as const, numFmt: '#,##0.000', value: (r) => skuMT(r) }
-                ]
-          }
-          rows={rows}
+        <Input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search SKU…"
+          className="h-8 w-44 text-[13px]"
         />
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="SKUs" value={String(rows.length)} />
-        <StatCard label="Total packs on hand" value={formatNum(totalOnHand)} />
-        <StatCard label="Total packed (MT)" value={formatNum(totalMT)} />
-        <StatCard label="Below zero" value={String(rows.filter((r) => Number(r.on_hand) < -1e-6).length)} tone={rows.some((r) => Number(r.on_hand) < -1e-6) ? 'text-red-600' : 'text-emerald-700'} />
+        <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-muted-foreground">
+          <Switch checked={hideEmpty} onCheckedChange={setHideEmpty} />
+          Hide untouched
+        </label>
+
+        <div className="ml-auto flex items-center gap-2">
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".xlsx"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (f) void importCountSheet(f)
+            }}
+          />
+          <Button variant="outline" size="sm" onClick={downloadCountSheet} disabled={!shown.length}>
+            <Download className="h-4 w-4" /> Count sheet
+          </Button>
+          <Button
+            size="sm"
+            className="bg-emerald-600 hover:bg-emerald-700"
+            onClick={() => fileRef.current?.click()}
+            disabled={importing}
+          >
+            <Upload className="h-4 w-4" /> {importing ? 'Uploading…' : 'Upload closing'}
+          </Button>
+          <ExcelButton
+            filename={`packed-sku-stock-${dayMode ? date : todayISO()}`}
+            sheetName="Packed SKU stock"
+            title={`Packed SKU stock${dayMode ? ` — ${formatDate(date)}` : ''}`}
+            columns={
+              dayMode
+                ? [
+                    { header: 'SKU', key: 'name', value: (r) => r.name || '' },
+                    { header: 'Pack size', key: 'size', value: (r) => unitLabel(r) },
+                    { header: 'Opening (pcs)', key: 'opening', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.opening) || 0 },
+                    { header: 'Packed in', key: 'added_on', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.added_on) || 0 },
+                    { header: 'Despatch', key: 'sold_on', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.sold_on) || 0 },
+                    { header: 'Closing (pcs)', key: 'on_hand', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.on_hand) || 0 },
+                    { header: 'Closing (MT)', key: 'mt', align: 'right' as const, numFmt: '#,##0.000', value: (r) => skuMT(r) }
+                  ]
+                : [
+                    { header: 'SKU', key: 'name', value: (r) => r.name || '' },
+                    { header: 'Pack size', key: 'size', value: (r) => unitLabel(r) },
+                    { header: 'Packed in', key: 'added', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.added) || 0 },
+                    { header: 'Sold (packed)', key: 'sold', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.sold) || 0 },
+                    { header: 'On hand (pcs)', key: 'on_hand', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.on_hand) || 0 },
+                    { header: 'On hand (MT)', key: 'mt', align: 'right' as const, numFmt: '#,##0.000', value: (r) => skuMT(r) }
+                  ]
+            }
+            rows={shown}
+          />
+        </div>
       </div>
 
-      <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>SKU</TableHead>
-              <TableHead>Pack size</TableHead>
-              {dayMode && <TableHead className="text-right">Opening (pcs)</TableHead>}
-              <TableHead className="text-right">{dayMode ? 'Packed in' : 'Packed in (total)'}</TableHead>
-              <TableHead className="text-right">{dayMode ? 'Despatch' : 'Sold (packed)'}</TableHead>
-              <TableHead className="text-right">{dayMode ? 'Closing (pcs)' : 'On hand (pcs)'}</TableHead>
-              <TableHead className="text-right">{dayMode ? 'Closing (MT)' : 'On hand (MT)'}</TableHead>
-              <TableHead className="w-[80px] text-right">Actions</TableHead>
+      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-5">
+        <MiniStat label="SKUs" value={`${shown.length}${shown.length !== rows.length ? ` / ${rows.length}` : ''}`} tone="slate" />
+        <MiniStat label={dayMode ? 'Packed in' : 'Packed (total)'} value={formatNum(rows.reduce((s, r) => s + (dayMode ? Number(r.added_on) || 0 : Number(r.added) || 0), 0))} tone="emerald" />
+        <MiniStat label={dayMode ? 'Despatched' : 'Sold (packed)'} value={formatNum(rows.reduce((s, r) => s + (dayMode ? Number(r.sold_on) || 0 : Number(r.sold) || 0), 0))} tone="rose" />
+        <MiniStat label={dayMode ? 'Closing (pcs)' : 'On hand (pcs)'} value={formatNum(totalOnHand)} tone="sky" />
+        <MiniStat label={dayMode ? 'Closing (MT)' : 'On hand (MT)'} value={`${formatNum(totalMT)} MT`} tone="violet" />
+      </div>
+
+      {negatives > 0 && (
+        <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800">
+          <b>{negatives}</b> SKU{negatives === 1 ? '' : 's'} below zero — more despatched than packed. Check the packing
+          entries for those rows.
+        </div>
+      )}
+
+      <div className="rounded-xl border bg-card shadow-sm">
+        <Table
+          wrapperClassName="max-h-[calc(100vh-360px)] rounded-xl"
+          className="text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3"
+        >
+          <TableHeader className="sticky top-0 z-10">
+            <TableRow className="bg-slate-200 hover:bg-slate-200">
+              <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-slate-700">SKU</TableHead>
+              <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-slate-700">Pack</TableHead>
+              {dayMode && (
+                <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">Opening</TableHead>
+              )}
+              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+                {dayMode ? 'Packed in' : 'Packed (total)'}
+              </TableHead>
+              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+                {dayMode ? 'Despatch' : 'Sold'}
+              </TableHead>
+              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+                {dayMode ? 'Closing (pcs)' : 'On hand (pcs)'}
+              </TableHead>
+              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+                {dayMode ? 'Closing (MT)' : 'On hand (MT)'}
+              </TableHead>
+              <TableHead className="w-[64px] text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+                Update
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={dayMode ? 8 : 7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
-            ) : rows.length === 0 ? (
-              <TableRow><TableCell colSpan={dayMode ? 8 : 7} className="py-10 text-center text-muted-foreground">No SKUs. Add packagings under Masters → Packed SKU first.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={dayMode ? 8 : 7} className="py-12 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+            ) : shown.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={dayMode ? 8 : 7} className="py-12 text-center text-muted-foreground">
+                  {rows.length === 0
+                    ? 'No SKUs. Add packagings under Masters → Packed SKU first.'
+                    : 'No SKU matches this search.'}
+                </TableCell>
+              </TableRow>
             ) : (
               <>
-                {rows.map((r) => {
+                {shown.map((r, i) => {
                   const onHand = Number(r.on_hand) || 0
                   const inQty = dayMode ? Number(r.added_on) || 0 : Number(r.added) || 0
                   const outQty = dayMode ? Number(r.sold_on) || 0 : Number(r.sold) || 0
+                  const touched = inQty > 1e-6 || outQty > 1e-6
                   return (
-                    <TableRow key={r.id as number}>
+                    <TableRow
+                      key={r.id as number}
+                      className={cn('border-b', i % 2 === 1 && 'bg-muted/30', touched && 'bg-sky-50/70 hover:bg-sky-50')}
+                    >
                       <TableCell className="font-medium">{r.name}</TableCell>
-                      <TableCell className="text-muted-foreground">{unitLabel(r)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-muted-foreground">{unitLabel(r)}</TableCell>
                       {dayMode && (
-                        <TableCell className="text-right tabular-nums text-muted-foreground">{Number(r.opening) ? formatNum(r.opening) : '—'}</TableCell>
+                        <TableCell className="text-right tabular-nums text-muted-foreground">
+                          {Number(r.opening) ? formatNum(r.opening) : '—'}
+                        </TableCell>
                       )}
-                      <TableCell className="text-right tabular-nums text-emerald-700">{inQty ? formatNum(inQty) : '—'}</TableCell>
-                      <TableCell className="text-right tabular-nums text-red-600">{outQty ? formatNum(outQty) : '—'}</TableCell>
-                      <TableCell className={cn('text-right font-semibold tabular-nums', onHand < -1e-6 && 'text-red-600')}>{formatNum(onHand)}</TableCell>
-                      <TableCell className="text-right tabular-nums">{formatNum(skuMT(r))}</TableCell>
+                      <TableCell className="text-right font-medium tabular-nums text-emerald-700">
+                        {inQty ? formatNum(inQty) : '—'}
+                      </TableCell>
+                      <TableCell className="text-right font-medium tabular-nums text-red-600">
+                        {outQty ? formatNum(outQty) : '—'}
+                      </TableCell>
+                      <TableCell className={cn('text-right font-bold tabular-nums', onHand < -1e-6 ? 'text-red-600' : 'text-slate-900')}>
+                        {formatNum(onHand)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-violet-700">{formatNum(skuMT(r))}</TableCell>
                       <TableCell className="text-right">
-                        <Button variant="ghost" size="icon" className="h-8 w-8" title={dayMode ? `Add / remove packs on ${formatDate(date)}` : 'Add / remove packs'} onClick={() => openAdjust(r)}>
-                          <SlidersHorizontal className="h-4 w-4" />
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          title={dayMode ? `Add / remove packs on ${formatDate(date)}` : 'Add / remove packs'}
+                          onClick={() => openAdjust(r)}
+                        >
+                          <SlidersHorizontal className="h-3.5 w-3.5" />
                         </Button>
                       </TableCell>
                     </TableRow>
                   )
                 })}
                 <TableRow className="border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
-                  <TableCell colSpan={dayMode ? 3 : 2} className="font-bold uppercase tracking-wide text-amber-900">Total</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(rows.reduce((s, r) => s + (dayMode ? Number(r.added_on) || 0 : Number(r.added) || 0), 0))}</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(rows.reduce((s, r) => s + (dayMode ? Number(r.sold_on) || 0 : Number(r.sold) || 0), 0))}</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totalOnHand)}</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totalMT)} MT</TableCell>
+                  <TableCell colSpan={dayMode ? 3 : 2} className="font-bold uppercase tracking-wide text-amber-900">
+                    Total{shown.length !== rows.length ? ' (filtered)' : ''}
+                  </TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                    {formatNum(shown.reduce((s, r) => s + (dayMode ? Number(r.added_on) || 0 : Number(r.added) || 0), 0))}
+                  </TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                    {formatNum(shown.reduce((s, r) => s + (dayMode ? Number(r.sold_on) || 0 : Number(r.sold) || 0), 0))}
+                  </TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                    {formatNum(shown.reduce((s, r) => s + (Number(r.on_hand) || 0), 0))}
+                  </TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(shownMT)} MT</TableCell>
                   <TableCell />
                 </TableRow>
               </>
@@ -709,8 +892,8 @@ function SkuStock(): React.JSX.Element {
       </div>
       <p className="text-xs text-muted-foreground">
         {dayMode
-          ? 'Day wise: opening (brought forward) + packed in on this date − despatched on this date = closing. Use the sliders icon to enter that day\'s packed pieces (the entry is dated to the day you\'re viewing). Closing (MT) = pieces × pack size (1 L counted as 1 KG); the Total row gives the day\'s packed closing balance in tonnage.'
-          : 'All time: packs added − packs sold on dispatched PACKED sales = on hand. On hand (MT) = pieces × pack size (1 L counted as 1 KG), and the Total row sums every SKU.'}
+          ? 'Day wise: opening (brought forward) + packed in on this date − despatched on this date = closing. Rows with movement on the day are tinted. Closing (MT) = pieces × pack size (1 L counted as 1 KG). Use the sliders icon for one SKU, or Count sheet → Upload closing to set the whole day at once.'
+          : 'All time: packs added − packs sold on dispatched PACKED sales = on hand. On hand (MT) = pieces × pack size (1 L counted as 1 KG).'}
       </p>
 
       <Dialog open={!!adjustRow} onOpenChange={(o) => !o && setAdjustRow(null)}>

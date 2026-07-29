@@ -20,7 +20,7 @@ function n(v: unknown): number {
 export async function listGateEntries(): Promise<Row[]> {
   const res = await getClient().execute(`
     SELECT g.*, p.code AS oil_code, p.name AS oil_name,
-           b.bargain_no, s.name AS supplier_name,
+           b.bargain_no, COALESCE(ds.name, s.name) AS supplier_name,
            COALESCE(sl.invoice_no, (SELECT invoice_no FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_invoice,
            COALESCE(sl.customer,  (SELECT customer  FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer
     FROM gate_entries g
@@ -28,6 +28,7 @@ export async function listGateEntries(): Promise<Row[]> {
     LEFT JOIN purchase_tankers pt ON pt.id = g.tanker_id
     LEFT JOIN bargains b ON b.id = pt.bargain_id
     LEFT JOIN suppliers s ON s.id = pt.supplier_id
+    LEFT JOIN suppliers ds ON ds.id = g.supplier_id
     LEFT JOIN sales sl ON sl.id = g.sale_id
     ORDER BY g.id DESC
   `)
@@ -100,8 +101,8 @@ export async function createGateEntry(v: Row): Promise<{ id: number }> {
   const status = v.status || (n(v.received_qty) > 0 ? 'completed' : 'pending')
   const res = await c.execute({
     sql: `INSERT INTO gate_entries
-      (gate_entry_no, ref_no, entry_date, tanker_id, tanker_no, oil_type_id, dispatch_qty, received_qty, uom, status, note, direction, sale_id, invoice_group, rec_type, gross_weight, tare_weight)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (gate_entry_no, ref_no, entry_date, tanker_id, tanker_no, oil_type_id, dispatch_qty, received_qty, uom, status, note, direction, sale_id, invoice_group, rec_type, gross_weight, tare_weight, supplier_id, is_direct_mnc)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       gateNo,
       v.ref_no ? String(v.ref_no).trim() : null,
@@ -119,7 +120,9 @@ export async function createGateEntry(v: Row): Promise<{ id: number }> {
       v.invoice_group ? String(v.invoice_group) : null,
       String(v.rec_type || 'OIL'),
       v.gross_weight != null && v.gross_weight !== '' ? n(v.gross_weight) : null,
-      v.tare_weight != null && v.tare_weight !== '' ? n(v.tare_weight) : null
+      v.tare_weight != null && v.tare_weight !== '' ? n(v.tare_weight) : null,
+      v.supplier_id ? n(v.supplier_id) : null,
+      v.is_direct_mnc ? 1 : 0
     ]
   })
   return { id: Number(res.lastInsertRowid) }
@@ -154,7 +157,7 @@ export async function updateGateEntry(id: number, v: Row): Promise<{ id: number 
   await getClient().execute({
     sql: `UPDATE gate_entries SET gate_entry_no = ?, ref_no = ?, entry_date = ?, tanker_id = ?, tanker_no = ?,
           oil_type_id = ?, dispatch_qty = ?, received_qty = ?, uom = ?, status = ?, note = ?, sale_id = ?,
-          rec_type = ?, gross_weight = ?, tare_weight = ? WHERE id = ?`,
+          rec_type = ?, gross_weight = ?, tare_weight = ?, supplier_id = ?, is_direct_mnc = ? WHERE id = ?`,
     args: [
       String(v.gate_entry_no || '').trim(),
       v.ref_no ? String(v.ref_no).trim() : null,
@@ -171,6 +174,8 @@ export async function updateGateEntry(id: number, v: Row): Promise<{ id: number 
       String(v.rec_type || 'OIL'),
       gross,
       tare,
+      v.supplier_id ? n(v.supplier_id) : null,
+      v.is_direct_mnc ? 1 : 0,
       id
     ]
   })

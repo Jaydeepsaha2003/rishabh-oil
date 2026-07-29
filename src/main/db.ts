@@ -209,6 +209,12 @@ const MIGRATIONS = [
   'ALTER TABLE sales ADD COLUMN invoice_group TEXT',
   "UPDATE sales SET invoice_group = 'LEGACY-' || id WHERE invoice_group IS NULL",
   'ALTER TABLE gate_entries ADD COLUMN invoice_group TEXT',
+  // Direct MNC arrival: the goods belong to a direct-purchase party and never
+  // travelled on one of our purchase tankers, so there is no tanker to pick —
+  // the gateman types the vehicle number and names the party right here, and the
+  // accountant's validation step is then only about which oil it is.
+  'ALTER TABLE gate_entries ADD COLUMN supplier_id INTEGER',
+  'ALTER TABLE gate_entries ADD COLUMN is_direct_mnc INTEGER NOT NULL DEFAULT 0',
   // Manual additional interest (₹ per unit) on a purchase invoice — folds into
   // the adjusted bargain rate.
   'ALTER TABLE orders ADD COLUMN additional_interest REAL NOT NULL DEFAULT 0',
@@ -416,6 +422,26 @@ const MIGRATIONS = [
   // Opening balance rather than an arrival: the stock the MNC already held with
   // us when the books started, entered by hand with no gate entry behind it.
   'ALTER TABLE consignment_stock ADD COLUMN is_opening INTEGER NOT NULL DEFAULT 0',
+  // How a consignment / direct purchase invoice is spread across bargains. The
+  // quantity is typed, not tanker-wise, so the allocation belongs to the invoice
+  // rather than to a tanker — and it is the single source the bargain register
+  // reads for these purchases.
+  `CREATE TABLE IF NOT EXISTS order_bargains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL REFERENCES orders(id),
+    bargain_id INTEGER NOT NULL REFERENCES bargains(id),
+    qty REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_order_bargains_bargain ON order_bargains(bargain_id)',
+  'CREATE INDEX IF NOT EXISTS idx_order_bargains_order ON order_bargains(order_id)',
+  // Consignment invoices booked before this table existed keep their single
+  // bargain link; give each one the row the register now expects.
+  `INSERT INTO order_bargains (order_id, bargain_id, qty)
+   SELECT o.id, o.bargain_id, o.ordered_qty FROM orders o
+   WHERE o.is_consignment = 1 AND o.bargain_id IS NOT NULL
+     AND EXISTS (SELECT 1 FROM bargains b WHERE b.id = o.bargain_id)
+     AND NOT EXISTS (SELECT 1 FROM order_bargains ob WHERE ob.order_id = o.id)`,
   // Parties whose goods are already at our site (consignment / MNC suppliers):
   // purchases from them skip the tanker movement entirely — no send-to-supplier,
   // no transit/outside/inside/empty. Booked straight to received.

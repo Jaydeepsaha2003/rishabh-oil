@@ -310,6 +310,79 @@ async function bargainLinesForTankers(tankerIds: unknown): Promise<{ rate: numbe
   return Array.from(m.values())
 }
 
+// How a consignment / direct purchase is spread across bargains. The quantity is
+// typed rather than taken tanker by tanker, so the split lives on the invoice.
+export interface OrderBargainLine {
+  bargain_id: number
+  qty: number
+}
+
+// Merge repeated bargains, drop empties. Adding the same bargain twice simply
+// means "put more quantity on it".
+function toBargainLines(v: unknown): OrderBargainLine[] {
+  const m = new Map<number, OrderBargainLine>()
+  for (const l of Array.isArray(v) ? v : []) {
+    const id = n((l as OrderBargainLine)?.bargain_id)
+    const qty = n((l as OrderBargainLine)?.qty)
+    if (!id || qty <= 0) continue
+    const cur = m.get(id) || { bargain_id: id, qty: 0 }
+    cur.qty += qty
+    m.set(id, cur)
+  }
+  return Array.from(m.values())
+}
+
+// Check the lines against the invoice and each bargain, and return them priced.
+async function priceBargainLines(
+  lines: OrderBargainLine[],
+  supplierId: number,
+  productId: number,
+  orderedQty: number,
+  uom: string
+): Promise<{ lines: { rate: number; qty: number }[]; primaryBargainId: number }> {
+  if (!lines.length) return { lines: [], primaryBargainId: 0 }
+  const total = lines.reduce((sum, l) => sum + l.qty, 0)
+  if (Math.abs(total - orderedQty) > 0.001) {
+    throw new Error(
+      `The bargain quantities add up to ${total.toFixed(3)} but the invoice is for ${orderedQty.toFixed(3)} ${uom}`
+    )
+  }
+  const out: { rate: number; qty: number }[] = []
+  for (const l of lines) {
+    const r = await getClient().execute({
+      sql: 'SELECT id, bargain_no, supplier_id, oil_type_id, rate_per_uom FROM bargains WHERE id = ? LIMIT 1',
+      args: [l.bargain_id]
+    })
+    if (!r.rows.length) throw new Error('One of the chosen bargains no longer exists')
+    const b = toPlain(r)[0]
+    if (n(b.supplier_id) !== supplierId) throw new Error(`Bargain ${b.bargain_no} belongs to a different supplier`)
+    if (n(b.oil_type_id) !== productId) throw new Error(`Bargain ${b.bargain_no} is for a different product`)
+    out.push({ rate: n(b.rate_per_uom), qty: l.qty })
+  }
+  return { lines: out, primaryBargainId: lines[0].bargain_id }
+}
+
+async function saveOrderBargains(orderId: number, lines: OrderBargainLine[]): Promise<void> {
+  const c = getClient()
+  await c.execute({ sql: 'DELETE FROM order_bargains WHERE order_id = ?', args: [orderId] })
+  for (const l of lines) {
+    await c.execute({
+      sql: 'INSERT INTO order_bargains (order_id, bargain_id, qty) VALUES (?, ?, ?)',
+      args: [orderId, l.bargain_id, l.qty]
+    })
+  }
+}
+
+export async function listOrderBargains(orderId: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT ob.id, ob.bargain_id, ob.qty, b.bargain_no, b.rate_per_uom, b.bargain_date
+          FROM order_bargains ob LEFT JOIN bargains b ON b.id = ob.bargain_id
+          WHERE ob.order_id = ? ORDER BY ob.id`,
+    args: [orderId]
+  })
+  return toPlain(res)
+}
+
 export async function createOrder(v: Row): Promise<{ id: number }> {
   await ensureOilType(n(v.oil_type_id))
   const supplier = await getSupplier(n(v.supplier_id))
@@ -330,6 +403,20 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     // the tankers, as it does for loaded ones.
     if (lotAlloc.primaryBargainId) v.bargain_id = lotAlloc.primaryBargainId
   }
+  // Typed-quantity route: the user enters how much is being invoiced and splits
+  // it across bargains by hand.
+  const obLines = picks.length ? [] : toBargainLines(v.bargain_lines)
+  let obPriced: { lines: { rate: number; qty: number }[]; primaryBargainId: number } = { lines: [], primaryBargainId: 0 }
+  if (obLines.length) {
+    obPriced = await priceBargainLines(
+      obLines,
+      n(v.supplier_id),
+      n(v.oil_type_id),
+      n(v.ordered_qty),
+      String(v.uom || 'MT')
+    )
+    if (obPriced.primaryBargainId) v.bargain_id = obPriced.primaryBargainId
+  }
   if (isConsignment) {
     if (n(v.ordered_qty) <= 0) throw new Error('Enter the quantity to invoice')
     // Whenever the party actually holds stock with us, the invoice can never
@@ -348,9 +435,11 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   const roundOff = n(v.round_off)
   // Consignment tankers bring their own per-bargain split; otherwise the split
   // comes from the loaded tankers on the invoice.
-  const bargainLines = lotAlloc.lines.length
-    ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty }))
-    : await bargainLinesForTankers(v.tanker_ids)
+  const bargainLines = obPriced.lines.length
+    ? obPriced.lines
+    : lotAlloc.lines.length
+      ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty }))
+      : await bargainLinesForTankers(v.tanker_ids)
   const m = computeMoney({
     orderedQty: n(v.ordered_qty),
     invoiceRate: n(v.invoice_rate),
@@ -425,8 +514,14 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   const id = Number(res.lastInsertRowid)
   if (isConsignment) {
     if (picks.length) {
-      await assignConsignmentLots(id, picks, n(v.supplier_id), n(v.oil_type_id))
+      const alloc = await assignConsignmentLots(id, picks, n(v.supplier_id), n(v.oil_type_id))
+      // Mirror the tanker split onto the invoice, which is what the register reads.
+      await saveOrderBargains(id, alloc.lines.map((l) => ({ bargain_id: l.bargain_id, qty: l.qty })))
     } else {
+      await saveOrderBargains(
+        id,
+        obLines.length ? obLines : v.bargain_id ? [{ bargain_id: n(v.bargain_id), qty: n(v.ordered_qty) }] : []
+      )
       await autoAssignConsignmentLots(id, n(v.supplier_id), n(v.oil_type_id), n(v.ordered_qty), n(v.bargain_id))
     }
   } else {
@@ -506,11 +601,25 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     v.ordered_qty = lotAlloc.total
     if (lotAlloc.primaryBargainId) v.bargain_id = lotAlloc.primaryBargainId
   }
+  const obLines = wasConsignment && !picks.length ? toBargainLines(v.bargain_lines) : []
+  let obPriced: { lines: { rate: number; qty: number }[]; primaryBargainId: number } = { lines: [], primaryBargainId: 0 }
+  if (obLines.length) {
+    obPriced = await priceBargainLines(
+      obLines,
+      n(v.supplier_id),
+      n(v.oil_type_id),
+      n(v.ordered_qty),
+      String(v.uom || 'MT')
+    )
+    if (obPriced.primaryBargainId) v.bargain_id = obPriced.primaryBargainId
+  }
   const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), id)
   const roundOff = n(v.round_off)
-  const bargainLines = lotAlloc.lines.length
-    ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty }))
-    : await bargainLinesForTankers(v.tanker_ids)
+  const bargainLines = obPriced.lines.length
+    ? obPriced.lines
+    : lotAlloc.lines.length
+      ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty }))
+      : await bargainLinesForTankers(v.tanker_ids)
   const m = computeMoney({
     orderedQty: n(v.ordered_qty),
     invoiceRate: n(v.invoice_rate),
@@ -583,11 +692,17 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       sql: 'UPDATE orders SET received_qty = ? WHERE id = ?',
       args: [n(v.ordered_qty), id]
     })
-    // Re-pick the consignment tankers this invoice draws.
+    // Re-pick the consignment tankers this invoice draws, and re-state how the
+    // quantity is spread across bargains.
     await releaseConsignmentLots(id)
     if (picks.length) {
-      await assignConsignmentLots(id, picks, n(v.supplier_id), n(v.oil_type_id))
+      const alloc = await assignConsignmentLots(id, picks, n(v.supplier_id), n(v.oil_type_id))
+      await saveOrderBargains(id, alloc.lines.map((l) => ({ bargain_id: l.bargain_id, qty: l.qty })))
     } else {
+      await saveOrderBargains(
+        id,
+        obLines.length ? obLines : v.bargain_id ? [{ bargain_id: n(v.bargain_id), qty: n(v.ordered_qty) }] : []
+      )
       await autoAssignConsignmentLots(id, n(v.supplier_id), n(v.oil_type_id), n(v.ordered_qty), n(v.bargain_id))
     }
   } else {
@@ -606,8 +721,10 @@ export async function deleteOrder(id: number): Promise<{ id: number }> {
   await c.execute({ sql: 'DELETE FROM supplier_ledger WHERE order_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM transporter_ledger WHERE order_id = ?', args: [id] })
   await c.execute({ sql: 'UPDATE purchase_tankers SET order_id = NULL WHERE order_id = ?', args: [id] })
-  // Consignment tankers this invoice drew go back to pending.
+  // Consignment tankers this invoice drew go back to pending, and its bargain
+  // allocation goes with it.
   await releaseConsignmentLots(id)
+  await c.execute({ sql: 'DELETE FROM order_bargains WHERE order_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM orders WHERE id = ?', args: [id] })
   return { id }
 }

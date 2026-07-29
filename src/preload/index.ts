@@ -58,6 +58,7 @@ const api = {
     advance: (id: number, toStatus: string, data: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('orders:advance', { id, toStatus, data }),
     unmapped: (): Promise<Row[]> => ipcRenderer.invoke('orders:unmapped'),
+    bargainLines: (id: number): Promise<Row[]> => ipcRenderer.invoke('orders:bargainLines', { id }),
     unmappedCount: (): Promise<number> => ipcRenderer.invoke('orders:unmappedCount'),
     map: (id: number, lines: Row[], force?: boolean): Promise<Row> =>
       ipcRenderer.invoke('orders:map', { id, lines, force }),

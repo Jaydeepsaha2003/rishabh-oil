@@ -9,7 +9,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { InfoTip } from '@/components/ui/tooltip'
+import { cn } from '@/lib/utils'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { errText, formatDate, formatNum, todayISO } from '@/lib/format'
 import { ExcelButton } from '@/components/ExcelButton'
@@ -29,7 +31,11 @@ const blankArrival = (): Row => ({
   tanker_id: '',
   tanker_no: '',
   dispatch_qty: '',
-  uom: 'MT'
+  uom: 'MT',
+  // Direct MNC stock: the vehicle is not one of ours, so there is nothing to
+  // pick from the tanker list — the number is typed and the party named here.
+  is_direct_mnc: false,
+  supplier_id: ''
 })
 
 const blankGateOut = (): Row => ({
@@ -46,6 +52,7 @@ const blankGateOut = (): Row => ({
 export function GateEntry(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [tankers, setTankers] = useState<Row[]>([])
+  const [suppliers, setSuppliers] = useState<Row[]>([])
   const [sales, setSales] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [arrival, setArrival] = useState<Row>(blankArrival())
@@ -59,16 +66,19 @@ export function GateEntry(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [g, pt, sl, nextNo, nextOutNo] = await Promise.all([
+    const [g, pt, sl, nextNo, nextOutNo, sup] = await Promise.all([
       window.api.gate.list(),
       // the gate serves every company — list tankers across all of them
       window.api.tankers.list(true),
       window.api.gate.dispatchableSales().catch(() => [] as Row[]),
       window.api.gate.nextNo('in').catch(() => ''),
-      window.api.gate.nextNo('out').catch(() => '')
+      window.api.gate.nextNo('out').catch(() => ''),
+      window.api.data.list('suppliers')
     ])
     setRows(g)
     setTankers(pt)
+    // Only parties whose purchases skip tanker movement can send direct stock.
+    setSuppliers(sup.filter((x) => x.active && x.skip_tanker_stages))
     setSales(sl)
     setArrival((p) => (p.gate_entry_no ? p : { ...p, gate_entry_no: nextNo }))
     setGateOut((p) => (p.gate_entry_no ? p : { ...p, gate_entry_no: nextOutNo }))
@@ -145,15 +155,21 @@ export function GateEntry(): React.JSX.Element {
   // Step 1 — the guard records the tanker coming in; weight comes later.
   async function recordArrival(): Promise<void> {
     if (!String(arrival.tanker_no || '').trim()) {
-      toast.error('Select the tanker (or type its number)')
+      toast.error(arrival.is_direct_mnc ? 'Enter the vehicle number' : 'Select the tanker (or type its number)')
+      return
+    }
+    if (arrival.is_direct_mnc && !arrival.supplier_id) {
+      toast.error('Choose the MNC / direct-purchase party sending this stock')
       return
     }
     setSavingArrival(true)
     try {
       await window.api.gate.create({
         ...arrival,
-        tanker_id: arrival.tanker_id ? Number(arrival.tanker_id) : null,
+        tanker_id: arrival.is_direct_mnc || !arrival.tanker_id ? null : Number(arrival.tanker_id),
         oil_type_id: arrival.oil_type_id ? Number(arrival.oil_type_id) : null,
+        supplier_id: arrival.is_direct_mnc && arrival.supplier_id ? Number(arrival.supplier_id) : null,
+        is_direct_mnc: !!arrival.is_direct_mnc,
         dispatch_qty: Number(arrival.dispatch_qty) || 0,
         received_qty: 0,
         status: 'pending'
@@ -269,22 +285,66 @@ export function GateEntry(): React.JSX.Element {
             </div>
             <h3 className="text-sm font-semibold">Tanker in</h3>
             <InfoTip text="Record a tanker the moment it arrives — pick it from the list or type the number manually. Weight is entered later under Waiting for weighment." />
+            {/* Direct MNC stock arrives on the party's own vehicle: nothing to
+                pick from our tanker list, so the number is typed and the party
+                named here. Validation on the Consignment page then only needs
+                the oil. */}
+            <label
+              className={cn(
+                'ml-auto flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs transition',
+                arrival.is_direct_mnc
+                  ? 'border-violet-300 bg-violet-50 text-violet-900'
+                  : 'text-muted-foreground hover:bg-muted/50'
+              )}
+            >
+              <Switch
+                checked={!!arrival.is_direct_mnc}
+                onCheckedChange={(v) =>
+                  setArrival((p) => ({ ...p, is_direct_mnc: v, tanker_id: '', supplier_id: v ? p.supplier_id : '' }))
+                }
+              />
+              <span className="font-medium">Direct MNC stock</span>
+              <InfoTip text="ON: the goods come straight from a direct-purchase party (BUNGE and the like) on their own vehicle. No tanker to select — type the number and name the party." />
+            </label>
           </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {arrival.is_direct_mnc ? (
+              <div className="grid min-w-0 gap-1.5">
+                <Label>MNC / party *</Label>
+                <Select
+                  value={String(arrival.supplier_id || '')}
+                  onValueChange={(v) => setArrival((p) => ({ ...p, supplier_id: v }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={suppliers.length ? 'Select the party' : 'No direct-purchase party yet'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {suppliers.map((x) => (
+                      <SelectItem key={x.id} value={String(x.id)}>{x.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
+              <div className="grid min-w-0 gap-1.5">
+                <Label>Tanker *</Label>
+                <Select value={String(arrival.tanker_id || '')} onValueChange={chooseTanker}>
+                  <SelectTrigger><SelectValue placeholder="Select arriving tanker" /></SelectTrigger>
+                  <SelectContent>
+                    {arrivable.map((t) => (
+                      <SelectItem key={t.id} value={String(t.id)}>{t.tanker_no} · {t.supplier_name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="grid min-w-0 gap-1.5">
-              <Label>Tanker *</Label>
-              <Select value={String(arrival.tanker_id || '')} onValueChange={chooseTanker}>
-                <SelectTrigger><SelectValue placeholder="Select arriving tanker" /></SelectTrigger>
-                <SelectContent>
-                  {arrivable.map((t) => (
-                    <SelectItem key={t.id} value={String(t.id)}>{t.tanker_no} · {t.supplier_name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid min-w-0 gap-1.5">
-              <Label>Tanker number *</Label>
-              <Input value={arrival.tanker_no || ''} onChange={(e) => setArrival((p) => ({ ...p, tanker_no: e.target.value }))} />
+              <Label>{arrival.is_direct_mnc ? 'Vehicle number *' : 'Tanker number *'}</Label>
+              <Input
+                value={arrival.tanker_no || ''}
+                placeholder={arrival.is_direct_mnc ? 'Type the vehicle number' : ''}
+                onChange={(e) => setArrival((p) => ({ ...p, tanker_no: e.target.value }))}
+              />
             </div>
             <div className="grid min-w-0 gap-1.5">
               <Label>Rec type</Label>

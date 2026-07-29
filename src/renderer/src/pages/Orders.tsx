@@ -703,6 +703,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     setSelected([])
     setLotIds([])
     setLotBargains({})
+    setBgLines([{ bargain_id: '', qty: '' }])
   }
 
   function choosePurchaseBargain(id: string, keepSelection = false): void {
@@ -738,6 +739,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     setSelected([])
     setLotIds([])
     setLotBargains({})
+    setBgLines([{ bargain_id: '', qty: '' }])
     setError(null)
     setFormPage(true)
     setTab('purchases')
@@ -848,6 +850,23 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       .catch(() => { if (active) setLots([]) })
     return () => { active = false }
   }, [formPage, directMode, form.supplier_id, editing])
+  // Reopening a direct purchase: restore how its quantity was drawn.
+  useEffect(() => {
+    if (!formPage || !editing?.is_consignment) { setBgLines([{ bargain_id: '', qty: '' }]); return }
+    let active = true
+    window.api.orders
+      .bargainLines(Number(editing.id))
+      .then((rows) => {
+        if (!active) return
+        setBgLines(
+          rows.length
+            ? rows.map((r) => ({ bargain_id: String(r.bargain_id), qty: String(r.qty) }))
+            : [{ bargain_id: String(editing.bargain_id || ''), qty: String(editing.ordered_qty || '') }]
+        )
+      })
+      .catch(() => {})
+    return () => { active = false }
+  }, [formPage, editing])
   // Tankers already on the invoice being edited are not "pending", so pull the
   // invoice's own lots in separately and pre-tick them.
   const [ownLots, setOwnLots] = useState<Row[]>([])
@@ -876,6 +895,69 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       .catch(() => { if (active) setOwnLots([]) })
     return () => { active = false }
   }, [formPage, editing])
+  // What this party is holding with us, per product — shown the moment the
+  // party is picked so the user knows how much can be invoiced.
+  const [partyStockAll, setPartyStockAll] = useState<Row[]>([])
+  useEffect(() => {
+    if (!formPage || !directMode) { setPartyStockAll([]); return }
+    let active = true
+    window.api.consignment
+      .summary()
+      .then((rows) => { if (active) setPartyStockAll(rows) })
+      .catch(() => { if (active) setPartyStockAll([]) })
+    return () => { active = false }
+  }, [formPage, directMode, editing])
+  const partyStock = useMemo(
+    () =>
+      partyStockAll
+        .filter((r) => String(r.supplier_id) === String(form.supplier_id || '') && Number(r.balance) > 1e-6)
+        .sort((a, b) => Number(b.balance) - Number(a.balance)),
+    [partyStockAll, form.supplier_id]
+  )
+  // Available balance of the product being invoiced.
+  const directAvailable = useMemo(() => {
+    if (!directMode || !form.oil_type_id) return null
+    const row = partyStockAll.find(
+      (r) =>
+        String(r.supplier_id) === String(form.supplier_id || '') &&
+        String(r.product_id) === String(form.oil_type_id)
+    )
+    return row ? Number(row.balance) || 0 : 0
+  }, [directMode, partyStockAll, form.supplier_id, form.oil_type_id])
+
+  // How the typed quantity is drawn from bargains: one line per bargain, the
+  // same bargain twice simply means more quantity on it.
+  const [bgLines, setBgLines] = useState<Row[]>([{ bargain_id: '', qty: '' }])
+  const bgAllocated = bgLines.reduce((sum, l) => sum + (Number(l.qty) || 0), 0)
+  const bgAlloc = useMemo(() => {
+    const m = new Map<string, { bargain_no: string; rate: number; qty: number }>()
+    for (const l of bgLines) {
+      const qty = Number(l.qty) || 0
+      if (!l.bargain_id || qty <= 0) continue
+      const b = bargains.find((x) => String(x.id) === String(l.bargain_id))
+      const k = String(l.bargain_id)
+      const cur = m.get(k) || { bargain_no: String(b?.bargain_no || '—'), rate: Number(b?.rate_per_uom) || 0, qty: 0 }
+      cur.qty += qty
+      m.set(k, cur)
+    }
+    return Array.from(m.values())
+  }, [bgLines, bargains])
+
+  // Picking a product from the stock panel sets it on the invoice and clears any
+  // bargain lines that belonged to the previous product.
+  function chooseDirectProduct(p: Row): void {
+    setForm((f) => ({
+      ...f,
+      oil_type_id: p.product_id,
+      oil_label: String(p.product_code || p.product_name || ''),
+      uom: p.uom || f.uom || 'MT',
+      bargain_id: '',
+      bargain_rate: '',
+      invoice_rate: f.invoice_rate_touched ? f.invoice_rate : ''
+    }))
+    setBgLines([{ bargain_id: '', qty: '' }])
+  }
+
   // Every pending tanker of the supplier — the tankers come first and the
   // bargain is assigned afterwards, so these are NOT pre-filtered by product.
   const pickableLots = useMemo(
@@ -944,16 +1026,26 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const mixedLotProducts = lotProducts.length > 1
   // Open bargains of that supplier (plus whichever one this invoice already
   // uses), narrowed to the product of the tankers that have been ticked.
-  const directBargains = useMemo(
-    () =>
-      bargains.filter(
+  const directBargains = useMemo(() => {
+    const pid = lotProductId || String(form.oil_type_id || '')
+    return bargains
+      .filter(
         (b) =>
           String(b.supplier_id) === String(form.supplier_id || '') &&
-          (!lotProductId || String(b.oil_type_id) === lotProductId) &&
-          (Number(b.balance_qty) > 0 || String(b.id) === String(form.bargain_id || ''))
-      ),
-    [bargains, form.supplier_id, form.bargain_id, lotProductId]
-  )
+          (!pid || String(b.oil_type_id) === pid) &&
+          (Number(b.balance_qty) > 0 ||
+            String(b.id) === String(form.bargain_id || '') ||
+            bgLines.some((l) => String(l.bargain_id) === String(b.id)))
+      )
+      // Bargains that can cover the whole typed quantity on their own come first.
+      .sort((a, b) => {
+        const q = Number(form.ordered_qty) || 0
+        const ca = Number(a.balance_qty) + 1e-6 >= q ? 0 : 1
+        const cb = Number(b.balance_qty) + 1e-6 >= q ? 0 : 1
+        if (ca !== cb) return ca - cb
+        return String(a.bargain_date || '').localeCompare(String(b.bargain_date || ''))
+      })
+  }, [bargains, form.supplier_id, form.bargain_id, form.oil_type_id, form.ordered_qty, lotProductId, bgLines])
   const chosenTankers = useMemo(() => tankers.filter((x) => selected.includes(Number(x.id))), [tankers, selected])
   // The invoice's bargain follows the first selected tanker automatically.
   useEffect(() => {
@@ -965,12 +1057,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     }
   }, [formPage, chosenTankers, form.bargain_id]) // eslint-disable-line react-hooks/exhaustive-deps
   // Same for a consignment invoice: it follows the first tanker's bargain.
-  const firstLotBargain = chosenLots
-    .map((l) => {
-      const a = lotBargains[Number(l.id)] || {}
-      return a.bargain_id || a.extra_bargain_id || ''
-    })
-    .find((x) => !!x)
+  const firstLotBargain =
+    chosenLots
+      .map((l) => {
+        const a = lotBargains[Number(l.id)] || {}
+        return a.bargain_id || a.extra_bargain_id || ''
+      })
+      .find((x) => !!x) || bgLines.find((l) => !!l.bargain_id)?.bargain_id || ''
   useEffect(() => {
     if (!formPage || !directMode || !firstLotBargain) return
     if (String(form.bargain_id || '') !== String(firstLotBargain)) {
@@ -985,8 +1078,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // contributes to BOTH its primary and its excess bargain. More than one entry
   // means the invoice spans multiple bargain rates.
   const rateAlloc = useMemo(() => {
-    // Consignment tankers carry their own per-bargain split.
+    // Consignment tankers carry their own per-bargain split; a typed-quantity
+    // invoice carries it on the invoice itself.
     if (directMode && chosenLots.length) return lotAlloc
+    if (directMode && bgAlloc.length) return bgAlloc
     const m = new Map<string, { bargain_no: string; rate: number; qty: number }>()
     const add = (id: unknown, no: unknown, rate: number, qty: number): void => {
       if (!id || qty <= 0) return
@@ -1002,7 +1097,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       if (extra > 0) add(t.extra_bargain_id, t.extra_bargain_no, Number(t.extra_bargain_rate) || 0, extra)
     }
     return Array.from(m.values())
-  }, [chosenTankers, directMode, chosenLots, lotAlloc])
+  }, [chosenTankers, directMode, chosenLots, lotAlloc, bgAlloc])
+  const bgRemaining = (Number(form.ordered_qty) || 0) - bgAllocated
   const directBalance = useMemo(() => {
     if (!directMode || !form.bargain_id) return null
     const b = bargains.find((x) => String(x.id) === String(form.bargain_id))
@@ -1011,9 +1107,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // Direct purchases add up the consignment tankers they draw; with no tankers
   // logged the quantity is typed in instead.
   const totalQty = directMode
-    ? chosenLots.length
-      ? lotQty
-      : Number(form.ordered_qty) || 0
+    ? Number(form.ordered_qty) || 0
     : chosenTankers.reduce((sum, x) => sum + Number(x.loaded_qty || 0), 0)
   // Quantity-weighted average bargain rate across the allocation.
   const blendedRate = useMemo(() => {
@@ -1093,21 +1187,22 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   async function savePurchase(): Promise<void> {
     if (!form.supplier_id) return setError('Select the supplier')
     if (directMode) {
-      if (mixedLotProducts) {
-        return setError('The ticked tankers are of different products — book them on separate invoices')
-      }
-      if (lotIssues.length) {
-        return setError(`Assign a bargain (and a valid split quantity) to: ${lotIssues.join(', ')}`)
-      }
-      if (!form.bargain_id) return setError('Assign a bargain to these tankers')
-      if (lotProductId && String(form.oil_type_id) !== lotProductId) {
-        return setError('The ticked tankers and the assigned bargain are for different products')
-      }
-      if (totalQty <= 0) {
+      if (!form.oil_type_id) return setError('Choose the product being invoiced')
+      if (totalQty <= 0) return setError('Enter the quantity being invoiced')
+      if (directAvailable != null && totalQty > directAvailable + 1e-6) {
         return setError(
-          pickableLots.length ? 'Tick the tankers being booked' : 'Enter the quantity being invoiced'
+          `Only ${formatNum(directAvailable)} ${form.uom || 'MT'} is available from this party for that product`
         )
       }
+      if (bgLines.some((l) => !l.bargain_id)) return setError('Every bargain line needs a bargain')
+      if (Math.abs(bgRemaining) > 1e-6) {
+        return setError(
+          bgRemaining > 0
+            ? `${formatNum(bgRemaining)} ${form.uom || 'MT'} of this invoice is not drawn from any bargain`
+            : `The bargain quantities are ${formatNum(-bgRemaining)} ${form.uom || 'MT'} more than the invoice`
+        )
+      }
+      if (!form.bargain_id) return setError('Choose the bargain this quantity is drawn from')
     } else {
       if (!selected.length) return setError('Select at least one loaded tanker')
       if (!form.bargain_id) return setError('Select at least one loaded tanker')
@@ -1125,16 +1220,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       tds_pct: Number(form.tds_pct) || 0,
       tanker_ids: directMode ? [] : selected,
       is_consignment: directMode,
-      consignment_lot_ids: directMode
-        ? chosenLots.map((l) => {
-            const a = lotBargains[Number(l.id)] || {}
-            return {
-              id: Number(l.id),
-              bargain_id: a.bargain_id ? Number(a.bargain_id) : null,
-              extra_bargain_id: a.extra_bargain_id ? Number(a.extra_bargain_id) : null,
-              extra_qty: a.extra_bargain_id ? Number(a.extra_qty) || 0 : 0
-            }
-          })
+      consignment_lot_ids: [],
+      bargain_lines: directMode
+        ? bgLines
+            .filter((l) => l.bargain_id && (Number(l.qty) || 0) > 0)
+            .map((l) => ({ bargain_id: Number(l.bargain_id), qty: Number(l.qty) || 0 }))
         : [],
       transporter_id: directMode || !form.transporter_id ? null : Number(form.transporter_id),
       allowed_shortage_pct:
@@ -1438,15 +1528,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
 
               {directMode ? (
                 <section className="rounded-xl border border-violet-200 bg-violet-50/40 p-5">
-                  <div className="mb-4 flex items-center justify-between">
-                    <div>
-                      <h3 className="font-medium text-violet-900">Direct purchase — no tanker movement</h3>
-                      <p className="text-xs text-violet-800/80">
-                        {form.supplier_name || 'This supplier'} keeps the goods at our site, so nothing is sent to
-                        the supplier: no in transit, outside factory, inside factory or empty stage. Pick the
-                        bargain and the quantity being invoiced — it is booked as received straight away.
-                      </p>
-                    </div>
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h3 className="font-medium text-violet-900">Direct purchase — no tanker movement</h3>
                     <Badge className="bg-violet-600 hover:bg-violet-600">Direct</Badge>
                   </div>
                   {!form.supplier_id ? (
@@ -1455,247 +1538,61 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     </div>
                   ) : (
                     <>
-                    {/* Step 1 — the tankers logged in Consignment Stock and not yet booked. */}
-                    <div className="mb-4">
-                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                        <div className="text-sm font-medium text-violet-900">
-                          1 · Tankers pending booking
-                          <span className="ml-2 font-normal text-violet-800/70">from Log Consignment Stock</span>
-                        </div>
-                        <Badge variant="secondary">
-                          {chosenLots.length} of {pickableLots.length} ticked · {formatNum(lotQty)} {form.uom || 'MT'}
-                        </Badge>
-                      </div>
-                      {pickableLots.length === 0 ? (
-                        <div className="rounded-lg border border-dashed bg-white/60 px-3 py-6 text-center text-xs text-muted-foreground">
-                          No consignment tanker is waiting to be booked for this supplier. Validate its gate arrivals
-                          on the Consignment page first, or enter the quantity by hand below.
-                        </div>
-                      ) : (
-                        <div className="grid gap-2">
-                          {mixedLotProducts && (
-                            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                              The ticked tankers are of different products — one invoice covers one product, so book
-                              them separately.
-                            </div>
-                          )}
-                          {pickableLots.map((lot) => {
-                            const id = Number(lot.id)
-                            const checked = lotIds.includes(id)
-                            const off = !!lotProductId && String(lot.product_id) !== lotProductId
-                            const a = lotBargains[id] || {}
-                            const qty = Number(lot.qty) || 0
-                            const extra = a.extra_bargain_id ? Number(a.extra_qty) || 0 : 0
-                            // Bargains this tanker can draw on — its own product.
-                            const opts = bargains.filter(
-                              (b) =>
-                                String(b.supplier_id) === String(form.supplier_id || '') &&
-                                String(b.oil_type_id) === String(lot.product_id) &&
-                                (Number(b.balance_qty) > 0 ||
-                                  String(b.id) === String(a.bargain_id || '') ||
-                                  String(b.id) === String(a.extra_bargain_id || ''))
-                            )
-                            return (
-                              <div
-                                key={lot.id}
-                                className={cn(
-                                  'rounded-lg border bg-white p-2.5 transition',
-                                  checked ? 'border-violet-400 bg-violet-50' : 'hover:bg-muted/40',
-                                  off && !checked && 'opacity-50'
-                                )}
-                              >
-                                <label className="flex cursor-pointer items-center gap-3">
-                                  <input
-                                    type="checkbox"
-                                    className="h-4 w-4 accent-violet-600"
-                                    checked={checked}
-                                    onChange={(e) =>
-                                      setLotIds((p) =>
-                                        e.target.checked ? [...p, id] : p.filter((x) => x !== id)
-                                      )
-                                    }
-                                  />
-                                  <div className="min-w-0 flex-1">
-                                    <div className="text-sm font-medium">
-                                      {lot.tanker_no ||
-                                        (Number(lot.is_opening) === 1 ? (
-                                          <span className="text-violet-700">Opening stock</span>
-                                        ) : (
-                                          <span className="text-muted-foreground">no tanker no.</span>
-                                        ))}
-                                    </div>
-                                    <div className="text-[11px] text-muted-foreground">
-                                      {lot.product_code || lot.product_name} · logged {formatDate(lot.deposit_date)}
-                                      {lot.gate_entry_no ? ` · gate ${lot.gate_entry_no}` : ''}
-                                      {lot.note ? ` · ${lot.note}` : ''}
-                                    </div>
-                                  </div>
-                                  <div className="text-sm font-medium tabular-nums">
-                                    {formatNum(lot.qty)} {lot.uom}
-                                  </div>
-                                </label>
-
-                                {/* Per-tanker bargain: one, or split across two. */}
-                                {checked && (
-                                  <div className="mt-2.5 grid gap-2 border-t border-violet-200 pt-2.5">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <Label className="w-16 shrink-0 text-[11px] text-muted-foreground">Bargain</Label>
-                                      <div className="min-w-[220px] flex-1">
-                                        <Select
-                                          value={String(a.bargain_id || '')}
-                                          onValueChange={(val) => setLotBargain(id, { bargain_id: val })}
-                                        >
-                                          <SelectTrigger className="h-8 text-xs">
-                                            <SelectValue placeholder={opts.length ? 'Select bargain' : 'No open bargain'} />
-                                          </SelectTrigger>
-                                          <SelectContent>
-                                            {opts.map((b) => (
-                                              <SelectItem key={b.id} value={String(b.id)}>
-                                                {b.bargain_no} · bal {formatNum(b.balance_qty)} {b.uom} @{' '}
-                                                {formatINR(b.rate_per_uom)}
-                                              </SelectItem>
-                                            ))}
-                                          </SelectContent>
-                                        </Select>
-                                      </div>
-                                      <span className="w-24 shrink-0 text-right text-xs font-medium tabular-nums">
-                                        {formatNum(qty - extra)} {lot.uom}
-                                      </span>
-                                      {!a.extra_bargain_id && (
-                                        <Button
-                                          variant="outline"
-                                          size="sm"
-                                          className="h-8 shrink-0 text-xs"
-                                          onClick={() =>
-                                            setLotBargain(id, { extra_bargain_id: '', extra_qty: '', split: true })
-                                          }
-                                          disabled={!!a.split}
-                                        >
-                                          Split
-                                        </Button>
-                                      )}
-                                    </div>
-                                    {(a.split || a.extra_bargain_id) && (
-                                      <div className="flex flex-wrap items-center gap-2">
-                                        <Label className="w-16 shrink-0 text-[11px] text-muted-foreground">2nd BG</Label>
-                                        <div className="min-w-[220px] flex-1">
-                                          <Select
-                                            value={String(a.extra_bargain_id || '')}
-                                            onValueChange={(val) => setLotBargain(id, { extra_bargain_id: val })}
-                                          >
-                                            <SelectTrigger className="h-8 text-xs">
-                                              <SelectValue placeholder="Select the second bargain" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                              {opts
-                                                .filter((b) => String(b.id) !== String(a.bargain_id || ''))
-                                                .map((b) => (
-                                                  <SelectItem key={b.id} value={String(b.id)}>
-                                                    {b.bargain_no} · bal {formatNum(b.balance_qty)} {b.uom} @{' '}
-                                                    {formatINR(b.rate_per_uom)}
-                                                  </SelectItem>
-                                                ))}
-                                            </SelectContent>
-                                          </Select>
-                                        </div>
-                                        <Input
-                                          type="number"
-                                          className="h-8 w-24 shrink-0 text-right text-xs"
-                                          placeholder="qty"
-                                          value={a.extra_qty ?? ''}
-                                          onChange={(e) => setLotBargain(id, { extra_qty: e.target.value })}
-                                        />
-                                        <Button
-                                          variant="ghost"
-                                          size="sm"
-                                          className="h-8 shrink-0 text-xs text-destructive"
-                                          onClick={() =>
-                                            setLotBargain(id, { extra_bargain_id: '', extra_qty: '', split: false })
-                                          }
-                                        >
-                                          Remove
-                                        </Button>
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="mb-2 text-sm font-medium text-violet-900">
-                      {chosenLots.length ? '2 · Bargain allocation' : '2 · Assign a bargain and quantity'}
-                    </div>
-                    {chosenLots.length > 0 ? (
-                      <div className="grid gap-2">
-                        {lotIssues.length > 0 && (
-                          <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                            Assign a bargain (and a valid split quantity) to: {lotIssues.join(', ')}
-                          </div>
-                        )}
-                        <div className="rounded-lg border bg-white">
-                          {lotAlloc.map((a, i) => (
-                            <div
-                              key={a.bargain_no + i}
-                              className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-3 py-2 text-xs last:border-b-0"
-                            >
-                              <span className="font-medium">{a.bargain_no}</span>
-                              <span className="text-muted-foreground">{formatINR(a.rate)}/{form.uom || 'MT'}</span>
-                              <span className="ml-auto font-semibold tabular-nums">
-                                {formatNum(a.qty)} {form.uom || 'MT'}
-                              </span>
-                              <span className="w-28 text-right font-semibold tabular-nums">
-                                {formatINR(a.rate * a.qty)}
-                              </span>
-                            </div>
-                          ))}
-                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t bg-muted/50 px-3 py-2 text-xs font-semibold">
-                            <span>Total</span>
-                            <span className="ml-auto tabular-nums">
-                              {formatNum(lotQty)} {form.uom || 'MT'}
-                            </span>
-                            <span className="w-28 text-right tabular-nums">
-                              {formatINR(lotAlloc.reduce((s, a) => s + a.rate * a.qty, 0))}
-                            </span>
-                          </div>
-                        </div>
-                        <span className="text-[11px] text-muted-foreground">
-                          {lotAlloc.length > 1
-                            ? `${lotAlloc.length} bargains on this invoice — it prices at the weighted-average rate ${formatINR(Number(form.bargain_rate) || 0)}/${form.uom || 'MT'}.`
-                            : 'Set each tanker’s bargain above; split a tanker to draw it from two bargains.'}
-                        </span>
+                    {/* Available stock as chips, then product + quantity. */}
+                    {partyStock.length === 0 ? (
+                      <div className="mb-3 rounded-lg border border-dashed bg-white/60 px-3 py-3 text-center text-xs text-muted-foreground">
+                        No stock logged for this party yet.
                       </div>
                     ) : (
-                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                        <span className="mr-1 text-[11px] font-medium uppercase tracking-wide text-violet-900/70">
+                          Available
+                        </span>
+                        {partyStock.map((p) => {
+                          const picked = String(form.oil_type_id || '') === String(p.product_id)
+                          return (
+                            <button
+                              key={String(p.product_id)}
+                              type="button"
+                              onClick={() => chooseDirectProduct(p)}
+                              className={cn(
+                                'rounded-md border bg-white px-2.5 py-1 text-[12px] transition',
+                                picked ? 'border-violet-500 ring-1 ring-violet-300' : 'hover:bg-muted/40'
+                              )}
+                            >
+                              <span className="font-medium">{p.product_code || p.product_name}</span>
+                              <span className="ml-1.5 font-bold tabular-nums text-emerald-700">
+                                {formatNum(p.balance)}
+                              </span>
+                              <span className="ml-0.5 text-[10px] text-muted-foreground">{p.uom || 'MT'}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+
+                    <div className="mb-3 grid gap-4 md:grid-cols-2">
                       <div className="grid gap-1.5">
-                        <Label>Bargain *</Label>
+                        <Label>Product *</Label>
                         <Select
-                          value={String(form.bargain_id || '')}
-                          onValueChange={(v) => choosePurchaseBargain(v, true)}
+                          value={String(form.oil_type_id || '')}
+                          onValueChange={(v) => {
+                            const p = partyStock.find((x) => String(x.product_id) === v)
+                            if (p) chooseDirectProduct(p)
+                          }}
                           disabled={!!editing}
                         >
                           <SelectTrigger>
-                            <SelectValue placeholder={directBargains.length ? 'Select the bargain' : 'No open bargain for this supplier'} />
+                            <SelectValue placeholder={partyStock.length ? 'Select the product' : 'No stock for this party'} />
                           </SelectTrigger>
                           <SelectContent>
-                            {directBargains.map((b) => (
-                              <SelectItem key={b.id} value={String(b.id)}>
-                                {b.bargain_no} · {String(b.oil_code || b.oil_name || '')} · bal{' '}
-                                {formatNum(b.balance_qty)} {b.uom} @ {formatINR(b.rate_per_uom)}
+                            {partyStock.map((p) => (
+                              <SelectItem key={String(p.product_id)} value={String(p.product_id)}>
+                                {p.product_code || p.product_name} · {formatNum(p.balance)} {p.uom || 'MT'} available
                               </SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
-                        <span className="text-[11px] text-muted-foreground">
-                          {form.bargain_id
-                            ? `${form.oil_label || ''} · bargain rate ${formatINR(Number(form.bargain_rate) || 0)}/${form.uom || 'MT'}`
-                            : lotProductId
-                              ? 'Only this product’s bargains with a balance are listed.'
-                              : 'Tick the tankers first to narrow this to their product.'}
-                        </span>
                       </div>
                       <div className="grid gap-1.5">
                         <Label>Quantity to invoice * ({form.uom || 'MT'})</Label>
@@ -1705,13 +1602,149 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           placeholder="0.000"
                           onChange={(e) => setForm((p) => ({ ...p, ordered_qty: e.target.value }))}
                         />
-                        <span className="text-[11px] text-muted-foreground">
-                          {directBalance != null
-                            ? `Bargain balance ${formatNum(directBalance)} ${form.uom || 'MT'}.`
-                            : 'Entered by hand — there is no weighment to take it from.'}
-                        </span>
+                        {directAvailable != null && (
+                          <span
+                            className={cn(
+                              'text-[11px]',
+                              totalQty > directAvailable + 1e-6 ? 'font-medium text-red-600' : 'text-muted-foreground'
+                            )}
+                          >
+                            {totalQty > directAvailable + 1e-6
+                              ? `Only ${formatNum(directAvailable)} available`
+                              : `${formatNum(directAvailable - totalQty)} ${form.uom || 'MT'} left after this`}
+                          </span>
+                        )}
                       </div>
                     </div>
+
+                    {/* Step 3 — which bargains that quantity is drawn from. */}
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium text-violet-900">Draw it from</span>
+                      {totalQty > 0 && (
+                        <span className="text-[11px] text-violet-800/80">
+                          {formatNum(bgAllocated)} of {formatNum(totalQty)} {form.uom || 'MT'} allocated
+                          {Math.abs(bgRemaining) > 1e-6 && (
+                            <b>
+                              {' '}
+                              · {bgRemaining > 0 ? `${formatNum(bgRemaining)} still to allocate` : `${formatNum(-bgRemaining)} over`}
+                            </b>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                    {totalQty <= 0 ? (
+                      <div className="rounded-lg border border-dashed bg-white/60 px-3 py-3 text-center text-xs text-muted-foreground">
+                        Enter a quantity to see the bargains.
+                      </div>
+                    ) : (
+                      <div className="grid gap-2">
+                        {bgLines.map((line, index) => {
+                          const bg = bargains.find((b) => String(b.id) === String(line.bargain_id))
+                          const bal = bg ? Number(bg.balance_qty) || 0 : 0
+                          const qty = Number(line.qty) || 0
+                          return (
+                            <div
+                              key={index}
+                              className="grid gap-2 rounded-lg border bg-white p-2.5 md:grid-cols-[minmax(0,1fr)_7rem_auto]"
+                            >
+                              <div className="grid min-w-0 gap-1">
+                                <Label className="text-[11px] text-muted-foreground">Bargain</Label>
+                                <Select
+                                  value={String(line.bargain_id || '')}
+                                  onValueChange={(v) =>
+                                    setBgLines((p) => p.map((x, i) => (i === index ? { ...x, bargain_id: v } : x)))
+                                  }
+                                >
+                                  <SelectTrigger className="h-8 text-xs">
+                                    <SelectValue
+                                      placeholder={directBargains.length ? 'Select bargain' : 'No open bargain for this product'}
+                                    />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {directBargains.map((b) => (
+                                      <SelectItem key={b.id} value={String(b.id)}>
+                                        {b.bargain_no} · {formatDate(b.bargain_date)} · bal {formatNum(b.balance_qty)}{' '}
+                                        {b.uom} @ {formatINR(b.rate_per_uom)}
+                                        {Number(b.balance_qty) + 1e-6 >= totalQty ? ' · covers it' : ''}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <div className="grid gap-1">
+                                <Label className="text-[11px] text-muted-foreground">Qty</Label>
+                                <Input
+                                  type="number"
+                                  className="h-8 text-right text-xs"
+                                  value={line.qty ?? ''}
+                                  onChange={(e) =>
+                                    setBgLines((p) => p.map((x, i) => (i === index ? { ...x, qty: e.target.value } : x)))
+                                  }
+                                />
+                              </div>
+                              <div className="flex items-end gap-2">
+                                <div className="min-w-[8.5rem] pb-1 text-[11px] leading-tight">
+                                  {bg ? (
+                                    <>
+                                      <div className="tabular-nums text-muted-foreground">
+                                        {formatINR(Number(bg.rate_per_uom) * qty)}
+                                      </div>
+                                      <div className={cn(qty > bal + 1e-6 ? 'font-medium text-red-600' : 'text-muted-foreground')}>
+                                        {qty > bal + 1e-6
+                                          ? `${formatNum(qty - bal)} over its balance`
+                                          : `balance left ${formatNum(bal - qty)}`}
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <span className="text-muted-foreground">pick a bargain</span>
+                                  )}
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 text-destructive"
+                                  disabled={bgLines.length === 1}
+                                  onClick={() => setBgLines((p) => p.filter((_, i) => i !== index))}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          )
+                        })}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8 text-xs"
+                            onClick={() => setBgLines((p) => [...p, { bargain_id: '', qty: '' }])}
+                          >
+                            <Plus className="h-4 w-4" /> Add another bargain
+                          </Button>
+                          {Math.abs(bgRemaining) > 1e-6 && bgLines.length > 0 && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 text-xs text-muted-foreground"
+                              onClick={() =>
+                                setBgLines((p) =>
+                                  p.map((x, i) =>
+                                    i === p.length - 1 ? { ...x, qty: String((Number(x.qty) || 0) + bgRemaining) } : x
+                                  )
+                                )
+                              }
+                            >
+                              Put the remaining {formatNum(Math.abs(bgRemaining))} on the last line
+                            </Button>
+                          )}
+                          {bgAlloc.length > 1 && (
+                            <span className="text-[11px] text-muted-foreground">
+                              {bgAlloc.length} bargains — the invoice prices at the weighted-average rate{' '}
+                              {formatINR(Number(form.bargain_rate) || 0)}/{form.uom || 'MT'}.
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     )}
                     </>
                   )}
@@ -1766,17 +1799,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               <h3 className="mb-3 font-medium">Purchase summary</h3>
               {directMode ? (
                 <>
-                  <MoneyRow
-                    label="Purchase type"
-                    value={chosenLots.length ? 'Consignment — from logged stock' : 'Direct — no tankers'}
-                  />
-                  {chosenLots.length > 0 && (
+                  <MoneyRow label="Purchase type" value="Direct — no tanker movement" />
+                  {directAvailable != null && (
                     <MoneyRow
-                      label="Consignment tankers"
-                      title={chosenLots.map((l) => String(l.tanker_no || l.id)).join(', ')}
-                      value={String(chosenLots.length)}
+                      label="Available from party"
+                      value={`${formatNum(directAvailable)} ${form.uom || 'MT'}`}
                     />
                   )}
+                  {bgAlloc.length > 1 && <MoneyRow label="Bargains drawn" value={String(bgAlloc.length)} />}
                   <MoneyRow label="Quantity invoiced" value={`${formatNum(totalQty)} ${form.uom || 'MT'}`} strong />
                 </>
               ) : (

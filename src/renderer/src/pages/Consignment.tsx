@@ -96,7 +96,11 @@ export function Consignment(): React.JSX.Element {
       gate_entry_id: g.id,
       gate_entry_no: g.gate_entry_no,
       tanker_no: g.tanker_no || '',
-      supplier_id: '',
+      // A Direct MNC arrival already named its party at the gate, so validation
+      // is only about which oil it is.
+      supplier_id: g.supplier_id ? String(g.supplier_id) : '',
+      supplier_prefilled: !!g.supplier_id,
+      supplier_name: g.supplier_name || '',
       product_id: g.oil_type_id ? String(g.oil_type_id) : '',
       qty: Number(g.received_qty) > 0 ? g.received_qty : '',
       uom: g.uom || defaultUom,
@@ -401,6 +405,7 @@ export function Consignment(): React.JSX.Element {
                   <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Gate no</TableHead>
                   <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Date</TableHead>
                   <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Tanker</TableHead>
+                  <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Party</TableHead>
                   <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Type</TableHead>
                   <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-amber-900">Net qty</TableHead>
                   <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Weighment</TableHead>
@@ -415,6 +420,18 @@ export function Consignment(): React.JSX.Element {
                       <TableCell className="font-medium tabular-nums">{g.gate_entry_no}</TableCell>
                       <TableCell className="whitespace-nowrap">{formatDate(g.entry_date)}</TableCell>
                       <TableCell className="font-medium">{g.tanker_no || <span className="italic text-muted-foreground">no number</span>}</TableCell>
+                      <TableCell>
+                        {g.supplier_name ? (
+                          <span className="inline-flex items-center gap-1.5">
+                            {g.supplier_name}
+                            {Number(g.is_direct_mnc) === 1 && (
+                              <Badge className="bg-violet-600 font-normal hover:bg-violet-600">MNC</Badge>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="italic text-muted-foreground">to be named</span>
+                        )}
+                      </TableCell>
                       <TableCell className="text-muted-foreground">{g.rec_type || 'OIL'}</TableCell>
                       <TableCell className="text-right font-semibold tabular-nums text-emerald-700">
                         {weighed ? `${formatNum(g.received_qty)} ${g.uom || 'MT'}` : '—'}
@@ -627,11 +644,20 @@ export function Consignment(): React.JSX.Element {
                 From gate entry <b>{depForm.gate_entry_no}</b>
                 {depForm.tanker_no ? <> · tanker <b>{depForm.tanker_no}</b></> : null}
                 {Number(depForm.qty) > 0 ? <> · weighed net <b>{formatNum(depForm.qty)} {depForm.uom}</b></> : <> · <b>not weighed yet</b> — enter the quantity manually</>}
-                <div className="mt-0.5 opacity-80">Confirm whose stock this is; the quantity starts being maintained once saved.</div>
+                <div className="mt-0.5 opacity-80">
+                  {depForm.supplier_prefilled
+                    ? `Party already named at the gate${depForm.supplier_name ? ` — ${depForm.supplier_name}` : ''}. Just pick the oil and save.`
+                    : 'Confirm whose stock this is; the quantity starts being maintained once saved.'}
+                </div>
               </div>
             )}
             <div className="grid gap-1.5">
-              <Label>Supplier *</Label>
+              <Label className="flex items-center gap-1.5">
+                Supplier *
+                {depForm.supplier_prefilled && (
+                  <Badge variant="secondary" className="font-normal">from the gate entry</Badge>
+                )}
+              </Label>
               <Select value={String(depForm.supplier_id || '')} onValueChange={(v) => setDepForm((p) => ({ ...p, supplier_id: v }))}>
                 <SelectTrigger><SelectValue placeholder="Select supplier" /></SelectTrigger>
                 <SelectContent>

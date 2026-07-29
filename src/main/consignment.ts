@@ -323,9 +323,11 @@ export async function listPendingGateArrivals(): Promise<Row[]> {
   const res = await getClient().execute({
     sql: `SELECT ge.id, ge.gate_entry_no, ge.ref_no, ge.entry_date, ge.tanker_no, ge.rec_type,
                  ge.received_qty, ge.gross_weight, ge.tare_weight, ge.uom, ge.status, ge.note,
-                 ge.oil_type_id, p.code AS product_code, p.name AS product_name
+                 ge.oil_type_id, ge.supplier_id, ge.is_direct_mnc,
+                 p.code AS product_code, p.name AS product_name, s.name AS supplier_name
           FROM gate_entries ge
           LEFT JOIN products p ON p.id = ge.oil_type_id
+          LEFT JOIN suppliers s ON s.id = ge.supplier_id
           WHERE ge.direction = 'in'
             AND ge.tanker_id IS NULL
             AND NOT EXISTS (SELECT 1 FROM consignment_stock cs WHERE cs.gate_entry_id = ge.id)
