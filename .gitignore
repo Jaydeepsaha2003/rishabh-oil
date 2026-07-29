@@ -8,3 +8,8 @@ release/
 .DS_Store
 
 *.tsbuildinfo
+
+# scratch harness/cleanup scripts
+_*.cjs
+_*.js
+src/main/_*.ts
