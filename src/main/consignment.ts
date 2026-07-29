@@ -415,6 +415,24 @@ async function validateLot(v: Row, existing: Row | null): Promise<{
     }
   }
 
+  // Opening stock is a balance, not a running total: one per party + product.
+  // A second one has to be an edit of the first, never a new row.
+  if (!existing && v.is_opening) {
+    const dup = await c.execute({
+      sql: `SELECT id, qty, uom FROM consignment_stock
+            WHERE company_id = ? AND supplier_id = ? AND product_id = ?
+              AND is_opening = 1 AND order_id IS NULL LIMIT 1`,
+      args: [getActiveCompanyId(), supplierId, productId]
+    })
+    if (dup.rows.length) {
+      const d = dup.rows[0]
+      throw new Error(
+        `Opening stock for ${sup.rows[0].name} · ${prod.rows[0].code || prod.rows[0].name} is already recorded ` +
+          `(${n(d.qty).toFixed(3)} ${d.uom || 'MT'}) — update that entry instead of adding another`
+      )
+    }
+  }
+
   // Two lots of the same party, product, date and vehicle is almost always the
   // same delivery entered twice.
   const tankerNo = (v.tanker_no ?? existing?.tanker_no) ? String(v.tanker_no ?? existing?.tanker_no).trim() : null

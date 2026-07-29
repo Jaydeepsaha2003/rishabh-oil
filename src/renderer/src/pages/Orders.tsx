@@ -704,6 +704,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     setLotIds([])
     setLotBargains({})
     setBgLines([{ bargain_id: '', qty: '' }])
+    setBgTouched(false)
   }
 
   function choosePurchaseBargain(id: string, keepSelection = false): void {
@@ -740,6 +741,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     setLotIds([])
     setLotBargains({})
     setBgLines([{ bargain_id: '', qty: '' }])
+    setBgTouched(false)
     setError(null)
     setFormPage(true)
     setTab('purchases')
@@ -928,6 +930,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // How the typed quantity is drawn from bargains: one line per bargain, the
   // same bargain twice simply means more quantity on it.
   const [bgLines, setBgLines] = useState<Row[]>([{ bargain_id: '', qty: '' }])
+  // Once the user changes a line by hand the FIFO fill stops overwriting it.
+  const [bgTouched, setBgTouched] = useState(false)
+  const editBgLines: typeof setBgLines = (next) => {
+    setBgTouched(true)
+    setBgLines(next)
+  }
   const bgAllocated = bgLines.reduce((sum, l) => sum + (Number(l.qty) || 0), 0)
   const bgAlloc = useMemo(() => {
     const m = new Map<string, { bargain_no: string; rate: number; qty: number }>()
@@ -1026,6 +1034,50 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const mixedLotProducts = lotProducts.length > 1
   // Open bargains of that supplier (plus whichever one this invoice already
   // uses), narrowed to the product of the tankers that have been ticked.
+  // Bargains of this party + product with balance left, oldest first — the
+  // order the quantity is drawn in.
+  const fifoBargains = useMemo(() => {
+    const pid = String(form.oil_type_id || '')
+    return bargains
+      .filter(
+        (b) =>
+          String(b.supplier_id) === String(form.supplier_id || '') &&
+          (!pid || String(b.oil_type_id) === pid) &&
+          Number(b.balance_qty) > 1e-6
+      )
+      .sort((a, b) => {
+        const d = String(a.bargain_date || '').localeCompare(String(b.bargain_date || ''))
+        return d !== 0 ? d : (Number(a.id) || 0) - (Number(b.id) || 0)
+      })
+  }, [bargains, form.supplier_id, form.oil_type_id])
+  const fifoKey = fifoBargains.map((b) => `${b.id}:${b.balance_qty}`).join('|')
+
+  // Fill the quantity from the oldest bargains first. Anything the balances
+  // cannot cover is left on the last line, where it shows as over-balance.
+  const fifoFill = useCallback((qty: number): Row[] => {
+    const out: Row[] = []
+    let left = qty
+    for (const b of fifoBargains) {
+      if (left <= 1e-6) break
+      const take = Math.min(left, Number(b.balance_qty) || 0)
+      if (take <= 1e-6) continue
+      out.push({ bargain_id: String(b.id), qty: String(Math.round(take * 1000) / 1000) })
+      left -= take
+    }
+    if (left > 1e-6 && out.length) {
+      const last = out[out.length - 1]
+      last.qty = String(Math.round(((Number(last.qty) || 0) + left) * 1000) / 1000)
+    }
+    return out
+  }, [fifoBargains])
+
+  useEffect(() => {
+    if (!formPage || !directMode || bgTouched || editing) return
+    const q = Number(form.ordered_qty) || 0
+    const next = q > 0 ? fifoFill(q) : []
+    setBgLines(next.length ? next : [{ bargain_id: '', qty: '' }])
+  }, [formPage, directMode, bgTouched, editing, form.ordered_qty, form.oil_type_id, fifoKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const directBargains = useMemo(() => {
     const pid = lotProductId || String(form.oil_type_id || '')
     return bargains
@@ -1037,13 +1089,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             String(b.id) === String(form.bargain_id || '') ||
             bgLines.some((l) => String(l.bargain_id) === String(b.id)))
       )
-      // Bargains that can cover the whole typed quantity on their own come first.
+      // Oldest first: the same order the quantity is drawn in.
       .sort((a, b) => {
-        const q = Number(form.ordered_qty) || 0
-        const ca = Number(a.balance_qty) + 1e-6 >= q ? 0 : 1
-        const cb = Number(b.balance_qty) + 1e-6 >= q ? 0 : 1
-        if (ca !== cb) return ca - cb
-        return String(a.bargain_date || '').localeCompare(String(b.bargain_date || ''))
+        const d = String(a.bargain_date || '').localeCompare(String(b.bargain_date || ''))
+        return d !== 0 ? d : (Number(a.id) || 0) - (Number(b.id) || 0)
       })
   }, [bargains, form.supplier_id, form.bargain_id, form.oil_type_id, form.ordered_qty, lotProductId, bgLines])
   const chosenTankers = useMemo(() => tankers.filter((x) => selected.includes(Number(x.id))), [tankers, selected])
@@ -1620,6 +1669,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     {/* Step 3 — which bargains that quantity is drawn from. */}
                     <div className="mb-2 flex flex-wrap items-center gap-2">
                       <span className="text-sm font-medium text-violet-900">Draw it from</span>
+                      {!bgTouched && bgAlloc.length > 0 && (
+                        <Badge variant="secondary" className="font-normal">oldest bargain first</Badge>
+                      )}
                       {totalQty > 0 && (
                         <span className="text-[11px] text-violet-800/80">
                           {formatNum(bgAllocated)} of {formatNum(totalQty)} {form.uom || 'MT'} allocated
@@ -1652,7 +1704,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                 <Select
                                   value={String(line.bargain_id || '')}
                                   onValueChange={(v) =>
-                                    setBgLines((p) => p.map((x, i) => (i === index ? { ...x, bargain_id: v } : x)))
+                                    editBgLines((p) => p.map((x, i) => (i === index ? { ...x, bargain_id: v } : x)))
                                   }
                                 >
                                   <SelectTrigger className="h-8 text-xs">
@@ -1678,7 +1730,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                   className="h-8 text-right text-xs"
                                   value={line.qty ?? ''}
                                   onChange={(e) =>
-                                    setBgLines((p) => p.map((x, i) => (i === index ? { ...x, qty: e.target.value } : x)))
+                                    editBgLines((p) => p.map((x, i) => (i === index ? { ...x, qty: e.target.value } : x)))
                                   }
                                 />
                               </div>
@@ -1704,7 +1756,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                   size="icon"
                                   className="h-8 w-8 text-destructive"
                                   disabled={bgLines.length === 1}
-                                  onClick={() => setBgLines((p) => p.filter((_, i) => i !== index))}
+                                  onClick={() => editBgLines((p) => p.filter((_, i) => i !== index))}
                                 >
                                   <Trash2 className="h-4 w-4" />
                                 </Button>
@@ -1717,17 +1769,31 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                             variant="outline"
                             size="sm"
                             className="h-8 text-xs"
-                            onClick={() => setBgLines((p) => [...p, { bargain_id: '', qty: '' }])}
+                            onClick={() => editBgLines((p) => [...p, { bargain_id: '', qty: '' }])}
                           >
                             <Plus className="h-4 w-4" /> Add another bargain
                           </Button>
+                          {bgTouched && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 text-xs text-muted-foreground"
+                              onClick={() => {
+                                const next = fifoFill(Number(form.ordered_qty) || 0)
+                                setBgLines(next.length ? next : [{ bargain_id: '', qty: '' }])
+                                setBgTouched(false)
+                              }}
+                            >
+                              Refill oldest first
+                            </Button>
+                          )}
                           {Math.abs(bgRemaining) > 1e-6 && bgLines.length > 0 && (
                             <Button
                               variant="ghost"
                               size="sm"
                               className="h-8 text-xs text-muted-foreground"
                               onClick={() =>
-                                setBgLines((p) =>
+                                editBgLines((p) =>
                                   p.map((x, i) =>
                                     i === p.length - 1 ? { ...x, qty: String((Number(x.qty) || 0) + bgRemaining) } : x
                                   )

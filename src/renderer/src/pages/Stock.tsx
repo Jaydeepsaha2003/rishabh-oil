@@ -973,13 +973,42 @@ function MncStock(): React.JSX.Element {
     setLoading(false)
   }, [])
 
+  // The opening lot already recorded for a party + product, if any. A second
+  // entry restates it rather than adding another row.
+  // Every unbooked opening lot for a party + product. Normally one, but entries
+  // made before opening stock became an update-in-place can leave several.
+  const openingLotsFor = useCallback(
+    (supplierId: unknown, productId: unknown): Row[] =>
+      lots
+        .filter(
+          (l) =>
+            Number(l.is_opening) === 1 &&
+            l.order_id == null &&
+            String(l.supplier_id) === String(supplierId || '') &&
+            String(l.product_id) === String(productId || '')
+        )
+        // Newest first: the last figure entered is the one that counts.
+        .sort((a, b) => Number(b.id) - Number(a.id)),
+    [lots]
+  )
+  const openingLotFor = useCallback(
+    (supplierId: unknown, productId: unknown): Row | undefined => openingLotsFor(supplierId, productId)[0],
+    [openingLotsFor]
+  )
+  const existingOpenings = openingLotsFor(opening.supplier_id, opening.product_id)
+  const existingOpening = existingOpenings[0]
+  const existingOpeningTotal = existingOpenings.reduce((s, l) => s + (Number(l.qty) || 0), 0)
+
   function openOpeningStock(supplierId?: unknown, productId?: unknown): void {
+    const existing = openingLotsFor(supplierId, productId)
+    const found = existing[0]
     setOpening({
       supplier_id: supplierId ? String(supplierId) : '',
       product_id: productId ? String(productId) : '',
-      qty: '',
-      uom: 'MT',
-      deposit_date: todayISO()
+      qty: existing.length ? String(existing[0].qty ?? '') : '',
+      uom: String(found?.uom || 'MT'),
+      deposit_date: String(found?.deposit_date || todayISO()).slice(0, 10),
+      note: found?.note ?? ''
     })
     setOpeningError(null)
     setOpeningOpen(true)
@@ -992,7 +1021,7 @@ function MncStock(): React.JSX.Element {
     setSavingOpening(true)
     setOpeningError(null)
     try {
-      await window.api.consignment.create({
+      const payload = {
         supplier_id: Number(opening.supplier_id),
         product_id: Number(opening.product_id),
         qty: Number(opening.qty),
@@ -1000,8 +1029,21 @@ function MncStock(): React.JSX.Element {
         deposit_date: opening.deposit_date,
         note: opening.note ? String(opening.note).trim() : 'Opening stock',
         is_opening: true
-      })
-      toast.success('Opening stock added')
+      }
+      const found = openingLotsFor(opening.supplier_id, opening.product_id)
+      if (found.length) {
+        // Restate the latest entry and drop the older ones, so a party + product
+        // is left with exactly one opening balance.
+        await window.api.consignment.update(Number(found[0].id), payload)
+        for (const extra of found.slice(1)) await window.api.consignment.remove(Number(extra.id))
+        toast.success(
+          `Opening stock set to ${formatNum(payload.qty)} ${payload.uom}` +
+            (found.length > 1 ? ` · ${found.length} entries merged into one` : '')
+        )
+      } else {
+        await window.api.consignment.create(payload)
+        toast.success('Opening stock added')
+      }
       setOpeningOpen(false)
       await load()
     } catch (e) {
@@ -1180,16 +1222,12 @@ function MncStock(): React.JSX.Element {
 
       {/* Opening stock for an MNC party — no gate entry, entered by hand */}
       <Dialog open={openingOpen} onOpenChange={(o) => !o && setOpeningOpen(false)}>
-        <DialogContent>
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Add opening stock</DialogTitle>
+            <DialogTitle>{existingOpening ? 'Update opening stock' : 'Add opening stock'}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
-            <p className="text-xs text-muted-foreground">
-              The quantity this party was already holding at your place when you started keeping books here. It joins
-              their balance straight away and can be invoiced against a bargain like any other consignment stock.
-            </p>
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="grid gap-x-5 gap-y-3 sm:grid-cols-2">
               <div className="grid gap-1.5">
                 <Label>MNC / party *</Label>
                 <Select
@@ -1223,6 +1261,25 @@ function MncStock(): React.JSX.Element {
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="grid gap-1.5 sm:col-span-2">
+                {existingOpening && (
+                  <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
+                    {existingOpenings.length > 1 ? (
+                      <>
+                        This product has <b>{existingOpenings.length} opening entries</b> (
+                        {formatNum(existingOpeningTotal)} {existingOpening.uom} in total). Saving keeps the latest —{' '}
+                        <b>{formatNum(existingOpening.qty)} {existingOpening.uom}</b>, shown below — and removes the
+                        older {existingOpenings.length - 1 === 1 ? 'one' : 'ones'}.
+                      </>
+                    ) : (
+                      <>
+                        Opening balance already recorded:{' '}
+                        <b>{formatNum(existingOpening.qty)} {existingOpening.uom}</b> — saving replaces it.
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="grid gap-1.5">
                 <Label>Opening quantity *</Label>
@@ -1269,7 +1326,7 @@ function MncStock(): React.JSX.Element {
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpeningOpen(false)} disabled={savingOpening}>Cancel</Button>
             <Button onClick={saveOpeningStock} disabled={savingOpening}>
-              {savingOpening ? 'Saving…' : 'Add opening stock'}
+              {savingOpening ? 'Saving…' : existingOpening ? 'Update opening stock' : 'Add opening stock'}
             </Button>
           </DialogFooter>
         </DialogContent>
