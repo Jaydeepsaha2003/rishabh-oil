@@ -41,6 +41,9 @@ export interface Api {
     remove: (id: number) => Promise<{ id: number }>
     advance: (id: number, toStatus: string, data: Row) => Promise<{ id: number }>
     fyTaxable: (supplierId: number, date: string, excludeId: number) => Promise<number>
+    unmapped: () => Promise<Row[]>
+    unmappedCount: () => Promise<number>
+    map: (id: number, lines: Row[], force?: boolean) => Promise<{ id: number; bargain_id: number; valueDiff: number; toppedUp: { bargain_no: string; qty: number }[] }>
   }
   company: {
     list: () => Promise<Row[]>

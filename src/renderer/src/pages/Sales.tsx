@@ -1102,6 +1102,39 @@ function SalesBargainsTab(): React.JSX.Element {
     }
   }
 
+  // Flatten the expandable second level for Excel: each bargain followed by the
+  // dispatches booked against it. Bargains with none still get their row.
+  function dispatchDetailRows(): Row[] {
+    const out: Row[] = []
+    for (const b of sortedRows) {
+      const reg = bargainRegister(b, F, T)
+      out.push({
+        bargain_no: b.bargain_no || '',
+        bargain_date: formatDate(b.bargain_date),
+        customer: b.customer || '',
+        product: b.product_name || '',
+        rate: Number(b.rate) || 0,
+        qty: reg.dispatch
+      })
+      for (const d of dispatchesByBargain.get(Number(b.id)) || []) {
+        out.push({
+          bargain_no: b.bargain_no || '',
+          bargain_date: '',
+          customer: '',
+          product: '',
+          rate: Number(b.rate) || 0,
+          invoice_no: d.invoice_no || '—',
+          sale_date: formatDate(d.sale_date),
+          stage: String(d.stage || d.status || ''),
+          qty: Number(d.qty) || 0,
+          sale_rate: Number(d.rate) || 0,
+          amount: (Number(d.amount) || 0) + (Number(d.gst_amount) || 0)
+        })
+      }
+    }
+    return out
+  }
+
   function openAdjust(row: Row): void {
     setAdjustRow(row)
     setAdjustForm({ mode: 'add', amount: '', note: '', date: todayISO() })
@@ -1209,6 +1242,27 @@ function SalesBargainsTab(): React.JSX.Element {
               { header: 'Balance', key: 'balance', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).closing }
             ]}
             rows={sortedRows}
+            extraSheets={[
+              {
+                sheetName: 'Dispatches',
+                title: 'Sales bargains — dispatch detail',
+                columns: [
+                  { header: 'Bargain no', key: 'bargain_no' },
+                  { header: 'BG date', key: 'bargain_date' },
+                  { header: 'Customer', key: 'customer' },
+                  { header: 'Product', key: 'product' },
+                  { header: 'BG rate', key: 'rate', align: 'right', numFmt: '#,##0.00' },
+                  { header: 'Invoice', key: 'invoice_no' },
+                  { header: 'Dispatched on', key: 'sale_date' },
+                  { header: 'Stage', key: 'stage' },
+                  { header: 'Dis qty', key: 'qty', align: 'right', numFmt: '#,##0.000' },
+                  { header: 'Sale rate', key: 'sale_rate', align: 'right', numFmt: '#,##0.00' },
+                  { header: 'Value incl. GST', key: 'amount', align: 'right', numFmt: '#,##0.00' }
+                ],
+                rows: dispatchDetailRows(),
+                isGroup: (r) => !r.invoice_no
+              }
+            ]}
           />
           <Button size="sm" onClick={openAdd} disabled={products.length === 0}>
             <Plus className="h-4 w-4" /> New sales bargain

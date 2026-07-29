@@ -41,6 +41,7 @@ import {
   updateBillDiscount,
   deleteBillDiscount
 } from './payments'
+import { listUnmappedOrders, unmappedCount, mapOrderToBargains } from './unmapped'
 import {
   listConsignment,
   consignmentSummary,
@@ -242,7 +243,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^company:setActive$|^company:getActive$|^session:setUser$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^company:setActive$|^company:getActive$|^session:setUser$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -343,6 +344,11 @@ export function registerIpc(): void {
       advanceOrder(id, toStatus, data)
   )
 
+  handle('orders:unmapped', () => listUnmappedOrders())
+  handle('orders:unmappedCount', () => unmappedCount())
+  handle('orders:map', (_e, { id, lines, force }: { id: number; lines: Row[]; force?: boolean }) =>
+    mapOrderToBargains(id, lines, !!force)
+  )
   handle('consignment:list', () => listConsignment())
   handle('consignment:summary', () => consignmentSummary())
   handle('consignment:pending', () => listPendingGateArrivals())

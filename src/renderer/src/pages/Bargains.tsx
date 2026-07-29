@@ -534,8 +534,74 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
         { header: 'Balance', key: '_closing', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r._closing) || 0 },
         { header: 'Total', key: 'total_amount', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.total_amount) || 0 }
       ],
-      rows: sortedRows
+      rows: sortedRows,
+      // Second tab: every tanker under every bargain, so the nested view of the
+      // page is readable in Excel too. A tanker split across two bargains shows
+      // under both, with only its share.
+      extraSheets: [
+        {
+          sheetName: 'Tankers',
+          title: 'Purchase bargains — tanker detail',
+          columns: [
+            { header: 'Bargain no', key: 'bargain_no' },
+            { header: 'BG date', key: 'bargain_date' },
+            { header: 'Supplier', key: 'supplier_name' },
+            { header: 'Oil', key: 'oil' },
+            { header: 'BG rate', key: 'rate', align: 'right', numFmt: '#,##0.00' },
+            { header: 'Tanker', key: 'tanker_no' },
+            { header: 'Loaded on', key: 'loaded_date' },
+            { header: 'Stage', key: 'stage' },
+            { header: 'Invoice', key: 'invoice_no' },
+            { header: 'Dis qty', key: 'dis_qty', align: 'right', numFmt: '#,##0.000' },
+            { header: 'Received', key: 'received_qty', align: 'right', numFmt: '#,##0.000' },
+            { header: 'Split', key: 'split' }
+          ],
+          rows: tankerDetailRows(),
+          isGroup: (r) => !r.tanker_no
+        }
+      ]
     })
+  }
+
+  // Flatten the expandable second level: one row per bargain followed by its
+  // tankers. Bargains with none still appear, so nothing goes missing.
+  function tankerDetailRows(): Row[] {
+    const out: Row[] = []
+    for (const b of sortedRows) {
+      const id = Number(b.id)
+      const list = tankers.filter(
+        (t) => Number(t.bargain_id) === id || (Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) === id)
+      )
+      out.push({
+        bargain_no: b.bargain_no || '',
+        bargain_date: formatDate(b.bargain_date),
+        supplier_name: b.supplier_name || '',
+        oil: oilOf(b),
+        rate: Number(b.rate_per_uom) || 0,
+        dis_qty: Number(b._dispatch) || 0
+      })
+      for (const t of list) {
+        const loaded = Number(t.loaded_qty) || 0
+        const extra = t.extra_bargain_id ? Number(t.extra_qty) || 0 : 0
+        const isPrimary = Number(t.bargain_id) === id
+        const share = isPrimary ? loaded - extra : extra
+        out.push({
+          bargain_no: b.bargain_no || '',
+          bargain_date: '',
+          supplier_name: '',
+          oil: '',
+          rate: Number(isPrimary ? b.rate_per_uom : b.rate_per_uom) || 0,
+          tanker_no: t.tanker_no || '—',
+          loaded_date: formatDate(t.loaded_date),
+          stage: String(t.status || ''),
+          invoice_no: t.invoice_no || '',
+          dis_qty: share,
+          received_qty: Number(t.received_qty) || 0,
+          split: extra > 0 ? (isPrimary ? `split — ${extra} moved out` : 'split — excess share') : ''
+        })
+      }
+    }
+    return out
   }
 
   function downloadReportExcel(): void {

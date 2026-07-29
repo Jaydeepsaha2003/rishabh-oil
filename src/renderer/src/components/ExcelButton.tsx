@@ -1,7 +1,7 @@
 import { toast } from 'sonner'
 import { Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { exportRowsToExcel, type ExcelColumn } from '@/lib/excel'
+import { exportRowsToExcel, type ExcelColumn, type ExcelSheet } from '@/lib/excel'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -13,6 +13,7 @@ export function ExcelButton({
   title,
   columns,
   rows,
+  extraSheets,
   label = 'Excel',
   disabled,
   className
@@ -22,13 +23,14 @@ export function ExcelButton({
   title?: string
   columns: ExcelColumn[]
   rows: Row[]
+  extraSheets?: ExcelSheet[]
   label?: string
   disabled?: boolean
   className?: string
 }): React.JSX.Element {
   async function onClick(): Promise<void> {
     try {
-      await exportRowsToExcel({ filename, sheetName, title, columns, rows })
+      await exportRowsToExcel({ filename, sheetName, title, columns, rows, extraSheets })
       toast.success(`Exported ${rows.length} row${rows.length === 1 ? '' : 's'} to Excel`)
     } catch (e) {
       toast.error((e as Error).message)

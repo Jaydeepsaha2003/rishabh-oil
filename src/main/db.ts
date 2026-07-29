@@ -328,7 +328,17 @@ const MIGRATIONS = [
           o.inside_factory_date, COALESCE(o.received_date, o.delivered_date), o.received_qty,
           o.transporter_id, o.transport_rate_per_ton, o.transport_amount, o.shortage_charge_amount
    FROM orders o
-   WHERE NOT EXISTS (SELECT 1 FROM purchase_tankers pt WHERE pt.order_id = o.id)`,
+   WHERE NOT EXISTS (SELECT 1 FROM purchase_tankers pt WHERE pt.order_id = o.id)
+     -- Consignment / direct purchases are tanker-less BY DESIGN: the goods are
+     -- already at our site. Giving them a stand-in tanker would put them back
+     -- into tanker movement and, worse, make the bargain register count their
+     -- quantity twice (once via the tanker, once via the lots / the invoice).
+     AND o.is_consignment = 0`,
+  // Remove stand-in tankers this backfill created for consignment purchases
+  // before the guard above existed. Only rows it generated itself are touched.
+  `DELETE FROM purchase_tankers
+   WHERE tanker_no = 'Legacy-' || order_id
+     AND order_id IN (SELECT id FROM orders WHERE is_consignment = 1)`,
   // Order status is now derived from its tankers (loaded → received). Remap
   // leftovers from the earlier order lifecycle; the OLD 'loaded'→'at_port'
   // remap is gone — it ran every boot and corrupted freshly created purchases.
@@ -403,6 +413,9 @@ const MIGRATIONS = [
   'ALTER TABLE consignment_stock ADD COLUMN bargain_id INTEGER',
   'ALTER TABLE consignment_stock ADD COLUMN extra_bargain_id INTEGER',
   'ALTER TABLE consignment_stock ADD COLUMN extra_qty REAL',
+  // Opening balance rather than an arrival: the stock the MNC already held with
+  // us when the books started, entered by hand with no gate entry behind it.
+  'ALTER TABLE consignment_stock ADD COLUMN is_opening INTEGER NOT NULL DEFAULT 0',
   // Parties whose goods are already at our site (consignment / MNC suppliers):
   // purchases from them skip the tanker movement entirely — no send-to-supplier,
   // no transit/outside/inside/empty. Booked straight to received.

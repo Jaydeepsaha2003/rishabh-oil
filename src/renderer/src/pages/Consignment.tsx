@@ -540,7 +540,11 @@ export function Consignment(): React.JSX.Element {
                                 <TableRow key={d.id as number} className={cn('border-b', !booked && 'bg-emerald-50/40')}>
                                   <TableCell className="whitespace-nowrap">{formatDate(d.deposit_date)}</TableCell>
                                   <TableCell className="font-medium">
-                                    {d.tanker_no || <span className="italic text-muted-foreground">no number</span>}
+                                    {d.tanker_no || (Number(d.is_opening) === 1 ? (
+                                      <Badge variant="secondary" className="font-normal">Opening</Badge>
+                                    ) : (
+                                      <span className="italic text-muted-foreground">no number</span>
+                                    ))}
                                   </TableCell>
                                   <TableCell className="tabular-nums text-muted-foreground">
                                     {d.gate_entry_no || '—'}

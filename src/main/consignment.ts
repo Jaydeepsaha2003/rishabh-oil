@@ -85,7 +85,7 @@ export async function listUnbookedLots(supplierId?: number, productId?: number):
   if (productId) { where.push('cs.product_id = ?'); args.push(productId) }
   const res = await getClient().execute({
     sql: `SELECT cs.id, cs.supplier_id, cs.product_id, cs.qty, cs.uom, cs.deposit_date, cs.note,
-                 cs.tanker_no, cs.gate_entry_id, cs.bargain_id, cs.extra_bargain_id, cs.extra_qty,
+                 cs.tanker_no, cs.gate_entry_id, cs.bargain_id, cs.extra_bargain_id, cs.extra_qty, cs.is_opening,
                  s.name AS supplier_name, p.code AS product_code, p.name AS product_name,
                  ge.gate_entry_no, ge.entry_date AS gate_date, ge.received_qty AS gate_qty
           FROM consignment_stock cs
@@ -356,8 +356,9 @@ export async function createConsignment(v: Row): Promise<{ id: number }> {
     if (!tankerNo) tankerNo = ge.rows[0].tanker_no ? String(ge.rows[0].tanker_no) : null
   }
   const res = await c.execute({
-    sql: `INSERT INTO consignment_stock (company_id, supplier_id, product_id, qty, uom, deposit_date, note, gate_entry_id, tanker_no)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO consignment_stock (company_id, supplier_id, product_id, qty, uom, deposit_date, note,
+            gate_entry_id, tanker_no, is_opening)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       n(v.supplier_id),
@@ -367,7 +368,8 @@ export async function createConsignment(v: Row): Promise<{ id: number }> {
       v.deposit_date,
       v.note ? String(v.note).trim() : null,
       gateId,
-      tankerNo
+      tankerNo,
+      v.is_opening ? 1 : 0
     ]
   })
   return { id: Number(res.lastInsertRowid) }

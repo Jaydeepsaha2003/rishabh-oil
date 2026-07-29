@@ -137,6 +137,14 @@ interface OrdersProps {
 
 export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersProps = {}): React.JSX.Element {
   const [tab, setTab] = useState('tankers')
+  // Invoices with no live bargain link, and the mapping dialog state.
+  const [unmapped, setUnmapped] = useState<Row[]>([])
+  const [mapRow, setMapRow] = useState<Row | null>(null)
+  const [mapLines, setMapLines] = useState<Row[]>([])
+  const [mapError, setMapError] = useState<string | null>(null)
+  const [mapWarn, setMapWarn] = useState<string | null>(null)
+  const [mapping, setMapping] = useState(false)
+
   const [rows, setRows] = useState<Row[]>([])
   const [tankers, setTankers] = useState<Row[]>([])
   const [bargains, setBargains] = useState<Row[]>([])
@@ -178,7 +186,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [o, pt, b, s, src, tr, cfg, ge] = await Promise.all([
+    const [o, pt, b, s, src, tr, cfg, ge, um] = await Promise.all([
       window.api.orders.list(),
       window.api.tankers.list(),
       window.api.bargains.list(),
@@ -186,7 +194,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       window.api.data.list('sources'),
       window.api.data.list('transporters'),
       window.api.settings.all(),
-      window.api.gate.list()
+      window.api.gate.list(),
+      window.api.orders.unmapped()
     ])
     setRows(o)
     setTankers(pt)
@@ -196,8 +205,84 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     setTransporters(tr.filter((x) => x.active))
     setSettings(cfg)
     setGateEntries(ge)
+    setUnmapped(um)
     setLoading(false)
   }, [])
+
+  const [mapConfirm, setMapConfirm] = useState(false)
+  // Bargains this invoice could be mapped to: same supplier, same product.
+  const mapBargains = useMemo(
+    () =>
+      mapRow
+        ? bargains.filter(
+            (b) =>
+              String(b.supplier_id) === String(mapRow.supplier_id) &&
+              String(b.oil_type_id) === String(mapRow.oil_type_id)
+          )
+        : [],
+    [bargains, mapRow]
+  )
+  const mapAllocated = mapLines.reduce((sum, l) => sum + (Number(l.qty) || 0), 0)
+  const mapRemaining = (Number(mapRow?.ordered_qty) || 0) - mapAllocated
+  const mapBargainValue = mapLines.reduce((sum, l) => {
+    const b = bargains.find((x) => String(x.id) === String(l.bargain_id))
+    return sum + (Number(b?.rate_per_uom) || 0) * (Number(l.qty) || 0)
+  }, 0)
+  const mapValueDiff = (Number(mapRow?.taxable_value) || 0) - mapBargainValue
+
+  function openMap(row: Row): void {
+    setMapRow(row)
+    // Start with the whole invoice on one bargain; more can be added.
+    setMapLines([{ bargain_id: '', qty: String(Number(row.ordered_qty) || 0), top_up: false }])
+    setMapError(null)
+    setMapWarn(null)
+    setMapConfirm(false)
+  }
+
+  async function saveMapping(force: boolean): Promise<void> {
+    if (!mapRow) return
+    setMapError(null)
+    if (mapLines.some((l) => !l.bargain_id)) return setMapError('Every line needs a bargain')
+    if (mapLines.some((l) => (Number(l.qty) || 0) <= 0)) return setMapError('Every line needs a quantity')
+    if (Math.abs(mapRemaining) > 0.0001) {
+      return setMapError(
+        mapRemaining > 0
+          ? `${formatNum(mapRemaining)} ${mapRow.uom} of this invoice is still unallocated`
+          : `The bargain quantities are ${formatNum(-mapRemaining)} ${mapRow.uom} more than the invoice`
+      )
+    }
+    // Value mismatch is a warning, not a block: confirm on the second press.
+    if (Math.abs(mapValueDiff) > 1 && !force && !mapConfirm) {
+      setMapConfirm(true)
+      setMapWarn(
+        `The bargains price this invoice ${formatINR(Math.abs(mapValueDiff))} ${mapValueDiff > 0 ? 'lower' : 'higher'} than it was booked. Press Assign again to map it anyway.`
+      )
+      return
+    }
+    setMapping(true)
+    try {
+      const res = await window.api.orders.map(
+        Number(mapRow.id),
+        mapLines.map((l) => ({
+          bargain_id: Number(l.bargain_id),
+          qty: Number(l.qty) || 0,
+          top_up: !!l.top_up
+        })),
+        true
+      )
+      const topped = (res.toppedUp || [])
+        .map((t) => `${t.bargain_no} +${formatNum(t.qty)}`)
+        .join(', ')
+      toast.success(`Invoice ${mapRow.invoice_no} mapped${topped ? ` · raised ${topped}` : ''}`)
+      setMapRow(null)
+      await load()
+    } catch (e) {
+      const msg = (e as Error).message
+      setMapError(msg.startsWith('VALUE_MISMATCH') ? 'The invoice value does not match the chosen bargains' : msg)
+    } finally {
+      setMapping(false)
+    }
+  }
 
   // Total gate-received qty for a tanker — completed weighments only; a pending
   // arrival (no weight yet) doesn't count. Null when nothing is completed.
@@ -1432,7 +1517,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                   />
                                   <div className="min-w-0 flex-1">
                                     <div className="text-sm font-medium">
-                                      {lot.tanker_no || <span className="text-muted-foreground">no tanker no.</span>}
+                                      {lot.tanker_no ||
+                                        (Number(lot.is_opening) === 1 ? (
+                                          <span className="text-violet-700">Opening stock</span>
+                                        ) : (
+                                          <span className="text-muted-foreground">no tanker no.</span>
+                                        ))}
                                     </div>
                                     <div className="text-[11px] text-muted-foreground">
                                       {lot.product_code || lot.product_name} · logged {formatDate(lot.deposit_date)}
@@ -1795,6 +1885,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             <TabsList className="mb-4">
               <TabsTrigger value="tankers">Tanker movement</TabsTrigger>
               <TabsTrigger value="purchases">Purchase entries</TabsTrigger>
+              <TabsTrigger value="unmapped">
+                Unmapped invoices
+                {unmapped.length > 0 && (
+                  <span className="ml-1.5 rounded-full bg-red-500 px-1.5 text-[10px] font-semibold text-white">
+                    {unmapped.length}
+                  </span>
+                )}
+              </TabsTrigger>
             </TabsList>
 
             <TabsContent value="tankers" className="space-y-5">
@@ -1967,6 +2065,97 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                             <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => deletePurchase(row)}><Trash2 className="h-4 w-4" /></Button>
                           </div></TableCell>
                         </TableRow>)}
+                  </TableBody>
+                </Table>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="unmapped" className="space-y-4">
+              <div className="overflow-hidden rounded-xl border-2 border-red-200 bg-card">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-red-200 bg-red-50 px-4 py-3">
+                  <div>
+                    <h3 className="font-medium text-red-900">Unmapped invoices</h3>
+                    <p className="text-xs text-red-800/80">
+                      Purchase invoices with no live bargain behind them — usually because the bargain was deleted.
+                      Assign one or more bargains so the bargain register counts them again.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <ExcelButton
+                      filename={`unmapped-invoices-${todayISO()}`}
+                      sheetName="Unmapped"
+                      title="Unmapped purchase invoices"
+                      columns={[
+                        { header: 'Invoice', key: 'invoice_no', value: (r) => r.invoice_no || '' },
+                        { header: 'Date', key: 'order_date', value: (r) => formatDate(r.order_date) },
+                        { header: 'Supplier', key: 'supplier_name', value: (r) => r.supplier_name || '' },
+                        { header: 'Product', key: 'product', value: (r) => r.product_code || r.product_name || '' },
+                        { header: 'Qty', key: 'ordered_qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.ordered_qty) || 0 },
+                        { header: 'Rate', key: 'invoice_rate', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.invoice_rate) || 0 },
+                        { header: 'Taxable value', key: 'taxable_value', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.taxable_value) || 0 },
+                        { header: 'Tankers', key: 'tanker_nos', value: (r) => r.tanker_nos || '' },
+                        { header: 'Reason', key: 'reason', value: (r) => (Number(r.was_linked) === 1 ? 'Bargain deleted' : 'Never linked') }
+                      ]}
+                      rows={unmapped}
+                    />
+                    <Badge variant={unmapped.length ? 'destructive' : 'success'}>
+                      {unmapped.length ? `${unmapped.length} to map` : 'All mapped'}
+                    </Badge>
+                  </div>
+                </div>
+                <Table
+                  className="text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:h-9 [&_th]:px-3"
+                  wrapperClassName="max-h-[65vh] overflow-auto"
+                >
+                  <TableHeader className="sticky top-0 z-10">
+                    <TableRow className="bg-muted">
+                      <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Invoice</TableHead>
+                      <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Date</TableHead>
+                      <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Supplier</TableHead>
+                      <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Product</TableHead>
+                      <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Qty</TableHead>
+                      <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Rate</TableHead>
+                      <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Taxable value</TableHead>
+                      <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Tankers</TableHead>
+                      <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Why</TableHead>
+                      <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {loading ? (
+                      <TableRow><TableCell colSpan={10} className="py-12 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+                    ) : unmapped.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={10} className="py-12 text-center text-muted-foreground">
+                          Every purchase invoice is linked to a bargain.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      unmapped.map((r, i) => (
+                        <TableRow key={r.id as number} className={cn('border-b', i % 2 === 1 && 'bg-muted/30')}>
+                          <TableCell className="font-medium">{r.invoice_no}</TableCell>
+                          <TableCell className="whitespace-nowrap">{formatDate(r.order_date)}</TableCell>
+                          <TableCell>{r.supplier_name}</TableCell>
+                          <TableCell>{r.product_code || r.product_name}</TableCell>
+                          <TableCell className="text-right font-semibold tabular-nums">
+                            {formatNum(r.ordered_qty)} {r.uom}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">{formatINR(r.invoice_rate)}</TableCell>
+                          <TableCell className="text-right font-semibold tabular-nums">{formatINR(r.taxable_value)}</TableCell>
+                          <TableCell className="max-w-[160px] truncate text-muted-foreground">
+                            {r.tanker_nos || (Number(r.is_consignment) === 1 ? 'consignment' : '—')}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={Number(r.was_linked) === 1 ? 'destructive' : 'warning'}>
+                              {Number(r.was_linked) === 1 ? 'Bargain deleted' : 'Never linked'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button size="sm" onClick={() => openMap(r)}>Assign bargains</Button>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
                   </TableBody>
                 </Table>
               </div>
@@ -2305,6 +2494,182 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             <div className="rounded-lg border bg-muted/30 p-3"><MoneyRow label="Loaded" value={`${formatNum(actionRow.loaded_qty)} ${actionRow.uom}`} /><MoneyRow label="Shortage" value={`${formatNum(shortage.actualShortage)} ${actionRow.uom}`} /><MoneyRow label="Freight" value={formatINR(shortage.transportAmount)} /></div>
           </div>}
           <DialogFooter><Button variant="outline" onClick={() => { setActionRow(null); setExcess(null) }}>Cancel</Button><Button onClick={advanceTanker}>{excess ? (excess.mode === 'existing' ? 'Allocate & confirm' : 'Add bargain & confirm') : 'Confirm'}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Assign bargains to an unmapped invoice */}
+      <Dialog open={!!mapRow} onOpenChange={(o) => !o && setMapRow(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Assign bargains — invoice {mapRow?.invoice_no}</DialogTitle>
+          </DialogHeader>
+          {mapRow && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1 rounded-lg border bg-muted/40 p-3 text-sm md:grid-cols-4">
+                <div>
+                  <div className="text-[11px] text-muted-foreground">Supplier</div>
+                  <div className="font-medium">{mapRow.supplier_name}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-muted-foreground">Product</div>
+                  <div className="font-medium">{mapRow.product_code || mapRow.product_name}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-muted-foreground">Invoice quantity</div>
+                  <div className="font-medium tabular-nums">
+                    {formatNum(mapRow.ordered_qty)} {mapRow.uom}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-muted-foreground">Taxable value</div>
+                  <div className="font-medium tabular-nums">{formatINR(mapRow.taxable_value)}</div>
+                </div>
+              </div>
+
+              {/* One line per bargain. The same bargain can be added twice — the
+                  quantities are merged when it is saved. */}
+              <div className="space-y-2">
+                {mapLines.map((line, index) => {
+                  const bg = bargains.find((b) => String(b.id) === String(line.bargain_id))
+                  const balance = bg ? Number(bg.balance_qty) || 0 : 0
+                  const qty = Number(line.qty) || 0
+                  const short = qty - balance
+                  return (
+                    <div key={index} className="grid gap-2 rounded-lg border p-2.5 md:grid-cols-[minmax(0,1fr)_7rem_auto]">
+                      <div className="grid min-w-0 gap-1">
+                        <Label className="text-[11px] text-muted-foreground">Bargain</Label>
+                        <Select
+                          value={String(line.bargain_id || '')}
+                          onValueChange={(v) =>
+                            setMapLines((p) => p.map((x, i) => (i === index ? { ...x, bargain_id: v } : x)))
+                          }
+                        >
+                          <SelectTrigger className="h-9">
+                            <SelectValue placeholder={mapBargains.length ? 'Select bargain' : 'No bargain for this supplier & product'} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {mapBargains.map((b) => (
+                              <SelectItem key={b.id} value={String(b.id)}>
+                                {b.bargain_no} · {formatDate(b.bargain_date)} · bal {formatNum(b.balance_qty)} {b.uom} @{' '}
+                                {formatINR(b.rate_per_uom)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="grid gap-1">
+                        <Label className="text-[11px] text-muted-foreground">Qty ({mapRow.uom})</Label>
+                        <Input
+                          type="number"
+                          className="h-9 text-right"
+                          value={line.qty ?? ''}
+                          onChange={(e) =>
+                            setMapLines((p) => p.map((x, i) => (i === index ? { ...x, qty: e.target.value } : x)))
+                          }
+                        />
+                      </div>
+                      <div className="flex items-end gap-2">
+                        <div className="min-w-[9rem] pb-1 text-[11px] leading-tight">
+                          {bg ? (
+                            <>
+                              <div className="tabular-nums text-muted-foreground">
+                                {formatINR(Number(bg.rate_per_uom) * qty)}
+                              </div>
+                              {short > 0.0001 ? (
+                                <label className="mt-0.5 flex cursor-pointer items-start gap-1.5 text-amber-800">
+                                  <input
+                                    type="checkbox"
+                                    className="mt-0.5 h-3 w-3 accent-amber-600"
+                                    checked={!!line.top_up}
+                                    onChange={(e) =>
+                                      setMapLines((p) =>
+                                        p.map((x, i) => (i === index ? { ...x, top_up: e.target.checked } : x))
+                                      )
+                                    }
+                                  />
+                                  <span>
+                                    {formatNum(short)} over balance — add it to the bargain
+                                  </span>
+                                </label>
+                              ) : (
+                                <div className="text-muted-foreground">
+                                  balance left {formatNum(balance - qty)}
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-muted-foreground">pick a bargain</span>
+                          )}
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-9 w-9 text-destructive"
+                          disabled={mapLines.length === 1}
+                          onClick={() => setMapLines((p) => p.filter((_, i) => i !== index))}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setMapLines((p) => [...p, { bargain_id: '', qty: '', top_up: false }])}
+                >
+                  <Plus className="h-4 w-4" /> Add another bargain
+                </Button>
+              </div>
+
+              {/* Quantity and value reconciliation */}
+              <div className="rounded-lg border">
+                <MoneyRow
+                  label="Allocated quantity"
+                  value={`${formatNum(mapAllocated)} of ${formatNum(mapRow.ordered_qty)} ${mapRow.uom}`}
+                  strong
+                />
+                {Math.abs(mapRemaining) > 0.0001 && (
+                  <MoneyRow
+                    label={mapRemaining > 0 ? 'Still to allocate' : 'Over-allocated by'}
+                    value={`${formatNum(Math.abs(mapRemaining))} ${mapRow.uom}`}
+                  />
+                )}
+                <div className="mx-3 border-t" />
+                <MoneyRow label="Value at bargain rates" value={formatINR(mapBargainValue)} />
+                <MoneyRow label="Invoice taxable value" value={formatINR(mapRow.taxable_value)} />
+                <MoneyRow label="Difference" value={formatINR(mapValueDiff)} strong />
+              </div>
+
+              {Math.abs(mapValueDiff) > 1 && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  <span className="font-semibold">Values do not match.</span> The invoice was booked at{' '}
+                  {formatINR(mapRow.taxable_value)} but these bargains price it at {formatINR(mapBargainValue)} — a
+                  difference of {formatINR(mapValueDiff)}. That is normal when the invoice carries interest or freight;
+                  check it before saving.
+                </div>
+              )}
+              {mapWarn && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  {mapWarn}
+                </div>
+              )}
+              {mapError && (
+                <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {mapError}
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMapRow(null)} disabled={mapping}>
+              Cancel
+            </Button>
+            <Button onClick={() => saveMapping(false)} disabled={mapping}>
+              {mapping ? 'Saving…' : Math.abs(mapValueDiff) > 1 ? 'Check and assign' : 'Assign bargains'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

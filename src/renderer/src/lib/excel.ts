@@ -13,26 +13,26 @@ export type ExcelColumn = {
   value?: (row: Row) => unknown
 }
 
-// Generic styled .xlsx export used by the Excel buttons across the app. A bold
-// header band, optional title, per-column width/alignment/number-format, and a
-// frozen header row. Downloads immediately in the browser.
-export async function exportRowsToExcel(opts: {
-  filename: string
+// One tab of a workbook.
+export type ExcelSheet = {
   sheetName?: string
+  title?: string
   columns: ExcelColumn[]
   rows: Row[]
-  title?: string
-}): Promise<void> {
-  const { filename, columns, rows } = opts
-  const sheetName = (opts.sheetName || 'Sheet1').slice(0, 31)
-  const wb = new ExcelJS.Workbook()
-  const ws = wb.addWorksheet(sheetName)
+  // Rows matching this get a tinted, bold-ish treatment — used to make the
+  // parent rows stand out when a sheet interleaves parents and their detail.
+  isGroup?: (row: Row) => boolean
+}
 
-  const headerRowIdx = opts.title ? 2 : 1
-  if (opts.title) {
+function writeSheet(wb: ExcelJS.Workbook, spec: ExcelSheet, index: number): void {
+  const { columns, rows } = spec
+  const ws = wb.addWorksheet((spec.sheetName || `Sheet${index + 1}`).slice(0, 31))
+
+  const headerRowIdx = spec.title ? 2 : 1
+  if (spec.title) {
     ws.mergeCells(1, 1, 1, columns.length)
     const t = ws.getCell(1, 1)
-    t.value = opts.title
+    t.value = spec.title
     t.font = { bold: true, size: 13, color: { argb: 'FF1F2937' } }
     ws.getRow(1).height = 22
   }
@@ -50,17 +50,56 @@ export async function exportRowsToExcel(opts: {
   })
   hr.height = 20
   ws.views = [{ state: 'frozen', ySplit: headerRowIdx }]
+  ws.autoFilter = {
+    from: { row: headerRowIdx, column: 1 },
+    to: { row: headerRowIdx, column: columns.length }
+  }
 
   rows.forEach((r, ri) => {
     const row = ws.getRow(headerRowIdx + 1 + ri)
+    const group = spec.isGroup ? spec.isGroup(r) : false
     columns.forEach((c, ci) => {
       const raw = c.value ? c.value(r) : r[c.key]
       const cell = row.getCell(ci + 1)
       cell.value = raw == null ? '' : (raw as ExcelJS.CellValue)
       if (c.numFmt) cell.numFmt = c.numFmt
       if (c.align) cell.alignment = { horizontal: c.align }
+      if (group) {
+        cell.font = { bold: true, color: { argb: 'FF1F2937' } }
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } }
+        cell.border = { top: { style: 'thin', color: { argb: 'FF94A3B8' } } }
+      }
     })
   })
+}
+
+// Generic styled .xlsx export used by the Excel buttons across the app. A bold
+// header band, optional title, per-column width/alignment/number-format, and a
+// frozen header row. Pass `extraSheets` for a workbook with more than one tab —
+// e.g. a register summary plus its line-by-line detail. Downloads immediately.
+export async function exportRowsToExcel(opts: {
+  filename: string
+  sheetName?: string
+  columns: ExcelColumn[]
+  rows: Row[]
+  title?: string
+  isGroup?: (row: Row) => boolean
+  extraSheets?: ExcelSheet[]
+}): Promise<void> {
+  const { filename } = opts
+  const wb = new ExcelJS.Workbook()
+  writeSheet(
+    wb,
+    {
+      sheetName: opts.sheetName || 'Sheet1',
+      title: opts.title,
+      columns: opts.columns,
+      rows: opts.rows,
+      isGroup: opts.isGroup
+    },
+    0
+  )
+  ;(opts.extraSheets || []).forEach((sh, i) => writeSheet(wb, sh, i + 1))
 
   const buf = await wb.xlsx.writeBuffer()
   const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })

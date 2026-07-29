@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowRightLeft, ChevronDown, ChevronRight, Download, SlidersHorizontal, Trash2, Upload } from 'lucide-react'
+import { ArrowRightLeft, ChevronDown, ChevronRight, Download, Plus, SlidersHorizontal, Trash2, Upload } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -766,14 +766,67 @@ function MncStock(): React.JSX.Element {
   const [lots, setLots] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState<Set<string>>(new Set())
+  // Opening stock: what the MNC already held with us when the books started.
+  // No gate entry behind it, so it is entered by hand.
+  const [suppliers, setSuppliers] = useState<Row[]>([])
+  const [products, setProducts] = useState<Row[]>([])
+  const [openingOpen, setOpeningOpen] = useState(false)
+  const [opening, setOpening] = useState<Row>({})
+  const [savingOpening, setSavingOpening] = useState(false)
+  const [openingError, setOpeningError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [sm, ls] = await Promise.all([window.api.consignment.summary(), window.api.consignment.list()])
+    const [sm, ls, sup, prd] = await Promise.all([
+      window.api.consignment.summary(),
+      window.api.consignment.list(),
+      window.api.data.list('suppliers'),
+      window.api.data.list('products')
+    ])
     setRows(sm)
     setLots(ls)
+    setSuppliers(sup.filter((x) => x.active))
+    setProducts(prd.filter((x) => x.active))
     setLoading(false)
   }, [])
+
+  function openOpeningStock(supplierId?: unknown, productId?: unknown): void {
+    setOpening({
+      supplier_id: supplierId ? String(supplierId) : '',
+      product_id: productId ? String(productId) : '',
+      qty: '',
+      uom: 'MT',
+      deposit_date: todayISO()
+    })
+    setOpeningError(null)
+    setOpeningOpen(true)
+  }
+
+  async function saveOpeningStock(): Promise<void> {
+    if (!opening.supplier_id) return setOpeningError('Choose the MNC / party')
+    if (!opening.product_id) return setOpeningError('Choose the product')
+    if ((Number(opening.qty) || 0) <= 0) return setOpeningError('Enter the opening quantity')
+    setSavingOpening(true)
+    setOpeningError(null)
+    try {
+      await window.api.consignment.create({
+        supplier_id: Number(opening.supplier_id),
+        product_id: Number(opening.product_id),
+        qty: Number(opening.qty),
+        uom: opening.uom || 'MT',
+        deposit_date: opening.deposit_date,
+        note: opening.note ? String(opening.note).trim() : 'Opening stock',
+        is_opening: true
+      })
+      toast.success('Opening stock added')
+      setOpeningOpen(false)
+      await load()
+    } catch (e) {
+      setOpeningError((e as Error).message)
+    } finally {
+      setSavingOpening(false)
+    }
+  }
   useEffect(() => { load() }, [load])
   useLiveRefresh(load)
 
@@ -819,7 +872,10 @@ function MncStock(): React.JSX.Element {
         <MiniStat label="Invoiced (became ours)" value={formatNum(tot.invoiced)} tone="rose" />
         <MiniStat label="Balance (supplier owned)" value={formatNum(tot.balance)} tone="violet" />
       </div>
-      <div className="flex justify-end">
+      <div className="flex items-center justify-end gap-2">
+        <Button size="sm" variant="outline" onClick={() => openOpeningStock()}>
+          <Plus className="h-4 w-4" /> Add opening stock
+        </Button>
         <ExcelButton
           filename={`mnc-consignment-stock-${todayISO()}`}
           sheetName="MNC stock"
@@ -936,8 +992,105 @@ function MncStock(): React.JSX.Element {
         </Table>
       </div>
       <p className="text-xs text-muted-foreground">
-        Consigned stock belongs to the supplier until you invoice it, so it is kept out of your own stock figures above. Deposited − Invoiced = Balance still owned by the party. Booking a consignment purchase against a bargain moves that quantity into your books and reduces this balance automatically. Expand a product to see its deposit lots.
+        Consigned stock belongs to the supplier until you invoice it, so it is kept out of your own stock figures above. Deposited − Invoiced = Balance still owned by the party. Booking a consignment purchase against a bargain moves that quantity into your books and reduces this balance automatically. Expand a product to see its deposit lots. Use <span className="font-medium">Add opening stock</span> for what a party already held with you before the books started.
       </p>
+
+      {/* Opening stock for an MNC party — no gate entry, entered by hand */}
+      <Dialog open={openingOpen} onOpenChange={(o) => !o && setOpeningOpen(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add opening stock</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              The quantity this party was already holding at your place when you started keeping books here. It joins
+              their balance straight away and can be invoiced against a bargain like any other consignment stock.
+            </p>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="grid gap-1.5">
+                <Label>MNC / party *</Label>
+                <Select
+                  value={String(opening.supplier_id || '')}
+                  onValueChange={(v) => setOpening((p) => ({ ...p, supplier_id: v }))}
+                >
+                  <SelectTrigger><SelectValue placeholder="Select the party" /></SelectTrigger>
+                  <SelectContent>
+                    {suppliers.map((x) => (
+                      <SelectItem key={x.id} value={String(x.id)}>
+                        {x.name}
+                        {x.skip_tanker_stages ? ' · direct' : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Product *</Label>
+                <Select
+                  value={String(opening.product_id || '')}
+                  onValueChange={(v) => setOpening((p) => ({ ...p, product_id: v }))}
+                >
+                  <SelectTrigger><SelectValue placeholder="Select the product" /></SelectTrigger>
+                  <SelectContent>
+                    {products.map((x) => (
+                      <SelectItem key={x.id} value={String(x.id)}>
+                        {x.code || x.name}
+                        {x.category ? ` · ${x.category}` : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Opening quantity *</Label>
+                <Input
+                  type="number"
+                  value={opening.qty ?? ''}
+                  placeholder="0.000"
+                  onChange={(e) => setOpening((p) => ({ ...p, qty: e.target.value }))}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label>UOM</Label>
+                <Select value={String(opening.uom || 'MT')} onValueChange={(v) => setOpening((p) => ({ ...p, uom: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="MT">MT</SelectItem>
+                    <SelectItem value="KG">KG</SelectItem>
+                    <SelectItem value="L">L</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-1.5">
+                <Label>As on date</Label>
+                <DatePicker
+                  value={String(opening.deposit_date || '')}
+                  onChange={(v) => setOpening((p) => ({ ...p, deposit_date: v }))}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Note</Label>
+                <Input
+                  value={opening.note ?? ''}
+                  placeholder="Opening stock"
+                  onChange={(e) => setOpening((p) => ({ ...p, note: e.target.value }))}
+                />
+              </div>
+            </div>
+            {openingError && (
+              <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {openingError}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpeningOpen(false)} disabled={savingOpening}>Cancel</Button>
+            <Button onClick={saveOpeningStock} disabled={savingOpening}>
+              {savingOpening ? 'Saving…' : 'Add opening stock'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

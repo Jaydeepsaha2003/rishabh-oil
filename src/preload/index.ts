@@ -57,6 +57,10 @@ const api = {
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('orders:delete', { id }),
     advance: (id: number, toStatus: string, data: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('orders:advance', { id, toStatus, data }),
+    unmapped: (): Promise<Row[]> => ipcRenderer.invoke('orders:unmapped'),
+    unmappedCount: (): Promise<number> => ipcRenderer.invoke('orders:unmappedCount'),
+    map: (id: number, lines: Row[], force?: boolean): Promise<Row> =>
+      ipcRenderer.invoke('orders:map', { id, lines, force }),
     fyTaxable: (supplierId: number, date: string, excludeId: number): Promise<number> =>
       ipcRenderer.invoke('orders:fyTaxable', { supplierId, date, excludeId })
   },
