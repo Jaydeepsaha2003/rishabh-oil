@@ -11,6 +11,7 @@ import { Bargains } from './pages/Bargains'
 import { Orders } from './pages/Orders'
 import { Consignment } from './pages/Consignment'
 import { GateEntry } from './pages/GateEntry'
+import { Accounts } from './pages/Accounts'
 import { Ledgers } from './pages/Ledgers'
 import { Daybook } from './pages/Daybook'
 import { Payments } from './pages/Payments'
@@ -292,6 +293,7 @@ function App(): React.JSX.Element {
         )}
         {view === 'debitNotes' && <Notes kind="debit" />}
         {view === 'creditNotes' && <Notes kind="credit" />}
+        {view === 'accounts' && <Accounts />}
         {view === 'ledgers' && <Ledgers onOpenRecord={openRecord} />}
         {view === 'daybook' && <Daybook />}
         {view === 'products' && <Products />}

@@ -12,6 +12,7 @@ export const MODULES: ModuleDef[] = [
   { key: 'orders', label: 'Purchases' },
   { key: 'consignment', label: 'Consignment' },
   { key: 'gateEntry', label: 'Gate Entry' },
+  { key: 'accounts', label: 'Accounting' },
   { key: 'payments', label: 'Payments' },
   { key: 'debitNotes', label: 'Debit Note' },
   { key: 'creditNotes', label: 'Credit Note' },

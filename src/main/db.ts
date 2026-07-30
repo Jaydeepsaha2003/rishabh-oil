@@ -438,6 +438,19 @@ const MIGRATIONS = [
     UNIQUE (sales_bargain_id, packaging_id)
   )`,
   'CREATE INDEX IF NOT EXISTS idx_sbsr_bargain ON sales_bargain_sku_rates(sales_bargain_id)',
+  // Tally-style bill-wise adjustments on payment/receipt voucher lines:
+  // agst_ref settles a named bill, advance/new_ref create one, on_account
+  // leaves the money unallocated.
+  `CREATE TABLE IF NOT EXISTS journal_bill_allocs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    line_id INTEGER NOT NULL REFERENCES journal_lines(id),
+    account_id INTEGER NOT NULL REFERENCES ledger_accounts(id),
+    method TEXT NOT NULL,
+    ref_name TEXT,
+    amount REAL NOT NULL
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_jba_line ON journal_bill_allocs(line_id)',
+  'CREATE INDEX IF NOT EXISTS idx_jba_account ON journal_bill_allocs(account_id)',
   // How a consignment / direct purchase invoice is spread across bargains. The
   // quantity is typed, not tanker-wise, so the allocation belongs to the invoice
   // rather than to a tanker — and it is the single source the bargain register

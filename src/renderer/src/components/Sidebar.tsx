@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import {
+  BookOpenCheck,
   Anchor,
   Boxes,
   Briefcase,
@@ -41,6 +42,7 @@ export type Page =
   | 'orders'
   | 'consignment'
   | 'gateEntry'
+  | 'accounts'
   | 'ledgers'
   | 'daybook'
   | 'payments'
@@ -66,6 +68,7 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   orders: { label: 'Purchases', icon: ShoppingCart },
   consignment: { label: 'Consignment', icon: PackageOpen },
   gateEntry: { label: 'Gate Entry', icon: DoorOpen },
+  accounts: { label: 'Accounting', icon: BookOpenCheck },
   payments: { label: 'Payments', icon: CreditCard },
   debitNotes: { label: 'Debit Note', icon: FileMinus2 },
   creditNotes: { label: 'Credit Note', icon: FilePlus2 },
@@ -92,7 +95,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Purchase', ids: ['bargains', 'orders', 'consignment', 'gateEntry'] },
   { label: 'Production', ids: ['products', 'formulation', 'production', 'stock'] },
   { label: 'Sales', ids: ['salesBargains', 'sales'] },
-  { label: 'Accounts', ids: ['payments', 'debitNotes', 'creditNotes', 'ledgers', 'daybook'] },
+  { label: 'Accounts', ids: ['accounts', 'payments', 'debitNotes', 'creditNotes', 'ledgers', 'daybook'] },
   { label: 'Masters', ids: ['suppliers', 'transporters', 'customers', 'ports', 'brokers', 'packaging'] },
   { label: 'System', ids: ['approvals', 'settings'] }
 ]

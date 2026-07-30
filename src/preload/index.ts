@@ -94,10 +94,27 @@ const api = {
     advance: (id: number, toStatus: string, data: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('tankers:advance', { id, toStatus, data })
   },
+  dashboard: {
+    stats: (): Promise<Row> => ipcRenderer.invoke('dashboard:stats')
+  },
+  vouchers: {
+    list: (args?: { from?: string; to?: string; vchType?: string }): Promise<Row[]> =>
+      ipcRenderer.invoke('vouchers:list', args),
+    get: (id: number): Promise<Row | null> => ipcRenderer.invoke('vouchers:get', { id }),
+    create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('vouchers:create', { values }),
+    update: (id: number, values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('vouchers:update', { id, values }),
+    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('vouchers:delete', { id })
+  },
   journal: {
+    trialBalance: (args?: { from?: string; to?: string }): Promise<Row> =>
+      ipcRenderer.invoke('journal:trialBalance', args),
+    groups: (): Promise<Row[]> => ipcRenderer.invoke('journal:groups'),
+    groupNames: (): Promise<{ name: string; nature: string }[]> => ipcRenderer.invoke('journal:groupNames'),
+    pendingRefs: (account: string): Promise<Row[]> => ipcRenderer.invoke('journal:pendingRefs', { account }),
     accounts: (): Promise<Row[]> => ipcRenderer.invoke('journal:accounts'),
-    createAccount: (name: string): Promise<{ id: number }> =>
-      ipcRenderer.invoke('journal:createAccount', { name }),
+    createAccount: (name: string, group?: string): Promise<{ id: number }> =>
+      ipcRenderer.invoke('journal:createAccount', { name, group }),
     statement: (accountId: number): Promise<Row[]> =>
       ipcRenderer.invoke('journal:statement', { accountId }),
     addEntry: (data: Row): Promise<{ id: number }> =>

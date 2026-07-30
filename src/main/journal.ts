@@ -138,6 +138,10 @@ export async function deleteManualEntry(id: number): Promise<{ id: number }> {
   if (r.order_id != null || r.sale_id != null || r.payment_id != null) {
     throw new Error('This entry was posted automatically — adjust its source document instead')
   }
+  await c.execute({
+    sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
+    args: [id]
+  })
   await c.execute({ sql: 'DELETE FROM journal_lines WHERE entry_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [id] })
   return { id }

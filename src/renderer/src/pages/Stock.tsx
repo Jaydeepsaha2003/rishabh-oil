@@ -200,9 +200,9 @@ function StockTable({ rows, breakdown, label = 'stock', range, onRange, companyP
       {companyPicker}
       {/* Period for the register: opening balance before it, flows within it. */}
       <span className="text-[11px] font-semibold text-muted-foreground">From</span>
-      <div className="w-36"><DatePicker value={range.from} onChange={(v) => onRange({ ...range, from: v })} /></div>
+      <div className="w-40"><DatePicker value={range.from} onChange={(v) => onRange({ ...range, from: v })} /></div>
       <span className="text-[11px] font-semibold text-muted-foreground">To</span>
-      <div className="w-36"><DatePicker value={range.to} onChange={(v) => onRange({ ...range, to: v })} /></div>
+      <div className="w-40"><DatePicker value={range.to} onChange={(v) => onRange({ ...range, to: v })} /></div>
       {ranged && (
         <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={() => onRange({ from: '', to: '' })}>
           Clear

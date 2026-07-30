@@ -68,9 +68,23 @@ export interface Api {
     remove: (id: number) => Promise<{ id: number }>
     advance: (id: number, toStatus: string, data: Row) => Promise<{ id: number }>
   }
+  dashboard: {
+    stats: () => Promise<Row>
+  }
+  vouchers: {
+    list: (args?: { from?: string; to?: string; vchType?: string }) => Promise<Row[]>
+    get: (id: number) => Promise<Row | null>
+    create: (values: Row) => Promise<{ id: number }>
+    update: (id: number, values: Row) => Promise<{ id: number }>
+    remove: (id: number) => Promise<{ id: number }>
+  }
   journal: {
+    trialBalance: (args?: { from?: string; to?: string }) => Promise<Row>
+    groups: () => Promise<Row[]>
+    groupNames: () => Promise<{ name: string; nature: string }[]>
+    pendingRefs: (account: string) => Promise<Row[]>
     accounts: () => Promise<Row[]>
-    createAccount: (name: string) => Promise<{ id: number }>
+    createAccount: (name: string, group?: string) => Promise<{ id: number }>
     statement: (accountId: number) => Promise<Row[]>
     addEntry: (data: Row) => Promise<{ id: number }>
     deleteEntry: (id: number) => Promise<{ id: number }>

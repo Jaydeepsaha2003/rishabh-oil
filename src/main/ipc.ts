@@ -77,6 +77,18 @@ import { stockCountSheet, listStockCounts, saveStockCounts } from './stockcount'
 import { listSkuStock, adjustSkuStock } from './skustock'
 import { listNotes, listNoteItems, createNote, deleteNote } from './notes'
 import { daybook } from './daybook'
+import { dashboardStats } from './dashboard'
+import {
+  createVoucher,
+  updateVoucher,
+  getVoucher,
+  listVouchers,
+  trialBalance,
+  listGroups,
+  listPendingRefs,
+  TALLY_GROUPS,
+  type VoucherInput
+} from './accounting'
 import {
   listProduction,
   getProductionItems,
@@ -247,7 +259,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^company:setActive$|^company:getActive$|^session:setUser$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^dashboard:stats$|^company:setActive$|^company:getActive$|^session:setUser$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -373,11 +385,27 @@ export function registerIpc(): void {
   handle('consignment:delete', (_e, { id }: { id: number }) => deleteConsignment(id))
 
   handle('journal:accounts', () => listAccounts())
-  handle('journal:createAccount', (_e, { name }: { name: string }) => createAccount(name))
+  handle('journal:createAccount', (_e, { name, group }: { name: string; group?: string }) => createAccount(name, group))
   handle('journal:statement', (_e, { accountId }: { accountId: number }) =>
     accountStatement(accountId)
   )
   handle('journal:addEntry', (_e, { data }: { data: Row }) => addManualJournal(data))
+  handle('journal:trialBalance', (_e, args?: { from?: string; to?: string }) =>
+    trialBalance(args?.from, args?.to)
+  )
+  handle('journal:groups', () => listGroups())
+  handle('journal:groupNames', () => TALLY_GROUPS)
+  handle('journal:pendingRefs', (_e, { account }: { account: string }) => listPendingRefs(account))
+  handle('dashboard:stats', () => dashboardStats())
+  handle('vouchers:list', (_e, args?: { from?: string; to?: string; vchType?: string }) =>
+    listVouchers(args?.from, args?.to, args?.vchType)
+  )
+  handle('vouchers:get', (_e, { id }: { id: number }) => getVoucher(id))
+  handle('vouchers:create', (_e, { values }: { values: VoucherInput }) => createVoucher(values))
+  handle('vouchers:update', (_e, { id, values }: { id: number; values: VoucherInput }) =>
+    updateVoucher(id, values)
+  )
+  handle('vouchers:delete', (_e, { id }: { id: number }) => deleteManualEntry(id))
   handle('journal:deleteEntry', (_e, { id }: { id: number }) => deleteManualEntry(id))
 
   handle('ledger:suppliers', () => listSupplierLedger())
