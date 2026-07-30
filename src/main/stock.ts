@@ -10,65 +10,122 @@ type Row = Record<string, any>
 //   + produced output                   (production.qty)
 //   − consumed in production            (production_items.qty)
 //   − sold (fulfilled)                  (sales.qty where status='done')
-export async function stockLevels(): Promise<Row[]> {
+// Book stock per product. With a range, the register becomes a period view:
+// opening = every movement strictly before `from`, the flow columns cover only
+// [from, to], and stock (closing) = opening + the period's net. Without a range
+// it is the lifetime view it always was (opening 0, flows all-time).
+export async function stockLevels(
+  range?: { from?: string; to?: string },
+  companyIds?: number[]
+): Promise<Row[]> {
   const c = getClient()
-  const cid = getActiveCompanyId()
-  const sumMap = async (sql: string): Promise<Map<number, number>> => {
-    const res = await c.execute({ sql, args: [cid] })
+  // One company, several, or all — no selection means the active company, so
+  // every existing caller keeps its behaviour.
+  const cidList = (companyIds || []).map(Number).filter((x) => x > 0)
+  if (!cidList.length) cidList.push(getActiveCompanyId())
+  const ph = cidList.map(() => '?').join(', ')
+  const from = String(range?.from || '')
+  const to = String(range?.to || '')
+
+  // Each movement source with its effective date. Note the sold query counts
+  // OFF-STOCK (track_stock = 0) sales too: off-stock only means the
+  // not-enough-stock guard was skipped at dispatch; the goods still physically
+  // left, so stock must reflect it (and may go negative).
+  const SOURCES = {
+    received: {
+      base: `SELECT oil_type_id AS pid, SUM(received_qty) AS q FROM orders WHERE status = 'received' AND company_id IN (${ph})`,
+      date: 'COALESCE(received_date, order_date)',
+      group: 'GROUP BY oil_type_id'
+    },
+    produced: {
+      base: `SELECT product_id AS pid, SUM(qty) AS q FROM production WHERE company_id IN (${ph})`,
+      date: 'prod_date',
+      group: 'GROUP BY product_id'
+    },
+    consumed: {
+      base: `SELECT i.product_id AS pid, SUM(i.qty) AS q FROM production_items i
+             JOIN production p ON p.id = i.production_id WHERE p.company_id IN (${ph})`,
+      date: 'p.prod_date',
+      group: 'GROUP BY i.product_id'
+    },
+    sold: {
+      base: `SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status = 'done' AND company_id IN (${ph})`,
+      date: 'COALESCE(unloaded_date, sale_date)',
+      group: 'GROUP BY product_id'
+    },
+    transferredIn: {
+      base: `SELECT product_id AS pid, SUM(qty) AS q FROM stock_transfers WHERE to_company_id IN (${ph})`,
+      date: 'transfer_date',
+      group: 'GROUP BY product_id'
+    },
+    transferredOut: {
+      base: `SELECT product_id AS pid, SUM(qty) AS q FROM stock_transfers WHERE from_company_id IN (${ph})`,
+      date: 'transfer_date',
+      group: 'GROUP BY product_id'
+    }
+  } as const
+
+  const slice = async (
+    src: { base: string; date: string; group: string },
+    kind: 'period' | 'opening'
+  ): Promise<Map<number, number>> => {
+    if (kind === 'opening' && !from) return new Map()
+    let sql = src.base
+    const args: (string | number)[] = [...cidList]
+    if (kind === 'opening') {
+      sql += ` AND ${src.date} < ?`
+      args.push(from)
+    } else {
+      if (from) {
+        sql += ` AND ${src.date} >= ?`
+        args.push(from)
+      }
+      if (to) {
+        sql += ` AND ${src.date} <= ?`
+        args.push(to)
+      }
+    }
+    const res = await c.execute({ sql: `${sql} ${src.group}`, args })
     const m = new Map<number, number>()
     for (const r of res.rows) m.set(Number(r.pid), Number(r.q) || 0)
     return m
   }
 
-  const products = await c.execute(
-    'SELECT id, code, name, category, active FROM products ORDER BY category, name'
-  )
-  const received = await sumMap(
-    "SELECT oil_type_id AS pid, SUM(received_qty) AS q FROM orders WHERE status = 'received' AND company_id = ? GROUP BY oil_type_id"
-  )
-  const produced = await sumMap(
-    'SELECT product_id AS pid, SUM(qty) AS q FROM production WHERE company_id = ? GROUP BY product_id'
-  )
-  const consumed = await sumMap(
-    `SELECT i.product_id AS pid, SUM(i.qty) AS q FROM production_items i
-     JOIN production p ON p.id = i.production_id WHERE p.company_id = ? GROUP BY i.product_id`
-  )
-  // Every dispatched sale draws stock — including OFF-STOCK (track_stock = 0)
-  // ones. Off-stock only means the not-enough-stock guard was skipped at
-  // dispatch; the goods still physically left, so stock must reflect it (and may
-  // go negative). track_stock therefore gates the guard, never the movement.
-  const sold = await sumMap(
-    "SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status = 'done' AND company_id = ? GROUP BY product_id"
-  )
-  // Inter-company transfers: in = received from another company, out = sent away.
-  const transferredIn = await sumMap(
-    'SELECT product_id AS pid, SUM(qty) AS q FROM stock_transfers WHERE to_company_id = ? GROUP BY product_id'
-  )
-  const transferredOut = await sumMap(
-    'SELECT product_id AS pid, SUM(qty) AS q FROM stock_transfers WHERE from_company_id = ? GROUP BY product_id'
-  )
+  const keys = Object.keys(SOURCES) as (keyof typeof SOURCES)[]
+  const [products, ...maps] = await Promise.all([
+    c.execute('SELECT id, code, name, category, active FROM products ORDER BY category, name'),
+    ...keys.map((k) => slice(SOURCES[k], 'period')),
+    ...keys.map((k) => slice(SOURCES[k], 'opening'))
+  ])
+  const period = Object.fromEntries(keys.map((k, i) => [k, maps[i] as Map<number, number>]))
+  const opening = Object.fromEntries(keys.map((k, i) => [k, maps[keys.length + i] as Map<number, number>]))
 
   return products.rows.map((p) => {
     const id = Number(p.id)
-    const rec = received.get(id) || 0
-    const prod = produced.get(id) || 0
-    const cons = consumed.get(id) || 0
-    const sld = sold.get(id) || 0
-    const tIn = transferredIn.get(id) || 0
-    const tOut = transferredOut.get(id) || 0
+    const g = (m: Record<string, Map<number, number>>, k: string): number => m[k].get(id) || 0
+    const open =
+      g(opening, 'received') + g(opening, 'produced') + g(opening, 'transferredIn') -
+      g(opening, 'consumed') - g(opening, 'sold') - g(opening, 'transferredOut')
+    const rec = g(period, 'received')
+    const prod = g(period, 'produced')
+    const cons = g(period, 'consumed')
+    const sld = g(period, 'sold')
+    const tIn = g(period, 'transferredIn')
+    const tOut = g(period, 'transferredOut')
     return {
       id,
       code: p.code,
       name: p.name,
       category: p.category,
       active: p.active,
+      opening: open,
       received: rec,
       produced: prod,
       consumed: cons,
       sold: sld,
       transferred_in: tIn,
       transferred_out: tOut,
-      stock: rec + prod + tIn - cons - sld - tOut
+      stock: open + rec + prod + tIn - cons - sld - tOut
     }
   })
 }

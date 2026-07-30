@@ -546,9 +546,13 @@ export async function createSale(v: Row): Promise<{ id: number }> {
       throw new Error(`Sale qty exceeds the sales bargain balance (${bal.toFixed(3)})`)
     }
   }
-  const stage = stageOf(v)
+  // Ex (customer lifts): there is no delivery journey to track — the goods
+  // leave with the customer at invoicing, so the sale books straight to Done,
+  // stamped with the sale date.
+  const exTerm = v.freight_term !== 'DLD'
+  const stage: DispatchStage = exTerm ? 'unloaded' : stageOf(v)
   const status = statusForStage(stage)
-  const dates = resolveStageDates(stage, v, todayLocal())
+  const dates = resolveStageDates(stage, v, (exTerm && String(v.sale_date || '')) || todayLocal())
   // A finished good WITH a formulation is made-to-order: dispatching it consumes
   // the recipe's raw/intermediate inputs (via a linked auto-production), not
   // finished stock. Without a formulation it draws finished stock as before.
@@ -637,9 +641,13 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       throw new Error(`Sale qty exceeds the sales bargain balance (${bal.toFixed(3)})`)
     }
   }
-  const stage = stageOf(v)
+  // Ex (customer lifts): there is no delivery journey to track — the goods
+  // leave with the customer at invoicing, so the sale books straight to Done,
+  // stamped with the sale date.
+  const exTerm = v.freight_term !== 'DLD'
+  const stage: DispatchStage = exTerm ? 'unloaded' : stageOf(v)
   const status = statusForStage(stage)
-  const dates = resolveStageDates(stage, v, todayLocal())
+  const dates = resolveStageDates(stage, v, (exTerm && String(v.sale_date || '')) || todayLocal())
   const hasFormula = await productHasFormulation(productId)
   // Keeping/putting this sale in a dispatched stage must be backed by stock:
   // formulation goods by their raw inputs, plain goods by finished stock —
@@ -908,6 +916,31 @@ export async function backfillSalesGst(): Promise<void> {
     "INSERT INTO app_settings (key, value) VALUES ('sales_gst_backfilled', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"
   )
   if (applied > 0) console.log(`[sales] backfilled output GST on ${applied} sales`)
+}
+
+// One-time sweep for the "Ex sales are simply Done" rule: any customer-lifts
+// sale still parked in a tracking stage is moved to Done through the normal
+// stage mover, so the stock draw and any linked auto-production run. Forced,
+// because the goods physically left with the customer regardless of the books.
+export async function backfillExSalesDone(): Promise<void> {
+  const c = getClient()
+  const done = await c.execute("SELECT value FROM app_settings WHERE key = 'ex_sales_done_backfilled'")
+  if (done.rows.length && String(done.rows[0].value) === '1') return
+  const rows = await c.execute(
+    "SELECT id, invoice_no, sale_date FROM sales WHERE COALESCE(freight_term, 'FREIGHT_ON_GOODS') != 'DLD' AND status != 'done' ORDER BY id"
+  )
+  for (const r of rows.rows) {
+    // Normal dispatch first (stock-guarded); only when that refuses does the
+    // sale go through off-stock — the goods left with the customer either way.
+    await setSaleStage(n(r.id), 'unloaded', false, String(r.sale_date))
+      .catch(() => setSaleStage(n(r.id), 'unloaded', true, String(r.sale_date)))
+      .catch((e) => console.error(`[sales] ex-done sweep failed for #${r.id}:`, (e as Error).message))
+    console.log(`[sales] ex sale #${r.id} ${r.invoice_no || ''} marked done as of ${r.sale_date}`)
+  }
+  await c.execute(
+    "INSERT INTO app_settings (key, value) VALUES ('ex_sales_done_backfilled', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"
+  )
+  if (rows.rows.length) console.log(`[sales] ex-done sweep completed ${rows.rows.length} sales`)
 }
 
 // One-time backfill: auto round-off on existing sale invoices (created before

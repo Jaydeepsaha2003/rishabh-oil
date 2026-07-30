@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowRightLeft, ChevronDown, ChevronRight, Download, Plus, SlidersHorizontal, Trash2, Upload } from 'lucide-react'
+import { ArrowRightLeft, Building2, Check, ChevronDown, ChevronRight, Download, Plus, SlidersHorizontal, Trash2, Upload } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import {
@@ -103,9 +104,67 @@ function PartyCell({ value, parties, uom, tone }: { value: number; parties: Row[
   )
 }
 
-function StockTable({ rows, breakdown, label = 'stock' }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[] }>; label?: string }): React.JSX.Element {
+// One company, several, or all — the book registers aggregate whatever is
+// picked. An empty selection means the active company, so the default view is
+// unchanged.
+function CompanyPicker({
+  companies,
+  value,
+  onChange,
+  activeId
+}: {
+  companies: Row[]
+  value: number[]
+  onChange: (ids: number[]) => void
+  activeId: number
+}): React.JSX.Element {
+  const sel = value.length ? value : activeId ? [activeId] : []
+  const all = companies.length > 0 && companies.every((c) => sel.includes(Number(c.id)))
+  const label = all && companies.length > 1
+    ? 'All companies'
+    : sel.length === 1
+      ? String(companies.find((c) => Number(c.id) === sel[0])?.name || 'Company')
+      : `${sel.length} companies`
+  const toggle = (id: number): void => {
+    const next = sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]
+    // Never empty — fall back to the active company.
+    onChange(next.length ? next : activeId ? [activeId] : [])
+  }
+  const item = 'flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-[13px] hover:bg-muted'
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" className="h-9 max-w-[220px] gap-1.5 text-xs font-semibold">
+          <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="truncate">{label}</span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-60 p-1.5">
+        <button type="button" className={item} onClick={() => onChange(companies.map((c) => Number(c.id)))}>
+          <span className="font-semibold">All companies</span>
+          {all && <Check className="h-3.5 w-3.5 text-emerald-600" />}
+        </button>
+        <div className="my-1 border-t" />
+        {companies.map((c) => (
+          <button key={String(c.id)} type="button" className={item} onClick={() => toggle(Number(c.id))}>
+            <span className="truncate">
+              {c.name}
+              {Number(c.id) === activeId && <span className="ml-1 text-[10px] text-muted-foreground">(active)</span>}
+            </span>
+            {sel.includes(Number(c.id)) && <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600" />}
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function StockTable({ rows, breakdown, label = 'stock', range, onRange, companyPicker }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[] }>; label?: string; range: { from: string; to: string }; onRange: (r: { from: string; to: string }) => void; companyPicker?: React.ReactNode }): React.JSX.Element {
+  const ranged = !!(range.from || range.to)
   const sum = (k: string): number => rows.reduce((s, r) => s + (Number(r[k]) || 0), 0)
   const totals = {
+    opening: sum('opening'),
     received: sum('received'),
     produced: sum('produced'),
     transferred_in: sum('transferred_in'),
@@ -137,22 +196,36 @@ function StockTable({ rows, breakdown, label = 'stock' }: { rows: Row[]; breakdo
       <MiniStat label="Total out" value={formatNum(outFlow)} tone="rose" />
       <MiniStat label={negatives ? `In stock · ${negatives} negative` : 'In stock'} value={formatNum(totals.stock)} tone={negatives ? 'amber' : 'sky'} />
     </div>
-    <div className="flex justify-end">
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      {companyPicker}
+      {/* Period for the register: opening balance before it, flows within it. */}
+      <span className="text-[11px] font-semibold text-muted-foreground">From</span>
+      <div className="w-36"><DatePicker value={range.from} onChange={(v) => onRange({ ...range, from: v })} /></div>
+      <span className="text-[11px] font-semibold text-muted-foreground">To</span>
+      <div className="w-36"><DatePicker value={range.to} onChange={(v) => onRange({ ...range, to: v })} /></div>
+      {ranged && (
+        <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={() => onRange({ from: '', to: '' })}>
+          Clear
+        </Button>
+      )}
       <ExcelButton
-        filename={`${label}-stock-${todayISO()}`}
+        filename={ranged ? `${label}-stock-${range.from || 'start'}-to-${range.to || todayISO()}` : `${label}-stock-${todayISO()}`}
         sheetName={`${label} stock`}
-        title={`${label.charAt(0).toUpperCase()}${label.slice(1)} stock`}
+        title={`${label.charAt(0).toUpperCase()}${label.slice(1)} stock${ranged ? ` (${range.from || 'start'} → ${range.to || 'today'})` : ''}`}
         columns={[
           { header: 'Product', key: 'name', value: (r) => r.name || '' },
           { header: 'Party', key: 'party', value: (r) => r.party || '' },
           { header: 'Flow', key: 'flow', value: (r) => r.flow || '' },
+          ...(ranged
+            ? [{ header: 'Opening', key: 'opening', align: 'right' as const, numFmt: '#,##0.000', value: (r: Row) => Number(r.opening) || 0 }]
+            : []),
           { header: 'Receipt', key: 'received', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.received) || 0 },
           { header: 'Produced', key: 'produced', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.produced) || 0 },
           { header: 'Transfer in', key: 'transferred_in', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.transferred_in) || 0 },
           { header: 'Transfer out', key: 'transferred_out', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.transferred_out) || 0 },
           { header: 'Consumed', key: 'consumed', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.consumed) || 0 },
           { header: 'Dispatch', key: 'sold', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.sold) || 0 },
-          { header: 'In stock', key: 'stock', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.stock) || 0 }
+          { header: ranged ? 'Closing' : 'In stock', key: 'stock', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.stock) || 0 }
         ]}
         rows={sheetRows}
         isGroup={(r) => !!r.is_group}
@@ -168,13 +241,14 @@ function StockTable({ rows, breakdown, label = 'stock' }: { rows: Row[]; breakdo
           <TableRow>
             {([
               { l: 'Product' },
+              ...(ranged ? [{ l: 'Opening', r: true, tone: 'text-slate-700' }] : []),
               { l: 'Receipt', r: true, tone: 'text-emerald-700' },
               { l: 'Produced', r: true, tone: 'text-emerald-700' },
               { l: 'Transfer in', r: true, tone: 'text-emerald-700' },
               { l: 'Transfer out', r: true, tone: 'text-rose-700' },
               { l: 'Consumed', r: true, tone: 'text-rose-700' },
               { l: 'Dispatch', r: true, tone: 'text-rose-700' },
-              { l: 'In stock', r: true, tone: 'text-sky-800' }
+              { l: ranged ? 'Closing' : 'In stock', r: true, tone: 'text-sky-800' }
             ] as { l: string; r?: boolean; tone?: string }[]).map((h) => (
               <TableHead
                 key={h.l}
@@ -192,7 +266,7 @@ function StockTable({ rows, breakdown, label = 'stock' }: { rows: Row[]; breakdo
         <TableBody>
           {rows.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
+              <TableCell colSpan={ranged ? 9 : 8} className="py-10 text-center text-muted-foreground">
                 Nothing here yet.
               </TableCell>
             </TableRow>
@@ -201,6 +275,11 @@ function StockTable({ rows, breakdown, label = 'stock' }: { rows: Row[]; breakdo
               {rows.map((r, i) => (
                 <TableRow key={r.id as number} className={cn('border-b', i % 2 === 1 && 'bg-muted/30')}>
                   <TableCell className="font-medium">{r.name}</TableCell>
+                  {ranged && (
+                    <TableCell className="text-right tabular-nums text-slate-700">
+                      {Number(r.opening) ? formatNum(r.opening) : '—'}
+                    </TableCell>
+                  )}
                   <PartyCell value={Number(r.received)} parties={breakdown[r.id as number]?.receipt || []} />
                   <TableCell className="text-right tabular-nums text-emerald-700">{Number(r.produced) ? formatNum(r.produced) : '—'}</TableCell>
                   <TableCell className="text-right tabular-nums text-emerald-700">{Number(r.transferred_in) > 0 ? formatNum(r.transferred_in) : '—'}</TableCell>
@@ -219,6 +298,7 @@ function StockTable({ rows, breakdown, label = 'stock' }: { rows: Row[]; breakdo
               ))}
               <TableRow className="border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
                 <TableCell className="text-[11px] font-bold uppercase tracking-wide text-amber-900">Grand total</TableCell>
+                {ranged && <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.opening)}</TableCell>}
                 <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.received)}</TableCell>
                 <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.produced)}</TableCell>
                 <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.transferred_in)}</TableCell>
@@ -1617,12 +1697,27 @@ export function Stock(): React.JSX.Element {
   const [tab, setTab] = useState('raw')
   const [rows, setRows] = useState<Row[]>([])
   const [breakdown, setBreakdown] = useState<Record<number, { receipt: Row[]; dispatch: Row[] }>>({})
+  const [range, setRange] = useState({ from: '', to: '' })
+  const ranged = !!(range.from || range.to)
+  const [companies, setCompanies] = useState<Row[]>([])
+  const [activeCid, setActiveCid] = useState(0)
+  const [cids, setCids] = useState<number[]>([])
+  // Party tooltips describe the active company's lifetime flows — hide them
+  // whenever the numbers on screen are a different slice.
+  const onlyActive = cids.length === 0 || (cids.length === 1 && cids[0] === activeCid)
 
   const load = useCallback(async () => {
-    const [s, b] = await Promise.all([window.api.stock.list(), window.api.stock.breakdown()])
+    const [s, b, cs, active] = await Promise.all([
+      window.api.stock.list(range.from || range.to ? range : undefined, cids.length ? cids : undefined),
+      window.api.stock.breakdown(),
+      window.api.company.list(),
+      window.api.company.getActive()
+    ])
     setRows(s)
     setBreakdown(b)
-  }, [])
+    setCompanies(cs)
+    setActiveCid(Number(active.id))
+  }, [range, cids])
 
   useEffect(() => {
     load()
@@ -1631,6 +1726,9 @@ export function Stock(): React.JSX.Element {
   useLiveRefresh(load)
 
   const byCat = useMemo(() => (cat: string): Row[] => rows.filter((r) => r.category === cat), [rows])
+  const companyPicker = (
+    <CompanyPicker companies={companies} value={cids} onChange={setCids} activeId={activeCid} />
+  )
 
   return (
     <>
@@ -1674,13 +1772,13 @@ export function Stock(): React.JSX.Element {
             )}
           </TabsList>
           <TabsContent value="raw" className="mt-6">
-            <StockTable rows={byCat('raw')} breakdown={breakdown} label="raw" />
+            <StockTable rows={byCat('raw')} breakdown={ranged || !onlyActive ? {} : breakdown} label="raw" range={range} onRange={setRange} companyPicker={companyPicker} />
           </TabsContent>
           <TabsContent value="intermediate" className="mt-6">
-            <StockTable rows={byCat('intermediate')} breakdown={breakdown} label="intermediate" />
+            <StockTable rows={byCat('intermediate')} breakdown={ranged || !onlyActive ? {} : breakdown} label="intermediate" range={range} onRange={setRange} companyPicker={companyPicker} />
           </TabsContent>
           <TabsContent value="finished" className="mt-6">
-            <StockTable rows={byCat('finished')} breakdown={breakdown} label="finished" />
+            <StockTable rows={byCat('finished')} breakdown={ranged || !onlyActive ? {} : breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} />
           </TabsContent>
           <TabsContent value="sku" className="mt-6">
             <SkuStock />

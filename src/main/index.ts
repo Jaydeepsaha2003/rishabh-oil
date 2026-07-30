@@ -5,7 +5,7 @@ import { registerUpdater } from './updater'
 import { initDb, startRevisionWatcher } from './db'
 import { backfillJournal } from './journal'
 import { backfillOrderStatuses, backfillPurchaseRoundOff } from './orders'
-import { backfillSalesGst, backfillSalesBargainCustomers, backfillSalesRoundOff } from './sales'
+import { backfillSalesGst, backfillSalesBargainCustomers, backfillSalesRoundOff, backfillExSalesDone } from './sales'
 import { seedDefaultAdmin } from './auth'
 import { seedProducts, seedFormulations, seedPackagings } from './seed'
 import { cleanupLogs } from './access'
@@ -49,6 +49,7 @@ app.whenReady().then(async () => {
   await backfillJournal().catch((e) => console.error('[journal] backfill failed:', e))
   await backfillSalesGst().catch((e) => console.error('[sales] GST backfill failed:', e))
   await backfillSalesRoundOff().catch((e) => console.error('[sales] round-off backfill failed:', e))
+  await backfillExSalesDone().catch((e) => console.error('[sales] ex-done sweep failed:', e))
   await backfillSalesBargainCustomers().catch((e) => console.error('[sales] bargain-customer link failed:', e))
   await backfillOrderStatuses().catch((e) => console.error('[orders] status backfill failed:', e))
   await backfillPurchaseRoundOff().catch((e) => console.error('[orders] round-off repair failed:', e))

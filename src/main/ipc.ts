@@ -439,7 +439,7 @@ export function registerIpc(): void {
   )
   handle('formulations:delete', (_e, { id }: { id: number }) => deleteFormulation(id))
 
-  handle('stock:list', () => stockLevels())
+  handle('stock:list', (_e, args?: { range?: { from?: string; to?: string }; companyIds?: number[] }) => stockLevels(args?.range, args?.companyIds))
   handle('stock:needs', () => productionNeeds())
   handle('stock:breakdown', () => stockPartyBreakdown())
   handle('daybook:list', (_e, { from, to }: { from: string; to: string }) => daybook(from, to))

@@ -793,6 +793,7 @@ function SalesTab({
             ) : (
               filteredInvoices.map((inv) => {
                 const stg = stageInfo(inv.first)
+                const exTerm = String(inv.first.freight_term || 'FREIGHT_ON_GOODS') !== 'DLD'
                 const idx = DISPATCH_STAGES.findIndex((x) => x.value === stg.value)
                 const prevStage = idx > 0 ? DISPATCH_STAGES[idx - 1] : null
                 const nextStage = idx < DISPATCH_STAGES.length - 1 ? DISPATCH_STAGES[idx + 1] : null
@@ -822,6 +823,11 @@ function SalesTab({
                       <TableCell className="align-top text-right tabular-nums">{formatNum(inv.qty)}</TableCell>
                       <TableCell className="align-top text-right tabular-nums">{formatINR(inv.net)}</TableCell>
                       <TableCell className="align-top" onClick={(e) => e.stopPropagation()}>
+                        {exTerm ? (
+                          <span className="flex h-7 items-center gap-1 text-xs font-medium text-emerald-600" title="Customer lifts — no dispatch tracking">
+                            <Check className="h-3.5 w-3.5" /> Done
+                          </span>
+                        ) : (
                         <div className="flex items-center gap-1">
                           <button
                             type="button"
@@ -841,6 +847,7 @@ function SalesTab({
                             <span className="flex items-center gap-0.5 pl-1 text-xs font-medium text-emerald-600" title="Delivered"><Check className="h-3.5 w-3.5" /> Done</span>
                           )}
                         </div>
+                        )}
                         {untracked && <div className="mt-1 text-[10px] font-medium uppercase tracking-wide text-orange-600">Off-stock</div>}
                       </TableCell>
                       <TableCell className="align-top text-right" onClick={(e) => e.stopPropagation()}>
@@ -926,12 +933,18 @@ function SalesTab({
             </div>
             <div className="grid gap-1.5">
               <Label>Dispatch stage</Label>
-              <Select value={header.dispatch_stage || 'pending'} onValueChange={(v) => setHeaderField('dispatch_stage', v)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {DISPATCH_STAGES.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              {isDld ? (
+                <Select value={header.dispatch_stage || 'pending'} onValueChange={(v) => setHeaderField('dispatch_stage', v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {DISPATCH_STAGES.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="flex h-9 items-center gap-1.5 rounded-md border bg-emerald-50 px-3 text-sm font-medium text-emerald-700">
+                  <Check className="h-4 w-4" /> Done — goods leave with the customer
+                </div>
+              )}
             </div>
           </div>
 
@@ -952,7 +965,7 @@ function SalesTab({
             </div>
           )}
 
-          {header.dispatch_stage && header.dispatch_stage !== 'pending' && (
+          {isDld && header.dispatch_stage && header.dispatch_stage !== 'pending' && (
             <div className="mt-4 grid grid-cols-1 gap-3 rounded-md border bg-muted/30 p-3 sm:grid-cols-3">
               <div className="grid gap-1.5">
                 <Label>Loaded date</Label>

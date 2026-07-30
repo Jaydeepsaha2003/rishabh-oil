@@ -166,7 +166,7 @@ const api = {
       ipcRenderer.invoke('formulations:delete', { id })
   },
   stock: {
-    list: (): Promise<Row[]> => ipcRenderer.invoke('stock:list'),
+    list: (range?: { from?: string; to?: string }, companyIds?: number[]): Promise<Row[]> => ipcRenderer.invoke('stock:list', { range, companyIds }),
     needs: (): Promise<Row[]> => ipcRenderer.invoke('stock:needs'),
     breakdown: (): Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>> => ipcRenderer.invoke('stock:breakdown'),
     daybook: (from: string, to: string): Promise<{ vouchers: Row[]; material: Row[] }> => ipcRenderer.invoke('daybook:list', { from, to }),
