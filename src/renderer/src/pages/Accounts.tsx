@@ -22,7 +22,9 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
-import { PageHeader } from '@/components/PageHeader'
+import { DbStatus } from '@/components/DbStatus'
+import { UpdateBadge } from '@/components/UpdateBadge'
+import { FyPicker } from '@/components/FyPicker'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
@@ -43,13 +45,15 @@ const T = {
 }
 
 type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial'
-type VchType = 'CONTRA' | 'PAYMENT' | 'RECEIPT' | 'JOURNAL'
+type VchType = 'CONTRA' | 'PAYMENT' | 'RECEIPT' | 'JOURNAL' | 'DEBIT NOTE' | 'CREDIT NOTE'
 
 const VCH_TYPES: { key: VchType; fkey: string; label: string }[] = [
   { key: 'CONTRA', fkey: 'F4', label: 'Contra' },
   { key: 'PAYMENT', fkey: 'F5', label: 'Payment' },
   { key: 'RECEIPT', fkey: 'F6', label: 'Receipt' },
-  { key: 'JOURNAL', fkey: 'F7', label: 'Journal' }
+  { key: 'JOURNAL', fkey: 'F7', label: 'Journal' },
+  { key: 'DEBIT NOTE', fkey: 'Alt F5', label: 'Debit Note' },
+  { key: 'CREDIT NOTE', fkey: 'Alt F6', label: 'Credit Note' }
 ]
 
 interface VLine {
@@ -57,6 +61,7 @@ interface VLine {
   account: string
   group: string
   amount: string
+  allocs: AllocRow[]
 }
 
 // Tally-format payment/receipt entry: one money account, party lines with
@@ -82,15 +87,21 @@ const METHODS: { key: AllocRow['method']; label: string }[] = [
 ]
 const blankPayLine = (): PayLine => ({ account: '', group: '', amount: '', allocs: [] })
 
+function monthLabelLong(m: string): string {
+  const [y, mo] = m.split('-')
+  const names = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+  return `${names[Number(mo) - 1] || mo} ${y}`
+}
+
 const blankLines = (t: VchType): VLine[] =>
-  t === 'RECEIPT'
+  t === 'RECEIPT' || t === 'CREDIT NOTE'
     ? [
-        { side: 'cr', account: '', group: '', amount: '' },
-        { side: 'dr', account: '', group: '', amount: '' }
+        { side: 'cr', account: '', group: '', amount: '', allocs: [] },
+        { side: 'dr', account: '', group: '', amount: '', allocs: [] }
       ]
     : [
-        { side: 'dr', account: '', group: '', amount: '' },
-        { side: 'cr', account: '', group: '', amount: '' }
+        { side: 'dr', account: '', group: '', amount: '', allocs: [] },
+        { side: 'cr', account: '', group: '', amount: '', allocs: [] }
       ]
 
 // A Tally-style function-key button for the right-hand bar.
@@ -107,6 +118,105 @@ function FKey({ k, label, active, onClick }: { k: string; label: string; active?
       <span className={cn('w-9 shrink-0 font-bold', active ? T.key : 'text-amber-300')}>{k}</span>
       <span className="truncate">{label}</span>
     </button>
+  )
+}
+
+// The bill-wise details editor (method of adjustment), Tally style. Used under
+// party lines in payments/receipts AND in the journal / note grid.
+function AllocPanel({
+  lineAmount,
+  allocs,
+  refs,
+  onChange
+}: {
+  lineAmount: number
+  allocs: AllocRow[]
+  refs: Row[]
+  onChange: (allocs: AllocRow[]) => void
+}): React.JSX.Element {
+  const allocated = allocs.reduce((sum, a) => sum + (Number(a.amount) || 0), 0)
+  const matched = Math.abs(allocated - lineAmount) < 0.005
+  const remaining = (skip = -1): number =>
+    Math.round((lineAmount - allocs.reduce((sum, a, j) => (j === skip ? sum : sum + (Number(a.amount) || 0)), 0)) * 100) / 100
+  const set = (j: number, patch: Partial<AllocRow>): void =>
+    onChange(allocs.map((a, y) => (y === j ? { ...a, ...patch } : a)))
+  return (
+    <div className="ml-3 mt-1.5 rounded border border-dashed border-amber-300 bg-amber-50/60 px-2.5 py-2">
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="text-[10px] font-bold uppercase tracking-widest text-amber-800">
+          Bill-wise details — method of adjustment
+        </span>
+        <span className={cn('text-[10px] font-semibold tabular-nums', matched ? 'text-emerald-700' : 'text-amber-700')}>
+          {allocs.length === 0 ? 'none — treated as plain balance' : `${formatINR(allocated)} of ${formatINR(lineAmount)} allocated`}
+        </span>
+      </div>
+      {allocs.map((a, j) => (
+        <div key={j} className="mb-1 grid grid-cols-[120px_1fr_120px_24px] items-center gap-1.5">
+          <Select value={a.method} onValueChange={(v) => set(j, { method: v as AllocRow['method'], ref_name: '' })}>
+            <SelectTrigger className="h-7 bg-white text-[12px]"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {METHODS.map((m) => <SelectItem key={m.key} value={m.key}>{m.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          {a.method === 'agst_ref' ? (
+            <Select
+              value={a.ref_name}
+              onValueChange={(v) => {
+                const bill = refs.find((r) => String(r.ref) === v)
+                const rest = remaining(j)
+                set(j, { ref_name: v, amount: a.amount || String(Math.min(Number(bill?.pending) || rest, rest)) })
+              }}
+            >
+              <SelectTrigger className="h-7 bg-white text-[12px]">
+                <SelectValue placeholder={refs.length ? 'Pick a pending bill' : 'No pending bills found'} />
+              </SelectTrigger>
+              <SelectContent className="max-h-64">
+                {refs.map((r) => (
+                  <SelectItem key={String(r.ref)} value={String(r.ref)}>
+                    {String(r.ref)} — {formatINR(r.pending)} pending
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : a.method === 'on_account' ? (
+            <span className="px-1 text-[11px] italic text-muted-foreground">no reference — unallocated</span>
+          ) : (
+            <Input
+              className="h-7 bg-white text-[12px]"
+              placeholder={a.method === 'advance' ? 'Advance reference (e.g. ADV-1)' : 'New reference name'}
+              value={a.ref_name}
+              onChange={(e) => set(j, { ref_name: e.target.value })}
+            />
+          )}
+          <Input
+            type="number"
+            className="h-7 bg-white text-right text-[12px] tabular-nums"
+            value={a.amount}
+            onChange={(e) => set(j, { amount: e.target.value })}
+          />
+          <button
+            type="button"
+            className="cursor-pointer text-muted-foreground hover:text-red-600"
+            onClick={() => onChange(allocs.filter((_, y) => y !== j))}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      ))}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6 px-1.5 text-[11px] text-amber-800 hover:bg-amber-100"
+        onClick={() =>
+          onChange([
+            ...allocs,
+            { method: refs.length ? 'agst_ref' : 'on_account', ref_name: '', amount: String(Math.max(0, remaining())) }
+          ])
+        }
+      >
+        <Plus className="h-3 w-3" /> Add adjustment
+      </Button>
+    </div>
   )
 }
 
@@ -186,7 +296,23 @@ function AccountPicker({
   )
 }
 
-export function Accounts(): React.JSX.Element {
+export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element {
+  // Tally opens on Select Company — every report and voucher below is pinned
+  // to this choice (F3 changes it), never silently the app-wide company.
+  const [companies, setCompanies] = useState<Row[]>([])
+  const [company, setCompany] = useState<Row | null>(null)
+  const [coIndex, setCoIndex] = useState(0)
+  useEffect(() => {
+    Promise.all([window.api.company.list(), window.api.company.getActive()])
+      .then(([cs, active]) => {
+        setCompanies(cs)
+        const i = cs.findIndex((x) => Number(x.id) === Number(active.id))
+        setCoIndex(i >= 0 ? i : 0)
+      })
+      .catch(() => {})
+  }, [])
+  const cid = company ? Number(company.id) : 0
+
   const [screen, setScreen] = useState<Screen>('gateway')
   const [gwIndex, setGwIndex] = useState(0)
   const [accounts, setAccounts] = useState<Row[]>([])
@@ -203,6 +329,20 @@ export function Accounts(): React.JSX.Element {
   const dateRef = useRef<HTMLDivElement | null>(null)
   // Tally-format payment/receipt entry state.
   const [payAccount, setPayAccount] = useState<{ account: string; group: string }>({ account: '', group: '' })
+  // Tally-style GST computation for debit/credit notes: taxable + GST% ->
+  // GST leg + round off so the party total lands on a whole rupee.
+  const [gstCalc, setGstCalc] = useState({ taxable: '', pct: '5', igst: false })
+  // Tally invoice-mode for Debit/Credit notes: party -> original invoice ->
+  // item lines (qty x rate) -> GST + round off, posted through the notes engine.
+  const [noteMode, setNoteMode] = useState(true)
+  const [noteParty, setNoteParty] = useState('')
+  const [noteInvoice, setNoteInvoice] = useState('')
+  const [noteGst, setNoteGst] = useState('5')
+  const [noteItems, setNoteItems] = useState<{ product_id: string; qty: string; rate: string }[]>([
+    { product_id: '', qty: '', rate: '' }
+  ])
+  const [noteParties, setNoteParties] = useState<Row[]>([])
+  const [noteProducts, setNoteProducts] = useState<Row[]>([])
   const [payLines, setPayLines] = useState<PayLine[]>([blankPayLine()])
   const [rawAlter, setRawAlter] = useState(false)
   const [refsCache, setRefsCache] = useState<Record<string, Row[]>>({})
@@ -219,6 +359,10 @@ export function Accounts(): React.JSX.Element {
   const [ledgerId, setLedgerId] = useState<number | null>(null)
   const [ledgerLines, setLedgerLines] = useState<Row[]>([])
   const [ledgerSearch, setLedgerSearch] = useState('')
+  const [lgFrom, setLgFrom] = useState('')
+  const [lgTo, setLgTo] = useState('')
+  const [lgMonthly, setLgMonthly] = useState(false)
+  const [lgDetailed, setLgDetailed] = useState(false)
 
   // Trial balance.
   const [tbFrom, setTbFrom] = useState('')
@@ -229,8 +373,9 @@ export function Accounts(): React.JSX.Element {
   const [newLedger, setNewLedger] = useState<{ name: string; group: string; forLine: number | null; target?: 'payLine' | 'payAccount'; index?: number } | null>(null)
 
   const loadAccounts = useCallback(async () => {
-    setAccounts(await window.api.journal.accounts())
-  }, [])
+    if (!cid) return
+    setAccounts(await window.api.journal.accounts(cid))
+  }, [cid])
   useEffect(() => {
     loadAccounts()
     window.api.journal.groupNames().then(setGroupNames).catch(() => {})
@@ -238,33 +383,34 @@ export function Accounts(): React.JSX.Element {
   useLiveRefresh(loadAccounts)
 
   const loadDaybook = useCallback(async () => {
-    if (screen !== 'daybook') return
+    if (screen !== 'daybook' || !cid) return
     setDayRows(
       await window.api.vouchers.list({
         from: dbFrom || undefined,
         to: dbTo || undefined,
-        vchType: dbType === 'ALL' ? undefined : dbType
+        vchType: dbType === 'ALL' ? undefined : dbType,
+        companyId: cid
       })
     )
-  }, [screen, dbFrom, dbTo, dbType])
+  }, [screen, dbFrom, dbTo, dbType, cid])
   useEffect(() => {
     loadDaybook()
   }, [loadDaybook])
   useLiveRefresh(loadDaybook)
 
   const loadLedger = useCallback(async () => {
-    if (screen !== 'ledger' || !ledgerId) return
-    setLedgerLines(await window.api.journal.statement(ledgerId))
-  }, [screen, ledgerId])
+    if (screen !== 'ledger' || !ledgerId || !cid) return
+    setLedgerLines(await window.api.journal.statement(ledgerId, cid))
+  }, [screen, ledgerId, cid])
   useEffect(() => {
     loadLedger()
   }, [loadLedger])
   useLiveRefresh(loadLedger)
 
   const loadTb = useCallback(async () => {
-    if (screen !== 'trial') return
-    setTb(await window.api.journal.trialBalance({ from: tbFrom || undefined, to: tbTo || undefined }))
-  }, [screen, tbFrom, tbTo])
+    if (screen !== 'trial' || !cid) return
+    setTb(await window.api.journal.trialBalance({ from: tbFrom || undefined, to: tbTo || undefined, companyId: cid }))
+  }, [screen, tbFrom, tbTo, cid])
   useEffect(() => {
     loadTb()
   }, [loadTb])
@@ -295,6 +441,10 @@ export function Accounts(): React.JSX.Element {
     setLines(blankLines(t))
     setPayLines([blankPayLine()])
     setRawAlter(false)
+    setNoteMode(true)
+    setNoteParty('')
+    setNoteInvoice('')
+    setNoteItems([{ product_id: '', qty: '', rate: '' }])
     // Default the money side to the first bank ledger, like Tally remembers one.
     const bank = accounts.find((a) => String(a.name) === 'BANK A/C') || cashBankAccounts[0]
     setPayAccount(bank ? { account: String(bank.name), group: String(bank.acc_group) } : { account: '', group: '' })
@@ -306,13 +456,38 @@ export function Accounts(): React.JSX.Element {
   }
 
   const structured = (vchType === 'PAYMENT' || vchType === 'RECEIPT') && !rawAlter
+  const isNoteType = vchType === 'DEBIT NOTE' || vchType === 'CREDIT NOTE'
+  // New notes open in Tally's invoice mode; altering an old grid voucher keeps the grid.
+  const noteInvoiceMode = isNoteType && noteMode && editingId == null
+
+  useEffect(() => {
+    if (!isNoteType) return
+    window.api.data
+      .list(vchType === 'DEBIT NOTE' ? 'suppliers' : 'customers')
+      .then(setNoteParties)
+      .catch(() => setNoteParties([]))
+    if (!noteProducts.length) {
+      window.api.data.list('products').then(setNoteProducts).catch(() => {})
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vchType, isNoteType])
+
+  const notePartyName = String(noteParties.find((x) => String(x.id) === noteParty)?.name || '')
+  const noteRefs = refsCache[notePartyName.toUpperCase()] || []
+  const noteTotals = (() => {
+    const base = noteItems.reduce((sum, it) => sum + Math.round((Number(it.qty) || 0) * (Number(it.rate) || 0) * 100) / 100, 0)
+    const gst = Math.round(base * (Number(noteGst) || 0)) / 100
+    const raw = Math.round((base + gst) * 100) / 100
+    const total = Math.round(raw)
+    return { base: Math.round(base * 100) / 100, gst, ro: Math.round((total - raw) * 100) / 100, total }
+  })()
   const cashBankAccounts = accounts.filter((a) => CASH_BANK_GROUPS.includes(String(a.acc_group)))
   const payTotal = payLines.reduce((s, l) => s + (Number(l.amount) || 0), 0)
 
   async function loadRefs(name: string): Promise<void> {
     if (!name || refsCache[name]) return
     try {
-      const r = await window.api.journal.pendingRefs(name)
+      const r = await window.api.journal.pendingRefs(name, cid)
       setRefsCache((p) => ({ ...p, [name]: r }))
     } catch {
       /* refs are a convenience — entry still works without them */
@@ -321,17 +496,6 @@ export function Accounts(): React.JSX.Element {
 
   function setPayLine(i: number, patch: Partial<PayLine>): void {
     setPayLines((p) => p.map((l, j) => (j === i ? { ...l, ...patch } : l)))
-  }
-
-  function setAlloc(i: number, j: number, patch: Partial<AllocRow>): void {
-    setPayLines((p) =>
-      p.map((l, x) => (x === i ? { ...l, allocs: l.allocs.map((a, y) => (y === j ? { ...a, ...patch } : a)) } : l))
-    )
-  }
-
-  function allocRemaining(l: PayLine, skip = -1): number {
-    const used = l.allocs.reduce((s, a, j) => (j === skip ? s : s + (Number(a.amount) || 0)), 0)
-    return Math.round(((Number(l.amount) || 0) - used) * 100) / 100
   }
 
   // Fill the amount that would balance the voucher — Tally's suggestion.
@@ -344,8 +508,84 @@ export function Accounts(): React.JSX.Element {
     if (rest > 0.004) setLine(i, { amount: String(Math.round(rest * 100) / 100) })
   }
 
+  // Build the note's legs from taxable + GST%, Tally style: the goods ledger
+  // carries the taxable, GST INPUT/OUTPUT its tax, ROUND OFF the paise so the
+  // party line is a whole rupee. Accounts stay pickable afterwards.
+  function applyGstCalc(): void {
+    const taxable = Number(gstCalc.taxable) || 0
+    if (taxable <= 0) return void toast.error('Type the taxable amount first')
+    const pct = Number(gstCalc.pct) || 0
+    const gst = Math.round(taxable * pct) / 100
+    const raw = taxable + gst
+    const total = Math.round(raw)
+    const ro = Math.round((total - raw) * 100) / 100
+    const isDn = vchType === 'DEBIT NOTE'
+    const partySide: 'dr' | 'cr' = isDn ? 'dr' : 'cr'
+    const goodsSide: 'dr' | 'cr' = isDn ? 'cr' : 'dr'
+    const gstAccount = isDn ? 'GST INPUT A/C' : 'GST OUTPUT A/C'
+    // Keep any party/goods ledgers already picked on the first two lines.
+    const party = lines.find((l) => l.side === partySide)
+    const goods = lines.find((l) => l.side === goodsSide)
+    const next: VLine[] = [
+      { side: partySide, account: party?.account || '', group: party?.group || '', amount: String(total), allocs: party?.allocs || [] },
+      { side: goodsSide, account: goods?.account || '', group: goods?.group || '', amount: String(taxable), allocs: [] }
+    ]
+    if (gst > 0) next.push({ side: goodsSide, account: gstAccount, group: 'Duties & Taxes', amount: String(gst), allocs: [] })
+    if (Math.abs(ro) >= 0.005) {
+      // +ro rounds the party UP -> the extra sits on ROUND OFF's other side.
+      next.push({
+        side: ro > 0 ? goodsSide : partySide,
+        account: 'ROUND OFF A/C',
+        group: 'Indirect Expenses',
+        amount: String(Math.abs(ro)),
+        allocs: []
+      })
+    }
+    setLines(next)
+    toast.success(`Taxable ${formatINR(taxable)} + GST ${formatINR(gst)}${Math.abs(ro) >= 0.005 ? ` + round off ${formatINR(ro)}` : ''} = ${formatINR(total)}`)
+  }
+
+  // Close a sub-rupee Dr/Cr gap with the ROUND OFF ledger — Tally's Alt+R habit.
+  function addRoundOffLine(): void {
+    const diff = Math.round((totals.dr - totals.cr) * 100) / 100
+    if (Math.abs(diff) < 0.005 || Math.abs(diff) >= 1) return
+    setLines((p) => [
+      ...p,
+      { side: diff > 0 ? 'cr' : 'dr', account: 'ROUND OFF A/C', group: 'Indirect Expenses', amount: String(Math.abs(diff)), allocs: [] }
+    ])
+  }
+
   async function saveVoucher(): Promise<void> {
     if (saving) return
+    if (noteInvoiceMode) {
+      if (!noteParty) return void toast.error(`Select the ${vchType === 'DEBIT NOTE' ? 'supplier' : 'customer'}`)
+      const items = noteItems.filter((it) => it.product_id && Number(it.qty) > 0 && Number(it.rate) > 0)
+      if (!items.length) return void toast.error('Add at least one item line (product, qty and rate)')
+      setSaving(true)
+      try {
+        const res = await window.api.notes.create({
+          note_type: vchType === 'DEBIT NOTE' ? 'debit' : 'credit',
+          company_id: cid || undefined,
+          party_id: Number(noteParty),
+          note_date: vchDate,
+          gst_pct: Number(noteGst) || 0,
+          narration: narration || null,
+          against_invoice: noteInvoice || null,
+          items: items.map((it) => ({ product_id: Number(it.product_id), qty: Number(it.qty), rate: Number(it.rate) }))
+        })
+        toast.success(`${vchType} ${res.note_no} accepted — ${formatINR(noteTotals.total)}${noteInvoice ? ` against ${noteInvoice}` : ' on account'}`)
+        setNoteInvoice('')
+        setNoteItems([{ product_id: '', qty: '', rate: '' }])
+        setNarration('')
+        setRefsCache({})
+        loadAccounts()
+      } catch (e) {
+        toast.error((e as Error).message)
+      } finally {
+        setSaving(false)
+      }
+      return
+    }
     setSaving(true)
     try {
       const structuredLines = (): Row[] => {
@@ -376,6 +616,7 @@ export function Accounts(): React.JSX.Element {
         vchType,
         vchNo: vchNo || null,
         narration: narration || null,
+        companyId: cid || undefined,
         lines: structured
           ? structuredLines()
           : lines
@@ -384,7 +625,10 @@ export function Accounts(): React.JSX.Element {
                 account: l.account,
                 group: l.group || undefined,
                 dr: l.side === 'dr' ? Number(l.amount) : 0,
-                cr: l.side === 'cr' ? Number(l.amount) : 0
+                cr: l.side === 'cr' ? Number(l.amount) : 0,
+                allocs: l.allocs
+                  .filter((a) => Number(a.amount) > 0)
+                  .map((a) => ({ method: a.method, ref_name: a.ref_name || null, amount: Number(a.amount) }))
               }))
       }
       if (editingId != null) {
@@ -429,9 +673,16 @@ export function Accounts(): React.JSX.Element {
         side: Number(l.dr) > 0 ? 'dr' : 'cr',
         account: String(l.account),
         group: String(l.acc_group || ''),
-        amount: String(Number(l.dr) > 0 ? l.dr : l.cr)
+        amount: String(Number(l.dr) > 0 ? l.dr : l.cr),
+        allocs: ((l.allocs as Row[]) || []).map((a) => ({
+          method: String(a.method) as AllocRow['method'],
+          ref_name: String(a.ref_name || ''),
+          amount: String(a.amount)
+        }))
       }))
     )
+    for (const l of vLines) if (BILLWISE_GROUPS.includes(String(l.acc_group))) void loadRefs(String(l.account))
+    setNoteMode(false)
     // Payment/receipt vouchers with exactly one money-side line reopen in the
     // Tally format, bill-wise details included; anything else falls back to
     // the plain Dr/Cr grid.
@@ -514,12 +765,41 @@ export function Accounts(): React.JSX.Element {
     function onKey(e: KeyboardEvent): void {
       const tag = (e.target as HTMLElement)?.tagName
       const typing = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable
+      // Select Company gate: arrows + Enter, Esc leaves the module.
+      if (!company) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault()
+          setCoIndex((i) => (companies.length ? (i + 1) % companies.length : 0))
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault()
+          setCoIndex((i) => (companies.length ? (i - 1 + companies.length) % companies.length : 0))
+        } else if (e.key === 'Enter') {
+          e.preventDefault()
+          if (companies[coIndex]) setCompany(companies[coIndex])
+        } else if (e.key === 'Escape') {
+          e.preventDefault()
+          onExit?.()
+        }
+        return
+      }
+      if (e.key === 'F3') {
+        e.preventDefault()
+        setScreen('gateway')
+        setCompany(null)
+        return
+      }
       // Function keys work everywhere on this page; letters only outside inputs.
       if (e.key === 'F4' || e.key === 'F5' || e.key === 'F6' || e.key === 'F7') {
         e.preventDefault()
-        const t = VCH_TYPES.find((v) => v.fkey === e.key)!.key
-        if (screen === 'voucher') switchType(t)
-        else openVoucher(t)
+        const wanted = e.altKey && e.key === 'F5' ? 'DEBIT NOTE' : e.altKey && e.key === 'F6' ? 'CREDIT NOTE' : null
+        const t = wanted || VCH_TYPES.find((v) => v.fkey === e.key)!.key
+        if (screen === 'voucher') switchType(t as VchType)
+        else openVoucher(t as VchType)
+        return
+      }
+      if (e.key === 'F1' && e.altKey && screen === 'ledger') {
+        e.preventDefault()
+        setLgDetailed((d) => !d)
         return
       }
       if (e.key === 'F2' && screen === 'voucher') {
@@ -534,6 +814,11 @@ export function Accounts(): React.JSX.Element {
           e.preventDefault()
           setEditingId(null)
           setScreen('gateway')
+        } else {
+          // Esc from the Gateway leaves the accounting workspace, like
+          // quitting Tally back to the rest of the software.
+          e.preventDefault()
+          onExit?.()
         }
         return
       }
@@ -569,17 +854,91 @@ export function Accounts(): React.JSX.Element {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, gwIndex, viewRow, newLedger, editingId, lines, payLines, payAccount, rawAlter, vchDate, vchNo, narration, vchType, saving])
+  }, [screen, gwIndex, viewRow, newLedger, editingId, lines, payLines, payAccount, rawAlter, vchDate, vchNo, narration, vchType, saving, onExit, company, companies, coIndex])
 
   // ------- derived -------
   const ledgerAccount = accounts.find((a) => Number(a.id) === ledgerId)
-  const ledgerRunning = useMemo((): Row[] => {
-    let bal = 0
-    return ledgerLines.map((l): Row => {
-      bal += (Number(l.dr) || 0) - (Number(l.cr) || 0)
-      return { ...l, running: bal }
+  // The statement for the chosen period: opening = everything before `from`,
+  // rows within [from, to] with a running balance seeded from the opening.
+  const stmt = useMemo(() => {
+    let opening = 0
+    const rows: Row[] = []
+    for (const l of ledgerLines) {
+      const d = String(l.entry_date)
+      const net = (Number(l.dr) || 0) - (Number(l.cr) || 0)
+      if (lgFrom && d < lgFrom) {
+        opening += net
+        continue
+      }
+      if (lgTo && d > lgTo) continue
+      rows.push(l)
+    }
+    let run = opening
+    const out = rows.map((l): Row => {
+      run += (Number(l.dr) || 0) - (Number(l.cr) || 0)
+      return { ...l, running: run }
     })
+    return {
+      opening,
+      rows: out,
+      closing: run,
+      totDr: out.reduce((sum, l) => sum + (Number(l.dr) || 0), 0),
+      totCr: out.reduce((sum, l) => sum + (Number(l.cr) || 0), 0)
+    }
+  }, [ledgerLines, lgFrom, lgTo])
+
+  // Tally's month-wise ledger summary: Dr/Cr per month and the cumulative
+  // closing, drillable into that month's vouchers.
+  const monthly = useMemo(() => {
+    const by = new Map<string, { dr: number; cr: number }>()
+    for (const l of ledgerLines) {
+      const m = String(l.entry_date).slice(0, 7)
+      const cur = by.get(m) || { dr: 0, cr: 0 }
+      cur.dr += Number(l.dr) || 0
+      cur.cr += Number(l.cr) || 0
+      by.set(m, cur)
+    }
+    let run = 0
+    return Array.from(by.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([m, v]) => {
+        run += v.dr - v.cr
+        return { month: m, dr: v.dr, cr: v.cr, closing: run }
+      })
   }, [ledgerLines])
+
+  function drillMonth(m: string): void {
+    const [y, mo] = m.split('-').map(Number)
+    const last = new Date(y, mo, 0).getDate()
+    setLgFrom(`${m}-01`)
+    setLgTo(`${m}-${String(last).padStart(2, '0')}`)
+    setLgMonthly(false)
+  }
+
+  // Tally's columnar register: in DETAILED mode every ledger involved in the
+  // period's vouchers becomes its own column, biggest money first.
+  const legCols = useMemo(() => {
+    if (!lgDetailed) return [] as string[]
+    const tot = new Map<string, number>()
+    for (const r of stmt.rows) {
+      for (const g of (r.legs as Row[]) || []) {
+        const k = String(g.name)
+        tot.set(k, (tot.get(k) || 0) + Math.abs((Number(g.dr) || 0) - (Number(g.cr) || 0)))
+      }
+    }
+    return Array.from(tot.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([name]) => name)
+  }, [stmt.rows, lgDetailed])
+
+  // One ledger's net share of one voucher (its legs summed), for a columnar cell.
+  const legShare = (row: Row, col: string): number => {
+    let v = 0
+    for (const g of (row.legs as Row[]) || []) {
+      if (String(g.name) === col) v += (Number(g.dr) || 0) - (Number(g.cr) || 0)
+    }
+    return Math.round(v * 100) / 100
+  }
 
   const filteredAccounts = useMemo(() => {
     const q = ledgerSearch.trim().toLowerCase()
@@ -616,6 +975,13 @@ export function Accounts(): React.JSX.Element {
       <FKey k="D" label="Day Book" active={screen === 'daybook'} onClick={() => setScreen('daybook')} />
       <FKey k="L" label="Ledgers" active={screen === 'ledger'} onClick={() => setScreen('ledger')} />
       <FKey k="T" label="Trial Balance" active={screen === 'trial'} onClick={() => setScreen('trial')} />
+      {screen === 'ledger' && (
+        <>
+          <div className="my-1 border-t border-white/20" />
+          <FKey k="Alt F1" label={lgDetailed ? 'Condensed' : 'Columnar'} onClick={() => setLgDetailed((d) => !d)} />
+          <FKey k="M" label={lgMonthly ? 'Vouchers' : 'Monthly'} active={lgMonthly} onClick={() => setLgMonthly((m) => !m)} />
+        </>
+      )}
       <div className="mt-auto space-y-1">
         {screen === 'voucher' && (
           <FKey k="Ctrl A" label={saving ? 'Saving…' : 'Accept'} onClick={() => void saveVoucher()} />
@@ -654,7 +1020,7 @@ export function Accounts(): React.JSX.Element {
           </button>
         ))}
         <p className="px-3 pt-3 text-[11px] leading-relaxed text-muted-foreground">
-          Use the highlighted letter or the function keys — F4 Contra, F5 Payment, F6 Receipt, F7 Journal. Purchase
+          Use the highlighted letter or the function keys — F4 Contra, F5 Payment, F6 Receipt, F7 Journal, Alt+F5 Debit Note, Alt+F6 Credit Note. Purchase
           and sale vouchers post automatically from their own pages and appear in the Day Book.
         </p>
       </div>
@@ -682,11 +1048,24 @@ export function Accounts(): React.JSX.Element {
             <Label className="text-[10px] uppercase tracking-wide">Voucher no (optional)</Label>
             <Input className="h-9 w-36 bg-white" value={vchNo} onChange={(e) => setVchNo(e.target.value)} />
           </div>
+          {isNoteType && editingId == null && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 bg-white text-xs"
+              title="Tally's Ctrl+H — switch between item invoice and plain voucher entry"
+              onClick={() => setNoteMode((m) => !m)}
+            >
+              {noteMode ? 'As voucher' : 'Item invoice'}
+            </Button>
+          )}
           <div className="ml-auto text-right text-[11px] text-muted-foreground">
             {vchType === 'CONTRA' && 'Cash ↔ bank only, both sides'}
             {vchType === 'PAYMENT' && 'Credit side must be cash / bank'}
             {vchType === 'RECEIPT' && 'Debit side must be cash / bank'}
             {vchType === 'JOURNAL' && 'Any ledgers, Dr = Cr'}
+            {vchType === 'DEBIT NOTE' && 'Purchase return — Dr the supplier, Cr the purchase/GST ledgers'}
+            {vchType === 'CREDIT NOTE' && 'Sales return — Cr the customer, Dr the sales/GST ledgers'}
           </div>
         </div>
 
@@ -719,9 +1098,7 @@ export function Accounts(): React.JSX.Element {
               {payLines.map((l, i) => {
                 const refs = refsCache[l.account] || []
                 const billwise = BILLWISE_GROUPS.includes(l.group) || l.allocs.length > 0
-                const allocated = l.allocs.reduce((sum, a) => sum + (Number(a.amount) || 0), 0)
                 const lineAmt = Number(l.amount) || 0
-                const matched = Math.abs(allocated - lineAmt) < 0.005
                 return (
                   <div key={i} className="border-b border-dotted px-3 py-2 last:border-0" style={{ borderColor: '#e5dfc8' }}>
                     <div className="grid grid-cols-[1fr_150px_32px] items-center gap-2">
@@ -763,93 +1140,12 @@ export function Accounts(): React.JSX.Element {
                     </div>
 
                     {billwise && (
-                      <div className="ml-3 mt-1.5 rounded border border-dashed border-amber-300 bg-amber-50/60 px-2.5 py-2">
-                        <div className="mb-1.5 flex items-center justify-between">
-                          <span className="text-[10px] font-bold uppercase tracking-widest text-amber-800">
-                            Bill-wise details — method of adjustment
-                          </span>
-                          <span className={cn('text-[10px] font-semibold tabular-nums', matched ? 'text-emerald-700' : 'text-amber-700')}>
-                            {l.allocs.length === 0
-                              ? 'none — treated as plain balance'
-                              : `${formatINR(allocated)} of ${formatINR(lineAmt)} allocated`}
-                          </span>
-                        </div>
-                        {l.allocs.map((a, j) => (
-                          <div key={j} className="mb-1 grid grid-cols-[120px_1fr_120px_24px] items-center gap-1.5">
-                            <Select value={a.method} onValueChange={(v) => setAlloc(i, j, { method: v as AllocRow['method'], ref_name: '' })}>
-                              <SelectTrigger className="h-7 bg-white text-[12px]"><SelectValue /></SelectTrigger>
-                              <SelectContent>
-                                {METHODS.map((m) => <SelectItem key={m.key} value={m.key}>{m.label}</SelectItem>)}
-                              </SelectContent>
-                            </Select>
-                            {a.method === 'agst_ref' ? (
-                              <Select
-                                value={a.ref_name}
-                                onValueChange={(v) => {
-                                  const bill = refs.find((r) => String(r.ref) === v)
-                                  const rest = allocRemaining(l, j)
-                                  setAlloc(i, j, {
-                                    ref_name: v,
-                                    amount: a.amount || String(Math.min(Number(bill?.pending) || rest, rest))
-                                  })
-                                }}
-                              >
-                                <SelectTrigger className="h-7 bg-white text-[12px]">
-                                  <SelectValue placeholder={refs.length ? 'Pick a pending bill' : 'No pending bills found'} />
-                                </SelectTrigger>
-                                <SelectContent className="max-h-64">
-                                  {refs.map((r) => (
-                                    <SelectItem key={String(r.ref)} value={String(r.ref)}>
-                                      {String(r.ref)} — {formatINR(r.pending)} pending
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            ) : a.method === 'on_account' ? (
-                              <span className="px-1 text-[11px] italic text-muted-foreground">no reference — unallocated</span>
-                            ) : (
-                              <Input
-                                className="h-7 bg-white text-[12px]"
-                                placeholder={a.method === 'advance' ? 'Advance reference (e.g. ADV-1)' : 'New reference name'}
-                                value={a.ref_name}
-                                onChange={(e) => setAlloc(i, j, { ref_name: e.target.value })}
-                              />
-                            )}
-                            <Input
-                              type="number"
-                              className="h-7 bg-white text-right text-[12px] tabular-nums"
-                              value={a.amount}
-                              onChange={(e) => setAlloc(i, j, { amount: e.target.value })}
-                            />
-                            <button
-                              type="button"
-                              className="cursor-pointer text-muted-foreground hover:text-red-600"
-                              onClick={() => setPayLine(i, { allocs: l.allocs.filter((_, y) => y !== j) })}
-                            >
-                              <X className="h-3 w-3" />
-                            </button>
-                          </div>
-                        ))}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-1.5 text-[11px] text-amber-800 hover:bg-amber-100"
-                          onClick={() =>
-                            setPayLine(i, {
-                              allocs: [
-                                ...l.allocs,
-                                {
-                                  method: refs.length ? 'agst_ref' : 'on_account',
-                                  ref_name: '',
-                                  amount: String(Math.max(0, allocRemaining(l)))
-                                }
-                              ]
-                            })
-                          }
-                        >
-                          <Plus className="h-3 w-3" /> Add adjustment
-                        </Button>
-                      </div>
+                      <AllocPanel
+                        lineAmount={lineAmt}
+                        allocs={l.allocs}
+                        refs={refs}
+                        onChange={(al) => setPayLine(i, { allocs: al })}
+                      />
                     )}
                   </div>
                 )
@@ -870,7 +1166,185 @@ export function Accounts(): React.JSX.Element {
           </div>
         )}
 
-        {!structured && (
+        {noteInvoiceMode && (
+          <div className="px-4 py-3">
+            <div className="mb-3 grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1">
+                <Label className="text-[10px] uppercase tracking-wide">
+                  {vchType === 'DEBIT NOTE' ? 'Supplier (goods going back)' : 'Customer (goods coming back)'}
+                </Label>
+                <Select
+                  value={noteParty}
+                  onValueChange={(v) => {
+                    setNoteParty(v)
+                    setNoteInvoice('')
+                    const nm = String(noteParties.find((x) => String(x.id) === v)?.name || '')
+                    if (nm) void loadRefs(nm.toUpperCase())
+                  }}
+                >
+                  <SelectTrigger className="bg-white"><SelectValue placeholder="Select party" /></SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    {noteParties.map((x) => (
+                      <SelectItem key={String(x.id)} value={String(x.id)}>{x.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-1">
+                <Label className="text-[10px] uppercase tracking-wide">Original invoice (Agst Ref)</Label>
+                <Select value={noteInvoice || 'ON_ACCOUNT'} onValueChange={(v) => setNoteInvoice(v === 'ON_ACCOUNT' ? '' : v)}>
+                  <SelectTrigger className="bg-white">
+                    <SelectValue placeholder={noteParty ? 'On account' : 'Pick the party first'} />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    <SelectItem value="ON_ACCOUNT">On account (no invoice)</SelectItem>
+                    {noteRefs.map((r) => (
+                      <SelectItem key={String(r.ref)} value={String(r.ref)}>
+                        {String(r.ref)} — {formatINR(r.pending)} pending
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="rounded border" style={{ borderColor: '#d9d2b8' }}>
+              <div
+                className="grid grid-cols-[1fr_110px_130px_130px_32px] items-center gap-2 border-b bg-[#f1ecd9] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
+                style={{ borderColor: '#d9d2b8' }}
+              >
+                <span>Item</span>
+                <span className="text-right">Qty</span>
+                <span className="text-right">Rate</span>
+                <span className="text-right">Amount</span>
+                <span />
+              </div>
+              {noteItems.map((it, i) => (
+                <div
+                  key={i}
+                  className="grid grid-cols-[1fr_110px_130px_130px_32px] items-center gap-2 border-b border-dotted px-3 py-1.5 last:border-0"
+                  style={{ borderColor: '#e5dfc8' }}
+                >
+                  <Select
+                    value={it.product_id}
+                    onValueChange={(v) => setNoteItems((p) => p.map((x, j) => (j === i ? { ...x, product_id: v } : x)))}
+                  >
+                    <SelectTrigger className="h-8 bg-white text-[13px]"><SelectValue placeholder="Product" /></SelectTrigger>
+                    <SelectContent className="max-h-72">
+                      {noteProducts.map((x) => (
+                        <SelectItem key={String(x.id)} value={String(x.id)}>{x.code || x.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Input
+                    type="number"
+                    className="h-8 bg-white text-right tabular-nums"
+                    placeholder="MT"
+                    value={it.qty}
+                    onChange={(e) => setNoteItems((p) => p.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)))}
+                  />
+                  <Input
+                    type="number"
+                    className="h-8 bg-white text-right tabular-nums"
+                    placeholder="₹ / MT"
+                    value={it.rate}
+                    onChange={(e) => setNoteItems((p) => p.map((x, j) => (j === i ? { ...x, rate: e.target.value } : x)))}
+                  />
+                  <span className="text-right text-[13px] font-medium tabular-nums">
+                    {formatINR(Math.round((Number(it.qty) || 0) * (Number(it.rate) || 0) * 100) / 100)}
+                  </span>
+                  <span className="text-right">
+                    {noteItems.length > 1 && (
+                      <button
+                        type="button"
+                        className="cursor-pointer text-muted-foreground hover:text-red-600"
+                        onClick={() => setNoteItems((p) => p.filter((_, j) => j !== i))}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </span>
+                </div>
+              ))}
+              <div className="px-3 py-1.5">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => setNoteItems((p) => [...p, { product_id: '', qty: '', rate: '' }])}
+                >
+                  <Plus className="h-3.5 w-3.5" /> Add item
+                </Button>
+              </div>
+            </div>
+
+            <div className="mt-3 ml-auto w-72 space-y-1 text-[13px]">
+              <div className="flex justify-between"><span className="text-muted-foreground">Taxable value</span><span className="tabular-nums">{formatINR(noteTotals.base)}</span></div>
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-muted-foreground">
+                  GST
+                  <Input
+                    type="number"
+                    className="h-6 w-14 bg-white px-1 text-right text-[12px] tabular-nums"
+                    value={noteGst}
+                    onChange={(e) => setNoteGst(e.target.value)}
+                  />
+                  %
+                </span>
+                <span className="tabular-nums">{formatINR(noteTotals.gst)}</span>
+              </div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Round off</span><span className="tabular-nums">{formatINR(noteTotals.ro)}</span></div>
+              <div className="flex justify-between border-t-2 pt-1 font-bold" style={{ borderColor: '#1a2c56' }}>
+                <span>{vchType === 'DEBIT NOTE' ? 'Dr supplier' : 'Cr customer'}</span>
+                <span className="tabular-nums">{formatINR(noteTotals.total)}</span>
+              </div>
+              <p className="pt-1 text-[10px] leading-relaxed text-muted-foreground">
+                Posts {vchType === 'DEBIT NOTE' ? 'PURCHASE RETURN + GST INPUT reversal' : 'SALES RETURN + GST OUTPUT reversal'} with
+                the round off, numbered automatically, settled bill-wise against the chosen invoice.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {!structured && !noteInvoiceMode && (vchType === 'DEBIT NOTE' || vchType === 'CREDIT NOTE') && (
+          <div className="mx-4 mt-3 flex flex-wrap items-end gap-3 rounded border border-dashed border-sky-300 bg-sky-50/60 px-3 py-2">
+            <span className="pb-1.5 text-[10px] font-bold uppercase tracking-widest text-sky-800">GST helper</span>
+            <div className="grid gap-1">
+              <Label className="text-[10px] uppercase tracking-wide">Taxable value</Label>
+              <Input
+                type="number"
+                className="h-8 w-36 bg-white text-right tabular-nums"
+                value={gstCalc.taxable}
+                onChange={(e) => setGstCalc((g) => ({ ...g, taxable: e.target.value }))}
+              />
+            </div>
+            <div className="grid gap-1">
+              <Label className="text-[10px] uppercase tracking-wide">GST %</Label>
+              <Input
+                type="number"
+                className="h-8 w-20 bg-white text-right tabular-nums"
+                value={gstCalc.pct}
+                onChange={(e) => setGstCalc((g) => ({ ...g, pct: e.target.value }))}
+              />
+            </div>
+            <Button size="sm" variant="outline" className="h-8 bg-white text-xs" onClick={applyGstCalc}>
+              Build the legs
+            </Button>
+            <span className="pb-1.5 text-[11px] text-sky-800">
+              {(() => {
+                const t = Number(gstCalc.taxable) || 0
+                const g = Math.round(t * (Number(gstCalc.pct) || 0)) / 100
+                const total = Math.round(t + g)
+                const ro = Math.round((total - t - g) * 100) / 100
+                return t > 0
+                  ? `GST ${formatINR(g)} · round off ${formatINR(ro)} · party ${formatINR(total)} — ${vchType === 'DEBIT NOTE' ? 'GST INPUT reversed, supplier debited' : 'GST OUTPUT reversed, customer credited'}`
+                  : 'Types the taxable and GST legs, with the round off, so the party total is a whole rupee.'
+              })()}
+            </span>
+          </div>
+        )}
+
+        {!structured && !noteInvoiceMode && (
         <table className="w-full text-[13px]">
           <thead>
             <tr className="border-b text-left text-[10px] uppercase tracking-widest text-muted-foreground" style={{ borderColor: '#d9d2b8' }}>
@@ -883,7 +1357,8 @@ export function Accounts(): React.JSX.Element {
           </thead>
           <tbody>
             {lines.map((l, i) => (
-              <tr key={i} className="border-b border-dotted" style={{ borderColor: '#e5dfc8' }}>
+              <Fragment key={i}>
+              <tr className="border-b border-dotted" style={{ borderColor: '#e5dfc8' }}>
                 <td className="px-4 py-1.5">
                   <button
                     type="button"
@@ -902,7 +1377,10 @@ export function Accounts(): React.JSX.Element {
                     value={l.account}
                     accounts={accounts}
                     autoFocus={i === 0}
-                    onPick={(name, group) => setLine(i, { account: name, group })}
+                    onPick={(name, group) => {
+                      setLine(i, { account: name, group, allocs: [] })
+                      void loadRefs(name)
+                    }}
                     onCreate={(q) => setNewLedger({ name: q, group: '', forLine: i })}
                   />
                 </td>
@@ -940,6 +1418,21 @@ export function Accounts(): React.JSX.Element {
                   )}
                 </td>
               </tr>
+              {(BILLWISE_GROUPS.includes(l.group) || l.allocs.length > 0) && (
+                <tr>
+                  <td />
+                  <td colSpan={3} className="px-2 pb-2">
+                    <AllocPanel
+                      lineAmount={Number(l.amount) || 0}
+                      allocs={l.allocs}
+                      refs={refsCache[l.account] || []}
+                      onChange={(al) => setLine(i, { allocs: al })}
+                    />
+                  </td>
+                  <td />
+                </tr>
+              )}
+              </Fragment>
             ))}
             <tr>
               <td colSpan={5} className="px-4 py-1.5">
@@ -947,7 +1440,7 @@ export function Accounts(): React.JSX.Element {
                   variant="ghost"
                   size="sm"
                   className="h-7 text-xs"
-                  onClick={() => setLines((p) => [...p, { side: 'cr', account: '', group: '', amount: '' }])}
+                  onClick={() => setLines((p) => [...p, { side: 'cr', account: '', group: '', amount: '', allocs: [] }])}
                 >
                   <Plus className="h-3.5 w-3.5" /> Add line
                 </Button>
@@ -962,8 +1455,13 @@ export function Accounts(): React.JSX.Element {
                     <Check className="h-3.5 w-3.5" /> Balanced
                   </span>
                 ) : (
-                  <span className="text-[12px] text-red-600">
+                  <span className="flex items-center gap-2 text-[12px] text-red-600">
                     Difference {formatINR(Math.abs(totals.diff))} {totals.diff > 0 ? '(Cr short)' : '(Dr short)'}
+                    {Math.abs(totals.diff) < 1 && (
+                      <Button size="sm" variant="outline" className="h-6 px-1.5 text-[11px]" onClick={addRoundOffLine}>
+                        Close with round off
+                      </Button>
+                    )}
                   </span>
                 )}
               </td>
@@ -999,6 +1497,7 @@ export function Accounts(): React.JSX.Element {
         <div className={cn('flex flex-wrap items-center gap-3 rounded-t-md px-4 py-2', T.headBar)}>
           <span className="text-[13px] font-bold uppercase tracking-widest">Day Book</span>
           <div className="ml-auto flex items-center gap-2">
+            <FyPicker from={dbFrom} to={dbTo} onRange={(f, t) => { setDbFrom(f); setDbTo(t) }} className="h-9 w-28 bg-white text-xs" />
             <div className="w-40"><DatePicker value={dbFrom} onChange={setDbFrom} /></div>
             <span className="text-[11px]">to</span>
             <div className="w-40"><DatePicker value={dbTo} onChange={setDbTo} /></div>
@@ -1007,8 +1506,8 @@ export function Accounts(): React.JSX.Element {
               <SelectContent>
                 <SelectItem value="ALL">All vouchers</SelectItem>
                 {VCH_TYPES.map((v) => <SelectItem key={v.key} value={v.key}>{v.label}</SelectItem>)}
-                <SelectItem value="PURCHASE OIL">Purchase</SelectItem>
-                <SelectItem value="SALE">Sales</SelectItem>
+                <SelectItem value="PURCHASE OIL">Purchase (auto)</SelectItem>
+                <SelectItem value="SALE">Sales (auto)</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -1102,58 +1601,174 @@ export function Accounts(): React.JSX.Element {
           </div>
         ) : (
           <>
-            <div className={cn('flex items-center justify-between rounded-t-md px-4 py-2', T.headBar)}>
-              <span className="text-[13px] font-bold uppercase tracking-widest">{ledgerAccount.name}</span>
+            <div className={cn('flex flex-wrap items-center gap-2 rounded-t-md px-4 py-2', T.headBar)}>
+              <span className="min-w-0 truncate text-[13px] font-bold uppercase tracking-widest">{ledgerAccount.name}</span>
               <span className="text-[11px]">{ledgerAccount.acc_group}</span>
+              <div className="ml-auto flex flex-wrap items-center gap-1.5">
+                <FyPicker from={lgFrom} to={lgTo} onRange={(f, t) => { setLgFrom(f); setLgTo(t) }} className="h-8 w-28 bg-white text-xs" />
+                <div className="w-40"><DatePicker value={lgFrom} onChange={setLgFrom} /></div>
+                <span className="text-[11px]">to</span>
+                <div className="w-40"><DatePicker value={lgTo} onChange={setLgTo} /></div>
+                {(lgFrom || lgTo) && (
+                  <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={() => { setLgFrom(''); setLgTo('') }}>
+                    All
+                  </Button>
+                )}
+                <Button
+                  variant={lgMonthly ? 'default' : 'outline'}
+                  size="sm"
+                  className={cn('h-8 px-2 text-xs', lgMonthly && 'bg-[#1a2c56] hover:bg-[#24407e]')}
+                  onClick={() => setLgMonthly((m) => !m)}
+                >
+                  Monthly
+                </Button>
+                <Button
+                  variant={lgDetailed ? 'default' : 'outline'}
+                  size="sm"
+                  className={cn('h-8 px-2 text-xs', lgDetailed && 'bg-[#1a2c56] hover:bg-[#24407e]')}
+                  title="Columnar register — a column per ledger involved (Alt+F1)"
+                  onClick={() => setLgDetailed((d) => !d)}
+                >
+                  Columnar
+                </Button>
+              </div>
             </div>
-            <div className="max-h-[calc(100vh-225px)] overflow-auto">
-              <table className="w-full text-[13px]">
-                <thead className="sticky top-0 bg-[#f1ecd9]">
-                  <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
-                    <th className="px-4 py-1.5">Date</th>
-                    <th className="px-2 py-1.5">Particulars</th>
-                    <th className="px-2 py-1.5">Vch</th>
-                    <th className="px-2 py-1.5 text-right">Debit</th>
-                    <th className="px-2 py-1.5 text-right">Credit</th>
-                    <th className="px-2 py-1.5 text-right">Balance</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ledgerRunning.map((l) => (
-                    <tr key={String(l.id)} className="border-b border-dotted" style={{ borderColor: '#e5dfc8' }}>
-                      <td className="whitespace-nowrap px-4 py-1.5 tabular-nums">{formatDate(l.entry_date)}</td>
-                      <td className="px-2 py-1.5">
-                        <div className="font-medium">{l.particulars || l.vch_type}</div>
-                        {l.narration && <div className="text-[11px] text-muted-foreground">{l.narration}</div>}
-                      </td>
-                      <td className="whitespace-nowrap px-2 py-1.5 text-[11px] text-muted-foreground">{l.voucher_code}</td>
-                      <td className="px-2 py-1.5 text-right tabular-nums">{Number(l.dr) ? formatINR(l.dr) : ''}</td>
-                      <td className="px-2 py-1.5 text-right tabular-nums">{Number(l.cr) ? formatINR(l.cr) : ''}</td>
-                      <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">
-                        {formatINR(Math.abs(l.running))} {l.running >= 0 ? 'Dr' : 'Cr'}
+            {lgMonthly ? (
+              <div className="max-h-[calc(100vh-225px)] overflow-auto">
+                <table className="w-full text-[13px]">
+                  <thead className="sticky top-0 bg-[#f1ecd9]">
+                    <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                      <th className="px-4 py-1.5">Month</th>
+                      <th className="px-2 py-1.5 text-right">Debit</th>
+                      <th className="px-2 py-1.5 text-right">Credit</th>
+                      <th className="px-2 py-1.5 text-right">Closing balance</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {monthly.map((m) => (
+                      <tr
+                        key={m.month}
+                        className="cursor-pointer border-b border-dotted hover:bg-amber-100/70"
+                        style={{ borderColor: '#e5dfc8' }}
+                        title="Open this month's vouchers"
+                        onClick={() => drillMonth(m.month)}
+                      >
+                        <td className="px-4 py-1.5 font-medium">{monthLabelLong(m.month)}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">{m.dr ? formatINR(m.dr) : ''}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">{m.cr ? formatINR(m.cr) : ''}</td>
+                        <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">
+                          {formatINR(Math.abs(m.closing))} {m.closing >= 0 ? 'Dr' : 'Cr'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t-2 font-bold" style={{ borderColor: '#1a2c56' }}>
+                      <td className="px-4 py-2">Grand total</td>
+                      <td className="px-2 py-2 text-right tabular-nums">{formatINR(monthly.reduce((sum, m) => sum + m.dr, 0))}</td>
+                      <td className="px-2 py-2 text-right tabular-nums">{formatINR(monthly.reduce((sum, m) => sum + m.cr, 0))}</td>
+                      <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">
+                        {(() => {
+                          const c = monthly.length ? monthly[monthly.length - 1].closing : 0
+                          return `${formatINR(Math.abs(c))} ${c >= 0 ? 'Dr' : 'Cr'}`
+                        })()}
                       </td>
                     </tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr className="border-t-2 font-bold" style={{ borderColor: '#1a2c56' }}>
-                    <td className="px-4 py-2" colSpan={3}>Closing balance</td>
-                    <td className="px-2 py-2 text-right tabular-nums">
-                      {formatINR(ledgerRunning.reduce((s, l) => s + (Number(l.dr) || 0), 0))}
-                    </td>
-                    <td className="px-2 py-2 text-right tabular-nums">
-                      {formatINR(ledgerRunning.reduce((s, l) => s + (Number(l.cr) || 0), 0))}
-                    </td>
-                    <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">
-                      {(() => {
-                        const c = ledgerRunning.length ? ledgerRunning[ledgerRunning.length - 1].running : 0
-                        return `${formatINR(Math.abs(c))} ${c >= 0 ? 'Dr' : 'Cr'}`
-                      })()}
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
+                  </tfoot>
+                </table>
+              </div>
+            ) : (
+              <div className="max-h-[calc(100vh-225px)] overflow-auto [scrollbar-gutter:stable] [&::-webkit-scrollbar]:h-3 [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-[#efe9d2] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[#1a2c56]/50 hover:[&::-webkit-scrollbar-thumb]:bg-[#1a2c56]/70">
+                <table className={cn('w-full text-[13px]', lgDetailed && legCols.length > 0 && 'min-w-max')}>
+                  <thead className="sticky top-0 z-20 bg-[#f1ecd9]">
+                    <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                      <th className={cn('px-4 py-1.5', lgDetailed && 'sticky left-0 z-30 w-[104px] min-w-[104px] bg-[#f1ecd9]')}>Date</th>
+                      <th className={cn('px-2 py-1.5', lgDetailed && 'sticky left-[104px] z-30 w-[190px] min-w-[190px] bg-[#f1ecd9] shadow-[4px_0_6px_-4px_rgba(26,44,86,0.35)]')}>Particulars</th>
+                      <th className="px-2 py-1.5">Vch</th>
+                      <th className="px-2 py-1.5 text-right">Debit</th>
+                      <th className="px-2 py-1.5 text-right">Credit</th>
+                      <th className="px-2 py-1.5 text-right">Balance</th>
+                      {lgDetailed &&
+                        legCols.map((c) => (
+                          <th key={c} className="max-w-[150px] truncate border-l px-2 py-1.5 text-right" style={{ borderColor: '#e5dfc8' }} title={c}>
+                            {c}
+                          </th>
+                        ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(lgFrom || Math.abs(stmt.opening) > 0.004) && (
+                      <tr className="border-b bg-amber-50/60 font-medium" style={{ borderColor: '#e5dfc8' }}>
+                        <td className={cn('px-4 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground', lgDetailed && 'sticky left-0 z-10 bg-[#fbf3dc]')}>
+                          {lgFrom ? formatDate(lgFrom) : ''}
+                        </td>
+                        <td className={cn('px-2 py-1.5 italic', lgDetailed && 'sticky left-[104px] z-10 bg-[#fbf3dc]')} colSpan={lgDetailed ? 1 : 4}>Opening balance</td>
+                        {lgDetailed && <td colSpan={3} />}
+                        <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">
+                          {formatINR(Math.abs(stmt.opening))} {stmt.opening >= 0 ? 'Dr' : 'Cr'}
+                        </td>
+                        {lgDetailed && legCols.length > 0 && <td colSpan={legCols.length} />}
+                      </tr>
+                    )}
+                    {stmt.rows.map((l) => (
+                      <tr key={String(l.id)} className="border-b border-dotted align-top" style={{ borderColor: '#e5dfc8' }}>
+                        <td className={cn('whitespace-nowrap px-4 py-1.5 tabular-nums', lgDetailed && 'sticky left-0 z-10 bg-[#fffdf4]')}>{formatDate(l.entry_date)}</td>
+                        <td className={cn('px-2 py-1.5', lgDetailed && 'sticky left-[104px] z-10 max-w-[190px] bg-[#fffdf4] shadow-[4px_0_6px_-4px_rgba(26,44,86,0.25)]')}>
+                          <div className="truncate font-medium" title={String(l.particulars || l.vch_type)}>{l.particulars || l.vch_type}</div>
+                          {l.narration && <div className="truncate text-[11px] italic text-muted-foreground">{l.narration}</div>}
+                        </td>
+                        <td className="whitespace-nowrap px-2 py-1.5 text-[11px] text-muted-foreground">
+                          <div>{l.voucher_code}</div>
+                          {lgDetailed && <div>{l.vch_type}{l.vch_no ? ` · ${l.vch_no}` : ''}</div>}
+                        </td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">{Number(l.dr) ? formatINR(l.dr) : ''}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">{Number(l.cr) ? formatINR(l.cr) : ''}</td>
+                        <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">
+                          {formatINR(Math.abs(l.running))} {l.running >= 0 ? 'Dr' : 'Cr'}
+                        </td>
+                        {lgDetailed &&
+                          legCols.map((c) => {
+                            const v = legShare(l, c)
+                            return (
+                              <td key={c} className="whitespace-nowrap border-l px-2 py-1.5 text-right tabular-nums" style={{ borderColor: '#f0ead2' }}>
+                                {Math.abs(v) > 0.004 ? (
+                                  <>
+                                    {formatINR(Math.abs(v))} <span className="text-[10px] text-muted-foreground">{v > 0 ? 'Dr' : 'Cr'}</span>
+                                  </>
+                                ) : (
+                                  ''
+                                )}
+                              </td>
+                            )
+                          })}
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t-2 bg-[#fffdf4] font-bold" style={{ borderColor: '#1a2c56' }}>
+                      <td className={cn('px-4 py-2', lgDetailed && 'sticky left-0 z-10 bg-[#fffdf4]')} colSpan={lgDetailed ? 2 : 3}>
+                        Closing balance{lgFrom || lgTo ? ' (period)' : ''}
+                      </td>
+                      {lgDetailed && <td />}
+                      <td className="px-2 py-2 text-right tabular-nums">{formatINR(stmt.totDr)}</td>
+                      <td className="px-2 py-2 text-right tabular-nums">{formatINR(stmt.totCr)}</td>
+                      <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">
+                        {formatINR(Math.abs(stmt.closing))} {stmt.closing >= 0 ? 'Dr' : 'Cr'}
+                      </td>
+                      {lgDetailed &&
+                        legCols.map((c) => {
+                          const v = Math.round(stmt.rows.reduce((sum, r) => sum + legShare(r, c), 0) * 100) / 100
+                          return (
+                            <td key={c} className="whitespace-nowrap border-l px-2 py-2 text-right tabular-nums" style={{ borderColor: '#e5dfc8' }}>
+                              {Math.abs(v) > 0.004 ? `${formatINR(Math.abs(v))} ${v > 0 ? 'Dr' : 'Cr'}` : ''}
+                            </td>
+                          )
+                        })}
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1166,6 +1781,7 @@ export function Accounts(): React.JSX.Element {
         <div className={cn('flex flex-wrap items-center gap-3 rounded-t-md px-4 py-2', T.headBar)}>
           <span className="text-[13px] font-bold uppercase tracking-widest">Trial Balance</span>
           <div className="ml-auto flex items-center gap-2">
+            <FyPicker from={tbFrom} to={tbTo} onRange={(f, t) => { setTbFrom(f); setTbTo(t) }} className="h-9 w-28 bg-white text-xs" />
             <div className="w-40"><DatePicker value={tbFrom} onChange={setTbFrom} /></div>
             <span className="text-[11px]">to</span>
             <div className="w-40"><DatePicker value={tbTo} onChange={setTbTo} /></div>
@@ -1220,14 +1836,55 @@ export function Accounts(): React.JSX.Element {
   )
 
   return (
-    <>
-      <PageHeader
-        title="Accounting"
-        subtitle="Tally-style vouchers, day book, ledgers and trial balance"
-        hint="Keyboard first, like Tally: F4 Contra, F5 Payment, F6 Receipt, F7 Journal, F2 date, Ctrl+A accept, Esc back. Purchase and sale vouchers post automatically from their pages; here you record the money and adjustment entries and read the books."
-      />
-      <div className="px-4 pb-4">
-        <div className={cn('flex min-h-[calc(100vh-170px)] rounded-xl', T.frame)}>
+    <div className={cn('fixed inset-0 z-50 flex flex-col overflow-auto', T.frame)}>
+      <div className="flex shrink-0 items-center gap-3 px-4 pb-1 pt-2">
+        <span className="text-[13px] font-bold uppercase tracking-widest text-amber-300">Rishabh Oil — Accounting</span>
+        {company && (
+          <button
+            type="button"
+            title="Change company (F3)"
+            onClick={() => { setScreen('gateway'); setCompany(null) }}
+            className="cursor-pointer rounded bg-white/10 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-white/20"
+          >
+            {company.name} <span className="ml-1 text-amber-300">F3</span>
+          </button>
+        )}
+        <span className="text-[11px] text-white/60">F4 Contra · F5 Payment · F6 Receipt · F7 Journal · Ctrl+A accept · Esc back / exit</span>
+        <span className="ml-auto flex items-center gap-2"><UpdateBadge /><DbStatus /></span>
+      </div>
+      <div className="flex-1 px-2 pb-2">
+        {!company ? (
+          <div className="flex h-full items-start justify-center pt-16">
+            <div className={cn('w-[380px] rounded-md border shadow-lg', T.paperEdge, T.paper)}>
+              <div className={cn('rounded-t-md px-4 py-2 text-center text-[13px] font-bold uppercase tracking-widest', T.headBar)}>
+                Select Company
+              </div>
+              <div className="px-2 py-3">
+                {companies.map((cm, i) => (
+                  <button
+                    key={String(cm.id)}
+                    type="button"
+                    onClick={() => setCompany(cm)}
+                    onMouseEnter={() => setCoIndex(i)}
+                    className={cn(
+                      'flex w-full cursor-pointer items-center gap-3 rounded px-3 py-2.5 text-left text-[14px] transition-colors',
+                      i === coIndex ? T.select : 'hover:bg-amber-100/60'
+                    )}
+                  >
+                    <span className={cn('font-bold', T.key)}>{i + 1}</span>
+                    <span className="font-medium">{cm.name}</span>
+                    <ChevronRight className="ml-auto h-4 w-4 text-muted-foreground" />
+                  </button>
+                ))}
+                <p className="px-3 pt-3 text-[11px] leading-relaxed text-muted-foreground">
+                  Every ledger, day book and trial balance you open is for this company's books only — press F3
+                  anywhere to switch. Esc leaves accounting.
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : (
+        <div className="flex min-h-full">
           <div className="flex min-w-0 flex-1 flex-col">
             {screen === 'gateway' && gateway}
             {screen === 'voucher' && voucherScreen}
@@ -1237,6 +1894,7 @@ export function Accounts(): React.JSX.Element {
           </div>
           {rightBar}
         </div>
+        )}
       </div>
 
       {/* Read-only view of an auto-posted voucher */}
@@ -1307,7 +1965,7 @@ export function Accounts(): React.JSX.Element {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </>
+    </div>
   )
 }
 

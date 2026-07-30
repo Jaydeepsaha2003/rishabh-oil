@@ -30,6 +30,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { PageHeader } from '@/components/PageHeader'
+import { FyPicker } from '@/components/FyPicker'
 import { UomSelect } from '@/components/UomSelect'
 import { DatePicker } from '@/components/ui/date-picker'
 import { convertQty, errText, formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
@@ -729,6 +730,7 @@ function SalesTab({
           <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
             Date
           </span>
+          <FyPicker from={dateFrom} to={dateTo} onRange={(f, t) => { setDateFrom(f); setDateTo(t) }} className="h-8 w-28 shrink-0 text-[11px]" />
           <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
           <span className="shrink-0 text-[10px] text-muted-foreground">to</span>
           <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="w-36" />
@@ -1818,6 +1820,7 @@ function SalesBargainsTab(): React.JSX.Element {
         </div>
         <div className="flex items-center gap-1.5 text-sm">
           <span className="text-muted-foreground">Date</span>
+          <FyPicker from={dateFrom} to={dateTo} onRange={(f, t) => { setDateFrom(f); setDateTo(t) }} className="h-9 w-28 text-xs" />
           <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="w-36" />
           <span className="text-muted-foreground">to</span>
           <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />

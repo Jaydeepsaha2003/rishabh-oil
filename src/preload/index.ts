@@ -82,7 +82,10 @@ const api = {
       ipcRenderer.invoke('consignment:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('consignment:update', { id, values }),
-    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('consignment:delete', { id })
+    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('consignment:delete', { id }),
+    saveOpening: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('consignment:saveOpening', { values }),
+    openingLog: (supplierId: number, productId: number): Promise<Row[]> =>
+      ipcRenderer.invoke('consignment:openingLog', { supplierId, productId })
   },
   tankers: {
     list: (all?: boolean): Promise<Row[]> => ipcRenderer.invoke('tankers:list', { all }),
@@ -92,13 +95,14 @@ const api = {
       ipcRenderer.invoke('tankers:update', { id, values }),
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('tankers:delete', { id }),
     advance: (id: number, toStatus: string, data: Row): Promise<{ id: number }> =>
-      ipcRenderer.invoke('tankers:advance', { id, toStatus, data })
+      ipcRenderer.invoke('tankers:advance', { id, toStatus, data }),
+    revert: (id: number): Promise<{ id: number; status: string }> => ipcRenderer.invoke('tankers:revert', { id })
   },
   dashboard: {
     stats: (): Promise<Row> => ipcRenderer.invoke('dashboard:stats')
   },
   vouchers: {
-    list: (args?: { from?: string; to?: string; vchType?: string }): Promise<Row[]> =>
+    list: (args?: { from?: string; to?: string; vchType?: string; companyId?: number }): Promise<Row[]> =>
       ipcRenderer.invoke('vouchers:list', args),
     get: (id: number): Promise<Row | null> => ipcRenderer.invoke('vouchers:get', { id }),
     create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('vouchers:create', { values }),
@@ -107,16 +111,16 @@ const api = {
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('vouchers:delete', { id })
   },
   journal: {
-    trialBalance: (args?: { from?: string; to?: string }): Promise<Row> =>
+    trialBalance: (args?: { from?: string; to?: string; companyId?: number }): Promise<Row> =>
       ipcRenderer.invoke('journal:trialBalance', args),
-    groups: (): Promise<Row[]> => ipcRenderer.invoke('journal:groups'),
+    groups: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('journal:groups', { companyId }),
     groupNames: (): Promise<{ name: string; nature: string }[]> => ipcRenderer.invoke('journal:groupNames'),
-    pendingRefs: (account: string): Promise<Row[]> => ipcRenderer.invoke('journal:pendingRefs', { account }),
-    accounts: (): Promise<Row[]> => ipcRenderer.invoke('journal:accounts'),
+    pendingRefs: (account: string, companyId?: number): Promise<Row[]> => ipcRenderer.invoke('journal:pendingRefs', { account, companyId }),
+    accounts: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('journal:accounts', { companyId }),
     createAccount: (name: string, group?: string): Promise<{ id: number }> =>
       ipcRenderer.invoke('journal:createAccount', { name, group }),
-    statement: (accountId: number): Promise<Row[]> =>
-      ipcRenderer.invoke('journal:statement', { accountId }),
+    statement: (accountId: number, companyId?: number): Promise<Row[]> =>
+      ipcRenderer.invoke('journal:statement', { accountId, companyId }),
     addEntry: (data: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('journal:addEntry', { data }),
     deleteEntry: (id: number): Promise<{ id: number }> =>
@@ -185,7 +189,7 @@ const api = {
   stock: {
     list: (range?: { from?: string; to?: string }, companyIds?: number[]): Promise<Row[]> => ipcRenderer.invoke('stock:list', { range, companyIds }),
     needs: (): Promise<Row[]> => ipcRenderer.invoke('stock:needs'),
-    breakdown: (): Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>> => ipcRenderer.invoke('stock:breakdown'),
+    breakdown: (companyIds?: number[]): Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>> => ipcRenderer.invoke('stock:breakdown', { companyIds }),
     daybook: (from: string, to: string): Promise<{ vouchers: Row[]; material: Row[] }> => ipcRenderer.invoke('daybook:list', { from, to }),
     transfers: (): Promise<Row[]> => ipcRenderer.invoke('stock:transfers'),
     transfer: (values: Row): Promise<{ id: number }> =>
@@ -240,6 +244,9 @@ const api = {
       ipcRenderer.invoke('sales:deleteInvoice', { group })
   },
   skuRates: {
+    parties: (packagingId: number): Promise<number[]> => ipcRenderer.invoke('skuRates:parties', { packagingId }),
+    setParties: (packagingId: number, customerIds: number[]): Promise<{ count: number }> =>
+      ipcRenderer.invoke('skuRates:setParties', { packagingId, customerIds }),
     list: (id: number): Promise<Row[]> => ipcRenderer.invoke('skuRates:list', { id }),
     save: (id: number, rows: Row[]): Promise<{ saved: number; cleared: number }> =>
       ipcRenderer.invoke('skuRates:save', { id, rows })
@@ -265,6 +272,16 @@ const api = {
     complete: (id: number, gross: number, tare: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('gate:complete', { id, gross, tare }),
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('gate:delete', { id })
+  },
+  treasury: {
+    alerts: (): Promise<Row> => ipcRenderer.invoke('treasury:alerts'),
+    settleLcBill: (id: number, date?: string): Promise<{ id: number }> =>
+      ipcRenderer.invoke('treasury:settleLcBill', { id, date }),
+    reopenLcBill: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('treasury:reopenLcBill', { id }),
+    discount: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('treasury:discount', { values }),
+    realize: (id: number, date?: string): Promise<{ id: number }> => ipcRenderer.invoke('treasury:realize', { id, date }),
+    unrealize: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('treasury:unrealize', { id }),
+    deleteDiscount: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('treasury:deleteDiscount', { id })
   },
   lc: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('lc:list'),

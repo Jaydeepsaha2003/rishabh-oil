@@ -451,6 +451,46 @@ const MIGRATIONS = [
   )`,
   'CREATE INDEX IF NOT EXISTS idx_jba_line ON journal_bill_allocs(line_id)',
   'CREATE INDEX IF NOT EXISTS idx_jba_account ON journal_bill_allocs(account_id)',
+  // Which customers buy which packed SKUs — narrows the sales-bargain rate
+  // card to the SKUs that party actually trades in.
+  "ALTER TABLE notes ADD COLUMN against_ref TEXT",
+  // Treasury: usance/margin on LCs, due-dated LC bills, and the discounting
+  // economics (rate, interest, net) with the journal entries they posted.
+  'ALTER TABLE letters_of_credit ADD COLUMN usance_days INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE letters_of_credit ADD COLUMN margin_pct REAL NOT NULL DEFAULT 0',
+  'ALTER TABLE letters_of_credit ADD COLUMN journal_entry_id INTEGER',
+  'ALTER TABLE lc_issuances ADD COLUMN due_date TEXT',
+  "ALTER TABLE lc_issuances ADD COLUMN status TEXT NOT NULL DEFAULT 'outstanding'",
+  'ALTER TABLE lc_issuances ADD COLUMN settled_date TEXT',
+  'ALTER TABLE lc_issuances ADD COLUMN journal_entry_id INTEGER',
+  'ALTER TABLE bill_discounts ADD COLUMN customer_id INTEGER',
+  'ALTER TABLE bill_discounts ADD COLUMN invoice_group TEXT',
+  'ALTER TABLE bill_discounts ADD COLUMN rate_pct REAL NOT NULL DEFAULT 0',
+  'ALTER TABLE bill_discounts ADD COLUMN charges REAL NOT NULL DEFAULT 0',
+  'ALTER TABLE bill_discounts ADD COLUMN interest_amount REAL NOT NULL DEFAULT 0',
+  'ALTER TABLE bill_discounts ADD COLUMN net_received REAL NOT NULL DEFAULT 0',
+  'ALTER TABLE bill_discounts ADD COLUMN journal_entry_id INTEGER',
+  'ALTER TABLE bill_discounts ADD COLUMN realize_entry_id INTEGER',
+  // Every restatement of an MNC opening balance keeps its old figure, so a
+  // mistaken change (or deletion) can be seen and put back.
+  `CREATE TABLE IF NOT EXISTS consignment_opening_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    supplier_id INTEGER NOT NULL,
+    product_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    old_qty REAL,
+    new_qty REAL,
+    uom TEXT,
+    deposit_date TEXT,
+    note TEXT,
+    changed_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS packaging_parties (
+    packaging_id INTEGER NOT NULL REFERENCES packagings(id),
+    customer_id INTEGER NOT NULL REFERENCES customers(id),
+    PRIMARY KEY (packaging_id, customer_id)
+  )`,
   // How a consignment / direct purchase invoice is spread across bargains. The
   // quantity is typed, not tanker-wise, so the allocation belongs to the invoice
   // rather than to a tanker — and it is the single source the bargain register

@@ -12,10 +12,8 @@ import { Orders } from './pages/Orders'
 import { Consignment } from './pages/Consignment'
 import { GateEntry } from './pages/GateEntry'
 import { Accounts } from './pages/Accounts'
-import { Ledgers } from './pages/Ledgers'
-import { Daybook } from './pages/Daybook'
+import { Treasury } from './pages/Treasury'
 import { Payments } from './pages/Payments'
-import { Notes } from './pages/Notes'
 import { Products } from './pages/Products'
 import { Formulation } from './pages/Formulation'
 import { Production } from './pages/Production'
@@ -87,7 +85,7 @@ function App(): React.JSX.Element {
   }
 
   function goBack(): void {
-    const t = returnTo || 'ledgers'
+    const t = returnTo || 'accounts'
     setReturnTo(null)
     setFocus(null)
     setPage(t)
@@ -291,11 +289,8 @@ function App(): React.JSX.Element {
             backLabel={backLabel}
           />
         )}
-        {view === 'debitNotes' && <Notes kind="debit" />}
-        {view === 'creditNotes' && <Notes kind="credit" />}
-        {view === 'accounts' && <Accounts />}
-        {view === 'ledgers' && <Ledgers onOpenRecord={openRecord} />}
-        {view === 'daybook' && <Daybook />}
+        {view === 'accounts' && <Accounts onExit={() => setPage('dashboard')} />}
+        {view === 'treasury' && <Treasury />}
         {view === 'products' && <Products />}
         {view === 'formulation' && <Formulation />}
         {view === 'production' && <Production />}

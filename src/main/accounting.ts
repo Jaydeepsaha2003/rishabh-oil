@@ -64,9 +64,9 @@ const CASH_BANK_GROUPS = ['Bank Accounts', 'Cash-in-Hand', 'Bank OD A/c']
 
 // Groups with the ledgers under them and their live balances — the "List of
 // Accounts" screen.
-export async function listGroups(): Promise<Row[]> {
+export async function listGroups(companyId?: number): Promise<Row[]> {
   const res = await getClient().execute({
-    args: [getActiveCompanyId()],
+    args: [companyId || getActiveCompanyId()],
     sql: `
     SELECT a.id, a.name, a.acc_group,
       COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
@@ -82,7 +82,7 @@ export async function listGroups(): Promise<Row[]> {
 // Tally's own rules about where cash and bank must sit in each type.
 // ---------------------------------------------------------------------------
 
-export type VoucherType = 'CONTRA' | 'PAYMENT' | 'RECEIPT' | 'JOURNAL'
+export type VoucherType = 'CONTRA' | 'PAYMENT' | 'RECEIPT' | 'JOURNAL' | 'DEBIT NOTE' | 'CREDIT NOTE'
 
 // One bill-wise adjustment on a party line, Tally style.
 export interface BillAlloc {
@@ -96,6 +96,7 @@ export interface VoucherInput {
   vchType: VoucherType
   vchNo?: string | null
   narration?: string | null
+  companyId?: number
   lines: { account: string; group?: string; dr?: number; cr?: number; allocs?: BillAlloc[] }[]
 }
 
@@ -215,6 +216,7 @@ export async function createVoucher(v: VoucherInput): Promise<{ id: number }> {
     vchType: v.vchType,
     vchNo: v.vchNo || null,
     narration: v.narration || null,
+    companyId: v.companyId ? n(v.companyId) : undefined,
     lines
   })
   await writeAllocs(res.id, lines)
@@ -234,6 +236,10 @@ export async function updateVoucher(id: number, v: VoucherInput): Promise<{ id: 
   const r = cur.rows[0]
   if (r.order_id != null || r.sale_id != null || r.payment_id != null) {
     throw new Error('This voucher was posted automatically — alter its source document instead')
+  }
+  const isNote = await c.execute({ sql: 'SELECT id FROM notes WHERE journal_entry_id = ? LIMIT 1', args: [id] })
+  if (isNote.rows.length) {
+    throw new Error('This voucher belongs to a Debit/Credit note — delete the note and enter it afresh')
   }
   const lines = await validateVoucher(v)
   await c.execute({
@@ -270,6 +276,11 @@ export async function getVoucher(id: number): Promise<Row | null> {
     args: [id]
   })
   const entry = toPlain(e)[0]
+  const noteRef = await c.execute({
+    sql: 'SELECT id FROM notes WHERE journal_entry_id = ? LIMIT 1',
+    args: [id]
+  })
+  entry.note_id = noteRef.rows.length ? Number(noteRef.rows[0].id) : null
   entry.lines = toPlain(lines)
   for (const l of entry.lines as Row[]) {
     const al = await c.execute({
@@ -278,15 +289,15 @@ export async function getVoucher(id: number): Promise<Row | null> {
     })
     l.allocs = toPlain(al)
   }
-  entry.manual = entry.order_id == null && entry.sale_id == null && entry.payment_id == null
+  entry.manual = entry.order_id == null && entry.sale_id == null && entry.payment_id == null && entry.note_id == null
   return entry
 }
 
 // The Day Book: every voucher in the period, one row each, with the principal
 // debit and credit ledgers as Tally shows them.
-export async function listVouchers(from?: string, to?: string, vchType?: string): Promise<Row[]> {
+export async function listVouchers(from?: string, to?: string, vchType?: string, companyId?: number): Promise<Row[]> {
   const c = getClient()
-  const cid = getActiveCompanyId()
+  const cid = companyId || getActiveCompanyId()
   const conds = ['je.company_id = ?']
   const args: (string | number)[] = [cid]
   if (from) {
@@ -304,6 +315,7 @@ export async function listVouchers(from?: string, to?: string, vchType?: string)
   const res = await c.execute({
     sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_no, je.narration,
                  je.order_id, je.sale_id, je.payment_id,
+                 (SELECT nt.id FROM notes nt WHERE nt.journal_entry_id = je.id LIMIT 1) AS note_id,
                  (SELECT SUM(dr) FROM journal_lines WHERE entry_id = je.id) AS amount,
                  (SELECT a.name FROM journal_lines jl JOIN ledger_accounts a ON a.id = jl.account_id
                   WHERE jl.entry_id = je.id AND jl.dr > 0 ORDER BY jl.dr DESC LIMIT 1) AS dr_account,
@@ -315,16 +327,16 @@ export async function listVouchers(from?: string, to?: string, vchType?: string)
     args
   })
   const rows = toPlain(res)
-  for (const r of rows) r.manual = r.order_id == null && r.sale_id == null && r.payment_id == null
+  for (const r of rows) r.manual = r.order_id == null && r.sale_id == null && r.payment_id == null && r.note_id == null
   return rows
 }
 
 // Trial balance as on a date (or over a period with an opening column):
 // per-ledger closing Dr/Cr, grouped by acc_group, plus group subtotals — the
 // grand totals must agree or the books are broken.
-export async function trialBalance(from?: string, to?: string): Promise<Row> {
+export async function trialBalance(from?: string, to?: string, companyId?: number): Promise<Row> {
   const c = getClient()
-  const cid = getActiveCompanyId()
+  const cid = companyId || getActiveCompanyId()
   const period = async (lo?: string, hi?: string): Promise<Map<number, { dr: number; cr: number }>> => {
     const conds = ['je.company_id = ?']
     const args: (string | number)[] = [cid]
@@ -395,9 +407,9 @@ function dayBefore(iso: string): string {
 // bills from sale invoices (what they owe), each net of everything already
 // allocated against that reference. References created by Advance / New Ref
 // lines appear too, so an advance can be settled later.
-export async function listPendingRefs(accountName: string): Promise<Row[]> {
+export async function listPendingRefs(accountName: string, companyId?: number): Promise<Row[]> {
   const c = getClient()
-  const cid = getActiveCompanyId()
+  const cid = companyId || getActiveCompanyId()
   const name = String(accountName || '').trim().toUpperCase()
   if (!name) return []
   const acc = await c.execute({ sql: 'SELECT id, acc_group FROM ledger_accounts WHERE name = ?', args: [name] })

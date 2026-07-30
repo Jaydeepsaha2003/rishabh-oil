@@ -31,6 +31,74 @@ async function invoicedMap(companyId: number): Promise<Map<string, number>> {
 
 // Total qty this party has ever deposited with us for a product. Zero means
 // they hold no stock at our place, so there is nothing to draw against.
+// Restate the opening balance for a party + product in one validated step:
+// the previous figure is logged first, duplicates merge into a single lot, and
+// the new value may never fall below what has already been drawn out.
+export async function saveOpeningStock(v: Row): Promise<{ id: number }> {
+  const c = getClient()
+  const cid = getActiveCompanyId()
+  const supplierId = n(v.supplier_id)
+  const productId = n(v.product_id)
+  const qty = n(v.qty)
+  const uom = String(v.uom || 'MT')
+  const date = String(v.deposit_date || '').slice(0, 10)
+  if (!supplierId) throw new Error('Choose the MNC / party')
+  if (!productId) throw new Error('Choose the product')
+  if (qty <= 0) throw new Error('Enter an opening quantity greater than zero — use the history to restore an older figure')
+  if (!date) throw new Error('Enter the opening date')
+  if (date > new Date().toISOString().slice(0, 10)) throw new Error('The opening date cannot be in the future')
+
+  const existing = await c.execute({
+    sql: `SELECT * FROM consignment_stock
+          WHERE company_id = ? AND supplier_id = ? AND product_id = ? AND is_opening = 1 AND order_id IS NULL
+          ORDER BY id DESC`,
+    args: [cid, supplierId, productId]
+  })
+  const lots = toPlain(existing)
+  const oldTotal = lots.reduce((s2, l) => s2 + n(l.qty), 0)
+  const available = await consignmentAvailable(supplierId, productId)
+  // drawn − deposits-other-than-opening = the floor the opening cannot cross.
+  const minOpening = Math.max(0, Math.round((oldTotal - available) * 1000) / 1000)
+  if (qty < minOpening - 1e-6) {
+    throw new Error(
+      `${minOpening.toFixed(3)} ${uom} of this opening is already drawn into purchases — the opening cannot go below that`
+    )
+  }
+
+  await c.execute({
+    sql: `INSERT INTO consignment_opening_log (company_id, supplier_id, product_id, action, old_qty, new_qty, uom, deposit_date, note)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [cid, supplierId, productId, lots.length ? 'restate' : 'create', lots.length ? oldTotal : null, qty, uom, date, v.note ? String(v.note) : null]
+  })
+
+  const payload = {
+    supplier_id: supplierId,
+    product_id: productId,
+    qty,
+    uom,
+    deposit_date: date,
+    note: v.note ? String(v.note).trim() : 'Opening stock',
+    is_opening: true
+  }
+  if (lots.length) {
+    await updateConsignment(n(lots[0].id), payload)
+    for (const extra of lots.slice(1)) await deleteConsignment(n(extra.id))
+    return { id: n(lots[0].id) }
+  }
+  return createConsignment(payload)
+}
+
+// The restatement trail for one party + product, newest first.
+export async function listOpeningLog(supplierId: number, productId: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT * FROM consignment_opening_log
+          WHERE company_id = ? AND supplier_id = ? AND product_id = ?
+          ORDER BY id DESC LIMIT 20`,
+    args: [getActiveCompanyId(), supplierId, productId]
+  })
+  return toPlain(res)
+}
+
 export async function consignmentDeposited(supplierId: number, productId: number): Promise<number> {
   const res = await getClient().execute({
     sql: 'SELECT COALESCE(SUM(qty), 0) AS q FROM consignment_stock WHERE company_id = ? AND supplier_id = ? AND product_id = ?',
@@ -551,6 +619,27 @@ export async function updateConsignment(id: number, v: Row): Promise<{ id: numbe
 }
 
 export async function deleteConsignment(id: number): Promise<{ id: number }> {
+  {
+    // A deleted OPENING lot still leaves its figure in the restatement log, so
+    // a mistaken removal can be restored from the dialog's history.
+    const cur = await getClient().execute({ sql: 'SELECT * FROM consignment_stock WHERE id = ?', args: [id] })
+    if (cur.rows.length && n(cur.rows[0].is_opening) === 1 && cur.rows[0].order_id == null) {
+      const l = cur.rows[0]
+      // Deleting the opening cannot orphan quantity already drawn into
+      // purchases — the balance would go negative.
+      const avail = await consignmentAvailable(n(l.supplier_id), n(l.product_id))
+      if (n(l.qty) > avail + 1e-6) {
+        throw new Error(
+          `${(n(l.qty) - avail).toFixed(3)} ${l.uom || 'MT'} of this opening is already drawn into purchases — reduce it from the opening dialog instead of deleting`
+        )
+      }
+      await getClient().execute({
+        sql: `INSERT INTO consignment_opening_log (company_id, supplier_id, product_id, action, old_qty, new_qty, uom, deposit_date, note)
+              VALUES (?, ?, ?, 'delete', ?, NULL, ?, ?, ?)`,
+        args: [n(l.company_id) || getActiveCompanyId(), n(l.supplier_id), n(l.product_id), n(l.qty), String(l.uom || 'MT'), String(l.deposit_date || ''), l.note ? String(l.note) : null]
+      }).catch(() => {})
+    }
+  }
   const c = getClient()
   const cur = await c.execute({ sql: 'SELECT * FROM consignment_stock WHERE id = ?', args: [id] })
   if (!cur.rows.length) return { id }

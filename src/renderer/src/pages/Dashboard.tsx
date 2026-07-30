@@ -160,12 +160,15 @@ function Kpi({
 
 export function Dashboard({ onNavigate }: Props): React.JSX.Element {
   const [stats, setStats] = useState<Row | null>(null)
+  const [treasury, setTreasury] = useState<Row | null>(null)
   const [checking, setChecking] = useState(false)
 
   const refresh = useCallback(async () => {
     setChecking(true)
     try {
-      setStats(await window.api.dashboard.stats())
+      const [st, tr] = await Promise.all([window.api.dashboard.stats(), window.api.treasury.alerts().catch(() => null)])
+      setStats(st)
+      setTreasury(tr)
     } finally {
       setChecking(false)
     }
@@ -413,6 +416,41 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
             )}
           </Card>
         </div>
+
+        {/* Treasury watch */}
+        {treasury && (((treasury.lcExpiring as Row[]) || []).length > 0 || ((treasury.lcBillsDue as Row[]) || []).length > 0 || ((treasury.billsDue as Row[]) || []).length > 0) && (
+          <Card className={cn('p-4', n(treasury.overdue) > 0 && 'border-red-300 bg-red-50/40')}>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-semibold">Treasury watch — LCs &amp; discounted bills</span>
+              <button type="button" className="cursor-pointer text-[11px] font-medium text-indigo-600 hover:underline" onClick={() => onNavigate('treasury')}>
+                Open Treasury →
+              </button>
+            </div>
+            <div className="grid gap-2 text-[12.5px] sm:grid-cols-3">
+              <div>
+                <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-amber-700">LCs expiring</div>
+                {((treasury.lcExpiring as Row[]) || []).slice(0, 3).map((l) => (
+                  <div key={String(l.id)} className="flex justify-between gap-2"><span className="truncate">{l.lc_no} · {l.bank}</span><span className="shrink-0 tabular-nums">{l.days_left < 0 ? 'expired' : `${l.days_left}d`}</span></div>
+                ))}
+                {((treasury.lcExpiring as Row[]) || []).length === 0 && <span className="text-muted-foreground">none</span>}
+              </div>
+              <div>
+                <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-sky-700">LC bills maturing</div>
+                {((treasury.lcBillsDue as Row[]) || []).slice(0, 3).map((b) => (
+                  <div key={String(b.id)} className="flex justify-between gap-2"><span className="truncate">{b.lc_no} {b.bill_no || ''}</span><span className={cn('shrink-0 tabular-nums', b.days_left < 0 && 'font-semibold text-red-600')}>{b.days_left < 0 ? `${-b.days_left}d late` : `${b.days_left}d`}</span></div>
+                ))}
+                {((treasury.lcBillsDue as Row[]) || []).length === 0 && <span className="text-muted-foreground">none</span>}
+              </div>
+              <div>
+                <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-indigo-700">Discounted bills due</div>
+                {((treasury.billsDue as Row[]) || []).slice(0, 3).map((b) => (
+                  <div key={String(b.id)} className="flex justify-between gap-2"><span className="truncate">{b.bill_nos || ''} {b.party_name || ''}</span><span className={cn('shrink-0 tabular-nums', b.days_left < 0 && 'font-semibold text-red-600')}>{b.days_left < 0 ? `${-b.days_left}d late` : `${b.days_left}d`}</span></div>
+                ))}
+                {((treasury.billsDue as Row[]) || []).length === 0 && <span className="text-muted-foreground">none</span>}
+              </div>
+            </div>
+          </Card>
+        )}
 
         {/* Payables / receivables detail */}
         <div className="grid gap-3 lg:grid-cols-2">

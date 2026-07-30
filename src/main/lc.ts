@@ -1,6 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
+import { postLcOpening } from './treasury'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -48,6 +49,8 @@ export async function listLCIssuances(lcId: number): Promise<Row[]> {
 }
 
 const LC_COLS = [
+  'usance_days',
+  'margin_pct',
   'lc_no',
   'facility_type',
   'bank',
@@ -66,7 +69,7 @@ function lcArgs(v: Row): (string | number | null)[] {
   return LC_COLS.map((k) => {
     const val = v[k]
     if (val === '' || val === undefined || val === null) return null
-    if (k === 'party_id' || k === 'amount' || k === 'interest_pct' || k === 'charges') return n(val)
+    if (k === 'party_id' || k === 'amount' || k === 'interest_pct' || k === 'charges' || k === 'usance_days' || k === 'margin_pct') return n(val)
     return val as string
   })
 }
@@ -78,7 +81,10 @@ export async function createLC(v: Row): Promise<{ id: number }> {
           VALUES (?, ${LC_COLS.map(() => '?').join(', ')})`,
     args: [getActiveCompanyId(), ...lcArgs(v)]
   })
-  return { id: Number(res.lastInsertRowid) }
+  const id = Number(res.lastInsertRowid)
+  // Margin + charges voucher into the books (skipped when both are zero).
+  await postLcOpening(id).catch((e) => console.error('[lc] opening voucher failed:', (e as Error).message))
+  return { id }
 }
 
 export async function updateLC(id: number, v: Row): Promise<{ id: number }> {
@@ -86,14 +92,30 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number }> {
     sql: `UPDATE letters_of_credit SET ${LC_COLS.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`,
     args: [...lcArgs(v), id]
   })
+  await postLcOpening(id).catch((e) => console.error('[lc] opening voucher failed:', (e as Error).message))
   return { id }
 }
 
 export async function deleteLC(id: number): Promise<{ id: number }> {
   const c = getClient()
+  // Reverse everything the LC put into the books before it goes.
+  const bills = await c.execute({ sql: 'SELECT journal_entry_id FROM lc_issuances WHERE lc_id = ?', args: [id] })
+  for (const b of bills.rows) if (b.journal_entry_id) await dropTreasuryEntry(Number(b.journal_entry_id))
+  const lc = await c.execute({ sql: 'SELECT journal_entry_id FROM letters_of_credit WHERE id = ?', args: [id] })
+  if (lc.rows.length && lc.rows[0].journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].journal_entry_id))
   await c.execute({ sql: 'DELETE FROM lc_issuances WHERE lc_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM letters_of_credit WHERE id = ?', args: [id] })
   return { id }
+}
+
+async function dropTreasuryEntry(entryId: number): Promise<void> {
+  const c = getClient()
+  await c.execute({
+    sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
+    args: [entryId]
+  })
+  await c.execute({ sql: 'DELETE FROM journal_lines WHERE entry_id = ?', args: [entryId] })
+  await c.execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [entryId] })
 }
 
 // Issue (draw down) against an LC. Cannot exceed the available balance.
@@ -112,16 +134,29 @@ export async function issueLC(v: Row): Promise<{ id: number }> {
   if (amount > available + 0.005) {
     throw new Error(`Issuance exceeds available LC balance (${available.toFixed(2)})`)
   }
+  const lc = lcRes.rows[0]
+  const issueDate = String(v.issue_date || '').slice(0, 10)
+  if (lc.expiry_date && issueDate > String(lc.expiry_date)) {
+    throw new Error(`The LC expired on ${lc.expiry_date} — a bill cannot be issued after that`)
+  }
+  // Every bill carries its maturity: explicit, or issue date + the LC's usance.
+  let dueDate = String(v.due_date || '').slice(0, 10)
+  if (!dueDate) {
+    const d = new Date(`${issueDate}T00:00:00`)
+    d.setDate(d.getDate() + (n(lc.usance_days) || 0))
+    dueDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
   const ins = await c.execute({
-    sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, order_id, bill_no, note)
-          VALUES (?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, order_id, bill_no, note, due_date, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'outstanding')`,
     args: [
       lcId,
-      v.issue_date,
+      issueDate,
       amount,
       v.order_id ? n(v.order_id) : null,
       v.bill_no || null,
-      v.note || null
+      v.note || null,
+      dueDate
     ]
   })
   // Mark the LC utilised/closed once fully drawn.
@@ -136,7 +171,8 @@ export async function issueLC(v: Row): Promise<{ id: number }> {
 
 export async function deleteLCIssuance(id: number): Promise<{ id: number }> {
   const c = getClient()
-  const res = await c.execute({ sql: 'SELECT lc_id FROM lc_issuances WHERE id = ?', args: [id] })
+  const res = await c.execute({ sql: 'SELECT lc_id, journal_entry_id FROM lc_issuances WHERE id = ?', args: [id] })
+  if (res.rows.length && res.rows[0].journal_entry_id) await dropTreasuryEntry(Number(res.rows[0].journal_entry_id))
   await c.execute({ sql: 'DELETE FROM lc_issuances WHERE id = ?', args: [id] })
   // Re-open the LC if it now has headroom.
   if (res.rows.length) {

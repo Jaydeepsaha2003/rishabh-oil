@@ -94,6 +94,11 @@ export async function createGateEntry(v: Row): Promise<{ id: number }> {
   const c = getClient()
   const direction = v.direction === 'out' ? 'out' : 'in'
   if (direction === 'out' && !v.invoice_group && !v.sale_id) throw new Error('Select the sale invoice being dispatched')
+  // Every gate entry names its vehicle — either a tanker from the movement
+  // register or a typed vehicle number; an entry with neither is untraceable.
+  if (!n(v.tanker_id) && !String(v.tanker_no || '').trim()) {
+    throw new Error('Pick a tanker from the list or type the vehicle number')
+  }
   // The system serial is always auto-assigned fresh (authoritative, no stale
   // preview / duplicates). The user's optional manual number lives in ref_no.
   const gateNo = await nextGateEntryNo(direction)

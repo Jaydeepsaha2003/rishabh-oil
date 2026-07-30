@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Pencil, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -76,6 +76,8 @@ interface Props {
   readOnly?: boolean
   // When a field changes, optionally return other fields to auto-fill.
   onFieldChange?: (key: string, value: unknown, form: Row) => Row | undefined
+  // An extra per-row button (e.g. linking related records), before edit/delete.
+  rowAction?: { title: string; icon: React.ComponentType<{ className?: string }>; onClick: (row: Row) => void }
 }
 
 export function EntityManager({
@@ -85,11 +87,20 @@ export function EntityManager({
   fields,
   columns,
   readOnly = false,
-  onFieldChange
+  onFieldChange,
+  rowAction
 }: Props): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
+  // Tally-style type-to-find across every visible column.
+  const [search, setSearch] = useState('')
+  const shownRows = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return rows
+    return rows.filter((r) => columns.some((c) => String(r[c.key] ?? '').toLowerCase().includes(q)))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, search])
   // 10 per page with page numbers underneath, shared by every master list.
-  const paged = usePaged(rows)
+  const paged = usePaged(shownRows)
   // Options a creatable field offers: whatever the field declares, plus every
   // value already used by an existing record, plus anything added this session.
   const [addedOptions, setAddedOptions] = useState<Record<string, string[]>>({})
@@ -212,6 +223,18 @@ export function EntityManager({
     }
   }
 
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void {
+      if (e.altKey && (e.key === 'n' || e.key === 'N') && !readOnly) {
+        e.preventDefault()
+        openAdd()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readOnly])
+
   function renderCell(row: Row, col: ColumnDef): string {
     const v = row[col.key]
     if (col.type === 'switch') return v ? 'Yes' : 'No'
@@ -221,13 +244,22 @@ export function EntityManager({
   }
 
   return (
-    <div>
-      <div className="mb-3 flex items-center justify-between">
-        <div>
-          <h3 className="text-base font-medium">{title}</h3>
-          {description && <p className="text-xs text-muted-foreground">{description}</p>}
+    <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
+      <div className="flex flex-wrap items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
+        <div className="min-w-0">
+          <h3 className="text-[13px] font-bold uppercase tracking-widest">{title}</h3>
+          {description && <p className="text-[11px] text-[#1a2c56]/70">{description}</p>}
         </div>
-        <div className="flex items-center gap-2">
+        <span className="rounded bg-white/60 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums">
+          {shownRows.length}{search ? ` / ${rows.length}` : ''}
+        </span>
+        <div className="ml-auto flex items-center gap-2">
+          <Input
+            className="h-8 w-48 bg-white text-[13px]"
+            placeholder={`Search ${title.toLowerCase()}…`}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
           <ExcelButton
             filename={`${table}-${todayISO()}`}
             sheetName={title}
@@ -248,23 +280,31 @@ export function EntityManager({
             rows={rows}
           />
           {!readOnly && (
-            <Button size="sm" onClick={openAdd}>
+            <Button size="sm" className="bg-[#1a2c56] hover:bg-[#24407e]" title="Alt+N" onClick={openAdd}>
               <Plus /> Add
             </Button>
           )}
         </div>
       </div>
 
-      <div className="rounded-lg border">
-        <Table>
+      <div>
+        <Table className="text-[13px]">
           <TableHeader>
-            <TableRow>
+            <TableRow className="bg-[#f1ecd9] hover:bg-[#f1ecd9]">
               {columns.map((c) => (
-                <TableHead key={c.key} className={c.align === 'right' ? 'text-right' : ''}>
+                <TableHead
+                  key={c.key}
+                  className={cn(
+                    'h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground',
+                    c.align === 'right' && 'text-right'
+                  )}
+                >
                   {c.label}
                 </TableHead>
               ))}
-              <TableHead className="w-[90px] text-right">Actions</TableHead>
+              <TableHead className="h-8 w-[90px] text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                Actions
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -288,20 +328,39 @@ export function EntityManager({
               </TableRow>
             ) : (
               paged.pageRows.map((row) => (
-                <TableRow key={row.id as number}>
+                <TableRow
+                  key={row.id as number}
+                  className={cn(
+                    'border-b border-dotted border-[#e5dfc8] transition-colors hover:bg-amber-100/70',
+                    !readOnly && 'cursor-pointer'
+                  )}
+                  onClick={() => !readOnly && openEdit(row)}
+                  title={readOnly ? undefined : 'Open to alter'}
+                >
                   {columns.map((c) => (
                     <TableCell
                       key={c.key}
-                      className={c.align === 'right' ? 'text-right tabular-nums' : ''}
+                      className={cn('py-1.5', c.align === 'right' && 'text-right tabular-nums')}
                     >
                       {renderCell(row, c)}
                     </TableCell>
                   ))}
-                  <TableCell className="text-right">
+                  <TableCell className="py-1.5 text-right" onClick={(e) => e.stopPropagation()}>
                     {readOnly ? (
                       <span className="text-muted-foreground">—</span>
                     ) : (
                       <div className="flex justify-end gap-1">
+                        {rowAction && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            title={rowAction.title}
+                            onClick={() => rowAction.onClick(row)}
+                          >
+                            <rowAction.icon className="h-4 w-4" />
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
                           size="icon"
@@ -326,13 +385,15 @@ export function EntityManager({
             )}
           </TableBody>
         </Table>
-        <Pagination {...paged} label="records" className="border-t" />
+        <Pagination {...paged} label="records" className="rounded-b-md border-t border-[#d9d2b8] bg-[#fffdf4] px-3" />
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{editingId == null ? `Add ${title}` : `Edit ${title}`}</DialogTitle>
+        <DialogContent className="border-[#d9d2b8] bg-[#fffdf4]">
+          <DialogHeader className="-mx-6 -mt-6 mb-1 rounded-t-lg bg-[#dce6f5] px-6 py-2.5">
+            <DialogTitle className="text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]">
+              {editingId == null ? `Create ${title}` : `Alter ${title}`}
+            </DialogTitle>
           </DialogHeader>
           <div className="grid max-h-[60vh] gap-3 overflow-y-auto py-2 pr-1">
             {fields.map((fd) => {

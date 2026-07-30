@@ -43,6 +43,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { PageHeader } from '@/components/PageHeader'
+import { FyPicker } from '@/components/FyPicker'
 import { UomSelect } from '@/components/UomSelect'
 import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
@@ -482,13 +483,21 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
       balance: number
       total: number
       openValue: number
+      opening: number
+      addition: number
+      dispatch: number
+      closing: number
     }
     const groups = new Map<string, Agg>()
-    for (const r of rows) {
+    for (const r of regRows) {
       const key = oilOf(r)
       if (!groups.has(key))
-        groups.set(key, { label: key, count: 0, openCount: 0, qty: 0, balance: 0, total: 0, openValue: 0 })
+        groups.set(key, { label: key, count: 0, openCount: 0, qty: 0, balance: 0, total: 0, openValue: 0, opening: 0, addition: 0, dispatch: 0, closing: 0 })
       const g = groups.get(key)!
+      g.opening += Number(r._opening) || 0
+      g.addition += Number(r._addition) || 0
+      g.dispatch += Number(r._dispatch) || 0
+      g.closing += Number(r._closing) || 0
       const qty = Number(r.qty) || 0
       const balance = Number(r.balance_qty) || 0
       const rate = Number(r.rate_per_uom) || 0
@@ -509,12 +518,16 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
         qty: s.qty + g.qty,
         balance: s.balance + g.balance,
         total: s.total + g.total,
-        openValue: s.openValue + g.openValue
+        openValue: s.openValue + g.openValue,
+        opening: s.opening + g.opening,
+        addition: s.addition + g.addition,
+        dispatch: s.dispatch + g.dispatch,
+        closing: s.closing + g.closing
       }),
-      { count: 0, openCount: 0, qty: 0, balance: 0, total: 0, openValue: 0 }
+      { count: 0, openCount: 0, qty: 0, balance: 0, total: 0, openValue: 0, opening: 0, addition: 0, dispatch: 0, closing: 0 }
     )
     return { groups: list, grand }
-  }, [rows])
+  }, [regRows])
 
   // Weighted average rate = total value ÷ total qty.
   const avgRate = (g: { total: number; qty: number }): number => (g.qty > 0 ? g.total / g.qty : 0)
@@ -613,21 +626,33 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
       label: g.label,
       openCount: g.openCount,
       count: g.count,
+      opening: g.opening,
+      addition: g.addition,
+      dispatch: g.dispatch,
+      closing: g.closing,
       balance: g.balance,
       qty: g.qty,
       avg: avgRate(g)
     }))
     const t = report.grand
-    rows.push({ label: 'GRAND TOTAL', openCount: t.openCount, count: t.count, balance: t.balance, qty: t.qty, avg: avgRate(t) })
+    rows.push({
+      label: 'GRAND TOTAL', openCount: t.openCount, count: t.count,
+      opening: t.opening, addition: t.addition, dispatch: t.dispatch, closing: t.closing,
+      balance: t.balance, qty: t.qty, avg: avgRate(t)
+    })
     void exportRowsToExcel({
       filename: `bargain-report-by-oil-${todayISO()}`,
       sheetName: 'Bargain report',
-      title: 'Bargain report by oil',
+      title: `Bargain report by oil (${formatDate(F)} — ${formatDate(T)})`,
       columns: [
         { header: 'Oil', key: 'label' },
         { header: 'Open bargains', key: 'openCount', align: 'right', numFmt: '#,##0' },
         { header: 'Total bargains', key: 'count', align: 'right', numFmt: '#,##0' },
-        { header: 'Bal qty', key: 'balance', align: 'right', numFmt: '#,##0.000' },
+        { header: 'Opening', key: 'opening', align: 'right', numFmt: '#,##0.000' },
+        { header: 'Addition', key: 'addition', align: 'right', numFmt: '#,##0.000' },
+        { header: 'Dispatch', key: 'dispatch', align: 'right', numFmt: '#,##0.000' },
+        { header: 'Closing', key: 'closing', align: 'right', numFmt: '#,##0.000' },
+        { header: 'Bal qty (live)', key: 'balance', align: 'right', numFmt: '#,##0.000' },
         { header: 'Total qty', key: 'qty', align: 'right', numFmt: '#,##0.000' },
         { header: 'Avg rate', key: 'avg', align: 'right', numFmt: '#,##0.00' }
       ],
@@ -693,6 +718,10 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                     <TableHead className="text-amber-900">Oil</TableHead>
                     <TableHead className="text-center text-amber-900">Open bargains</TableHead>
                     <TableHead className="text-center text-amber-900">Total bargains</TableHead>
+                    <TableHead className="text-right text-amber-900">Opening</TableHead>
+                    <TableHead className="text-right text-amber-900">Addition</TableHead>
+                    <TableHead className="text-right text-amber-900">Dispatch</TableHead>
+                    <TableHead className="text-right text-amber-900">Closing</TableHead>
                     <TableHead className="text-right text-amber-900">Bal Qty</TableHead>
                     <TableHead className="text-right text-amber-900">Total qty</TableHead>
                     <TableHead className="text-right text-amber-900">Avg rate</TableHead>
@@ -701,7 +730,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                 <TableBody>
                   {report.groups.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">No bargains yet.</TableCell>
+                      <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">No bargains yet.</TableCell>
                     </TableRow>
                   ) : (
                     <>
@@ -712,6 +741,10 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                             <Badge variant={g.openCount > 0 ? 'warning' : 'muted'}>{g.openCount}</Badge>
                           </TableCell>
                           <TableCell className="text-center tabular-nums">{g.count}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatNum(g.opening)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatNum(g.addition)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatNum(g.dispatch)}</TableCell>
+                          <TableCell className="text-right font-medium tabular-nums">{formatNum(g.closing)}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatNum(g.balance)}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatNum(g.qty)}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatINR(avgRate(g))}</TableCell>
@@ -721,6 +754,10 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                         <TableCell>Grand total</TableCell>
                         <TableCell className="text-center tabular-nums">{report.grand.openCount}</TableCell>
                         <TableCell className="text-center tabular-nums">{report.grand.count}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.opening)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.addition)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.dispatch)}</TableCell>
+                        <TableCell className="text-right font-medium tabular-nums">{formatNum(report.grand.closing)}</TableCell>
                         <TableCell className="text-right tabular-nums">{formatNum(report.grand.balance)}</TableCell>
                         <TableCell className="text-right tabular-nums">{formatNum(report.grand.qty)}</TableCell>
                         <TableCell className="text-right tabular-nums">{formatINR(avgRate(report.grand))}</TableCell>
@@ -731,7 +768,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
               </Table>
             </div>
             <p className="text-xs text-muted-foreground">
-              Open = bargains with balance quantity left. Bal Qty is the quantity still open. Avg rate is weighted (total value ÷ total qty).
+              Opening / Addition / Dispatch / Closing follow the register's date range. Open = bargains with balance quantity left; Bal Qty is the live open quantity. Avg rate is weighted (total value ÷ total qty).
             </p>
           </div>
         ) : (
@@ -763,6 +800,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
               </div>
               <div className="flex shrink-0 flex-wrap items-center gap-1.5 text-[13px]">
                 <span className="text-muted-foreground">Date</span>
+                <FyPicker from={dateFrom} to={dateTo} onRange={(f, t) => { setDateFrom(f); setDateTo(t) }} className="h-9 w-28 text-xs" />
                 <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="w-[8.5rem]" />
                 <span className="text-muted-foreground">to</span>
                 <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="w-[8.5rem]" />

@@ -1062,9 +1062,16 @@ async function syncPurchaseFromTankers(orderId: number): Promise<void> {
   })
   const x = res.rows[0]
   const status = n(x.total) > 0 && n(x.total) === n(x.empty_count) ? 'received' : 'loaded'
+  // The receipt date is when the LAST tanker actually finished — never
+  // date('now'), which restamped every order's history on each startup sweep.
   await c.execute({
     sql: `UPDATE orders SET status = ?, received_qty = ?, transport_amount = ?,
-          shortage_charge_amount = ?, received_date = CASE WHEN ? = 'received' THEN date('now') ELSE received_date END
+          shortage_charge_amount = ?,
+          received_date = CASE WHEN ? = 'received' THEN COALESCE(
+            (SELECT MAX(COALESCE(pt.empty_date, pt.inside_factory_date, pt.outside_factory_date, pt.transit_date, pt.loaded_date))
+             FROM purchase_tankers pt WHERE pt.order_id = orders.id),
+            orders.received_date, orders.order_date, date('now'))
+          ELSE received_date END
           WHERE id = ?`,
     args: [status, n(x.received_qty), n(x.transport_amount), n(x.shortage_amount), status, orderId]
   })
@@ -1167,6 +1174,34 @@ export async function backfillOrderStatuses(): Promise<void> {
   for (const r of res.rows) {
     await syncPurchaseFromTankers(n(r.order_id)).catch(() => {})
   }
+}
+
+// Undo a mistaken stage move: step the tanker BACK one stage and clear the
+// abandoned stage's date. Never below 'loaded' (loading fixed the quantity and
+// drew the bargain). If the tanker belongs to an invoice, the order's status
+// re-syncs, so a received purchase correctly drops back to loaded.
+export async function revertPurchaseTanker(id: number): Promise<{ id: number; status: string }> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT * FROM purchase_tankers WHERE id = ?', args: [id] })
+  if (!res.rows.length) throw new Error('Tanker not found')
+  const tanker = toPlain(res)[0]
+  const current = TANKER_STAGES.indexOf(String(tanker.status))
+  const min = TANKER_STAGES.indexOf('loaded')
+  if (current <= min) throw new Error('Already at Loaded — a loaded tanker cannot go back further')
+  const prev = TANKER_STAGES[current - 1]
+  const dateCol: Record<string, string> = {
+    transit: 'transit_date',
+    outside_factory: 'outside_factory_date',
+    inside_factory: 'inside_factory_date',
+    empty: 'empty_date'
+  }
+  const clear = dateCol[String(tanker.status)]
+  await c.execute({
+    sql: `UPDATE purchase_tankers SET status = ?${clear ? `, ${clear} = NULL` : ''}${String(tanker.status) === 'empty' ? ', received_qty = NULL' : ''} WHERE id = ?`,
+    args: [prev, id]
+  })
+  if (tanker.order_id) await syncPurchaseFromTankers(n(tanker.order_id)).catch(() => {})
+  return { id, status: prev }
 }
 
 export async function advancePurchaseTanker(id: number, toStatus: string, data: Row): Promise<{ id: number }> {

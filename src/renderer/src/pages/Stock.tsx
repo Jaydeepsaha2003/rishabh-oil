@@ -33,6 +33,7 @@ import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { downloadDayCloseExcel, parseDayCloseExcel } from '@/lib/dayCloseExcel'
 import { downloadSkuCountExcel, parseSkuCountExcel } from '@/lib/skuCountExcel'
 import { ExcelButton } from '@/components/ExcelButton'
+import { FyPicker } from '@/components/FyPicker'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -160,7 +161,7 @@ function CompanyPicker({
   )
 }
 
-function StockTable({ rows, breakdown, label = 'stock', range, onRange, companyPicker }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[] }>; label?: string; range: { from: string; to: string }; onRange: (r: { from: string; to: string }) => void; companyPicker?: React.ReactNode }): React.JSX.Element {
+function StockTable({ rows, breakdown, label = 'stock', range, onRange, companyPicker, companySplit = {} }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[] }>; label?: string; range: { from: string; to: string }; onRange: (r: { from: string; to: string }) => void; companyPicker?: React.ReactNode; companySplit?: Record<number, Row[]> }): React.JSX.Element {
   const ranged = !!(range.from || range.to)
   const sum = (k: string): number => rows.reduce((s, r) => s + (Number(r[k]) || 0), 0)
   const totals = {
@@ -181,7 +182,21 @@ function StockTable({ rows, breakdown, label = 'stock', range, onRange, companyP
   // product collapses in Excel.
   const sheetRows = rows.flatMap((r) => {
     const bd = breakdown[r.id as number]
+    const split = companySplit[r.id as number] || []
     const kids = [
+      // Company rows first: whose books hold how much of this product.
+      ...split.map((x) => ({
+        party: String(x.company),
+        flow: 'Company',
+        opening: x.opening,
+        received: x.received,
+        produced: x.produced,
+        transferred_in: x.transferred_in,
+        transferred_out: x.transferred_out,
+        consumed: x.consumed,
+        sold: x.sold,
+        stock: x.stock
+      })),
       ...(bd?.receipt || []).map((x) => ({ party: x.party, flow: 'Receipt', received: x.qty })),
       ...(bd?.dispatch || []).map((x) => ({ party: x.party, flow: 'Dispatch', sold: x.qty }))
     ]
@@ -198,6 +213,7 @@ function StockTable({ rows, breakdown, label = 'stock', range, onRange, companyP
     </div>
     <div className="flex flex-wrap items-center justify-end gap-2">
       {companyPicker}
+      <FyPicker from={range.from} to={range.to} onRange={(f, t) => onRange({ from: f, to: t })} className="h-9 w-28 text-xs" />
       {/* Period for the register: opening balance before it, flows within it. */}
       <span className="text-[11px] font-semibold text-muted-foreground">From</span>
       <div className="w-40"><DatePicker value={range.from} onChange={(v) => onRange({ ...range, from: v })} /></div>
@@ -1075,6 +1091,7 @@ function MncStock(): React.JSX.Element {
   const [products, setProducts] = useState<Row[]>([])
   const [openingOpen, setOpeningOpen] = useState(false)
   const [opening, setOpening] = useState<Row>({})
+  const [openingLog, setOpeningLog] = useState<Row[]>([])
   const [savingOpening, setSavingOpening] = useState(false)
   const [openingError, setOpeningError] = useState<string | null>(null)
 
@@ -1141,29 +1158,17 @@ function MncStock(): React.JSX.Element {
     setSavingOpening(true)
     setOpeningError(null)
     try {
-      const payload = {
+      // One validated main-process step: logs the old figure, merges duplicate
+      // lots, refuses figures below what is already drawn or future dates.
+      await window.api.consignment.saveOpening({
         supplier_id: Number(opening.supplier_id),
         product_id: Number(opening.product_id),
         qty: Number(opening.qty),
         uom: opening.uom || 'MT',
         deposit_date: opening.deposit_date,
-        note: opening.note ? String(opening.note).trim() : 'Opening stock',
-        is_opening: true
-      }
-      const found = openingLotsFor(opening.supplier_id, opening.product_id)
-      if (found.length) {
-        // Restate the latest entry and drop the older ones, so a party + product
-        // is left with exactly one opening balance.
-        await window.api.consignment.update(Number(found[0].id), payload)
-        for (const extra of found.slice(1)) await window.api.consignment.remove(Number(extra.id))
-        toast.success(
-          `Opening stock set to ${formatNum(payload.qty)} ${payload.uom}` +
-            (found.length > 1 ? ` · ${found.length} entries merged into one` : '')
-        )
-      } else {
-        await window.api.consignment.create(payload)
-        toast.success('Opening stock added')
-      }
+        note: opening.note ? String(opening.note).trim() : 'Opening stock'
+      })
+      toast.success(`Opening stock set to ${formatNum(Number(opening.qty))} ${opening.uom || 'MT'}`)
       setOpeningOpen(false)
       await load()
     } catch (e) {
@@ -1172,8 +1177,30 @@ function MncStock(): React.JSX.Element {
       setSavingOpening(false)
     }
   }
+
+  // The band's live numbers for the pair in the dialog — shown before changing.
+  const dlgBand = rows.find(
+    (r) => String(r.supplier_id) === String(opening.supplier_id) && String(r.product_id) === String(opening.product_id)
+  )
+  const dlgDrawn = dlgBand ? (Number(dlgBand.deposited) || 0) - (Number(dlgBand.balance) || 0) : 0
+  const dlgMin = dlgBand ? Math.max(0, dlgDrawn - ((Number(dlgBand.deposited) || 0) - existingOpeningTotal)) : 0
   useEffect(() => { load() }, [load])
   useLiveRefresh(load)
+
+  // The restatement trail for the pair currently in the dialog — every set,
+  // restate and delete of this opening, so mistakes can be put back.
+  useEffect(() => {
+    if (!openingOpen || !opening.supplier_id || !opening.product_id) {
+      setOpeningLog([])
+      return
+    }
+    let live = true
+    window.api.consignment
+      .openingLog(Number(opening.supplier_id), Number(opening.product_id))
+      .then((r) => { if (live) setOpeningLog(r) })
+      .catch(() => {})
+    return () => { live = false }
+  }, [openingOpen, opening.supplier_id, opening.product_id])
 
   const key = (r: Row): string => `${r.supplier_id}:${r.product_id}`
   function toggle(k: string): void {
@@ -1327,7 +1354,24 @@ function MncStock(): React.JSX.Element {
                             <TableCell className="text-right tabular-nums text-emerald-700">{formatNum(r.deposited)}</TableCell>
                             <TableCell className="text-right tabular-nums text-rose-700">{Number(r.invoiced) ? formatNum(r.invoiced) : '—'}</TableCell>
                             <TableCell className={cn('text-right font-bold tabular-nums', Number(r.balance) < -1e-9 ? 'text-red-600' : 'text-violet-900')}>{formatNum(r.balance)}</TableCell>
-                            <TableCell className="text-muted-foreground">{r.uom || 'MT'}</TableCell>
+                            <TableCell className="text-muted-foreground">
+                              <span className="flex items-center justify-between gap-2">
+                                {r.uom || 'MT'}
+                                {openingLotFor(r.supplier_id, r.product_id) && (
+                                  <button
+                                    type="button"
+                                    title="Modify the opening stock (validated against what is already drawn)"
+                                    className="cursor-pointer rounded p-1 text-muted-foreground hover:bg-slate-200 hover:text-foreground"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      openOpeningStock(r.supplier_id, r.product_id)
+                                    }}
+                                  >
+                                    <SlidersHorizontal className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
+                              </span>
+                            </TableCell>
                           </TableRow>
                           {isOpen && (
                             <TableRow className="bg-slate-100 hover:bg-slate-100">
@@ -1348,6 +1392,7 @@ function MncStock(): React.JSX.Element {
                                           <th className="py-1.5 pr-3 text-right font-semibold">Qty (net)</th>
                                           <th className="py-1.5 pr-3 font-semibold">Status</th>
                                           <th className="py-1.5 pr-3 font-semibold">Note</th>
+                                          <th className="w-10 py-1.5 pr-3" />
                                         </tr>
                                       </thead>
                                       <tbody>
@@ -1382,6 +1427,28 @@ function MncStock(): React.JSX.Element {
                                               )}
                                             </td>
                                             <td className="py-1.5 pr-3 text-muted-foreground">{l.note || '—'}</td>
+                                            <td className="py-1 pr-2 text-right">
+                                              {Number(l.is_opening) === 1 && l.order_id == null && (
+                                                <button
+                                                  type="button"
+                                                  title="Delete this opening lot (kept in history — restorable)"
+                                                  className="cursor-pointer rounded p-1 text-muted-foreground hover:bg-red-50 hover:text-red-600"
+                                                  onClick={async (e) => {
+                                                    e.stopPropagation()
+                                                    if (!confirm(`Delete the opening lot of ${formatNum(l.qty)} ${l.uom || 'MT'}? Its figure stays in the restatement history.`)) return
+                                                    try {
+                                                      await window.api.consignment.remove(Number(l.id))
+                                                      toast.success('Opening lot deleted — restorable from the opening dialog history')
+                                                      await load()
+                                                    } catch (err) {
+                                                      toast.error((err as Error).message)
+                                                    }
+                                                  }}
+                                                >
+                                                  <Trash2 className="h-3.5 w-3.5" />
+                                                </button>
+                                              )}
+                                            </td>
                                           </tr>
                                         ))}
                                       </tbody>
@@ -1454,25 +1521,37 @@ function MncStock(): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-1.5 sm:col-span-2">
-                {existingOpening && (
-                  <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
-                    {existingOpenings.length > 1 ? (
-                      <>
-                        This product has <b>{existingOpenings.length} opening entries</b> (
-                        {formatNum(existingOpeningTotal)} {existingOpening.uom} in total). Saving keeps the latest —{' '}
-                        <b>{formatNum(existingOpening.qty)} {existingOpening.uom}</b>, shown below — and removes the
-                        older {existingOpenings.length - 1 === 1 ? 'one' : 'ones'}.
-                      </>
-                    ) : (
-                      <>
-                        Opening balance already recorded:{' '}
-                        <b>{formatNum(existingOpening.qty)} {existingOpening.uom}</b> — saving replaces it.
-                      </>
-                    )}
+              {opening.supplier_id && opening.product_id && (
+                <div className="sm:col-span-2">
+                  <div className="grid grid-cols-2 gap-2 rounded-lg border bg-muted/30 p-2.5 sm:grid-cols-4">
+                    {[
+                      { l: 'Current opening', v: existingOpening ? `${formatNum(existingOpeningTotal)} ${existingOpening.uom}` : '—', tone: 'text-violet-900' },
+                      { l: 'Deposited (all lots)', v: dlgBand ? formatNum(dlgBand.deposited) : '—', tone: 'text-emerald-700' },
+                      { l: 'Already drawn', v: dlgBand ? formatNum(dlgDrawn) : '—', tone: 'text-rose-700' },
+                      { l: 'Minimum allowed', v: `${formatNum(dlgMin)} ${opening.uom || 'MT'}`, tone: 'text-amber-700' }
+                    ].map((x) => (
+                      <div key={x.l}>
+                        <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{x.l}</div>
+                        <div className={cn('text-[13px] font-semibold tabular-nums', x.tone)}>{x.v}</div>
+                      </div>
+                    ))}
                   </div>
-                )}
-              </div>
+                  {existingOpenings.length > 1 && (
+                    <p className="mt-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
+                      {existingOpenings.length} opening entries exist — saving merges them into one figure.
+                    </p>
+                  )}
+                  {!existingOpening && openingLog.length > 0 && (
+                    <p className="mt-1.5 rounded-md border border-red-300 bg-red-50 px-3 py-1.5 text-xs text-red-800">
+                      The opening here was removed — its last figure was{' '}
+                      <b>
+                        {formatNum(openingLog[0].old_qty ?? openingLog[0].new_qty)} {openingLog[0].uom || 'MT'}
+                      </b>
+                      . Use Restore below to bring it back.
+                    </p>
+                  )}
+                </div>
+              )}
               <div className="grid gap-1.5">
                 <Label>Opening quantity *</Label>
                 <Input
@@ -1509,6 +1588,52 @@ function MncStock(): React.JSX.Element {
                 />
               </div>
             </div>
+            {opening.supplier_id && opening.product_id && openingLog.length > 0 && (
+              <div className="rounded-lg border">
+                <div className="border-b bg-muted/40 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                  Restatement history — every change is kept
+                </div>
+                <div className="max-h-36 overflow-auto">
+                  {openingLog.map((h) => (
+                    <div key={String(h.id)} className="flex items-center gap-2 border-b border-dotted px-3 py-1.5 text-[12px] last:border-0">
+                      <span className="w-32 shrink-0 tabular-nums text-muted-foreground">
+                        {formatDate(String(h.changed_at).slice(0, 10))}
+                      </span>
+                      <span
+                        className={cn(
+                          'w-16 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase',
+                          h.action === 'delete' ? 'bg-red-100 text-red-700' : h.action === 'create' ? 'bg-emerald-100 text-emerald-700' : 'bg-sky-100 text-sky-700'
+                        )}
+                      >
+                        {h.action === 'delete' ? 'Removed' : h.action === 'create' ? 'Created' : 'Restated'}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate tabular-nums">
+                        {h.old_qty != null ? `${formatNum(h.old_qty)} → ` : ''}
+                        {h.new_qty != null ? `${formatNum(h.new_qty)} ${h.uom || 'MT'}` : 'removed'}
+                      </span>
+                      {(h.old_qty != null || h.new_qty != null) && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 shrink-0 px-1.5 text-[11px] text-indigo-700"
+                          title="Fill this figure into the form — Save applies it with full validation"
+                          onClick={() =>
+                            setOpening((prev) => ({
+                              ...prev,
+                              qty: String(h.action === 'delete' || h.new_qty == null ? h.old_qty : h.old_qty ?? h.new_qty),
+                              uom: String(h.uom || prev.uom || 'MT'),
+                              deposit_date: String(h.deposit_date || prev.deposit_date || todayISO()).slice(0, 10)
+                            }))
+                          }
+                        >
+                          Restore
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {openingError && (
               <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                 {openingError}
@@ -1702,14 +1827,15 @@ export function Stock(): React.JSX.Element {
   const [companies, setCompanies] = useState<Row[]>([])
   const [activeCid, setActiveCid] = useState(0)
   const [cids, setCids] = useState<number[]>([])
-  // Party tooltips describe the active company's lifetime flows — hide them
-  // whenever the numbers on screen are a different slice.
-  const onlyActive = cids.length === 0 || (cids.length === 1 && cids[0] === activeCid)
+  // Per-company rows under each product when more than one company is in view,
+  // so the register (and its Excel) says whose stock is whose.
+  const [companySplit, setCompanySplit] = useState<Record<number, Row[]>>({})
 
   const load = useCallback(async () => {
+    const sel = cids.length ? cids : undefined
     const [s, b, cs, active] = await Promise.all([
-      window.api.stock.list(range.from || range.to ? range : undefined, cids.length ? cids : undefined),
-      window.api.stock.breakdown(),
+      window.api.stock.list(range.from || range.to ? range : undefined, sel),
+      window.api.stock.breakdown(sel),
       window.api.company.list(),
       window.api.company.getActive()
     ])
@@ -1717,6 +1843,27 @@ export function Stock(): React.JSX.Element {
     setBreakdown(b)
     setCompanies(cs)
     setActiveCid(Number(active.id))
+    // The split needs one levels call per selected company (2-3 at most).
+    if (sel && sel.length > 1) {
+      const per = await Promise.all(
+        sel.map((id) => window.api.stock.list(range.from || range.to ? range : undefined, [id]))
+      )
+      const split: Record<number, Row[]> = {}
+      per.forEach((list, i) => {
+        const cname = String(cs.find((x) => Number(x.id) === sel[i])?.name || `Company ${sel[i]}`)
+        for (const r of list) {
+          const moved =
+            Math.abs(Number(r.opening) || 0) + (Number(r.received) || 0) + (Number(r.produced) || 0) +
+            (Number(r.transferred_in) || 0) + (Number(r.transferred_out) || 0) + (Number(r.consumed) || 0) +
+            (Number(r.sold) || 0) + Math.abs(Number(r.stock) || 0)
+          if (moved < 1e-9) continue
+          ;(split[Number(r.id)] ??= []).push({ ...r, company: cname })
+        }
+      })
+      setCompanySplit(split)
+    } else {
+      setCompanySplit({})
+    }
   }, [range, cids])
 
   useEffect(() => {
@@ -1772,13 +1919,13 @@ export function Stock(): React.JSX.Element {
             )}
           </TabsList>
           <TabsContent value="raw" className="mt-6">
-            <StockTable rows={byCat('raw')} breakdown={ranged || !onlyActive ? {} : breakdown} label="raw" range={range} onRange={setRange} companyPicker={companyPicker} />
+            <StockTable rows={byCat('raw')} breakdown={ranged ? {} : breakdown} label="raw" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} />
           </TabsContent>
           <TabsContent value="intermediate" className="mt-6">
-            <StockTable rows={byCat('intermediate')} breakdown={ranged || !onlyActive ? {} : breakdown} label="intermediate" range={range} onRange={setRange} companyPicker={companyPicker} />
+            <StockTable rows={byCat('intermediate')} breakdown={ranged ? {} : breakdown} label="intermediate" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} />
           </TabsContent>
           <TabsContent value="finished" className="mt-6">
-            <StockTable rows={byCat('finished')} breakdown={ranged || !onlyActive ? {} : breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} />
+            <StockTable rows={byCat('finished')} breakdown={ranged ? {} : breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} />
           </TabsContent>
           <TabsContent value="sku" className="mt-6">
             <SkuStock />

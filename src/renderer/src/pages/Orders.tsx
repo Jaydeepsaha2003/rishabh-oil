@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, BarChart3, Eye, Pencil, Plus, Trash2, Truck } from 'lucide-react'
+import {
+  Undo2, ArrowLeft, BarChart3, Eye, Pencil, Plus, Trash2, Truck } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { FyPicker } from '@/components/FyPicker'
 import { ExcelButton } from '@/components/ExcelButton'
 import { Pagination, usePaged } from '@/components/Pagination'
 import { Badge } from '@/components/ui/badge'
@@ -167,6 +169,24 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     () => Array.from(new Set(tankers.map((t) => String(t.product_category || '')).filter(Boolean))).sort(),
     [tankers]
   )
+  // The movement views can look across companies: 'active' keeps today's
+  // behaviour, 'all' or a company id widens the lens (fetched on demand —
+  // booking lists stay scoped to the active company regardless).
+  const [moveCompany, setMoveCompany] = useState('active')
+  const [allTankers, setAllTankers] = useState<Row[]>([])
+  useEffect(() => {
+    if (moveCompany === 'active') return
+    let live = true
+    window.api.tankers.list(true).then((r) => { if (live) setAllTankers(r) })
+    return () => { live = false }
+  }, [moveCompany, tankers])
+  const moveTankers = useMemo(() => {
+    if (moveCompany === 'active') return tankers
+    const base = allTankers.length ? allTankers : tankers
+    if (moveCompany === 'all') return base
+    return base.filter((t) => String(t.company_id) === moveCompany)
+  }, [moveCompany, tankers, allTankers])
+
   const inCategory = useCallback(
     (t: Row): boolean => tmCategory === 'ALL' || String(t.product_category || '') === tmCategory,
     [tmCategory]
@@ -338,7 +358,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     const map = new Map<string, { label: string; cells: Record<string, Cell>; total: number }>()
     const totals: Record<string, number> = {}
     let grand = 0
-    for (const t of tankers) {
+    for (const t of moveTankers) {
       if (!inCategory(t)) continue
       const created = dstr(t.created_at)
       if (created && created > end) continue // didn't exist yet
@@ -366,7 +386,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     }
     const rows = Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label))
     return { rows, totals, grand }
-  }, [tankers, pivotStart, pivotEnd, inCategory])
+  }, [moveTankers, pivotStart, pivotEnd, inCategory])
 
   // The pivot as Excel rows: one line per oil with its stage counts, then a line
   // per party under it — the breakdown the UI only shows on hover. Detail rows
@@ -411,7 +431,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     const start = pivotStart
     const end = pivotEnd < pivotStart ? pivotStart : pivotEnd
     if (pivotSel) {
-      return tankers.filter((t) => {
+      return moveTankers.filter((t) => {
         if (!inCategory(t)) return false
         const created = String(t.created_at || '').slice(0, 10)
         if (created && created > end) return false
@@ -424,11 +444,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         return String(t.oil_code || t.oil_name || '—') === pivotSel.oil
       })
     }
-    return tankers.filter((t) => {
+    return moveTankers.filter((t) => {
       const d = String(t.loaded_date || t.factory_entry_date || t.created_at || '').slice(0, 10)
       return !!d && d >= start && d <= end
     })
-  }, [tankers, pivotStart, pivotEnd, pivotSel, inCategory])
+  }, [moveTankers, pivotStart, pivotEnd, pivotSel, inCategory])
   const tankerPaged = usePaged(visibleTankers)
   // Purchase entries filters: a date range on the invoice date, and the product
   // category. Both narrow the list the page shows and exports.
@@ -606,6 +626,22 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     setActionForm(next)
     setExcess(null)
     setActionRow(row)
+  }
+
+  // Step a tanker BACK one stage (mistake correction, e.g. Outside factory
+  // pressed too early). The abandoned stage's date is cleared server-side.
+  async function revertTanker(row: Row): Promise<void> {
+    const idx = TANKER_STAGES.indexOf(String(row.status))
+    const prev = idx > 0 ? TANKER_STAGES[idx - 1] : null
+    if (!prev) return
+    if (!confirm(`Move tanker ${row.tanker_no || ''} back from ${TANKER_LABEL[String(row.status)]} to ${TANKER_LABEL[prev]}?`)) return
+    try {
+      await window.api.tankers.revert(Number(row.id))
+      toast.success(`Back to ${TANKER_LABEL[prev]}`)
+      load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
   }
 
   function openEditTanker(row: Row): void {
@@ -2103,6 +2139,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
                       Date
                     </span>
+                    <FyPicker from={poFrom} to={poTo} onRange={(f, t) => { setPoFrom(f); setPoTo(t) }} className="h-8 w-28 shrink-0 text-[11px]" />
                     <DatePicker value={poFrom} onChange={(v) => setPoFrom(v || '')} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
                     <span className="shrink-0 text-[10px] text-muted-foreground">to</span>
                     <DatePicker value={poTo} onChange={(v) => setPoTo(v || '')} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
@@ -2148,6 +2185,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
+                    <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+                      Company
+                    </span>
+                    <Select value={moveCompany} onValueChange={setMoveCompany}>
+                      <SelectTrigger className="h-8 w-[11rem] text-[11px]"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="active">Active company</SelectItem>
+                        <SelectItem value="all">All companies</SelectItem>
+                        {companies.map((cm) => (
+                          <SelectItem key={String(cm.id)} value={String(cm.id)}>{cm.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <div className="h-5 shrink-0 border-l" />
                     <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
                       Category
                     </span>
@@ -2312,6 +2363,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                               })()}
                             </TableCell>
                             <TableCell className="text-right"><div className="flex justify-end gap-1">
+                              {TANKER_STAGES.indexOf(String(row.status)) > TANKER_STAGES.indexOf('loaded') && (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-8 w-8 text-amber-700"
+                                  title={`Undo — back to ${TANKER_LABEL[TANKER_STAGES[TANKER_STAGES.indexOf(String(row.status)) - 1]]}`}
+                                  onClick={() => void revertTanker(row)}
+                                >
+                                  <Undo2 className="h-4 w-4" />
+                                </Button>
+                              )}
                               {next && <Button size="sm" variant="outline" onClick={() => openTankerAction(row)}>{TANKER_LABEL[next]}</Button>}
                               <Button size="icon" variant="ghost" className="h-8 w-8" title="Edit stage entries" onClick={() => openEditTanker(row)}><Pencil className="h-4 w-4" /></Button>
                               {!row.order_id && <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => deleteTanker(row)}><Trash2 className="h-4 w-4" /></Button>}

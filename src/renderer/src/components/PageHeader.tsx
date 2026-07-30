@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { DbStatus } from '@/components/DbStatus'
+import { UpdateBadge } from '@/components/UpdateBadge'
 import { InfoTip } from '@/components/ui/tooltip'
 
 interface Props {
@@ -20,6 +21,7 @@ export function PageHeader({ title, subtitle, hint, actions }: Props): React.JSX
         {subtitle && <p className="mt-0.5 text-sm text-muted-foreground">{subtitle}</p>}
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-2">
+        <UpdateBadge />
         <DbStatus />
         {actions}
       </div>

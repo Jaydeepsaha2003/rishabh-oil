@@ -25,6 +25,7 @@ import {
   updateTankerDetails,
   deletePurchaseTanker,
   advancePurchaseTanker,
+  revertPurchaseTanker,
   supplierFyTaxable,
   listOrderBargains,
   listConsignmentDraws,
@@ -45,7 +46,7 @@ import {
 } from './payments'
 import { listUnmappedOrders, unmappedCount, mapOrderToBargains } from './unmapped'
 import { assertAllowed, clearAccessCache } from './access-gate'
-import { listSkuRates, saveSkuRates } from './skurates'
+import { listSkuRates, saveSkuRates, listPackagingParties, setPackagingParties } from './skurates'
 import {
   listConsignment,
   consignmentSummary,
@@ -53,8 +54,7 @@ import {
   listUnbookedLots,
   createConsignment,
   updateConsignment,
-  deleteConsignment
-} from './consignment'
+  deleteConsignment, saveOpeningStock, listOpeningLog } from './consignment'
 import { login, listUsers, createUser, updateUser, deleteUser } from './auth'
 import { heartbeat, liveUsers, listIps, setIpActive, listLogs, logEvent, machineIp, type LogFilter } from './access'
 import { getCurrentUser, setCurrentUser } from './currentUser'
@@ -78,6 +78,15 @@ import { listSkuStock, adjustSkuStock } from './skustock'
 import { listNotes, listNoteItems, createNote, deleteNote } from './notes'
 import { daybook } from './daybook'
 import { dashboardStats } from './dashboard'
+import {
+  treasuryAlerts,
+  settleLcBill,
+  reopenLcBill,
+  discountBill,
+  realizeBill,
+  unrealizeBill,
+  deleteDiscountedBill
+} from './treasury'
 import {
   createVoucher,
   updateVoucher,
@@ -259,7 +268,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^dashboard:stats$|^company:setActive$|^company:getActive$|^session:setUser$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^treasury:alerts$|^company:setActive$|^company:getActive$|^session:setUser$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -337,6 +346,8 @@ export function registerIpc(): void {
 
   handle('orders:list', () => listOrders())
   handle('skuRates:list', (_e, { id }: { id: number }) => listSkuRates(id))
+  handle('skuRates:parties', (_e, { packagingId }: { packagingId: number }) => listPackagingParties(packagingId))
+  handle('skuRates:setParties', (_e, { packagingId, customerIds }: { packagingId: number; customerIds: number[] }) => setPackagingParties(packagingId, customerIds))
   handle('skuRates:save', (_e, { id, rows }: { id: number; rows: Row[] }) => saveSkuRates(id, rows))
   handle('orders:consignmentDraws', () => listConsignmentDraws())
   handle('orders:bargainLines', (_e, { id }: { id: number }) => listOrderBargains(id))
@@ -351,6 +362,7 @@ export function registerIpc(): void {
     (_e, { id, toStatus, data }: { id: number; toStatus: string; data: Row }) =>
       advancePurchaseTanker(id, toStatus, data)
   )
+  handle('tankers:revert', (_e, { id }: { id: number }) => revertPurchaseTanker(id))
   handle('orders:create', (_e, { values }: { values: Row }) => createOrder(values))
   handle('orders:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateOrder(id, values)
@@ -383,22 +395,26 @@ export function registerIpc(): void {
     updateConsignment(id, values)
   )
   handle('consignment:delete', (_e, { id }: { id: number }) => deleteConsignment(id))
+  handle('consignment:saveOpening', (_e, { values }: { values: Row }) => saveOpeningStock(values))
+  handle('consignment:openingLog', (_e, { supplierId, productId }: { supplierId: number; productId: number }) =>
+    listOpeningLog(supplierId, productId)
+  )
 
-  handle('journal:accounts', () => listAccounts())
+  handle('journal:accounts', (_e, args?: { companyId?: number }) => listAccounts(args?.companyId))
   handle('journal:createAccount', (_e, { name, group }: { name: string; group?: string }) => createAccount(name, group))
-  handle('journal:statement', (_e, { accountId }: { accountId: number }) =>
-    accountStatement(accountId)
+  handle('journal:statement', (_e, { accountId, companyId }: { accountId: number; companyId?: number }) =>
+    accountStatement(accountId, companyId)
   )
   handle('journal:addEntry', (_e, { data }: { data: Row }) => addManualJournal(data))
-  handle('journal:trialBalance', (_e, args?: { from?: string; to?: string }) =>
-    trialBalance(args?.from, args?.to)
+  handle('journal:trialBalance', (_e, args?: { from?: string; to?: string; companyId?: number }) =>
+    trialBalance(args?.from, args?.to, args?.companyId)
   )
-  handle('journal:groups', () => listGroups())
+  handle('journal:groups', (_e, args?: { companyId?: number }) => listGroups(args?.companyId))
   handle('journal:groupNames', () => TALLY_GROUPS)
-  handle('journal:pendingRefs', (_e, { account }: { account: string }) => listPendingRefs(account))
+  handle('journal:pendingRefs', (_e, { account, companyId }: { account: string; companyId?: number }) => listPendingRefs(account, companyId))
   handle('dashboard:stats', () => dashboardStats())
-  handle('vouchers:list', (_e, args?: { from?: string; to?: string; vchType?: string }) =>
-    listVouchers(args?.from, args?.to, args?.vchType)
+  handle('vouchers:list', (_e, args?: { from?: string; to?: string; vchType?: string; companyId?: number }) =>
+    listVouchers(args?.from, args?.to, args?.vchType, args?.companyId)
   )
   handle('vouchers:get', (_e, { id }: { id: number }) => getVoucher(id))
   handle('vouchers:create', (_e, { values }: { values: VoucherInput }) => createVoucher(values))
@@ -469,7 +485,7 @@ export function registerIpc(): void {
 
   handle('stock:list', (_e, args?: { range?: { from?: string; to?: string }; companyIds?: number[] }) => stockLevels(args?.range, args?.companyIds))
   handle('stock:needs', () => productionNeeds())
-  handle('stock:breakdown', () => stockPartyBreakdown())
+  handle('stock:breakdown', (_e, args?: { companyIds?: number[] }) => stockPartyBreakdown(args?.companyIds))
   handle('daybook:list', (_e, { from, to }: { from: string; to: string }) => daybook(from, to))
   handle('stock:transfers', () => listStockTransfers())
   handle('stock:transfer', (_e, { values }: { values: Row }) => createStockTransfer(values))
@@ -535,6 +551,13 @@ export function registerIpc(): void {
   handle('gate:delete', (_e, { id }: { id: number }) => deleteGateEntry(id))
 
   handle('lc:list', () => listLCs())
+  handle('treasury:alerts', () => treasuryAlerts())
+  handle('treasury:settleLcBill', (_e, { id, date }: { id: number; date?: string }) => settleLcBill(id, date))
+  handle('treasury:reopenLcBill', (_e, { id }: { id: number }) => reopenLcBill(id))
+  handle('treasury:discount', (_e, { values }: { values: Row }) => discountBill(values))
+  handle('treasury:realize', (_e, { id, date }: { id: number; date?: string }) => realizeBill(id, date))
+  handle('treasury:unrealize', (_e, { id }: { id: number }) => unrealizeBill(id))
+  handle('treasury:deleteDiscount', (_e, { id }: { id: number }) => deleteDiscountedBill(id))
   handle('lc:issuances', (_e, { lcId }: { lcId: number }) => listLCIssuances(lcId))
   handle('lc:create', (_e, { values }: { values: Row }) => createLC(values))
   handle('lc:update', (_e, { id, values }: { id: number; values: Row }) => updateLC(id, values))

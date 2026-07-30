@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import {
+  Landmark,
   BookOpenCheck,
   Anchor,
   Boxes,
@@ -43,11 +44,8 @@ export type Page =
   | 'consignment'
   | 'gateEntry'
   | 'accounts'
-  | 'ledgers'
-  | 'daybook'
+  | 'treasury'
   | 'payments'
-  | 'debitNotes'
-  | 'creditNotes'
   | 'products'
   | 'formulation'
   | 'production'
@@ -69,11 +67,8 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   consignment: { label: 'Consignment', icon: PackageOpen },
   gateEntry: { label: 'Gate Entry', icon: DoorOpen },
   accounts: { label: 'Accounting', icon: BookOpenCheck },
+  treasury: { label: 'Treasury', icon: Landmark },
   payments: { label: 'Payments', icon: CreditCard },
-  debitNotes: { label: 'Debit Note', icon: FileMinus2 },
-  creditNotes: { label: 'Credit Note', icon: FilePlus2 },
-  ledgers: { label: 'Ledgers', icon: Wallet },
-  daybook: { label: 'Daybook', icon: BookOpenText },
   products: { label: 'Products', icon: Boxes },
   formulation: { label: 'Formulation', icon: FlaskConical },
   production: { label: 'Production', icon: Factory },
@@ -95,7 +90,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Purchase', ids: ['bargains', 'orders', 'consignment', 'gateEntry'] },
   { label: 'Production', ids: ['products', 'formulation', 'production', 'stock'] },
   { label: 'Sales', ids: ['salesBargains', 'sales'] },
-  { label: 'Accounts', ids: ['accounts', 'payments', 'debitNotes', 'creditNotes', 'ledgers', 'daybook'] },
+  { label: 'Accounts', ids: ['accounts', 'treasury', 'payments'] },
   { label: 'Masters', ids: ['suppliers', 'transporters', 'customers', 'ports', 'brokers', 'packaging'] },
   { label: 'System', ids: ['approvals', 'settings'] }
 ]

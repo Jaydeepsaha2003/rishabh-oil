@@ -213,33 +213,52 @@ async function productStockForCompany(companyId: number, productId: number): Pro
 // each raw product from (suppliers, on received purchases) and who we
 // DISPATCHED each product to (customers, on done stock-tracked sales). Used for
 // the hover detail on the Stock page's Receipt / Dispatch columns.
-export async function stockPartyBreakdown(): Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>> {
+export async function stockPartyBreakdown(
+  companyIds?: number[]
+): Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>> {
   const c = getClient()
-  const cid = getActiveCompanyId()
+  const cidList = (companyIds || []).map(Number).filter((x) => x > 0)
+  if (!cidList.length) cidList.push(getActiveCompanyId())
+  const ph = cidList.map(() => '?').join(', ')
+  const multi = cidList.length > 1
   const out: Record<number, { receipt: Row[]; dispatch: Row[] }> = {}
   const ensure = (pid: number): { receipt: Row[]; dispatch: Row[] } => (out[pid] ??= { receipt: [], dispatch: [] })
 
+  // With more than one company in view, the party rows say whose books each
+  // figure belongs to.
   const rec = await c.execute({
-    sql: `SELECT o.oil_type_id AS pid, COALESCE(s.name, 'Unknown') AS party, SUM(o.received_qty) AS qty
-          FROM orders o LEFT JOIN suppliers s ON s.id = o.supplier_id
-          WHERE o.status = 'received' AND o.company_id = ?
-          GROUP BY o.oil_type_id, s.name
+    sql: `SELECT o.oil_type_id AS pid, COALESCE(s.name, 'Unknown') AS party, co.name AS company, SUM(o.received_qty) AS qty
+          FROM orders o
+          LEFT JOIN suppliers s ON s.id = o.supplier_id
+          LEFT JOIN companies co ON co.id = o.company_id
+          WHERE o.status = 'received' AND o.company_id IN (${ph})
+          GROUP BY o.oil_type_id, s.name, o.company_id
           HAVING SUM(o.received_qty) > 0
           ORDER BY qty DESC`,
-    args: [cid]
+    args: cidList
   })
-  for (const r of rec.rows) ensure(Number(r.pid)).receipt.push({ party: String(r.party), qty: Number(r.qty) || 0 })
+  for (const r of rec.rows)
+    ensure(Number(r.pid)).receipt.push({
+      party: multi ? `${r.party} · ${r.company || ''}` : String(r.party),
+      qty: Number(r.qty) || 0
+    })
 
   const disp = await c.execute({
-    sql: `SELECT s.product_id AS pid, COALESCE(cu.name, s.customer, 'Unknown') AS party, SUM(s.qty) AS qty
-          FROM sales s LEFT JOIN customers cu ON cu.id = s.customer_id
-          WHERE s.status = 'done' AND s.company_id = ?
-          GROUP BY s.product_id, COALESCE(cu.name, s.customer)
+    sql: `SELECT s.product_id AS pid, COALESCE(cu.name, s.customer, 'Unknown') AS party, co.name AS company, SUM(s.qty) AS qty
+          FROM sales s
+          LEFT JOIN customers cu ON cu.id = s.customer_id
+          LEFT JOIN companies co ON co.id = s.company_id
+          WHERE s.status = 'done' AND s.company_id IN (${ph})
+          GROUP BY s.product_id, COALESCE(cu.name, s.customer), s.company_id
           HAVING SUM(s.qty) > 0
           ORDER BY qty DESC`,
-    args: [cid]
+    args: cidList
   })
-  for (const r of disp.rows) ensure(Number(r.pid)).dispatch.push({ party: String(r.party), qty: Number(r.qty) || 0 })
+  for (const r of disp.rows)
+    ensure(Number(r.pid)).dispatch.push({
+      party: multi ? `${r.party} · ${r.company || ''}` : String(r.party),
+      qty: Number(r.qty) || 0
+    })
 
   return out
 }

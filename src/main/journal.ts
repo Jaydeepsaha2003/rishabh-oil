@@ -35,10 +35,11 @@ export async function getOrCreateAccount(name: string, group = 'General'): Promi
   return Number(res.rows[0].id)
 }
 
-export async function listAccounts(): Promise<Row[]> {
-  // Accounts are shared; balances are per ACTIVE COMPANY (separate books).
+export async function listAccounts(companyId?: number): Promise<Row[]> {
+  // Accounts are shared; balances are per company (separate books) — the
+  // caller may pin one, else the active company.
   const res = await getClient().execute({
-    args: [getActiveCompanyId()],
+    args: [companyId || getActiveCompanyId()],
     sql: `
     SELECT a.*,
       COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
@@ -138,6 +139,13 @@ export async function deleteManualEntry(id: number): Promise<{ id: number }> {
   if (r.order_id != null || r.sale_id != null || r.payment_id != null) {
     throw new Error('This entry was posted automatically — adjust its source document instead')
   }
+  const noteRef = await c.execute({
+    sql: 'SELECT id FROM notes WHERE journal_entry_id = ? LIMIT 1',
+    args: [id]
+  })
+  if (noteRef.rows.length) {
+    throw new Error('This voucher belongs to a Debit/Credit note — delete the note itself')
+  }
   await c.execute({
     sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
     args: [id]
@@ -186,8 +194,9 @@ async function voucherCodeMap(companyId: number): Promise<Map<number, string>> {
   return map
 }
 
-export async function accountStatement(accountId: number): Promise<Row[]> {
+export async function accountStatement(accountId: number, companyId?: number): Promise<Row[]> {
   const c = getClient()
+  const cid = companyId || getActiveCompanyId()
   const res = await c.execute({
     sql: `SELECT jl.id, je.id AS entry_id, je.entry_date, je.vch_type, je.vch_no, je.narration,
                  jl.dr, jl.cr, je.order_id, je.sale_id, je.payment_id
@@ -195,7 +204,7 @@ export async function accountStatement(accountId: number): Promise<Row[]> {
           JOIN journal_entries je ON je.id = jl.entry_id
           WHERE jl.account_id = ? AND je.company_id = ?
           ORDER BY je.entry_date ASC, je.id ASC, jl.id ASC`,
-    args: [accountId, getActiveCompanyId()]
+    args: [accountId, cid]
   })
   const lines = toPlain(res)
   if (!lines.length) return lines
@@ -216,7 +225,7 @@ export async function accountStatement(accountId: number): Promise<Row[]> {
     byEntry.get(k)!.push(r)
   }
 
-  const codes = await voucherCodeMap(getActiveCompanyId())
+  const codes = await voucherCodeMap(cid)
   for (const l of lines) {
     const rest = byEntry.get(Number(l.entry_id)) || []
     const opposite = Number(l.dr) > 0
@@ -224,6 +233,8 @@ export async function accountStatement(accountId: number): Promise<Row[]> {
       : rest.filter((r) => n(r.dr) > 0).sort((a, b) => n(b.dr) - n(a.dr))
     l.particulars = String((opposite[0] || rest[0])?.name || '')
     l.voucher_code = codes.get(Number(l.entry_id)) || ''
+    // Every other leg of the voucher, for the ledger's DETAILED (Alt+F1) mode.
+    l.legs = rest.map((r) => ({ name: String(r.name), dr: n(r.dr), cr: n(r.cr) }))
   }
   return lines
 }

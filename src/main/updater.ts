@@ -44,7 +44,9 @@ export function registerUpdater(getWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('update:install', () => {
-    if (app.isPackaged) autoUpdater.quitAndInstall()
+    // Silent NSIS run (/S) + relaunch: no Next/Next/Finish, the app just
+    // comes back on the new version.
+    if (app.isPackaged) autoUpdater.quitAndInstall(true, true)
     return { ok: app.isPackaged }
   })
 

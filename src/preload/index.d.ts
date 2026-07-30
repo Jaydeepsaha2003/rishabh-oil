@@ -60,6 +60,8 @@ export interface Api {
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
+    saveOpening: (values: Row) => Promise<{ id: number }>
+    openingLog: (supplierId: number, productId: number) => Promise<Row[]>
   }
   tankers: {
     list: (all?: boolean) => Promise<Row[]>
@@ -67,25 +69,26 @@ export interface Api {
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
     advance: (id: number, toStatus: string, data: Row) => Promise<{ id: number }>
+    revert: (id: number) => Promise<{ id: number; status: string }>
   }
   dashboard: {
     stats: () => Promise<Row>
   }
   vouchers: {
-    list: (args?: { from?: string; to?: string; vchType?: string }) => Promise<Row[]>
+    list: (args?: { from?: string; to?: string; vchType?: string; companyId?: number }) => Promise<Row[]>
     get: (id: number) => Promise<Row | null>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
   }
   journal: {
-    trialBalance: (args?: { from?: string; to?: string }) => Promise<Row>
-    groups: () => Promise<Row[]>
+    trialBalance: (args?: { from?: string; to?: string; companyId?: number }) => Promise<Row>
+    groups: (companyId?: number) => Promise<Row[]>
     groupNames: () => Promise<{ name: string; nature: string }[]>
-    pendingRefs: (account: string) => Promise<Row[]>
-    accounts: () => Promise<Row[]>
+    pendingRefs: (account: string, companyId?: number) => Promise<Row[]>
+    accounts: (companyId?: number) => Promise<Row[]>
     createAccount: (name: string, group?: string) => Promise<{ id: number }>
-    statement: (accountId: number) => Promise<Row[]>
+    statement: (accountId: number, companyId?: number) => Promise<Row[]>
     addEntry: (data: Row) => Promise<{ id: number }>
     deleteEntry: (id: number) => Promise<{ id: number }>
   }
@@ -137,7 +140,7 @@ export interface Api {
   stock: {
     list: (range?: { from?: string; to?: string }, companyIds?: number[]) => Promise<Row[]>
     needs: () => Promise<Row[]>
-    breakdown: () => Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>>
+    breakdown: (companyIds?: number[]) => Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>>
     daybook: (from: string, to: string) => Promise<{ vouchers: Row[]; material: Row[] }>
     transfers: () => Promise<Row[]>
     transfer: (values: Row) => Promise<{ id: number }>
@@ -177,6 +180,8 @@ export interface Api {
     removeInvoice: (group: string) => Promise<{ group: string }>
   }
   skuRates: {
+    parties: (packagingId: number) => Promise<number[]>
+    setParties: (packagingId: number, customerIds: number[]) => Promise<{ count: number }>
     list: (id: number) => Promise<Row[]>
     save: (id: number, rows: Row[]) => Promise<{ saved: number; cleared: number }>
   }
@@ -195,6 +200,15 @@ export interface Api {
     update: (id: number, values: Row) => Promise<{ id: number }>
     complete: (id: number, gross: number, tare: number) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
+  }
+  treasury: {
+    alerts: () => Promise<Row>
+    settleLcBill: (id: number, date?: string) => Promise<{ id: number }>
+    reopenLcBill: (id: number) => Promise<{ id: number }>
+    discount: (values: Row) => Promise<{ id: number }>
+    realize: (id: number, date?: string) => Promise<{ id: number }>
+    unrealize: (id: number) => Promise<{ id: number }>
+    deleteDiscount: (id: number) => Promise<{ id: number }>
   }
   lc: {
     list: () => Promise<Row[]>
