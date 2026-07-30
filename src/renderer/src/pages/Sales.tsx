@@ -240,7 +240,8 @@ function SalesTab({
       loaded_date: '',
       transit_date: '',
       unloaded_date: '',
-      round_off: ''
+      round_off: '',
+      round_off_manual: false
     }
   }
   function blankItem(): Row {
@@ -273,7 +274,9 @@ function SalesTab({
       transit_date: f.transit_date ?? '',
       unloaded_date: f.unloaded_date ?? '',
       // Round off lives on the first line of the group; sum is safe either way.
-      round_off: inv.lines.reduce((s, r) => s + (Number(r.round_off) || 0), 0) || ''
+      round_off: inv.lines.reduce((s, r) => s + (Number(r.round_off) || 0), 0) || '',
+      // A stored round off is kept as typed — auto would silently reprice it.
+      round_off_manual: inv.lines.some((r) => Math.abs(Number(r.round_off) || 0) > 0.004)
     })
     setItems(inv.lines.map((r) => ({
       product_id: String(r.product_id ?? ''),
@@ -361,6 +364,18 @@ function SalesTab({
     },
     { amount: 0, gst: 0, qty: 0 }
   )
+
+  // Auto round-off to the nearest rupee, same idiom as the purchase form. The
+  // base (taxable + GST) does not depend on the round off, so this cannot
+  // loop. A manual edit overrides it; clearing the field brings auto back.
+  const invoiceRawTotal = totals.amount + totals.gst
+  useEffect(() => {
+    if (header.round_off_manual) return
+    if (!Number.isFinite(invoiceRawTotal) || invoiceRawTotal <= 0) return
+    const auto = Math.round(invoiceRawTotal) - invoiceRawTotal
+    const val = Math.abs(auto) < 0.005 ? '' : auto.toFixed(2)
+    if (String(header.round_off ?? '') !== val) setHeaderField('round_off', val)
+  }, [invoiceRawTotal, header.round_off_manual, header.round_off])
 
   // Rate cards for the bargains used on this invoice, keyed by bargain id then
   // packaging id. Loaded when a line names a bargain; the rate it yields is
@@ -1106,29 +1121,31 @@ function SalesTab({
           <div className="flex items-center justify-between py-0.5"><span className="text-muted-foreground">Taxable value</span><span className="tabular-nums">{formatINR(totals.amount)}</span></div>
           <div className="flex items-center justify-between py-0.5"><span className="text-muted-foreground">Total GST</span><span className="tabular-nums">{formatINR(totals.gst)}</span></div>
           <div className="flex items-center justify-between py-0.5">
-            <span className="text-muted-foreground">Round off</span>
+            <span className="text-muted-foreground">
+              Round off {header.round_off_manual ? '(manual)' : '(auto)'}
+            </span>
             <span className="flex items-center gap-1.5">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 px-2 text-xs"
-                title="Round the invoice total to the nearest rupee"
-                onClick={() => {
-                  const raw = totals.amount + totals.gst
-                  const ro = Math.round((Math.round(raw) - raw) * 100) / 100
-                  setHeaderField('round_off', ro === 0 ? '' : String(ro))
-                }}
-              >
-                Auto
-              </Button>
+              {header.round_off_manual ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  title="Go back to rounding the invoice total to the nearest rupee automatically"
+                  onClick={() => setHeader((p) => ({ ...p, round_off_manual: false }))}
+                >
+                  Auto
+                </Button>
+              ) : null}
               <Input
                 type="number"
                 step="0.01"
                 className="h-7 w-24 bg-white text-right"
                 placeholder="0.00"
                 value={header.round_off ?? ''}
-                onChange={(e) => setHeaderField('round_off', e.target.value)}
+                onChange={(e) =>
+                  setHeader((p) => ({ ...p, round_off: e.target.value, round_off_manual: e.target.value !== '' }))
+                }
               />
             </span>
           </div>

@@ -4,7 +4,7 @@ import { registerIpc } from './ipc'
 import { registerUpdater } from './updater'
 import { initDb, startRevisionWatcher } from './db'
 import { backfillJournal } from './journal'
-import { backfillOrderStatuses } from './orders'
+import { backfillOrderStatuses, backfillPurchaseRoundOff } from './orders'
 import { backfillSalesGst, backfillSalesBargainCustomers, backfillSalesRoundOff } from './sales'
 import { seedDefaultAdmin } from './auth'
 import { seedProducts, seedFormulations, seedPackagings } from './seed'
@@ -51,6 +51,7 @@ app.whenReady().then(async () => {
   await backfillSalesRoundOff().catch((e) => console.error('[sales] round-off backfill failed:', e))
   await backfillSalesBargainCustomers().catch((e) => console.error('[sales] bargain-customer link failed:', e))
   await backfillOrderStatuses().catch((e) => console.error('[orders] status backfill failed:', e))
+  await backfillPurchaseRoundOff().catch((e) => console.error('[orders] round-off repair failed:', e))
   await seedDefaultAdmin().catch((e) => console.error('[auth] seed failed:', e))
   await seedProducts().catch((e) => console.error('[seed] products failed:', e))
   await seedFormulations().catch((e) => console.error('[seed] formulations failed:', e))

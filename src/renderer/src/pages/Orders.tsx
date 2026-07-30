@@ -1298,18 +1298,22 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     }
   }, [formPage, editing, form.interest_touched, form.adds_interest, form.charge_interest, financedCount, selected.length])
 
-  // Auto round-off to the nearest rupee (Tally style). A manual edit overrides
-  // it; clearing the field brings the auto value back.
+  // Auto round-off to the nearest rupee (Tally style). It rounds the total
+  // excluding TDS — the figure on the supplier's physical invoice — which does
+  // not depend on the round off itself. Deriving it from the net (as before)
+  // fed the value back into its own TDS base and oscillated without settling,
+  // so whichever value the loop was passing through at Save got stored. A
+  // manual edit overrides it; clearing the field brings the auto value back.
   useEffect(() => {
     if (!formPage || form.round_off_manual) return
-    const net = calc.netAmount
-    if (!Number.isFinite(net) || net <= 0) return
-    const auto = Math.round(net) - net
+    const total = calc.totalExclTds
+    if (!Number.isFinite(total) || total <= 0) return
+    const auto = Math.round(total) - total
     const val = Math.abs(auto) < 0.005 ? '' : auto.toFixed(2)
     if (String(form.round_off ?? '') !== val) {
       setForm((p) => ({ ...p, round_off: val }))
     }
-  }, [calc.netAmount, form.round_off_manual, form.round_off, formPage])
+  }, [calc.totalExclTds, form.round_off_manual, form.round_off, formPage])
 
   async function savePurchase(): Promise<void> {
     if (!form.company_id) return setError('Choose the company this purchase belongs to')

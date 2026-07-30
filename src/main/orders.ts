@@ -110,7 +110,7 @@ export async function supplierFyTaxable(
   const res = await c.execute({
     sql: `SELECT COALESCE(SUM(taxable_value), 0) AS t FROM orders
           WHERE supplier_id = ? AND order_date BETWEEN ? AND ? AND id != ? AND company_id = ?`,
-    args: [supplierId, start, end, excludeId || 0, getActiveCompanyId()]
+    args: [supplierId, start, dateStr, excludeId || 0, getActiveCompanyId()]
   })
   // Add the "purchase bill amount as on <date>" if that date is in this FY —
   // it seeds the cumulative taxable so the TDS slab picks up from the right point.
@@ -1072,6 +1072,93 @@ async function syncPurchaseFromTankers(orderId: number): Promise<void> {
 
 // Startup backfill: recompute each purchase's status/received totals from its
 // tankers (fixes rows whose status was corrupted by the old lifecycle remap).
+// One-time repair agreed with the client: round off becomes round-to-the-rupee
+// of the total excluding TDS, and TDS is charged on that rounded, GST-inclusive
+// total (older rows had TDS on the taxable value alone). Stored round offs are
+// re-derived rather than trusted, because the form's auto round-off oscillated
+// before 0.3.56 and saved whichever value the loop was passing through. Journal
+// vouchers are re-posted at the corrected figures. Runs once, behind a flag.
+export async function backfillPurchaseRoundOff(): Promise<void> {
+  const c = getClient()
+  const done = await c.execute("SELECT value FROM app_settings WHERE key = 'purchase_round_off_backfilled'")
+  if (done.rows.length && String(done.rows[0].value) === '1') return
+
+  const sup = await c.execute(
+    'SELECT id, name, tds_threshold, tds_above_only, opening_purchase_amount, opening_purchase_date FROM suppliers'
+  )
+  const suppliers = new Map<number, Row>()
+  for (const r of toPlain(sup)) suppliers.set(n(r.id), r)
+
+  const res = await c.execute(`
+    SELECT o.id, o.company_id, o.supplier_id, o.invoice_no, o.order_date, o.ordered_qty, o.bargain_rate,
+           o.gst_pct, o.interest_pct, o.interest_days, o.taxable_value, o.gst_amount, o.tds_pct, o.tds_amount,
+           o.round_off, o.net_amount, o.final_taxable_value, o.final_gst_amount,
+           pr.code AS oil_code, pr.name AS oil_name
+    FROM orders o LEFT JOIN products pr ON pr.id = o.oil_type_id
+    ORDER BY o.order_date ASC, o.id ASC`)
+
+  const round2 = (v: number): number => Math.round(v * 100) / 100
+  const same = (a: number, b: number): boolean => Math.abs(a - b) < 0.005
+  // Cumulative FY taxable per (company, supplier), accumulated in date order so
+  // each row's TDS slab sees only what was billed before it — what the form saw
+  // when the invoice was originally saved.
+  const prior = new Map<string, number>()
+  let applied = 0
+  for (const r of toPlain(res)) {
+    const s = suppliers.get(n(r.supplier_id))
+    const { start, end } = fyRange(String(r.order_date))
+    const key = `${n(r.company_id)}|${n(r.supplier_id)}|${start}`
+    if (!prior.has(key)) {
+      const od = String(s?.opening_purchase_date || '')
+      prior.set(key, od && od >= start && od <= end ? n(s?.opening_purchase_amount) : 0)
+    }
+    const before = prior.get(key)!
+    prior.set(key, before + n(r.taxable_value))
+
+    const T = n(r.taxable_value) + n(r.gst_amount)
+    const ro = round2(Math.round(T) - T)
+    const pct = s?.tds_above_only ? 0 : n(r.tds_pct)
+    const threshold = n(s?.tds_threshold)
+    const tds = round2(tierTds(T + ro, before, threshold, pct, n(r.tds_pct)))
+    const net = round2(T + ro - tds)
+    const fT = n(r.final_taxable_value) + n(r.final_gst_amount)
+    const fTds = round2(tierTds(fT + ro, before, threshold, pct, n(r.tds_pct)))
+    const fNet = round2(fT + ro - fTds)
+    if (same(ro, n(r.round_off)) && same(tds, n(r.tds_amount)) && same(net, n(r.net_amount))) continue
+
+    console.log(
+      `[orders] round-off repair #${r.id} ${r.invoice_no} ${r.order_date}: ` +
+        `ro ${n(r.round_off).toFixed(2)} -> ${ro.toFixed(2)} | tds ${n(r.tds_amount).toFixed(2)} -> ${tds.toFixed(2)} | ` +
+        `net ${n(r.net_amount).toFixed(2)} -> ${net.toFixed(2)}`
+    )
+    await c.execute({
+      sql: 'UPDATE orders SET round_off = ?, tds_amount = ?, net_amount = ?, final_tds_amount = ?, final_net_amount = ? WHERE id = ?',
+      args: [ro, tds, net, fTds, fNet, n(r.id)]
+    })
+    const interestPerUnit =
+      n(r.bargain_rate) * (1 + n(r.gst_pct) / 100) * (n(r.interest_pct) / 100) * (n(r.interest_days) / 365)
+    await postPurchaseJournal({
+      orderId: n(r.id),
+      date: String(r.order_date),
+      invoiceNo: String(r.invoice_no || ''),
+      oilCode: String(r.oil_code || r.oil_name || 'OIL').toUpperCase(),
+      supplierName: String(s?.name || 'SUPPLIER'),
+      taxable: n(r.taxable_value),
+      gst: n(r.gst_amount),
+      tds,
+      net,
+      roundOff: ro,
+      interest: interestPerUnit * n(r.ordered_qty),
+      companyId: n(r.company_id) || 1
+    }).catch((e) => console.error('[orders] journal re-post failed:', (e as Error).message))
+    applied++
+  }
+  await c.execute(
+    "INSERT INTO app_settings (key, value) VALUES ('purchase_round_off_backfilled', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"
+  )
+  if (applied > 0) console.log(`[orders] round-off repair corrected ${applied} purchases`)
+}
+
 export async function backfillOrderStatuses(): Promise<void> {
   const c = getClient()
   const res = await c.execute(

@@ -918,7 +918,7 @@ export async function backfillSalesGst(): Promise<void> {
 // net. Guarded by a settings flag so it runs once.
 export async function backfillSalesRoundOff(): Promise<void> {
   const c = getClient()
-  const done = await c.execute("SELECT value FROM app_settings WHERE key = 'sales_round_off_backfilled'")
+  const done = await c.execute("SELECT value FROM app_settings WHERE key = 'sales_round_off_backfilled_2'")
   if (done.rows.length && String(done.rows[0].value) === '1') return
 
   const sales = await c.execute(`
@@ -967,7 +967,7 @@ export async function backfillSalesRoundOff(): Promise<void> {
     applied++
   }
   await c.execute(
-    "INSERT INTO app_settings (key, value) VALUES ('sales_round_off_backfilled', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"
+    "INSERT INTO app_settings (key, value) VALUES ('sales_round_off_backfilled_2', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"
   )
   if (applied > 0) console.log(`[sales] backfilled round off on ${applied} invoices`)
 }
