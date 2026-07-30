@@ -1089,14 +1089,14 @@ export function Payments({ focusId, onFocusHandled, onBack, backLabel }: { focus
   return (
     <>
       {onBack && (
-        <div className="border-b bg-muted/30 px-8 py-2">
+        <div className="border-b bg-muted/30 px-4 py-2">
           <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground" onClick={onBack}>
             <ArrowLeft className="h-4 w-4" /> Back to {backLabel || 'previous page'}
           </button>
         </div>
       )}
       <PageHeader title="Payments" subtitle="Pay suppliers and transporters; LC, bill discounting and excess on account" hint="Pick a party to see its open invoices, then pay against them (FIFO or specific) or keep an Excess amount on account. Open Letters of Credit / discounting facilities with a bank and issue against them; utilization is tracked automatically. Sources: Bank, Credit Card, Bill Discounting, Letter of Credit." />
-      <div className="p-8">
+      <div className="px-4 py-6">
         <Tabs defaultValue="payments">
           <TabsList>
             <TabsTrigger value="payments">Payments</TabsTrigger>

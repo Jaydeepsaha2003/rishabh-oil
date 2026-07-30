@@ -16,6 +16,8 @@ export interface MoneyInput {
   tdsPrior?: number
   // Per-bargain shares when the invoice spans more than one bargain rate.
   lines?: { rate: number; qty: number }[]
+  // Applied to the total excluding TDS, which then becomes the TDS base.
+  roundOff?: number
 }
 
 function tierTds(
@@ -37,6 +39,10 @@ export interface MoneyResult {
   taxableValue: number
   gstAmount: number
   tdsAmount: number
+  // taxable + GST, before the round off.
+  totalExclTds: number
+  // taxable + GST + round off — what TDS is charged on.
+  roundedTotal: number
   netAmount: number
   finalTaxableValue: number
   finalGstAmount: number
@@ -71,18 +77,29 @@ export function computeMoney(i: MoneyInput): MoneyResult {
       : Math.ceil(rawAdjustedRate) * i.orderedQty
   const adjustedRate = i.orderedQty > 0 ? taxableValue / i.orderedQty : Math.ceil(rawAdjustedRate)
   const gstAmount = (taxableValue * i.gstPct) / 100
-  const tdsAmount = tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct)
-  const netAmount = taxableValue + gstAmount - tdsAmount
+  // The round off lands on the total excluding TDS, and that rounded figure is
+  // what TDS is deducted on — so the rounding flows through to TDS and the net.
+  const roundOff = num(i.roundOff)
+  const totalExclTds = taxableValue + gstAmount
+  const roundedTotal = totalExclTds + roundOff
+  // TDS is rounded to paise ONCE and the net derived from that rounded
+  // figure, so the summary and the ledger cannot disagree by a paisa.
+  const round2 = (v: number): number => Math.round(v * 100) / 100
+  const tdsAmount = round2(tierTds(roundedTotal, prior, threshold, i.tdsPct, abovePct))
+  const netAmount = round2(roundedTotal - tdsAmount)
   const finalTaxableValue = i.bargainRate * i.orderedQty
   const finalGstAmount = (finalTaxableValue * i.gstPct) / 100
-  const finalTdsAmount = tierTds(finalTaxableValue, prior, threshold, i.tdsPct, abovePct)
-  const finalNetAmount = finalTaxableValue + finalGstAmount - finalTdsAmount
+  const finalRoundedTotal = finalTaxableValue + finalGstAmount + roundOff
+  const finalTdsAmount = round2(tierTds(finalRoundedTotal, prior, threshold, i.tdsPct, abovePct))
+  const finalNetAmount = round2(finalRoundedTotal - finalTdsAmount)
   return {
     interestPerUnit,
     adjustedRate,
     taxableValue,
     gstAmount,
     tdsAmount,
+    totalExclTds,
+    roundedTotal,
     netAmount,
     finalTaxableValue,
     finalGstAmount,

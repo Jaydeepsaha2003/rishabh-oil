@@ -34,7 +34,7 @@ import { ExcelButton } from '@/components/ExcelButton'
 import { todayISO } from '@/lib/format'
 import { Pagination, usePaged } from '@/components/Pagination'
 
-export type FieldType = 'text' | 'number' | 'switch' | 'select' | 'date'
+export type FieldType = 'text' | 'number' | 'switch' | 'select' | 'date' | 'creatable'
 export type ColumnType = FieldType
 
 // Format a stored date/datetime as DD/MM/YYYY.
@@ -90,6 +90,27 @@ export function EntityManager({
   const [rows, setRows] = useState<Row[]>([])
   // 10 per page with page numbers underneath, shared by every master list.
   const paged = usePaged(rows)
+  // Options a creatable field offers: whatever the field declares, plus every
+  // value already used by an existing record, plus anything added this session.
+  const [addedOptions, setAddedOptions] = useState<Record<string, string[]>>({})
+  const [newOption, setNewOption] = useState<Record<string, string>>({})
+  function optionsFor(fd: FieldDef): { value: string; label: string }[] {
+    const seen = new Map<string, string>()
+    for (const o of fd.options ?? []) seen.set(o.value, o.label)
+    for (const r of rows) {
+      const v = String(r[fd.key] ?? '').trim()
+      if (v && !seen.has(v)) seen.set(v, v)
+    }
+    for (const v of addedOptions[fd.key] ?? []) if (!seen.has(v)) seen.set(v, v)
+    return Array.from(seen.entries()).map(([value, label]) => ({ value, label }))
+  }
+  function addOption(key: string): void {
+    const v = String(newOption[key] ?? '').trim()
+    if (!v) return
+    setAddedOptions((p) => ({ ...p, [key]: [...(p[key] ?? []), v] }))
+    setField(key, v)
+    setNewOption((p) => ({ ...p, [key]: '' }))
+  }
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -338,6 +359,57 @@ export function EntityManager({
                         disabled={fieldDisabled}
                         onChange={(v) => setField(fd.key, v)}
                       />
+                    </>
+                  ) : fd.type === 'creatable' ? (
+                    <>
+                      <Label>
+                        {fd.label}
+                        {fd.required ? ' *' : ''}
+                      </Label>
+                      <Select
+                        value={String(form[fd.key] ?? '')}
+                        disabled={fieldDisabled}
+                        onValueChange={(v) => setField(fd.key, v)}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder={`Select ${fd.label.toLowerCase()}`} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {optionsFor(fd).map((o) => (
+                            <SelectItem key={o.value} value={o.value}>
+                              {o.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {/* Type a value that is not in the list yet and add it. It
+                          becomes a permanent option once the record is saved. */}
+                      <div className="flex items-center gap-1.5">
+                        <Input
+                          className="h-8 text-[13px]"
+                          placeholder={`New ${fd.label.toLowerCase()}…`}
+                          value={newOption[fd.key] ?? ''}
+                          disabled={fieldDisabled}
+                          onChange={(e) => setNewOption((p) => ({ ...p, [fd.key]: e.target.value }))}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
+                              addOption(fd.key)
+                            }
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          title={`Add ${fd.label.toLowerCase()}`}
+                          disabled={fieldDisabled || !String(newOption[fd.key] ?? '').trim()}
+                          onClick={() => addOption(fd.key)}
+                        >
+                          <Plus className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </>
                   ) : fd.type === 'select' ? (
                     <>

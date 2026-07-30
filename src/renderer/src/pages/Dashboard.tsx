@@ -77,7 +77,7 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
         }
       />
 
-      <div className="space-y-6 p-8">
+      <div className="space-y-6 px-4 py-6">
         <Card className="flex items-center justify-between p-5">
           <div className="flex items-center gap-3">
             <span

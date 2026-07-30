@@ -145,7 +145,7 @@ export function Production(): React.JSX.Element {
             </Button>
           }
         />
-        <div className="p-8">
+        <div className="px-4 py-6">
           <Card className="max-w-3xl p-6">
             <div className="grid grid-cols-3 gap-3">
               <div className="grid gap-1.5">
@@ -266,7 +266,7 @@ export function Production(): React.JSX.Element {
           </div>
         }
       />
-      <div className="p-8">
+      <div className="px-4 py-6">
         <div className="rounded-lg border bg-card">
           <Table>
             <TableHeader>

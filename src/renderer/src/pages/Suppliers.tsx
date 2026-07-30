@@ -60,7 +60,7 @@ export function Suppliers(): React.JSX.Element {
   return (
     <>
       <PageHeader title="Suppliers" subtitle="GST, TDS slab, credit period, interest rule and purchase flow per supplier" hint="Slab TDS is cumulative per financial year: a base % up to the threshold, then a higher % above it. 'Below slab no TDS' charges TDS only above the threshold. 'Direct purchase' suppliers keep their goods at our site, so no tanker is sent to them — the purchase is booked in one step against the bargain." />
-      <div className="p-8">
+      <div className="px-4 py-6">
         <EntityManager
           table="suppliers"
           title="Supplier"

@@ -38,7 +38,7 @@ export function Transporters(): React.JSX.Element {
   return (
     <>
       <PageHeader title="Transporters" subtitle="Company type, GST and fixed TDS per transporter" hint="Transporters use a fixed TDS % (not slab-based). Freight is posted to the transporter ledger when a tanker reaches Empty, less any shortage penalty. Reverse charge (RCM) is for individual/GTA transporters — freight is billed without GST; GST is self-accounted at the transporter's GST %." />
-      <div className="p-8">
+      <div className="px-4 py-6">
         <EntityManager
           table="transporters"
           title="Transporter"

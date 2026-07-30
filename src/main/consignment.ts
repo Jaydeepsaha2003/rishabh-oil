@@ -473,8 +473,8 @@ export async function createConsignment(v: Row): Promise<{ id: number }> {
   const ok = await validateLot({ ...v, tanker_no: tankerNo }, null)
   const res = await c.execute({
     sql: `INSERT INTO consignment_stock (company_id, supplier_id, product_id, qty, uom, deposit_date, note,
-            gate_entry_id, tanker_no, is_opening)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            gate_entry_id, tanker_no, is_opening, weighed_qty, shortage_pct)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       ok.supplierId,
@@ -485,7 +485,9 @@ export async function createConsignment(v: Row): Promise<{ id: number }> {
       v.note ? String(v.note).trim() : null,
       gateId,
       tankerNo,
-      v.is_opening ? 1 : 0
+      v.is_opening ? 1 : 0,
+      v.weighed_qty != null && v.weighed_qty !== '' ? n(v.weighed_qty) : null,
+      v.shortage_pct != null && v.shortage_pct !== '' ? n(v.shortage_pct) : null
     ]
   })
   return { id: Number(res.lastInsertRowid) }
@@ -530,7 +532,8 @@ export async function updateConsignment(id: number, v: Row): Promise<{ id: numbe
   }
   await c.execute({
     sql: `UPDATE consignment_stock
-          SET supplier_id = ?, product_id = ?, qty = ?, uom = ?, deposit_date = ?, note = ?
+          SET supplier_id = ?, product_id = ?, qty = ?, uom = ?, deposit_date = ?, note = ?,
+              weighed_qty = ?, shortage_pct = ?
           WHERE id = ?`,
     args: [
       newSupplier,
@@ -539,6 +542,8 @@ export async function updateConsignment(id: number, v: Row): Promise<{ id: numbe
       ok.uom,
       ok.depositDate,
       v.note ? String(v.note).trim() : null,
+      v.weighed_qty != null && v.weighed_qty !== '' ? n(v.weighed_qty) : row.weighed_qty,
+      v.shortage_pct != null && v.shortage_pct !== '' ? n(v.shortage_pct) : row.shortage_pct,
       id
     ]
   })

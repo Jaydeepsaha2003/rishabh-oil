@@ -222,6 +222,11 @@ const api = {
     removeInvoice: (group: string): Promise<{ group: string }> =>
       ipcRenderer.invoke('sales:deleteInvoice', { group })
   },
+  skuRates: {
+    list: (id: number): Promise<Row[]> => ipcRenderer.invoke('skuRates:list', { id }),
+    save: (id: number, rows: Row[]): Promise<{ saved: number; cleared: number }> =>
+      ipcRenderer.invoke('skuRates:save', { id, rows })
+  },
   salesBargains: {
     list: (from?: string, to?: string): Promise<Row[]> => ipcRenderer.invoke('salesBargains:list', { from, to }),
     create: (values: Row): Promise<{ id: number; bargain_no: string }> =>

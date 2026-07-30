@@ -1,6 +1,6 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, Pencil, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, Download, Pencil, Plus, Search, SlidersHorizontal, Tags, Trash2, Upload } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -34,6 +34,7 @@ import { UomSelect } from '@/components/UomSelect'
 import { DatePicker } from '@/components/ui/date-picker'
 import { convertQty, errText, formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { ExcelButton } from '@/components/ExcelButton'
+import { downloadSkuRateExcel, parseSkuRateExcel, caseMT } from '@/lib/skuRateExcel'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -143,6 +144,7 @@ function SalesTab({
   const [search, setSearch] = useState('')
   const [dateFrom, setDateFrom] = useState(monthStartISO())
   const [dateTo, setDateTo] = useState(todayISO())
+  const [productType, setProductType] = useState('ALL')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -191,6 +193,17 @@ function SalesTab({
 
   // Invoice list filtered by the sale date range and a free-text search over
   // invoice no, customer and product names.
+  // Product types present across the dispatched lines, for the filter beside the
+  // date range. An invoice matches when any of its lines is of that type.
+  const productTypes = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          invoices.flatMap((inv) => inv.lines.map((r) => String(r.product_category || '')).filter(Boolean))
+        )
+      ).sort(),
+    [invoices]
+  )
   const filteredInvoices = useMemo(() => {
     const f = dateFrom || '0000-01-01'
     const t = dateTo || '9999-12-31'
@@ -198,6 +211,9 @@ function SalesTab({
     return invoices.filter((inv) => {
       const d = String(inv.first.sale_date || '').slice(0, 10)
       if (d < f || d > t) return false
+      if (productType !== 'ALL' && !inv.lines.some((r) => String(r.product_category || '') === productType)) {
+        return false
+      }
       if (!q) return true
       const hay = [
         inv.first.invoice_no,
@@ -209,7 +225,7 @@ function SalesTab({
         .toLowerCase()
       return hay.includes(q)
     })
-  }, [invoices, dateFrom, dateTo, search])
+  }, [invoices, dateFrom, dateTo, search, productType])
 
   function blankHeader(): Row {
     return {
@@ -346,10 +362,47 @@ function SalesTab({
     { amount: 0, gst: 0, qty: 0 }
   )
 
+  // Rate cards for the bargains used on this invoice, keyed by bargain id then
+  // packaging id. Loaded when a line names a bargain; the rate it yields is
+  // offered, never forced — the line stays editable.
+  const [cards, setCards] = useState<Record<string, Record<string, Row>>>({})
+  const loadCard = useCallback(async (bargainId: string): Promise<Record<string, Row>> => {
+    if (cards[bargainId]) return cards[bargainId]
+    try {
+      const rows = await window.api.skuRates.list(Number(bargainId))
+      const byPack: Record<string, Row> = {}
+      for (const r of rows) {
+        if (r.rate_per_case != null || r.rate_per_mt != null) byPack[String(r.packaging_id)] = r
+      }
+      setCards((p) => ({ ...p, [bargainId]: byPack }))
+      return byPack
+    } catch {
+      return {}
+    }
+  }, [cards])
+
+  // The card rate for a line, in the unit the line is priced in.
+  function cardRateFor(it: Row): number | null {
+    const card = cards[String(it.sales_bargain_id || '')]
+    const hit = card?.[String(it.packaging_id || '')]
+    if (!hit) return null
+    const packed = calc(it).isPacked
+    const v = packed ? hit.rate_per_case : hit.rate_per_mt
+    return v == null ? null : Number(v)
+  }
+
   function selectItemBargain(idx: number, v: string): void {
     if (v === 'none') { setItem(idx, { sales_bargain_id: '' }); return }
     const b = bargains.find((x) => String(x.id) === v)
     const it = items[idx]
+    // Pull the bargain's SKU rate card; if it prices this SKU, offer that rate.
+    void loadCard(v).then((card) => {
+      const hit = card[String(items[idx]?.packaging_id || '')]
+      if (!hit) return
+      const packed = calc(items[idx]).isPacked
+      const rate = packed ? hit.rate_per_case : hit.rate_per_mt
+      if (rate != null) setItem(idx, { rate: String(rate), rate_from_card: true })
+    })
     setItem(idx, {
       sales_bargain_id: v,
       rate: it.rate || b?.rate || '',
@@ -372,9 +425,158 @@ function SalesTab({
     }))
   }
 
-  async function save(): Promise<void> {
-    if (!items.length) return void toast.error('Add at least one item')
-    for (const [i, it] of items.entries()) {
+  // Selling more than the bargain has left. Mirrors the purchase loading query:
+  // the excess is booked as a new bargain, moved onto the next open bargain, or
+  // added to this one. `idx` is the line it came from.
+  const [excess, setExcess] = useState<{
+    idx: number
+    qty: number
+    balance: number
+    uom: string
+    mode: 'new' | 'existing' | 'expand'
+    diffRate: boolean
+    rate: string
+    targetBargainId: string
+  } | null>(null)
+  const [excessBusy, setExcessBusy] = useState(false)
+
+  // How much of a bargain this invoice may still draw: the register balance, plus
+  // back whatever the invoice being edited already books on it (those lines are
+  // about to be replaced), less what the invoice's OTHER lines take from it.
+  function bargainRoom(bargainId: string, exceptIdx: number, lines: Row[]): number {
+    const b = bargains.find((x) => String(x.id) === String(bargainId))
+    if (!b) return Infinity
+    let room = Number(b.balance_qty) || 0
+    if (editingGroup) {
+      for (const r of rows) {
+        if (String(r.invoice_group || `LEGACY-${r.id}`) !== editingGroup) continue
+        if (String(r.sales_bargain_id || '') === String(bargainId)) room += Number(r.qty) || 0
+      }
+    }
+    lines.forEach((it, i) => {
+      if (i === exceptIdx) return
+      if (String(it.sales_bargain_id || '') === String(bargainId)) room -= calc(it).effQty
+    })
+    return Math.round(room * 1000) / 1000
+  }
+
+  // Split a line so `keepQty` stays on its bargain and the rest moves to another.
+  // A packed line splits on a pouch boundary — the smallest saleable unit — so no
+  // case is ever broken in half.
+  function splitLine(it: Row, keepQty: number): [Row, Row] {
+    const c = calc(it)
+    if (!c.isPacked) {
+      const keep = Math.max(0, Math.round(keepQty * 1000) / 1000)
+      const rest = Math.round((c.effQty - keep) * 1000) / 1000
+      return [{ ...it, qty: String(keep) }, { ...it, qty: String(rest) }]
+    }
+    const ppb = Number(c.selPack?.pouches_per_box) || 1
+    const perPouch = convertQty(Number(c.selPack?.base_per_pouch) || 0, c.packBaseUom, c.saleUom)
+    const total = (Number(it.boxes) || 0) * ppb + (Number(it.pouches) || 0)
+    const keepPouches = perPouch > 0 ? Math.min(total, Math.floor(keepQty / perPouch + 1e-9)) : 0
+    const asPack = (n: number): Row => ({
+      boxes: Math.floor(n / ppb) ? String(Math.floor(n / ppb)) : '',
+      pouches: n % ppb ? String(n % ppb) : ''
+    })
+    return [{ ...it, ...asPack(keepPouches) }, { ...it, ...asPack(total - keepPouches) }]
+  }
+
+  // Carry out the chosen resolution, then save the invoice.
+  async function resolveExcess(): Promise<void> {
+    if (!excess) return
+    const it = items[excess.idx]
+    if (!it) return void setExcess(null)
+    const label = String(header.invoice_no || '').trim() || '(no number)'
+    const date = String(header.sale_date || todayISO())
+    setExcessBusy(true)
+    try {
+      // (a) Grow this bargain and leave the invoice as typed.
+      if (excess.mode === 'expand') {
+        const b = bargains.find((x) => String(x.id) === String(it.sales_bargain_id))
+        await window.api.salesBargains.adjust(
+          Number(it.sales_bargain_id),
+          excess.qty,
+          `Top-up for invoice ${label}`,
+          date
+        )
+        toast.success(`${b?.bargain_no || 'Bargain'} increased by ${formatNum(excess.qty)} ${excess.uom}`)
+        setExcess(null)
+        await save(items, true)
+        return
+      }
+
+      // (b) and (c) both split the line, so work out the halves first — the
+      // packed split lands on a pouch boundary and can differ slightly from the
+      // raw excess, and the new bargain must cover what actually moves.
+      const [keep, extra] = splitLine(it, excess.balance)
+      const moveQty = calc(extra).effQty
+      if (moveQty <= 1e-9) {
+        toast.error('Nothing to move — check the quantity')
+        return
+      }
+
+      let targetId = excess.targetBargainId
+      let extraRate = String(it.rate || '')
+      if (excess.mode === 'new') {
+        const rate = excess.diffRate && Number(excess.rate) > 0 ? Number(excess.rate) : Number(it.rate) || 0
+        if (rate <= 0) {
+          toast.error('Enter a rate for the new bargain')
+          return
+        }
+        const made = await window.api.salesBargains.create({
+          bargain_date: date,
+          customer: String(header.customer || ''),
+          customer_id: header.customer_id ? Number(header.customer_id) : null,
+          product_id: Number(it.product_id),
+          qty: moveQty,
+          uom: excess.uom,
+          rate,
+          sale_type: it.sale_type,
+          packaging_id: it.packaging_id ? Number(it.packaging_id) : null,
+          gst_pct: Number(it.gst_pct) || 0,
+          gst_type: it.gst_type,
+          freight_term: header.freight_term,
+          note: `Excess of ${formatNum(moveQty)} ${excess.uom} on invoice ${label}`
+        })
+        targetId = String(made.id)
+        extraRate = String(rate)
+        toast.success(`New bargain ${made.bargain_no} created for ${formatNum(moveQty)} ${excess.uom}`)
+      } else {
+        if (!targetId) {
+          toast.error('Select the bargain the extra quantity goes to')
+          return
+        }
+        const room = bargainRoom(targetId, -1, items)
+        if (moveQty > room + 1e-6) {
+          const t = bargains.find((x) => String(x.id) === String(targetId))
+          toast.error(`${t?.bargain_no || 'That bargain'} has only ${formatNum(room)} ${excess.uom} free`)
+          return
+        }
+        toast.success(`${formatNum(moveQty)} ${excess.uom} moved to the selected bargain`)
+      }
+
+      const moved: Row = { ...extra, sales_bargain_id: targetId, rate: extraRate, rate_from_card: false }
+      const next = [...items]
+      // Nothing fits on the original bargain (its balance is already used up), so
+      // the whole line moves rather than leaving an empty one behind.
+      if (calc(keep).effQty <= 1e-9) next[excess.idx] = moved
+      else next.splice(excess.idx, 1, keep, moved)
+      setItems(next)
+      setExcess(null)
+      await save(next, true)
+    } catch (e) {
+      toast.error(errText(e))
+      await load()
+    } finally {
+      setExcessBusy(false)
+    }
+  }
+
+  async function save(overrideItems?: Row[], excessResolved = false): Promise<void> {
+    const lines = overrideItems ?? items
+    if (!String(header.invoice_no || '').trim()) return void toast.error('Invoice number is required')
+    if (!lines.length) return void toast.error('Add at least one item')
+    for (const [i, it] of lines.entries()) {
       if (!it.product_id) return void toast.error(`Item ${i + 1}: select a product`)
       const c = calc(it)
       if (c.isPacked && !it.packaging_id) return void toast.error(`Item ${i + 1}: select a packaging`)
@@ -383,12 +585,38 @@ function SalesTab({
     }
     if (isDld && !header.transporter_id) return void toast.error('Select a transporter for the FOR delivery')
 
+    // More on a line than its bargain has left: stop and ask where the extra goes
+    // instead of failing the save. The server checks the balance as well, so this
+    // is the query, not the guard.
+    if (!excessResolved) {
+      for (const [i, it] of lines.entries()) {
+        if (!it.sales_bargain_id) continue
+        const c = calc(it)
+        const room = bargainRoom(String(it.sales_bargain_id), i, lines)
+        const over = Math.round((c.effQty - room) * 1000) / 1000
+        if (over > 1e-6) {
+          const b = bargains.find((x) => String(x.id) === String(it.sales_bargain_id))
+          setExcess({
+            idx: i,
+            qty: over,
+            balance: Math.max(room, 0),
+            uom: c.saleUom,
+            mode: 'new',
+            diffRate: false,
+            rate: String(it.rate || b?.rate || ''),
+            targetBargainId: ''
+          })
+          return
+        }
+      }
+    }
+
     const payload: Row = {
       ...header,
       customer_id: header.customer_id ? Number(header.customer_id) : null,
       transporter_id: header.transporter_id ? Number(header.transporter_id) : null,
       round_off: Number(header.round_off) || 0,
-      items: items.map((it) => ({
+      items: lines.map((it) => ({
         product_id: Number(it.product_id),
         sales_bargain_id: it.sales_bargain_id ? Number(it.sales_bargain_id) : null,
         sale_type: it.sale_type,
@@ -482,10 +710,12 @@ function SalesTab({
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <div className="flex items-center gap-1.5 text-sm">
-          <span className="text-muted-foreground">Date</span>
-          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="w-36" />
-          <span className="text-muted-foreground">to</span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+            Date
+          </span>
+          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
+          <span className="shrink-0 text-[10px] text-muted-foreground">to</span>
           <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="w-36" />
           <Button
             variant="ghost"
@@ -495,6 +725,20 @@ function SalesTab({
           >
             This month
           </Button>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+            Product type
+          </span>
+          <Select value={productType} onValueChange={setProductType}>
+            <SelectTrigger className="h-9 w-[11.5rem] text-[12px]"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All product types</SelectItem>
+              {productTypes.map((t) => (
+                <SelectItem key={t} value={t}>{t.toUpperCase()}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <ExcelButton
           className="ml-auto"
@@ -764,7 +1008,21 @@ function SalesTab({
                   <div className="mt-3 grid grid-cols-2 gap-3 rounded-md border border-violet-200 bg-violet-50/60 p-3 sm:grid-cols-3">
                     <div className="grid gap-1.5 sm:col-span-3">
                       <Label>Packed SKU *</Label>
-                      <Select value={item.packaging_id ? String(item.packaging_id) : ''} onValueChange={(v) => setItem(i, { packaging_id: v })}>
+                      <Select value={item.packaging_id ? String(item.packaging_id) : ''} onValueChange={(v) => {
+                        setItem(i, { packaging_id: v })
+                        // Changing the SKU re-prices from the bargain's rate card.
+                        const bid = String(items[i]?.sales_bargain_id || '')
+                        if (bid) {
+                          void loadCard(bid).then((card) => {
+                            const hit = card[v]
+                            if (!hit) return
+                            const rate = calc({ ...items[i], packaging_id: v }).isPacked
+                              ? hit.rate_per_case
+                              : hit.rate_per_mt
+                            if (rate != null) setItem(i, { rate: String(rate), rate_from_card: true })
+                          })
+                        }
+                      }}>
                         <SelectTrigger className="bg-white"><SelectValue placeholder="Select packaging" /></SelectTrigger>
                         <SelectContent>{packagings.map((p) => <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>)}</SelectContent>
                       </Select>
@@ -799,7 +1057,25 @@ function SalesTab({
                   </div>
                   <div className="grid gap-1.5">
                     <Label>Rate /{c.saleUom}</Label>
-                    <Input type="number" value={item.rate ?? ''} onChange={(e) => setItem(i, { rate: e.target.value })} />
+                    <Input
+                      type="number"
+                      value={item.rate ?? ''}
+                      onChange={(e) => setItem(i, { rate: e.target.value, rate_from_card: false })}
+                    />
+                    {/* Say so when the rate came from the bargain's card, and
+                        show the card figure if it has since been overridden. */}
+                    {cardRateFor(item) != null && (
+                      <span
+                        className={cn(
+                          'text-[10px]',
+                          item.rate_from_card ? 'font-medium text-emerald-700' : 'text-amber-700'
+                        )}
+                      >
+                        {item.rate_from_card
+                          ? 'from the bargain rate card'
+                          : `card rate ${formatINR(cardRateFor(item) as number)} — overridden`}
+                      </span>
+                    )}
                   </div>
                   <div className="grid gap-1.5">
                     <Label>GST %</Label>
@@ -859,9 +1135,153 @@ function SalesTab({
           <div className="mt-1 flex items-center justify-between border-t pt-1 text-base font-semibold"><span>Invoice total</span><span className="tabular-nums">{formatINR(totals.amount + totals.gst + (Number(header.round_off) || 0))}</span></div>
         </div>
 
+        <Dialog open={!!excess} onOpenChange={(o) => !o && setExcess(null)}>
+          <DialogContent className="max-w-xl">
+            <DialogHeader>
+              <DialogTitle className="text-amber-900">More than the bargain has left</DialogTitle>
+            </DialogHeader>
+            {excess && (() => {
+              const it = items[excess.idx] || {}
+              const cur = bargains.find((x) => String(x.id) === String(it.sales_bargain_id))
+              // Other open bargains of the same customer + product that can take it.
+              const nextBargains = bargains.filter(
+                (b) =>
+                  String(b.id) !== String(it.sales_bargain_id) &&
+                  String(b.product_id) === String(it.product_id) &&
+                  matchesCustomer(b) &&
+                  notExpired(b) &&
+                  bargainRoom(String(b.id), -1, items) >= excess.qty - 1e-6
+              )
+              return (
+                <div className="space-y-2.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
+                  <p>
+                    Item {excess.idx + 1} sells <b>{formatNum(calc(it).effQty)} {excess.uom}</b> but{' '}
+                    <b>{cur?.bargain_no || 'this bargain'}</b> has only{' '}
+                    <b>{formatNum(excess.balance)} {excess.uom}</b> left. Choose where the extra{' '}
+                    <b>{formatNum(excess.qty)} {excess.uom}</b> should go:
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setExcess((p) => (p ? { ...p, mode: 'new' } : p))}
+                      className={cn(
+                        'rounded-md border px-3 py-1.5 text-xs font-medium',
+                        excess.mode === 'new' ? 'border-amber-500 bg-amber-100' : 'border-amber-300 bg-white'
+                      )}
+                    >
+                      Book as a new bargain
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setExcess((p) => (p ? { ...p, mode: 'existing' } : p))}
+                      className={cn(
+                        'rounded-md border px-3 py-1.5 text-xs font-medium',
+                        excess.mode === 'existing' ? 'border-amber-500 bg-amber-100' : 'border-amber-300 bg-white'
+                      )}
+                    >
+                      Use the next available bargain
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setExcess((p) => (p ? { ...p, mode: 'expand' } : p))}
+                      className={cn(
+                        'rounded-md border px-3 py-1.5 text-xs font-medium',
+                        excess.mode === 'expand' ? 'border-amber-500 bg-amber-100' : 'border-amber-300 bg-white'
+                      )}
+                    >
+                      Add to this bargain
+                    </button>
+                  </div>
+
+                  {excess.mode === 'expand' ? (
+                    <p className="text-[11px]">
+                      {cur?.bargain_no || 'This bargain'} will be increased by{' '}
+                      <b>{formatNum(excess.qty)} {excess.uom}</b> (at its own rate) so the whole item stays on it. The
+                      top-up is logged as an Addition on the bargain register.
+                    </p>
+                  ) : excess.mode === 'new' ? (
+                    <>
+                      <p className="text-[11px]">
+                        The item is split in two: <b>{formatNum(excess.balance)} {excess.uom}</b> stays on{' '}
+                        {cur?.bargain_no || 'this bargain'} and a new bargain is created for{' '}
+                        {String(header.customer || 'the customer')} carrying the extra{' '}
+                        <b>{formatNum(excess.qty)} {excess.uom}</b>.
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={excess.diffRate}
+                          onCheckedChange={(v) => setExcess((p) => (p ? { ...p, diffRate: v } : p))}
+                        />
+                        <span>A different rate applies to the extra quantity</span>
+                      </div>
+                      {excess.diffRate && (
+                        <div className="grid gap-1.5">
+                          <Label className="text-amber-900">Rate for the extra qty (per {excess.uom})</Label>
+                          <Input
+                            type="number"
+                            className="bg-white"
+                            value={excess.rate}
+                            onChange={(e) => setExcess((p) => (p ? { ...p, rate: e.target.value } : p))}
+                          />
+                          <p className="text-[11px]">The new line is invoiced at this rate.</p>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="grid gap-1.5">
+                      <Label className="text-amber-900">Next bargain for the extra qty</Label>
+                      {nextBargains.length === 0 ? (
+                        <p className="text-[11px]">
+                          No other open bargain for {String(header.customer || 'this customer')} has{' '}
+                          {formatNum(excess.qty)} {excess.uom} free — book it as a new bargain, or add it to this one.
+                        </p>
+                      ) : (
+                        <>
+                          <Select
+                            value={excess.targetBargainId}
+                            onValueChange={(v) => setExcess((p) => (p ? { ...p, targetBargainId: v } : p))}
+                          >
+                            <SelectTrigger className="bg-white"><SelectValue placeholder="Select bargain" /></SelectTrigger>
+                            <SelectContent>
+                              {nextBargains
+                                .slice()
+                                .sort((a, b) => String(a.bargain_date || '').localeCompare(String(b.bargain_date || '')))
+                                .map((b) => (
+                                  <SelectItem key={b.id} value={String(b.id)}>
+                                    {b.bargain_no} · BAL {formatNum(bargainRoom(String(b.id), -1, items))} · {formatINR(b.rate)}
+                                  </SelectItem>
+                                ))}
+                            </SelectContent>
+                          </Select>
+                          <p className="text-[11px]">
+                            The item is split in two and the extra line keeps the rate you typed — the chosen bargain&apos;s
+                            own rate is not applied, so change it on the line if it should differ.
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setExcess(null)} disabled={excessBusy}>Cancel</Button>
+              <Button onClick={() => void resolveExcess()} disabled={excessBusy}>
+                {excessBusy
+                  ? 'Saving…'
+                  : excess?.mode === 'expand'
+                    ? 'Top up & save'
+                    : excess?.mode === 'existing'
+                      ? 'Allocate & save'
+                      : 'Add bargain & save'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         <div className="mt-5 flex justify-end gap-2 border-t pt-4">
           <Button variant="outline" onClick={() => (onBack ? onBack() : setFormPage(false))} disabled={saving}>Cancel</Button>
-          <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save invoice'}</Button>
+          <Button onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : 'Save invoice'}</Button>
         </div>
       </div>
       )}
@@ -1135,6 +1555,67 @@ function SalesBargainsTab(): React.JSX.Element {
     return out
   }
 
+  // --- SKU rate card for one sales bargain ----------------------------------
+  const [rateRow, setRateRow] = useState<Row | null>(null)
+  const [rateRows, setRateRows] = useState<Row[]>([])
+  const [rateBusy, setRateBusy] = useState(false)
+  const rateFile = useRef<HTMLInputElement | null>(null)
+
+  async function openRates(row: Row): Promise<void> {
+    setRateRow(row)
+    setRateRows([])
+    try {
+      setRateRows(await window.api.skuRates.list(Number(row.id)))
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  async function downloadRateCard(): Promise<void> {
+    if (!rateRow) return
+    try {
+      await downloadSkuRateExcel(rateRows, {
+        bargainNo: String(rateRow.bargain_no || ''),
+        qty: Number(rateRow.qty) || 0,
+        uom: String(rateRow.uom || 'MT'),
+        customer: String(rateRow.customer || '')
+      })
+      toast.success('Rate card downloaded — only the rate columns are editable')
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  async function uploadRateCard(file: File): Promise<void> {
+    if (!rateRow) return
+    setRateBusy(true)
+    try {
+      const parsed = await parseSkuRateExcel(file)
+      if (!parsed.rows.length) {
+        toast.error('No SKU rows found — use the downloaded rate card')
+        return
+      }
+      // The card carries the bargain it was generated for, so one bargain's
+      // rates cannot be uploaded onto another by mistake.
+      const want = String(rateRow.bargain_no || '').trim()
+      if (parsed.bargainNo && want && parsed.bargainNo !== want) {
+        toast.error(`That card belongs to bargain ${parsed.bargainNo}, not ${want}`)
+        return
+      }
+      const res = await window.api.skuRates.save(Number(rateRow.id), parsed.rows)
+      setRateRows(await window.api.skuRates.list(Number(rateRow.id)))
+      toast.success(
+        `${res.saved} SKU rate${res.saved === 1 ? '' : 's'} saved` +
+          (res.cleared ? `, ${res.cleared} cleared` : '')
+      )
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setRateBusy(false)
+      if (rateFile.current) rateFile.current.value = ''
+    }
+  }
+
   function openAdjust(row: Row): void {
     setAdjustRow(row)
     setAdjustForm({ mode: 'add', amount: '', note: '', date: todayISO() })
@@ -1166,16 +1647,107 @@ function SalesBargainsTab(): React.JSX.Element {
     }
   }
 
+  const rateCard = (
+    <Dialog open={!!rateRow} onOpenChange={(o) => !o && setRateRow(null)}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>SKU rates — {rateRow?.bargain_no}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            Download the card, fill the rate per case or per MT for each SKU, and upload it back. Whichever rate you
+            leave blank is worked out from MT per case. These rates are then offered on a sale line booked against this
+            bargain.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              ref={rateFile}
+              type="file"
+              accept=".xlsx"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) void uploadRateCard(f)
+              }}
+            />
+            <Button variant="outline" size="sm" onClick={downloadRateCard} disabled={!rateRows.length}>
+              <Download className="h-4 w-4" /> Download rate card
+            </Button>
+            <Button
+              size="sm"
+              className="bg-emerald-600 hover:bg-emerald-700"
+              onClick={() => rateFile.current?.click()}
+              disabled={rateBusy}
+            >
+              <Upload className="h-4 w-4" /> {rateBusy ? 'Uploading…' : 'Upload filled card'}
+            </Button>
+            <span className="ml-auto text-[11px] text-muted-foreground">
+              {rateRows.filter((r) => r.rate_per_case != null || r.rate_per_mt != null).length} of {rateRows.length}{' '}
+              SKUs priced
+            </span>
+          </div>
+          <div className="max-h-[45vh] overflow-auto rounded-lg border">
+            <table className="w-full text-[12px]">
+              <thead className="sticky top-0 bg-muted/70">
+                <tr className="text-left">
+                  <th className="px-3 py-1.5 font-semibold">SKU</th>
+                  <th className="px-3 py-1.5 text-right font-semibold">MT / case</th>
+                  <th className="px-3 py-1.5 text-right font-semibold">Rate / case</th>
+                  <th className="px-3 py-1.5 text-right font-semibold">Rate / MT</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rateRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="px-3 py-8 text-center text-muted-foreground">
+                      No packed SKUs for this bargain&apos;s product. Add them under Masters → Packed SKU.
+                    </td>
+                  </tr>
+                ) : (
+                  rateRows.map((r, i) => {
+                    const priced = r.rate_per_case != null || r.rate_per_mt != null
+                    return (
+                      <tr
+                        key={String(r.packaging_id)}
+                        className={cn('border-b last:border-0', i % 2 === 1 && 'bg-muted/30', priced && 'bg-emerald-50/60')}
+                      >
+                        <td className="px-3 py-1.5 font-medium">{r.name}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">
+                          {caseMT(r).toFixed(5)}
+                        </td>
+                        <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
+                          {r.rate_per_case != null ? formatINR(r.rate_per_case) : '—'}
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums">
+                          {r.rate_per_mt != null ? formatINR(r.rate_per_mt) : '—'}
+                        </td>
+                      </tr>
+                    )
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setRateRow(null)}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+
   return (
     <div>
-      <div className="mb-3 inline-flex flex-wrap gap-1 rounded-lg border bg-muted/40 p-1">
+      {rateCard}
+      <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-2">
+      <div className="inline-flex flex-wrap gap-1 rounded-lg border bg-muted/40 p-1">
         {[{ v: 'ALL', label: 'All' }, ...SALE_CATS].map((t) => (
           <button
             key={t.v}
             type="button"
             onClick={() => setSectionCategory(t.v)}
             className={cn(
-              'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+              'whitespace-nowrap rounded-md px-2.5 py-1 text-[13px] font-medium transition-colors',
               sectionCategory === t.v ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
             )}
           >
@@ -1183,7 +1755,6 @@ function SalesBargainsTab(): React.JSX.Element {
           </button>
         ))}
       </div>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div className="inline-flex rounded-lg border p-0.5">
           {(['LOOSE', 'PACKED'] as const).map((t) => (
             <button
@@ -1191,7 +1762,7 @@ function SalesBargainsTab(): React.JSX.Element {
               type="button"
               onClick={() => setSectionType(t)}
               className={cn(
-                'rounded-md px-4 py-1.5 text-sm font-medium transition-colors',
+                'whitespace-nowrap rounded-md px-3 py-1 text-[13px] font-medium transition-colors',
                 sectionType === t ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
               )}
             >
@@ -1199,17 +1770,17 @@ function SalesBargainsTab(): React.JSX.Element {
             </button>
           ))}
         </div>
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+        <label className="ml-auto flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[12px] text-muted-foreground">
           <Switch checked={showZero} onCheckedChange={setShowZero} />
           Show settled (0 balance)
         </label>
       </div>
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <div className="relative w-full sm:w-64">
+      <div className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-2">
+        <div className="relative min-w-[180px] flex-1 basis-56">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             type="search"
-            className="h-9 pl-8"
+            className="h-8 pl-8 text-[12px]"
             placeholder="Search bargain no, customer, product…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -1219,7 +1790,7 @@ function SalesBargainsTab(): React.JSX.Element {
           <span className="text-muted-foreground">Date</span>
           <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="w-36" />
           <span className="text-muted-foreground">to</span>
-          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="w-36" />
+          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
           {(dateFrom || dateTo) && (
             <Button variant="ghost" size="sm" className="h-8 text-muted-foreground" onClick={() => { setDateFrom(''); setDateTo('') }}>Clear</Button>
           )}
@@ -1271,8 +1842,8 @@ function SalesBargainsTab(): React.JSX.Element {
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-lg border bg-card">
-        <Table className="min-w-[920px] text-[13px]">
+      <div className="rounded-lg border bg-card">
+        <Table wrapperClassName="rounded-lg" className="min-w-[1180px] text-[13px]">
           <TableHeader>
             <TableRow>
               <TableHead>Bargain no</TableHead>
@@ -1363,6 +1934,15 @@ function SalesBargainsTab(): React.JSX.Element {
                           </TableCell>
                           <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                             <div className="flex justify-end gap-1">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                title="SKU rate card — download, fill the rates, upload"
+                                onClick={() => void openRates(row)}
+                              >
+                                <Tags className="h-4 w-4" />
+                              </Button>
                               <Button variant="ghost" size="icon" className="h-8 w-8" title="Add / remove balance qty" onClick={() => openAdjust(row)}>
                                 <SlidersHorizontal className="h-4 w-4" />
                               </Button>

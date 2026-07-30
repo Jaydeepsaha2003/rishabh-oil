@@ -73,6 +73,8 @@ export interface MoneyInput {
   // Per-bargain shares when the invoice spans more than one bargain rate. Each
   // line is rated (and rounded) on its own, matching how suppliers bill.
   lines?: { rate: number; qty: number }[]
+  // Applied to the total excluding TDS, which then becomes the TDS base.
+  roundOff?: number
 }
 
 // Tiered TDS: the part of `taxable` still under the threshold (given `prior`
@@ -173,14 +175,22 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   // The rate actually charged (taxable ÷ qty) — what the invoice shows per unit.
   const adjustedRate = i.orderedQty > 0 ? taxableValue / i.orderedQty : Math.ceil(rawAdjustedRate)
   const gstAmount = (taxableValue * i.gstPct) / 100
-  const tdsAmount = tierTds(taxableValue, prior, threshold, i.tdsPct, abovePct)
-  const netAmount = taxableValue + gstAmount - tdsAmount
+  // The round off lands on the total excluding TDS, and that rounded figure is
+  // the base TDS is deducted on — so the rounding flows into TDS and the net.
+  const roundOff = Number(i.roundOff) || 0
+  const roundedTotal = taxableValue + gstAmount + roundOff
+  // TDS is rounded to paise ONCE and the net derived from that rounded
+  // figure, so the summary and the ledger cannot disagree by a paisa.
+  const round2 = (v: number): number => Math.round(v * 100) / 100
+  const tdsAmount = round2(tierTds(roundedTotal, prior, threshold, i.tdsPct, abovePct))
+  const netAmount = round2(roundedTotal - tdsAmount)
 
   // Final (bargain rate) block.
   const finalTaxable = i.bargainRate * i.orderedQty
   const finalGst = (finalTaxable * i.gstPct) / 100
-  const finalTds = tierTds(finalTaxable, prior, threshold, i.tdsPct, abovePct)
-  const finalNet = finalTaxable + finalGst - finalTds
+  const finalRounded = finalTaxable + finalGst + roundOff
+  const finalTds = round2(tierTds(finalRounded, prior, threshold, i.tdsPct, abovePct))
+  const finalNet = round2(finalRounded - finalTds)
 
   return {
     interest_pct: interestPct,
@@ -267,6 +277,10 @@ export async function listOrders(): Promise<Row[]> {
            -- strings have to fall through as well as NULLs.
            COALESCE(NULLIF(pr.code, ''), NULLIF(pr.name, ''), NULLIF(ot.code, ''), ot.name) AS oil_code,
            COALESCE(NULLIF(pr.name, ''), NULLIF(pr.code, ''), ot.name) AS oil_name,
+           -- "Category" is material_type on the Products master; pr.category is
+           -- its Sub-category, exposed separately so both can be shown.
+           pr.material_type AS product_category,
+           pr.category AS product_sub_category,
            src.name AS source_name,
            t.name AS transporter_name,
            (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_count,
@@ -486,6 +500,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     tdsThreshold: n(supplier?.tds_threshold),
     tdsPctAbove: n(v.tds_pct),
     tdsPrior: prior,
+    roundOff,
     lines: bargainLines
   })
   const res = await getClient().execute({
@@ -520,7 +535,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       n(v.tds_pct),
       m.tds_amount,
       roundOff,
-      m.net_amount + roundOff,
+      m.net_amount,
       m.final_taxable_value,
       m.final_gst_amount,
       m.final_tds_amount,
@@ -558,7 +573,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id), bookInCompany)
     await applySupplierFreight(id, v)
   }
-  await setSupplierPayable(id, n(v.supplier_id), m.net_amount + roundOff, String(v.order_date))
+  await setSupplierPayable(id, n(v.supplier_id), m.net_amount, String(v.order_date))
   await postOrderJournal(id, v, m, supplier, roundOff)
   return { id }
 }
@@ -609,7 +624,7 @@ async function postOrderJournal(
     taxable: m.taxable_value,
     gst: m.gst_amount,
     tds: m.tds_amount,
-    net: m.net_amount + roundOff,
+    net: m.net_amount,
     roundOff,
     interest: m.interest_per_unit * n(v.ordered_qty)
   }).catch((e) => console.error('[journal] purchase post failed:', (e as Error).message))
@@ -666,6 +681,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     tdsThreshold: n(supplier?.tds_threshold),
     tdsPctAbove: n(v.tds_pct),
     tdsPrior: prior,
+    roundOff,
     lines: bargainLines
   })
   await getClient().execute({
@@ -699,7 +715,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       n(v.tds_pct),
       m.tds_amount,
       roundOff,
-      m.net_amount + roundOff,
+      m.net_amount,
       m.final_taxable_value,
       m.final_gst_amount,
       m.final_tds_amount,
@@ -744,7 +760,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id), moveTo)
     await applySupplierFreight(id, v)
   }
-  await setSupplierPayable(id, n(v.supplier_id), m.net_amount + roundOff, String(v.order_date))
+  await setSupplierPayable(id, n(v.supplier_id), m.net_amount, String(v.order_date))
   await postOrderJournal(id, v, m, supplier, roundOff)
   return { id }
 }
@@ -814,6 +830,7 @@ export async function listPurchaseTankers(allCompanies = false): Promise<Row[]> 
            b.bargain_no, b.bargain_type, b.rate_per_uom AS bargain_rate,
            b.allowed_shortage_pct, s.name AS supplier_name,
            p.code AS oil_code, p.name AS oil_name, src.name AS source_name,
+           p.material_type AS product_category,
            tr.name AS transporter_name, xb.bargain_no AS extra_bargain_no,
            xb.rate_per_uom AS extra_bargain_rate,
            -- what the gate recorded for this tanker: its own entry number and

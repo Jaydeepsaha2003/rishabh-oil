@@ -45,6 +45,7 @@ import {
 } from './payments'
 import { listUnmappedOrders, unmappedCount, mapOrderToBargains } from './unmapped'
 import { assertAllowed, clearAccessCache } from './access-gate'
+import { listSkuRates, saveSkuRates } from './skurates'
 import {
   listConsignment,
   consignmentSummary,
@@ -323,6 +324,8 @@ export function registerIpc(): void {
   )
 
   handle('orders:list', () => listOrders())
+  handle('skuRates:list', (_e, { id }: { id: number }) => listSkuRates(id))
+  handle('skuRates:save', (_e, { id, rows }: { id: number; rows: Row[] }) => saveSkuRates(id, rows))
   handle('orders:consignmentDraws', () => listConsignmentDraws())
   handle('orders:bargainLines', (_e, { id }: { id: number }) => listOrderBargains(id))
   handle('tankers:list', (_e, args?: { all?: boolean }) => listPurchaseTankers(!!args?.all))

@@ -65,6 +65,7 @@ export async function listDispatchableSales(): Promise<Row[]> {
            MAX(s.uom) AS uom,
            COUNT(*) AS item_count,
            GROUP_CONCAT(pr.name, ', ') AS product_name,
+           MAX(pr.material_type) AS product_category,
            (SELECT COUNT(*) FROM gate_entries g WHERE g.invoice_group = s.invoice_group AND g.direction = 'out') AS gate_outs
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id

@@ -23,7 +23,7 @@ export function Ports(): React.JSX.Element {
         subtitle="Delivery ports / sources, each with its transit days"
         hint="Transit days are used to compute the expected delivery date when a tanker goes in transit from this port."
       />
-      <div className="p-8">
+      <div className="px-4 py-6">
         <EntityManager
           table="sources"
           title="Port"

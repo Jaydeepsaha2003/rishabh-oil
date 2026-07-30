@@ -117,6 +117,18 @@ function StockTable({ rows, breakdown, label = 'stock' }: { rows: Row[]; breakdo
   const negatives = rows.filter((r) => Number(r.stock) < -1e-9).length
   const inFlow = totals.received + totals.produced + totals.transferred_in
   const outFlow = totals.consumed + totals.sold + totals.transferred_out
+  // Excel rows: a line per product, then a line per party underneath it —
+  // exactly what the hover shows — with the parties on outline level 1 so each
+  // product collapses in Excel.
+  const sheetRows = rows.flatMap((r) => {
+    const bd = breakdown[r.id as number]
+    const kids = [
+      ...(bd?.receipt || []).map((x) => ({ party: x.party, flow: 'Receipt', received: x.qty })),
+      ...(bd?.dispatch || []).map((x) => ({ party: x.party, flow: 'Dispatch', sold: x.qty }))
+    ]
+    return [{ ...r, is_group: true }, ...kids.map((k) => ({ name: r.name, ...k }))]
+  })
+
   return (
     <div className="space-y-3">
     <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
@@ -132,6 +144,8 @@ function StockTable({ rows, breakdown, label = 'stock' }: { rows: Row[]; breakdo
         title={`${label.charAt(0).toUpperCase()}${label.slice(1)} stock`}
         columns={[
           { header: 'Product', key: 'name', value: (r) => r.name || '' },
+          { header: 'Party', key: 'party', value: (r) => r.party || '' },
+          { header: 'Flow', key: 'flow', value: (r) => r.flow || '' },
           { header: 'Receipt', key: 'received', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.received) || 0 },
           { header: 'Produced', key: 'produced', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.produced) || 0 },
           { header: 'Transfer in', key: 'transferred_in', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.transferred_in) || 0 },
@@ -140,7 +154,9 @@ function StockTable({ rows, breakdown, label = 'stock' }: { rows: Row[]; breakdo
           { header: 'Dispatch', key: 'sold', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.sold) || 0 },
           { header: 'In stock', key: 'stock', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.stock) || 0 }
         ]}
-        rows={rows}
+        rows={sheetRows}
+        isGroup={(r) => !!r.is_group}
+        outlineDetail
       />
     </div>
     <div className="rounded-xl border bg-card shadow-sm">
@@ -222,9 +238,9 @@ function StockTable({ rows, breakdown, label = 'stock' }: { rows: Row[]; breakdo
 
 function StatCard({ label, value, tone }: { label: string; value: string; tone?: string }): React.JSX.Element {
   return (
-    <div className="rounded-xl border bg-card p-4 shadow-sm">
-      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className={cn('mt-1 text-xl font-semibold tabular-nums', tone)}>{value}</div>
+    <div className="rounded-lg border bg-card px-3 py-2 shadow-sm">
+      <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className={cn('mt-0.5 text-[15px] font-semibold tabular-nums', tone)}>{value}</div>
     </div>
   )
 }
@@ -1113,6 +1129,39 @@ function MncStock(): React.JSX.Element {
     { deposited: 0, invoiced: 0, balance: 0 }
   )
 
+  // Excel rows: party+product summary, then each of its lots underneath.
+  const mncSheetRows = byParty.flatMap((g) =>
+    g.rows.flatMap((p) => [
+      {
+        supplier_name: g.name,
+        product_code: p.product_code || p.product_name,
+        deposited: p.deposited,
+        invoiced: p.invoiced,
+        balance: p.balance,
+        uom: p.uom,
+        is_group: true
+      },
+      ...lots
+        .filter(
+          (l) =>
+            String(l.supplier_id) === String(p.supplier_id) && String(l.product_id) === String(p.product_id)
+        )
+        .map((l) => ({
+          supplier_name: g.name,
+          product_code: p.product_code || p.product_name,
+          deposit_date: l.deposit_date,
+          tanker_no: l.tanker_no,
+          gate_entry_no: l.gate_entry_no,
+          weighed_qty: l.weighed_qty,
+          shortage_pct: l.shortage_pct,
+          deposited: l.qty,
+          uom: l.uom,
+          invoice_no: l.invoice_no,
+          status: Number(l.qty) > 0 ? 'Completed' : 'Pending'
+        }))
+    ])
+  )
+
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
@@ -1135,9 +1184,18 @@ function MncStock(): React.JSX.Element {
             { header: 'Deposited', key: 'deposited', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.deposited) || 0 },
             { header: 'Invoiced', key: 'invoiced', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.invoiced) || 0 },
             { header: 'Balance', key: 'balance', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.balance) || 0 },
-            { header: 'UOM', key: 'uom', value: (r) => r.uom || 'MT' }
+            { header: 'UOM', key: 'uom', value: (r) => r.uom || 'MT' },
+            { header: 'Date', key: 'deposit_date', value: (r) => (r.deposit_date ? formatDate(r.deposit_date) : '') },
+            { header: 'Tanker', key: 'tanker_no', value: (r) => r.tanker_no || '' },
+            { header: 'Gate no', key: 'gate_entry_no', value: (r) => r.gate_entry_no || '' },
+            { header: 'Weighed', key: 'weighed_qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.weighed_qty) || 0 },
+            { header: 'Short %', key: 'shortage_pct', value: (r) => (Number(r.shortage_pct) > 0 ? `${r.shortage_pct}%` : '') },
+            { header: 'Status', key: 'status', value: (r) => r.status || '' },
+            { header: 'Invoice', key: 'invoice_no', value: (r) => r.invoice_no || '' }
           ]}
-          rows={rows}
+          rows={mncSheetRows}
+          isGroup={(r) => !!r.is_group}
+          outlineDetail
         />
       </div>
       <div className="rounded-xl border bg-card shadow-sm">
@@ -1205,8 +1263,10 @@ function MncStock(): React.JSX.Element {
                                           <th className="py-1.5 pr-3 font-semibold">Deposit date</th>
                                           <th className="py-1.5 pr-3 font-semibold">Tanker</th>
                                           <th className="py-1.5 pr-3 font-semibold">Gate no</th>
-                                          <th className="py-1.5 pr-3 text-right font-semibold">Qty</th>
-                                          <th className="py-1.5 pr-3 font-semibold">Booking</th>
+                                          <th className="py-1.5 pr-3 text-right font-semibold">Weighed</th>
+                                          <th className="py-1.5 pr-3 text-right font-semibold">Short %</th>
+                                          <th className="py-1.5 pr-3 text-right font-semibold">Qty (net)</th>
+                                          <th className="py-1.5 pr-3 font-semibold">Status</th>
                                           <th className="py-1.5 pr-3 font-semibold">Note</th>
                                         </tr>
                                       </thead>
@@ -1224,10 +1284,19 @@ function MncStock(): React.JSX.Element {
                                                 ))}
                                             </td>
                                             <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{l.gate_entry_no || '—'}</td>
+                                            <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">{Number(l.weighed_qty) > 0 ? formatNum(l.weighed_qty) : '—'}</td>
+                                            <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">{Number(l.shortage_pct) > 0 ? `${l.shortage_pct}%` : '—'}</td>
                                             <td className="py-1.5 pr-3 text-right font-medium tabular-nums text-emerald-700">{formatNum(l.qty)} {l.uom}</td>
                                             <td className="py-1.5 pr-3">
-                                              {l.order_id != null ? (
-                                                <span className="text-muted-foreground">{String(l.invoice_no || 'Booked')}</span>
+                                              {Number(l.qty) > 0 ? (
+                                                <span className="inline-flex items-center gap-1.5">
+                                                  <span className="font-medium text-emerald-700">Completed</span>
+                                                  {l.order_id != null && (
+                                                    <span className="text-[10px] text-muted-foreground">
+                                                      {String(l.invoice_no || 'booked')}
+                                                    </span>
+                                                  )}
+                                                </span>
                                               ) : (
                                                 <span className="font-medium text-amber-700">Pending</span>
                                               )}
@@ -1544,6 +1613,8 @@ function Transfers(): React.JSX.Element {
 }
 
 export function Stock(): React.JSX.Element {
+  const [stockGroup, setStockGroup] = useState<'book' | 'actual'>('book')
+  const [tab, setTab] = useState('raw')
   const [rows, setRows] = useState<Row[]>([])
   const [breakdown, setBreakdown] = useState<Record<number, { receipt: Row[]; dispatch: Row[] }>>({})
 
@@ -1565,15 +1636,42 @@ export function Stock(): React.JSX.Element {
     <>
       <PageHeader title="Stock" subtitle="Live balance per product, and daily book-vs-actual reconciliation" hint="Book balances update automatically (purchases add raw oil, production consumes inputs and adds outputs, sales reduce finished goods). Use Day close to enter the actual physical count each day and see the difference." />
       <div className="p-5">
-        <Tabs defaultValue="raw">
+        {/* Two families: what the books say, and what was physically counted or
+            is held for someone else. Switching family lands on its first tab. */}
+        <div className="mb-3 inline-flex rounded-lg border p-0.5">
+          {([
+            { key: 'book', label: 'Book Stock', first: 'raw' },
+            { key: 'actual', label: 'Actual Stock', first: 'sku' }
+          ] as const).map((g) => (
+            <button
+              key={g.key}
+              type="button"
+              onClick={() => { setStockGroup(g.key); setTab(g.first) }}
+              className={cn(
+                'rounded-md px-4 py-1.5 text-[13px] font-semibold transition-colors',
+                stockGroup === g.key ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {g.label}
+            </button>
+          ))}
+        </div>
+        <Tabs value={tab} onValueChange={setTab}>
           <TabsList>
-            <TabsTrigger value="raw">Raw ({byCat('raw').length})</TabsTrigger>
-            <TabsTrigger value="intermediate">Intermediate ({byCat('intermediate').length})</TabsTrigger>
-            <TabsTrigger value="finished">Finished ({byCat('finished').length})</TabsTrigger>
-            <TabsTrigger value="sku">Packed SKU</TabsTrigger>
-            <TabsTrigger value="mnc">MNC / Consignment</TabsTrigger>
-            <TabsTrigger value="transfers">Transfers</TabsTrigger>
-            <TabsTrigger value="dayclose">Day close (actual vs book)</TabsTrigger>
+            {stockGroup === 'book' ? (
+              <>
+                <TabsTrigger value="raw">Raw ({byCat('raw').length})</TabsTrigger>
+                <TabsTrigger value="intermediate">Intermediate ({byCat('intermediate').length})</TabsTrigger>
+                <TabsTrigger value="finished">Finished ({byCat('finished').length})</TabsTrigger>
+              </>
+            ) : (
+              <>
+                <TabsTrigger value="sku">Packed SKU</TabsTrigger>
+                <TabsTrigger value="mnc">MNC / Consignment</TabsTrigger>
+                <TabsTrigger value="transfers">Transfers</TabsTrigger>
+                <TabsTrigger value="dayclose">Day close (actual vs book)</TabsTrigger>
+              </>
+            )}
           </TabsList>
           <TabsContent value="raw" className="mt-6">
             <StockTable rows={byCat('raw')} breakdown={breakdown} label="raw" />

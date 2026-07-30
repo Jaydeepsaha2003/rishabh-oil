@@ -32,7 +32,7 @@ export function Customers(): React.JSX.Element {
   return (
     <>
       <PageHeader title="Customers" subtitle="GST, TDS, credit period and interest terms per customer" hint="Each customer's tax and credit terms auto-fill on sales. Credit period defaults to 0 days; interest applies only to days beyond it." />
-      <div className="p-8">
+      <div className="px-4 py-6">
         <EntityManager
           table="customers"
           title="Customer"

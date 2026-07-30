@@ -422,6 +422,22 @@ const MIGRATIONS = [
   // Opening balance rather than an arrival: the stock the MNC already held with
   // us when the books started, entered by hand with no gate entry behind it.
   'ALTER TABLE consignment_stock ADD COLUMN is_opening INTEGER NOT NULL DEFAULT 0',
+  // The gate weighment and the allowed shortage that produced the net qty, so
+  // the register can show how the figure was arrived at.
+  'ALTER TABLE consignment_stock ADD COLUMN weighed_qty REAL',
+  'ALTER TABLE consignment_stock ADD COLUMN shortage_pct REAL',
+  // Per-SKU selling rates agreed on a sales bargain. Filled from a downloaded
+  // sheet, then offered when a sale line on that bargain picks the SKU.
+  `CREATE TABLE IF NOT EXISTS sales_bargain_sku_rates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sales_bargain_id INTEGER NOT NULL REFERENCES sales_bargains(id),
+    packaging_id INTEGER NOT NULL REFERENCES packagings(id),
+    rate_per_case REAL,
+    rate_per_mt REAL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (sales_bargain_id, packaging_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_sbsr_bargain ON sales_bargain_sku_rates(sales_bargain_id)',
   // How a consignment / direct purchase invoice is spread across bargains. The
   // quantity is typed, not tanker-wise, so the allocation belongs to the invoice
   // rather than to a tanker — and it is the single source the bargain register

@@ -81,6 +81,14 @@ export function Consignment(): React.JSX.Element {
 
   const defaultUom = settings.default_uom ?? 'MT'
 
+  // Weighed quantity less the allowed shortage, to 3 decimals.
+  function netOfShortage(weighed: unknown, pct: unknown): string {
+    const w = Number(weighed) || 0
+    const p = Number(pct) || 0
+    if (w <= 0) return ''
+    return String(Math.round(w * (1 - p / 100) * 1000) / 1000)
+  }
+
   function openAddDeposit(): void {
     setEditing(null)
     setDepForm({ supplier_id: '', product_id: '', qty: '', uom: defaultUom, deposit_date: todayISO(), note: '' })
@@ -102,7 +110,14 @@ export function Consignment(): React.JSX.Element {
       supplier_prefilled: !!g.supplier_id,
       supplier_name: g.supplier_name || '',
       product_id: g.oil_type_id ? String(g.oil_type_id) : '',
-      qty: Number(g.received_qty) > 0 ? g.received_qty : '',
+      // The gate figure is gross-of-shortage; the stock taken in is net of the
+      // allowed shortage, which is how the yard has been noting it by hand.
+      weighed_qty: Number(g.received_qty) > 0 ? g.received_qty : '',
+      shortage_pct: settings.allowed_shortage_pct ?? '0.2',
+      qty:
+        Number(g.received_qty) > 0
+          ? netOfShortage(g.received_qty, settings.allowed_shortage_pct ?? '0.2')
+          : '',
       uom: g.uom || defaultUom,
       deposit_date: g.entry_date ?? todayISO(),
       note: g.note || ''
@@ -117,6 +132,8 @@ export function Consignment(): React.JSX.Element {
       supplier_id: String(row.supplier_id ?? ''),
       product_id: String(row.product_id ?? ''),
       qty: row.qty ?? '',
+      weighed_qty: row.weighed_qty ?? '',
+      shortage_pct: row.shortage_pct ?? '',
       uom: row.uom ?? defaultUom,
       deposit_date: row.deposit_date ?? todayISO(),
       note: row.note ?? ''
@@ -137,9 +154,16 @@ export function Consignment(): React.JSX.Element {
       qty: Number(depForm.qty),
       uom: depForm.uom || defaultUom,
       deposit_date: depForm.deposit_date,
-      note: depForm.note || null,
+      note:
+        depForm.note ||
+        (Number(depForm.shortage_pct) > 0 && Number(depForm.weighed_qty) > 0
+          ? `AFTER ${depForm.shortage_pct}% SHORTAGE`
+          : null),
       gate_entry_id: depForm.gate_entry_id ? Number(depForm.gate_entry_id) : null,
-      tanker_no: depForm.tanker_no || null
+      tanker_no: depForm.tanker_no || null,
+      // Recorded alongside the net so the register can show how it was reached.
+      weighed_qty: depForm.weighed_qty !== '' && depForm.weighed_qty != null ? Number(depForm.weighed_qty) : null,
+      shortage_pct: depForm.shortage_pct !== '' && depForm.shortage_pct != null ? Number(depForm.shortage_pct) : null
     }
     try {
       if (editing) {
@@ -385,7 +409,7 @@ export function Consignment(): React.JSX.Element {
         }
       />
 
-      <div className="space-y-6 p-6">
+      <div className="space-y-6 px-4 py-5">
         {/* Step 1 of the flow: tankers passed at the gate, waiting for the
             accountant to say whose stock they are. */}
         {pending.length > 0 && (
@@ -544,7 +568,9 @@ export function Consignment(): React.JSX.Element {
                               <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Date</TableHead>
                               <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Tanker</TableHead>
                               <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Gate no</TableHead>
-                              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Qty</TableHead>
+                              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Weighed</TableHead>
+                              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Short %</TableHead>
+                              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Qty (net)</TableHead>
                               <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Status</TableHead>
                               <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Note</TableHead>
                               <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Actions</TableHead>
@@ -566,6 +592,12 @@ export function Consignment(): React.JSX.Element {
                                   <TableCell className="tabular-nums text-muted-foreground">
                                     {d.gate_entry_no || '—'}
                                   </TableCell>
+                                  <TableCell className="text-right tabular-nums text-muted-foreground">
+                                    {Number(d.weighed_qty) > 0 ? formatNum(d.weighed_qty) : '—'}
+                                  </TableCell>
+                                  <TableCell className="text-right tabular-nums text-muted-foreground">
+                                    {Number(d.shortage_pct) > 0 ? `${d.shortage_pct}%` : '—'}
+                                  </TableCell>
                                   <TableCell
                                     className={cn(
                                       'text-right font-semibold tabular-nums',
@@ -575,12 +607,20 @@ export function Consignment(): React.JSX.Element {
                                     {formatNum(d.qty)} {d.uom}
                                   </TableCell>
                                   <TableCell>
-                                    {booked ? (
-                                      <Badge variant="secondary" className="font-normal">
-                                        Booked · {String(d.invoice_no || '—')}
-                                      </Badge>
+                                    {/* Validation status: a lot is Completed once it has been
+                                        validated with a quantity. Whether it has since been
+                                        invoiced is shown alongside, not instead. */}
+                                    {Number(d.qty) > 0 ? (
+                                      <span className="inline-flex items-center gap-1.5">
+                                        <Badge variant="success">Completed</Badge>
+                                        {booked && (
+                                          <span className="text-[10px] text-muted-foreground">
+                                            {String(d.invoice_no || 'booked')}
+                                          </span>
+                                        )}
+                                      </span>
                                     ) : (
-                                      <Badge variant="warning">In stock</Badge>
+                                      <Badge variant="warning">Pending</Badge>
                                     )}
                                   </TableCell>
                                   <TableCell className="max-w-[200px] truncate text-muted-foreground">
@@ -674,15 +714,60 @@ export function Consignment(): React.JSX.Element {
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <div className="grid gap-1.5">
-                <Label>Quantity *</Label>
-                <Input type="number" value={depForm.qty ?? ''} onChange={(e) => setDepForm((p) => ({ ...p, qty: e.target.value }))} />
+                <Label className="flex items-center gap-1">
+                  Weighed qty
+                  <InfoTip text="The gate weighment, before the allowed shortage is deducted." />
+                </Label>
+                <Input
+                  type="number"
+                  value={depForm.weighed_qty ?? ''}
+                  onChange={(e) =>
+                    setDepForm((p) => ({
+                      ...p,
+                      weighed_qty: e.target.value,
+                      qty: netOfShortage(e.target.value, p.shortage_pct)
+                    }))
+                  }
+                />
               </div>
               <div className="grid gap-1.5">
-                <Label>Deposit date</Label>
-                <DatePicker value={depForm.deposit_date || ''} onChange={(v) => setDepForm((p) => ({ ...p, deposit_date: v }))} />
+                <Label>Shortage %</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  placeholder="0.2"
+                  value={depForm.shortage_pct ?? ''}
+                  onChange={(e) =>
+                    setDepForm((p) => ({
+                      ...p,
+                      shortage_pct: e.target.value,
+                      qty: netOfShortage(p.weighed_qty, e.target.value)
+                    }))
+                  }
+                />
               </div>
+              <div className="grid gap-1.5">
+                <Label>Net qty taken in *</Label>
+                <Input
+                  type="number"
+                  className="font-semibold"
+                  value={depForm.qty ?? ''}
+                  onChange={(e) => setDepForm((p) => ({ ...p, qty: e.target.value }))}
+                />
+              </div>
+            </div>
+            {Number(depForm.weighed_qty) > 0 && Number(depForm.shortage_pct) > 0 && (
+              <p className="text-[11px] text-muted-foreground">
+                {formatNum(depForm.weighed_qty)} {depForm.uom} weighed − {depForm.shortage_pct}% shortage (
+                {formatNum(Number(depForm.weighed_qty) - Number(depForm.qty || 0))} {depForm.uom}) ={' '}
+                <b>{formatNum(depForm.qty)} {depForm.uom}</b> taken into stock.
+              </p>
+            )}
+            <div className="grid gap-1.5">
+              <Label>Deposit date</Label>
+              <DatePicker value={depForm.deposit_date || ''} onChange={(v) => setDepForm((p) => ({ ...p, deposit_date: v }))} />
             </div>
             <div className="grid gap-1.5">
               <Label>Note</Label>

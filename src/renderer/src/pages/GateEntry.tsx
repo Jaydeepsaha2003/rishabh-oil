@@ -17,6 +17,7 @@ import { errText, formatDate, formatNum, todayISO } from '@/lib/format'
 import { ExcelButton } from '@/components/ExcelButton'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { Pagination, usePaged } from '@/components/Pagination'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -52,9 +53,47 @@ const blankGateOut = (): Row => ({
 
 export function GateEntry(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
-  const paged = usePaged(rows)
+  // Register filters: date range on the entry date, receipt category, free text.
+  const [gFrom, setGFrom] = useState('')
+  const [gTo, setGTo] = useState('')
+  const [gCat, setGCat] = useState('ALL')
+  const [gSearch, setGSearch] = useState('')
+  const gCats = useMemo(
+    () => Array.from(new Set(rows.map((r) => String(r.rec_type || '')).filter(Boolean))).sort(),
+    [rows]
+  )
+  const filteredRows = useMemo(() => {
+    const q = gSearch.trim().toLowerCase()
+    return rows.filter((r) => {
+      const d = String(r.entry_date || '').slice(0, 10)
+      if (gFrom && d < gFrom) return false
+      if (gTo && d > gTo) return false
+      if (gCat !== 'ALL' && String(r.rec_type || '') !== gCat) return false
+      if (!q) return true
+      return [r.gate_entry_no, r.ref_no, r.tanker_no, r.supplier_name, r.sale_customer, r.sale_invoice]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(q)
+    })
+  }, [rows, gFrom, gTo, gCat, gSearch])
+  const paged = usePaged(filteredRows)
   const [tankers, setTankers] = useState<Row[]>([])
   const [suppliers, setSuppliers] = useState<Row[]>([])
+  const [products, setProducts] = useState<Row[]>([])
+  // The page carried the two entry forms, the weighment queue and the whole
+  // register at once; split so recording and reviewing are separate.
+  const [tab, setTab] = useState('entry')
+  // Rec type mirrors the categories on the Products master, so a category added
+  // there (FATTY, SCRAP, SPENT EARTH…) is immediately selectable at the gate.
+  const recTypes = useMemo(() => {
+    const seen = new Set<string>(REC_TYPES)
+    for (const p of products) {
+      const c = String(p.material_type || '').trim()
+      if (c) seen.add(c.toUpperCase())
+    }
+    return Array.from(seen).sort()
+  }, [products])
   const [sales, setSales] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [arrival, setArrival] = useState<Row>(blankArrival())
@@ -68,19 +107,21 @@ export function GateEntry(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [g, pt, sl, nextNo, nextOutNo, sup] = await Promise.all([
+    const [g, pt, sl, nextNo, nextOutNo, sup, prd] = await Promise.all([
       window.api.gate.list(),
       // the gate serves every company — list tankers across all of them
       window.api.tankers.list(true),
       window.api.gate.dispatchableSales().catch(() => [] as Row[]),
       window.api.gate.nextNo('in').catch(() => ''),
       window.api.gate.nextNo('out').catch(() => ''),
-      window.api.data.list('suppliers')
+      window.api.data.list('suppliers'),
+      window.api.data.list('products')
     ])
     setRows(g)
     setTankers(pt)
     // Only parties whose purchases skip tanker movement can send direct stock.
     setSuppliers(sup.filter((x) => x.active && x.skip_tanker_stages))
+    setProducts(prd.filter((x) => x.active))
     setSales(sl)
     setArrival((p) => (p.gate_entry_no ? p : { ...p, gate_entry_no: nextNo }))
     setGateOut((p) => (p.gate_entry_no ? p : { ...p, gate_entry_no: nextOutNo }))
@@ -125,7 +166,10 @@ export function GateEntry(): React.JSX.Element {
       ...p,
       invoice_group: group,
       uom: s?.uom || 'MT',
-      dispatch_qty: s?.qty ? String(s.qty) : p.dispatch_qty
+      dispatch_qty: s?.qty ? String(s.qty) : p.dispatch_qty,
+      // The category belongs to the goods being dispatched, so it comes from the
+      // invoice rather than being picked again at the gate.
+      rec_type: s?.product_category ? String(s.product_category).toUpperCase() : p.rec_type
     }))
   }
 
@@ -278,7 +322,72 @@ export function GateEntry(): React.JSX.Element {
           />
         }
       />
-      <div className="w-full space-y-6 p-6">
+      <div className="w-full px-4 py-5">
+        <Tabs value={tab} onValueChange={setTab}>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+            <TabsList>
+            <TabsTrigger value="entry">Record entry</TabsTrigger>
+            <TabsTrigger value="view">
+              Entries
+              {rows.length > 0 && (
+                <span className="ml-1.5 rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground">
+                  {rows.length}
+                </span>
+              )}
+            </TabsTrigger>
+            </TabsList>
+            {tab === 'view' && (
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-card px-2.5 py-1">
+                <div className="relative shrink-0">
+                  <Input
+                    type="search"
+                    className="h-7 w-52 pl-2 text-[11px]"
+                    placeholder="Search gate no, vehicle, party…"
+                    value={gSearch}
+                    onChange={(e) => setGSearch(e.target.value)}
+                  />
+                </div>
+                <div className="h-5 shrink-0 border-l" />
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+                    Date
+                  </span>
+                  <DatePicker value={gFrom} onChange={(v) => setGFrom(v || '')} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
+                  <span className="shrink-0 text-[10px] text-muted-foreground">to</span>
+                  <DatePicker value={gTo} onChange={(v) => setGTo(v || '')} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
+                </div>
+                <div className="h-5 shrink-0 border-l" />
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+                    Category
+                  </span>
+                  <Select value={gCat} onValueChange={setGCat}>
+                    <SelectTrigger className="h-7 w-[10.5rem] shrink-0 text-[11px]"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ALL">All categories</SelectItem>
+                      {gCats.map((c) => (
+                        <SelectItem key={c} value={c}>{c}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {(gFrom || gTo || gCat !== 'ALL' || gSearch) && (
+                  <>
+                    <div className="h-5 shrink-0 border-l" />
+                    <button
+                      type="button"
+                      className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                      onClick={() => { setGFrom(''); setGTo(''); setGCat('ALL'); setGSearch('') }}
+                    >
+                      Clear
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          <TabsContent value="entry" className="space-y-6">
         {/* Tanker IN */}
         <section className="rounded-xl border bg-card p-5 shadow-sm">
           <div className="mb-4 flex items-center gap-2">
@@ -353,7 +462,7 @@ export function GateEntry(): React.JSX.Element {
               <Select value={arrival.rec_type || 'OIL'} onValueChange={(v) => setArrival((p) => ({ ...p, rec_type: v }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {REC_TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                  {recTypes.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -406,11 +515,11 @@ export function GateEntry(): React.JSX.Element {
               <Input value={gateOut.tanker_no || ''} onChange={(e) => setGateOut((p) => ({ ...p, tanker_no: e.target.value }))} />
             </div>
             <div className="grid min-w-0 gap-1.5">
-              <Label>Rec type</Label>
+              <Label>Category <span className="text-[10px] font-normal text-muted-foreground">(from the invoice)</span></Label>
               <Select value={gateOut.rec_type || 'OIL'} onValueChange={(v) => setGateOut((p) => ({ ...p, rec_type: v }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {REC_TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                  {recTypes.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -501,7 +610,9 @@ export function GateEntry(): React.JSX.Element {
             </div>
           )}
         </section>
+          </TabsContent>
 
+          <TabsContent value="view">
         {/* History */}
         <section className="overflow-hidden rounded-xl border bg-card shadow-sm">
           <div className="border-b bg-muted/40 px-4 py-2.5 text-sm font-semibold">Gate register</div>
@@ -521,7 +632,7 @@ export function GateEntry(): React.JSX.Element {
             <TableBody>
               {loading ? (
                 <TableRow><TableCell colSpan={10} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
-              ) : rows.length === 0 ? (
+              ) : filteredRows.length === 0 ? (
                 <TableRow><TableCell colSpan={10} className="py-10 text-center text-muted-foreground">No gate entries yet.</TableCell></TableRow>
               ) : (
                 paged.pageRows.map((row) => {
@@ -576,6 +687,8 @@ export function GateEntry(): React.JSX.Element {
           </Table>
           <Pagination {...paged} label="gate entries" className="border-t px-3" />
         </section>
+          </TabsContent>
+        </Tabs>
       </div>
 
       {/* Correction dialog (office use) */}
@@ -597,7 +710,7 @@ export function GateEntry(): React.JSX.Element {
                 <Label>Rec type</Label>
                 <Select value={editForm.rec_type || 'OIL'} onValueChange={(v) => setEditForm((p) => ({ ...p, rec_type: v }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>{REC_TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
+                  <SelectContent>{recTypes.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
             </div>

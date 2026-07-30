@@ -161,6 +161,16 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const [pivotEnd, setPivotEnd] = useState(todayISO())
   // Clicking a pivot count filters the tanker list below to that oil × stage.
   const [pivotSel, setPivotSel] = useState<{ oil: string; stage: string } | null>(null)
+  // Category filter for the whole tab — the pivot and the tanker list below it.
+  const [tmCategory, setTmCategory] = useState('ALL')
+  const tmCategories = useMemo(
+    () => Array.from(new Set(tankers.map((t) => String(t.product_category || '')).filter(Boolean))).sort(),
+    [tankers]
+  )
+  const inCategory = useCallback(
+    (t: Row): boolean => tmCategory === 'ALL' || String(t.product_category || '') === tmCategory,
+    [tmCategory]
+  )
 
   const [loadingOpen, setLoadingOpen] = useState(false)
   const [loadingForm, setLoadingForm] = useState<Row>({ tanker_count: 1, factory_entry_date: todayISO() })
@@ -329,6 +339,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     const totals: Record<string, number> = {}
     let grand = 0
     for (const t of tankers) {
+      if (!inCategory(t)) continue
       const created = dstr(t.created_at)
       if (created && created > end) continue // didn't exist yet
       const stage = stageAsOf(t, end)
@@ -355,7 +366,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     }
     const rows = Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label))
     return { rows, totals, grand }
-  }, [tankers, pivotStart, pivotEnd])
+  }, [tankers, pivotStart, pivotEnd, inCategory])
 
   // The pivot as Excel rows: one line per oil with its stage counts, then a line
   // per party under it — the breakdown the UI only shows on hover. Detail rows
@@ -401,6 +412,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     const end = pivotEnd < pivotStart ? pivotStart : pivotEnd
     if (pivotSel) {
       return tankers.filter((t) => {
+        if (!inCategory(t)) return false
         const created = String(t.created_at || '').slice(0, 10)
         if (created && created > end) return false
         const stage = stageAsOf(t, end)
@@ -416,9 +428,29 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       const d = String(t.loaded_date || t.factory_entry_date || t.created_at || '').slice(0, 10)
       return !!d && d >= start && d <= end
     })
-  }, [tankers, pivotStart, pivotEnd, pivotSel])
+  }, [tankers, pivotStart, pivotEnd, pivotSel, inCategory])
   const tankerPaged = usePaged(visibleTankers)
-  const orderPaged = usePaged(rows)
+  // Purchase entries filters: a date range on the invoice date, and the product
+  // category. Both narrow the list the page shows and exports.
+  const [poFrom, setPoFrom] = useState('')
+  const [poTo, setPoTo] = useState('')
+  const [poCategory, setPoCategory] = useState('ALL')
+  const poCategories = useMemo(
+    () => Array.from(new Set(rows.map((r) => String(r.product_category || '')).filter(Boolean))).sort(),
+    [rows]
+  )
+  const filteredOrders = useMemo(
+    () =>
+      rows.filter((r) => {
+        const d = String(r.order_date || '').slice(0, 10)
+        if (poFrom && d < poFrom) return false
+        if (poTo && d > poTo) return false
+        if (poCategory !== 'ALL' && String(r.product_category || '') !== poCategory) return false
+        return true
+      }),
+    [rows, poFrom, poTo, poCategory]
+  )
+  const orderPaged = usePaged(filteredOrders)
 
   // Row fields derived from a bargain (auto or manual pick).
   function bargainDefaults(b: Row): Row {
@@ -1443,7 +1475,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       )}
 
       {formPage ? (
-        <div className="p-6">
+        <div className="px-4 py-5">
           <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 border-b pb-3">
             <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground" onClick={() => { if (onBack) { onBack() } else { setFormPage(false) } }}>
               <ArrowLeft className="h-4 w-4" /> {onBack ? `Back to ${backLabel || 'previous page'}` : 'Back'}
@@ -2014,9 +2046,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               )}
               <div className="border-t" />
               <MoneyRow label="Total value (excl. TDS)" value={formatINR(calc.taxableValue + calc.gstAmount)} strong />
-              <MoneyRow label="TDS" value={`− ${formatINR(calc.tdsAmount)}`} />
               <div className="flex items-center justify-between py-1.5 text-sm">
-                <span className="text-muted-foreground" title="Auto-rounds the net to the nearest rupee. Type to override; clear to go back to auto.">
+                <span className="text-muted-foreground" title="Applied to the total excluding TDS. TDS is then deducted on the rounded figure. Auto-rounds to the nearest rupee; type to override, clear to go back to auto.">
                   Round off {form.round_off_manual ? '(manual)' : '(auto)'}
                 </span>
                 <Input
@@ -2033,8 +2064,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   }
                 />
               </div>
+              <MoneyRow label="Total after round off" value={formatINR(calc.roundedTotal)} strong />
+              <MoneyRow label="TDS (on the rounded total)" value={`− ${formatINR(calc.tdsAmount)}`} />
               <div className="my-3 border-t" />
-              <MoneyRow label="Net purchase amount" value={formatINR(calc.netAmount + (Number(form.round_off) || 0))} strong />
+              <MoneyRow label="Net purchase amount" value={formatINR(calc.netAmount)} strong />
               {error && <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
               <div className="mt-5 grid grid-cols-2 gap-2">
                 <Button variant="outline" onClick={() => setFormPage(false)} disabled={saving}>Cancel</Button>
@@ -2044,9 +2077,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           </div>
         </div>
       ) : (
-        <div className="px-8 pb-8 pt-3">
+        <div className="px-4 pb-6 pt-3">
           <Tabs value={tab} onValueChange={setTab}>
-            <TabsList className="mb-4">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+              <TabsList>
               <TabsTrigger value="tankers">Tanker movement</TabsTrigger>
               <TabsTrigger value="purchases">Purchase entries</TabsTrigger>
               <TabsTrigger value="unmapped">
@@ -2057,7 +2091,48 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   </span>
                 )}
               </TabsTrigger>
-            </TabsList>
+              </TabsList>
+              {/* Filters live on the tab row, for the entries tab only. */}
+              {tab === 'purchases' && (
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-card px-2.5 py-1">
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+                      Date
+                    </span>
+                    <DatePicker value={poFrom} onChange={(v) => setPoFrom(v || '')} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
+                    <span className="shrink-0 text-[10px] text-muted-foreground">to</span>
+                    <DatePicker value={poTo} onChange={(v) => setPoTo(v || '')} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
+                  </div>
+                  <div className="h-5 border-l" />
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+                      Category
+                    </span>
+                    <Select value={poCategory} onValueChange={setPoCategory}>
+                      <SelectTrigger className="h-7 w-[11.5rem] shrink-0 text-[11px]"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="ALL">All categories</SelectItem>
+                        {poCategories.map((cat) => (
+                          <SelectItem key={cat} value={cat}>{cat.toUpperCase()}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {(poFrom || poTo || poCategory !== 'ALL') && (
+                    <>
+                      <div className="h-5 shrink-0 border-l" />
+                      <button
+                        type="button"
+                        className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                        onClick={() => { setPoFrom(''); setPoTo(''); setPoCategory('ALL') }}
+                      >
+                        Clear
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
 
             <TabsContent value="tankers" className="space-y-5">
               <div className="overflow-hidden rounded-xl border bg-card">
@@ -2069,10 +2144,23 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <Label className="text-xs text-muted-foreground">From</Label>
-                    <DatePicker max={pivotEnd} value={pivotStart} onChange={(v) => setPivotStart(v || todayISO())} className="w-40" />
+                    <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+                      Category
+                    </span>
+                    <Select value={tmCategory} onValueChange={setTmCategory}>
+                      <SelectTrigger className="h-8 w-[10.5rem] text-[11px]"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="ALL">All categories</SelectItem>
+                        {tmCategories.map((c) => (
+                          <SelectItem key={c} value={c}>{c.toUpperCase()}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <div className="h-5 shrink-0 border-l" />
+                    <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">From</span>
+                    <DatePicker max={pivotEnd} value={pivotStart} onChange={(v) => setPivotStart(v || todayISO())} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
                     <Label className="text-xs text-muted-foreground">To</Label>
-                    <DatePicker min={pivotStart} max={todayISO()} value={pivotEnd} onChange={(v) => setPivotEnd(v || todayISO())} className="w-40" />
+                    <DatePicker min={pivotStart} max={todayISO()} value={pivotEnd} onChange={(v) => setPivotEnd(v || todayISO())} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
                     {(pivotStart !== monthStartISO() || pivotEnd !== todayISO()) && (
                       <Button variant="ghost" size="sm" onClick={() => { setPivotStart(monthStartISO()); setPivotEnd(todayISO()) }}>This month</Button>
                     )}
@@ -2099,11 +2187,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     />
                   </div>
                 </div>
-                <Table>
-                  <TableHeader className="bg-amber-100/70"><TableRow>
-                    <TableHead className="text-amber-900">Oil type</TableHead>
-                    {PIVOT_STAGES.map((s) => <TableHead key={s.key} className="text-center text-amber-900">{s.label}</TableHead>)}
-                    <TableHead className="text-center text-amber-900">Total</TableHead>
+                <Table className="text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:h-9 [&_th]:px-3">
+                  <TableHeader className="bg-amber-50"><TableRow>
+                    <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Oil type</TableHead>
+                    {PIVOT_STAGES.map((s) => <TableHead key={s.key} className="text-center text-[10px] font-semibold uppercase tracking-wide text-amber-900">{s.label}</TableHead>)}
+                    <TableHead className="text-center text-[10px] font-semibold uppercase tracking-wide text-amber-900">Total</TableHead>
                   </TableRow></TableHeader>
                   <TableBody>
                     {pivot.rows.length === 0 ? (
@@ -2178,10 +2266,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 </div>
               )}
               <div className="overflow-hidden rounded-xl border bg-card">
-                <Table>
-                  <TableHeader><TableRow>
-                    <TableHead>Tanker</TableHead><TableHead>Supplier / bargain</TableHead><TableHead className="text-right">Loaded qty</TableHead>
-                    <TableHead>Payment</TableHead><TableHead>Invoice</TableHead><TableHead>Stage</TableHead><TableHead className="text-right">Action</TableHead>
+                <Table className="text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:h-9 [&_th]:px-3">
+                  <TableHeader><TableRow className="bg-muted/60">
+                    <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Tanker</TableHead><TableHead className="text-[10px] font-semibold uppercase tracking-wide">Supplier / bargain</TableHead><TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Loaded qty</TableHead>
+                    <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Payment</TableHead><TableHead className="text-[10px] font-semibold uppercase tracking-wide">Invoice</TableHead><TableHead className="text-[10px] font-semibold uppercase tracking-wide">Stage</TableHead><TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Action</TableHead>
                   </TableRow></TableHeader>
                   <TableBody>
                     {loading ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
@@ -2234,17 +2322,19 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
 
             <TabsContent value="purchases">
               <div className="overflow-hidden rounded-xl border bg-card">
-                <Table>
+                <Table className="text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3">
                   <TableHeader><TableRow>
-                    <TableHead>Invoice</TableHead><TableHead>Supplier</TableHead><TableHead>Oil</TableHead><TableHead className="text-center">Tankers</TableHead>
+                    <TableHead>Invoice</TableHead><TableHead>Supplier</TableHead><TableHead>Category</TableHead><TableHead>Product</TableHead><TableHead className="text-center">Tankers</TableHead>
                     <TableHead className="text-right">Quantity</TableHead><TableHead className="text-right">Net amount</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead>
                   </TableRow></TableHeader>
                   <TableBody>
-                    {loading ? <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
-                      : rows.length === 0 ? <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No purchase entries yet.</TableCell></TableRow>
-                        : orderPaged.pageRows.map((row) => <TableRow key={row.id}>
-                          <TableCell><div className="font-medium">{row.invoice_no}</div><div className="text-xs text-muted-foreground">{formatDate(row.order_date)}</div></TableCell>
-                          <TableCell>{row.supplier_name}</TableCell><TableCell>{row.oil_code || row.oil_name || '—'}</TableCell>
+                    {loading ? <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+                      : filteredOrders.length === 0 ? <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">{rows.length ? 'No purchase entry matches these filters.' : 'No purchase entries yet.'}</TableCell></TableRow>
+                        : orderPaged.pageRows.map((row) => <TableRow key={row.id} className="hover:bg-amber-50">
+                          <TableCell><div className="font-medium">{row.invoice_no}</div><div className="text-[11px] text-muted-foreground">{formatDate(row.order_date)}</div></TableCell>
+                          <TableCell>{row.supplier_name}</TableCell>
+                          <TableCell className="uppercase text-muted-foreground">{row.product_category || '—'}</TableCell>
+                          <TableCell className="font-medium">{row.oil_code || row.oil_name || '—'}</TableCell>
                           <TableCell className="text-center"><Badge variant="secondary">{row.tanker_count || 0}</Badge></TableCell>
                           <TableCell className="text-right tabular-nums">{formatNum(row.ordered_qty)} {row.uom}</TableCell>
                           <TableCell className="text-right font-medium tabular-nums">{formatINR(row.net_amount)}</TableCell>

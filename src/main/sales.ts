@@ -186,7 +186,8 @@ export async function listSales(): Promise<Row[]> {
   const res = await getClient().execute({
     args: [getActiveCompanyId()],
     sql: `
-    SELECT s.*, pr.name AS product_name, pr.category AS product_category, sb.bargain_no AS sales_bargain_no,
+    SELECT s.*, pr.name AS product_name, pr.material_type AS product_category,
+           pr.category AS product_sub_category, sb.bargain_no AS sales_bargain_no,
            pk.name AS packaging_name, tr.name AS transporter_name, cu.name AS customer_master
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id

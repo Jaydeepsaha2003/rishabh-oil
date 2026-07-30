@@ -846,7 +846,7 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
   return (
     <>
       <PageHeader title="Settings" subtitle="Master data used across bargains and purchases" hint="Ports/sources (with transit days), the default allowed shortage %, users and access control. Changes here flow through to every module." />
-      <div className="p-8">
+      <div className="px-4 py-6">
         <Tabs defaultValue="sources">
           <TabsList>
             <TabsTrigger value="sources">Ports</TabsTrigger>

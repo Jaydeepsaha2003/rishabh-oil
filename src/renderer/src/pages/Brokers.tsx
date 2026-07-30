@@ -29,7 +29,7 @@ export function Brokers(): React.JSX.Element {
         subtitle="Brokers with their contact details and brokerage"
         hint="Master list of brokers. Add the broker's contact info and default brokerage % here; they can then be referenced across deals."
       />
-      <div className="p-8">
+      <div className="px-4 py-6">
         <EntityManager
           table="brokers"
           title="Broker"

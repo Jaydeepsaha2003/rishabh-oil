@@ -157,7 +157,7 @@ export function Formulation(): React.JSX.Element {
             </Button>
           }
         />
-        <div className="p-8">
+        <div className="px-4 py-6">
           <Card className="max-w-3xl p-6">
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1.5">
@@ -285,7 +285,7 @@ export function Formulation(): React.JSX.Element {
           </Button>
         }
       />
-      <div className="p-8">
+      <div className="px-4 py-6">
         {outputs.length === 0 && (
           <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             Add finished or intermediate products first (Products page) to build a formulation.

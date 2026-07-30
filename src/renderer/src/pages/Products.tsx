@@ -9,11 +9,16 @@ const fields: FieldDef[] = [
   {
     key: 'material_type',
     label: 'Category',
-    type: 'select',
+    // Creatable: the seed list below plus every category already in use, and the
+    // user can type a new one and add it.
+    type: 'creatable',
     default: 'OIL',
     options: [
       { value: 'OIL', label: 'OIL' },
       { value: 'HUSK', label: 'HUSK' },
+      { value: 'FATTY', label: 'FATTY' },
+      { value: 'SCRAP', label: 'SCRAP' },
+      { value: 'SPENT EARTH', label: 'SPENT EARTH' },
       { value: 'PACKAGING', label: 'PACKAGING' },
       { value: 'CHEMICAL', label: 'CHEMICAL' },
       { value: 'MISC', label: 'MISC' }
@@ -22,12 +27,14 @@ const fields: FieldDef[] = [
   {
     key: 'category',
     label: 'Sub-category',
-    type: 'select',
+    type: 'creatable',
     default: 'raw',
     options: [
       { value: 'raw', label: 'Raw' },
       { value: 'intermediate', label: 'Intermediate' },
-      { value: 'finished', label: 'Finished' }
+      { value: 'finished', label: 'Finished' },
+      { value: 'by-product', label: 'By-product' },
+      { value: 'waste', label: 'Waste' }
     ]
   },
   { key: 'active', label: 'Active', type: 'switch', default: true }
@@ -46,7 +53,7 @@ export function Products(): React.JSX.Element {
   return (
     <>
       <PageHeader title="Products" subtitle="Raw oils, intermediates and finished products" hint="The master catalog. Raw oils are bought via bargains; intermediates and finished goods are built from formulations and tracked in stock." />
-      <div className="p-8">
+      <div className="px-4 py-6">
         <EntityManager
           table="products"
           title="Product"

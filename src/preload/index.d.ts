@@ -162,6 +162,10 @@ export interface Api {
     setInvoiceStage: (group: string, stage: string, force?: boolean, date?: string) => Promise<{ group: string }>
     removeInvoice: (group: string) => Promise<{ group: string }>
   }
+  skuRates: {
+    list: (id: number) => Promise<Row[]>
+    save: (id: number, rows: Row[]) => Promise<{ saved: number; cleared: number }>
+  }
   salesBargains: {
     list: (from?: string, to?: string) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number; bargain_no: string }>
