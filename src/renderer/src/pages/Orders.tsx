@@ -1351,6 +1351,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     }
   }, [calc.totalExclTds, form.round_off_manual, form.round_off, formPage])
 
+  // Tally's accept shortcut, on the purchase form only.
+  useEffect(() => {
+    if (!formPage) return
+    function onKey(e: KeyboardEvent): void {
+      if (e.ctrlKey && (e.key === 'a' || e.key === 'A')) {
+        e.preventDefault()
+        if (!saving) void savePurchase()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formPage, saving, form, selected, bgLines])
+
   async function savePurchase(): Promise<void> {
     if (!form.company_id) return setError('Choose the company this purchase belongs to')
     if (!form.supplier_id) return setError('Select the supplier')
@@ -1515,24 +1529,29 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       )}
 
       {formPage ? (
-        <div className="px-4 py-5">
-          <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 border-b pb-3">
-            <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground" onClick={() => { if (onBack) { onBack() } else { setFormPage(false) } }}>
-              <ArrowLeft className="h-4 w-4" /> {onBack ? `Back to ${backLabel || 'previous page'}` : 'Back'}
+        <div className="px-4 py-4">
+          <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
+            <button className="inline-flex cursor-pointer items-center gap-1.5 text-[12px] font-medium hover:underline" onClick={() => { if (onBack) { onBack() } else { setFormPage(false) } }}>
+              <ArrowLeft className="h-3.5 w-3.5" /> {onBack ? `Back to ${backLabel || 'previous page'}` : 'Back'}
             </button>
-            <div className="h-4 border-l" />
-            <h2 className="text-base font-semibold">{editing ? `Edit purchase ${editing.invoice_no}` : 'Create purchase invoice'}</h2>
-            <p className="text-sm text-muted-foreground">
-              {directMode
-                ? 'Direct purchase — book the bargain quantity straight into the books, no tanker movement.'
-                : 'Select all loaded tankers covered by this single supplier invoice.'}
-            </p>
+            <div className="h-4 border-l border-[#1a2c56]/30" />
+            <h2 className="text-[13px] font-bold uppercase tracking-widest">
+              {editing ? 'Alter purchase invoice' : 'Purchase invoice'}
+            </h2>
+            <span className="ml-auto text-[11px] font-medium">
+              {form.invoice_no ? `No ${form.invoice_no}` : 'No: not yet given'}
+              {form.order_date ? ` · ${formatDate(form.order_date)}` : ''}
+              {directMode ? ' · direct, no tanker movement' : ''}
+            </span>
           </div>
 
-          <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
-            <div className="space-y-6">
-              <section className="rounded-xl border bg-card p-5">
-                <h3 className="mb-4 font-medium">Invoice details</h3>
+          <div className="grid gap-4 p-4 xl:grid-cols-[1fr_360px]">
+            <div className="space-y-4">
+              <section className="rounded border border-[#e5dfc8] bg-white p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
+                <h3 className="mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                  Invoice details
+                </h3>
                 <div className="grid gap-4 md:grid-cols-3">
                   <div className="grid gap-1.5">
                     <Label>Book into company *</Label>
@@ -1716,9 +1735,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               </section>
 
               {directMode ? (
-                <section className="rounded-xl border border-violet-200 bg-violet-50/40 p-5">
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <h3 className="font-medium text-violet-900">Direct purchase — no tanker movement</h3>
+                <section className="rounded border border-violet-300 bg-violet-50/40 p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
+                  <div className="mb-3 flex items-center justify-between gap-3 border-b border-dotted border-violet-200 pb-1.5">
+                    <h3 className="text-[11px] font-bold uppercase tracking-widest text-violet-900">Direct purchase — no tanker movement</h3>
                     <Badge className="bg-violet-600 hover:bg-violet-600">Direct</Badge>
                   </div>
                   {!form.supplier_id ? (
@@ -1956,10 +1975,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   )}
                 </section>
               ) : (
-              <section className="rounded-xl border bg-card p-5">
-                <div className="mb-4 flex items-center justify-between">
+              <section className="rounded border border-[#e5dfc8] bg-white p-4">
+                <div className="mb-3 flex items-center justify-between border-b border-dotted border-[#e5dfc8] pb-1.5">
                   <div>
-                    <h3 className="font-medium">Tankers on this invoice</h3>
+                    <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Tankers on this invoice</h3>
                     <p className="text-xs text-muted-foreground">All the supplier&apos;s unbilled loaded tankers — tick the ones covered by this invoice.</p>
                   </div>
                   <Badge variant="secondary">{selected.length} selected</Badge>
@@ -2001,8 +2020,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               )}
             </div>
 
-            <aside className="h-fit rounded-xl border bg-card p-5 xl:sticky xl:top-6">
-              <h3 className="mb-3 font-medium">Purchase summary</h3>
+            <aside className="h-fit rounded border border-[#d9d2b8] bg-[#f7f2e2] p-4 xl:sticky xl:top-6">
+              <h3 className="mb-2 border-b border-[#d9d2b8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                Purchase summary
+              </h3>
               {directMode ? (
                 <>
                   <MoneyRow label="Purchase type" value="Direct — no tanker movement" />
@@ -2106,14 +2127,21 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               </div>
               <MoneyRow label="Total after round off" value={formatINR(calc.roundedTotal)} strong />
               <MoneyRow label="TDS (on the rounded total)" value={`− ${formatINR(calc.tdsAmount)}`} />
-              <div className="my-3 border-t" />
-              <MoneyRow label="Net purchase amount" value={formatINR(calc.netAmount)} strong />
-              {error && <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
-              <div className="mt-5 grid grid-cols-2 gap-2">
-                <Button variant="outline" onClick={() => setFormPage(false)} disabled={saving}>Cancel</Button>
-                <Button onClick={savePurchase} disabled={saving}>{saving ? 'Saving…' : 'Save purchase'}</Button>
+              <div className="my-2 border-t-2 border-[#1a2c56]" />
+              <div className="flex items-center justify-between text-[15px] font-bold text-[#1a2c56]">
+                <span>Net purchase amount</span>
+                <span className="tabular-nums">{formatINR(calc.netAmount)}</span>
               </div>
+              {error && <p className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <Button variant="outline" className="bg-white" onClick={() => setFormPage(false)} disabled={saving}>Cancel</Button>
+                <Button className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={savePurchase} disabled={saving}>
+                  {saving ? 'Saving…' : editing ? 'Save changes' : 'Accept purchase'}
+                </Button>
+              </div>
+              <p className="mt-2 text-center text-[10px] text-muted-foreground">Ctrl+A accepts, like Tally.</p>
             </aside>
+          </div>
           </div>
         </div>
       ) : (
