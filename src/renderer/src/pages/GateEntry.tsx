@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
+  ClipboardList,
   LogIn, LogOut, Pencil, Scale, Trash2, Truck } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Badge } from '@/components/ui/badge'
@@ -38,7 +39,14 @@ const blankArrival = (): Row => ({
   // Direct MNC stock: the vehicle is not one of ours, so there is nothing to
   // pick from the tanker list — the number is typed and the party named here.
   is_direct_mnc: false,
-  supplier_id: ''
+  supplier_id: '',
+  customer_id: '',
+  // 's:12' / 'c:5' — one picker spanning both party masters, used when the
+  // vehicle is typed in by hand rather than chosen from the tanker list.
+  party: '',
+  note: '',
+  // Recorded and finished at the gate — no weighbridge step.
+  no_weighment: false
 })
 
 const blankGateOut = (): Row => ({
@@ -50,7 +58,7 @@ const blankGateOut = (): Row => ({
   tanker_no: '',
   dispatch_qty: '',
   uom: 'MT',
-  no_invoice: false,
+  no_weighment: false,
   note: ''
 })
 
@@ -73,7 +81,7 @@ export function GateEntry(): React.JSX.Element {
       if (gTo && d > gTo) return false
       if (gCat !== 'ALL' && String(r.rec_type || '') !== gCat) return false
       if (!q) return true
-      return [r.gate_entry_no, r.ref_no, r.tanker_no, r.supplier_name, r.sale_customer, r.sale_invoice]
+      return [r.gate_entry_no, r.ref_no, r.tanker_no, r.supplier_name, r.sale_customer, r.sale_invoice, r.person, r.note]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
@@ -83,10 +91,13 @@ export function GateEntry(): React.JSX.Element {
   const paged = usePaged(filteredRows)
   const [tankers, setTankers] = useState<Row[]>([])
   const [suppliers, setSuppliers] = useState<Row[]>([])
+  // Every active party, both sides — the manual-vehicle picker spans them.
+  const [allSuppliers, setAllSuppliers] = useState<Row[]>([])
+  const [customers, setCustomers] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
   // The page carried the two entry forms, the weighment queue and the whole
   // register at once; split so recording and reviewing are separate.
-  const [tab, setTab] = useState('entry')
+  const [tab, setTab] = useState('in')
   // Rec type mirrors the categories on the Products master, so a category added
   // there (FATTY, SCRAP, SPENT EARTH…) is immediately selectable at the gate.
   const recTypes = useMemo(() => {
@@ -101,6 +112,9 @@ export function GateEntry(): React.JSX.Element {
   const [loading, setLoading] = useState(true)
   const [arrival, setArrival] = useState<Row>(blankArrival())
   const [savingArrival, setSavingArrival] = useState(false)
+  // The plain register line — vehicle, person, material. Nothing else.
+  const [quick, setQuick] = useState<Row>({ direction: 'in', tanker_no: '', person: '', note: '', entry_date: todayISO() })
+  const [savingQuick, setSavingQuick] = useState(false)
   const [gateOut, setGateOut] = useState<Row>(blankGateOut())
   const [savingOut, setSavingOut] = useState(false)
   // per-pending-entry weighbridge inputs (gross / tare → net)
@@ -110,7 +124,7 @@ export function GateEntry(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [g, pt, sl, nextNo, nextOutNo, sup, prd] = await Promise.all([
+    const [g, pt, sl, nextNo, nextOutNo, sup, prd, cus] = await Promise.all([
       window.api.gate.list(),
       // the gate serves every company — list tankers across all of them
       window.api.tankers.list(true),
@@ -118,12 +132,15 @@ export function GateEntry(): React.JSX.Element {
       window.api.gate.nextNo('in').catch(() => ''),
       window.api.gate.nextNo('out').catch(() => ''),
       window.api.data.list('suppliers'),
-      window.api.data.list('products')
+      window.api.data.list('products'),
+      window.api.data.list('customers').catch(() => [] as Row[])
     ])
     setRows(g)
     setTankers(pt)
     // Only parties whose purchases skip tanker movement can send direct stock.
     setSuppliers(sup.filter((x) => x.active && x.skip_tanker_stages))
+    setAllSuppliers(sup.filter((x) => x.active))
+    setCustomers(cus.filter((x) => x.active))
     setProducts(prd.filter((x) => x.active))
     setSales(sl)
     setArrival((p) => (p.gate_entry_no ? p : { ...p, gate_entry_no: nextNo }))
@@ -135,6 +152,8 @@ export function GateEntry(): React.JSX.Element {
   useLiveRefresh(load)
 
   const pending = rows.filter((r) => r.status === 'pending')
+  const pendingIn = pending.filter((r) => String(r.direction || 'in') === 'in').length
+  const pendingOut = pending.filter((r) => String(r.direction || 'in') === 'out').length
   const completed = rows.filter((r) => r.status !== 'pending')
 
   // Tankers that can still arrive: not emptied yet and no gate entry so far.
@@ -176,26 +195,56 @@ export function GateEntry(): React.JSX.Element {
     }))
   }
 
+  // A gate line with nothing behind it: no document, no weighment, no stock.
+  async function recordQuick(): Promise<void> {
+    if (!String(quick.tanker_no || '').trim()) return void toast.error('Enter the vehicle number')
+    if (!String(quick.note || '').trim()) return void toast.error('Say what the vehicle is carrying')
+    setSavingQuick(true)
+    try {
+      await window.api.gate.create({
+        entry_kind: 'simple',
+        direction: quick.direction === 'out' ? 'out' : 'in',
+        entry_date: quick.entry_date || todayISO(),
+        tanker_no: String(quick.tanker_no).trim(),
+        person: quick.person || null,
+        note: String(quick.note).trim(),
+        rec_type: 'MISCELLANEOUS',
+        dispatch_qty: 0,
+        received_qty: 0,
+        no_weighment: true
+      })
+      toast.success(`${quick.tanker_no} logged at the gate`)
+      setQuick({ direction: quick.direction, tanker_no: '', person: '', note: '', entry_date: quick.entry_date || todayISO() })
+      await load()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setSavingQuick(false)
+    }
+  }
+
   // Gate OUT — normally with a sale invoice; a vehicle can also leave without
   // a bill when that is said explicitly and the reason is recorded.
   async function recordGateOut(): Promise<void> {
-    if (!gateOut.no_invoice && !gateOut.invoice_group) return void toast.error('Select the sale invoice being dispatched')
-    if (gateOut.no_invoice && !String(gateOut.note || '').trim()) return void toast.error('Give the reason the vehicle is leaving without a bill')
+    if (!gateOut.invoice_group && !String(gateOut.note || '').trim()) {
+      return void toast.error('Pick the sale invoice, or write why the vehicle is leaving without one')
+    }
     if (!String(gateOut.tanker_no || '').trim()) return void toast.error('Enter the vehicle number')
     setSavingOut(true)
     try {
       await window.api.gate.create({
         ...gateOut,
         direction: 'out',
-        invoice_group: gateOut.no_invoice ? null : gateOut.invoice_group,
+        invoice_group: gateOut.invoice_group || null,
         tanker_id: null,
         dispatch_qty: Number(gateOut.dispatch_qty) || 0,
-        received_qty: 0,
-        status: 'pending'
+        received_qty: gateOut.no_weighment ? Number(gateOut.dispatch_qty) || 0 : 0,
+        no_weighment: !!gateOut.no_weighment,
+        status: gateOut.no_weighment ? 'completed' : 'pending'
       })
       toast.success(
-        gateOut.no_invoice
-          ? `Vehicle ${gateOut.tanker_no} out WITHOUT a bill — reason on record`
+        gateOut.no_weighment
+          ? `Vehicle ${gateOut.tanker_no} out — no weighment, entry complete`
           : `Vehicle ${gateOut.tanker_no} out — waiting for weight`
       )
       setGateOut(blankGateOut())
@@ -223,13 +272,29 @@ export function GateEntry(): React.JSX.Element {
         ...arrival,
         tanker_id: arrival.is_direct_mnc || !arrival.tanker_id ? null : Number(arrival.tanker_id),
         oil_type_id: arrival.oil_type_id ? Number(arrival.oil_type_id) : null,
-        supplier_id: arrival.is_direct_mnc && arrival.supplier_id ? Number(arrival.supplier_id) : null,
+        supplier_id: arrival.is_direct_mnc
+          ? arrival.supplier_id
+            ? Number(arrival.supplier_id)
+            : null
+          : String(arrival.party || '').startsWith('s:')
+            ? Number(String(arrival.party).slice(2))
+            : null,
+        customer_id: !arrival.is_direct_mnc && String(arrival.party || '').startsWith('c:')
+          ? Number(String(arrival.party).slice(2))
+          : null,
+        note: arrival.note ? String(arrival.note).trim() : null,
         is_direct_mnc: !!arrival.is_direct_mnc,
         dispatch_qty: Number(arrival.dispatch_qty) || 0,
-        received_qty: 0,
-        status: 'pending'
+        // Without weighment the declared quantity stands as the entry's figure.
+        received_qty: arrival.no_weighment ? Number(arrival.dispatch_qty) || 0 : 0,
+        no_weighment: !!arrival.no_weighment,
+        status: arrival.no_weighment ? 'completed' : 'pending'
       })
-      toast.success(`Tanker ${arrival.tanker_no} received — waiting for weight`)
+      toast.success(
+        arrival.no_weighment
+          ? `Tanker ${arrival.tanker_no} recorded — no weighment, entry complete`
+          : `Tanker ${arrival.tanker_no} received — waiting for weight`
+      )
       setArrival(blankArrival())
       await load()
     } catch (e) {
@@ -240,20 +305,51 @@ export function GateEntry(): React.JSX.Element {
   }
 
   // Step 2 — gross & tare arrive from the weighbridge; net completes the entry.
+  // Save whatever is on the weighbridge slip so far. One figure keeps the
+  // vehicle in the queue; both complete it.
   async function saveWeight(row: Row): Promise<void> {
-    const w = weights[row.id] || { gross: '', tare: '' }
-    const gross = Number(w.gross || 0)
-    const tare = Number(w.tare || 0)
-    if (gross <= 0) return void toast.error('Enter the gross weight')
-    const net = Math.round((gross - tare) * 1000) / 1000
-    if (net <= 0) return void toast.error('Net (gross − tare) must be greater than zero')
+    const w = storedWeights(row)
+    const gross = w.gross === '' ? null : Number(w.gross)
+    const tare = w.tare === '' ? null : Number(w.tare)
+    if (gross == null && tare == null) return void toast.error('Enter the gross or the tare weight')
     try {
-      await window.api.gate.complete(row.id, gross, tare)
-      toast.success(`${row.tanker_no} completed — net ${formatNum(net)} ${row.uom}`)
-      setWeights((p) => ({ ...p, [row.id]: { gross: '', tare: '' } }))
+      const r = await window.api.gate.weights(row.id, gross, tare)
+      if (r.status === 'completed') {
+        toast.success(`${row.tanker_no} completed — net ${formatNum(r.net || 0)} ${row.uom}`)
+      } else {
+        toast.success(`${row.tanker_no}: ${r.missing === 'gross' ? 'tare' : 'gross'} saved — still waiting for the ${r.missing}`)
+      }
+      setWeights((p) => {
+        const next = { ...p }
+        delete next[row.id]
+        return next
+      })
       await load()
     } catch (e) {
       toast.error(errText(e))
+    }
+  }
+
+  // Finish a non-oil entry with no weighment at all.
+  async function skipWeighment(row: Row): Promise<void> {
+    if (!confirm(`Complete ${row.tanker_no} without any weighment?`)) return
+    try {
+      await window.api.gate.skipWeighment(row.id)
+      toast.success(`${row.tanker_no} completed without weighment`)
+      await load()
+    } catch (e) {
+      toast.error(errText(e))
+    }
+  }
+
+  // What the card shows: the operator's unsaved typing, else whatever weight
+  // was already recorded against the entry.
+  function storedWeights(row: Row): { gross: string; tare: string } {
+    const typed = weights[row.id]
+    if (typed) return typed
+    return {
+      gross: row.gross_weight == null ? '' : String(row.gross_weight),
+      tare: row.tare_weight == null ? '' : String(row.tare_weight)
     }
   }
 
@@ -305,6 +401,149 @@ export function GateEntry(): React.JSX.Element {
     }
   }
 
+  // The weighbridge queue for ONE direction, so Gate in and Gate out each
+  // finish the vehicles they recorded instead of sharing one mixed list.
+  function weighQueue(dir: 'in' | 'out'): React.JSX.Element {
+    const list = pending.filter((r) => String(r.direction || 'in') === dir)
+    return (
+        <section>
+          <div className="mb-2 flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-100 text-amber-700">
+              <Scale className="h-4 w-4" />
+            </div>
+            <h3 className="text-sm font-semibold">Waiting for weighment</h3>
+            <InfoTip text="Enter the weighbridge Gross and Tare; the net (gross − tare) is calculated and completes the entry." />
+            <Badge variant={list.length ? 'warning' : 'muted'} className="ml-1">{list.length}</Badge>
+          </div>
+          {list.length === 0 ? (
+            <div className="rounded-xl border border-dashed py-5 text-center text-sm text-muted-foreground">
+              No tankers waiting for weight.
+            </div>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {list.map((row) => (
+                <div key={row.id} className="flex flex-col rounded-xl border border-amber-200 bg-card shadow-sm transition-shadow hover:shadow-md">
+                  {/* Identity strip: vehicle + direction, never wrapping. */}
+                  <div className="flex items-center gap-2 rounded-t-xl border-b border-amber-100 bg-amber-50/60 px-3 py-2">
+                    <span
+                      className={cn(
+                        'inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md',
+                        row.direction === 'out' ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'
+                      )}
+                    >
+                      {row.direction === 'out' ? <LogOut className="h-3.5 w-3.5" /> : <LogIn className="h-3.5 w-3.5" />}
+                    </span>
+                    <span className="truncate text-[13.5px] font-bold tracking-wide">{row.tanker_no}</span>
+                    <Badge
+                      variant={row.direction === 'out' ? 'default' : 'warning'}
+                      className="ml-auto shrink-0 whitespace-nowrap"
+                    >
+                      {row.direction === 'out' ? 'OUT' : 'IN'}
+                    </Badge>
+                  </div>
+
+                  <div className="flex flex-1 flex-col px-3 pb-3 pt-2">
+                    <div className="truncate text-[12.5px] font-medium" title={String(row.direction === 'out' ? row.sale_customer || '' : row.supplier_name || '')}>
+                      {row.direction === 'out'
+                        ? (row.sale_invoice || row.sale_customer
+                            ? <>{row.sale_customer || '—'}{row.sale_invoice ? <span className="text-muted-foreground"> · {row.sale_invoice}</span> : ''}</>
+                            : <span className="font-medium text-amber-700">No bill{row.note ? ` — ${row.note}` : ''}</span>)
+                        : <>{row.supplier_name || '—'}{row.bargain_no ? <span className="text-muted-foreground"> · {row.bargain_no}</span> : ''}</>}
+                    </div>
+                    {/* Meta as aligned label/value pairs instead of a wrapping sentence. */}
+                    <div className="mt-1.5 grid grid-cols-3 gap-1 text-center">
+                      {[
+                        { l: 'Gate no', v: String(row.gate_entry_no || '—') },
+                        { l: String(row.rec_type || 'OIL'), v: formatDate(row.entry_date) },
+                        { l: 'Dispatch', v: Number(row.dispatch_qty) > 0 ? `${formatNum(row.dispatch_qty)} ${row.uom}` : '—' }
+                      ].map((x) => (
+                        <div key={x.l} className="rounded bg-muted/50 px-1 py-0.5">
+                          <div className="truncate text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">{x.l}</div>
+                          <div className="truncate text-[11px] font-medium tabular-nums">{x.v}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {(() => {
+                      const w = storedWeights(row)
+                      const hasG = w.gross !== '' && Number(w.gross) > 0
+                      const hasT = w.tare !== '' && Number(w.tare) >= 0
+                      const both = hasG && hasT
+                      const net = Math.round(((Number(w.gross) || 0) - (Number(w.tare) || 0)) * 1000) / 1000
+                      const ready = both && net > 0
+                      // Oil must be weighed both ways; other categories may be
+                      // finished at the gate with no weighment at all.
+                      const isOil = String(row.rec_type || 'OIL').toUpperCase() === 'OIL'
+                      const setW = (k: 'gross' | 'tare', val: string): void =>
+                        setWeights((p) => ({ ...p, [row.id]: { ...storedWeights(row), [k]: val } }))
+                      return (
+                        <div className="mt-auto">
+                          <div className="mt-2.5 grid grid-cols-2 gap-1.5">
+                            <div className="grid gap-0.5">
+                              <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Gross ({row.uom})</span>
+                              <Input type="number" className="h-8 text-right tabular-nums" placeholder="0.000" value={w.gross}
+                                onChange={(e) => setW('gross', e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
+                            </div>
+                            <div className="grid gap-0.5">
+                              <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Tare ({row.uom})</span>
+                              <Input type="number" className="h-8 text-right tabular-nums" placeholder="0.000" value={w.tare}
+                                onChange={(e) => setW('tare', e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
+                            </div>
+                          </div>
+                          {/* One figure saves and waits; both complete. */}
+                          {(hasG || hasT) && !both && (
+                            <div className="mt-1.5 rounded bg-amber-100/70 px-2 py-1 text-[10.5px] font-medium text-amber-900">
+                              {hasG ? 'Gross recorded — waiting for the tare weight' : 'Tare recorded — waiting for the gross weight'}
+                            </div>
+                          )}
+                          <div className="mt-2 flex items-center justify-between gap-2">
+                            <span className={cn('text-[12px]', ready ? 'font-semibold text-emerald-700' : 'text-muted-foreground')}>
+                              Net <span className="tabular-nums">{ready ? formatNum(net) : '—'}</span> {row.uom}
+                            </span>
+                            <span className="flex items-center gap-1">
+                              {!isOil && !hasG && !hasT && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8 px-2 text-[11px]"
+                                  title="Finish this entry with no weighment (not allowed for oil)"
+                                  onClick={() => void skipWeighment(row)}
+                                >
+                                  No weighment
+                                </Button>
+                              )}
+                              <Button
+                                size="sm"
+                                className="h-8"
+                                disabled={!hasG && !hasT}
+                                title={
+                                  ready
+                                    ? 'Complete on net = gross − tare'
+                                    : hasG || hasT
+                                      ? 'Saves this weight; the vehicle stays in the queue for the other one'
+                                      : isOil
+                                        ? 'Oil needs both the gross and the tare weight'
+                                        : 'Enter a weight, or finish with No weighment'
+                                }
+                                onClick={() => saveWeight(row)}
+                              >
+                                <Scale className="h-4 w-4" /> {ready ? 'Complete' : 'Save'}
+                              </Button>
+                            </span>
+                          </div>
+                        </div>
+                      )
+                    })()}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+    )
+  }
+
   return (
     <>
       <PageHeader
@@ -325,7 +564,10 @@ export function GateEntry(): React.JSX.Element {
               { header: 'Gross', key: 'gross_weight', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.gross_weight) || 0 },
               { header: 'Tare', key: 'tare_weight', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.tare_weight) || 0 },
               { header: 'Net qty', key: 'qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.qty) || 0 },
-              { header: 'Status', key: 'status', value: (r) => (r.status === 'completed' ? 'Done' : 'Pending') }
+              { header: 'Status', key: 'status', value: (r) => (r.status === 'completed' ? 'Done' : 'Pending') },
+              { header: 'Weighed', key: 'no_weighment', value: (r) => (String(r.entry_kind) === 'simple' ? 'Quick entry' : Number(r.no_weighment) === 1 ? 'No weighment' : 'Yes') },
+              { header: 'Person', key: 'person', value: (r) => r.person || '' },
+              { header: 'Note / material', key: 'note', value: (r) => r.note || '' }
             ]}
             rows={rows}
           />
@@ -335,15 +577,30 @@ export function GateEntry(): React.JSX.Element {
         <Tabs value={tab} onValueChange={setTab}>
           <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
             <TabsList>
-            <TabsTrigger value="entry">Record entry</TabsTrigger>
-            <TabsTrigger value="view">
-              Entries
-              {rows.length > 0 && (
-                <span className="ml-1.5 rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground">
-                  {rows.length}
-                </span>
-              )}
-            </TabsTrigger>
+              <TabsTrigger value="in">
+                Gate in
+                {pendingIn > 0 && (
+                  <span className="ml-1.5 rounded-full bg-amber-200 px-1.5 text-[10px] font-semibold text-amber-900">
+                    {pendingIn}
+                  </span>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="out">
+                Gate out
+                {pendingOut > 0 && (
+                  <span className="ml-1.5 rounded-full bg-amber-200 px-1.5 text-[10px] font-semibold text-amber-900">
+                    {pendingOut}
+                  </span>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="view">
+                Entries
+                {rows.length > 0 && (
+                  <span className="ml-1.5 rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground">
+                    {rows.length}
+                  </span>
+                )}
+              </TabsTrigger>
             </TabsList>
             {tab === 'view' && (
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-card px-2.5 py-1">
@@ -396,7 +653,7 @@ export function GateEntry(): React.JSX.Element {
             )}
           </div>
 
-          <TabsContent value="entry" className="space-y-6">
+          <TabsContent value="in" className="space-y-6">
         {/* Tanker IN */}
         <section className="rounded-xl border bg-card p-5 shadow-sm">
           <div className="mb-4 flex items-center gap-2">
@@ -425,6 +682,21 @@ export function GateEntry(): React.JSX.Element {
               />
               <span className="font-medium">Direct MNC stock</span>
               <InfoTip text="ON: the goods come straight from a direct-purchase party (BUNGE and the like) on their own vehicle. No tanker to select — type the number and name the party." />
+            </label>
+            <label
+              className={cn(
+                'flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs transition',
+                arrival.no_weighment
+                  ? 'border-sky-300 bg-sky-50 text-sky-900'
+                  : 'text-muted-foreground hover:bg-muted/50'
+              )}
+            >
+              <Switch
+                checked={!!arrival.no_weighment}
+                onCheckedChange={(v) => setArrival((p) => ({ ...p, no_weighment: v }))}
+              />
+              <span className="font-medium">Without weighment</span>
+              <InfoTip text="ON: the entry completes at the gate and never joins the weighbridge queue. The declared quantity stands as its figure, and no gate weight cross-checks the purchase." />
             </label>
           </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -475,6 +747,53 @@ export function GateEntry(): React.JSX.Element {
                 </SelectContent>
               </Select>
             </div>
+            {/* A hand-typed vehicle belongs to nobody yet — name the party it
+                came from or went to, from either master in one list. */}
+            {!arrival.is_direct_mnc && !arrival.tanker_id && (
+              <div className="grid min-w-0 gap-1.5">
+                <Label>
+                  Party <span className="text-[10px] font-normal text-muted-foreground">(supplier or customer)</span>
+                </Label>
+                <Select
+                  value={String(arrival.party || '')}
+                  onValueChange={(v) => setArrival((p) => ({ ...p, party: v }))}
+                >
+                  <SelectTrigger><SelectValue placeholder="Select the party" /></SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    {allSuppliers.length > 0 && (
+                      <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                        Suppliers
+                      </div>
+                    )}
+                    {allSuppliers.map((x) => (
+                      <SelectItem key={`s${x.id}`} value={`s:${x.id}`}>{x.name}</SelectItem>
+                    ))}
+                    {customers.length > 0 && (
+                      <div className="mt-1 border-t px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                        Customers
+                      </div>
+                    )}
+                    {customers.map((x) => (
+                      <SelectItem key={`c${x.id}`} value={`c:${x.id}`}>{x.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            {/* Miscellaneous has no product behind it, so let the gateman say
+                what actually came in. */}
+            {String(arrival.rec_type || '').toUpperCase() === 'MISCELLANEOUS' && (
+              <div className="grid min-w-0 gap-1.5 sm:col-span-2">
+                <Label>
+                  Details <span className="text-[10px] font-normal text-muted-foreground">(optional — what is it?)</span>
+                </Label>
+                <Input
+                  value={arrival.note || ''}
+                  placeholder="e.g. spare parts, empty drums, workshop material"
+                  onChange={(e) => setArrival((p) => ({ ...p, note: e.target.value }))}
+                />
+              </div>
+            )}
             <div className="grid min-w-0 gap-1.5">
               <Label className="flex items-center gap-1">Gate entry no <span className="text-[10px] font-normal text-muted-foreground">(auto)</span></Label>
               <Input value={arrival.gate_entry_no || ''} disabled className="bg-muted/50 text-muted-foreground" />
@@ -496,6 +815,78 @@ export function GateEntry(): React.JSX.Element {
           </div>
         </section>
 
+        {weighQueue('in')}
+
+        {/* Quick register line — no document, no weighment, no stock effect. */}
+        <section className="rounded-xl border bg-card p-5 shadow-sm">
+          <div className="mb-4 flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-slate-200 text-slate-700">
+              <ClipboardList className="h-4 w-4" />
+            </div>
+            <h3 className="text-sm font-semibold">Quick entry</h3>
+            <InfoTip text="The plain gate-register line: which vehicle, who it is with, and what it carries. It completes on the spot — no weighment, no invoice, and it touches no stock or purchase." />
+            <div className="ml-auto inline-flex rounded-lg border p-0.5">
+              {(['in', 'out'] as const).map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => setQuick((p) => ({ ...p, direction: d }))}
+                  className={cn(
+                    'cursor-pointer rounded-md px-3 py-1 text-[12px] font-semibold transition-colors',
+                    quick.direction === d ? 'bg-slate-800 text-white' : 'text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  {d === 'in' ? 'Coming in' : 'Going out'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid min-w-0 gap-1.5">
+              <Label>Vehicle number *</Label>
+              <Input
+                value={quick.tanker_no || ''}
+                placeholder="e.g. UP14 HT 5682"
+                onChange={(e) => setQuick((p) => ({ ...p, tanker_no: e.target.value }))}
+                onKeyDown={(e) => e.key === 'Enter' && recordQuick()}
+              />
+            </div>
+            <div className="grid min-w-0 gap-1.5">
+              <Label>
+                Person <span className="text-[10px] font-normal text-muted-foreground">(optional)</span>
+              </Label>
+              <Input
+                value={quick.person || ''}
+                placeholder="Driver or the person responsible"
+                onChange={(e) => setQuick((p) => ({ ...p, person: e.target.value }))}
+                onKeyDown={(e) => e.key === 'Enter' && recordQuick()}
+              />
+            </div>
+            <div className="grid min-w-0 gap-1.5">
+              <Label>Material *</Label>
+              <Input
+                value={quick.note || ''}
+                placeholder="What is in the vehicle"
+                onChange={(e) => setQuick((p) => ({ ...p, note: e.target.value }))}
+                onKeyDown={(e) => e.key === 'Enter' && recordQuick()}
+              />
+            </div>
+            <div className="grid min-w-0 gap-1.5">
+              <Label>Date</Label>
+              <DatePicker value={quick.entry_date || ''} onChange={(v) => setQuick((p) => ({ ...p, entry_date: v }))} />
+            </div>
+          </div>
+          <div className="mt-4 flex items-center justify-end gap-3">
+            <span className="text-[11px] text-muted-foreground">Completes immediately — nothing waits for weighment.</span>
+            <Button className="bg-slate-800 px-5 font-semibold hover:bg-slate-900" onClick={recordQuick} disabled={savingQuick}>
+              <ClipboardList className="h-4 w-4" />
+              {savingQuick ? 'Saving…' : 'Log entry'}
+            </Button>
+          </div>
+        </section>
+          </TabsContent>
+
+          <TabsContent value="out" className="space-y-6">
         {/* Gate OUT — sale dispatch leaving the factory */}
         <section className="rounded-xl border bg-card p-5 shadow-sm">
           <div className="mb-4 flex items-center gap-2">
@@ -505,29 +896,24 @@ export function GateEntry(): React.JSX.Element {
             <h3 className="text-sm font-semibold">Gate out</h3>
             <InfoTip text="Record a sale dispatch leaving the factory. Only dispatched sales (Loaded / In transit / Unloaded) that haven't gone out yet are listed. The exit weight completes it." />
           </div>
-          <div className="mb-3 flex items-center gap-2 rounded-md border border-dashed border-amber-300 bg-amber-50/60 px-3 py-2">
+          <div className="mb-3 flex items-center gap-2 rounded-md border border-dashed border-sky-300 bg-sky-50/60 px-3 py-2">
             <Switch
-              checked={!!gateOut.no_invoice}
-              onCheckedChange={(on) => setGateOut((p) => ({ ...p, no_invoice: on, invoice_group: on ? '' : p.invoice_group }))}
+              checked={!!gateOut.no_weighment}
+              onCheckedChange={(on) => setGateOut((p) => ({ ...p, no_weighment: on }))}
             />
             <div>
-              <div className="text-[12.5px] font-medium">Without invoice / bill</div>
-              <div className="text-[11px] text-muted-foreground">Empty vehicle, weighment run, return — needs the reason below.</div>
+              <div className="text-[12.5px] font-medium">Without weighment</div>
+              <div className="text-[11px] text-muted-foreground">
+                Completes at the gate — the vehicle is not held for the weighbridge.
+              </div>
             </div>
           </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {gateOut.no_invoice ? (
-              <div className="grid min-w-0 gap-1.5 sm:col-span-2 lg:col-span-1">
-                <Label>Reason (no bill) *</Label>
-                <Input
-                  value={gateOut.note || ''}
-                  placeholder="e.g. empty tanker returning to transporter"
-                  onChange={(e) => setGateOut((p) => ({ ...p, note: e.target.value }))}
-                />
-              </div>
-            ) : (
             <div className="grid min-w-0 gap-1.5 sm:col-span-2 lg:col-span-1">
-              <Label>Sale invoice (dispatched) *</Label>
+              <Label>
+                Sale invoice (dispatched){' '}
+                <span className="text-[10px] font-normal text-muted-foreground">(optional — else give the reason)</span>
+              </Label>
               <Select value={String(gateOut.invoice_group || '')} onValueChange={chooseSale}>
                 <SelectTrigger><SelectValue placeholder="Select outgoing invoice" /></SelectTrigger>
                 <SelectContent>
@@ -539,7 +925,17 @@ export function GateEntry(): React.JSX.Element {
                 </SelectContent>
               </Select>
             </div>
-            )}
+            <div className="grid min-w-0 gap-1.5">
+              <Label>
+                Reason / note{' '}
+                {!gateOut.invoice_group && <span className="text-[10px] font-normal text-amber-700">required without an invoice</span>}
+              </Label>
+              <Input
+                value={gateOut.note || ''}
+                placeholder="e.g. empty tanker returning"
+                onChange={(e) => setGateOut((p) => ({ ...p, note: e.target.value }))}
+              />
+            </div>
             <div className="grid min-w-0 gap-1.5">
               <Label>Vehicle number *</Label>
               <Input value={gateOut.tanker_no || ''} onChange={(e) => setGateOut((p) => ({ ...p, tanker_no: e.target.value }))} />
@@ -574,103 +970,7 @@ export function GateEntry(): React.JSX.Element {
           </div>
         </section>
 
-        {/* Step 2 — waiting for weighment */}
-        <section>
-          <div className="mb-2 flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-100 text-amber-700">
-              <Scale className="h-4 w-4" />
-            </div>
-            <h3 className="text-sm font-semibold">Waiting for weighment</h3>
-            <InfoTip text="Enter the weighbridge Gross and Tare; the net (gross − tare) is calculated and completes the entry." />
-            <Badge variant={pending.length ? 'warning' : 'muted'} className="ml-1">{pending.length}</Badge>
-          </div>
-          {pending.length === 0 ? (
-            <div className="rounded-xl border border-dashed py-5 text-center text-sm text-muted-foreground">
-              No tankers waiting for weight.
-            </div>
-          ) : (
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              {pending.map((row) => (
-                <div key={row.id} className="flex flex-col rounded-xl border border-amber-200 bg-card shadow-sm transition-shadow hover:shadow-md">
-                  {/* Identity strip: vehicle + direction, never wrapping. */}
-                  <div className="flex items-center gap-2 rounded-t-xl border-b border-amber-100 bg-amber-50/60 px-3 py-2">
-                    <span
-                      className={cn(
-                        'inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md',
-                        row.direction === 'out' ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'
-                      )}
-                    >
-                      {row.direction === 'out' ? <LogOut className="h-3.5 w-3.5" /> : <LogIn className="h-3.5 w-3.5" />}
-                    </span>
-                    <span className="truncate text-[13.5px] font-bold tracking-wide">{row.tanker_no}</span>
-                    <Badge
-                      variant={row.direction === 'out' ? 'default' : 'warning'}
-                      className="ml-auto shrink-0 whitespace-nowrap"
-                    >
-                      {row.direction === 'out' ? 'OUT' : 'IN'}
-                    </Badge>
-                  </div>
-
-                  <div className="flex flex-1 flex-col px-3 pb-3 pt-2">
-                    <div className="truncate text-[12.5px] font-medium" title={String(row.direction === 'out' ? row.sale_customer || '' : row.supplier_name || '')}>
-                      {row.direction === 'out'
-                        ? (row.sale_invoice || row.sale_customer
-                            ? <>{row.sale_customer || '—'}{row.sale_invoice ? <span className="text-muted-foreground"> · {row.sale_invoice}</span> : ''}</>
-                            : <span className="font-medium text-amber-700">No bill{row.note ? ` — ${row.note}` : ''}</span>)
-                        : <>{row.supplier_name || '—'}{row.bargain_no ? <span className="text-muted-foreground"> · {row.bargain_no}</span> : ''}</>}
-                    </div>
-                    {/* Meta as aligned label/value pairs instead of a wrapping sentence. */}
-                    <div className="mt-1.5 grid grid-cols-3 gap-1 text-center">
-                      {[
-                        { l: 'Gate no', v: String(row.gate_entry_no || '—') },
-                        { l: String(row.rec_type || 'OIL'), v: formatDate(row.entry_date) },
-                        { l: 'Dispatch', v: Number(row.dispatch_qty) > 0 ? `${formatNum(row.dispatch_qty)} ${row.uom}` : '—' }
-                      ].map((x) => (
-                        <div key={x.l} className="rounded bg-muted/50 px-1 py-0.5">
-                          <div className="truncate text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">{x.l}</div>
-                          <div className="truncate text-[11px] font-medium tabular-nums">{x.v}</div>
-                        </div>
-                      ))}
-                    </div>
-                    {(() => {
-                      const w = weights[row.id] || { gross: '', tare: '' }
-                      const net = Math.round(((Number(w.gross) || 0) - (Number(w.tare) || 0)) * 1000) / 1000
-                      const ready = net > 0
-                      const setW = (k: 'gross' | 'tare', val: string): void =>
-                        setWeights((p) => ({ ...p, [row.id]: { ...(p[row.id] || { gross: '', tare: '' }), [k]: val } }))
-                      return (
-                        <div className="mt-auto">
-                          <div className="mt-2.5 grid grid-cols-2 gap-1.5">
-                            <div className="grid gap-0.5">
-                              <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Gross ({row.uom})</span>
-                              <Input type="number" className="h-8 text-right tabular-nums" placeholder="0.000" value={w.gross}
-                                onChange={(e) => setW('gross', e.target.value)}
-                                onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
-                            </div>
-                            <div className="grid gap-0.5">
-                              <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Tare ({row.uom})</span>
-                              <Input type="number" className="h-8 text-right tabular-nums" placeholder="0.000" value={w.tare}
-                                onChange={(e) => setW('tare', e.target.value)}
-                                onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
-                            </div>
-                          </div>
-                          <div className="mt-2 flex items-center justify-between gap-2">
-                            <span className={cn('text-[12px]', ready ? 'font-semibold text-emerald-700' : 'text-muted-foreground')}>
-                              Net <span className="tabular-nums">{ready ? formatNum(net) : '—'}</span> {row.uom}
-                            </span>
-                            <Button size="sm" className="h-8" disabled={!ready} title={ready ? undefined : 'Enter Gross and Tare first'} onClick={() => saveWeight(row)}>
-                              <Scale className="h-4 w-4" /> Complete
-                            </Button>
-                          </div>
-                        </div>
-                      )
-                    })()}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+        {weighQueue('out')}
           </TabsContent>
 
           <TabsContent value="view">
@@ -713,7 +1013,12 @@ export function GateEntry(): React.JSX.Element {
                       <TableCell>{formatDate(row.entry_date)}</TableCell>
                       <TableCell>
                         <div>{row.tanker_no}</div>
-                        {isOut ? (
+                        {String(row.entry_kind) === 'simple' ? (
+                          <div className="text-xs">
+                            <span className="font-medium text-slate-700">{row.person || 'Quick entry'}</span>
+                            {row.note ? <span className="text-muted-foreground"> · {row.note}</span> : ''}
+                          </div>
+                        ) : isOut ? (
                           <div className="text-xs text-muted-foreground">
                             {row.sale_invoice || row.sale_customer
                               ? <>{row.sale_customer || '—'}{row.sale_invoice ? ` · ${row.sale_invoice}` : ''}{row.sale_product ? ` · ${row.sale_product}` : ''}</>
@@ -737,7 +1042,14 @@ export function GateEntry(): React.JSX.Element {
                       <TableCell className="text-right tabular-nums">
                         {!done ? <span className="text-muted-foreground">—</span> : Math.abs(diff) < 0.0005 ? <Badge variant="muted">0</Badge> : <span className={diff > 0 ? 'text-amber-700' : 'text-emerald-700'}>{formatNum(diff)} {row.uom}</span>}
                       </TableCell>
-                      <TableCell>{done ? <Badge variant="success">Completed</Badge> : <Badge variant="warning">Pending weight</Badge>}</TableCell>
+                      <TableCell>
+                        {done ? <Badge variant="success">Completed</Badge> : <Badge variant="warning">Pending weight</Badge>}
+                        {Number(row.no_weighment) === 1 && (
+                          <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700">
+                            {String(row.entry_kind) === 'simple' ? 'Quick entry' : 'No weighment'}
+                          </div>
+                        )}
+                      </TableCell>
                       <TableCell><div className="flex justify-end gap-1">
                         <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEdit(row)}><Pencil className="h-4 w-4" /></Button>
                         <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => remove(row)}><Trash2 className="h-4 w-4" /></Button>

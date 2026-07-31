@@ -111,8 +111,7 @@ import {
   createGateEntry,
   updateGateEntry,
   completeGateEntry,
-  deleteGateEntry
-} from './gate'
+  deleteGateEntry, saveGateWeights, skipGateWeighment } from './gate'
 import { listCompanies, setActiveCompany, getActiveCompanyId } from './company'
 import {
   needsApproval,
@@ -548,6 +547,10 @@ export function registerIpc(): void {
   handle('gate:complete', (_e, { id, gross, tare }: { id: number; gross: number; tare: number }) =>
     completeGateEntry(id, gross, tare)
   )
+  handle('gate:weights', (_e, { id, gross, tare }: { id: number; gross: number | null; tare: number | null }) =>
+    saveGateWeights(id, gross, tare)
+  )
+  handle('gate:skipWeighment', (_e, { id }: { id: number }) => skipGateWeighment(id))
   handle('gate:delete', (_e, { id }: { id: number }) => deleteGateEntry(id))
 
   handle('lc:list', () => listLCs())

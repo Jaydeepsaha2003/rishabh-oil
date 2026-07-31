@@ -387,7 +387,7 @@ function DayClose(): React.JSX.Element {
   // in the grid (where a reload or date change would silently discard it).
   async function applyImport(
     cats: string[],
-    parsed: Array<{ product_id?: number; name?: string; actual_qty?: string; note?: string }>
+    parsed: Array<{ product_id?: number; name?: string; actual_qty?: string; pp_qty?: string; note?: string }>
   ): Promise<{ applied: number; saved: number }> {
     const byId = new Map<string, (typeof parsed)[number]>()
     const byName = new Map<string, (typeof parsed)[number]>()
@@ -401,12 +401,14 @@ function DayClose(): React.JSX.Element {
       const p = byId.get(String(r.product_id)) || byName.get(String(r.name).toLowerCase())
       if (!p) return r
       const hasQty = p.actual_qty != null && p.actual_qty !== ''
+      const hasPp = p.pp_qty != null && p.pp_qty !== ''
       const hasNote = p.note != null && p.note !== ''
       if (!hasQty && !hasNote) return r
       applied++
       return {
         ...r,
         actual_qty: hasQty ? p.actual_qty : r.actual_qty,
+        pp_qty: hasPp ? p.pp_qty : r.pp_qty,
         note: hasNote ? p.note : r.note
       }
     })
@@ -450,7 +452,7 @@ function DayClose(): React.JSX.Element {
       </Tabs>
 
       <p className="text-xs text-muted-foreground">
-        Book qty is the system-computed stock (received + produced − consumed − sold). Difference = book − actual; a positive value means physical stock is short of the books. Actual value is valued automatically at the weighted-average cost (rate × actual qty). Download a protected Excel per section — only the Actual qty and Note cells are editable — hand it to the person counting, then upload it back — uploading records the counts immediately.
+        Book qty is the system-computed stock (received + produced − consumed − sold). PP is the presentation stock counted alongside the physical figure. Difference = book − actual; a positive value means physical stock is short of the books. Actual value is valued automatically at the weighted-average cost (rate × actual qty). Download a protected Excel per section — only the Actual qty and Note cells are editable — hand it to the person counting, then upload it back — uploading records the counts immediately.
       </p>
     </div>
   )
@@ -473,14 +475,14 @@ function DayCloseSection({
   loading: boolean
   rows: Row[]
   setField: (pid: number, key: string, value: unknown) => void
-  onImport: (cats: string[], parsed: Array<{ product_id?: number; name?: string; actual_qty?: string; note?: string }>) => Promise<{ applied: number; saved: number }>
+  onImport: (cats: string[], parsed: Array<{ product_id?: number; name?: string; actual_qty?: string; pp_qty?: string; note?: string }>) => Promise<{ applied: number; saved: number }>
   rateOf: (r: Row) => number
   actualValueOf: (r: Row) => number
   diffOf: (r: Row) => number
 }): React.JSX.Element {
   const fileRef = useRef<HTMLInputElement>(null)
 
-  const counted = rows.filter((r) => r.actual_qty !== null && r.actual_qty !== '')
+  const counted = rows.filter((r) => (r.actual_qty !== null && r.actual_qty !== '') || (r.pp_qty !== null && r.pp_qty !== ''))
   const totalDiff = counted.reduce((s, r) => s + diffOf(r), 0)
   const totalActualValue = rows.reduce((s, r) => s + actualValueOf(r), 0)
   const mismatches = counted.filter((r) => Math.abs(diffOf(r)) > 0.0005).length
@@ -566,6 +568,9 @@ function DayCloseSection({
               <TableHead>Category</TableHead>
               <TableHead className="text-right">Book qty</TableHead>
               <TableHead className="w-[130px] text-right">Actual qty</TableHead>
+              <TableHead className="w-[120px] text-right">
+                PP <span className="text-[10px] font-normal text-muted-foreground">(presentation)</span>
+              </TableHead>
               <TableHead className="text-right">Difference</TableHead>
               <TableHead className="text-right">Rate (₹)</TableHead>
               <TableHead className="text-right">Actual value (₹)</TableHead>
@@ -574,9 +579,9 @@ function DayCloseSection({
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
             ) : rows.length === 0 ? (
-              <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No products in this section.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">No products in this section.</TableCell></TableRow>
             ) : (
               rows.map((r) => {
                 const has = r.actual_qty !== null && r.actual_qty !== ''
@@ -594,6 +599,15 @@ function DayCloseSection({
                         placeholder="—"
                         value={r.actual_qty ?? ''}
                         onChange={(e) => setField(r.product_id, 'actual_qty', e.target.value)}
+                      />
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Input
+                        type="number"
+                        className="h-8 w-24 text-right"
+                        placeholder="—"
+                        value={r.pp_qty ?? ''}
+                        onChange={(e) => setField(r.product_id, 'pp_qty', e.target.value)}
                       />
                     </TableCell>
                     <TableCell className={cn('text-right tabular-nums', off ? (diff > 0 ? 'text-amber-700' : 'text-red-600') : 'text-muted-foreground')}>
@@ -621,6 +635,9 @@ function DayCloseSection({
                 </TableCell>
                 <TableCell className="text-right font-bold tabular-nums text-amber-900">
                   {formatNum(rows.reduce((a, r) => a + (Number(r.actual_qty) || 0), 0))}
+                </TableCell>
+                <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                  {formatNum(rows.reduce((a, r) => a + (Number(r.pp_qty) || 0), 0))}
                 </TableCell>
                 <TableCell className="text-right font-bold tabular-nums text-amber-900">
                   {formatNum(

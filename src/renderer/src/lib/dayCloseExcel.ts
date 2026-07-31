@@ -10,7 +10,7 @@ const CAT_LABEL: Record<string, string> = {
 }
 
 // Column layout of the day-close template (1-indexed for exceljs).
-const COL = { pid: 1, product: 2, category: 3, book: 4, rate: 5, actual: 6, value: 7, note: 8 }
+const COL = { pid: 1, product: 2, category: 3, book: 4, rate: 5, actual: 6, pp: 7, value: 8, note: 9 }
 
 // Build and download a PROTECTED .xlsx day-close template for one section.
 // Only the "Actual Qty" and "Note" cells are editable; everything else (incl.
@@ -46,7 +46,7 @@ export async function downloadDayCloseExcel(
   ws.getRow(1).height = 24
 
   // Header row.
-  const headers = ['Product ID', 'Product', 'Category', 'Book Qty', 'Rate (₹/unit)', 'Actual Qty', 'Actual Value (₹)', 'Note']
+  const headers = ['Product ID', 'Product', 'Category', 'Book Qty', 'Rate (₹/unit)', 'Actual Qty', 'PP Qty', 'Actual Value (₹)', 'Note']
   const hr = ws.getRow(2)
   headers.forEach((h, i) => {
     const cell = hr.getCell(i + 1)
@@ -68,6 +68,8 @@ export async function downloadDayCloseExcel(
     row.getCell(COL.rate).value = Number(r.rate) || 0
     // Actual Qty is left blank for the counter.
     row.getCell(COL.actual).value = r.actual_qty != null && r.actual_qty !== '' ? Number(r.actual_qty) : null
+    // PP — presentation stock, filled in by the same counter.
+    row.getCell(COL.pp).value = r.pp_qty != null && r.pp_qty !== '' ? Number(r.pp_qty) : null
     // Actual Value = Actual Qty × Rate, as a live (locked) formula.
     row.getCell(COL.value).value = { formula: `F${excelRow}*E${excelRow}`, result: 0 }
     row.getCell(COL.note).value = r.note ?? null
@@ -76,11 +78,13 @@ export async function downloadDayCloseExcel(
     row.getCell(COL.book).numFmt = '#,##0.000'
     row.getCell(COL.rate).numFmt = '#,##0.00'
     row.getCell(COL.actual).numFmt = '#,##0.000'
+    row.getCell(COL.pp).numFmt = '#,##0.000'
     row.getCell(COL.value).numFmt = '#,##0.00'
 
     // Lock everything, then unlock the two fillable columns.
-    for (let c = 1; c <= 8; c++) row.getCell(c).protection = { locked: true }
+    for (let c = 1; c <= 9; c++) row.getCell(c).protection = { locked: true }
     row.getCell(COL.actual).protection = { locked: false }
+    row.getCell(COL.pp).protection = { locked: false }
     row.getCell(COL.note).protection = { locked: false }
 
     // Highlight the Product column.
@@ -88,16 +92,17 @@ export async function downloadDayCloseExcel(
     row.getCell(COL.product).font = { bold: true, color: { argb: 'FF92400E' } }
     // Tint the fillable Actual Qty cell so it's obvious where to type.
     row.getCell(COL.actual).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFECFDF5' } }
+    row.getCell(COL.pp).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFECFDF5' } }
 
     // Right-align the numeric columns.
-    for (const c of [COL.pid, COL.book, COL.rate, COL.actual, COL.value]) {
+    for (const c of [COL.pid, COL.book, COL.rate, COL.actual, COL.pp, COL.value]) {
       row.getCell(c).alignment = { horizontal: 'right' }
     }
   })
 
   // Lock the header/title too.
   for (const rn of [1, 2]) {
-    for (let c = 1; c <= 8; c++) ws.getRow(rn).getCell(c).protection = { locked: true }
+    for (let c = 1; c <= 9; c++) ws.getRow(rn).getCell(c).protection = { locked: true }
   }
 
   // Protect the sheet: allow selecting cells and auto-filter, block structural edits.
@@ -127,7 +132,7 @@ export async function downloadDayCloseExcel(
 // rows, matching by Product ID (falling back to Product name).
 export async function parseDayCloseExcel(
   file: File
-): Promise<Array<{ product_id?: number; name?: string; actual_qty?: string; note?: string }>> {
+): Promise<Array<{ product_id?: number; name?: string; actual_qty?: string; pp_qty?: string; note?: string }>> {
   const wb = new ExcelJS.Workbook()
   await wb.xlsx.load(await file.arrayBuffer())
   const ws = wb.worksheets[0]
@@ -149,25 +154,28 @@ export async function parseDayCloseExcel(
         if (t.includes('product id') || t.includes('productid')) headerIdx.pid = colNo
         else if (t.includes('product') || t === 'name') headerIdx.name ??= colNo
         else if (t.includes('actual qty') || t.includes('actual quantity')) headerIdx.qty = colNo
+        else if (t.includes('pp qty') || t === 'pp') headerIdx.pp = colNo
         else if (t.includes('note')) headerIdx.note = colNo
       })
     }
   })
   if (headerRowNo < 0) return []
 
-  const out: Array<{ product_id?: number; name?: string; actual_qty?: string; note?: string }> = []
+  const out: Array<{ product_id?: number; name?: string; actual_qty?: string; pp_qty?: string; note?: string }> = []
   ws.eachRow((row, rowNo) => {
     if (rowNo <= headerRowNo) return
     const get = (col?: number): string => (col ? String(row.getCell(col).text || '').trim() : '')
     const pid = get(headerIdx.pid)
     const name = get(headerIdx.name)
     const qty = get(headerIdx.qty)
+    const pp = get(headerIdx.pp)
     const note = get(headerIdx.note)
     if (!pid && !name) return
     out.push({
       product_id: pid ? Number(pid) : undefined,
       name: name || undefined,
       actual_qty: qty || undefined,
+      pp_qty: pp || undefined,
       note: note || undefined
     })
   })

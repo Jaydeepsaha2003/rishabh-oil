@@ -20,7 +20,8 @@ function n(v: unknown): number {
 export async function listGateEntries(): Promise<Row[]> {
   const res = await getClient().execute(`
     SELECT g.*, p.code AS oil_code, p.name AS oil_name,
-           b.bargain_no, COALESCE(ds.name, s.name) AS supplier_name,
+           b.bargain_no, COALESCE(ds.name, s.name, dc.name) AS supplier_name,
+           dc.name AS gate_customer_name,
            COALESCE(sl.invoice_no, (SELECT invoice_no FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_invoice,
            COALESCE(sl.customer,  (SELECT customer  FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer
     FROM gate_entries g
@@ -29,6 +30,7 @@ export async function listGateEntries(): Promise<Row[]> {
     LEFT JOIN bargains b ON b.id = pt.bargain_id
     LEFT JOIN suppliers s ON s.id = pt.supplier_id
     LEFT JOIN suppliers ds ON ds.id = g.supplier_id
+    LEFT JOIN customers dc ON dc.id = g.customer_id
     LEFT JOIN sales sl ON sl.id = g.sale_id
     ORDER BY g.id DESC
   `)
@@ -83,7 +85,8 @@ export async function listDispatchableSales(): Promise<Row[]> {
 export async function tankerGateReceived(tankerId: number): Promise<number | null> {
   const res = await getClient().execute({
     sql: `SELECT COALESCE(SUM(received_qty), 0) AS qty, COUNT(*) AS cnt
-          FROM gate_entries WHERE tanker_id = ? AND status = 'completed'`,
+          FROM gate_entries
+          WHERE tanker_id = ? AND status = 'completed' AND COALESCE(no_weighment, 0) = 0`,
     args: [tankerId]
   })
   if (!res.rows.length || n(res.rows[0].cnt) === 0) return null
@@ -93,15 +96,18 @@ export async function tankerGateReceived(tankerId: number): Promise<number | nul
 export async function createGateEntry(v: Row): Promise<{ id: number }> {
   const c = getClient()
   const direction = v.direction === 'out' ? 'out' : 'in'
-  if (direction === 'out' && !v.invoice_group && !v.sale_id) {
-    // Vehicles do leave without a bill (empty tankers, weighment runs, returns)
-    // — allowed, but only deliberately and with the reason on record.
-    if (!v.no_invoice) {
-      throw new Error('Select the sale invoice being dispatched — or tick "Without invoice / bill" for a vehicle leaving with no bill')
-    }
-    if (!String(v.note || '').trim()) {
-      throw new Error('Give the reason the vehicle is leaving without a bill')
-    }
+  // The simple register line: a vehicle, optionally who it is with, and what
+  // it carries. Nothing else is asked of it and it never waits to be weighed.
+  const kind = String(v.entry_kind || 'standard') === 'simple' ? 'simple' : 'standard'
+  if (kind === 'simple') {
+    if (!String(v.tanker_no || '').trim()) throw new Error('Enter the vehicle number')
+    if (!String(v.note || '').trim()) throw new Error('Say what the vehicle is carrying')
+  }
+  // A sale invoice is the normal case but not compulsory — empty vehicles,
+  // returns and weighment runs leave too. What such an exit must carry is the
+  // reason, so the register never holds an unexplained departure.
+  if (kind === 'standard' && direction === 'out' && !v.invoice_group && !v.sale_id && !String(v.note || '').trim()) {
+    throw new Error('Pick the sale invoice being dispatched, or write why the vehicle is leaving without one')
   }
   // Every gate entry names its vehicle — either a tanker from the movement
   // register or a typed vehicle number; an entry with neither is untraceable.
@@ -113,11 +119,14 @@ export async function createGateEntry(v: Row): Promise<{ id: number }> {
   const gateNo = await nextGateEntryNo(direction)
   // Two-step flow: an entry without a weighed quantity stays 'pending' until
   // the weighbridge figure is entered, which completes the transaction.
-  const status = v.status || (n(v.received_qty) > 0 ? 'completed' : 'pending')
+  // Without weighment: the entry is done the moment it is recorded — it never
+  // joins the weighbridge queue and keeps whatever quantity was declared.
+  const noWeighment = !!v.no_weighment || kind === 'simple'
+  const status = noWeighment ? 'completed' : v.status || (n(v.received_qty) > 0 ? 'completed' : 'pending')
   const res = await c.execute({
     sql: `INSERT INTO gate_entries
-      (gate_entry_no, ref_no, entry_date, tanker_id, tanker_no, oil_type_id, dispatch_qty, received_qty, uom, status, note, direction, sale_id, invoice_group, rec_type, gross_weight, tare_weight, supplier_id, is_direct_mnc)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (gate_entry_no, ref_no, entry_date, tanker_id, tanker_no, oil_type_id, dispatch_qty, received_qty, uom, status, note, direction, sale_id, invoice_group, rec_type, gross_weight, tare_weight, supplier_id, is_direct_mnc, no_weighment, customer_id, person, entry_kind)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       gateNo,
       v.ref_no ? String(v.ref_no).trim() : null,
@@ -137,7 +146,11 @@ export async function createGateEntry(v: Row): Promise<{ id: number }> {
       v.gross_weight != null && v.gross_weight !== '' ? n(v.gross_weight) : null,
       v.tare_weight != null && v.tare_weight !== '' ? n(v.tare_weight) : null,
       v.supplier_id ? n(v.supplier_id) : null,
-      v.is_direct_mnc ? 1 : 0
+      v.is_direct_mnc ? 1 : 0,
+      noWeighment ? 1 : 0,
+      v.customer_id ? n(v.customer_id) : null,
+      v.person ? String(v.person).trim() : null,
+      kind
     ]
   })
   return { id: Number(res.lastInsertRowid) }
@@ -159,6 +172,66 @@ export async function completeGateEntry(
   await getClient().execute({
     sql: "UPDATE gate_entries SET gross_weight = ?, tare_weight = ?, received_qty = ?, status = 'completed' WHERE id = ?",
     args: [g, t, net, id]
+  })
+  return { id }
+}
+
+// Save whatever the weighbridge has so far. Gross and tare rarely arrive
+// together — the loaded weight is taken on the way in and the empty weight
+// only after unloading — so each is stored on its own and the entry stays in
+// the queue until BOTH are in, at which point it completes on net = gross − tare.
+export async function saveGateWeights(
+  id: number,
+  gross: number | null,
+  tare: number | null
+): Promise<{ id: number; status: string; net: number | null; missing: string | null }> {
+  const c = getClient()
+  const cur = await c.execute({ sql: 'SELECT * FROM gate_entries WHERE id = ?', args: [id] })
+  if (!cur.rows.length) throw new Error('Gate entry not found')
+  const row = cur.rows[0]
+
+  const given = (v: number | null, existing: unknown): number | null => {
+    if (v == null || !Number.isFinite(Number(v))) return existing == null ? null : n(existing)
+    return Number(v)
+  }
+  const g = given(gross, row.gross_weight)
+  const t = given(tare, row.tare_weight)
+  if (g != null && g < 0) throw new Error('Gross weight cannot be negative')
+  if (t != null && t < 0) throw new Error('Tare weight cannot be negative')
+  if (g == null && t == null) throw new Error('Enter the gross or the tare weight')
+
+  const both = g != null && t != null
+  const net = both ? Math.round((g - t) * 1000) / 1000 : null
+  if (both && (net as number) <= 0) {
+    throw new Error('Net weight (gross − tare) must be greater than zero — check the two figures')
+  }
+  await c.execute({
+    sql: `UPDATE gate_entries
+          SET gross_weight = ?, tare_weight = ?, received_qty = ?, status = ?
+          WHERE id = ?`,
+    args: [g, t, both ? net : 0, both ? 'completed' : 'pending', id]
+  })
+  return {
+    id,
+    status: both ? 'completed' : 'pending',
+    net,
+    missing: both ? null : g == null ? 'gross' : 'tare'
+  }
+}
+
+// Finish an entry with no weighment at all. Oil is always weighed — the whole
+// purchase and stock chain is built on that figure — so only other categories
+// (packaging, miscellaneous, scrap and the like) may skip it.
+export async function skipGateWeighment(id: number): Promise<{ id: number }> {
+  const c = getClient()
+  const cur = await c.execute({ sql: 'SELECT rec_type, dispatch_qty FROM gate_entries WHERE id = ?', args: [id] })
+  if (!cur.rows.length) throw new Error('Gate entry not found')
+  if (String(cur.rows[0].rec_type || 'OIL').toUpperCase() === 'OIL') {
+    throw new Error('Oil is always weighed — enter the gross and tare weights for this vehicle')
+  }
+  await c.execute({
+    sql: "UPDATE gate_entries SET status = 'completed', no_weighment = 1, received_qty = ? WHERE id = ?",
+    args: [n(cur.rows[0].dispatch_qty), id]
   })
   return { id }
 }

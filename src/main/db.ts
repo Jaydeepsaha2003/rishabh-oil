@@ -453,6 +453,17 @@ const MIGRATIONS = [
   'CREATE INDEX IF NOT EXISTS idx_jba_account ON journal_bill_allocs(account_id)',
   // Which customers buy which packed SKUs — narrows the sales-bargain rate
   // card to the SKUs that party actually trades in.
+  // A gate entry can be recorded without any weighment — it completes on the
+  // spot instead of waiting at the weighbridge, and carries no gate figure.
+  'ALTER TABLE gate_entries ADD COLUMN no_weighment INTEGER NOT NULL DEFAULT 0',
+  // A manually-entered vehicle can belong to either side of the trade.
+  'ALTER TABLE gate_entries ADD COLUMN customer_id INTEGER',
+  // The plain gate-register line: a vehicle, who it is with, and what it
+  // carries. No weighment, no document behind it.
+  // PP = presentation stock counted alongside the physical count.
+  'ALTER TABLE stock_counts ADD COLUMN pp_qty REAL',
+  'ALTER TABLE gate_entries ADD COLUMN person TEXT',
+  "ALTER TABLE gate_entries ADD COLUMN entry_kind TEXT NOT NULL DEFAULT 'standard'",
   "ALTER TABLE notes ADD COLUMN against_ref TEXT",
   // Treasury: usance/margin on LCs, due-dated LC bills, and the discounting
   // economics (rate, interest, net) with the journal entries they posted.

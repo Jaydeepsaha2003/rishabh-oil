@@ -38,6 +38,8 @@ export async function stockCountSheet(date: string): Promise<Row[]> {
       book_value: (Number(l.stock) || 0) * rate,
       actual_qty: actualQty,
       actual_value: actualQty != null ? actualQty * rate : null,
+      // PP — presentation stock, counted next to the physical figure.
+      pp_qty: s && s.pp_qty != null ? Number(s.pp_qty) : null,
       note: s ? s.note : null
     }
   })
@@ -66,18 +68,21 @@ export async function saveStockCounts(date: string, items: Row[]): Promise<{ cou
   let count = 0
   for (const it of items || []) {
     const hasActual = it.actual_qty !== '' && it.actual_qty != null
-    if (!hasActual) continue
+    const hasPp = it.pp_qty !== '' && it.pp_qty != null
+    // A row counts as entered when either figure is given.
+    if (!hasActual && !hasPp) continue
     const pid = n(it.product_id)
     const actualQty = n(it.actual_qty)
     const rate = rates.get(pid) || 0
     await c.execute({
-      sql: `INSERT INTO stock_counts (company_id, count_date, product_id, book_qty, actual_qty, rate, actual_value, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      sql: `INSERT INTO stock_counts (company_id, count_date, product_id, book_qty, actual_qty, rate, actual_value, pp_qty, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(company_id, count_date, product_id) DO UPDATE SET
               book_qty = excluded.book_qty,
               actual_qty = excluded.actual_qty,
               rate = excluded.rate,
               actual_value = excluded.actual_value,
+              pp_qty = excluded.pp_qty,
               note = excluded.note`,
       args: [
         getActiveCompanyId(),
@@ -87,6 +92,7 @@ export async function saveStockCounts(date: string, items: Row[]): Promise<{ cou
         actualQty,
         rate,
         actualQty * rate,
+        hasPp ? n(it.pp_qty) : null,
         it.note || null
       ]
     })

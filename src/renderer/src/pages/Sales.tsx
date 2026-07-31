@@ -41,6 +41,10 @@ import { useLiveRefresh } from '@/lib/useLiveRefresh'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
 
+// A rate contract past its expiry date. Still a real open bargain — it is
+// offered and labelled rather than hidden.
+const rateExpired = (b: Row): boolean => !!b.rate_expiry_date && String(b.rate_expiry_date) < todayISO()
+
 // Dispatch lifecycle: a sale is a pending commitment until the tanker is
 // loaded, then tracked in transit and finally unloaded at the customer. Any
 // dispatched stage means the finished stock has left the factory.
@@ -324,13 +328,23 @@ function SalesTab({
     if (custId && b.customer_id != null && String(b.customer_id) !== '') return String(b.customer_id) === custId
     return String(b.customer || '').trim().toLowerCase() === custName
   }
-  const notExpired = (b: Row): boolean => !b.rate_expiry_date || String(b.rate_expiry_date) >= todayISO()
+  // As-of date for rate validity: the invoice's own date. A bargain that
+  // lapsed on 27-07 was still live for an invoice dated 16-07, so a back-dated
+  // entry must not be told its rate has expired.
+  const asOfDate = String(header.sale_date || '').slice(0, 10) || todayISO()
+  const notExpired = (b: Row): boolean => !b.rate_expiry_date || String(b.rate_expiry_date) >= asOfDate
+  // A contract whose rate date has passed is still a real open bargain — the
+  // office decides whether to sell against it. Hiding it just left the picker
+  // saying "no bargain" with no reason, so it is offered and labelled instead,
+  // with the live ones first.
   const bargainsFor = (item: Row): Row[] =>
-    bargains.filter(
-      (b) =>
-        String(b.id) === String(item.sales_bargain_id) ||
-        (String(b.product_id) === String(item.product_id) && matchesCustomer(b) && Number(b.balance_qty) > 0 && notExpired(b))
-    )
+    bargains
+      .filter(
+        (b) =>
+          String(b.id) === String(item.sales_bargain_id) ||
+          (String(b.product_id) === String(item.product_id) && matchesCustomer(b) && Number(b.balance_qty) > 0)
+      )
+      .sort((a, b) => Number(notExpired(b)) - Number(notExpired(a)))
 
   // Per-item computed quantity (packaging → sale unit), amount and GST.
   function calc(item: Row): {
@@ -397,14 +411,26 @@ function SalesTab({
     }
   }, [cards])
 
+  // A card row turned into the rate THIS line is priced in. The line always
+  // charges rate x quantity in the bargain's unit (MT/KG/L) — even a packed
+  // line, whose cases are converted to that unit first — so the per-MT figure
+  // is the one to use. Writing the per-case rate here would undercharge by the
+  // size of a case (a 15 MT line at a 2,311/case rate bills 34,668 instead of
+  // 23,11,190).
+  function cardRateInUnit(hit: Row, saleUom: string): number | null {
+    const perMt = hit.rate_per_mt == null ? null : Number(hit.rate_per_mt)
+    if (perMt == null) return null
+    const u = String(saleUom || 'MT').toUpperCase()
+    // KG and L are thousandths of the per-MT rate (1 L counted as 1 KG here).
+    return u === 'KG' || u === 'L' ? Math.round((perMt / 1000) * 100) / 100 : perMt
+  }
+
   // The card rate for a line, in the unit the line is priced in.
   function cardRateFor(it: Row): number | null {
     const card = cards[String(it.sales_bargain_id || '')]
     const hit = card?.[String(it.packaging_id || '')]
     if (!hit) return null
-    const packed = calc(it).isPacked
-    const v = packed ? hit.rate_per_case : hit.rate_per_mt
-    return v == null ? null : Number(v)
+    return cardRateInUnit(hit, calc(it).saleUom)
   }
 
   function selectItemBargain(idx: number, v: string): void {
@@ -416,11 +442,10 @@ function SalesTab({
     // reading items[idx] inside the .then sees the stale pre-bargain line and
     // the card lookup misses, which is exactly how fed rates failed to appear.
     const nextPack = b?.packaging_id ? String(b.packaging_id) : String(it.packaging_id || '')
-    const nextPacked = String(b?.sale_type || it.sale_type || 'LOOSE') === 'PACKED'
     void loadCard(v).then((card) => {
       const hit = card[nextPack]
       if (!hit) return
-      const rate = nextPacked ? hit.rate_per_case : hit.rate_per_mt
+      const rate = cardRateInUnit(hit, String(b?.uom || 'MT'))
       if (rate != null) setItem(idx, { rate: String(rate), rate_from_card: true })
     })
     setItem(idx, {
@@ -591,6 +616,20 @@ function SalesTab({
       setExcessBusy(false)
     }
   }
+
+  // Tally's accept shortcut, on the invoice form only.
+  useEffect(() => {
+    if (!formPage) return
+    function onKey(e: KeyboardEvent): void {
+      if (e.ctrlKey && (e.key === 'a' || e.key === 'A')) {
+        e.preventDefault()
+        if (!saving) void save()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formPage, saving, header, items])
 
   async function save(overrideItems?: Row[], excessResolved = false): Promise<void> {
     const lines = overrideItems ?? items
@@ -898,18 +937,23 @@ function SalesTab({
       )}
 
       {formPage && (
-      <div className="w-full">
-        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 border-b pb-3">
-          <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground" onClick={() => { if (onBack) { onBack() } else { setFormPage(false) } }}>
-            <ArrowLeft className="h-4 w-4" /> {onBack ? `Back to ${backLabel || 'previous page'}` : 'Back'}
+      <div className="w-full rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
+          <button className="inline-flex cursor-pointer items-center gap-1.5 text-[12px] font-medium hover:underline" onClick={() => { if (onBack) { onBack() } else { setFormPage(false) } }}>
+            <ArrowLeft className="h-3.5 w-3.5" /> {onBack ? `Back to ${backLabel || 'previous page'}` : 'Back'}
           </button>
-          <div className="h-4 border-l" />
-          <h2 className="text-base font-semibold">{editingGroup ? 'Edit invoice' : 'New sale invoice'}</h2>
+          <div className="h-4 border-l border-[#1a2c56]/30" />
+          <h2 className="text-[13px] font-bold uppercase tracking-widest">
+            {editingGroup ? 'Alter sales invoice' : 'Sales invoice'}
+          </h2>
+          <span className="ml-auto text-[11px] font-medium">
+            {header.invoice_no ? `No ${header.invoice_no}` : 'No: not yet given'} · {formatDate(header.sale_date)}
+          </span>
         </div>
 
         {/* Invoice header */}
-        <div className="rounded-xl border bg-card p-4">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 [&>div]:min-w-0">
+        <div className="border-b border-dashed border-[#d9d2b8] px-4 py-3">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 [&>div]:min-w-0 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
             <div className="grid gap-1.5">
               <Label>Date</Label>
               <DatePicker value={header.sale_date} onChange={(v) => setHeaderField('sale_date', v)} />
@@ -989,19 +1033,29 @@ function SalesTab({
         </div>
 
         {/* Line items */}
-        <div className="mt-4 space-y-3">
+        <div className="px-4 py-3">
+          <div className="mb-2 flex items-center gap-2 rounded bg-[#f1ecd9] px-3 py-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Particulars</span>
+            <span className="ml-auto text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              {items.length} item{items.length === 1 ? '' : 's'} · {formatNum(totals.qty)} MT
+            </span>
+          </div>
+          <div className="space-y-2">
           {items.map((item, i) => {
             const c = calc(item)
             const prodBargains = bargainsFor(item)
             return (
-              <div key={i} className="rounded-xl border bg-card p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <span className="text-sm font-semibold">Item {i + 1}</span>
-                  {items.length > 1 && (
-                    <Button variant="ghost" size="sm" className="h-7 text-destructive" onClick={() => removeItem(i)}>
-                      <Trash2 className="h-3.5 w-3.5" /> Remove
-                    </Button>
-                  )}
+              <div key={i} className="rounded border border-[#e5dfc8] bg-white p-3 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
+                <div className="mb-2 flex items-center justify-between border-b border-dotted border-[#e5dfc8] pb-1.5">
+                  <span className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Item {i + 1}</span>
+                  <span className="flex items-center gap-2">
+                    <span className="text-[11px] font-semibold tabular-nums text-muted-foreground">{formatINR(c.net)}</span>
+                    {items.length > 1 && (
+                      <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[11px] text-destructive" onClick={() => removeItem(i)}>
+                        <Trash2 className="h-3.5 w-3.5" /> Remove
+                      </Button>
+                    )}
+                  </span>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.7fr)_minmax(0,1fr)] [&>div]:min-w-0">
                   <div className="grid gap-1.5">
@@ -1021,10 +1075,24 @@ function SalesTab({
                           <SelectItem key={b.id} value={String(b.id)}>
                             <span className="font-medium">{b.bargain_no}</span>
                             <span className="text-muted-foreground"> · Bal {formatNum(b.balance_qty)} · {formatINR(b.rate)}</span>
+                            {!notExpired(b) && (
+                              <span className="font-medium text-amber-700"> · rate expired {formatDate(b.rate_expiry_date)}</span>
+                            )}
+                            {notExpired(b) && rateExpired(b) && (
+                              <span className="text-emerald-700"> · valid on {formatDate(asOfDate)}</span>
+                            )}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                    {(() => {
+                      const chosen = bargains.find((b) => String(b.id) === String(item.sales_bargain_id))
+                      return chosen && !notExpired(chosen) ? (
+                        <span className="text-[10px] font-medium text-amber-700">
+                          Rate expired {formatDate(chosen.rate_expiry_date)}, before this invoice&apos;s date ({formatDate(asOfDate)}) — selling against it anyway
+                        </span>
+                      ) : null
+                    })()}
                   </div>
                   <div className="grid gap-1.5">
                     <Label>Sale type</Label>
@@ -1050,9 +1118,7 @@ function SalesTab({
                           void loadCard(bid).then((card) => {
                             const hit = card[v]
                             if (!hit) return
-                            const rate = calc({ ...items[i], packaging_id: v }).isPacked
-                              ? hit.rate_per_case
-                              : hit.rate_per_mt
+                            const rate = cardRateInUnit(hit, calc({ ...items[i], packaging_id: v }).saleUom)
                             if (rate != null) setItem(i, { rate: String(rate), rate_from_card: true })
                           })
                         }
@@ -1098,18 +1164,34 @@ function SalesTab({
                     />
                     {/* Say so when the rate came from the bargain's card, and
                         show the card figure if it has since been overridden. */}
-                    {cardRateFor(item) != null && (
-                      <span
-                        className={cn(
-                          'text-[10px]',
-                          item.rate_from_card ? 'font-medium text-emerald-700' : 'text-amber-700'
-                        )}
-                      >
-                        {item.rate_from_card
-                          ? 'from the bargain rate card'
-                          : `card rate ${formatINR(cardRateFor(item) as number)} — overridden`}
-                      </span>
-                    )}
+                    {(() => {
+                      const card = cards[String(item.sales_bargain_id || '')]
+                      const hit = card?.[String(item.packaging_id || '')]
+                      const cardRate = cardRateFor(item)
+                      if (cardRate != null) {
+                        const perCase = hit?.rate_per_case == null ? null : Number(hit.rate_per_case)
+                        return (
+                          <span className={cn('text-[10px]', item.rate_from_card ? 'font-medium text-emerald-700' : 'text-amber-700')}>
+                            {item.rate_from_card
+                              ? `from the bargain rate card${perCase ? ` · ${formatINR(perCase)} per case` : ''}`
+                              : `card rate ${formatINR(cardRate)} — overridden`}
+                          </span>
+                        )
+                      }
+                      // Say why nothing was filled: no card at all, or this SKU
+                      // is not on it. Silence here is what looked like a bug.
+                      if (item.sales_bargain_id && item.packaging_id) {
+                        const hasCard = card && Object.keys(card).length > 0
+                        return (
+                          <span className="text-[10px] text-muted-foreground">
+                            {hasCard
+                              ? 'this SKU is not priced on the bargain’s rate card'
+                              : 'no rate card on this bargain — add one from the Sales Bargain page'}
+                          </span>
+                        )
+                      }
+                      return null
+                    })()}
                   </div>
                   <div className="grid gap-1.5">
                     <Label>GST %</Label>
@@ -1132,11 +1214,13 @@ function SalesTab({
               </div>
             )
           })}
-          <Button variant="outline" size="sm" onClick={addItem}><Plus className="h-4 w-4" /> Add item</Button>
+          </div>
+          <Button variant="outline" size="sm" className="mt-2 bg-white" onClick={addItem}><Plus className="h-4 w-4" /> Add item</Button>
         </div>
 
         {/* Invoice summary */}
-        <div className="mt-4 rounded-xl border bg-muted/30 p-4 text-sm">
+        <div className="ml-auto w-full max-w-md px-4 pb-4 text-sm">
+          <div className="rounded border border-[#d9d2b8] bg-[#f7f2e2] p-3">
           <div className="flex items-center justify-between py-0.5"><span className="text-muted-foreground">Taxable value</span><span className="tabular-nums">{formatINR(totals.amount)}</span></div>
           <div className="flex items-center justify-between py-0.5"><span className="text-muted-foreground">Total GST</span><span className="tabular-nums">{formatINR(totals.gst)}</span></div>
           <div className="flex items-center justify-between py-0.5">
@@ -1168,7 +1252,11 @@ function SalesTab({
               />
             </span>
           </div>
-          <div className="mt-1 flex items-center justify-between border-t pt-1 text-base font-semibold"><span>Invoice total</span><span className="tabular-nums">{formatINR(totals.amount + totals.gst + (Number(header.round_off) || 0))}</span></div>
+          <div className="mt-1 flex items-center justify-between border-t-2 border-[#1a2c56] pt-1.5 text-[15px] font-bold text-[#1a2c56]">
+            <span>Invoice total</span>
+            <span className="tabular-nums">{formatINR(totals.amount + totals.gst + (Number(header.round_off) || 0))}</span>
+          </div>
+          </div>
         </div>
 
         <Dialog open={!!excess} onOpenChange={(o) => !o && setExcess(null)}>
@@ -1315,9 +1403,14 @@ function SalesTab({
           </DialogContent>
         </Dialog>
 
-        <div className="mt-5 flex justify-end gap-2 border-t pt-4">
-          <Button variant="outline" onClick={() => (onBack ? onBack() : setFormPage(false))} disabled={saving}>Cancel</Button>
-          <Button onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : 'Save invoice'}</Button>
+        <div className="flex items-center justify-end gap-2 rounded-b-md border-t border-[#d9d2b8] bg-[#f1ecd9] px-4 py-2.5">
+          <span className="mr-auto text-[11px] text-muted-foreground">
+            Ctrl+A accepts, like Tally — or use the button.
+          </span>
+          <Button variant="outline" className="bg-white" onClick={() => (onBack ? onBack() : setFormPage(false))} disabled={saving}>Cancel</Button>
+          <Button className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => void save()} disabled={saving}>
+            {saving ? 'Saving…' : editingGroup ? 'Save changes' : 'Accept invoice'}
+          </Button>
         </div>
       </div>
       )}
@@ -1827,12 +1920,12 @@ function SalesBargainsTab(): React.JSX.Element {
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <div className="flex items-center gap-1.5 text-sm">
-          <span className="text-muted-foreground">Date</span>
-          <FyPicker from={dateFrom} to={dateTo} onRange={(f, t) => { setDateFrom(f); setDateTo(t) }} className="h-9 w-28 text-xs" />
-          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="w-36" />
-          <span className="text-muted-foreground">to</span>
-          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
+        <div className="flex items-center gap-1.5 text-[12px]">
+          <span className="shrink-0 text-muted-foreground">Date</span>
+          <FyPicker from={dateFrom} to={dateTo} onRange={(f, t) => { setDateFrom(f); setDateTo(t) }} className="h-8 w-36 shrink-0 text-[11px]" />
+          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="h-8 w-40 shrink-0 text-[11px]" />
+          <span className="shrink-0 text-muted-foreground">to</span>
+          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="h-8 w-40 shrink-0 text-[11px]" />
           {(dateFrom || dateTo) && (
             <Button variant="ghost" size="sm" className="h-8 text-muted-foreground" onClick={() => { setDateFrom(''); setDateTo('') }}>Clear</Button>
           )}
@@ -1966,6 +2059,14 @@ function SalesBargainsTab(): React.JSX.Element {
                               {bgOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                               <span className="tabular-nums text-muted-foreground">{seq}.</span>
                               {row.bargain_no}
+                              {rateExpired(row) && Number(row.balance_qty) > 0 && (
+                                <span
+                                  className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800"
+                                  title={`The rate expired on ${formatDate(row.rate_expiry_date)} — it is still offered on a sale, marked as expired`}
+                                >
+                                  Rate expired
+                                </span>
+                              )}
                             </span>
                           </TableCell>
                           <TableCell>{formatDate(row.bargain_date)}</TableCell>
