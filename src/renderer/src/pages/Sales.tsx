@@ -411,12 +411,16 @@ function SalesTab({
     if (v === 'none') { setItem(idx, { sales_bargain_id: '' }); return }
     const b = bargains.find((x) => String(x.id) === v)
     const it = items[idx]
-    // Pull the bargain's SKU rate card; if it prices this SKU, offer that rate.
+    // Pull the bargain's SKU rate card. The lookup must use the packaging and
+    // sale type the line is ABOUT to have (the bargain often brings both) —
+    // reading items[idx] inside the .then sees the stale pre-bargain line and
+    // the card lookup misses, which is exactly how fed rates failed to appear.
+    const nextPack = b?.packaging_id ? String(b.packaging_id) : String(it.packaging_id || '')
+    const nextPacked = String(b?.sale_type || it.sale_type || 'LOOSE') === 'PACKED'
     void loadCard(v).then((card) => {
-      const hit = card[String(items[idx]?.packaging_id || '')]
+      const hit = card[nextPack]
       if (!hit) return
-      const packed = calc(items[idx]).isPacked
-      const rate = packed ? hit.rate_per_case : hit.rate_per_mt
+      const rate = nextPacked ? hit.rate_per_case : hit.rate_per_mt
       if (rate != null) setItem(idx, { rate: String(rate), rate_from_card: true })
     })
     setItem(idx, {
@@ -1566,6 +1570,11 @@ function SalesBargainsTab(): React.JSX.Element {
         customer: b.customer || '',
         product: b.product_name || '',
         rate: Number(b.rate) || 0,
+        // The parent row states the bargain's period register, so the grouped
+        // sheet reads on its own without cross-checking the summary tab.
+        opening: reg.opening,
+        addition: reg.addition,
+        balance: reg.closing,
         qty: reg.dispatch
       })
       for (const d of dispatchesByBargain.get(Number(b.id)) || []) {
@@ -1856,12 +1865,15 @@ function SalesBargainsTab(): React.JSX.Element {
                   { header: 'Customer', key: 'customer' },
                   { header: 'Product', key: 'product' },
                   { header: 'BG rate', key: 'rate', align: 'right', numFmt: '#,##0.00' },
+                  { header: 'Opening', key: 'opening', align: 'right', numFmt: '#,##0.000' },
+                  { header: 'Addition', key: 'addition', align: 'right', numFmt: '#,##0.000' },
                   { header: 'Invoice', key: 'invoice_no' },
                   { header: 'Dispatched on', key: 'sale_date' },
                   { header: 'Stage', key: 'stage' },
                   { header: 'Dis qty', key: 'qty', align: 'right', numFmt: '#,##0.000' },
                   { header: 'Sale rate', key: 'sale_rate', align: 'right', numFmt: '#,##0.00' },
-                  { header: 'Value incl. GST', key: 'amount', align: 'right', numFmt: '#,##0.00' }
+                  { header: 'Value incl. GST', key: 'amount', align: 'right', numFmt: '#,##0.00' },
+                  { header: 'Balance', key: 'balance', align: 'right', numFmt: '#,##0.000' }
                 ],
                 rows: dispatchDetailRows(),
                 isGroup: (r) => !r.invoice_no,

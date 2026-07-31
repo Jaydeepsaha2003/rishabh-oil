@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowRightLeft, Building2, Check, ChevronDown, ChevronRight, Download, Plus, SlidersHorizontal, Trash2, Upload } from 'lucide-react'
+import { ArrowRightLeft, Building2, ChevronDown, ChevronRight, Download, Plus, SlidersHorizontal, Trash2, Upload } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -14,7 +14,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import {
@@ -119,45 +118,38 @@ function CompanyPicker({
   onChange: (ids: number[]) => void
   activeId: number
 }): React.JSX.Element {
-  const sel = value.length ? value : activeId ? [activeId] : []
-  const all = companies.length > 0 && companies.every((c) => sel.includes(Number(c.id)))
-  const label = all && companies.length > 1
-    ? 'All companies'
-    : sel.length === 1
-      ? String(companies.find((c) => Number(c.id) === sel[0])?.name || 'Company')
-      : `${sel.length} companies`
-  const toggle = (id: number): void => {
-    const next = sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]
-    // Never empty — fall back to the active company.
-    onChange(next.length ? next : activeId ? [activeId] : [])
-  }
-  const item = 'flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-[13px] hover:bg-muted'
+  // Same grammar as the Tanker Movement filter: one dropdown offering the
+  // active company, every company together, or any single company.
+  const all = companies.length > 1 && companies.every((c) => value.includes(Number(c.id)))
+  const current = value.length === 0 ? 'active' : all ? 'all' : value.length === 1 ? String(value[0]) : 'all'
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" className="h-9 max-w-[220px] gap-1.5 text-xs font-semibold">
+    <Select
+      value={current}
+      onValueChange={(v) => {
+        if (v === 'active') onChange([])
+        else if (v === 'all') onChange(companies.map((c) => Number(c.id)))
+        else onChange([Number(v)])
+      }}
+    >
+      <SelectTrigger className="h-9 w-[13rem] text-xs">
+        <span className="flex min-w-0 items-center gap-1.5">
           <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="truncate">{label}</span>
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-60 p-1.5">
-        <button type="button" className={item} onClick={() => onChange(companies.map((c) => Number(c.id)))}>
-          <span className="font-semibold">All companies</span>
-          {all && <Check className="h-3.5 w-3.5 text-emerald-600" />}
-        </button>
-        <div className="my-1 border-t" />
+          <SelectValue />
+        </span>
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="active">
+          Active company
+          {companies.find((c) => Number(c.id) === activeId)?.name
+            ? ` — ${companies.find((c) => Number(c.id) === activeId)?.name}`
+            : ''}
+        </SelectItem>
+        <SelectItem value="all">All companies</SelectItem>
         {companies.map((c) => (
-          <button key={String(c.id)} type="button" className={item} onClick={() => toggle(Number(c.id))}>
-            <span className="truncate">
-              {c.name}
-              {Number(c.id) === activeId && <span className="ml-1 text-[10px] text-muted-foreground">(active)</span>}
-            </span>
-            {sel.includes(Number(c.id)) && <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600" />}
-          </button>
+          <SelectItem key={String(c.id)} value={String(c.id)}>{c.name}</SelectItem>
         ))}
-      </PopoverContent>
-    </Popover>
+      </SelectContent>
+    </Select>
   )
 }
 

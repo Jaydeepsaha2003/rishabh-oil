@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { LogOut, Pencil, Scale, Trash2, Truck } from 'lucide-react'
+import {
+  LogIn, LogOut, Pencil, Scale, Trash2, Truck } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -48,7 +49,9 @@ const blankGateOut = (): Row => ({
   invoice_group: '',
   tanker_no: '',
   dispatch_qty: '',
-  uom: 'MT'
+  uom: 'MT',
+  no_invoice: false,
+  note: ''
 })
 
 export function GateEntry(): React.JSX.Element {
@@ -173,22 +176,28 @@ export function GateEntry(): React.JSX.Element {
     }))
   }
 
-  // Gate OUT — the vehicle leaves with a sale invoice; weight completes it.
+  // Gate OUT — normally with a sale invoice; a vehicle can also leave without
+  // a bill when that is said explicitly and the reason is recorded.
   async function recordGateOut(): Promise<void> {
-    if (!gateOut.invoice_group) return void toast.error('Select the sale invoice being dispatched')
+    if (!gateOut.no_invoice && !gateOut.invoice_group) return void toast.error('Select the sale invoice being dispatched')
+    if (gateOut.no_invoice && !String(gateOut.note || '').trim()) return void toast.error('Give the reason the vehicle is leaving without a bill')
     if (!String(gateOut.tanker_no || '').trim()) return void toast.error('Enter the vehicle number')
     setSavingOut(true)
     try {
       await window.api.gate.create({
         ...gateOut,
         direction: 'out',
-        invoice_group: gateOut.invoice_group,
+        invoice_group: gateOut.no_invoice ? null : gateOut.invoice_group,
         tanker_id: null,
         dispatch_qty: Number(gateOut.dispatch_qty) || 0,
         received_qty: 0,
         status: 'pending'
       })
-      toast.success(`Vehicle ${gateOut.tanker_no} out — waiting for weight`)
+      toast.success(
+        gateOut.no_invoice
+          ? `Vehicle ${gateOut.tanker_no} out WITHOUT a bill — reason on record`
+          : `Vehicle ${gateOut.tanker_no} out — waiting for weight`
+      )
       setGateOut(blankGateOut())
       await load()
     } catch (e) {
@@ -496,7 +505,27 @@ export function GateEntry(): React.JSX.Element {
             <h3 className="text-sm font-semibold">Gate out</h3>
             <InfoTip text="Record a sale dispatch leaving the factory. Only dispatched sales (Loaded / In transit / Unloaded) that haven't gone out yet are listed. The exit weight completes it." />
           </div>
+          <div className="mb-3 flex items-center gap-2 rounded-md border border-dashed border-amber-300 bg-amber-50/60 px-3 py-2">
+            <Switch
+              checked={!!gateOut.no_invoice}
+              onCheckedChange={(on) => setGateOut((p) => ({ ...p, no_invoice: on, invoice_group: on ? '' : p.invoice_group }))}
+            />
+            <div>
+              <div className="text-[12.5px] font-medium">Without invoice / bill</div>
+              <div className="text-[11px] text-muted-foreground">Empty vehicle, weighment run, return — needs the reason below.</div>
+            </div>
+          </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {gateOut.no_invoice ? (
+              <div className="grid min-w-0 gap-1.5 sm:col-span-2 lg:col-span-1">
+                <Label>Reason (no bill) *</Label>
+                <Input
+                  value={gateOut.note || ''}
+                  placeholder="e.g. empty tanker returning to transporter"
+                  onChange={(e) => setGateOut((p) => ({ ...p, note: e.target.value }))}
+                />
+              </div>
+            ) : (
             <div className="grid min-w-0 gap-1.5 sm:col-span-2 lg:col-span-1">
               <Label>Sale invoice (dispatched) *</Label>
               <Select value={String(gateOut.invoice_group || '')} onValueChange={chooseSale}>
@@ -510,6 +539,7 @@ export function GateEntry(): React.JSX.Element {
                 </SelectContent>
               </Select>
             </div>
+            )}
             <div className="grid min-w-0 gap-1.5">
               <Label>Vehicle number *</Label>
               <Input value={gateOut.tanker_no || ''} onChange={(e) => setGateOut((p) => ({ ...p, tanker_no: e.target.value }))} />
@@ -561,50 +591,81 @@ export function GateEntry(): React.JSX.Element {
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {pending.map((row) => (
-                <div key={row.id} className="rounded-lg border border-amber-200 bg-card p-3 shadow-sm">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold">{row.tanker_no}</div>
-                      <div className="truncate text-xs text-muted-foreground">
-                        {row.direction === 'out'
-                          ? <>{row.sale_customer || '—'}{row.sale_invoice ? ` · ${row.sale_invoice}` : ''}</>
-                          : <>{row.supplier_name || '—'}{row.bargain_no ? ` · ${row.bargain_no}` : ''}</>}
-                      </div>
-                    </div>
-                    <Badge variant={row.direction === 'out' ? 'default' : 'warning'}>
-                      {row.direction === 'out' ? 'Out · pending' : 'Pending'}
+                <div key={row.id} className="flex flex-col rounded-xl border border-amber-200 bg-card shadow-sm transition-shadow hover:shadow-md">
+                  {/* Identity strip: vehicle + direction, never wrapping. */}
+                  <div className="flex items-center gap-2 rounded-t-xl border-b border-amber-100 bg-amber-50/60 px-3 py-2">
+                    <span
+                      className={cn(
+                        'inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md',
+                        row.direction === 'out' ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'
+                      )}
+                    >
+                      {row.direction === 'out' ? <LogOut className="h-3.5 w-3.5" /> : <LogIn className="h-3.5 w-3.5" />}
+                    </span>
+                    <span className="truncate text-[13.5px] font-bold tracking-wide">{row.tanker_no}</span>
+                    <Badge
+                      variant={row.direction === 'out' ? 'default' : 'warning'}
+                      className="ml-auto shrink-0 whitespace-nowrap"
+                    >
+                      {row.direction === 'out' ? 'OUT' : 'IN'}
                     </Badge>
                   </div>
-                  <div className="mt-0.5 text-xs text-muted-foreground">
-                    {row.gate_entry_no} · {row.rec_type || 'OIL'} · arrived {formatDate(row.entry_date)}
-                    {Number(row.dispatch_qty) > 0 && <> · dispatch {formatNum(row.dispatch_qty)} {row.uom}</>}
+
+                  <div className="flex flex-1 flex-col px-3 pb-3 pt-2">
+                    <div className="truncate text-[12.5px] font-medium" title={String(row.direction === 'out' ? row.sale_customer || '' : row.supplier_name || '')}>
+                      {row.direction === 'out'
+                        ? (row.sale_invoice || row.sale_customer
+                            ? <>{row.sale_customer || '—'}{row.sale_invoice ? <span className="text-muted-foreground"> · {row.sale_invoice}</span> : ''}</>
+                            : <span className="font-medium text-amber-700">No bill{row.note ? ` — ${row.note}` : ''}</span>)
+                        : <>{row.supplier_name || '—'}{row.bargain_no ? <span className="text-muted-foreground"> · {row.bargain_no}</span> : ''}</>}
+                    </div>
+                    {/* Meta as aligned label/value pairs instead of a wrapping sentence. */}
+                    <div className="mt-1.5 grid grid-cols-3 gap-1 text-center">
+                      {[
+                        { l: 'Gate no', v: String(row.gate_entry_no || '—') },
+                        { l: String(row.rec_type || 'OIL'), v: formatDate(row.entry_date) },
+                        { l: 'Dispatch', v: Number(row.dispatch_qty) > 0 ? `${formatNum(row.dispatch_qty)} ${row.uom}` : '—' }
+                      ].map((x) => (
+                        <div key={x.l} className="rounded bg-muted/50 px-1 py-0.5">
+                          <div className="truncate text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">{x.l}</div>
+                          <div className="truncate text-[11px] font-medium tabular-nums">{x.v}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {(() => {
+                      const w = weights[row.id] || { gross: '', tare: '' }
+                      const net = Math.round(((Number(w.gross) || 0) - (Number(w.tare) || 0)) * 1000) / 1000
+                      const ready = net > 0
+                      const setW = (k: 'gross' | 'tare', val: string): void =>
+                        setWeights((p) => ({ ...p, [row.id]: { ...(p[row.id] || { gross: '', tare: '' }), [k]: val } }))
+                      return (
+                        <div className="mt-auto">
+                          <div className="mt-2.5 grid grid-cols-2 gap-1.5">
+                            <div className="grid gap-0.5">
+                              <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Gross ({row.uom})</span>
+                              <Input type="number" className="h-8 text-right tabular-nums" placeholder="0.000" value={w.gross}
+                                onChange={(e) => setW('gross', e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
+                            </div>
+                            <div className="grid gap-0.5">
+                              <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Tare ({row.uom})</span>
+                              <Input type="number" className="h-8 text-right tabular-nums" placeholder="0.000" value={w.tare}
+                                onChange={(e) => setW('tare', e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
+                            </div>
+                          </div>
+                          <div className="mt-2 flex items-center justify-between gap-2">
+                            <span className={cn('text-[12px]', ready ? 'font-semibold text-emerald-700' : 'text-muted-foreground')}>
+                              Net <span className="tabular-nums">{ready ? formatNum(net) : '—'}</span> {row.uom}
+                            </span>
+                            <Button size="sm" className="h-8" disabled={!ready} title={ready ? undefined : 'Enter Gross and Tare first'} onClick={() => saveWeight(row)}>
+                              <Scale className="h-4 w-4" /> Complete
+                            </Button>
+                          </div>
+                        </div>
+                      )
+                    })()}
                   </div>
-                  {(() => {
-                    const w = weights[row.id] || { gross: '', tare: '' }
-                    const net = Math.round(((Number(w.gross) || 0) - (Number(w.tare) || 0)) * 1000) / 1000
-                    const setW = (k: 'gross' | 'tare', val: string): void =>
-                      setWeights((p) => ({ ...p, [row.id]: { ...(p[row.id] || { gross: '', tare: '' }), [k]: val } }))
-                    return (
-                      <>
-                        <div className="mt-2 grid grid-cols-2 gap-1.5">
-                          <Input type="number" placeholder={`Gross (${row.uom})`} value={w.gross}
-                            onChange={(e) => setW('gross', e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
-                          <Input type="number" placeholder={`Tare (${row.uom})`} value={w.tare}
-                            onChange={(e) => setW('tare', e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
-                        </div>
-                        <div className="mt-1.5 flex items-center justify-between gap-2">
-                          <span className="text-xs text-muted-foreground">
-                            Net <span className={`font-semibold tabular-nums ${net > 0 ? 'text-foreground' : ''}`}>{net > 0 ? formatNum(net) : '—'}</span> {row.uom}
-                          </span>
-                          <Button size="sm" className="h-8" onClick={() => saveWeight(row)}>
-                            <Scale className="h-4 w-4" /> Complete
-                          </Button>
-                        </div>
-                      </>
-                    )
-                  })()}
                 </div>
               ))}
             </div>
@@ -654,7 +715,9 @@ export function GateEntry(): React.JSX.Element {
                         <div>{row.tanker_no}</div>
                         {isOut ? (
                           <div className="text-xs text-muted-foreground">
-                            {row.sale_customer || '—'}{row.sale_invoice ? ` · ${row.sale_invoice}` : ''}{row.sale_product ? ` · ${row.sale_product}` : ''}
+                            {row.sale_invoice || row.sale_customer
+                              ? <>{row.sale_customer || '—'}{row.sale_invoice ? ` · ${row.sale_invoice}` : ''}{row.sale_product ? ` · ${row.sale_product}` : ''}</>
+                              : <span className="font-medium text-amber-700">No bill{row.note ? ` — ${row.note}` : ''}</span>}
                           </div>
                         ) : (
                           row.supplier_name && <div className="text-xs text-muted-foreground">{row.supplier_name}{row.bargain_no ? ` · ${row.bargain_no}` : ''}</div>

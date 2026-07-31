@@ -93,7 +93,16 @@ export async function tankerGateReceived(tankerId: number): Promise<number | nul
 export async function createGateEntry(v: Row): Promise<{ id: number }> {
   const c = getClient()
   const direction = v.direction === 'out' ? 'out' : 'in'
-  if (direction === 'out' && !v.invoice_group && !v.sale_id) throw new Error('Select the sale invoice being dispatched')
+  if (direction === 'out' && !v.invoice_group && !v.sale_id) {
+    // Vehicles do leave without a bill (empty tankers, weighment runs, returns)
+    // — allowed, but only deliberately and with the reason on record.
+    if (!v.no_invoice) {
+      throw new Error('Select the sale invoice being dispatched — or tick "Without invoice / bill" for a vehicle leaving with no bill')
+    }
+    if (!String(v.note || '').trim()) {
+      throw new Error('Give the reason the vehicle is leaving without a bill')
+    }
+  }
   // Every gate entry names its vehicle — either a tanker from the movement
   // register or a typed vehicle number; an entry with neither is untraceable.
   if (!n(v.tanker_id) && !String(v.tanker_no || '').trim()) {

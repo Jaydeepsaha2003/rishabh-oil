@@ -49,7 +49,12 @@ export async function listSkuRates(salesBargainId: number): Promise<Row[]> {
     })
     const linked = new Set(links.rows.map((r) => Number(r.packaging_id)))
     if (linked.size) {
-      const own = rows.filter((r) => linked.has(Number(r.packaging_id)))
+      // The party's linked SKUs — but an SKU that already carries a rate on
+      // THIS bargain always stays, or the sale line's auto-fill (which uses
+      // this same list) would stop seeing rates that were properly fed in.
+      const own = rows.filter(
+        (r) => linked.has(Number(r.packaging_id)) || r.rate_per_case != null || r.rate_per_mt != null
+      )
       if (own.length) rows = own
     }
   }

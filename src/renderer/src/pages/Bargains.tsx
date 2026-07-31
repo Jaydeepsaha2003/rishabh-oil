@@ -550,7 +550,17 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
         { header: 'Balance', key: '_closing', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r._closing) || 0 },
         { header: 'Total', key: 'total_amount', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.total_amount) || 0 }
       ],
-      rows: sortedRows,
+      rows: [
+        ...sortedRows,
+        {
+          bargain_no: 'GRAND TOTAL',
+          _opening: grandVisible.opening,
+          _addition: grandVisible.addition,
+          _dispatch: grandVisible.dispatch,
+          _closing: grandVisible.closing,
+          total_amount: sortedRows.reduce((sum, r) => sum + (Number(r.total_amount) || 0), 0)
+        }
+      ],
       // Second tab: every tanker under every bargain, so the nested view of the
       // page is readable in Excel too. A tanker split across two bargains shows
       // under both, with only its share.
@@ -564,12 +574,15 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
             { header: 'Supplier', key: 'supplier_name' },
             { header: 'Oil', key: 'oil' },
             { header: 'BG rate', key: 'rate', align: 'right', numFmt: '#,##0.00' },
+            { header: 'Opening', key: 'opening', align: 'right', numFmt: '#,##0.000' },
+            { header: 'Addition', key: 'addition', align: 'right', numFmt: '#,##0.000' },
             { header: 'Tanker', key: 'tanker_no' },
             { header: 'Loaded on', key: 'loaded_date' },
             { header: 'Stage', key: 'stage' },
             { header: 'Invoice', key: 'invoice_no' },
             { header: 'Dis qty', key: 'dis_qty', align: 'right', numFmt: '#,##0.000' },
             { header: 'Received', key: 'received_qty', align: 'right', numFmt: '#,##0.000' },
+            { header: 'Balance', key: 'balance', align: 'right', numFmt: '#,##0.000' },
             { header: 'Split', key: 'split' }
           ],
           rows: tankerDetailRows(),
@@ -595,6 +608,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
         supplier_name: b.supplier_name || '',
         oil: oilOf(b),
         rate: Number(b.rate_per_uom) || 0,
+        // The parent row states the bargain's period register, so the grouped
+        // sheet reads on its own without cross-checking the summary tab.
+        opening: Number(b._opening) || 0,
+        addition: Number(b._addition) || 0,
+        balance: Number(b._closing) || 0,
         dis_qty: Number(b._dispatch) || 0
       })
       for (const t of list) {
