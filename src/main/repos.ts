@@ -5,6 +5,7 @@ import { getClient } from './db'
 // ever come from this map (never from the renderer), so the dynamic SQL below
 // is safe — all *values* are passed as bound parameters.
 const TABLES: Record<string, string[]> = {
+  categories: ['name', 'applies_to', 'note', 'active'],
   oil_types: ['code', 'name', 'active'],
   products: ['code', 'name', 'category', 'material_type', 'active'],
   suppliers: [
@@ -41,6 +42,7 @@ const TABLES: Record<string, string[]> = {
   ],
   customers: [
     'name',
+    'category',
     'company_type',
     'gstin',
     'state',
@@ -80,6 +82,31 @@ function pickKeys(values: Row, allowed: string[]): string[] {
   return Object.keys(values).filter((k) => allowed.includes(k))
 }
 
+// Two masters with the same name are indistinguishable in every dropdown and
+// split a party's history in two, so a duplicate is refused at the write path
+// — the UI warns, this makes it impossible.
+//
+// A row that is ALREADY a duplicate can still be edited (that is how it gets
+// fixed); only creating a clash, or renaming into one, is blocked.
+async function assertUniqueName(table: string, values: Row, excludeId?: number): Promise<void> {
+  if (!('name' in values)) return
+  const name = String(values.name ?? '').trim()
+  if (!name) return
+  const c = getClient()
+  if (excludeId) {
+    const cur = await c.execute({ sql: `SELECT name FROM ${table} WHERE id = ?`, args: [excludeId] })
+    const before = String(cur.rows[0]?.name ?? '').trim().toLowerCase()
+    if (before === name.toLowerCase()) return // not a rename — leave it alone
+  }
+  const hit = await c.execute({
+    sql: `SELECT id, name FROM ${table} WHERE TRIM(LOWER(name)) = ?${excludeId ? ' AND id != ?' : ''} LIMIT 1`,
+    args: excludeId ? [name.toLowerCase(), excludeId] : [name.toLowerCase()]
+  })
+  if (hit.rows.length) {
+    throw new Error(`"${String(hit.rows[0].name)}" already exists — give this one a different name`)
+  }
+}
+
 export async function list(table: string): Promise<Row[]> {
   assertTable(table)
   // Every master table has a `name` and feeds dropdowns across the app —
@@ -109,6 +136,7 @@ export async function get(table: string, id: number): Promise<Row | null> {
 
 export async function create(table: string, values: Row): Promise<{ id: number }> {
   const allowed = assertTable(table)
+  await assertUniqueName(table, values)
   const keys = pickKeys(values, allowed)
   if (keys.length === 0) throw new Error('No valid columns to insert')
   const placeholders = keys.map(() => '?').join(', ')
@@ -121,6 +149,7 @@ export async function create(table: string, values: Row): Promise<{ id: number }
 
 export async function update(table: string, id: number, values: Row): Promise<{ id: number }> {
   const allowed = assertTable(table)
+  await assertUniqueName(table, values, id)
   const keys = pickKeys(values, allowed)
   if (keys.length === 0) return { id }
   const setClause = keys.map((k) => `${k} = ?`).join(', ')

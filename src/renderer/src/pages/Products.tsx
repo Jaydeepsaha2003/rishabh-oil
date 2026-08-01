@@ -2,28 +2,13 @@ import { PageHeader } from '@/components/PageHeader'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { loadUser } from '@/lib/session'
 import { canWrite } from '@/lib/modules'
+import { useCategories } from '@/lib/useCategories'
 
-const fields: FieldDef[] = [
+const baseFields: FieldDef[] = [
   { key: 'name', label: 'Name', type: 'text', required: true, placeholder: 'CPO' },
   { key: 'code', label: 'Code', type: 'text' },
-  {
-    key: 'material_type',
-    label: 'Category',
-    // Creatable: the seed list below plus every category already in use, and the
-    // user can type a new one and add it.
-    type: 'creatable',
-    default: 'OIL',
-    options: [
-      { value: 'OIL', label: 'OIL' },
-      { value: 'HUSK', label: 'HUSK' },
-      { value: 'FATTY', label: 'FATTY' },
-      { value: 'SCRAP', label: 'SCRAP' },
-      { value: 'SPENT EARTH', label: 'SPENT EARTH' },
-      { value: 'PACKAGING', label: 'PACKAGING' },
-      { value: 'CHEMICAL', label: 'CHEMICAL' },
-      { value: 'MISC', label: 'MISC' }
-    ]
-  },
+  // Category is filled in below from the Categories master.
+  { key: 'material_type', label: 'Category', type: 'creatable', default: 'OIL', options: [] },
   {
     key: 'category',
     label: 'Sub-category',
@@ -50,6 +35,12 @@ const columns: ColumnDef[] = [
 ]
 
 export function Products(): React.JSX.Element {
+  const { categories } = useCategories()
+  // One list, maintained on the Categories page — typing a new one here still
+  // works and simply adds it to this product.
+  const fields = baseFields.map((f) =>
+    f.key === 'material_type' ? { ...f, options: categories.map((c) => ({ value: c, label: c })) } : f
+  )
   return (
     <>
       <PageHeader title="Products" subtitle="Raw oils, intermediates and finished products" hint="The master catalog. Raw oils are bought via bargains; intermediates and finished goods are built from formulations and tracked in stock." />

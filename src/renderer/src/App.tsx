@@ -15,6 +15,7 @@ import { Accounts } from './pages/Accounts'
 import { Treasury } from './pages/Treasury'
 import { Payments } from './pages/Payments'
 import { Products } from './pages/Products'
+import { Categories } from './pages/Categories'
 import { Formulation } from './pages/Formulation'
 import { Production } from './pages/Production'
 import { Stock } from './pages/Stock'
@@ -292,6 +293,7 @@ function App(): React.JSX.Element {
         {view === 'accounts' && <Accounts onExit={() => setPage('dashboard')} />}
         {view === 'treasury' && <Treasury />}
         {view === 'products' && <Products />}
+        {view === 'categories' && <Categories />}
         {view === 'formulation' && <Formulation />}
         {view === 'production' && <Production />}
         {view === 'stock' && <Stock />}

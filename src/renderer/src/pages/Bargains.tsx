@@ -50,6 +50,7 @@ import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { exportRowsToExcel } from '@/lib/excel'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { useCategories } from '@/lib/useCategories'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -370,8 +371,10 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
     }
   }
 
+  const { categories: bargainCats } = useCategories(suppliers.map((x) => x.supplier_type), 'purchase')
   const noMasters = suppliers.length === 0 || oilTypes.length === 0
-  const TYPE_FILTERS = ['OIL', 'HUSK', 'PACKAGING', 'CHEMICAL', 'ALL']
+  // The tabs follow the Categories master, with ALL pinned at the end.
+  const TYPE_FILTERS = [...bargainCats, 'ALL']
   // Enrich each bargain with its period register figures (used for the columns
   // and for sorting via the _opening/_addition/_dispatch/_closing accessors).
   const regRows = useMemo<Row[]>(

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import {
+  Tags,
   Landmark,
   BookOpenCheck,
   Anchor,
@@ -46,6 +47,7 @@ export type Page =
   | 'accounts'
   | 'treasury'
   | 'payments'
+  | 'categories'
   | 'products'
   | 'formulation'
   | 'production'
@@ -69,6 +71,7 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   accounts: { label: 'Accounting', icon: BookOpenCheck },
   treasury: { label: 'Treasury', icon: Landmark },
   payments: { label: 'Payments', icon: CreditCard },
+  categories: { label: 'Categories', icon: Tags },
   products: { label: 'Products', icon: Boxes },
   formulation: { label: 'Formulation', icon: FlaskConical },
   production: { label: 'Production', icon: Factory },
@@ -91,7 +94,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Production', ids: ['products', 'formulation', 'production', 'stock'] },
   { label: 'Sales', ids: ['salesBargains', 'sales'] },
   { label: 'Accounts', ids: ['accounts', 'treasury', 'payments'] },
-  { label: 'Masters', ids: ['suppliers', 'transporters', 'customers', 'ports', 'brokers', 'packaging'] },
+  { label: 'Masters', ids: ['categories', 'suppliers', 'transporters', 'customers', 'ports', 'brokers', 'packaging'] },
   { label: 'System', ids: ['approvals', 'settings'] }
 ]
 

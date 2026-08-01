@@ -2,21 +2,13 @@ import { PageHeader } from '@/components/PageHeader'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { loadUser } from '@/lib/session'
 import { canWrite } from '@/lib/modules'
+import { useCategories } from '@/lib/useCategories'
 import { COMPANY_TYPES } from '@/lib/constants'
 
-const fields: FieldDef[] = [
+const baseFields: FieldDef[] = [
   { key: 'name', label: 'Name', type: 'text', required: true },
-  {
-    key: 'supplier_type',
-    label: 'Supplier type',
-    type: 'select',
-    options: [
-      { value: 'OIL', label: 'OIL' },
-      { value: 'HUSK', label: 'HUSK' },
-      { value: 'PACKAGING', label: 'PACKAGING' },
-      { value: 'CHEMICAL', label: 'CHEMICAL' }
-    ]
-  },
+  // Category comes from the Categories master, same list as everywhere else.
+  { key: 'supplier_type', label: 'Category', type: 'creatable', options: [] },
   { key: 'company_type', label: 'Company type', type: 'select', options: COMPANY_TYPES },
   { key: 'gstin', label: 'GSTIN', type: 'text' },
   { key: 'state', label: 'State', type: 'text' },
@@ -57,6 +49,11 @@ const columns: ColumnDef[] = [
 ]
 
 export function Suppliers(): React.JSX.Element {
+  // A supplier is a buying relationship.
+  const { categories } = useCategories([], 'purchase')
+  const fields = baseFields.map((f) =>
+    f.key === 'supplier_type' ? { ...f, options: categories.map((c) => ({ value: c, label: c })) } : f
+  )
   return (
     <>
       <PageHeader title="Suppliers" subtitle="GST, TDS slab, credit period, interest rule and purchase flow per supplier" hint="Slab TDS is cumulative per financial year: a base % up to the threshold, then a higher % above it. 'Below slab no TDS' charges TDS only above the threshold. 'Direct purchase' suppliers keep their goods at our site, so no tanker is sent to them — the purchase is booked in one step against the bargain." />

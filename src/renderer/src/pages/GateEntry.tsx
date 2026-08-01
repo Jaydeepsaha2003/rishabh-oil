@@ -18,6 +18,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { errText, formatDate, formatNum, todayISO } from '@/lib/format'
 import { ExcelButton } from '@/components/ExcelButton'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { useCategories } from '@/lib/useCategories'
 import { Pagination, usePaged } from '@/components/Pagination'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
@@ -25,7 +26,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 type Row = Record<string, any>
 
 // Receipt classification for a gate entry.
-const REC_TYPES = ['OIL', 'PACKAGING', 'CHEMICAL', 'HUSK', 'MISCELLANEOUS'] as const
+// Miscellaneous covers goods with no trading party behind them — workshop
+// material, empty drums, samples. The gate records what it is, not whose it is.
+const isMisc = (v: unknown): boolean => {
+  const c = String(v || '').trim().toUpperCase()
+  return c === 'MISCELLANEOUS' || c === 'MISC'
+}
 
 const blankArrival = (): Row => ({
   gate_entry_no: '',
@@ -96,20 +102,18 @@ export function GateEntry(): React.JSX.Element {
   const [customers, setCustomers] = useState<Row[]>([])
   // (category -> party ids) derived from what each party actually trades.
   const [partyCats, setPartyCats] = useState<Row[]>([])
+  // Lets the gateman reach a party the category filter would hide.
+  const [showAllParties, setShowAllParties] = useState(false)
   const [products, setProducts] = useState<Row[]>([])
   // The page carried the two entry forms, the weighment queue and the whole
   // register at once; split so recording and reviewing are separate.
   const [tab, setTab] = useState('in')
-  // Rec type mirrors the categories on the Products master, so a category added
-  // there (FATTY, SCRAP, SPENT EARTH…) is immediately selectable at the gate.
-  const recTypes = useMemo(() => {
-    const seen = new Set<string>(REC_TYPES)
-    for (const p of products) {
-      const c = String(p.material_type || '').trim()
-      if (c) seen.add(c.toUpperCase())
-    }
-    return Array.from(seen).sort()
-  }, [products])
+  // Rec type is the Categories master, plus whatever the products already use
+  // so nothing on an old record becomes unselectable.
+  // Every category, both directions. A purchase/sales tag narrows the master
+  // screens, but the gate must be able to record whatever actually arrives or
+  // leaves — a sales-tagged SCRAP lorry still comes in through the same gate.
+  const { categories: recTypes } = useCategories(products.map((p) => p.material_type))
   const [sales, setSales] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [arrival, setArrival] = useState<Row>(blankArrival())
@@ -256,23 +260,24 @@ export function GateEntry(): React.JSX.Element {
     }
   }
 
-  // Parties that deal in one category. An unknown category, or one nobody has
-  // traded yet, must never empty the list — it falls back to everyone.
+  // Parties for one category. The tag on the master (Supplier type / Customer
+  // category) is the answer when it is set; a party with no tag falls back to
+  // what it has actually traded. Anything that belongs to other categories is
+  // hidden — HUSK means HUSK parties. "Show all" below the field is the escape
+  // for a party that has neither a tag nor any history yet.
   function partiesIn(list: Row[], side: 'supplier' | 'customer', category: string): { rows: Row[]; narrowed: boolean } {
     const cat = String(category || '').trim().toUpperCase()
-    if (!cat) return { rows: list, narrowed: false }
-    const mine = new Set(
+    if (!cat || showAllParties) return { rows: list, narrowed: false }
+    const traded = new Set(
       partyCats.filter((r) => String(r.side) === side && String(r.cat).toUpperCase() === cat).map((r) => Number(r.id))
     )
-    // Nobody on this side trades that category — show everyone rather than an
-    // empty list.
-    if (!mine.size) return { rows: list, narrowed: false }
-    // Parties with no trading history at all stay visible: a master added this
-    // morning has no evidence against it, and hiding it would make a new
-    // customer unreachable at the gate.
-    const known = new Set(partyCats.filter((r) => String(r.side) === side).map((r) => Number(r.id)))
-    const hit = list.filter((x) => mine.has(Number(x.id)) || !known.has(Number(x.id)))
-    return hit.length ? { rows: hit, narrowed: hit.length < list.length } : { rows: list, narrowed: false }
+    const tagOf = (x: Row): string =>
+      String((side === 'supplier' ? x.supplier_type : x.category) || '').trim().toUpperCase()
+    const hit = list.filter((x) => {
+      const tag = tagOf(x)
+      return tag ? tag === cat : traded.has(Number(x.id))
+    })
+    return { rows: hit, narrowed: hit.length < list.length }
   }
 
   // Gate OUT — normally with a sale invoice; a vehicle can also leave without
@@ -805,6 +810,7 @@ export function GateEntry(): React.JSX.Element {
               <div className="grid min-w-0 gap-1">
                 <Label>MNC / party *</Label>
                 <Select
+                  searchable
                   value={String(arrival.supplier_id || '')}
                   onValueChange={(v) => setArrival((p) => ({ ...p, supplier_id: v }))}
                 >
@@ -821,7 +827,7 @@ export function GateEntry(): React.JSX.Element {
             ) : (
               <div className="grid min-w-0 gap-1">
                 <Label>Tanker *</Label>
-                <Select value={String(arrival.tanker_id || '')} onValueChange={chooseTanker}>
+                <Select searchable value={String(arrival.tanker_id || '')} onValueChange={chooseTanker}>
                   <SelectTrigger><SelectValue placeholder="Select arriving tanker" /></SelectTrigger>
                   <SelectContent>
                     {arrivable.map((t) => (
@@ -841,7 +847,15 @@ export function GateEntry(): React.JSX.Element {
             </div>
             <div className="grid min-w-0 gap-1">
               <Label>Rec type</Label>
-              <Select value={arrival.rec_type || 'OIL'} onValueChange={(v) => setArrival((p) => ({ ...p, rec_type: v }))}>
+              <Select
+                searchable
+                value={arrival.rec_type || 'OIL'}
+                onValueChange={(v) =>
+                  // Switching category re-scopes the party list, so a party
+                  // that no longer belongs is dropped rather than left stale.
+                  setArrival((p) => ({ ...p, rec_type: v, party: isMisc(v) ? '' : p.party }))
+                }
+              >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {recTypes.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
@@ -849,13 +863,16 @@ export function GateEntry(): React.JSX.Element {
               </Select>
             </div>
             {/* A hand-typed vehicle belongs to nobody yet — name the party it
-                came from or went to, from either master in one list. */}
-            {!arrival.is_direct_mnc && !arrival.tanker_id && (
+                came from or went to, from either master in one list.
+                Miscellaneous is workshop material, empty drums and the like:
+                there is no trading party behind it, so it is not asked for. */}
+            {!arrival.is_direct_mnc && !arrival.tanker_id && !isMisc(arrival.rec_type) && (
               <div className="grid min-w-0 gap-1">
                 <Label>
                   Party <span className="text-[10px] font-normal text-muted-foreground">(supplier or customer)</span>
                 </Label>
                 <Select
+                  searchable
                   value={String(arrival.party || '')}
                   onValueChange={(v) => setArrival((p) => ({ ...p, party: v }))}
                 >
@@ -888,13 +905,29 @@ export function GateEntry(): React.JSX.Element {
                   </SelectContent>
                 </Select>
                 {(() => {
-                  const sup = partiesIn(allSuppliers, 'supplier', String(arrival.rec_type || ''))
-                  const cus = partiesIn(customers, 'customer', String(arrival.rec_type || ''))
-                  return sup.narrowed || cus.narrowed ? (
-                    <span className="text-[10px] text-muted-foreground">
-                      showing parties who deal in {String(arrival.rec_type).toUpperCase()}
+                  const cat = String(arrival.rec_type || '').toUpperCase()
+                  const sup = partiesIn(allSuppliers, 'supplier', cat)
+                  const cus = partiesIn(customers, 'customer', cat)
+                  const none = sup.rows.length === 0 && cus.rows.length === 0
+                  if (!sup.narrowed && !cus.narrowed && !none) return null
+                  return (
+                    <span className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+                      {none ? (
+                        <span className="font-medium text-amber-700">
+                          No party is tagged {cat} — tag them on the Suppliers / Customers master
+                        </span>
+                      ) : (
+                        <>parties who deal in {cat}</>
+                      )}
+                      <button
+                        type="button"
+                        className="cursor-pointer font-medium text-indigo-600 underline-offset-2 hover:underline"
+                        onClick={() => setShowAllParties((v) => !v)}
+                      >
+                        {showAllParties ? 'filter by category' : 'show all'}
+                      </button>
                     </span>
-                  ) : null
+                  )
                 })()}
               </div>
             )}
@@ -956,7 +989,7 @@ export function GateEntry(): React.JSX.Element {
                 Sale invoice (dispatched){' '}
                 <span className="text-[10px] font-normal text-muted-foreground">(optional — else give the reason)</span>
               </Label>
-              <Select value={String(gateOut.invoice_group || '')} onValueChange={chooseSale}>
+              <Select searchable value={String(gateOut.invoice_group || '')} onValueChange={chooseSale}>
                 <SelectTrigger><SelectValue placeholder="Select outgoing invoice" /></SelectTrigger>
                 <SelectContent>
                   {(() => {
@@ -994,7 +1027,7 @@ export function GateEntry(): React.JSX.Element {
             </div>
             <div className="grid min-w-0 gap-1">
               <Label>Category <span className="text-[10px] font-normal text-muted-foreground">(from the invoice)</span></Label>
-              <Select value={gateOut.rec_type || 'OIL'} onValueChange={(v) => setGateOut((p) => ({ ...p, rec_type: v }))}>
+              <Select searchable value={gateOut.rec_type || 'OIL'} onValueChange={(v) => setGateOut((p) => ({ ...p, rec_type: v }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {recTypes.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
@@ -1136,7 +1169,7 @@ export function GateEntry(): React.JSX.Element {
               <div className="grid gap-1.5"><Label>Tanker no *</Label><Input value={editForm.tanker_no || ''} onChange={(e) => setEditForm((p) => ({ ...p, tanker_no: e.target.value }))} /></div>
               <div className="grid gap-1.5">
                 <Label>Rec type</Label>
-                <Select value={editForm.rec_type || 'OIL'} onValueChange={(v) => setEditForm((p) => ({ ...p, rec_type: v }))}>
+                <Select searchable value={editForm.rec_type || 'OIL'} onValueChange={(v) => setEditForm((p) => ({ ...p, rec_type: v }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>{recTypes.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
                 </Select>

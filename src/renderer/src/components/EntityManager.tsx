@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { Pencil, Plus, Trash2 } from 'lucide-react'
+import { AlertCircle, Pencil, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -91,6 +91,15 @@ export function EntityManager({
   rowAction
 }: Props): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
+
+  // Names already taken, and the ones duplicated in the data as it stands.
+  const norm = (v: unknown): string => String(v ?? '').trim().toLowerCase()
+  const nameCounts = new Map<string, number>()
+  for (const r of rows) {
+    const k = norm(r.name)
+    if (k) nameCounts.set(k, (nameCounts.get(k) || 0) + 1)
+  }
+  const isDuplicated = (r: Row): boolean => (nameCounts.get(norm(r.name)) || 0) > 1
   // Tally-style type-to-find across every visible column.
   const [search, setSearch] = useState('')
   const shownRows = useMemo(() => {
@@ -235,6 +244,15 @@ export function EntityManager({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readOnly])
 
+  // What the dialog is about to save, checked against the rest of the table.
+  const typedName = norm(form.name)
+  const clash = typedName
+    ? rows.find((r) => norm(r.name) === typedName && Number(r.id) !== Number(editingId))
+    : undefined
+  // Editing a row that is already duplicated must stay possible — only a new
+  // clash (or renaming into one) is blocked.
+  const nameBlocked = !!clash && (editingId == null || norm(rows.find((r) => Number(r.id) === Number(editingId))?.name) !== typedName)
+
   function renderCell(row: Row, col: ColumnDef): string {
     const v = row[col.key]
     if (col.type === 'switch') return v ? 'Yes' : 'No'
@@ -253,6 +271,17 @@ export function EntityManager({
         <span className="rounded bg-white/60 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums">
           {shownRows.length}{search ? ` / ${rows.length}` : ''}
         </span>
+        {(() => {
+          const dupes = rows.filter(isDuplicated).length
+          return dupes > 0 ? (
+            <span
+              className="inline-flex items-center gap-1 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700"
+              title="These names appear more than once — rename or remove the extras"
+            >
+              <AlertCircle className="h-3 w-3" /> {dupes} duplicate{dupes === 1 ? '' : 's'}
+            </span>
+          ) : null
+        })()}
         <div className="ml-auto flex items-center gap-2">
           <Input
             className="h-8 w-48 bg-white text-[13px]"
@@ -342,7 +371,19 @@ export function EntityManager({
                       key={c.key}
                       className={cn('py-1.5', c.align === 'right' && 'text-right tabular-nums')}
                     >
-                      {renderCell(row, c)}
+                      {c.key === 'name' && isDuplicated(row) ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <AlertCircle
+                            className="h-3.5 w-3.5 shrink-0 text-red-600"
+                            aria-label="Duplicate name"
+                          />
+                          <span className="font-medium text-red-700" title="Another record carries this exact name — rename one of them, or delete the one not in use">
+                            {renderCell(row, c)}
+                          </span>
+                        </span>
+                      ) : (
+                        renderCell(row, c)
+                      )}
                     </TableCell>
                   ))}
                   <TableCell className="py-1.5 text-right" onClick={(e) => e.stopPropagation()}>
@@ -514,12 +555,21 @@ export function EntityManager({
               )
             })}
           </div>
+          {nameBlocked && (
+            <p className="flex items-center gap-1.5 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span>
+                <b>{String(clash?.name)}</b> already exists. Two masters with the same name split the
+                history between them — give this one a different name.
+              </span>
+            </p>
+          )}
           {error && <p className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>
               Cancel
             </Button>
-            <Button onClick={save} disabled={saving}>
+            <Button onClick={save} disabled={saving || nameBlocked} title={nameBlocked ? 'That name is already taken' : undefined}>
               {saving ? 'Saving…' : 'Save'}
             </Button>
           </DialogFooter>

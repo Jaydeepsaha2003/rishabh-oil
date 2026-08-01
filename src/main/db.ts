@@ -460,6 +460,30 @@ const MIGRATIONS = [
   'ALTER TABLE gate_entries ADD COLUMN customer_id INTEGER',
   // The plain gate-register line: a vehicle, who it is with, and what it
   // carries. No weighment, no document behind it.
+  // Product/material categories as a master, so OIL, HUSK, SCRAP and whatever
+  // the mill adds later live in one place instead of being hard-coded in every
+  // screen. Referenced BY NAME, so existing rows keep working untouched.
+  `CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    note TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  // Seed from whatever the books already use, so nothing vanishes on upgrade.
+  `INSERT OR IGNORE INTO categories (name)
+     SELECT DISTINCT UPPER(TRIM(material_type)) FROM products
+      WHERE COALESCE(TRIM(material_type), '') != ''`,
+  `INSERT OR IGNORE INTO categories (name)
+     SELECT DISTINCT UPPER(TRIM(supplier_type)) FROM suppliers
+      WHERE COALESCE(TRIM(supplier_type), '') != ''`,
+  `INSERT OR IGNORE INTO categories (name) VALUES
+     ('OIL'), ('HUSK'), ('FATTY'), ('SCRAP'), ('SPENT EARTH'), ('PACKAGING'), ('CHEMICAL'), ('MISCELLANEOUS')`,
+  // Which side of the trade a category belongs to: bought, sold, or both.
+  "ALTER TABLE categories ADD COLUMN applies_to TEXT NOT NULL DEFAULT 'both'",
+  // A customer can be tagged with the category it trades in, the way a supplier
+  // already is — that is what lets the gate narrow the party list honestly.
+  'ALTER TABLE customers ADD COLUMN category TEXT',
   // PP = presentation stock counted alongside the physical count.
   'ALTER TABLE stock_counts ADD COLUMN pp_qty REAL',
   'ALTER TABLE gate_entries ADD COLUMN person TEXT',
