@@ -1103,11 +1103,16 @@ function MncStock(): React.JSX.Element {
   const [openingLog, setOpeningLog] = useState<Row[]>([])
   const [savingOpening, setSavingOpening] = useState(false)
   const [openingError, setOpeningError] = useState<string | null>(null)
+  // Period for the register: opening balance before it, deposits/invoices
+  // within it — same convention as Book Stock's date range.
+  const [mncFrom, setMncFrom] = useState('')
+  const [mncTo, setMncTo] = useState('')
+  const mncRanged = !!(mncFrom || mncTo)
 
   const load = useCallback(async () => {
     setLoading(true)
     const [sm, ls, sup, prd] = await Promise.all([
-      window.api.consignment.summary(),
+      window.api.consignment.summary(mncRanged ? { from: mncFrom, to: mncTo } : undefined),
       window.api.consignment.list(),
       window.api.data.list('suppliers'),
       window.api.data.list('products')
@@ -1117,7 +1122,7 @@ function MncStock(): React.JSX.Element {
     setSuppliers(sup.filter((x) => x.active))
     setProducts(prd.filter((x) => x.active))
     setLoading(false)
-  }, [])
+  }, [mncRanged, mncFrom, mncTo])
 
   // The opening lot already recorded for a party + product, if any. A second
   // entry restates it rather than adding another row.
@@ -1221,6 +1226,18 @@ function MncStock(): React.JSX.Element {
     })
   }
 
+  // The Opening figure a row shows: the pre-books manual balance when there is
+  // no period selected, or the period's computed opening (which already
+  // folds that manual balance in, once it is dated before the range) once a
+  // range is chosen — same convention as Book Stock's ranged Opening column.
+  const openingFor = useCallback(
+    (r: Row): number =>
+      mncRanged
+        ? Number(r.opening) || 0
+        : openingLotsFor(r.supplier_id, r.product_id).reduce((s2, l) => s2 + (Number(l.qty) || 0), 0),
+    [mncRanged, openingLotsFor]
+  )
+
   // Roll up per supplier — the "MNC" view (all of Bunge's stock with us).
   const byParty = useMemo(() => {
     const m = new Map<string, { name: string; opening: number; deposited: number; invoiced: number; balance: number; rows: Row[] }>()
@@ -1228,14 +1245,14 @@ function MncStock(): React.JSX.Element {
       const k = String(r.supplier_name || '—')
       if (!m.has(k)) m.set(k, { name: k, opening: 0, deposited: 0, invoiced: 0, balance: 0, rows: [] })
       const g = m.get(k)!
-      g.opening += openingLotsFor(r.supplier_id, r.product_id).reduce((s2, l) => s2 + (Number(l.qty) || 0), 0)
+      g.opening += openingFor(r)
       g.deposited += Number(r.deposited) || 0
       g.invoiced += Number(r.invoiced) || 0
       g.balance += Number(r.balance) || 0
       g.rows.push(r)
     }
     return Array.from(m.values()).sort((a, b) => a.name.localeCompare(b.name))
-  }, [rows, openingLotsFor])
+  }, [rows, openingFor])
 
   const tot = rows.reduce(
     (s, r) => ({
@@ -1253,7 +1270,7 @@ function MncStock(): React.JSX.Element {
       {
         supplier_name: g.name,
         product_code: p.product_code || p.product_name,
-        opening: openingLotsFor(p.supplier_id, p.product_id).reduce((s2, l) => s2 + (Number(l.qty) || 0), 0),
+        opening: openingFor(p),
         deposited: p.deposited,
         invoiced: p.invoiced,
         balance: p.balance,
@@ -1285,25 +1302,38 @@ function MncStock(): React.JSX.Element {
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
         <MiniStat label="Parties" value={String(byParty.length)} tone="violet" />
-        <MiniStat label="Deposited" value={formatNum(tot.deposited)} tone="emerald" />
-        <MiniStat label="Invoiced (became ours)" value={formatNum(tot.invoiced)} tone="rose" />
-        <MiniStat label="Balance (supplier owned)" value={formatNum(tot.balance)} tone="violet" />
+        <MiniStat label={mncRanged ? 'Deposited (period)' : 'Deposited'} value={formatNum(tot.deposited)} tone="emerald" />
+        <MiniStat label={mncRanged ? 'Invoiced (period)' : 'Invoiced (became ours)'} value={formatNum(tot.invoiced)} tone="rose" />
+        <MiniStat label={mncRanged ? 'Closing (supplier owned)' : 'Balance (supplier owned)'} value={formatNum(tot.balance)} tone="violet" />
       </div>
-      <div className="flex items-center justify-end gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <FyPicker from={mncFrom} to={mncTo} onRange={(f, t) => { setMncFrom(f); setMncTo(t) }} className="h-9 w-28 text-xs" />
+          <span className="text-[11px] font-semibold text-muted-foreground">From</span>
+          <div className="w-40"><DatePicker value={mncFrom} onChange={(v) => setMncFrom(v || '')} /></div>
+          <span className="text-[11px] font-semibold text-muted-foreground">To</span>
+          <div className="w-40"><DatePicker value={mncTo} onChange={(v) => setMncTo(v || '')} /></div>
+          {mncRanged && (
+            <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={() => { setMncFrom(''); setMncTo('') }}>
+              Clear
+            </Button>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
         <Button size="sm" variant="outline" onClick={() => openOpeningStock()}>
           <Plus className="h-4 w-4" /> Add opening stock
         </Button>
         <ExcelButton
-          filename={`mnc-consignment-stock-${todayISO()}`}
+          filename={mncRanged ? `mnc-consignment-stock-${mncFrom || 'start'}-to-${mncTo || todayISO()}` : `mnc-consignment-stock-${todayISO()}`}
           sheetName="MNC stock"
-          title="MNC / consignment stock"
+          title={`MNC / consignment stock${mncRanged ? ` (${mncFrom || 'start'} → ${mncTo || 'today'})` : ''}`}
           columns={[
             { header: 'Party', key: 'supplier_name', value: (r) => r.supplier_name || '' },
             { header: 'Product', key: 'product', value: (r) => r.product_code || r.product_name || '' },
             { header: 'Opening', key: 'opening', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.opening) || 0 },
             { header: 'Deposited', key: 'deposited', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.deposited) || 0 },
             { header: 'Invoiced', key: 'invoiced', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.invoiced) || 0 },
-            { header: 'Balance', key: 'balance', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.balance) || 0 },
+            { header: mncRanged ? 'Closing' : 'Balance', key: 'balance', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.balance) || 0 },
             { header: 'UOM', key: 'uom', value: (r) => r.uom || 'MT' },
             { header: 'Date', key: 'deposit_date', value: (r) => (r.deposit_date ? formatDate(r.deposit_date) : '') },
             { header: 'Tanker', key: 'tanker_no', value: (r) => r.tanker_no || '' },
@@ -1317,6 +1347,7 @@ function MncStock(): React.JSX.Element {
           isGroup={(r) => !!r.is_group}
           outlineDetail
         />
+        </div>
       </div>
       <div className="rounded-xl border bg-card shadow-sm">
         <Table
@@ -1329,7 +1360,7 @@ function MncStock(): React.JSX.Element {
               <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">Opening</TableHead>
               <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-emerald-700">Deposited</TableHead>
               <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-rose-700">Invoiced</TableHead>
-              <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-violet-900">Balance</TableHead>
+              <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-violet-900">{mncRanged ? 'Closing' : 'Balance'}</TableHead>
               <TableHead className="sticky top-0 z-20 bg-violet-100 text-[10px] font-semibold uppercase tracking-wide text-violet-900">UOM</TableHead>
             </TableRow>
           </TableHeader>
@@ -1368,7 +1399,7 @@ function MncStock(): React.JSX.Element {
                             </TableCell>
                             <TableCell className="text-right tabular-nums text-slate-600">
                               {(() => {
-                                const o = openingLotsFor(r.supplier_id, r.product_id).reduce((s2, l) => s2 + (Number(l.qty) || 0), 0)
+                                const o = openingFor(r)
                                 return o ? formatNum(o) : '—'
                               })()}
                             </TableCell>

@@ -15,20 +15,6 @@ function toPlain(res: ResultSet): Row[] {
 
 const n = (v: unknown): number => Number(v) || 0
 
-// Total consignment qty already drawn into the books for a supplier+product in
-// the active company — i.e. booked via consignment purchase invoices.
-async function invoicedMap(companyId: number): Promise<Map<string, number>> {
-  const res = await getClient().execute({
-    sql: `SELECT supplier_id, oil_type_id AS product_id, COALESCE(SUM(ordered_qty), 0) AS q
-          FROM orders WHERE company_id = ? AND is_consignment = 1
-          GROUP BY supplier_id, oil_type_id`,
-    args: [companyId]
-  })
-  const m = new Map<string, number>()
-  for (const r of res.rows) m.set(`${r.supplier_id}:${r.product_id}`, n(r.q))
-  return m
-}
-
 // Total qty this party has ever deposited with us for a product. Zero means
 // they hold no stock at our place, so there is nothing to draw against.
 // Restate the opening balance for a party + product in one validated step:
@@ -363,23 +349,79 @@ export async function releaseConsignmentLots(orderId: number): Promise<void> {
 
 
 // Consigned stock rolled up per supplier+product: deposited, invoiced, balance.
-export async function consignmentSummary(): Promise<Row[]> {
+// With a date range, the same split Book Stock uses: whatever moved before
+// `from` collapses into `opening`, and `deposited`/`invoiced` become the
+// movement strictly inside [from, to] — `balance` is then the closing figure
+// as of `to`. Without a range (both blank) `opening` is 0 and `deposited`/
+// `invoiced`/`balance` are the lifetime totals, exactly as before this split
+// existed.
+export async function consignmentSummary(range?: { from?: string; to?: string }): Promise<Row[]> {
   const cid = getActiveCompanyId()
-  const dep = await getClient().execute({
-    sql: `SELECT cs.supplier_id, cs.product_id, cs.uom,
-                 s.name AS supplier_name, p.code AS product_code, p.name AS product_name,
-                 SUM(cs.qty) AS deposited
+  const c = getClient()
+  const from = String(range?.from || '')
+  const to = String(range?.to || '')
+
+  const base = await c.execute({
+    sql: `SELECT DISTINCT cs.supplier_id, cs.product_id, cs.uom,
+                 s.name AS supplier_name, p.code AS product_code, p.name AS product_name
           FROM consignment_stock cs
           LEFT JOIN suppliers s ON s.id = cs.supplier_id
           LEFT JOIN products p ON p.id = cs.product_id
-          WHERE cs.company_id = ?
-          GROUP BY cs.supplier_id, cs.product_id`,
+          WHERE cs.company_id = ?`,
     args: [cid]
   })
-  const inv = await invoicedMap(cid)
-  return toPlain(dep).map((d) => {
-    const invoiced = inv.get(`${d.supplier_id}:${d.product_id}`) || 0
-    return { ...d, invoiced, balance: n(d.deposited) - invoiced }
+
+  const depositSlice = async (kind: 'opening' | 'period'): Promise<Map<string, number>> => {
+    if (kind === 'opening' && !from) return new Map()
+    let sql = 'SELECT supplier_id, product_id, SUM(qty) AS q FROM consignment_stock WHERE company_id = ?'
+    const args: (string | number)[] = [cid]
+    if (kind === 'opening') {
+      sql += ' AND deposit_date < ?'
+      args.push(from)
+    } else {
+      if (from) { sql += ' AND deposit_date >= ?'; args.push(from) }
+      if (to) { sql += ' AND deposit_date <= ?'; args.push(to) }
+    }
+    const res = await c.execute({ sql: `${sql} GROUP BY supplier_id, product_id`, args })
+    const m = new Map<string, number>()
+    for (const r of res.rows) m.set(`${r.supplier_id}:${r.product_id}`, n(r.q))
+    return m
+  }
+
+  // Stock becomes "invoiced" the moment the consignment purchase is booked —
+  // orders.ordered_qty where is_consignment=1, sliced by order date instead
+  // of taken over all time.
+  const invoicedSlice = async (kind: 'opening' | 'period'): Promise<Map<string, number>> => {
+    if (kind === 'opening' && !from) return new Map()
+    let sql = `SELECT supplier_id, oil_type_id AS product_id, SUM(ordered_qty) AS q
+               FROM orders WHERE company_id = ? AND is_consignment = 1`
+    const args: (string | number)[] = [cid]
+    if (kind === 'opening') {
+      sql += ' AND order_date < ?'
+      args.push(from)
+    } else {
+      if (from) { sql += ' AND order_date >= ?'; args.push(from) }
+      if (to) { sql += ' AND order_date <= ?'; args.push(to) }
+    }
+    const res = await c.execute({ sql: `${sql} GROUP BY supplier_id, oil_type_id`, args })
+    const m = new Map<string, number>()
+    for (const r of res.rows) m.set(`${r.supplier_id}:${r.product_id}`, n(r.q))
+    return m
+  }
+
+  const [depOpening, depPeriod, invOpening, invPeriod] = await Promise.all([
+    depositSlice('opening'),
+    depositSlice('period'),
+    invoicedSlice('opening'),
+    invoicedSlice('period')
+  ])
+
+  return toPlain(base).map((r) => {
+    const key = `${r.supplier_id}:${r.product_id}`
+    const opening = (depOpening.get(key) || 0) - (invOpening.get(key) || 0)
+    const deposited = depPeriod.get(key) || 0
+    const invoiced = invPeriod.get(key) || 0
+    return { ...r, opening, deposited, invoiced, balance: opening + deposited - invoiced }
   })
 }
 

@@ -384,7 +384,7 @@ export function registerIpc(): void {
     mapOrderToBargains(id, lines, !!force)
   )
   handle('consignment:list', () => listConsignment())
-  handle('consignment:summary', () => consignmentSummary())
+  handle('consignment:summary', (_e, args?: { range?: { from?: string; to?: string } }) => consignmentSummary(args?.range))
   handle('consignment:pending', () => listPendingGateArrivals())
   handle('consignment:lots', (_e, { supplierId, productId }: { supplierId?: number; productId?: number }) =>
     listUnbookedLots(supplierId, productId)

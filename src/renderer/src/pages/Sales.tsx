@@ -76,8 +76,9 @@ function monthStartISO(): string {
 }
 
 // Period register figures for a bargain, relative to [from,to].
-// opening (b/f) + addition (created in period) − dispatch (in period) = closing.
-function bargainRegister(r: Row, from: string, to: string): { opening: number; addition: number; dispatch: number; closing: number } {
+// opening (b/f) + addition (created in period) + adjusted (manual add/remove
+// in period) − dispatch (in period) = closing.
+function bargainRegister(r: Row, from: string, to: string): { opening: number; addition: number; adjusted: number; dispatch: number; closing: number } {
   const qty = Number(r.qty) || 0
   const before = Number(r.disp_before) || 0
   const inP = Number(r.disp_period) || 0
@@ -87,13 +88,15 @@ function bargainRegister(r: Row, from: string, to: string): { opening: number; a
   const bdate = String(r.bargain_date || '').slice(0, 10)
   const createdInRange = bdate >= from && bdate <= to
   const createdBefore = bdate < from
-  // Original booked qty minus every dated top-up (top-ups belong in Addition of
-  // the month they were made, not in Opening).
+  // Original booked qty minus every dated top-up (top-ups get their own
+  // Adjusted figure in the month they were made, not folded into Opening or
+  // blended into Addition).
   const baseQty = qty - adjBefore - adjIn - adjAfter
   const opening = createdBefore ? Math.max(0, baseQty + adjBefore - before) : 0
-  const addition = (createdInRange ? baseQty : 0) + adjIn
+  const addition = createdInRange ? baseQty : 0
+  const adjusted = adjIn
   const dispatch = inP
-  return { opening, addition, dispatch, closing: opening + addition - dispatch }
+  return { opening, addition, adjusted, dispatch, closing: opening + addition + adjusted - dispatch }
 }
 
 // Whether a bargain belongs in the register for [from,to]: created on/before the
@@ -111,7 +114,13 @@ function inRegister(r: Row, from: string, to: string, showZero = false): boolean
   const fin = String(r.last_dispatch_date || '').slice(0, 10)
   const finishedInRange = !!fin && fin >= from && fin <= to
   const createdInRange = bdate >= from && bdate <= to
-  const activityInRange = reg.opening + reg.addition + reg.dispatch > 1e-6
+  // Each figure checked on its own, not summed — an addition and a same-size
+  // removal in the same period (e.g. a bargain booked then cancelled) net to
+  // zero, but it is still real activity that happened in this period. Opening
+  // is deliberately excluded: it is the balance carried IN from before the
+  // period, not something that happened during it.
+  const activityInRange =
+    Math.abs(reg.addition) > 1e-6 || Math.abs(reg.adjusted) > 1e-6 || Math.abs(reg.dispatch) > 1e-6
   return finishedInRange || createdInRange || activityInRange
 }
 
@@ -421,11 +430,19 @@ function SalesTab({
 
   // A card row turned into the rate THIS line is priced in. The line always
   // charges rate x quantity in the bargain's unit (MT/KG/L) — even a packed
-  // line, whose cases are converted to that unit first — so the per-MT figure
-  // is the one to use. Writing the per-case rate here would undercharge by the
-  // size of a case (a 15 MT line at a 2,311/case rate bills 34,668 instead of
-  // 23,11,190).
-  function cardRateInUnit(hit: Row, saleUom: string): number | null {
+  // line, whose cases are converted to that unit first.
+  //
+  // Packed deals are negotiated per case, so the per-case figure is the one to
+  // trust: it is derived through the exact same MT-per-case conversion the
+  // Rate/Case box itself uses, so it can never disagree with what a person
+  // reads off the card. The card's independently-typed per-MT column is only a
+  // convenience for whoever filled the sheet — a typo there (dividing by the
+  // wrong case size, a slipped decimal) would otherwise bill silently wrong,
+  // with nothing on this screen able to catch it.
+  function cardRateInUnit(hit: Row, saleUom: string, mtPerCaseValue: number): number | null {
+    if (hit.rate_per_case != null && mtPerCaseValue > 0) {
+      return Math.round((Number(hit.rate_per_case) / mtPerCaseValue) * 100) / 100
+    }
     const perMt = hit.rate_per_mt == null ? null : Number(hit.rate_per_mt)
     if (perMt == null) return null
     const u = String(saleUom || 'MT').toUpperCase()
@@ -438,7 +455,8 @@ function SalesTab({
     const card = cards[String(it.sales_bargain_id || '')]
     const hit = card?.[String(it.packaging_id || '')]
     if (!hit) return null
-    return cardRateInUnit(hit, calc(it).saleUom)
+    const c = calc(it)
+    return cardRateInUnit(hit, c.saleUom, mtPerCase(c))
   }
 
   function selectItemBargain(idx: number, v: string): void {
@@ -453,7 +471,8 @@ function SalesTab({
     void loadCard(v).then((card) => {
       const hit = card[nextPack]
       if (!hit) return
-      const rate = cardRateInUnit(hit, String(b?.uom || 'MT'))
+      const nc = calc({ ...it, sales_bargain_id: v, packaging_id: nextPack, sale_type: b?.sale_type || it.sale_type || 'LOOSE' })
+      const rate = cardRateInUnit(hit, nc.saleUom, mtPerCase(nc))
       if (rate != null) setItem(idx, { rate: String(rate), rate_case: '', rate_from_card: true })
     })
     setItem(idx, {
@@ -784,7 +803,7 @@ function SalesTab({
           <FyPicker from={dateFrom} to={dateTo} onRange={(f, t) => { setDateFrom(f); setDateTo(t) }} className="h-8 w-28 shrink-0 text-[11px]" />
           <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
           <span className="shrink-0 text-[10px] text-muted-foreground">to</span>
-          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="w-36" />
+          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
           <Button
             variant="ghost"
             size="sm"
@@ -1076,6 +1095,10 @@ function SalesTab({
                       <SelectTrigger><SelectValue placeholder="Finished product" /></SelectTrigger>
                       <SelectContent>{products.map((p) => <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>)}</SelectContent>
                     </Select>
+                    {/* A fixed-height caption slot, empty here — Sales bargain's
+                        expiry note is the only one of these three that ever has
+                        text, so without this the row would tilt toward it. */}
+                    <span className="block h-[15px]" />
                   </div>
                   <div className="grid gap-1.5">
                     <Label>Sales bargain (optional)</Label>
@@ -1120,14 +1143,14 @@ function SalesTab({
                         ))}
                       </SelectContent>
                     </Select>
-                    {(() => {
-                      const chosen = bargains.find((b) => String(b.id) === String(item.sales_bargain_id))
-                      return chosen && !notExpired(chosen) ? (
-                        <span className="text-[10px] font-medium text-amber-700">
-                          Rate expired {formatDate(chosen.rate_expiry_date)}, before this invoice&apos;s date ({formatDate(asOfDate)}) — selling against it anyway
-                        </span>
-                      ) : null
-                    })()}
+                    <span className="block min-h-[15px] text-[10px] font-medium leading-[15px] text-amber-700">
+                      {(() => {
+                        const chosen = bargains.find((b) => String(b.id) === String(item.sales_bargain_id))
+                        return chosen && !notExpired(chosen)
+                          ? `Rate expired ${formatDate(chosen.rate_expiry_date)}, before this invoice's date (${formatDate(asOfDate)}) — selling against it anyway`
+                          : ''
+                      })()}
+                    </span>
                   </div>
                   <div className="grid gap-1.5">
                     <Label>Sale type</Label>
@@ -1138,11 +1161,12 @@ function SalesTab({
                         <SelectItem value="PACKED">Packed (box / pouch)</SelectItem>
                       </SelectContent>
                     </Select>
+                    <span className="block h-[15px]" />
                   </div>
                 </div>
 
                 {c.isPacked && (
-                  <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 rounded-md border border-violet-200 bg-violet-50/60 p-2.5 sm:grid-cols-4 [&>div]:min-w-0 [&>div]:gap-1">
+                  <div className="mt-2 grid grid-cols-2 items-start gap-x-3 gap-y-2 rounded-md border border-violet-200 bg-violet-50/60 p-2.5 sm:grid-cols-3 [&>div]:min-w-0 [&>div]:gap-1">
                     <div className="grid gap-1 sm:col-span-2">
                       <Label>Packed SKU *</Label>
                       <Select value={item.packaging_id ? String(item.packaging_id) : ''} onValueChange={(v) => {
@@ -1153,7 +1177,8 @@ function SalesTab({
                           void loadCard(bid).then((card) => {
                             const hit = card[v]
                             if (!hit) return
-                            const rate = cardRateInUnit(hit, calc({ ...items[i], packaging_id: v }).saleUom)
+                            const nc = calc({ ...items[i], packaging_id: v })
+                            const rate = cardRateInUnit(hit, nc.saleUom, mtPerCase(nc))
                             if (rate != null) setItem(i, { rate: String(rate), rate_case: '', rate_from_card: true })
                           })
                         }
@@ -1161,42 +1186,47 @@ function SalesTab({
                         <SelectTrigger className="bg-white"><SelectValue placeholder="Select packaging" /></SelectTrigger>
                         <SelectContent>{packagings.map((p) => <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>)}</SelectContent>
                       </Select>
-                      {c.selPack && (
-                        <span className="text-[11px] text-muted-foreground">
-                          1 {c.selPack.box_label} = {formatNum(c.selPack.pouches_per_box)} {c.selPack.pouch_label} = {formatNum(Number(c.selPack.pouches_per_box) * Number(c.selPack.base_per_pouch))} {c.selPack.base_uom}
-                        </span>
-                      )}
+                      {/* A fixed-height caption slot — present or not, every
+                          column in this row reserves the same space below its
+                          box, so the boxes above line up instead of drifting
+                          up/down with however much hint text each one has. */}
+                      <span className="block h-[15px] text-[11px] leading-[15px] text-muted-foreground">
+                        {c.selPack &&
+                          `1 ${c.selPack.box_label} = ${formatNum(c.selPack.pouches_per_box)} ${c.selPack.pouch_label} = ${formatNum(Number(c.selPack.pouches_per_box) * Number(c.selPack.base_per_pouch))} ${c.selPack.base_uom}`}
+                      </span>
                     </div>
                     <div className="grid gap-1">
                       <Label>{c.selPack?.box_label || 'Cases'}</Label>
                       <Input type="number" className="bg-white" value={item.boxes ?? ''} onChange={(e) => setItem(i, { boxes: e.target.value })} />
-                    </div>
-                    <div className="grid gap-1.5">
-                      <Label>Loose {c.selPack?.pouch_label || 'units'}</Label>
-                      <Input type="number" className="bg-white" value={item.pouches ?? ''} onChange={(e) => setItem(i, { pouches: e.target.value })} />
+                      <span className="block h-[15px]" />
                     </div>
                   </div>
                 )}
 
-                <div className={cn(
-                  'mt-2 grid grid-cols-2 gap-x-3 gap-y-2 [&>div]:min-w-0 [&>div]:gap-1',
-                  c.isPacked ? 'sm:grid-cols-5' : 'sm:grid-cols-4'
-                )}>
+                <div className="mt-2 grid grid-cols-2 items-start gap-x-3 gap-y-2 sm:grid-cols-4 [&>div]:min-w-0 [&>div]:gap-1">
                   <div className="grid gap-1.5">
                     <Label>Qty ({c.saleUom})</Label>
                     {c.isPacked ? (
-                      <>
-                        <div className="flex h-9 items-center rounded-md bg-muted px-3 text-sm font-medium tabular-nums">{formatNum(c.effQty)}</div>
-                        {c.selPack && c.packBaseUom !== c.saleUom && <span className="text-[11px] text-muted-foreground">= {formatNum(c.packBaseQty)} {c.packBaseUom}</span>}
-                      </>
+                      <div className="flex h-9 items-center rounded-md bg-muted px-3 text-sm font-medium tabular-nums">{formatNum(c.effQty)}</div>
                     ) : (
                       <Input type="number" value={item.qty ?? ''} onChange={(e) => setItem(i, { qty: e.target.value })} />
                     )}
+                    {/* A fixed-height caption slot — present or not, every column
+                        in this row reserves the same space below its box, so
+                        the boxes above stay level instead of drifting up/down
+                        with however much hint text each one has. */}
+                    <span className="block h-[15px] text-[11px] leading-[15px] text-muted-foreground">
+                      {c.isPacked && c.selPack && c.packBaseUom !== c.saleUom ? `= ${formatNum(c.packBaseQty)} ${c.packBaseUom}` : ''}
+                    </span>
                   </div>
-                  {/* Packed goods are quoted per case, so the case rate is
-                      typed directly and the per-unit rate follows from the pack
-                      size — either box may be used, they stay in step. */}
-                  {c.isPacked && (
+                  {/* Packed goods are quoted per case — that is the only rate
+                      box a packed line needs. The per-MT figure it implies is
+                      still computed and billed (see calc/cardRateInUnit), it is
+                      just never shown: a second, read-only, unchangeable box
+                      next to the one the user actually fills in had nothing to
+                      offer but clutter. Loose sales have no case to price by,
+                      so they get the per-unit rate box instead. */}
+                  {c.isPacked ? (
                     <div className="grid gap-1.5">
                       <Label>Rate / {c.selPack?.box_label || 'case'}</Label>
                       <Input
@@ -1219,64 +1249,53 @@ function SalesTab({
                           })
                         }}
                       />
-                      {mtPerCase(c) > 0 && (
-                        <span className="text-[10px] text-muted-foreground">
-                          1 {c.selPack?.box_label || 'case'} = {formatNum(mtPerCase(c))} {c.saleUom}
-                        </span>
-                      )}
+                      <span className="block min-h-[15px] text-[10px] leading-[15px]">
+                        {(() => {
+                          const card = cards[String(item.sales_bargain_id || '')]
+                          const hit = card?.[String(item.packaging_id || '')]
+                          const cardRate = cardRateFor(item)
+                          if (cardRate != null) {
+                            return (
+                              <span className={cn(item.rate_from_card ? 'font-medium text-emerald-700' : 'text-amber-700')}>
+                                {item.rate_from_card ? 'from the bargain rate card' : `card rate ${formatINR(hit?.rate_per_case ?? cardRate)} — overridden`}
+                              </span>
+                            )
+                          }
+                          // Say why nothing was filled: no card at all, or this
+                          // SKU is not on it. Silence here is what looked like a bug.
+                          if (item.sales_bargain_id && item.packaging_id) {
+                            const hasCard = card && Object.keys(card).length > 0
+                            return (
+                              <span className="text-muted-foreground">
+                                {hasCard
+                                  ? 'this SKU is not priced on the bargain’s rate card'
+                                  : 'no rate card on this bargain — add one from the Sales Bargain page'}
+                              </span>
+                            )
+                          }
+                          return mtPerCase(c) > 0 ? (
+                            <span className="text-muted-foreground">
+                              1 {c.selPack?.box_label || 'case'} = {formatNum(mtPerCase(c))} {c.saleUom}
+                            </span>
+                          ) : null
+                        })()}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="grid gap-1.5">
+                      <Label>Rate /{c.saleUom}</Label>
+                      <Input
+                        type="number"
+                        value={item.rate ?? ''}
+                        onChange={(e) => setItem(i, { rate: e.target.value, rate_from_card: false })}
+                      />
+                      <span className="block h-[15px]" />
                     </div>
                   )}
                   <div className="grid gap-1.5">
-                    <Label>Rate /{c.saleUom}</Label>
-                    <Input
-                      type="number"
-                      value={item.rate ?? ''}
-                      onChange={(e) =>
-                        setItem(i, {
-                          rate: e.target.value,
-                          // keep the case box in step with a hand-typed unit rate
-                          rate_case:
-                            mtPerCase(c) > 0 && e.target.value !== ''
-                              ? String(Math.round(Number(e.target.value) * mtPerCase(c) * 100) / 100)
-                              : '',
-                          rate_from_card: false
-                        })
-                      }
-                    />
-                    {/* Say so when the rate came from the bargain's card, and
-                        show the card figure if it has since been overridden. */}
-                    {(() => {
-                      const card = cards[String(item.sales_bargain_id || '')]
-                      const hit = card?.[String(item.packaging_id || '')]
-                      const cardRate = cardRateFor(item)
-                      if (cardRate != null) {
-                        const perCase = hit?.rate_per_case == null ? null : Number(hit.rate_per_case)
-                        return (
-                          <span className={cn('text-[10px]', item.rate_from_card ? 'font-medium text-emerald-700' : 'text-amber-700')}>
-                            {item.rate_from_card
-                              ? `from the bargain rate card${perCase ? ` · ${formatINR(perCase)} per case` : ''}`
-                              : `card rate ${formatINR(cardRate)} — overridden`}
-                          </span>
-                        )
-                      }
-                      // Say why nothing was filled: no card at all, or this SKU
-                      // is not on it. Silence here is what looked like a bug.
-                      if (item.sales_bargain_id && item.packaging_id) {
-                        const hasCard = card && Object.keys(card).length > 0
-                        return (
-                          <span className="text-[10px] text-muted-foreground">
-                            {hasCard
-                              ? 'this SKU is not priced on the bargain’s rate card'
-                              : 'no rate card on this bargain — add one from the Sales Bargain page'}
-                          </span>
-                        )
-                      }
-                      return null
-                    })()}
-                  </div>
-                  <div className="grid gap-1.5">
                     <Label>GST %</Label>
                     <Input type="number" value={item.gst_pct ?? ''} onChange={(e) => setItem(i, { gst_pct: e.target.value })} />
+                    <span className="block h-[15px]" />
                   </div>
                   <div className="grid gap-1.5">
                     <Label>GST type</Label>
@@ -1287,6 +1306,7 @@ function SalesTab({
                         <SelectItem value="IGST">IGST</SelectItem>
                       </SelectContent>
                     </Select>
+                    <span className="block h-[15px]" />
                   </div>
                 </div>
                 <div className="mt-2 text-right text-xs text-muted-foreground">
@@ -1661,15 +1681,16 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
   )
 
   const groupStats = useMemo(() => {
-    const m = new Map<string, { count: number; opening: number; addition: number; dispatch: number; closing: number; uom: string }>()
+    const m = new Map<string, { count: number; opening: number; addition: number; adjusted: number; dispatch: number; closing: number; uom: string }>()
     for (const r of visibleRows) {
       const k = String(r.customer || '—')
-      if (!m.has(k)) m.set(k, { count: 0, opening: 0, addition: 0, dispatch: 0, closing: 0, uom: String(r.uom || 'MT') })
+      if (!m.has(k)) m.set(k, { count: 0, opening: 0, addition: 0, adjusted: 0, dispatch: 0, closing: 0, uom: String(r.uom || 'MT') })
       const g = m.get(k)!
       const reg = bargainRegister(r, F, T)
       g.count += 1
       g.opening += reg.opening
       g.addition += reg.addition
+      g.adjusted += reg.adjusted
       g.dispatch += reg.dispatch
       g.closing += reg.closing
     }
@@ -1677,15 +1698,16 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
   }, [visibleRows, F, T])
 
   const grand = useMemo(() => {
-    let count = 0, opening = 0, addition = 0, dispatch = 0, closing = 0
+    let count = 0, opening = 0, addition = 0, adjusted = 0, dispatch = 0, closing = 0
     for (const g of groupStats.values()) {
       count += g.count
       opening += g.opening
       addition += g.addition
+      adjusted += g.adjusted
       dispatch += g.dispatch
       closing += g.closing
     }
-    return { count, opening, addition, dispatch, closing }
+    return { count, opening, addition, adjusted, dispatch, closing }
   }, [groupStats])
 
   function blank(): Row {
@@ -1795,6 +1817,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
         // sheet reads on its own without cross-checking the summary tab.
         opening: reg.opening,
         addition: reg.addition,
+        adjusted: reg.adjusted,
         balance: reg.closing,
         qty: reg.dispatch
       })
@@ -2071,6 +2094,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
               { header: 'Product', key: 'product', value: (r) => r.product_name || '' },
               { header: 'Opening', key: 'opening', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).opening },
               { header: 'Addition', key: 'addition', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).addition },
+              { header: 'Adjusted', key: 'adjusted', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).adjusted },
               { header: 'Rate', key: 'rate', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.rate) || 0 },
               { header: 'Dispatch', key: 'dispatch', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).dispatch },
               { header: 'Balance', key: 'balance', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).closing }
@@ -2088,6 +2112,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                   { header: 'BG rate', key: 'rate', align: 'right', numFmt: '#,##0.00' },
                   { header: 'Opening', key: 'opening', align: 'right', numFmt: '#,##0.000' },
                   { header: 'Addition', key: 'addition', align: 'right', numFmt: '#,##0.000' },
+                  { header: 'Adjusted', key: 'adjusted', align: 'right', numFmt: '#,##0.000' },
                   { header: 'Invoice', key: 'invoice_no' },
                   { header: 'Dispatched on', key: 'sale_date' },
                   { header: 'Stage', key: 'stage' },
@@ -2117,6 +2142,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
               <TableHead>Product</TableHead>
               <TableHead className="text-right">Opening</TableHead>
               <TableHead className="text-right">Addition</TableHead>
+              <TableHead className="text-right">Adjusted</TableHead>
               <TableHead className="text-right">Rate</TableHead>
               <TableHead className="text-right">Dispatch</TableHead>
               <TableHead className="text-right">Balance</TableHead>
@@ -2126,7 +2152,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
           <TableBody>
             {sortedRows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
                   {rows.length === 0 ? 'No sales bargains yet.' : 'No sales bargains in this period.'}
                 </TableCell>
               </TableRow>
@@ -2141,6 +2167,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                   </TableCell>
                   <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.opening)}</TableCell>
                   <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.addition)}</TableCell>
+                  <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.adjusted)}</TableCell>
                   <TableCell className="py-2" />
                   <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.dispatch)}</TableCell>
                   <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.closing)} MT</TableCell>
@@ -2172,6 +2199,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                           </TableCell>
                           <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.opening ?? 0)}</TableCell>
                           <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.addition ?? 0)}</TableCell>
+                          <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.adjusted ?? 0)}</TableCell>
                           <TableCell className="py-1.5" />
                           <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.dispatch ?? 0)}</TableCell>
                           <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.closing ?? 0)} {g?.uom || 'MT'}</TableCell>
@@ -2201,6 +2229,11 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                           <TableCell>{row.product_name || '—'}</TableCell>
                           <TableCell className="text-right tabular-nums text-muted-foreground">{reg.opening ? formatNum(reg.opening) : '—'}</TableCell>
                           <TableCell className="text-right tabular-nums">{reg.addition ? formatNum(reg.addition) : '—'}</TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            <span className={reg.adjusted < -1e-9 ? 'text-red-600' : reg.adjusted > 0 ? 'text-emerald-700' : ''}>
+                              {reg.adjusted ? formatNum(reg.adjusted) : '—'}
+                            </span>
+                          </TableCell>
                           <TableCell className="text-right tabular-nums">{formatINR(row.rate)}</TableCell>
                           <TableCell className={cn('text-right tabular-nums', reg.dispatch && 'font-bold text-red-600')}>{reg.dispatch ? formatNum(reg.dispatch) : '—'}</TableCell>
                           <TableCell className="text-right font-medium tabular-nums">
@@ -2233,7 +2266,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                       })()}
                       {!isCollapsed && bgOpen && (
                         <TableRow className="bg-muted/20 hover:bg-muted/20">
-                          <TableCell colSpan={9} className="p-0">
+                          <TableCell colSpan={10} className="p-0">
                             {(() => {
                               const disp = dispatchesByBargain.get(Number(row.id)) || []
                               const tot = disp.reduce(

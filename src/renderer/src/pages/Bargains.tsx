@@ -66,6 +66,7 @@ const SORT_ACCESSORS: Record<string, (r: Row) => string | number> = {
   condition: (r) => String(r.bargain_type || ''),
   qty: (r) => Number(r._opening) || 0,
   addition: (r) => Number(r._addition) || 0,
+  adjusted: (r) => Number(r._adjusted) || 0,
   rate: (r) => Number(r.rate_per_uom) || 0,
   dispatch: (r) => Number(r._dispatch) || 0,
   balance: (r) => Number(r._closing) || 0,
@@ -84,8 +85,9 @@ function monthStartISO(): string {
 }
 
 // Period register for a purchase bargain relative to [from,to]:
-// opening (b/f) + addition (opened in period) − dispatch (received in period) = closing.
-function bargainRegister(r: Row, from: string, to: string): { opening: number; addition: number; dispatch: number; closing: number } {
+// opening (b/f) + addition (booked in period) + adjusted (manual add/remove in
+// period) − dispatch (received in period) = closing.
+function bargainRegister(r: Row, from: string, to: string): { opening: number; addition: number; adjusted: number; dispatch: number; closing: number } {
   const qty = Number(r.qty) || 0
   const before = Number(r.disp_before) || 0
   const inP = Number(r.disp_period) || 0
@@ -95,14 +97,19 @@ function bargainRegister(r: Row, from: string, to: string): { opening: number; a
   const bdate = String(r.bargain_date || '').slice(0, 10)
   const createdInRange = bdate >= from && bdate <= to
   const createdBefore = bdate < from
-  // Original booked qty, stripped of every dated top-up (those are shown as Addition
-  // in the month they were made, not folded into Opening).
+  // Original booked qty, stripped of every dated top-up (those are shown as
+  // their own Adjusted figure in the month they were made, not folded into
+  // Opening or blended into Addition).
   const baseQty = qty - adjBefore - adjIn - adjAfter
   // Opening = base created before + top-ups dated before the period − dispatched before.
   const opening = createdBefore ? Math.max(0, baseQty + adjBefore - before) : 0
-  // Addition = base booked this period (if created here) + top-ups dated in the period.
-  const addition = (createdInRange ? baseQty : 0) + adjIn
-  return { opening, addition, dispatch: inP, closing: opening + addition - inP }
+  // Addition = the bargain as originally booked, only in the period it was booked.
+  const addition = createdInRange ? baseQty : 0
+  // Adjusted = manual balance add/remove dated in the period — kept separate so
+  // Addition always reads as "what was originally struck", not muddied by
+  // later corrections.
+  const adjusted = adjIn
+  return { opening, addition, adjusted, dispatch: inP, closing: opening + addition + adjusted - inP }
 }
 
 // A bargain shows in the register when it still has an open balance. Fully
@@ -118,7 +125,13 @@ function inRegister(r: Row, from: string, to: string, showZero = false): boolean
   const fin = String(r.last_dispatch_date || '').slice(0, 10)
   const finishedInRange = !!fin && fin >= from && fin <= to
   const createdInRange = bdate >= from && bdate <= to
-  const activityInRange = reg.opening + reg.addition + reg.dispatch > 1e-6
+  // Each figure checked on its own, not summed — an addition and a same-size
+  // removal in the same period (e.g. a bargain booked then cancelled) net to
+  // zero, but it is still real activity that happened in this period. Opening
+  // is deliberately excluded: it is the balance carried IN from before the
+  // period, not something that happened during it.
+  const activityInRange =
+    Math.abs(reg.addition) > 1e-6 || Math.abs(reg.adjusted) > 1e-6 || Math.abs(reg.dispatch) > 1e-6
   return finishedInRange || createdInRange || activityInRange
 }
 
@@ -376,12 +389,19 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
   // The tabs follow the Categories master, with ALL pinned at the end.
   const TYPE_FILTERS = [...bargainCats, 'ALL']
   // Enrich each bargain with its period register figures (used for the columns
-  // and for sorting via the _opening/_addition/_dispatch/_closing accessors).
+  // and for sorting via the _opening/_addition/_adjusted/_dispatch/_closing accessors).
   const regRows = useMemo<Row[]>(
     () =>
       rows.map((r): Row => {
         const reg = bargainRegister(r, F, T)
-        return { ...r, _opening: reg.opening, _addition: reg.addition, _dispatch: reg.dispatch, _closing: reg.closing }
+        return {
+          ...r,
+          _opening: reg.opening,
+          _addition: reg.addition,
+          _adjusted: reg.adjusted,
+          _dispatch: reg.dispatch,
+          _closing: reg.closing
+        }
       }),
     [rows, F, T]
   )
@@ -446,14 +466,15 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
 
   // Per-oil totals shown on the group band, aligned to the table columns.
   const groupStats = useMemo(() => {
-    const m = new Map<string, { count: number; opening: number; addition: number; dispatch: number; closing: number; balValue: number; uom: string }>()
+    const m = new Map<string, { count: number; opening: number; addition: number; adjusted: number; dispatch: number; closing: number; balValue: number; uom: string }>()
     for (const r of visibleRows) {
       const k = oilOf(r)
-      if (!m.has(k)) m.set(k, { count: 0, opening: 0, addition: 0, dispatch: 0, closing: 0, balValue: 0, uom: String(r.uom || 'MT') })
+      if (!m.has(k)) m.set(k, { count: 0, opening: 0, addition: 0, adjusted: 0, dispatch: 0, closing: 0, balValue: 0, uom: String(r.uom || 'MT') })
       const g = m.get(k)!
       g.count += 1
       g.opening += Number(r._opening) || 0
       g.addition += Number(r._addition) || 0
+      g.adjusted += Number(r._adjusted) || 0
       g.dispatch += Number(r._dispatch) || 0
       g.closing += Number(r._closing) || 0
       g.balValue += (Number(r._closing) || 0) * (Number(r.rate_per_uom) || 0)
@@ -463,16 +484,17 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
 
   // Grand total across the currently visible groups (matches the group bands).
   const grandVisible = useMemo(() => {
-    let count = 0, opening = 0, addition = 0, dispatch = 0, closing = 0, balValue = 0
+    let count = 0, opening = 0, addition = 0, adjusted = 0, dispatch = 0, closing = 0, balValue = 0
     for (const g of groupStats.values()) {
       count += g.count
       opening += g.opening
       addition += g.addition
+      adjusted += g.adjusted
       dispatch += g.dispatch
       closing += g.closing
       balValue += g.balValue
     }
-    return { count, opening, addition, dispatch, closing, balValue }
+    return { count, opening, addition, adjusted, dispatch, closing, balValue }
   }, [groupStats])
 
   // Report: one summary line per oil type — open bargains (balance left), total
@@ -488,6 +510,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
       openValue: number
       opening: number
       addition: number
+      adjusted: number
       dispatch: number
       closing: number
     }
@@ -495,10 +518,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
     for (const r of regRows) {
       const key = oilOf(r)
       if (!groups.has(key))
-        groups.set(key, { label: key, count: 0, openCount: 0, qty: 0, balance: 0, total: 0, openValue: 0, opening: 0, addition: 0, dispatch: 0, closing: 0 })
+        groups.set(key, { label: key, count: 0, openCount: 0, qty: 0, balance: 0, total: 0, openValue: 0, opening: 0, addition: 0, adjusted: 0, dispatch: 0, closing: 0 })
       const g = groups.get(key)!
       g.opening += Number(r._opening) || 0
       g.addition += Number(r._addition) || 0
+      g.adjusted += Number(r._adjusted) || 0
       g.dispatch += Number(r._dispatch) || 0
       g.closing += Number(r._closing) || 0
       const qty = Number(r.qty) || 0
@@ -524,10 +548,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
         openValue: s.openValue + g.openValue,
         opening: s.opening + g.opening,
         addition: s.addition + g.addition,
+        adjusted: s.adjusted + g.adjusted,
         dispatch: s.dispatch + g.dispatch,
         closing: s.closing + g.closing
       }),
-      { count: 0, openCount: 0, qty: 0, balance: 0, total: 0, openValue: 0, opening: 0, addition: 0, dispatch: 0, closing: 0 }
+      { count: 0, openCount: 0, qty: 0, balance: 0, total: 0, openValue: 0, opening: 0, addition: 0, adjusted: 0, dispatch: 0, closing: 0 }
     )
     return { groups: list, grand }
   }, [regRows])
@@ -548,6 +573,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
         { header: 'Condition', key: 'bargain_type', value: (r) => r.bargain_type || '' },
         { header: 'Opening', key: '_opening', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r._opening) || 0 },
         { header: 'Addition', key: '_addition', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r._addition) || 0 },
+        { header: 'Adjusted', key: '_adjusted', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r._adjusted) || 0 },
         { header: 'BG rate', key: 'rate_per_uom', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.rate_per_uom) || 0 },
         { header: 'Dispatch', key: '_dispatch', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r._dispatch) || 0 },
         { header: 'Balance', key: '_closing', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r._closing) || 0 },
@@ -559,6 +585,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
           bargain_no: 'GRAND TOTAL',
           _opening: grandVisible.opening,
           _addition: grandVisible.addition,
+          _adjusted: grandVisible.adjusted,
           _dispatch: grandVisible.dispatch,
           _closing: grandVisible.closing,
           total_amount: sortedRows.reduce((sum, r) => sum + (Number(r.total_amount) || 0), 0)
@@ -579,6 +606,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
             { header: 'BG rate', key: 'rate', align: 'right', numFmt: '#,##0.00' },
             { header: 'Opening', key: 'opening', align: 'right', numFmt: '#,##0.000' },
             { header: 'Addition', key: 'addition', align: 'right', numFmt: '#,##0.000' },
+            { header: 'Adjusted', key: 'adjusted', align: 'right', numFmt: '#,##0.000' },
             { header: 'Tanker', key: 'tanker_no' },
             { header: 'Loaded on', key: 'loaded_date' },
             { header: 'Stage', key: 'stage' },
@@ -615,6 +643,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
         // sheet reads on its own without cross-checking the summary tab.
         opening: Number(b._opening) || 0,
         addition: Number(b._addition) || 0,
+        adjusted: Number(b._adjusted) || 0,
         balance: Number(b._closing) || 0,
         dis_qty: Number(b._dispatch) || 0
       })
@@ -649,6 +678,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
       count: g.count,
       opening: g.opening,
       addition: g.addition,
+      adjusted: g.adjusted,
       dispatch: g.dispatch,
       closing: g.closing,
       balance: g.balance,
@@ -658,7 +688,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
     const t = report.grand
     rows.push({
       label: 'GRAND TOTAL', openCount: t.openCount, count: t.count,
-      opening: t.opening, addition: t.addition, dispatch: t.dispatch, closing: t.closing,
+      opening: t.opening, addition: t.addition, adjusted: t.adjusted, dispatch: t.dispatch, closing: t.closing,
       balance: t.balance, qty: t.qty, avg: avgRate(t)
     })
     void exportRowsToExcel({
@@ -671,6 +701,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
         { header: 'Total bargains', key: 'count', align: 'right', numFmt: '#,##0' },
         { header: 'Opening', key: 'opening', align: 'right', numFmt: '#,##0.000' },
         { header: 'Addition', key: 'addition', align: 'right', numFmt: '#,##0.000' },
+        { header: 'Adjusted', key: 'adjusted', align: 'right', numFmt: '#,##0.000' },
         { header: 'Dispatch', key: 'dispatch', align: 'right', numFmt: '#,##0.000' },
         { header: 'Closing', key: 'closing', align: 'right', numFmt: '#,##0.000' },
         { header: 'Bal qty (live)', key: 'balance', align: 'right', numFmt: '#,##0.000' },
@@ -741,6 +772,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                     <TableHead className="text-center text-amber-900">Total bargains</TableHead>
                     <TableHead className="text-right text-amber-900">Opening</TableHead>
                     <TableHead className="text-right text-amber-900">Addition</TableHead>
+                    <TableHead className="text-right text-amber-900">Adjusted</TableHead>
                     <TableHead className="text-right text-amber-900">Dispatch</TableHead>
                     <TableHead className="text-right text-amber-900">Closing</TableHead>
                     <TableHead className="text-right text-amber-900">Bal Qty</TableHead>
@@ -751,7 +783,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                 <TableBody>
                   {report.groups.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">No bargains yet.</TableCell>
+                      <TableCell colSpan={11} className="py-8 text-center text-muted-foreground">No bargains yet.</TableCell>
                     </TableRow>
                   ) : (
                     <>
@@ -764,6 +796,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                           <TableCell className="text-center tabular-nums">{g.count}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatNum(g.opening)}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatNum(g.addition)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatNum(g.adjusted)}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatNum(g.dispatch)}</TableCell>
                           <TableCell className="text-right font-medium tabular-nums">{formatNum(g.closing)}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatNum(g.balance)}</TableCell>
@@ -777,6 +810,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                         <TableCell className="text-center tabular-nums">{report.grand.count}</TableCell>
                         <TableCell className="text-right tabular-nums">{formatNum(report.grand.opening)}</TableCell>
                         <TableCell className="text-right tabular-nums">{formatNum(report.grand.addition)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatNum(report.grand.adjusted)}</TableCell>
                         <TableCell className="text-right tabular-nums">{formatNum(report.grand.dispatch)}</TableCell>
                         <TableCell className="text-right font-medium tabular-nums">{formatNum(report.grand.closing)}</TableCell>
                         <TableCell className="text-right tabular-nums">{formatNum(report.grand.balance)}</TableCell>
@@ -848,6 +882,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                         { id: 'condition', label: 'Condition' },
                         { id: 'qty', label: 'Opening', right: true },
                         { id: 'addition', label: 'Addition', right: true },
+                        { id: 'adjusted', label: 'Adjusted', right: true },
                         { id: 'rate', label: 'BG rate', right: true },
                         { id: 'dispatch', label: 'Dispatch', right: true },
                         { id: 'balance', label: 'Balance', right: true },
@@ -878,13 +913,13 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                 <TableBody>
                   {loading ? (
                     <TableRow>
-                      <TableCell colSpan={12} className="py-10 text-center text-muted-foreground">
+                      <TableCell colSpan={13} className="py-10 text-center text-muted-foreground">
                         Loading…
                       </TableCell>
                     </TableRow>
                   ) : sortedRows.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={12} className="py-10 text-center text-muted-foreground">
+                      <TableCell colSpan={13} className="py-10 text-center text-muted-foreground">
                         {rows.length === 0
                           ? 'No bargains yet. Click “New bargain” to add one.'
                           : `No ${typeFilter === 'ALL' ? '' : typeFilter + ' '}bargains to show.`}
@@ -901,6 +936,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                       </TableCell>
                       <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.opening)}</TableCell>
                       <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.addition)}</TableCell>
+                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.adjusted)}</TableCell>
                       <TableCell className="py-2" />
                       <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.dispatch)}</TableCell>
                       <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.closing)}</TableCell>
@@ -937,6 +973,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                               </TableCell>
                               <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.opening ?? 0)}</TableCell>
                               <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.addition ?? 0)}</TableCell>
+                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.adjusted ?? 0)}</TableCell>
                               <TableCell className="py-1.5" />
                               <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.dispatch ?? 0)}</TableCell>
                               <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.closing ?? 0)}</TableCell>
@@ -967,6 +1004,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                           </TableCell>
                           <TableCell className="text-right tabular-nums text-muted-foreground">{Number(row._opening) ? formatNum(row._opening) : '—'}</TableCell>
                           <TableCell className="text-right tabular-nums">{Number(row._addition) ? formatNum(row._addition) : '—'}</TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            <span className={Number(row._adjusted) < -1e-9 ? 'text-red-600' : Number(row._adjusted) > 0 ? 'text-emerald-700' : ''}>
+                              {Number(row._adjusted) ? formatNum(row._adjusted) : '—'}
+                            </span>
+                          </TableCell>
                           <TableCell className="text-right tabular-nums">{formatINR(row.rate_per_uom)}</TableCell>
                           <TableCell className={cn('text-right tabular-nums', Number(row._dispatch) && 'font-bold text-red-600')}>{Number(row._dispatch) ? formatNum(row._dispatch) : '—'}</TableCell>
                           <TableCell className="text-right font-semibold tabular-nums">
@@ -998,7 +1040,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                           </TableRow>
                           {expanded.has(Number(row.id)) && (
                             <TableRow className="bg-slate-200 hover:bg-slate-200">
-                              <TableCell colSpan={12} className="p-0">
+                              <TableCell colSpan={13} className="p-0">
                                 {(() => {
                                   // A tanker may be split across two bargains (excess loading):
                                   // its bargain gets loaded − extra, the auto-created line gets extra.

@@ -260,7 +260,10 @@ export async function adjustBargainQty(
 
   const consumed = await bargainConsumed(id)
   const newQty = Math.round((Number(b.qty) + d) * 1000) / 1000
-  if (newQty <= 0) throw new Error('The resulting quantity must be greater than zero')
+  // Zeroing out a bargain that never loaded anything is a cancellation, not
+  // an error — the register already shows 0-balance bargains (toggle "show
+  // settled"). Only a genuinely negative result is refused.
+  if (newQty < -1e-9) throw new Error('The resulting quantity cannot go below zero')
   if (newQty < consumed - 1e-6) {
     throw new Error(`Cannot remove below the ${consumed.toFixed(3)} already loaded/consumed on this bargain`)
   }
