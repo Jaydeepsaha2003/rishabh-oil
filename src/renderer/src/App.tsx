@@ -297,7 +297,7 @@ function App(): React.JSX.Element {
         {view === 'formulation' && <Formulation />}
         {view === 'production' && <Production />}
         {view === 'stock' && <Stock />}
-        {view === 'salesBargains' && <SalesBargains />}
+        {view === 'salesBargains' && <SalesBargains onOpenSale={(id) => openRecord('sales', id)} />}
         {view === 'sales' && (
           <Sales
             focusId={focus?.page === 'sales' ? focus.id : null}

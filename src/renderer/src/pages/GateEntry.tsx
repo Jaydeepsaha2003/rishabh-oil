@@ -65,7 +65,9 @@ const blankGateOut = (): Row => ({
   dispatch_qty: '',
   uom: 'MT',
   no_weighment: false,
-  note: ''
+  note: '',
+  // 's:12' / 'c:5' — named by hand when no sale invoice supplies the party.
+  party: ''
 })
 
 export function GateEntry(): React.JSX.Element {
@@ -75,6 +77,7 @@ export function GateEntry(): React.JSX.Element {
   const [gTo, setGTo] = useState('')
   const [gCat, setGCat] = useState('ALL')
   const [gSearch, setGSearch] = useState('')
+  const [gDir, setGDir] = useState<'ALL' | 'in' | 'out'>('ALL')
   const gCats = useMemo(
     () => Array.from(new Set(rows.map((r) => String(r.rec_type || '')).filter(Boolean))).sort(),
     [rows]
@@ -86,6 +89,7 @@ export function GateEntry(): React.JSX.Element {
       if (gFrom && d < gFrom) return false
       if (gTo && d > gTo) return false
       if (gCat !== 'ALL' && String(r.rec_type || '') !== gCat) return false
+      if (gDir !== 'ALL' && String(r.direction || 'in') !== gDir) return false
       if (!q) return true
       return [r.gate_entry_no, r.ref_no, r.tanker_no, r.supplier_name, r.sale_customer, r.sale_invoice, r.person, r.note]
         .filter(Boolean)
@@ -93,7 +97,7 @@ export function GateEntry(): React.JSX.Element {
         .toLowerCase()
         .includes(q)
     })
-  }, [rows, gFrom, gTo, gCat, gSearch])
+  }, [rows, gFrom, gTo, gCat, gDir, gSearch])
   const paged = usePaged(filteredRows)
   const [tankers, setTankers] = useState<Row[]>([])
   const [suppliers, setSuppliers] = useState<Row[]>([])
@@ -224,6 +228,8 @@ export function GateEntry(): React.JSX.Element {
     setGateOut((p) => ({
       ...p,
       invoice_group: group,
+      // The invoice names the customer, so a hand-picked party is dropped.
+      party: '',
       uom: s?.uom || 'MT',
       dispatch_qty: s?.qty ? String(s.qty) : p.dispatch_qty,
       // The category belongs to the goods being dispatched, so it comes from the
@@ -294,6 +300,13 @@ export function GateEntry(): React.JSX.Element {
         direction: 'out',
         invoice_group: gateOut.invoice_group || null,
         tanker_id: null,
+        // A hand-named party, for an exit the invoice does not account for.
+        supplier_id: String(gateOut.party || '').startsWith('s:')
+          ? Number(String(gateOut.party).slice(2))
+          : null,
+        customer_id: String(gateOut.party || '').startsWith('c:')
+          ? Number(String(gateOut.party).slice(2))
+          : null,
         dispatch_qty: Number(gateOut.dispatch_qty) || 0,
         received_qty: gateOut.no_weighment ? Number(gateOut.dispatch_qty) || 0 : 0,
         no_weighment: !!gateOut.no_weighment,
@@ -425,7 +438,9 @@ export function GateEntry(): React.JSX.Element {
       gross_weight: row.gross_weight ?? '',
       tare_weight: row.tare_weight ?? '',
       uom: row.uom || 'MT',
-      note: row.note || ''
+      note: row.note || '',
+      is_direct_mnc: !!row.is_direct_mnc,
+      supplier_id: row.supplier_id ? String(row.supplier_id) : ''
     })
   }
 
@@ -437,7 +452,9 @@ export function GateEntry(): React.JSX.Element {
         tanker_id: editForm.tanker_id ? Number(editForm.tanker_id) : null,
         oil_type_id: editForm.oil_type_id ? Number(editForm.oil_type_id) : null,
         dispatch_qty: Number(editForm.dispatch_qty) || 0,
-        received_qty: Number(editForm.received_qty) || 0
+        received_qty: Number(editForm.received_qty) || 0,
+        is_direct_mnc: !!editForm.is_direct_mnc,
+        supplier_id: editForm.is_direct_mnc && editForm.supplier_id ? Number(editForm.supplier_id) : null
       })
       toast.success('Gate entry updated')
       setEditRow(null)
@@ -723,6 +740,22 @@ export function GateEntry(): React.JSX.Element {
             </TabsList>
             {tab === 'view' && (
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-card px-2.5 py-1">
+                <div className="flex shrink-0 items-center gap-0.5 rounded-md bg-muted p-0.5">
+                  {(['ALL', 'in', 'out'] as const).map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      className={cn(
+                        'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide transition',
+                        gDir === d ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                      )}
+                      onClick={() => setGDir(d)}
+                    >
+                      {d === 'ALL' ? 'All' : d}
+                    </button>
+                  ))}
+                </div>
+                <div className="h-5 shrink-0 border-l" />
                 <div className="relative shrink-0">
                   <Input
                     type="search"
@@ -756,13 +789,13 @@ export function GateEntry(): React.JSX.Element {
                     </SelectContent>
                   </Select>
                 </div>
-                {(gFrom || gTo || gCat !== 'ALL' || gSearch) && (
+                {(gFrom || gTo || gCat !== 'ALL' || gDir !== 'ALL' || gSearch) && (
                   <>
                     <div className="h-5 shrink-0 border-l" />
                     <button
                       type="button"
                       className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
-                      onClick={() => { setGFrom(''); setGTo(''); setGCat('ALL'); setGSearch('') }}
+                      onClick={() => { setGFrom(''); setGTo(''); setGCat('ALL'); setGDir('ALL'); setGSearch('') }}
                     >
                       Clear
                     </button>
@@ -797,9 +830,20 @@ export function GateEntry(): React.JSX.Element {
             >
               <Switch
                 checked={!!arrival.is_direct_mnc}
-                onCheckedChange={(v) =>
+                onCheckedChange={(v) => {
+                  // Only a real off→on flip needs asking — it changes what the
+                  // entry means, so it is confirmed rather than just flipped.
+                  if (
+                    v &&
+                    !arrival.is_direct_mnc &&
+                    !window.confirm(
+                      'Record this as DIRECT MNC STOCK?\n\nThe vehicle is the party’s own, so no tanker is picked from the movement register, and you must name the MNC / direct-purchase party sending it.'
+                    )
+                  ) {
+                    return
+                  }
                   setArrival((p) => ({ ...p, is_direct_mnc: v, tanker_id: '', supplier_id: v ? p.supplier_id : '' }))
-                }
+                }}
               />
               <span className="font-medium">Direct MNC stock</span>
               <InfoTip text="ON: the goods come straight from a direct-purchase party (BUNGE and the like) on their own vehicle. No tanker to select — type the number and name the party." />
@@ -1025,9 +1069,80 @@ export function GateEntry(): React.JSX.Element {
               <Label>Vehicle number *</Label>
               <Input value={gateOut.tanker_no || ''} onChange={(e) => setGateOut((p) => ({ ...p, tanker_no: e.target.value }))} />
             </div>
+            {/* With no invoice behind it the vehicle belongs to nobody, so the
+                party is named here — the same combined list as Gate in.
+                Miscellaneous has no trading party, so it is not asked for. */}
+            {!gateOut.invoice_group && !isMisc(gateOut.rec_type) && (
+              <div className="grid min-w-0 gap-1">
+                <Label>
+                  Party <span className="text-[10px] font-normal text-muted-foreground">(supplier or customer)</span>
+                </Label>
+                <Select
+                  searchable
+                  value={String(gateOut.party || '')}
+                  onValueChange={(v) => setGateOut((p) => ({ ...p, party: v }))}
+                >
+                  <SelectTrigger><SelectValue placeholder="Select the party" /></SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    {(() => {
+                      const cat = String(gateOut.rec_type || '')
+                      const sup = partiesIn(allSuppliers, 'supplier', cat)
+                      const cus = partiesIn(customers, 'customer', cat)
+                      return (
+                        <>
+                          {cus.rows.length > 0 && (
+                            <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                              Customers{cus.narrowed ? ` · ${cat.toUpperCase()}` : ''}
+                            </div>
+                          )}
+                          {cus.rows.map((x) => (
+                            <SelectItem key={`c${x.id}`} value={`c:${x.id}`}>{x.name}</SelectItem>
+                          ))}
+                          {sup.rows.length > 0 && (
+                            <div className="mt-1 border-t px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                              Suppliers{sup.narrowed ? ` · ${cat.toUpperCase()}` : ''}
+                            </div>
+                          )}
+                          {sup.rows.map((x) => (
+                            <SelectItem key={`s${x.id}`} value={`s:${x.id}`}>{x.name}</SelectItem>
+                          ))}
+                        </>
+                      )
+                    })()}
+                  </SelectContent>
+                </Select>
+                {(() => {
+                  const cat = String(gateOut.rec_type || '').toUpperCase()
+                  const sup = partiesIn(allSuppliers, 'supplier', cat)
+                  const cus = partiesIn(customers, 'customer', cat)
+                  const none = sup.rows.length === 0 && cus.rows.length === 0
+                  if (!sup.narrowed && !cus.narrowed && !none) return null
+                  return (
+                    <span className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+                      {none ? (
+                        <span className="font-medium text-amber-700">No party is tagged {cat}</span>
+                      ) : (
+                        <>parties who deal in {cat}</>
+                      )}
+                      <button
+                        type="button"
+                        className="cursor-pointer font-medium text-indigo-600 underline-offset-2 hover:underline"
+                        onClick={() => setShowAllParties((v) => !v)}
+                      >
+                        {showAllParties ? 'filter by category' : 'show all'}
+                      </button>
+                    </span>
+                  )
+                })()}
+              </div>
+            )}
             <div className="grid min-w-0 gap-1">
               <Label>Category <span className="text-[10px] font-normal text-muted-foreground">(from the invoice)</span></Label>
-              <Select searchable value={gateOut.rec_type || 'OIL'} onValueChange={(v) => setGateOut((p) => ({ ...p, rec_type: v }))}>
+              <Select
+                searchable
+                value={gateOut.rec_type || 'OIL'}
+                onValueChange={(v) => setGateOut((p) => ({ ...p, rec_type: v, party: isMisc(v) ? '' : p.party }))}
+              >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {recTypes.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
@@ -1165,8 +1280,50 @@ export function GateEntry(): React.JSX.Element {
               <div className="grid gap-1.5"><Label>Date *</Label><DatePicker value={editForm.entry_date || ''} onChange={(v) => setEditForm((p) => ({ ...p, entry_date: v }))} /></div>
               <div />
             </div>
+            <label
+              className={cn(
+                'flex w-fit cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs transition',
+                editForm.is_direct_mnc ? 'border-violet-300 bg-violet-50 text-violet-900' : 'text-muted-foreground hover:bg-muted/50'
+              )}
+            >
+              <Switch
+                checked={!!editForm.is_direct_mnc}
+                onCheckedChange={(v) => {
+                  // Only a real off→on flip needs asking — an entry that is
+                  // already MNC re-affirming the same state is not a change.
+                  if (
+                    v &&
+                    !editForm.is_direct_mnc &&
+                    !window.confirm(
+                      'Mark this as DIRECT MNC STOCK?\n\nThe vehicle is the party’s own — no tanker is linked, and you name the MNC / direct-purchase party sending it.'
+                    )
+                  ) {
+                    return
+                  }
+                  setEditForm((p) => ({ ...p, is_direct_mnc: v, supplier_id: v ? p.supplier_id : '' }))
+                }}
+              />
+              <span className="font-medium">Direct MNC stock</span>
+            </label>
+            {editForm.is_direct_mnc && (
+              <div className="grid gap-1.5">
+                <Label>MNC / party *</Label>
+                <Select
+                  searchable
+                  value={String(editForm.supplier_id || '')}
+                  onValueChange={(v) => setEditForm((p) => ({ ...p, supplier_id: v }))}
+                >
+                  <SelectTrigger><SelectValue placeholder="Select the party" /></SelectTrigger>
+                  <SelectContent>
+                    {partiesIn(suppliers, 'supplier', String(editForm.rec_type || '')).rows.map((x) => (
+                      <SelectItem key={x.id} value={String(x.id)}>{x.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5"><Label>Tanker no *</Label><Input value={editForm.tanker_no || ''} onChange={(e) => setEditForm((p) => ({ ...p, tanker_no: e.target.value }))} /></div>
+              <div className="grid gap-1.5"><Label>{editForm.is_direct_mnc ? 'Vehicle number *' : 'Tanker no *'}</Label><Input value={editForm.tanker_no || ''} onChange={(e) => setEditForm((p) => ({ ...p, tanker_no: e.target.value }))} /></div>
               <div className="grid gap-1.5">
                 <Label>Rec type</Label>
                 <Select searchable value={editForm.rec_type || 'OIL'} onValueChange={(v) => setEditForm((p) => ({ ...p, rec_type: v }))}>

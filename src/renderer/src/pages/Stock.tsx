@@ -1223,18 +1223,19 @@ function MncStock(): React.JSX.Element {
 
   // Roll up per supplier — the "MNC" view (all of Bunge's stock with us).
   const byParty = useMemo(() => {
-    const m = new Map<string, { name: string; deposited: number; invoiced: number; balance: number; rows: Row[] }>()
+    const m = new Map<string, { name: string; opening: number; deposited: number; invoiced: number; balance: number; rows: Row[] }>()
     for (const r of rows) {
       const k = String(r.supplier_name || '—')
-      if (!m.has(k)) m.set(k, { name: k, deposited: 0, invoiced: 0, balance: 0, rows: [] })
+      if (!m.has(k)) m.set(k, { name: k, opening: 0, deposited: 0, invoiced: 0, balance: 0, rows: [] })
       const g = m.get(k)!
+      g.opening += openingLotsFor(r.supplier_id, r.product_id).reduce((s2, l) => s2 + (Number(l.qty) || 0), 0)
       g.deposited += Number(r.deposited) || 0
       g.invoiced += Number(r.invoiced) || 0
       g.balance += Number(r.balance) || 0
       g.rows.push(r)
     }
     return Array.from(m.values()).sort((a, b) => a.name.localeCompare(b.name))
-  }, [rows])
+  }, [rows, openingLotsFor])
 
   const tot = rows.reduce(
     (s, r) => ({
@@ -1244,6 +1245,7 @@ function MncStock(): React.JSX.Element {
     }),
     { deposited: 0, invoiced: 0, balance: 0 }
   )
+  const totOpening = byParty.reduce((s, g) => s + g.opening, 0)
 
   // Excel rows: party+product summary, then each of its lots underneath.
   const mncSheetRows = byParty.flatMap((g) =>
@@ -1251,6 +1253,7 @@ function MncStock(): React.JSX.Element {
       {
         supplier_name: g.name,
         product_code: p.product_code || p.product_name,
+        opening: openingLotsFor(p.supplier_id, p.product_id).reduce((s2, l) => s2 + (Number(l.qty) || 0), 0),
         deposited: p.deposited,
         invoiced: p.invoiced,
         balance: p.balance,
@@ -1297,6 +1300,7 @@ function MncStock(): React.JSX.Element {
           columns={[
             { header: 'Party', key: 'supplier_name', value: (r) => r.supplier_name || '' },
             { header: 'Product', key: 'product', value: (r) => r.product_code || r.product_name || '' },
+            { header: 'Opening', key: 'opening', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.opening) || 0 },
             { header: 'Deposited', key: 'deposited', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.deposited) || 0 },
             { header: 'Invoiced', key: 'invoiced', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.invoiced) || 0 },
             { header: 'Balance', key: 'balance', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.balance) || 0 },
@@ -1322,6 +1326,7 @@ function MncStock(): React.JSX.Element {
           <TableHeader>
             <TableRow>
               <TableHead className="sticky top-0 z-20 bg-violet-100 text-[10px] font-semibold uppercase tracking-wide text-violet-900">Party / product</TableHead>
+              <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">Opening</TableHead>
               <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-emerald-700">Deposited</TableHead>
               <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-rose-700">Invoiced</TableHead>
               <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-violet-900">Balance</TableHead>
@@ -1330,9 +1335,9 @@ function MncStock(): React.JSX.Element {
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
             ) : rows.length === 0 ? (
-              <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">No consignment stock. Log a deposit under Consignment.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">No consignment stock. Log a deposit under Consignment.</TableCell></TableRow>
             ) : (
               <>
                 {byParty.map((g) => (
@@ -1342,6 +1347,7 @@ function MncStock(): React.JSX.Element {
                         {g.name}
                         <span className="ml-1 font-medium normal-case tracking-normal text-violet-500">· {g.rows.length} product{g.rows.length === 1 ? '' : 's'}</span>
                       </TableCell>
+                      <TableCell className="text-right text-[11px] font-bold tabular-nums text-slate-700">{g.opening ? formatNum(g.opening) : '—'}</TableCell>
                       <TableCell className="text-right text-[11px] font-bold tabular-nums text-violet-900">{formatNum(g.deposited)}</TableCell>
                       <TableCell className="text-right text-[11px] font-bold tabular-nums text-violet-900">{formatNum(g.invoiced)}</TableCell>
                       <TableCell className="text-right text-[11px] font-bold tabular-nums text-violet-900">{formatNum(g.balance)}</TableCell>
@@ -1359,6 +1365,12 @@ function MncStock(): React.JSX.Element {
                                 {isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                                 {r.product_code || r.product_name}
                               </span>
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums text-slate-600">
+                              {(() => {
+                                const o = openingLotsFor(r.supplier_id, r.product_id).reduce((s2, l) => s2 + (Number(l.qty) || 0), 0)
+                                return o ? formatNum(o) : '—'
+                              })()}
                             </TableCell>
                             <TableCell className="text-right tabular-nums text-emerald-700">{formatNum(r.deposited)}</TableCell>
                             <TableCell className="text-right tabular-nums text-rose-700">{Number(r.invoiced) ? formatNum(r.invoiced) : '—'}</TableCell>
@@ -1384,7 +1396,7 @@ function MncStock(): React.JSX.Element {
                           </TableRow>
                           {isOpen && (
                             <TableRow className="bg-slate-100 hover:bg-slate-100">
-                              <TableCell colSpan={5} className="p-0">
+                              <TableCell colSpan={6} className="p-0">
                                 <div className="px-6 py-3">
                                   {myLots.length === 0 ? (
                                     <p className="text-xs text-muted-foreground">No deposit lots recorded.</p>
@@ -1474,6 +1486,7 @@ function MncStock(): React.JSX.Element {
                 ))}
                 <TableRow className="border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
                   <TableCell className="text-[11px] font-bold uppercase tracking-wide text-amber-900">Grand total</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totOpening)}</TableCell>
                   <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(tot.deposited)}</TableCell>
                   <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(tot.invoiced)}</TableCell>
                   <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(tot.balance)}</TableCell>

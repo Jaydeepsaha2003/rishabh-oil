@@ -1548,7 +1548,7 @@ function SalesTab({
 
 // ---------------- Sales bargains tab ----------------
 
-function SalesBargainsTab(): React.JSX.Element {
+function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } = {}): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [sales, setSales] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
@@ -2264,7 +2264,15 @@ function SalesBargainsTab(): React.JSX.Element {
                                       </thead>
                                       <tbody>
                                         {disp.map((d, di) => (
-                                          <tr key={d.id as number} className="border-b last:border-0">
+                                          <tr
+                                            key={d.id as number}
+                                            className={cn('border-b last:border-0', onOpenSale && 'cursor-pointer hover:bg-muted/40')}
+                                            title={onOpenSale ? 'Open this sale invoice' : undefined}
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              onOpenSale?.(Number(d.id))
+                                            }}
+                                          >
                                             <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{di + 1}</td>
                                             <td className="py-1.5 pr-3 font-medium">{d.invoice_no || '—'}</td>
                                             <td className="py-1.5 pr-3 whitespace-nowrap">{formatDate(d.sale_date)}</td>
@@ -2618,12 +2626,12 @@ export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?
   )
 }
 
-export function SalesBargains(): React.JSX.Element {
+export function SalesBargains({ onOpenSale }: { onOpenSale?: (id: number) => void } = {}): React.JSX.Element {
   return (
     <>
       <PageHeader title="Sales Bargain" subtitle="Rate contracts with customers — drawn down as sales are dispatched" hint="Each sales bargain locks a rate and quantity with a customer; dispatches under Sales draw it down. The bargain number is FGCODE/DD-MM/CUSTOMER/SERIAL, resetting monthly." />
       <div className="px-4 py-4">
-        <SalesBargainsTab />
+        <SalesBargainsTab onOpenSale={onOpenSale} />
       </div>
     </>
   )

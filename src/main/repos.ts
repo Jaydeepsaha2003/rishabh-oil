@@ -160,8 +160,81 @@ export async function update(table: string, id: number, values: Row): Promise<{ 
   return { id }
 }
 
+// What points at each master. Deleting a row the books still reference throws
+// a bare "FOREIGN KEY constraint failed" from SQLite, which tells the person at
+// the screen nothing — so the references are counted first and named.
+const DEPENDENTS: Record<string, { table: string; column: string; label: string }[]> = {
+  suppliers: [
+    { table: 'bargains', column: 'supplier_id', label: 'purchase bargain' },
+    { table: 'orders', column: 'supplier_id', label: 'purchase' },
+    { table: 'purchase_tankers', column: 'supplier_id', label: 'tanker' },
+    { table: 'consignment_stock', column: 'supplier_id', label: 'consignment lot' },
+    { table: 'supplier_ledger', column: 'supplier_id', label: 'ledger entry' },
+    { table: 'gate_entries', column: 'supplier_id', label: 'gate entry' }
+  ],
+  customers: [
+    { table: 'sales', column: 'customer_id', label: 'sale' },
+    { table: 'sales_bargains', column: 'customer_id', label: 'sales bargain' },
+    { table: 'customer_ledger', column: 'customer_id', label: 'ledger entry' },
+    { table: 'gate_entries', column: 'customer_id', label: 'gate entry' },
+    { table: 'packaging_parties', column: 'customer_id', label: 'packed-SKU link' }
+  ],
+  products: [
+    { table: 'sales', column: 'product_id', label: 'sale' },
+    { table: 'sales_bargains', column: 'product_id', label: 'sales bargain' },
+    { table: 'orders', column: 'oil_type_id', label: 'purchase' },
+    { table: 'production', column: 'product_id', label: 'production run' },
+    { table: 'production_items', column: 'product_id', label: 'production input' },
+    { table: 'formulation_items', column: 'product_id', label: 'formulation line' },
+    { table: 'consignment_stock', column: 'product_id', label: 'consignment lot' },
+    { table: 'stock_counts', column: 'product_id', label: 'day-close count' },
+    { table: 'stock_transfers', column: 'product_id', label: 'stock transfer' },
+    { table: 'packagings', column: 'product_id', label: 'packed SKU' }
+  ],
+  transporters: [
+    { table: 'purchase_tankers', column: 'transporter_id', label: 'tanker' },
+    { table: 'orders', column: 'transporter_id', label: 'purchase' },
+    { table: 'sales', column: 'transporter_id', label: 'sale' },
+    { table: 'transporter_ledger', column: 'transporter_id', label: 'ledger entry' }
+  ],
+  sources: [{ table: 'bargains', column: 'source_id', label: 'purchase bargain' }],
+  brokers: [{ table: 'bargains', column: 'broker_id', label: 'purchase bargain' }],
+  packagings: [
+    { table: 'sales', column: 'packaging_id', label: 'sale' },
+    { table: 'sales_bargains', column: 'packaging_id', label: 'sales bargain' },
+    { table: 'sales_bargain_sku_rates', column: 'packaging_id', label: 'rate-card line' },
+    { table: 'packaging_parties', column: 'packaging_id', label: 'party link' }
+  ],
+  oil_types: [
+    { table: 'bargains', column: 'oil_type_id', label: 'purchase bargain' },
+    { table: 'purchase_tankers', column: 'oil_type_id', label: 'tanker' }
+  ]
+}
+
+async function assertNotInUse(table: string, id: number): Promise<void> {
+  const deps = DEPENDENTS[table]
+  if (!deps) return
+  const c = getClient()
+  const held: string[] = []
+  for (const d of deps) {
+    const r = await c
+      .execute({ sql: `SELECT COUNT(*) AS n FROM ${d.table} WHERE ${d.column} = ?`, args: [id] })
+      .catch(() => null) // a table this build does not have is simply skipped
+    const n = r ? Number(r.rows[0].n) : 0
+    if (n > 0) held.push(`${n} ${d.label}${n === 1 ? '' : 's'}`)
+  }
+  if (!held.length) return
+  const who = await c.execute({ sql: `SELECT name FROM ${table} WHERE id = ?`, args: [id] })
+  const name = String(who.rows[0]?.name ?? 'This record')
+  throw new Error(
+    `"${name}" is still used by ${held.join(', ')} — deleting it would orphan them. ` +
+      'Switch it off with the Active toggle instead, so it stops being offered but its history stays.'
+  )
+}
+
 export async function remove(table: string, id: number): Promise<{ id: number }> {
   assertTable(table)
+  await assertNotInUse(table, id)
   await getClient().execute({ sql: `DELETE FROM ${table} WHERE id = ?`, args: [id] })
   return { id }
 }

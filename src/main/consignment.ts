@@ -383,10 +383,11 @@ export async function consignmentSummary(): Promise<Row[]> {
   })
 }
 
-// Gate-in entries that aren't tied to a purchase tanker and haven't been
-// validated into consignment stock yet — the accountant's to-do list. The
-// gateman only records the vehicle (and later the weighment); everything else
-// is filled in at validation.
+// Gate-in entries booked as Direct MNC stock that haven't been validated into
+// consignment stock yet — the accountant's to-do list. Only entries the
+// gateman actually flagged Direct MNC belong here: a hand-typed vehicle for
+// Packaging or Miscellaneous is a different thing entirely and is never
+// meant to become a consignment lot, whatever date it was entered on.
 export async function listPendingGateArrivals(): Promise<Row[]> {
   const res = await getClient().execute({
     sql: `SELECT ge.id, ge.gate_entry_no, ge.ref_no, ge.entry_date, ge.tanker_no, ge.rec_type,
@@ -397,6 +398,7 @@ export async function listPendingGateArrivals(): Promise<Row[]> {
           LEFT JOIN products p ON p.id = ge.oil_type_id
           LEFT JOIN suppliers s ON s.id = ge.supplier_id
           WHERE ge.direction = 'in'
+            AND ge.is_direct_mnc = 1
             AND ge.tanker_id IS NULL
             AND NOT EXISTS (SELECT 1 FROM consignment_stock cs WHERE cs.gate_entry_id = ge.id)
           ORDER BY ge.entry_date DESC, ge.id DESC`,
