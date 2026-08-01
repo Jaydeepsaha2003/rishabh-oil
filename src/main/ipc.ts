@@ -111,7 +111,7 @@ import {
   createGateEntry,
   updateGateEntry,
   completeGateEntry,
-  deleteGateEntry, saveGateWeights, skipGateWeighment } from './gate'
+  deleteGateEntry, saveGateWeights, skipGateWeighment, partyCategories } from './gate'
 import { listCompanies, setActiveCompany, getActiveCompanyId } from './company'
 import {
   needsApproval,
@@ -267,7 +267,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^treasury:alerts$|^company:setActive$|^company:getActive$|^session:setUser$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^gate:partyCategories$|^treasury:alerts$|^company:setActive$|^company:getActive$|^session:setUser$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -484,7 +484,9 @@ export function registerIpc(): void {
 
   handle('stock:list', (_e, args?: { range?: { from?: string; to?: string }; companyIds?: number[] }) => stockLevels(args?.range, args?.companyIds))
   handle('stock:needs', () => productionNeeds())
-  handle('stock:breakdown', (_e, args?: { companyIds?: number[] }) => stockPartyBreakdown(args?.companyIds))
+  handle('stock:breakdown', (_e, args?: { companyIds?: number[]; range?: { from?: string; to?: string } }) =>
+    stockPartyBreakdown(args?.companyIds, args?.range)
+  )
   handle('daybook:list', (_e, { from, to }: { from: string; to: string }) => daybook(from, to))
   handle('stock:transfers', () => listStockTransfers())
   handle('stock:transfer', (_e, { values }: { values: Row }) => createStockTransfer(values))
@@ -540,6 +542,7 @@ export function registerIpc(): void {
   handle('gate:list', () => listGateEntries())
   handle('gate:nextNo', (_e, args?: { direction?: 'in' | 'out' }) => nextGateEntryNo(args?.direction))
   handle('gate:dispatchableSales', () => listDispatchableSales())
+  handle('gate:partyCategories', () => partyCategories())
   handle('gate:create', (_e, { values }: { values: Row }) => createGateEntry(values))
   handle('gate:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateGateEntry(id, values)

@@ -94,6 +94,8 @@ export function GateEntry(): React.JSX.Element {
   // Every active party, both sides — the manual-vehicle picker spans them.
   const [allSuppliers, setAllSuppliers] = useState<Row[]>([])
   const [customers, setCustomers] = useState<Row[]>([])
+  // (category -> party ids) derived from what each party actually trades.
+  const [partyCats, setPartyCats] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
   // The page carried the two entry forms, the weighment queue and the whole
   // register at once; split so recording and reviewing are separate.
@@ -115,6 +117,35 @@ export function GateEntry(): React.JSX.Element {
   // The plain register line — vehicle, person, material. Nothing else.
   const [quick, setQuick] = useState<Row>({ direction: 'in', tanker_no: '', person: '', note: '', entry_date: todayISO() })
   const [savingQuick, setSavingQuick] = useState(false)
+  // Each direction is entered one of two ways: weighed at the bridge, or
+  // finished at the gate. One toggle inside the tab, not a switch per form.
+  const [inMode, setInMode] = useState<'with' | 'without'>('with')
+  const [outMode, setOutMode] = useState<'with' | 'without'>('with')
+
+  function modeToggle(mode: 'with' | 'without', set: (m: 'with' | 'without') => void, pending: number): React.JSX.Element {
+    return (
+      <div className="mb-3 inline-flex rounded-lg border border-[#d9d2b8] bg-[#f1ecd9] p-0.5">
+        {(['with', 'without'] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => set(m)}
+            className={cn(
+              'cursor-pointer rounded-md px-3.5 py-1.5 text-[12px] font-semibold transition-colors',
+              mode === m ? 'bg-[#1a2c56] text-white' : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            {m === 'with' ? 'With weighment' : 'Without weighment'}
+            {m === 'with' && pending > 0 && (
+              <span className={cn('ml-1.5 rounded-full px-1.5 text-[10px]', mode === m ? 'bg-white/20' : 'bg-amber-200 text-amber-900')}>
+                {pending}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+    )
+  }
   const [gateOut, setGateOut] = useState<Row>(blankGateOut())
   const [savingOut, setSavingOut] = useState(false)
   // per-pending-entry weighbridge inputs (gross / tare → net)
@@ -124,7 +155,7 @@ export function GateEntry(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [g, pt, sl, nextNo, nextOutNo, sup, prd, cus] = await Promise.all([
+    const [g, pt, sl, nextNo, nextOutNo, sup, prd, cus, pcats] = await Promise.all([
       window.api.gate.list(),
       // the gate serves every company — list tankers across all of them
       window.api.tankers.list(true),
@@ -133,7 +164,8 @@ export function GateEntry(): React.JSX.Element {
       window.api.gate.nextNo('out').catch(() => ''),
       window.api.data.list('suppliers'),
       window.api.data.list('products'),
-      window.api.data.list('customers').catch(() => [] as Row[])
+      window.api.data.list('customers').catch(() => [] as Row[]),
+      window.api.gate.partyCategories().catch(() => [] as Row[])
     ])
     setRows(g)
     setTankers(pt)
@@ -141,6 +173,7 @@ export function GateEntry(): React.JSX.Element {
     setSuppliers(sup.filter((x) => x.active && x.skip_tanker_stages))
     setAllSuppliers(sup.filter((x) => x.active))
     setCustomers(cus.filter((x) => x.active))
+    setPartyCats(pcats)
     setProducts(prd.filter((x) => x.active))
     setSales(sl)
     setArrival((p) => (p.gate_entry_no ? p : { ...p, gate_entry_no: nextNo }))
@@ -196,14 +229,14 @@ export function GateEntry(): React.JSX.Element {
   }
 
   // A gate line with nothing behind it: no document, no weighment, no stock.
-  async function recordQuick(): Promise<void> {
+  async function recordQuick(dir: 'in' | 'out'): Promise<void> {
     if (!String(quick.tanker_no || '').trim()) return void toast.error('Enter the vehicle number')
     if (!String(quick.note || '').trim()) return void toast.error('Say what the vehicle is carrying')
     setSavingQuick(true)
     try {
       await window.api.gate.create({
         entry_kind: 'simple',
-        direction: quick.direction === 'out' ? 'out' : 'in',
+        direction: dir,
         entry_date: quick.entry_date || todayISO(),
         tanker_no: String(quick.tanker_no).trim(),
         person: quick.person || null,
@@ -214,13 +247,32 @@ export function GateEntry(): React.JSX.Element {
         no_weighment: true
       })
       toast.success(`${quick.tanker_no} logged at the gate`)
-      setQuick({ direction: quick.direction, tanker_no: '', person: '', note: '', entry_date: quick.entry_date || todayISO() })
+      setQuick({ tanker_no: '', person: '', note: '', entry_date: quick.entry_date || todayISO() })
       await load()
     } catch (e) {
       toast.error(errText(e))
     } finally {
       setSavingQuick(false)
     }
+  }
+
+  // Parties that deal in one category. An unknown category, or one nobody has
+  // traded yet, must never empty the list — it falls back to everyone.
+  function partiesIn(list: Row[], side: 'supplier' | 'customer', category: string): { rows: Row[]; narrowed: boolean } {
+    const cat = String(category || '').trim().toUpperCase()
+    if (!cat) return { rows: list, narrowed: false }
+    const mine = new Set(
+      partyCats.filter((r) => String(r.side) === side && String(r.cat).toUpperCase() === cat).map((r) => Number(r.id))
+    )
+    // Nobody on this side trades that category — show everyone rather than an
+    // empty list.
+    if (!mine.size) return { rows: list, narrowed: false }
+    // Parties with no trading history at all stay visible: a master added this
+    // morning has no evidence against it, and hiding it would make a new
+    // customer unreachable at the gate.
+    const known = new Set(partyCats.filter((r) => String(r.side) === side).map((r) => Number(r.id)))
+    const hit = list.filter((x) => mine.has(Number(x.id)) || !known.has(Number(x.id)))
+    return hit.length ? { rows: hit, narrowed: hit.length < list.length } : { rows: list, narrowed: false }
   }
 
   // Gate OUT — normally with a sale invoice; a vehicle can also leave without
@@ -401,6 +453,68 @@ export function GateEntry(): React.JSX.Element {
     }
   }
 
+  // The 'Without weighment' view of a tab: the plain register line — vehicle,
+  // person, material — finished on the spot. Identical for both directions;
+  // the tab supplies the direction.
+  function quickEntry(dir: 'in' | 'out'): React.JSX.Element {
+    return (
+        <section className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white">
+          <div className="mb-3 flex items-center gap-2 border-b border-dotted border-[#e5dfc8] pb-1.5">
+            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-slate-200 text-slate-700">
+              <ClipboardList className="h-4 w-4" />
+            </div>
+            <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Without weighment — quick entry</h3>
+            <InfoTip text="The plain gate-register line: which vehicle, who it is with, and what it carries. It completes on the spot — no weighment, no invoice, and it touches no stock or purchase." />
+            <span className="ml-auto rounded bg-slate-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-slate-700">
+              {dir === 'in' ? 'Coming in' : 'Going out'}
+            </span>
+          </div>
+          <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid min-w-0 gap-1">
+              <Label>Vehicle number *</Label>
+              <Input
+                value={quick.tanker_no || ''}
+                placeholder="e.g. UP14 HT 5682"
+                onChange={(e) => setQuick((p) => ({ ...p, tanker_no: e.target.value }))}
+                onKeyDown={(e) => e.key === 'Enter' && recordQuick(dir)}
+              />
+            </div>
+            <div className="grid min-w-0 gap-1">
+              <Label>
+                Person <span className="text-[10px] font-normal text-muted-foreground">(optional)</span>
+              </Label>
+              <Input
+                value={quick.person || ''}
+                placeholder="Driver or the person responsible"
+                onChange={(e) => setQuick((p) => ({ ...p, person: e.target.value }))}
+                onKeyDown={(e) => e.key === 'Enter' && recordQuick(dir)}
+              />
+            </div>
+            <div className="grid min-w-0 gap-1">
+              <Label>Material *</Label>
+              <Input
+                value={quick.note || ''}
+                placeholder="What is in the vehicle"
+                onChange={(e) => setQuick((p) => ({ ...p, note: e.target.value }))}
+                onKeyDown={(e) => e.key === 'Enter' && recordQuick(dir)}
+              />
+            </div>
+            <div className="grid min-w-0 gap-1">
+              <Label>Date</Label>
+              <DatePicker value={quick.entry_date || ''} onChange={(v) => setQuick((p) => ({ ...p, entry_date: v }))} />
+            </div>
+          </div>
+          <div className="mt-4 flex items-center justify-end gap-3">
+            <span className="text-[11px] text-muted-foreground">Completes immediately — nothing waits for weighment.</span>
+            <Button className="h-8 bg-slate-800 px-4 text-[13px] font-semibold hover:bg-slate-900" onClick={() => void recordQuick(dir)} disabled={savingQuick}>
+              <ClipboardList className="h-4 w-4" />
+              {savingQuick ? 'Saving…' : 'Log entry'}
+            </Button>
+          </div>
+        </section>
+    )
+  }
+
   // The weighbridge queue for ONE direction, so Gate in and Gate out each
   // finish the vehicles they recorded instead of sharing one mixed list.
   function weighQueue(dir: 'in' | 'out'): React.JSX.Element {
@@ -411,7 +525,7 @@ export function GateEntry(): React.JSX.Element {
             <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-100 text-amber-700">
               <Scale className="h-4 w-4" />
             </div>
-            <h3 className="text-sm font-semibold">Waiting for weighment</h3>
+            <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Waiting for weighment</h3>
             <InfoTip text="Enter the weighbridge Gross and Tare; the net (gross − tare) is calculated and completes the entry." />
             <Badge variant={list.length ? 'warning' : 'muted'} className="ml-1">{list.length}</Badge>
           </div>
@@ -653,14 +767,16 @@ export function GateEntry(): React.JSX.Element {
             )}
           </div>
 
-          <TabsContent value="in" className="space-y-6">
+          <TabsContent value="in" className="space-y-4">
+        {modeToggle(inMode, setInMode, pendingIn)}
+        {inMode === 'without' ? quickEntry('in') : (<>
         {/* Tanker IN */}
-        <section className="rounded-xl border bg-card p-5 shadow-sm">
-          <div className="mb-4 flex items-center gap-2">
+        <section className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white">
+          <div className="mb-3 flex items-center gap-2 border-b border-dotted border-[#e5dfc8] pb-1.5">
             <div className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-100 text-emerald-700">
               <Truck className="h-4 w-4" />
             </div>
-            <h3 className="text-sm font-semibold">Tanker in</h3>
+            <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Tanker in</h3>
             <InfoTip text="Record a tanker the moment it arrives — pick it from the list or type the number manually. Weight is entered later under Waiting for weighment." />
             {/* Direct MNC stock arrives on the party's own vehicle: nothing to
                 pick from our tanker list, so the number is typed and the party
@@ -683,25 +799,10 @@ export function GateEntry(): React.JSX.Element {
               <span className="font-medium">Direct MNC stock</span>
               <InfoTip text="ON: the goods come straight from a direct-purchase party (BUNGE and the like) on their own vehicle. No tanker to select — type the number and name the party." />
             </label>
-            <label
-              className={cn(
-                'flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs transition',
-                arrival.no_weighment
-                  ? 'border-sky-300 bg-sky-50 text-sky-900'
-                  : 'text-muted-foreground hover:bg-muted/50'
-              )}
-            >
-              <Switch
-                checked={!!arrival.no_weighment}
-                onCheckedChange={(v) => setArrival((p) => ({ ...p, no_weighment: v }))}
-              />
-              <span className="font-medium">Without weighment</span>
-              <InfoTip text="ON: the entry completes at the gate and never joins the weighbridge queue. The declared quantity stands as its figure, and no gate weight cross-checks the purchase." />
-            </label>
           </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {arrival.is_direct_mnc ? (
-              <div className="grid min-w-0 gap-1.5">
+              <div className="grid min-w-0 gap-1">
                 <Label>MNC / party *</Label>
                 <Select
                   value={String(arrival.supplier_id || '')}
@@ -711,14 +812,14 @@ export function GateEntry(): React.JSX.Element {
                     <SelectValue placeholder={suppliers.length ? 'Select the party' : 'No direct-purchase party yet'} />
                   </SelectTrigger>
                   <SelectContent>
-                    {suppliers.map((x) => (
+                    {partiesIn(suppliers, 'supplier', String(arrival.rec_type || '')).rows.map((x) => (
                       <SelectItem key={x.id} value={String(x.id)}>{x.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
             ) : (
-              <div className="grid min-w-0 gap-1.5">
+              <div className="grid min-w-0 gap-1">
                 <Label>Tanker *</Label>
                 <Select value={String(arrival.tanker_id || '')} onValueChange={chooseTanker}>
                   <SelectTrigger><SelectValue placeholder="Select arriving tanker" /></SelectTrigger>
@@ -730,7 +831,7 @@ export function GateEntry(): React.JSX.Element {
                 </Select>
               </div>
             )}
-            <div className="grid min-w-0 gap-1.5">
+            <div className="grid min-w-0 gap-1">
               <Label>{arrival.is_direct_mnc ? 'Vehicle number *' : 'Tanker number *'}</Label>
               <Input
                 value={arrival.tanker_no || ''}
@@ -738,7 +839,7 @@ export function GateEntry(): React.JSX.Element {
                 onChange={(e) => setArrival((p) => ({ ...p, tanker_no: e.target.value }))}
               />
             </div>
-            <div className="grid min-w-0 gap-1.5">
+            <div className="grid min-w-0 gap-1">
               <Label>Rec type</Label>
               <Select value={arrival.rec_type || 'OIL'} onValueChange={(v) => setArrival((p) => ({ ...p, rec_type: v }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -750,7 +851,7 @@ export function GateEntry(): React.JSX.Element {
             {/* A hand-typed vehicle belongs to nobody yet — name the party it
                 came from or went to, from either master in one list. */}
             {!arrival.is_direct_mnc && !arrival.tanker_id && (
-              <div className="grid min-w-0 gap-1.5">
+              <div className="grid min-w-0 gap-1">
                 <Label>
                   Party <span className="text-[10px] font-normal text-muted-foreground">(supplier or customer)</span>
                 </Label>
@@ -760,30 +861,47 @@ export function GateEntry(): React.JSX.Element {
                 >
                   <SelectTrigger><SelectValue placeholder="Select the party" /></SelectTrigger>
                   <SelectContent className="max-h-72">
-                    {allSuppliers.length > 0 && (
-                      <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                        Suppliers
-                      </div>
-                    )}
-                    {allSuppliers.map((x) => (
-                      <SelectItem key={`s${x.id}`} value={`s:${x.id}`}>{x.name}</SelectItem>
-                    ))}
-                    {customers.length > 0 && (
-                      <div className="mt-1 border-t px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                        Customers
-                      </div>
-                    )}
-                    {customers.map((x) => (
-                      <SelectItem key={`c${x.id}`} value={`c:${x.id}`}>{x.name}</SelectItem>
-                    ))}
+                    {(() => {
+                      const sup = partiesIn(allSuppliers, 'supplier', String(arrival.rec_type || ''))
+                      const cus = partiesIn(customers, 'customer', String(arrival.rec_type || ''))
+                      return (
+                        <>
+                          {sup.rows.length > 0 && (
+                            <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                              Suppliers{sup.narrowed ? ` · ${String(arrival.rec_type).toUpperCase()}` : ''}
+                            </div>
+                          )}
+                          {sup.rows.map((x) => (
+                            <SelectItem key={`s${x.id}`} value={`s:${x.id}`}>{x.name}</SelectItem>
+                          ))}
+                          {cus.rows.length > 0 && (
+                            <div className="mt-1 border-t px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                              Customers{cus.narrowed ? ` · ${String(arrival.rec_type).toUpperCase()}` : ''}
+                            </div>
+                          )}
+                          {cus.rows.map((x) => (
+                            <SelectItem key={`c${x.id}`} value={`c:${x.id}`}>{x.name}</SelectItem>
+                          ))}
+                        </>
+                      )
+                    })()}
                   </SelectContent>
                 </Select>
+                {(() => {
+                  const sup = partiesIn(allSuppliers, 'supplier', String(arrival.rec_type || ''))
+                  const cus = partiesIn(customers, 'customer', String(arrival.rec_type || ''))
+                  return sup.narrowed || cus.narrowed ? (
+                    <span className="text-[10px] text-muted-foreground">
+                      showing parties who deal in {String(arrival.rec_type).toUpperCase()}
+                    </span>
+                  ) : null
+                })()}
               </div>
             )}
             {/* Miscellaneous has no product behind it, so let the gateman say
                 what actually came in. */}
             {String(arrival.rec_type || '').toUpperCase() === 'MISCELLANEOUS' && (
-              <div className="grid min-w-0 gap-1.5 sm:col-span-2">
+              <div className="grid min-w-0 gap-1 sm:col-span-2">
                 <Label>
                   Details <span className="text-[10px] font-normal text-muted-foreground">(optional — what is it?)</span>
                 </Label>
@@ -794,21 +912,21 @@ export function GateEntry(): React.JSX.Element {
                 />
               </div>
             )}
-            <div className="grid min-w-0 gap-1.5">
+            <div className="grid min-w-0 gap-1">
               <Label className="flex items-center gap-1">Gate entry no <span className="text-[10px] font-normal text-muted-foreground">(auto)</span></Label>
               <Input value={arrival.gate_entry_no || ''} disabled className="bg-muted/50 text-muted-foreground" />
             </div>
-            <div className="grid min-w-0 gap-1.5">
+            <div className="grid min-w-0 gap-1">
               <Label className="flex items-center gap-1">Manual gate no <span className="text-[10px] font-normal text-muted-foreground">(optional)</span></Label>
               <Input value={arrival.ref_no || ''} placeholder="Gate-register no…" onChange={(e) => setArrival((p) => ({ ...p, ref_no: e.target.value }))} />
             </div>
-            <div className="grid min-w-0 gap-1.5">
+            <div className="grid min-w-0 gap-1">
               <Label>Date</Label>
               <DatePicker value={arrival.entry_date || ''} onChange={(v) => setArrival((p) => ({ ...p, entry_date: v }))} />
             </div>
           </div>
           <div className="mt-4 flex justify-end">
-            <Button className="bg-emerald-600 px-5 font-semibold hover:bg-emerald-700" onClick={recordArrival} disabled={savingArrival}>
+            <Button className="h-8 bg-emerald-600 px-4 text-[13px] font-semibold hover:bg-emerald-700" onClick={recordArrival} disabled={savingArrival}>
               <Truck className="h-4 w-4" />
               {savingArrival ? 'Saving…' : 'Tanker received'}
             </Button>
@@ -816,100 +934,24 @@ export function GateEntry(): React.JSX.Element {
         </section>
 
         {weighQueue('in')}
+        </>)}
 
-        {/* Quick register line — no document, no weighment, no stock effect. */}
-        <section className="rounded-xl border bg-card p-5 shadow-sm">
-          <div className="mb-4 flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-slate-200 text-slate-700">
-              <ClipboardList className="h-4 w-4" />
-            </div>
-            <h3 className="text-sm font-semibold">Quick entry</h3>
-            <InfoTip text="The plain gate-register line: which vehicle, who it is with, and what it carries. It completes on the spot — no weighment, no invoice, and it touches no stock or purchase." />
-            <div className="ml-auto inline-flex rounded-lg border p-0.5">
-              {(['in', 'out'] as const).map((d) => (
-                <button
-                  key={d}
-                  type="button"
-                  onClick={() => setQuick((p) => ({ ...p, direction: d }))}
-                  className={cn(
-                    'cursor-pointer rounded-md px-3 py-1 text-[12px] font-semibold transition-colors',
-                    quick.direction === d ? 'bg-slate-800 text-white' : 'text-muted-foreground hover:text-foreground'
-                  )}
-                >
-                  {d === 'in' ? 'Coming in' : 'Going out'}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="grid min-w-0 gap-1.5">
-              <Label>Vehicle number *</Label>
-              <Input
-                value={quick.tanker_no || ''}
-                placeholder="e.g. UP14 HT 5682"
-                onChange={(e) => setQuick((p) => ({ ...p, tanker_no: e.target.value }))}
-                onKeyDown={(e) => e.key === 'Enter' && recordQuick()}
-              />
-            </div>
-            <div className="grid min-w-0 gap-1.5">
-              <Label>
-                Person <span className="text-[10px] font-normal text-muted-foreground">(optional)</span>
-              </Label>
-              <Input
-                value={quick.person || ''}
-                placeholder="Driver or the person responsible"
-                onChange={(e) => setQuick((p) => ({ ...p, person: e.target.value }))}
-                onKeyDown={(e) => e.key === 'Enter' && recordQuick()}
-              />
-            </div>
-            <div className="grid min-w-0 gap-1.5">
-              <Label>Material *</Label>
-              <Input
-                value={quick.note || ''}
-                placeholder="What is in the vehicle"
-                onChange={(e) => setQuick((p) => ({ ...p, note: e.target.value }))}
-                onKeyDown={(e) => e.key === 'Enter' && recordQuick()}
-              />
-            </div>
-            <div className="grid min-w-0 gap-1.5">
-              <Label>Date</Label>
-              <DatePicker value={quick.entry_date || ''} onChange={(v) => setQuick((p) => ({ ...p, entry_date: v }))} />
-            </div>
-          </div>
-          <div className="mt-4 flex items-center justify-end gap-3">
-            <span className="text-[11px] text-muted-foreground">Completes immediately — nothing waits for weighment.</span>
-            <Button className="bg-slate-800 px-5 font-semibold hover:bg-slate-900" onClick={recordQuick} disabled={savingQuick}>
-              <ClipboardList className="h-4 w-4" />
-              {savingQuick ? 'Saving…' : 'Log entry'}
-            </Button>
-          </div>
-        </section>
           </TabsContent>
 
-          <TabsContent value="out" className="space-y-6">
+          <TabsContent value="out" className="space-y-4">
+        {modeToggle(outMode, setOutMode, pendingOut)}
+        {outMode === 'without' ? quickEntry('out') : (<>
         {/* Gate OUT — sale dispatch leaving the factory */}
-        <section className="rounded-xl border bg-card p-5 shadow-sm">
-          <div className="mb-4 flex items-center gap-2">
+        <section className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white">
+          <div className="mb-3 flex items-center gap-2 border-b border-dotted border-[#e5dfc8] pb-1.5">
             <div className="flex h-7 w-7 items-center justify-center rounded-md bg-sky-100 text-sky-700">
               <LogOut className="h-4 w-4" />
             </div>
-            <h3 className="text-sm font-semibold">Gate out</h3>
+            <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Gate out</h3>
             <InfoTip text="Record a sale dispatch leaving the factory. Only dispatched sales (Loaded / In transit / Unloaded) that haven't gone out yet are listed. The exit weight completes it." />
           </div>
-          <div className="mb-3 flex items-center gap-2 rounded-md border border-dashed border-sky-300 bg-sky-50/60 px-3 py-2">
-            <Switch
-              checked={!!gateOut.no_weighment}
-              onCheckedChange={(on) => setGateOut((p) => ({ ...p, no_weighment: on }))}
-            />
-            <div>
-              <div className="text-[12.5px] font-medium">Without weighment</div>
-              <div className="text-[11px] text-muted-foreground">
-                Completes at the gate — the vehicle is not held for the weighbridge.
-              </div>
-            </div>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <div className="grid min-w-0 gap-1.5 sm:col-span-2 lg:col-span-1">
+          <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            <div className="grid min-w-0 gap-1 sm:col-span-2 lg:col-span-1">
               <Label>
                 Sale invoice (dispatched){' '}
                 <span className="text-[10px] font-normal text-muted-foreground">(optional — else give the reason)</span>
@@ -917,15 +959,25 @@ export function GateEntry(): React.JSX.Element {
               <Select value={String(gateOut.invoice_group || '')} onValueChange={chooseSale}>
                 <SelectTrigger><SelectValue placeholder="Select outgoing invoice" /></SelectTrigger>
                 <SelectContent>
-                  {outgoable.map((s) => (
-                    <SelectItem key={s.invoice_group} value={String(s.invoice_group)}>
-                      {s.invoice_no || 'No invoice no'} · {s.customer || '—'} · {s.product_name} · {formatNum(s.qty)} {s.uom}
-                    </SelectItem>
-                  ))}
+                  {(() => {
+                    // A chosen category narrows the invoices to that kind of
+                    // goods; if none match it shows everything rather than
+                    // leaving the gateman with an empty list.
+                    const cat = String(gateOut.rec_type || '').trim().toUpperCase()
+                    const hit = cat
+                      ? outgoable.filter((x) => String(x.product_category || '').toUpperCase() === cat)
+                      : outgoable
+                    const list = hit.length ? hit : outgoable
+                    return list.map((s) => (
+                      <SelectItem key={s.invoice_group} value={String(s.invoice_group)}>
+                        {s.invoice_no || 'No invoice no'} · {s.customer || '—'} · {s.product_name} · {formatNum(s.qty)} {s.uom}
+                      </SelectItem>
+                    ))
+                  })()}
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid min-w-0 gap-1.5">
+            <div className="grid min-w-0 gap-1">
               <Label>
                 Reason / note{' '}
                 {!gateOut.invoice_group && <span className="text-[10px] font-normal text-amber-700">required without an invoice</span>}
@@ -936,11 +988,11 @@ export function GateEntry(): React.JSX.Element {
                 onChange={(e) => setGateOut((p) => ({ ...p, note: e.target.value }))}
               />
             </div>
-            <div className="grid min-w-0 gap-1.5">
+            <div className="grid min-w-0 gap-1">
               <Label>Vehicle number *</Label>
               <Input value={gateOut.tanker_no || ''} onChange={(e) => setGateOut((p) => ({ ...p, tanker_no: e.target.value }))} />
             </div>
-            <div className="grid min-w-0 gap-1.5">
+            <div className="grid min-w-0 gap-1">
               <Label>Category <span className="text-[10px] font-normal text-muted-foreground">(from the invoice)</span></Label>
               <Select value={gateOut.rec_type || 'OIL'} onValueChange={(v) => setGateOut((p) => ({ ...p, rec_type: v }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -949,21 +1001,21 @@ export function GateEntry(): React.JSX.Element {
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid min-w-0 gap-1.5">
+            <div className="grid min-w-0 gap-1">
               <Label className="flex items-center gap-1">Gate out no <span className="text-[10px] font-normal text-muted-foreground">(auto)</span></Label>
               <Input value={gateOut.gate_entry_no || ''} disabled className="bg-muted/50 text-muted-foreground" />
             </div>
-            <div className="grid min-w-0 gap-1.5">
+            <div className="grid min-w-0 gap-1">
               <Label className="flex items-center gap-1">Manual gate no <span className="text-[10px] font-normal text-muted-foreground">(optional)</span></Label>
               <Input value={gateOut.ref_no || ''} placeholder="Gate-register no…" onChange={(e) => setGateOut((p) => ({ ...p, ref_no: e.target.value }))} />
             </div>
-            <div className="grid min-w-0 gap-1.5">
+            <div className="grid min-w-0 gap-1">
               <Label>Date</Label>
               <DatePicker value={gateOut.entry_date || ''} onChange={(v) => setGateOut((p) => ({ ...p, entry_date: v }))} />
             </div>
           </div>
           <div className="mt-4 flex justify-end">
-            <Button className="bg-sky-600 px-5 font-semibold hover:bg-sky-700" onClick={recordGateOut} disabled={savingOut}>
+            <Button className="h-8 bg-sky-600 px-4 text-[13px] font-semibold hover:bg-sky-700" onClick={recordGateOut} disabled={savingOut}>
               <LogOut className="h-4 w-4" />
               {savingOut ? 'Saving…' : 'Vehicle out'}
             </Button>
@@ -971,6 +1023,7 @@ export function GateEntry(): React.JSX.Element {
         </section>
 
         {weighQueue('out')}
+        </>)}
           </TabsContent>
 
           <TabsContent value="view">

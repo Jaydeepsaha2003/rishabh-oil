@@ -214,13 +214,33 @@ async function productStockForCompany(companyId: number, productId: number): Pro
 // DISPATCHED each product to (customers, on done stock-tracked sales). Used for
 // the hover detail on the Stock page's Receipt / Dispatch columns.
 export async function stockPartyBreakdown(
-  companyIds?: number[]
+  companyIds?: number[],
+  range?: { from?: string; to?: string }
 ): Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>> {
   const c = getClient()
   const cidList = (companyIds || []).map(Number).filter((x) => x > 0)
   if (!cidList.length) cidList.push(getActiveCompanyId())
   const ph = cidList.map(() => '?').join(', ')
   const multi = cidList.length > 1
+  // The split must cover the SAME period the register shows, or the hover would
+  // contradict the row it belongs to. Dates match stockLevels exactly.
+  const from = String(range?.from || '')
+  const to = String(range?.to || '')
+  const bounds = (dateExpr: string): { sql: string; args: string[] } => {
+    const parts: string[] = []
+    const args: string[] = []
+    if (from) {
+      parts.push(`AND ${dateExpr} >= ?`)
+      args.push(from)
+    }
+    if (to) {
+      parts.push(`AND ${dateExpr} <= ?`)
+      args.push(to)
+    }
+    return { sql: parts.join(' '), args }
+  }
+  const recB = bounds('COALESCE(o.received_date, o.order_date)')
+  const dispB = bounds('COALESCE(s.unloaded_date, s.sale_date)')
   const out: Record<number, { receipt: Row[]; dispatch: Row[] }> = {}
   const ensure = (pid: number): { receipt: Row[]; dispatch: Row[] } => (out[pid] ??= { receipt: [], dispatch: [] })
 
@@ -231,11 +251,11 @@ export async function stockPartyBreakdown(
           FROM orders o
           LEFT JOIN suppliers s ON s.id = o.supplier_id
           LEFT JOIN companies co ON co.id = o.company_id
-          WHERE o.status = 'received' AND o.company_id IN (${ph})
+          WHERE o.status = 'received' AND o.company_id IN (${ph}) ${recB.sql}
           GROUP BY o.oil_type_id, s.name, o.company_id
           HAVING SUM(o.received_qty) > 0
           ORDER BY qty DESC`,
-    args: cidList
+    args: [...cidList, ...recB.args]
   })
   for (const r of rec.rows)
     ensure(Number(r.pid)).receipt.push({
@@ -248,11 +268,11 @@ export async function stockPartyBreakdown(
           FROM sales s
           LEFT JOIN customers cu ON cu.id = s.customer_id
           LEFT JOIN companies co ON co.id = s.company_id
-          WHERE s.status = 'done' AND s.company_id IN (${ph})
+          WHERE s.status = 'done' AND s.company_id IN (${ph}) ${dispB.sql}
           GROUP BY s.product_id, COALESCE(cu.name, s.customer), s.company_id
           HAVING SUM(s.qty) > 0
           ORDER BY qty DESC`,
-    args: cidList
+    args: [...cidList, ...dispB.args]
   })
   for (const r of disp.rows)
     ensure(Number(r.pid)).dispatch.push({

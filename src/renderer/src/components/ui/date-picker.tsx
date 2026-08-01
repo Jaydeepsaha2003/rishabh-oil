@@ -52,6 +52,8 @@ export function DatePicker({
         <Button
           type="button"
           variant="outline"
+          // Lets a dense form shrink its date fields with the rest.
+          data-slot="date-picker"
           disabled={disabled}
           className={cn(
             'h-9 w-full justify-start text-left font-normal',

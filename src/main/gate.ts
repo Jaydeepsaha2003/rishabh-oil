@@ -93,6 +93,30 @@ export async function tankerGateReceived(tankerId: number): Promise<number | nul
   return n(res.rows[0].qty)
 }
 
+// Which product categories each party actually trades in, so the gate can
+// narrow a long party list to the ones that make sense for the goods at the
+// barrier. Derived from real documents (purchases, bargains, sales) and from
+// the supplier's declared type — never from a hand-kept list that can go stale.
+export async function partyCategories(): Promise<Row[]> {
+  const res = await getClient().execute(`
+    SELECT DISTINCT UPPER(COALESCE(p.material_type, '')) AS cat, 'supplier' AS side, o.supplier_id AS id
+      FROM orders o JOIN products p ON p.id = o.oil_type_id WHERE o.supplier_id IS NOT NULL
+    UNION
+    SELECT DISTINCT UPPER(COALESCE(p.material_type, '')), 'supplier', b.supplier_id
+      FROM bargains b JOIN products p ON p.id = b.oil_type_id WHERE b.supplier_id IS NOT NULL
+    UNION
+    SELECT DISTINCT UPPER(COALESCE(su.supplier_type, '')), 'supplier', su.id
+      FROM suppliers su WHERE COALESCE(su.supplier_type, '') != ''
+    UNION
+    SELECT DISTINCT UPPER(COALESCE(p.material_type, '')), 'customer', s.customer_id
+      FROM sales s JOIN products p ON p.id = s.product_id WHERE s.customer_id IS NOT NULL
+    UNION
+    SELECT DISTINCT UPPER(COALESCE(p.material_type, '')), 'customer', sb.customer_id
+      FROM sales_bargains sb JOIN products p ON p.id = sb.product_id WHERE sb.customer_id IS NOT NULL
+  `)
+  return toPlain(res).filter((r) => String(r.cat || '').trim() !== '' && Number(r.id) > 0)
+}
+
 export async function createGateEntry(v: Row): Promise<{ id: number }> {
   const c = getClient()
   const direction = v.direction === 'out' ? 'out' : 'in'

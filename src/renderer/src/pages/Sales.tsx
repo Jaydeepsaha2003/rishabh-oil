@@ -346,6 +346,14 @@ function SalesTab({
       )
       .sort((a, b) => Number(notExpired(b)) - Number(notExpired(a)))
 
+  // How much of the sale unit one case holds — the bridge between a case
+  // rate and the per-unit rate the invoice actually charges on.
+  function mtPerCase(c: { selPack: Row | undefined; packBaseUom: string; saleUom: string }): number {
+    if (!c.selPack) return 0
+    const perCase = (Number(c.selPack.pouches_per_box) || 0) * (Number(c.selPack.base_per_pouch) || 0)
+    return Math.round(convertQty(perCase, c.packBaseUom, c.saleUom) * 100000) / 100000
+  }
+
   // Per-item computed quantity (packaging → sale unit), amount and GST.
   function calc(item: Row): {
     isPacked: boolean; selPack: Row | undefined; saleUom: string; packBaseUom: string
@@ -446,7 +454,7 @@ function SalesTab({
       const hit = card[nextPack]
       if (!hit) return
       const rate = cardRateInUnit(hit, String(b?.uom || 'MT'))
-      if (rate != null) setItem(idx, { rate: String(rate), rate_from_card: true })
+      if (rate != null) setItem(idx, { rate: String(rate), rate_case: '', rate_from_card: true })
     })
     setItem(idx, {
       sales_bargain_id: v,
@@ -952,8 +960,8 @@ function SalesTab({
         </div>
 
         {/* Invoice header */}
-        <div className="border-b border-dashed border-[#d9d2b8] px-4 py-3">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 [&>div]:min-w-0 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
+        <div className="border-b border-dashed border-[#d9d2b8] px-4 py-3 [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white">
+          <div className="grid gap-x-3 gap-y-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 [&>div]:min-w-0 [&>div]:gap-1 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
             <div className="grid gap-1.5">
               <Label>Date</Label>
               <DatePicker value={header.sale_date} onChange={(v) => setHeaderField('sale_date', v)} />
@@ -976,8 +984,8 @@ function SalesTab({
               <Select value={header.freight_term || 'FREIGHT_ON_GOODS'} onValueChange={(v) => setHeaderField('freight_term', v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="FREIGHT_ON_GOODS">Ex (customer lifts — no transporter)</SelectItem>
-                  <SelectItem value="DLD">FOR (we deliver — transporter)</SelectItem>
+                  <SelectItem value="FREIGHT_ON_GOODS">Ex — customer lifts</SelectItem>
+                  <SelectItem value="DLD">FOR — we deliver</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -991,8 +999,12 @@ function SalesTab({
                   </SelectContent>
                 </Select>
               ) : (
-                <div className="flex h-9 items-center gap-1.5 rounded-md border bg-emerald-50 px-3 text-sm font-medium text-emerald-700">
-                  <Check className="h-4 w-4" /> Done — goods leave with the customer
+                <div
+                  className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border bg-emerald-50 px-2.5 text-[12px] font-medium text-emerald-700"
+                  title="Ex sale — the goods leave with the customer, so the dispatch is complete on invoicing"
+                >
+                  <Check className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">Done — customer lifts</span>
                 </div>
               )}
             </div>
@@ -1045,7 +1057,7 @@ function SalesTab({
             const c = calc(item)
             const prodBargains = bargainsFor(item)
             return (
-              <div key={i} className="rounded border border-[#e5dfc8] bg-white p-3 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
+              <div key={i} className="rounded border border-[#e5dfc8] bg-white p-3 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white">
                 <div className="mb-2 flex items-center justify-between border-b border-dotted border-[#e5dfc8] pb-1.5">
                   <span className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Item {i + 1}</span>
                   <span className="flex items-center gap-2">
@@ -1057,7 +1069,7 @@ function SalesTab({
                     )}
                   </span>
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.7fr)_minmax(0,1fr)] [&>div]:min-w-0">
+                <div className="grid gap-x-3 gap-y-2 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)] [&>div]:min-w-0 [&>div]:gap-1">
                   <div className="grid gap-1.5">
                     <Label>Product *</Label>
                     <Select value={String(item.product_id)} onValueChange={(v) => setItem(i, { product_id: v, sales_bargain_id: '' })}>
@@ -1068,7 +1080,30 @@ function SalesTab({
                   <div className="grid gap-1.5">
                     <Label>Sales bargain (optional)</Label>
                     <Select value={item.sales_bargain_id ? String(item.sales_bargain_id) : 'none'} onValueChange={(v) => selectItemBargain(i, v)} disabled={!item.product_id}>
-                      <SelectTrigger><SelectValue placeholder="No bargain" /></SelectTrigger>
+                      <SelectTrigger>
+                        {/* The list carries the detail; the closed field shows
+                            the bargain number and a short balance, so it never
+                            outgrows its box. */}
+                        <SelectValue placeholder="No bargain">
+                          {(() => {
+                            const b = bargains.find((x) => String(x.id) === String(item.sales_bargain_id))
+                            if (!b) return 'No bargain'
+                            return (
+                              <span className="flex min-w-0 items-center gap-1.5">
+                                <span className="truncate font-medium normal-case">{b.bargain_no}</span>
+                                <span className="shrink-0 text-[11px] normal-case text-muted-foreground">
+                                  bal {formatNum(b.balance_qty)}
+                                </span>
+                                {!notExpired(b) && (
+                                  <span className="shrink-0 rounded bg-amber-100 px-1 text-[9px] font-bold uppercase text-amber-800">
+                                    expired
+                                  </span>
+                                )}
+                              </span>
+                            )
+                          })()}
+                        </SelectValue>
+                      </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="none">No bargain</SelectItem>
                         {prodBargains.map((b) => (
@@ -1107,8 +1142,8 @@ function SalesTab({
                 </div>
 
                 {c.isPacked && (
-                  <div className="mt-3 grid grid-cols-2 gap-3 rounded-md border border-violet-200 bg-violet-50/60 p-3 sm:grid-cols-3">
-                    <div className="grid gap-1.5 sm:col-span-3">
+                  <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 rounded-md border border-violet-200 bg-violet-50/60 p-2.5 sm:grid-cols-4 [&>div]:min-w-0 [&>div]:gap-1">
+                    <div className="grid gap-1 sm:col-span-2">
                       <Label>Packed SKU *</Label>
                       <Select value={item.packaging_id ? String(item.packaging_id) : ''} onValueChange={(v) => {
                         setItem(i, { packaging_id: v })
@@ -1119,7 +1154,7 @@ function SalesTab({
                             const hit = card[v]
                             if (!hit) return
                             const rate = cardRateInUnit(hit, calc({ ...items[i], packaging_id: v }).saleUom)
-                            if (rate != null) setItem(i, { rate: String(rate), rate_from_card: true })
+                            if (rate != null) setItem(i, { rate: String(rate), rate_case: '', rate_from_card: true })
                           })
                         }
                       }}>
@@ -1132,7 +1167,7 @@ function SalesTab({
                         </span>
                       )}
                     </div>
-                    <div className="grid gap-1.5">
+                    <div className="grid gap-1">
                       <Label>{c.selPack?.box_label || 'Cases'}</Label>
                       <Input type="number" className="bg-white" value={item.boxes ?? ''} onChange={(e) => setItem(i, { boxes: e.target.value })} />
                     </div>
@@ -1143,7 +1178,10 @@ function SalesTab({
                   </div>
                 )}
 
-                <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <div className={cn(
+                  'mt-2 grid grid-cols-2 gap-x-3 gap-y-2 [&>div]:min-w-0 [&>div]:gap-1',
+                  c.isPacked ? 'sm:grid-cols-5' : 'sm:grid-cols-4'
+                )}>
                   <div className="grid gap-1.5">
                     <Label>Qty ({c.saleUom})</Label>
                     {c.isPacked ? (
@@ -1155,12 +1193,55 @@ function SalesTab({
                       <Input type="number" value={item.qty ?? ''} onChange={(e) => setItem(i, { qty: e.target.value })} />
                     )}
                   </div>
+                  {/* Packed goods are quoted per case, so the case rate is
+                      typed directly and the per-unit rate follows from the pack
+                      size — either box may be used, they stay in step. */}
+                  {c.isPacked && (
+                    <div className="grid gap-1.5">
+                      <Label>Rate / {c.selPack?.box_label || 'case'}</Label>
+                      <Input
+                        type="number"
+                        placeholder="0.00"
+                        value={
+                          item.rate_case != null && item.rate_case !== ''
+                            ? item.rate_case
+                            : mtPerCase(c) > 0 && Number(item.rate) > 0
+                              ? String(Math.round(Number(item.rate) * mtPerCase(c) * 100) / 100)
+                              : ''
+                        }
+                        onChange={(e) => {
+                          const per = mtPerCase(c)
+                          const v = e.target.value
+                          setItem(i, {
+                            rate_case: v,
+                            rate: per > 0 && v !== '' ? String(Math.round((Number(v) / per) * 100) / 100) : item.rate,
+                            rate_from_card: false
+                          })
+                        }}
+                      />
+                      {mtPerCase(c) > 0 && (
+                        <span className="text-[10px] text-muted-foreground">
+                          1 {c.selPack?.box_label || 'case'} = {formatNum(mtPerCase(c))} {c.saleUom}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   <div className="grid gap-1.5">
                     <Label>Rate /{c.saleUom}</Label>
                     <Input
                       type="number"
                       value={item.rate ?? ''}
-                      onChange={(e) => setItem(i, { rate: e.target.value, rate_from_card: false })}
+                      onChange={(e) =>
+                        setItem(i, {
+                          rate: e.target.value,
+                          // keep the case box in step with a hand-typed unit rate
+                          rate_case:
+                            mtPerCase(c) > 0 && e.target.value !== ''
+                              ? String(Math.round(Number(e.target.value) * mtPerCase(c) * 100) / 100)
+                              : '',
+                          rate_from_card: false
+                        })
+                      }
                     />
                     {/* Say so when the rate came from the bargain's card, and
                         show the card figure if it has since been overridden. */}
@@ -1209,7 +1290,16 @@ function SalesTab({
                   </div>
                 </div>
                 <div className="mt-2 text-right text-xs text-muted-foreground">
-                  Line: taxable {formatINR(c.amount)} · GST {formatINR(c.gstAmt)} · <span className="font-semibold text-foreground">{formatINR(c.net)}</span>
+                  Line: taxable {formatINR(c.amount)} ·{' '}
+                  {String(item.gst_type || 'CGST_SGST') === 'IGST' ? (
+                    <>IGST{c.gstPct ? ` @ ${c.gstPct}%` : ''} {formatINR(c.gstAmt)}</>
+                  ) : (
+                    <>
+                      CGST{c.gstPct ? ` @ ${c.gstPct / 2}%` : ''} {formatINR(c.gstAmt / 2)} · SGST
+                      {c.gstPct ? ` @ ${c.gstPct / 2}%` : ''} {formatINR(c.gstAmt / 2)}
+                    </>
+                  )}{' '}
+                  · <span className="font-semibold text-foreground">{formatINR(c.net)}</span>
                 </div>
               </div>
             )
@@ -1222,7 +1312,45 @@ function SalesTab({
         <div className="ml-auto w-full max-w-md px-4 pb-4 text-sm">
           <div className="rounded border border-[#d9d2b8] bg-[#f7f2e2] p-3">
           <div className="flex items-center justify-between py-0.5"><span className="text-muted-foreground">Taxable value</span><span className="tabular-nums">{formatINR(totals.amount)}</span></div>
-          <div className="flex items-center justify-between py-0.5"><span className="text-muted-foreground">Total GST</span><span className="tabular-nums">{formatINR(totals.gst)}</span></div>
+          {/* GST split by head, the way it must appear on the invoice: an
+              intra-state line is half CGST and half SGST, inter-state is IGST.
+              An invoice may legitimately mix the two, so both are summed. */}
+          {(() => {
+            let cgst = 0
+            let igst = 0
+            for (const it of items) {
+              const g = calc(it).gstAmt
+              if (String(it.gst_type || 'CGST_SGST') === 'IGST') igst += g
+              else cgst += g / 2
+            }
+            const round2 = (v: number): number => Math.round(v * 100) / 100
+            return (
+              <>
+                {cgst > 0.004 && (
+                  <>
+                    <div className="flex items-center justify-between py-0.5">
+                      <span className="text-muted-foreground">CGST</span>
+                      <span className="tabular-nums">{formatINR(round2(cgst))}</span>
+                    </div>
+                    <div className="flex items-center justify-between py-0.5">
+                      <span className="text-muted-foreground">SGST</span>
+                      <span className="tabular-nums">{formatINR(round2(cgst))}</span>
+                    </div>
+                  </>
+                )}
+                {igst > 0.004 && (
+                  <div className="flex items-center justify-between py-0.5">
+                    <span className="text-muted-foreground">IGST</span>
+                    <span className="tabular-nums">{formatINR(round2(igst))}</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between py-0.5">
+                  <span className="text-muted-foreground">Total GST</span>
+                  <span className="tabular-nums">{formatINR(totals.gst)}</span>
+                </div>
+              </>
+            )
+          })()}
           <div className="flex items-center justify-between py-0.5">
             <span className="text-muted-foreground">
               Round off {header.round_off_manual ? '(manual)' : '(auto)'}
@@ -2500,3 +2628,4 @@ export function SalesBargains(): React.JSX.Element {
     </>
   )
 }
+

@@ -140,7 +140,7 @@ export interface Api {
   stock: {
     list: (range?: { from?: string; to?: string }, companyIds?: number[]) => Promise<Row[]>
     needs: () => Promise<Row[]>
-    breakdown: (companyIds?: number[]) => Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>>
+    breakdown: (companyIds?: number[], range?: { from?: string; to?: string }) => Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>>
     daybook: (from: string, to: string) => Promise<{ vouchers: Row[]; material: Row[] }>
     transfers: () => Promise<Row[]>
     transfer: (values: Row) => Promise<{ id: number }>
@@ -196,6 +196,7 @@ export interface Api {
     list: () => Promise<Row[]>
     nextNo: (direction?: 'in' | 'out') => Promise<string>
     dispatchableSales: () => Promise<Row[]>
+    partyCategories: () => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     complete: (id: number, gross: number, tare: number) => Promise<{ id: number }>

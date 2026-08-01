@@ -1844,7 +1844,7 @@ export function Stock(): React.JSX.Element {
     const sel = cids.length ? cids : undefined
     const [s, b, cs, active] = await Promise.all([
       window.api.stock.list(range.from || range.to ? range : undefined, sel),
-      window.api.stock.breakdown(sel),
+      window.api.stock.breakdown(sel, range.from || range.to ? range : undefined),
       window.api.company.list(),
       window.api.company.getActive()
     ])
@@ -1928,13 +1928,13 @@ export function Stock(): React.JSX.Element {
             )}
           </TabsList>
           <TabsContent value="raw" className="mt-6">
-            <StockTable rows={byCat('raw')} breakdown={ranged ? {} : breakdown} label="raw" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} />
+            <StockTable rows={byCat('raw')} breakdown={breakdown} label="raw" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} />
           </TabsContent>
           <TabsContent value="intermediate" className="mt-6">
-            <StockTable rows={byCat('intermediate')} breakdown={ranged ? {} : breakdown} label="intermediate" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} />
+            <StockTable rows={byCat('intermediate')} breakdown={breakdown} label="intermediate" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} />
           </TabsContent>
           <TabsContent value="finished" className="mt-6">
-            <StockTable rows={byCat('finished')} breakdown={ranged ? {} : breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} />
+            <StockTable rows={byCat('finished')} breakdown={breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} />
           </TabsContent>
           <TabsContent value="sku" className="mt-6">
             <SkuStock />

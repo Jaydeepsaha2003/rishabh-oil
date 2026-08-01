@@ -189,7 +189,8 @@ const api = {
   stock: {
     list: (range?: { from?: string; to?: string }, companyIds?: number[]): Promise<Row[]> => ipcRenderer.invoke('stock:list', { range, companyIds }),
     needs: (): Promise<Row[]> => ipcRenderer.invoke('stock:needs'),
-    breakdown: (companyIds?: number[]): Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>> => ipcRenderer.invoke('stock:breakdown', { companyIds }),
+    breakdown: (companyIds?: number[], range?: { from?: string; to?: string }): Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>> =>
+      ipcRenderer.invoke('stock:breakdown', { companyIds, range }),
     daybook: (from: string, to: string): Promise<{ vouchers: Row[]; material: Row[] }> => ipcRenderer.invoke('daybook:list', { from, to }),
     transfers: (): Promise<Row[]> => ipcRenderer.invoke('stock:transfers'),
     transfer: (values: Row): Promise<{ id: number }> =>
@@ -266,6 +267,7 @@ const api = {
     list: (): Promise<Row[]> => ipcRenderer.invoke('gate:list'),
     nextNo: (direction?: 'in' | 'out'): Promise<string> => ipcRenderer.invoke('gate:nextNo', { direction }),
     dispatchableSales: (): Promise<Row[]> => ipcRenderer.invoke('gate:dispatchableSales'),
+    partyCategories: (): Promise<Row[]> => ipcRenderer.invoke('gate:partyCategories'),
     create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('gate:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('gate:update', { id, values }),

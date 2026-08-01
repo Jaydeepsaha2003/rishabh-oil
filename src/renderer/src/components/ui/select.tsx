@@ -273,9 +273,19 @@ const SelectTrigger = React.forwardRef<
 })
 SelectTrigger.displayName = 'SelectTrigger'
 
-function SelectValue({ placeholder }: { placeholder?: string }): React.JSX.Element {
+// Children override what the closed field shows for the selected item — used
+// where the list entry is a long descriptive line but the field must stay
+// short (e.g. a bargain number instead of its whole summary).
+function SelectValue({
+  placeholder,
+  children
+}: {
+  placeholder?: string
+  children?: React.ReactNode
+}): React.JSX.Element {
   const { value, items } = React.useContext(SelectContext)
   const current = items.find((i) => i.value === value)
+  if (children != null && value) return <>{children}</>
   if (current) return <span>{current.label}</span>
   return <span className="text-muted-foreground">{placeholder}</span>
 }
