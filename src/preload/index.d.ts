@@ -222,6 +222,16 @@ export interface Api {
     issue: (values: Row) => Promise<{ id: number }>
     removeIssuance: (id: number) => Promise<{ id: number }>
   }
+  facility: {
+    list: () => Promise<Row[]>
+    exposures: (facilityId: number) => Promise<Row[]>
+    headroom: (facilityId: number, excludeLcId?: number) => Promise<Row>
+    create: (values: Row) => Promise<{ id: number }>
+    update: (id: number, values: Row) => Promise<{ id: number }>
+    remove: (id: number) => Promise<{ id: number }>
+    saveExposure: (values: Row) => Promise<{ id: number }>
+    removeExposure: (id: number) => Promise<{ id: number }>
+  }
   updates: {
     version: () => Promise<string>
     check: () => Promise<{ ok: boolean; version?: string; message?: string }>

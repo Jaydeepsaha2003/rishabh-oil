@@ -284,7 +284,21 @@ export async function listOrders(): Promise<Row[]> {
            src.name AS source_name,
            t.name AS transporter_name,
            (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_count,
-           (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_nos
+           (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_nos,
+           -- How this purchase is being funded, if through an LC. A purchase is
+           -- tagged by issuing a bill under an LC against it, so the LC comes
+           -- back through lc_issuances rather than sitting on the order itself.
+           (SELECT GROUP_CONCAT(DISTINCT lc.lc_no) FROM lc_issuances li
+              JOIN letters_of_credit lc ON lc.id = li.lc_id
+             WHERE li.order_id = o.id) AS lc_nos,
+           (SELECT li.lc_id FROM lc_issuances li WHERE li.order_id = o.id LIMIT 1) AS lc_id,
+           (SELECT COALESCE(SUM(li.amount), 0) FROM lc_issuances li WHERE li.order_id = o.id) AS lc_amount,
+           -- Outstanding until every bill drawn for it has been settled.
+           (SELECT COUNT(*) FROM lc_issuances li
+             WHERE li.order_id = o.id AND COALESCE(li.status, 'outstanding') != 'settled') AS lc_bills_open,
+           (SELECT MIN(li.due_date) FROM lc_issuances li
+             WHERE li.order_id = o.id AND COALESCE(li.status, 'outstanding') != 'settled') AS lc_next_due,
+           COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa WHERE pa.order_id = o.id), 0) AS paid_amount
     FROM orders o
     LEFT JOIN suppliers s ON s.id = o.supplier_id
     LEFT JOIN products pr ON pr.id = o.oil_type_id

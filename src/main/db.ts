@@ -560,6 +560,59 @@ const MIGRATIONS = [
     qty REAL NOT NULL DEFAULT 0,
     rate REAL NOT NULL DEFAULT 0,
     amount REAL NOT NULL DEFAULT 0
+  )`,
+  // The sanctioned facility a bank grants, sitting ABOVE individual LCs: each
+  // LC draws against it, so headroom is the sanction less everything already
+  // committed. Without this an LC only knew its own amount and nothing stopped
+  // the bank's overall limit being exceeded.
+  `CREATE TABLE IF NOT EXISTS bank_facilities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    name TEXT NOT NULL,
+    bank TEXT NOT NULL,
+    facility_type TEXT NOT NULL DEFAULT 'lc',
+    sanctioned_limit REAL NOT NULL DEFAULT 0,
+    sanction_date TEXT,
+    review_date TEXT,
+    note TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  // Outstanding that consumes the sanction but is NOT one of our LCs — the
+  // legacy accounts and the DIL EXIM balance the notes call out. Kept as named
+  // lines so the available figure can always be broken back down into what
+  // makes it up, rather than being a single unexplained number.
+  `CREATE TABLE IF NOT EXISTS facility_exposures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    facility_id INTEGER NOT NULL REFERENCES bank_facilities(id),
+    label TEXT NOT NULL,
+    amount REAL NOT NULL DEFAULT 0,
+    kind TEXT NOT NULL DEFAULT 'outstanding',
+    as_of TEXT,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  'ALTER TABLE letters_of_credit ADD COLUMN facility_id INTEGER',
+  // Why the LC was opened — the notes head the LC record with its purpose, so
+  // a register can be read without opening every one to remember what it was for.
+  'ALTER TABLE letters_of_credit ADD COLUMN purpose TEXT',
+  // FDs held as security. The notes ask for the FD NUMBER to be the link, with
+  // the bank, amount, maturity and lien visible from whatever it secures.
+  `CREATE TABLE IF NOT EXISTS fixed_deposits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    fd_no TEXT NOT NULL,
+    bank TEXT NOT NULL,
+    amount REAL NOT NULL DEFAULT 0,
+    start_date TEXT,
+    maturity_date TEXT,
+    interest_pct REAL NOT NULL DEFAULT 0,
+    lien_status TEXT NOT NULL DEFAULT 'free',
+    facility_id INTEGER,
+    lc_id INTEGER,
+    note TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`
 ]
 

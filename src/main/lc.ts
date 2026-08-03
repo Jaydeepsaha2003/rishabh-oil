@@ -2,6 +2,7 @@ import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
 import { postLcOpening } from './treasury'
+import { facilityHeadroom } from './facilities'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -26,10 +27,12 @@ export async function listLCs(): Promise<Row[]> {
     sql: `
     SELECT l.*,
       s.name AS supplier_name,
+      f.name AS facility_name,
       COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS utilized,
       l.amount - COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS available
     FROM letters_of_credit l
     LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+    LEFT JOIN bank_facilities f ON f.id = l.facility_id
     WHERE l.company_id = ?
     ORDER BY l.id DESC
   `
@@ -62,20 +65,50 @@ const LC_COLS = [
   'interest_pct',
   'charges',
   'status',
-  'note'
+  'note',
+  'facility_id',
+  'purpose'
 ]
 
 function lcArgs(v: Row): (string | number | null)[] {
   return LC_COLS.map((k) => {
     const val = v[k]
     if (val === '' || val === undefined || val === null) return null
-    if (k === 'party_id' || k === 'amount' || k === 'interest_pct' || k === 'charges' || k === 'usance_days' || k === 'margin_pct') return n(val)
+    if (
+      k === 'party_id' ||
+      k === 'amount' ||
+      k === 'interest_pct' ||
+      k === 'charges' ||
+      k === 'usance_days' ||
+      k === 'margin_pct' ||
+      k === 'facility_id'
+    ) {
+      return n(val)
+    }
     return val as string
   })
 }
 
+// An LC drawing on a sanctioned facility cannot quietly take it past its
+// limit. `force` lets an authorised person proceed anyway — the notes ask for
+// an override path, not a hard wall — and the reason lands in the LC's note.
+async function assertWithinFacility(v: Row, excludeLcId = 0): Promise<void> {
+  const facilityId = n(v.facility_id)
+  if (!facilityId || v.force_over_limit) return
+  const h = await facilityHeadroom(facilityId, excludeLcId)
+  const amount = n(v.amount)
+  if (amount > n(h.available) + 0.005) {
+    throw new Error(
+      `${h.name} has ${Number(h.available).toFixed(2)} left of its ${Number(h.sanctioned).toFixed(2)} sanction ` +
+        `(${Number(h.lc_committed).toFixed(2)} on other LCs, ${Number(h.other_outstanding).toFixed(2)} other outstanding). ` +
+        `This LC of ${amount.toFixed(2)} would exceed it.`
+    )
+  }
+}
+
 export async function createLC(v: Row): Promise<{ id: number }> {
   if (!v.lc_no || !v.bank) throw new Error('LC number and bank are required')
+  await assertWithinFacility(v)
   const res = await getClient().execute({
     sql: `INSERT INTO letters_of_credit (company_id, ${LC_COLS.join(', ')})
           VALUES (?, ${LC_COLS.map(() => '?').join(', ')})`,
@@ -88,6 +121,7 @@ export async function createLC(v: Row): Promise<{ id: number }> {
 }
 
 export async function updateLC(id: number, v: Row): Promise<{ id: number }> {
+  await assertWithinFacility(v, id)
   await getClient().execute({
     sql: `UPDATE letters_of_credit SET ${LC_COLS.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`,
     args: [...lcArgs(v), id]

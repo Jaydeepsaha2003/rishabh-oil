@@ -188,7 +188,19 @@ export async function listSales(): Promise<Row[]> {
     sql: `
     SELECT s.*, pr.name AS product_name, pr.material_type AS product_category,
            pr.category AS product_sub_category, sb.bargain_no AS sales_bargain_no,
-           pk.name AS packaging_name, tr.name AS transporter_name, cu.name AS customer_master
+           pk.name AS packaging_name, tr.name AS transporter_name, cu.name AS customer_master,
+           -- Whether this invoice has been discounted with a bank, and whether
+           -- that bill has come back yet — the sales-side mirror of an LC.
+           (SELECT bd.id FROM bill_discounts bd
+             WHERE bd.invoice_group = s.invoice_group AND s.invoice_group IS NOT NULL LIMIT 1) AS discount_id,
+           (SELECT bd.disc_bank FROM bill_discounts bd
+             WHERE bd.invoice_group = s.invoice_group AND s.invoice_group IS NOT NULL LIMIT 1) AS discount_bank,
+           (SELECT bd.status FROM bill_discounts bd
+             WHERE bd.invoice_group = s.invoice_group AND s.invoice_group IS NOT NULL LIMIT 1) AS discount_status,
+           (SELECT bd.maturity_date FROM bill_discounts bd
+             WHERE bd.invoice_group = s.invoice_group AND s.invoice_group IS NOT NULL LIMIT 1) AS discount_due,
+           COALESCE((SELECT SUM(cl.amount) FROM customer_ledger cl
+                      WHERE cl.sale_id = s.id AND cl.entry_type = 'payment'), 0) AS received_amount
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id
     LEFT JOIN sales_bargains sb ON sb.id = s.sales_bargain_id

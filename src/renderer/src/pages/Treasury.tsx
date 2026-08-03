@@ -60,15 +60,19 @@ export function Treasury(): React.JSX.Element {
   const [orders, setOrders] = useState<Row[]>([])
   const [issuances, setIssuances] = useState<Record<number, Row[]>>({})
   const [openLc, setOpenLc] = useState<Set<number>>(new Set())
+  const [facilities, setFacilities] = useState<Row[]>([])
+  const [exposures, setExposures] = useState<Record<number, Row[]>>({})
+  const [openFac, setOpenFac] = useState<Set<number>>(new Set())
 
   const load = useCallback(async () => {
-    const [l, b, a, sup, sl, od] = await Promise.all([
+    const [l, b, a, sup, sl, od, fac] = await Promise.all([
       window.api.lc.list(),
       window.api.billDiscounts.list(),
       window.api.treasury.alerts(),
       window.api.data.list('suppliers'),
       window.api.sales.list(),
-      window.api.orders.list()
+      window.api.orders.list(),
+      window.api.facility.list()
     ])
     setLcs(l.filter((x) => String(x.facility_type || 'lc') === 'lc'))
     setBills(b.filter((x) => String(x.medium || '') === 'bill_discounting' || x.rate_pct != null))
@@ -76,7 +80,19 @@ export function Treasury(): React.JSX.Element {
     setSuppliers(sup.filter((x) => x.active))
     setSales(sl)
     setOrders(od)
+    setFacilities(fac)
   }, [])
+
+  async function toggleFacility(id: number): Promise<void> {
+    setOpenFac((p) => {
+      const next = new Set(p)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+    const rows = await window.api.facility.exposures(id)
+    setExposures((p) => ({ ...p, [id]: rows }))
+  }
   useEffect(() => {
     load()
   }, [load])
@@ -99,6 +115,70 @@ export function Treasury(): React.JSX.Element {
   const [issueForm, setIssueForm] = useState<Row | null>(null)
   const [busy, setBusy] = useState(false)
 
+  // ---------------- Facilities and exposures ----------------
+  const [facForm, setFacForm] = useState<Row | null>(null)
+  const [expForm, setExpForm] = useState<Row | null>(null)
+
+  async function saveFacility(): Promise<void> {
+    if (!facForm) return
+    setBusy(true)
+    try {
+      if (facForm.id) await window.api.facility.update(Number(facForm.id), facForm)
+      else await window.api.facility.create(facForm)
+      toast.success(`Facility ${facForm.name} saved`)
+      setFacForm(null)
+      load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function removeFacility(f: Row): Promise<void> {
+    if (!window.confirm(`Delete the facility "${f.name}"? This cannot be undone.`)) return
+    try {
+      await window.api.facility.remove(Number(f.id))
+      toast.success('Facility deleted')
+      load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  async function saveExposure(): Promise<void> {
+    if (!expForm) return
+    setBusy(true)
+    try {
+      await window.api.facility.saveExposure(expForm)
+      toast.success('Balance saved')
+      const fid = Number(expForm.facility_id)
+      setExpForm(null)
+      setExposures((p) => ({ ...p, [fid]: [] }))
+      const rows = await window.api.facility.exposures(fid)
+      setExposures((p) => ({ ...p, [fid]: rows }))
+      load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function removeExposure(e: Row): Promise<void> {
+    if (!window.confirm(`Remove "${e.label}" from this facility's outstanding?`)) return
+    try {
+      await window.api.facility.removeExposure(Number(e.id))
+      const fid = Number(e.facility_id)
+      const rows = await window.api.facility.exposures(fid)
+      setExposures((p) => ({ ...p, [fid]: rows }))
+      load()
+    } catch (err) {
+      toast.error((err as Error).message)
+    }
+  }
+
+
   async function saveLc(): Promise<void> {
     if (!lcForm) return
     setBusy(true)
@@ -108,6 +188,7 @@ export function Treasury(): React.JSX.Element {
         facility_type: 'lc',
         party_type: 'supplier',
         party_id: lcForm.party_id ? Number(lcForm.party_id) : null,
+        facility_id: lcForm.facility_id ? Number(lcForm.facility_id) : null,
         status: lcForm.status || 'open'
       }
       if (lcForm.id) await window.api.lc.update(Number(lcForm.id), payload)
@@ -273,6 +354,7 @@ export function Treasury(): React.JSX.Element {
           <TabsList>
             <TabsTrigger value="lc">Letters of Credit ({lcs.length})</TabsTrigger>
             <TabsTrigger value="bd">Bill Discounting ({bills.length})</TabsTrigger>
+            <TabsTrigger value="limits">Sanctioned Limits ({facilities.length})</TabsTrigger>
           </TabsList>
 
           <TabsContent value="lc" className="mt-4">
@@ -473,8 +555,263 @@ export function Treasury(): React.JSX.Element {
               </Table>
             </div>
           </TabsContent>
+
+          {/* Sanctioned limits: what the bank allows, what is already committed
+              against it, and what is genuinely left. Each facility opens to
+              show the named balances that make up its outstanding, so the
+              available figure is never an unexplained number. */}
+          <TabsContent value="limits" className="mt-4 space-y-4">
+            <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
+              <div className="flex items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
+                <span className="text-[13px] font-bold uppercase tracking-widest">Sanctioned limits</span>
+                <Button size="sm" className="ml-auto bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setFacForm({ facility_type: 'lc', active: 1 })}>
+                  <Plus className="h-4 w-4" /> New facility
+                </Button>
+              </div>
+              <Table className="text-[13px]">
+                <TableHeader>
+                  <TableRow className="bg-[#f1ecd9] hover:bg-[#f1ecd9]">
+                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Facility · bank</TableHead>
+                    <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Sanctioned</TableHead>
+                    <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">On LCs</TableHead>
+                    <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Other o/s</TableHead>
+                    <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Available</TableHead>
+                    <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Planned</TableHead>
+                    <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {facilities.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                        No sanctioned facilities yet. Add one to track available limit across LCs and other outstanding.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    facilities.map((f) => {
+                      const isOpen = openFac.has(Number(f.id))
+                      const lines = exposures[Number(f.id)] || []
+                      const pct = n(f.sanctioned_limit) > 0 ? Math.min(100, (n(f.total_outstanding) / n(f.sanctioned_limit)) * 100) : 0
+                      return (
+                        <Fragment key={String(f.id)}>
+                          <TableRow
+                            className={cn(
+                              'cursor-pointer border-b border-dotted border-[#e5dfc8] transition-colors hover:bg-amber-100/70',
+                              Number(f.active) === 0 && 'opacity-55'
+                            )}
+                            onClick={() => void toggleFacility(Number(f.id))}
+                          >
+                            <TableCell>
+                              <div className="flex items-center gap-1.5">
+                                {isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                                <div>
+                                  <div className="font-semibold">
+                                    {f.name}
+                                    {Number(f.active) === 0 && <span className="ml-1.5 text-[10px] font-normal uppercase text-muted-foreground">off</span>}
+                                  </div>
+                                  <div className="text-[11px] text-muted-foreground">
+                                    {f.bank}
+                                    {f.review_date ? ` · review ${formatDate(f.review_date)}` : ''}
+                                  </div>
+                                </div>
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-right font-medium tabular-nums">{formatINR(f.sanctioned_limit)}</TableCell>
+                            <TableCell className="text-right tabular-nums text-muted-foreground">{formatINR(f.lc_committed)}</TableCell>
+                            <TableCell className="text-right tabular-nums text-muted-foreground">{formatINR(f.other_outstanding)}</TableCell>
+                            <TableCell className={cn('text-right font-semibold tabular-nums', n(f.available) < 0 ? 'text-rose-600' : 'text-emerald-700')}>
+                              {formatINR(f.available)}
+                              <div className="mt-0.5 h-1.5 w-full rounded-full bg-muted">
+                                <div className={cn('h-1.5 rounded-full', pct >= 95 ? 'bg-rose-500' : 'bg-sky-600')} style={{ width: `${pct}%` }} />
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              {n(f.planned) ? (
+                                <>
+                                  {formatINR(f.planned)}
+                                  <div className={cn('text-[10px]', n(f.available_after_planned) < 0 ? 'text-rose-600' : 'text-muted-foreground')}>
+                                    {formatINR(f.available_after_planned)} after
+                                  </div>
+                                </>
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                              <div className="flex justify-end gap-1">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 px-2 text-xs"
+                                  onClick={() => setExpForm({ facility_id: f.id, kind: 'outstanding', as_of: todayISO() })}
+                                >
+                                  Add balance
+                                </Button>
+                                <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit facility" onClick={() => setFacForm({ ...f })}>
+                                  <CalendarClock className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" title="Delete facility" onClick={() => void removeFacility(f)}>
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                          {isOpen && (
+                            <TableRow className="bg-muted/20 hover:bg-muted/20">
+                              <TableCell colSpan={7} className="p-0">
+                                <div className="px-8 py-3">
+                                  <div className="mb-1.5 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                                    What makes up this facility&apos;s outstanding
+                                  </div>
+                                  <table className="w-full text-xs">
+                                    <tbody>
+                                      {lcs.filter((l) => String(l.facility_id) === String(f.id)).map((l) => (
+                                        <tr key={`lc${l.id}`} className="border-b border-dotted last:border-0">
+                                          <td className="py-1.5 pr-3">
+                                            <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-sky-800">LC</span>{' '}
+                                            {l.lc_no} · {l.supplier_name || '—'}
+                                          </td>
+                                          <td className="py-1.5 pr-3 text-muted-foreground">{formatDate(l.open_date)} → {formatDate(l.expiry_date)}</td>
+                                          <td className="py-1.5 text-right tabular-nums">{formatINR(l.amount)}</td>
+                                          <td className="w-16 py-1.5" />
+                                        </tr>
+                                      ))}
+                                      {lines.map((x) => (
+                                        <tr key={`ex${x.id}`} className="border-b border-dotted last:border-0">
+                                          <td className="py-1.5 pr-3">
+                                            <span
+                                              className={cn(
+                                                'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase',
+                                                String(x.kind) === 'planned' ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-700'
+                                              )}
+                                            >
+                                              {String(x.kind) === 'planned' ? 'Planned' : 'O/s'}
+                                            </span>{' '}
+                                            {x.label}
+                                          </td>
+                                          <td className="py-1.5 pr-3 text-muted-foreground">{x.as_of ? formatDate(x.as_of) : ''}{x.note ? ` · ${x.note}` : ''}</td>
+                                          <td className="py-1.5 text-right tabular-nums">{formatINR(x.amount)}</td>
+                                          <td className="w-16 py-1.5 text-right">
+                                            <Button size="icon" variant="ghost" className="h-6 w-6" title="Edit" onClick={() => setExpForm({ ...x })}>
+                                              <CalendarClock className="h-3 w-3" />
+                                            </Button>
+                                            <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive" title="Remove" onClick={() => void removeExposure(x)}>
+                                              <Trash2 className="h-3 w-3" />
+                                            </Button>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                      {lines.length === 0 && lcs.filter((l) => String(l.facility_id) === String(f.id)).length === 0 && (
+                                        <tr><td className="py-2 text-muted-foreground">Nothing committed against this facility yet.</td></tr>
+                                      )}
+                                      <tr className="border-t font-semibold">
+                                        <td className="py-1.5" colSpan={2}>Total outstanding</td>
+                                        <td className="py-1.5 text-right tabular-nums">{formatINR(f.total_outstanding)}</td>
+                                        <td />
+                                      </tr>
+                                      <tr className="font-semibold">
+                                        <td className="py-1.5" colSpan={2}>Available</td>
+                                        <td className={cn('py-1.5 text-right tabular-nums', n(f.available) < 0 ? 'text-rose-600' : 'text-emerald-700')}>
+                                          {formatINR(f.available)}
+                                        </td>
+                                        <td />
+                                      </tr>
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </Fragment>
+                      )
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+
+          </TabsContent>
         </Tabs>
       </div>
+
+      {/* New / edit facility */}
+      <Dialog open={!!facForm} onOpenChange={(o) => !o && setFacForm(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>{facForm?.id ? `Alter ${facForm.name}` : 'New sanctioned facility'}</DialogTitle></DialogHeader>
+          {facForm && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1.5"><Label>Facility name *</Label><Input value={facForm.name ?? ''} onChange={(e) => setFacForm({ ...facForm, name: e.target.value })} /></div>
+              <div className="grid gap-1.5"><Label>Bank *</Label><Input value={facForm.bank ?? ''} onChange={(e) => setFacForm({ ...facForm, bank: e.target.value })} /></div>
+              <div className="grid gap-1.5"><Label>Sanctioned limit (₹) *</Label><Input type="number" value={facForm.sanctioned_limit ?? ''} onChange={(e) => setFacForm({ ...facForm, sanctioned_limit: e.target.value })} /></div>
+              <div className="grid gap-1.5">
+                <Label>Type</Label>
+                <Select value={String(facForm.facility_type || 'lc')} onValueChange={(v) => setFacForm({ ...facForm, facility_type: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="lc">Letter of credit</SelectItem>
+                    <SelectItem value="cc">Cash credit</SelectItem>
+                    <SelectItem value="od">Overdraft</SelectItem>
+                    <SelectItem value="bd">Bill discounting</SelectItem>
+                    <SelectItem value="composite">Composite</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-1.5"><Label>Sanction date</Label><DatePicker value={String(facForm.sanction_date || '')} onChange={(v) => setFacForm({ ...facForm, sanction_date: v })} /></div>
+              <div className="grid gap-1.5"><Label>Review / renewal date</Label><DatePicker value={String(facForm.review_date || '')} onChange={(v) => setFacForm({ ...facForm, review_date: v })} /></div>
+              <div className="grid gap-1.5 sm:col-span-2"><Label>Note</Label><Input value={facForm.note ?? ''} onChange={(e) => setFacForm({ ...facForm, note: e.target.value })} /></div>
+              <label className="flex cursor-pointer items-center gap-2 text-[13px] sm:col-span-2">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={Number(facForm.active ?? 1) !== 0}
+                  onChange={(e) => setFacForm({ ...facForm, active: e.target.checked ? 1 : 0 })}
+                />
+                Active — offered when opening an LC
+              </label>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFacForm(null)}>Cancel</Button>
+            <Button disabled={busy} onClick={() => void saveFacility()}>{busy ? 'Saving…' : 'Save facility'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add / edit an outstanding or planned balance under a facility */}
+      <Dialog open={!!expForm} onOpenChange={(o) => !o && setExpForm(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>{expForm?.id ? 'Alter balance' : 'Add a balance to this facility'}</DialogTitle></DialogHeader>
+          {expForm && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1.5 sm:col-span-2">
+                <Label>What is this balance? *</Label>
+                <Input
+                  placeholder="e.g. Legacy accounts (KREL/KRFL), DIL EXIM"
+                  value={expForm.label ?? ''}
+                  onChange={(e) => setExpForm({ ...expForm, label: e.target.value })}
+                />
+              </div>
+              <div className="grid gap-1.5"><Label>Amount (₹) *</Label><Input type="number" value={expForm.amount ?? ''} onChange={(e) => setExpForm({ ...expForm, amount: e.target.value })} /></div>
+              <div className="grid gap-1.5">
+                <Label>Counts as</Label>
+                <Select value={String(expForm.kind || 'outstanding')} onValueChange={(v) => setExpForm({ ...expForm, kind: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="outstanding">Outstanding — reduces available now</SelectItem>
+                    <SelectItem value="planned">Planned — shown separately, not yet drawn</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-1.5"><Label>As of</Label><DatePicker value={String(expForm.as_of || '')} onChange={(v) => setExpForm({ ...expForm, as_of: v })} /></div>
+              <div className="grid gap-1.5"><Label>Note</Label><Input value={expForm.note ?? ''} onChange={(e) => setExpForm({ ...expForm, note: e.target.value })} /></div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setExpForm(null)}>Cancel</Button>
+            <Button disabled={busy} onClick={() => void saveExposure()}>{busy ? 'Saving…' : 'Save balance'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* New / edit LC */}
       <Dialog open={!!lcForm} onOpenChange={(o) => !o && setLcForm(null)}>
@@ -492,6 +829,38 @@ export function Treasury(): React.JSX.Element {
                     {suppliers.map((x) => <SelectItem key={String(x.id)} value={String(x.id)}>{x.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="grid gap-1.5 sm:col-span-2">
+                <Label>Sanctioned facility <span className="text-[10px] font-normal text-muted-foreground">(optional — draws against its limit)</span></Label>
+                <Select
+                  value={lcForm.facility_id ? String(lcForm.facility_id) : 'none'}
+                  onValueChange={(v) => setLcForm({ ...lcForm, facility_id: v === 'none' ? '' : v })}
+                >
+                  <SelectTrigger><SelectValue placeholder="Not tied to a sanctioned limit" /></SelectTrigger>
+                  <SelectContent className="max-h-64">
+                    <SelectItem value="none">Not tied to a sanctioned limit</SelectItem>
+                    {facilities.filter((f) => Number(f.active) !== 0).map((f) => (
+                      <SelectItem key={String(f.id)} value={String(f.id)}>
+                        {f.name} · {f.bank} · {formatINR(f.available)} free
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {(() => {
+                  const f = facilities.find((x) => String(x.id) === String(lcForm.facility_id))
+                  if (!f) return null
+                  // Headroom excluding this LC's own current commitment, so
+                  // editing an existing LC is judged against the others.
+                  const mine = lcForm.id ? n(lcs.find((x) => String(x.id) === String(lcForm.id))?.amount) : 0
+                  const free = n(f.available) + mine
+                  const over = n(lcForm.amount) - free
+                  return (
+                    <span className={cn('text-[11px]', over > 0.005 ? 'font-medium text-rose-700' : 'text-muted-foreground')}>
+                      {formatINR(free)} free of {formatINR(f.sanctioned_limit)} sanctioned
+                      {over > 0.005 ? ` — this LC is ${formatINR(over)} over the limit` : ''}
+                    </span>
+                  )
+                })()}
               </div>
               <div className="grid gap-1.5"><Label>Limit (₹) *</Label><Input type="number" value={lcForm.amount ?? ''} onChange={(e) => setLcForm({ ...lcForm, amount: e.target.value })} /></div>
               <div className="grid gap-1.5"><Label>Usance days</Label><Input type="number" value={lcForm.usance_days ?? ''} onChange={(e) => setLcForm({ ...lcForm, usance_days: e.target.value })} /></div>

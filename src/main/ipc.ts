@@ -139,6 +139,16 @@ import {
   deleteLCIssuance
 } from './lc'
 import {
+  listFacilities,
+  listFacilityExposures,
+  facilityHeadroom,
+  createFacility,
+  updateFacility,
+  deleteFacility,
+  saveExposure,
+  deleteExposure
+} from './facilities'
+import {
   listSales,
   createSale,
   updateSale,
@@ -267,7 +277,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^gate:partyCategories$|^treasury:alerts$|^company:setActive$|^company:getActive$|^session:setUser$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^gate:partyCategories$|^treasury:alerts$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -570,4 +580,15 @@ export function registerIpc(): void {
   handle('lc:delete', (_e, { id }: { id: number }) => deleteLC(id))
   handle('lc:issue', (_e, { values }: { values: Row }) => issueLC(values))
   handle('lc:deleteIssuance', (_e, { id }: { id: number }) => deleteLCIssuance(id))
+
+  handle('facility:list', () => listFacilities())
+  handle('facility:exposures', (_e, { facilityId }: { facilityId: number }) => listFacilityExposures(facilityId))
+  handle('facility:headroom', (_e, { facilityId, excludeLcId }: { facilityId: number; excludeLcId?: number }) =>
+    facilityHeadroom(facilityId, excludeLcId || 0)
+  )
+  handle('facility:create', (_e, { values }: { values: Row }) => createFacility(values))
+  handle('facility:update', (_e, { id, values }: { id: number; values: Row }) => updateFacility(id, values))
+  handle('facility:delete', (_e, { id }: { id: number }) => deleteFacility(id))
+  handle('facility:saveExposure', (_e, { values }: { values: Row }) => saveExposure(values))
+  handle('facility:deleteExposure', (_e, { id }: { id: number }) => deleteExposure(id))
 }

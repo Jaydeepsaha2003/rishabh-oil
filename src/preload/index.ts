@@ -300,6 +300,18 @@ const api = {
     removeIssuance: (id: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('lc:deleteIssuance', { id })
   },
+  facility: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('facility:list'),
+    exposures: (facilityId: number): Promise<Row[]> => ipcRenderer.invoke('facility:exposures', { facilityId }),
+    headroom: (facilityId: number, excludeLcId?: number): Promise<Row> =>
+      ipcRenderer.invoke('facility:headroom', { facilityId, excludeLcId }),
+    create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('facility:create', { values }),
+    update: (id: number, values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('facility:update', { id, values }),
+    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('facility:delete', { id }),
+    saveExposure: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('facility:saveExposure', { values }),
+    removeExposure: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('facility:deleteExposure', { id })
+  },
   updates: {
     version: (): Promise<string> => ipcRenderer.invoke('app:version'),
     check: (): Promise<{ ok: boolean; version?: string; message?: string }> =>
