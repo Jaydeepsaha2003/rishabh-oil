@@ -1726,7 +1726,8 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
       sale_type: 'LOOSE',
       sale_category: sectionCategory === 'ALL' ? 'FINISHED_OIL' : sectionCategory,
       packaging_id: '',
-      freight_term: 'FREIGHT_ON_GOODS'
+      freight_term: 'FREIGHT_ON_GOODS',
+      manual_bargain_no: ''
     }
   }
   function openAdd(): void {
@@ -1752,7 +1753,8 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
       sale_type: row.sale_type ?? 'LOOSE',
       sale_category: row.sale_category ?? 'FINISHED_OIL',
       packaging_id: row.packaging_id ? String(row.packaging_id) : '',
-      freight_term: row.freight_term ?? 'FREIGHT_ON_GOODS'
+      freight_term: row.freight_term ?? 'FREIGHT_ON_GOODS',
+      manual_bargain_no: row.manual_bargain_no ?? ''
     })
     setError(null)
     setOpen(true)
@@ -1821,19 +1823,33 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
         balance: reg.closing,
         qty: reg.dispatch
       })
+      // One row per invoice, same as the on-screen drilldown — a split
+      // invoice's lines are summed rather than listed separately, with a
+      // qty-weighted average sale rate.
+      const byInvoice = new Map<string, { invoice_no: string; sale_date: string; sample: Row; qty: number; taxable: number; total: number }>()
       for (const d of dispatchesByBargain.get(Number(b.id)) || []) {
+        const key = String(d.invoice_group || d.invoice_no || d.id)
+        if (!byInvoice.has(key)) {
+          byInvoice.set(key, { invoice_no: d.invoice_no, sale_date: d.sale_date, sample: d, qty: 0, taxable: 0, total: 0 })
+        }
+        const g = byInvoice.get(key)!
+        g.qty += Number(d.qty) || 0
+        g.taxable += Number(d.amount) || 0
+        g.total += (Number(d.amount) || 0) + (Number(d.gst_amount) || 0)
+      }
+      for (const g of byInvoice.values()) {
         out.push({
           bargain_no: b.bargain_no || '',
           bargain_date: '',
           customer: '',
           product: '',
           rate: Number(b.rate) || 0,
-          invoice_no: d.invoice_no || '—',
-          sale_date: formatDate(d.sale_date),
-          stage: String(d.stage || d.status || ''),
-          qty: Number(d.qty) || 0,
-          sale_rate: Number(d.rate) || 0,
-          amount: (Number(d.amount) || 0) + (Number(d.gst_amount) || 0)
+          invoice_no: g.invoice_no || '—',
+          sale_date: formatDate(g.sale_date),
+          stage: String(g.sample.stage || g.sample.status || ''),
+          qty: g.qty,
+          sale_rate: g.qty > 0 ? g.taxable / g.qty : 0,
+          amount: g.total
         })
       }
     }
@@ -2088,6 +2104,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
             title="Sales bargains"
             columns={[
               { header: 'Bargain no', key: 'bargain_no', value: (r) => r.bargain_no || '' },
+              { header: 'Manual no', key: 'manual_bargain_no', value: (r) => r.manual_bargain_no || '' },
               { header: 'Date', key: 'date', value: (r) => formatDate(r.bargain_date) },
               { header: 'Type', key: 'sale_category', value: (r) => saleCatLabel(r.sale_category) },
               { header: 'Customer', key: 'customer', value: (r) => r.customer || '' },
@@ -2138,6 +2155,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
           <TableHeader>
             <TableRow>
               <TableHead>Bargain no</TableHead>
+              <TableHead>Manual no</TableHead>
               <TableHead>Date</TableHead>
               <TableHead>Product</TableHead>
               <TableHead className="text-right">Opening</TableHead>
@@ -2152,14 +2170,14 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
           <TableBody>
             {sortedRows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={11} className="py-10 text-center text-muted-foreground">
                   {rows.length === 0 ? 'No sales bargains yet.' : 'No sales bargains in this period.'}
                 </TableCell>
               </TableRow>
             ) : (
               <>
                 <TableRow className="border-y-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
-                  <TableCell colSpan={3} className="py-2 text-xs font-bold uppercase tracking-wide text-amber-900">
+                  <TableCell colSpan={4} className="py-2 text-xs font-bold uppercase tracking-wide text-amber-900">
                     Grand total
                     <span className="ml-1 font-medium normal-case tracking-normal text-amber-700">
                       · {grand.count} bargain{grand.count === 1 ? '' : 's'}
@@ -2188,7 +2206,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                           className="cursor-pointer border-y-2 border-slate-300 bg-slate-100 hover:bg-slate-200/70"
                           onClick={() => toggleGroup(grp)}
                         >
-                          <TableCell colSpan={3} className="py-1.5">
+                          <TableCell colSpan={4} className="py-1.5">
                             <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-700">
                               {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                               {grp}
@@ -2225,6 +2243,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                               )}
                             </span>
                           </TableCell>
+                          <TableCell className="text-muted-foreground">{row.manual_bargain_no || '—'}</TableCell>
                           <TableCell>{formatDate(row.bargain_date)}</TableCell>
                           <TableCell>{row.product_name || '—'}</TableCell>
                           <TableCell className="text-right tabular-nums text-muted-foreground">{reg.opening ? formatNum(reg.opening) : '—'}</TableCell>
@@ -2266,7 +2285,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                       })()}
                       {!isCollapsed && bgOpen && (
                         <TableRow className="bg-muted/20 hover:bg-muted/20">
-                          <TableCell colSpan={10} className="p-0">
+                          <TableCell colSpan={11} className="p-0">
                             {(() => {
                               const disp = dispatchesByBargain.get(Number(row.id)) || []
                               const tot = disp.reduce(
@@ -2277,6 +2296,24 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                 },
                                 { qty: 0, amount: 0 }
                               )
+                              // One row per invoice — a split invoice draws the
+                              // bargain down over several lines, which used to
+                              // show as that many rows here. Qty and amount sum
+                              // across the invoice's lines; rate is the
+                              // qty-weighted average (taxable amount / qty), not
+                              // just the first line's rate.
+                              const byInvoice = new Map<string, { id: number; invoice_no: string; sale_date: string; sample: Row; qty: number; taxable: number; total: number }>()
+                              for (const d of disp) {
+                                const key = String(d.invoice_group || d.invoice_no || d.id)
+                                if (!byInvoice.has(key)) {
+                                  byInvoice.set(key, { id: Number(d.id), invoice_no: d.invoice_no, sale_date: d.sale_date, sample: d, qty: 0, taxable: 0, total: 0 })
+                                }
+                                const g = byInvoice.get(key)!
+                                g.qty += Number(d.qty) || 0
+                                g.taxable += Number(d.amount) || 0
+                                g.total += (Number(d.amount) || 0) + (Number(d.gst_amount) || 0)
+                              }
+                              const invoiceRows = Array.from(byInvoice.values())
                               return (
                                 <div className="bg-muted/20 px-6 py-3">
                                   {row.note && <p className="pb-2 text-xs text-muted-foreground"><span className="font-semibold">Note:</span> {row.note}</p>}
@@ -2296,23 +2333,23 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                         </tr>
                                       </thead>
                                       <tbody>
-                                        {disp.map((d, di) => (
+                                        {invoiceRows.map((g, di) => (
                                           <tr
-                                            key={d.id as number}
+                                            key={g.id}
                                             className={cn('border-b last:border-0', onOpenSale && 'cursor-pointer hover:bg-muted/40')}
                                             title={onOpenSale ? 'Open this sale invoice' : undefined}
                                             onClick={(e) => {
                                               e.stopPropagation()
-                                              onOpenSale?.(Number(d.id))
+                                              onOpenSale?.(g.id)
                                             }}
                                           >
                                             <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{di + 1}</td>
-                                            <td className="py-1.5 pr-3 font-medium">{d.invoice_no || '—'}</td>
-                                            <td className="py-1.5 pr-3 whitespace-nowrap">{formatDate(d.sale_date)}</td>
-                                            <td className="py-1.5 pr-3">{stageInfo(d).label}</td>
-                                            <td className="py-1.5 pr-3 text-right tabular-nums font-medium text-red-600">{formatNum(d.qty)} {d.uom}</td>
-                                            <td className="py-1.5 pr-3 text-right tabular-nums">{formatINR(d.rate)}</td>
-                                            <td className="py-1.5 text-right tabular-nums">{formatINR((Number(d.amount) || 0) + (Number(d.gst_amount) || 0))}</td>
+                                            <td className="py-1.5 pr-3 font-medium">{g.invoice_no || '—'}</td>
+                                            <td className="py-1.5 pr-3 whitespace-nowrap">{formatDate(g.sale_date)}</td>
+                                            <td className="py-1.5 pr-3">{stageInfo(g.sample).label}</td>
+                                            <td className="py-1.5 pr-3 text-right tabular-nums font-medium text-red-600">{formatNum(g.qty)} {g.sample.uom}</td>
+                                            <td className="py-1.5 pr-3 text-right tabular-nums">{formatINR(g.qty > 0 ? g.taxable / g.qty : 0)}</td>
+                                            <td className="py-1.5 text-right tabular-nums">{formatINR(g.total)}</td>
                                           </tr>
                                         ))}
                                         <tr className="font-semibold">
@@ -2431,6 +2468,14 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
               <DatePicker value={form.rate_expiry_date ?? ''} onChange={(v) => setField('rate_expiry_date', v)} />
             </div>
             <div className="grid gap-1.5">
+              <Label>Manual bargain no <span className="text-[10px] font-normal text-muted-foreground">(optional)</span></Label>
+              <Input
+                value={form.manual_bargain_no ?? ''}
+                onChange={(e) => setField('manual_bargain_no', e.target.value)}
+                placeholder="e.g. the party's own reference"
+              />
+            </div>
+            <div className="grid gap-1.5">
               <Label>Sale type</Label>
               <Select value={form.sale_type || 'LOOSE'} onValueChange={(v) => setField('sale_type', v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -2482,7 +2527,11 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
           </DialogHeader>
           {adjustRow && (() => {
             const qty = Number(adjustRow.qty) || 0
-            const bal = Number(adjustRow.balance_qty) || 0
+            // Rounded to the 3 decimals MT is tracked at — balance_qty is a
+            // running total that can carry float residue past that (0.0019996
+            // reading as "0.002"), which made squaring off to what the screen
+            // already shows as the full balance look like an over-removal.
+            const bal = Math.round((Number(adjustRow.balance_qty) || 0) * 1000) / 1000
             const sold = qty - bal
             const amt = Number(adjustForm.amount) || 0
             const delta = adjustForm.mode === 'add' ? amt : -amt

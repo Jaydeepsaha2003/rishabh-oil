@@ -80,34 +80,32 @@ export async function listBargains(from?: string, to?: string): Promise<Row[]> {
 
 // Format: OIL/DD-MM/PARTYNAME(no spaces, upper)/SERIAL.
 // Serial is a continuous running number across all bargains.
+async function oilCodeFor(oilTypeId: number): Promise<string> {
+  const res = await getClient().execute({ sql: 'SELECT code, name FROM products WHERE id = ?', args: [oilTypeId] })
+  return (res.rows.length ? String(res.rows[0].code || res.rows[0].name || 'OIL') : 'OIL')
+    .replace(/\s+/g, '')
+    .toUpperCase()
+}
+
+async function partyNameFor(supplierId: number): Promise<string> {
+  const res = await getClient().execute({ sql: 'SELECT name FROM suppliers WHERE id = ?', args: [supplierId] })
+  return (res.rows.length ? String(res.rows[0].name || 'PARTY') : 'PARTY')
+    .replace(/\s+/g, '')
+    .toUpperCase()
+}
+
 async function nextBargainNo(
   oilTypeId: number,
   supplierId: number,
   bargainDate: string
 ): Promise<string> {
-  const c = getClient()
-  const oilRes = await c.execute({
-    sql: 'SELECT code, name FROM products WHERE id = ?',
-    args: [oilTypeId]
-  })
-  const oil = (
-    oilRes.rows.length ? String(oilRes.rows[0].code || oilRes.rows[0].name || 'OIL') : 'OIL'
-  )
-    .replace(/\s+/g, '')
-    .toUpperCase()
-
-  const supRes = await c.execute({
-    sql: 'SELECT name FROM suppliers WHERE id = ?',
-    args: [supplierId]
-  })
-  const party = (supRes.rows.length ? String(supRes.rows[0].name || 'PARTY') : 'PARTY')
-    .replace(/\s+/g, '')
-    .toUpperCase()
+  const oil = await oilCodeFor(oilTypeId)
+  const party = await partyNameFor(supplierId)
 
   // Serial resets every calendar month, GLOBAL across all companies (bargains
   // are general): max trailing serial among the month's bargains + 1, 2-digit.
   const monthKey = String(bargainDate).slice(0, 7) // yyyy-mm
-  const existing = await c.execute({
+  const existing = await getClient().execute({
     sql: 'SELECT bargain_no FROM bargains WHERE substr(bargain_date, 1, 7) = ?',
     args: [monthKey]
   })
@@ -191,34 +189,51 @@ export async function createBargain(v: Row): Promise<{ id: number; bargain_no: s
   return { id: Number(res.lastInsertRowid), bargain_no }
 }
 
-export async function updateBargain(id: number, v: Row): Promise<{ id: number }> {
+export async function updateBargain(id: number, v: Row): Promise<{ id: number; bargain_no: string }> {
   const { qty, rate } = validateBargainInput(v)
   const total = qty * rate
   // Once anything has been loaded/consumed against the bargain, its supplier
   // and oil are locked (linked tankers/purchases depend on them) and the
   // quantity can't drop below what's already committed.
-  const cur = await getClient().execute({ sql: 'SELECT supplier_id, oil_type_id FROM bargains WHERE id = ?', args: [id] })
+  const cur = await getClient().execute({ sql: 'SELECT bargain_no, supplier_id, oil_type_id FROM bargains WHERE id = ?', args: [id] })
   if (!cur.rows.length) throw new Error('Bargain not found')
   const consumed = await bargainConsumed(id)
+  const supplierChanged = Number(v.supplier_id) !== Number(cur.rows[0].supplier_id)
+  const oilChanged = Number(v.oil_type_id) !== Number(cur.rows[0].oil_type_id)
   if (consumed > 1e-6) {
-    if (Number(v.supplier_id) !== Number(cur.rows[0].supplier_id)) {
+    if (supplierChanged) {
       throw new Error('Cannot change the supplier — this bargain already has loaded tankers or purchases')
     }
-    if (Number(v.oil_type_id) !== Number(cur.rows[0].oil_type_id)) {
+    if (oilChanged) {
       throw new Error('Cannot change the oil — this bargain already has loaded tankers or purchases')
     }
     if (qty < consumed - 1e-6) {
       throw new Error(`Quantity cannot be below the ${consumed.toFixed(3)} already loaded/consumed on this bargain`)
     }
   }
+  // The bargain number names the party and oil in it (OIL/DD-MM/PARTY/SERIAL)
+  // — while nothing has moved yet, changing either would otherwise leave the
+  // number silently lying about what the bargain actually is. The date and
+  // serial are kept exactly as struck; only the two changed segments update.
+  let bargain_no = String(cur.rows[0].bargain_no)
+  if (consumed <= 1e-6 && (supplierChanged || oilChanged)) {
+    const parts = bargain_no.split('/')
+    if (parts.length === 4) {
+      const [oldOil, dateSeg, , serialSeg] = parts
+      const newOil = oilChanged ? await oilCodeFor(Number(v.oil_type_id)) : oldOil
+      const newParty = supplierChanged ? await partyNameFor(Number(v.supplier_id)) : parts[2]
+      bargain_no = `${newOil}/${dateSeg}/${newParty}/${serialSeg}`
+    }
+  }
   await ensureOilType(Number(v.oil_type_id))
   await getClient().execute({
     sql: `UPDATE bargains SET
-      bargain_date = ?, supplier_id = ?, broker_id = ?, oil_type_id = ?, bargain_type = ?,
+      bargain_no = ?, bargain_date = ?, supplier_id = ?, broker_id = ?, oil_type_id = ?, bargain_type = ?,
       qty = ?, opening_qty = ?, uom = ?, base_rate = ?, duty = ?, rate_per_uom = ?,
       allowed_shortage_pct = ?, rate_expiry_date = ?, total_amount = ?, remarks = ?
       WHERE id = ?`,
     args: [
+      bargain_no,
       v.bargain_date,
       Number(v.supplier_id),
       v.broker_id ? Number(v.broker_id) : null,
@@ -239,7 +254,7 @@ export async function updateBargain(id: number, v: Row): Promise<{ id: number }>
       id
     ]
   })
-  return { id }
+  return { id, bargain_no }
 }
 
 // Add to (delta > 0) or remove from (delta < 0) a bargain's quantity, which
@@ -258,7 +273,10 @@ export async function adjustBargainQty(
   const d = Number(delta) || 0
   if (d === 0) throw new Error('Enter a quantity to add or remove')
 
-  const consumed = await bargainConsumed(id)
+  // Rounded to the same 3 decimals qty is stored at — consumed is a SUM()
+  // over many tanker/order rows and can carry residue past that, which a
+  // 1e-6 tolerance is too tight to absorb.
+  const consumed = Math.round((await bargainConsumed(id)) * 1000) / 1000
   const newQty = Math.round((Number(b.qty) + d) * 1000) / 1000
   // Zeroing out a bargain that never loaded anything is a cancellation, not
   // an error — the register already shows 0-balance bargains (toggle "show

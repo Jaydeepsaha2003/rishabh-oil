@@ -325,11 +325,12 @@ export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_
     String(v.bargain_date)
   )
   const res = await getClient().execute({
-    sql: `INSERT INTO sales_bargains (company_id, bargain_no, bargain_date, customer, customer_id, product_id, qty, uom, rate, rate_expiry_date, status, note, sale_type, sale_category, packaging_id, freight_term, gst_pct, gst_type)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO sales_bargains (company_id, bargain_no, manual_bargain_no, bargain_date, customer, customer_id, product_id, qty, uom, rate, rate_expiry_date, status, note, sale_type, sale_category, packaging_id, freight_term, gst_pct, gst_type)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       bargain_no,
+      v.manual_bargain_no ? String(v.manual_bargain_no).trim() : null,
       v.bargain_date,
       v.customer || null,
       v.customer_id ? n(v.customer_id) : null,
@@ -381,7 +382,7 @@ export async function updateSalesBargain(id: number, v: Row): Promise<{ id: numb
   }
   await getClient().execute({
     sql: `UPDATE sales_bargains SET bargain_date = ?, customer = ?, customer_id = ?, product_id = ?, qty = ?, uom = ?,
-          rate = ?, rate_expiry_date = ?, note = ?, sale_type = ?, sale_category = ?, packaging_id = ?, freight_term = ?, gst_pct = ?, gst_type = ? WHERE id = ?`,
+          rate = ?, rate_expiry_date = ?, note = ?, sale_type = ?, sale_category = ?, packaging_id = ?, freight_term = ?, gst_pct = ?, gst_type = ?, manual_bargain_no = ? WHERE id = ?`,
     args: [
       v.bargain_date,
       v.customer || null,
@@ -398,6 +399,7 @@ export async function updateSalesBargain(id: number, v: Row): Promise<{ id: numb
       v.freight_term === 'DLD' ? 'DLD' : 'FREIGHT_ON_GOODS',
       n(v.gst_pct),
       v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
+      v.manual_bargain_no ? String(v.manual_bargain_no).trim() : null,
       id
     ]
   })
@@ -426,9 +428,15 @@ export async function adjustSalesBargainQty(
   const b = toPlain(res)[0]
   const d = Number(delta) || 0
   if (d === 0) throw new Error('Enter a quantity to add or remove')
-  const sold = await salesBargainSold(id)
+  // Rounded to the same 3 decimals qty is stored at — sold is a SUM() over
+  // many dispatch rows and can carry residue past that (6.7034999...), which
+  // a 1e-6 tolerance is too tight to absorb and refuses a square-off to
+  // exactly what the screen already shows as fully sold.
+  const sold = Math.round((await salesBargainSold(id)) * 1000) / 1000
   const newQty = Math.round((n(b.qty) + d) * 1000) / 1000
-  if (newQty <= 0) throw new Error('The resulting quantity must be greater than zero')
+  // Zeroing out a bargain that is otherwise fully drawn is a legitimate
+  // square-off, not an error — only a genuinely negative result is refused.
+  if (newQty < -1e-9) throw new Error('The resulting quantity cannot go below zero')
   if (newQty < sold - 1e-6) {
     throw new Error(`Cannot remove below the ${sold.toFixed(3)} already sold on this bargain`)
   }

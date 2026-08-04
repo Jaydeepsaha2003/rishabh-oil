@@ -613,7 +613,11 @@ const MIGRATIONS = [
     note TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`
+  )`,
+  // A hand-written reference kept alongside the auto-generated bargain_no —
+  // e.g. the number the party quotes on their own paperwork — never used for
+  // anything but display.
+  'ALTER TABLE sales_bargains ADD COLUMN manual_bargain_no TEXT'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

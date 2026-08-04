@@ -1236,7 +1236,23 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
             </div>
             <div className="grid gap-1.5">
               <Label>Bargain no</Label>
-              <Input value={editing ? editing.bargain_no : 'Auto-generated'} disabled />
+              <Input
+                value={(() => {
+                  if (!editing) return 'Auto-generated'
+                  // Nothing loaded yet — the number can still follow a changed
+                  // supplier or product, so preview what saving will make it.
+                  if (editLocked) return editing.bargain_no
+                  const parts = String(editing.bargain_no || '').split('/')
+                  if (parts.length !== 4) return editing.bargain_no
+                  const norm = (s: string): string => s.replace(/\s+/g, '').toUpperCase()
+                  const oil = categoryProducts.find((o) => String(o.id) === String(form.oil_type_id))
+                  const sup = suppliers.find((s) => String(s.id) === String(form.supplier_id))
+                  const oilSeg = oil ? norm(String(oil.code || oil.name || parts[0])) : parts[0]
+                  const partySeg = sup ? norm(String(sup.name || parts[2])) : parts[2]
+                  return `${oilSeg}/${parts[1]}/${partySeg}/${parts[3]}`
+                })()}
+                disabled
+              />
             </div>
 
             <div className="grid gap-1.5">
@@ -1399,7 +1415,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
           </DialogHeader>
           {adjustRow && (() => {
             const qty = Number(adjustRow.qty) || 0
-            const bal = Number(adjustRow.balance_qty) || 0
+            // Rounded to the 3 decimals MT is tracked at — balance_qty is a
+            // running total that can carry float residue past that, which made
+            // squaring off to what the screen already shows as the full
+            // balance look like an over-removal.
+            const bal = Math.round((Number(adjustRow.balance_qty) || 0) * 1000) / 1000
             const consumed = qty - bal
             const amt = Number(adjustForm.amount) || 0
             const delta = adjustForm.mode === 'add' ? amt : -amt
