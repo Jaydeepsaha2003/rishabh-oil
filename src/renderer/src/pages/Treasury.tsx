@@ -7,7 +7,11 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  FileText,
+  LayoutGrid,
   Landmark,
+  List,
+  Paperclip,
   Plus,
   RotateCcw,
   Trash2
@@ -31,11 +35,32 @@ import { useLiveRefresh } from '@/lib/useLiveRefresh'
 type Row = Record<string, any>
 
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
+const round2 = (v: number): number => Math.round(v * 100) / 100
 
 function daysTo(date: unknown): number | null {
   const s = String(date || '').slice(0, 10)
   if (!s) return null
   return Math.round((new Date(`${s}T00:00:00`).getTime() - new Date(`${todayISO()}T00:00:00`).getTime()) / 86400000)
+}
+
+const DUE_PERIODS = [
+  { key: 'all', label: 'All' },
+  { key: 't1', label: 'T+1 due' },
+  { key: 'week', label: 'This week' },
+  { key: 'fortnight', label: 'Fortnight' },
+  { key: 'month', label: 'Monthly' },
+  { key: 'quarter', label: 'Quarterly' }
+]
+
+function duePeriodOf(daysLeft: number | null): string {
+  if (daysLeft == null) return 'none'
+  if (daysLeft < 0) return 'overdue'
+  if (daysLeft <= 1) return 't1'
+  if (daysLeft <= 7) return 'week'
+  if (daysLeft <= 14) return 'fortnight'
+  if (daysLeft <= 30) return 'month'
+  if (daysLeft <= 90) return 'quarter'
+  return 'later'
 }
 
 // Countdown chip: red overdue, amber close, muted otherwise.
@@ -56,31 +81,45 @@ export function Treasury(): React.JSX.Element {
   const [bills, setBills] = useState<Row[]>([])
   const [alerts, setAlerts] = useState<Row | null>(null)
   const [suppliers, setSuppliers] = useState<Row[]>([])
+  const [customers, setCustomers] = useState<Row[]>([])
   const [sales, setSales] = useState<Row[]>([])
   const [orders, setOrders] = useState<Row[]>([])
   const [issuances, setIssuances] = useState<Record<number, Row[]>>({})
+  const [repayments, setRepayments] = useState<Record<number, Row[]>>({})
   const [openLc, setOpenLc] = useState<Set<number>>(new Set())
+  const [lcView, setLcView] = useState<'cards' | 'table'>('cards')
+  // T+1 / this week / fortnight / monthly / quarterly, by whichever is nearer:
+  // an outstanding bill's due date, or (no outstanding bill) the LC's expiry.
+  const [lcDuePeriod, setLcDuePeriod] = useState('all')
   const [facilities, setFacilities] = useState<Row[]>([])
   const [exposures, setExposures] = useState<Record<number, Row[]>>({})
   const [openFac, setOpenFac] = useState<Set<number>>(new Set())
+  // Every LC bill and discounted bill in one due-date-sorted list, regardless
+  // of urgency — the alerts above only surface what's already close.
+  const [tracker, setTracker] = useState<Row[]>([])
+  const [trackerShowSettled, setTrackerShowSettled] = useState(false)
 
   const load = useCallback(async () => {
-    const [l, b, a, sup, sl, od, fac] = await Promise.all([
+    const [l, b, a, sup, cust, sl, od, fac, tr] = await Promise.all([
       window.api.lc.list(),
       window.api.billDiscounts.list(),
       window.api.treasury.alerts(),
       window.api.data.list('suppliers'),
+      window.api.data.list('customers'),
       window.api.sales.list(),
       window.api.orders.list(),
-      window.api.facility.list()
+      window.api.facility.list(),
+      window.api.treasury.paymentTracker()
     ])
     setLcs(l.filter((x) => String(x.facility_type || 'lc') === 'lc'))
     setBills(b.filter((x) => String(x.medium || '') === 'bill_discounting' || x.rate_pct != null))
     setAlerts(a)
     setSuppliers(sup.filter((x) => x.active))
+    setCustomers(cust.filter((x) => x.active))
     setSales(sl)
     setOrders(od)
     setFacilities(fac)
+    setTracker(tr)
   }, [])
 
   async function toggleFacility(id: number): Promise<void> {
@@ -106,8 +145,15 @@ export function Treasury(): React.JSX.Element {
       return next
     })
     if (!issuances[id]) setIssuances((p) => ({ ...p })) // placeholder until fetch lands
-    const rows = await window.api.lc.issuances(id)
+    const [rows, reps] = await Promise.all([window.api.lc.issuances(id), window.api.lc.repayments(id)])
     setIssuances((p) => ({ ...p, [id]: rows }))
+    setRepayments((p) => ({ ...p, [id]: reps }))
+  }
+
+  async function reloadLcDetail(id: number): Promise<void> {
+    const [rows, reps] = await Promise.all([window.api.lc.issuances(id), window.api.lc.repayments(id)])
+    setIssuances((p) => ({ ...p, [id]: rows }))
+    setRepayments((p) => ({ ...p, [id]: reps }))
   }
 
   // ---------------- LC create / issue ----------------
@@ -193,7 +239,7 @@ export function Treasury(): React.JSX.Element {
       }
       if (lcForm.id) await window.api.lc.update(Number(lcForm.id), payload)
       else await window.api.lc.create(payload)
-      toast.success(`LC ${lcForm.lc_no} saved — margin & charges posted to the books`)
+      toast.success(`LC ${lcForm.lc_no} saved — margin, interest & charges posted to the books`)
       setLcForm(null)
       load()
     } catch (e) {
@@ -202,6 +248,11 @@ export function Treasury(): React.JSX.Element {
       setBusy(false)
     }
   }
+
+  const lcFormOrders = useMemo(() => {
+    if (!lcForm) return []
+    return orders.filter((o) => !lcForm.party_id || Number(o.supplier_id) === Number(lcForm.party_id))
+  }, [lcForm, orders])
 
   const issueOrders = useMemo(() => {
     if (!issueForm) return []
@@ -234,6 +285,46 @@ export function Treasury(): React.JSX.Element {
     } finally {
       setBusy(false)
     }
+  }
+
+  // ---------------- LC repayment ----------------
+  const [repayForm, setRepayForm] = useState<Row | null>(null)
+
+  async function pickRepaymentDocument(): Promise<void> {
+    if (!repayForm) return
+    const r = await window.api.files.pickDocument()
+    if (r.path) setRepayForm({ ...repayForm, document_path: r.path })
+  }
+
+  async function saveRepayment(): Promise<void> {
+    if (!repayForm) return
+    setBusy(true)
+    try {
+      await window.api.lc.saveRepayment({
+        ...repayForm,
+        lc_id: Number(repayForm.lc_id),
+        party_id: repayForm.party_id ? Number(repayForm.party_id) : null,
+        amount: Number(repayForm.amount),
+        posted: !!repayForm.posted
+      })
+      toast.success(repayForm.posted ? 'Repayment posted to the books' : 'Repayment logged')
+      const lcId = Number(repayForm.lc_id)
+      setRepayForm(null)
+      await reloadLcDetail(lcId)
+      setOpenLc((p) => new Set(p).add(lcId))
+      load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function removeRepayment(r: Row): Promise<void> {
+    if (!window.confirm('Delete this repayment? Its journal entry (if posted) reverses too.')) return
+    await window.api.lc.removeRepayment(Number(r.id))
+    await reloadLcDetail(Number(r.lc_id))
+    load()
   }
 
   // ---------------- bill discounting ----------------
@@ -299,6 +390,132 @@ export function Treasury(): React.JSX.Element {
     }
   }
 
+  // Each LC's nearest due date (an outstanding bill, else the LC's own expiry)
+  // and which due-period bucket that falls into, for the dashboard filter.
+  const lcsWithDue: Row[] = useMemo(
+    () =>
+      lcs.map((l) => {
+        const dueDate = l.next_due_date || l.expiry_date
+        const daysLeft = daysTo(dueDate)
+        const row: Row = { ...l, due_date_effective: dueDate, days_left_effective: daysLeft, due_period: duePeriodOf(daysLeft) }
+        return row
+      }),
+    [lcs]
+  )
+  const lcsFiltered = useMemo(
+    () => (lcDuePeriod === 'all' ? lcsWithDue : lcsWithDue.filter((l) => l.due_period === lcDuePeriod || (lcDuePeriod === 't1' && l.due_period === 'overdue'))),
+    [lcsWithDue, lcDuePeriod]
+  )
+
+  // Bills issued under an LC, and repayments logged against it — shared by
+  // both the card and table views so expanding an LC looks the same either way.
+  function lcExpanded(l: Row): React.JSX.Element {
+    const kids = issuances[Number(l.id)] || []
+    const reps = repayments[Number(l.id)] || []
+    return (
+      <div className="space-y-3 px-4 py-3 sm:px-8">
+        <div>
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Bills under this LC</div>
+          {kids.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No bills issued under this LC yet.</p>
+          ) : (
+            <table className="w-full rounded-lg border bg-card text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:px-3 [&_th]:py-1.5">
+              <thead className="border-b bg-muted/50 text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                <tr>
+                  <th>Bill / invoice</th><th>Issued</th><th>Due</th><th className="text-right">Amount</th><th>Status</th><th className="text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {kids.map((b) => (
+                  <tr key={String(b.id)} className="border-b last:border-0">
+                    <td className="font-medium">{b.bill_no || b.invoice_no || '—'}</td>
+                    <td className="tabular-nums">{formatDate(b.issue_date)}</td>
+                    <td><span className="mr-1.5 tabular-nums">{formatDate(b.due_date)}</span>{String(b.status) !== 'settled' && <DueBadge date={b.due_date} />}</td>
+                    <td className="text-right font-medium tabular-nums">{formatINR(b.amount)}</td>
+                    <td>
+                      {String(b.status) === 'settled'
+                        ? <Badge variant="success">Settled {formatDate(b.settled_date)}</Badge>
+                        : <Badge variant="warning">Outstanding</Badge>}
+                    </td>
+                    <td className="text-right">
+                      <div className="flex justify-end gap-1">
+                        {String(b.status) === 'settled' ? (
+                          <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[11px]" onClick={async () => { await window.api.treasury.reopenLcBill(Number(b.id)); await reloadLcDetail(Number(l.id)); load() }}>
+                            <RotateCcw className="h-3 w-3" /> Reopen
+                          </Button>
+                        ) : (
+                          <Button size="sm" variant="outline" className="h-6 px-1.5 text-[11px] text-emerald-700" onClick={async () => { try { await window.api.treasury.settleLcBill(Number(b.id)); toast.success('Bill settled — supplier paid through the books'); await reloadLcDetail(Number(l.id)); load() } catch (e) { toast.error((e as Error).message) } }}>
+                            <Check className="h-3 w-3" /> Settle
+                          </Button>
+                        )}
+                        <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive" onClick={async () => { if (confirm('Delete this bill?')) { await window.api.lc.removeIssuance(Number(b.id)); await reloadLcDetail(Number(l.id)); load() } }}>
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div>
+          <div className="mb-1 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+            Repayments
+            <Button
+              size="sm"
+              variant="outline"
+              className="ml-auto h-6 px-2 text-[11px] normal-case tracking-normal"
+              onClick={() => setRepayForm({ lc_id: l.id, party_id: l.receivable_party_id ? String(l.receivable_party_id) : '', repay_date: todayISO(), posted: false })}
+            >
+              <Plus className="h-3 w-3" /> Log repayment
+            </Button>
+          </div>
+          {reps.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No repayments logged against this LC yet.</p>
+          ) : (
+            <table className="w-full rounded-lg border bg-card text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:px-3 [&_th]:py-1.5">
+              <thead className="border-b bg-muted/50 text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                <tr>
+                  <th>Party</th><th>Date</th><th className="text-right">Amount</th><th>Posted</th><th>Document</th><th className="text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reps.map((r) => (
+                  <tr key={String(r.id)} className="border-b last:border-0">
+                    <td className="font-medium">{r.party_name || '—'}</td>
+                    <td className="tabular-nums">{formatDate(r.repay_date)}</td>
+                    <td className="text-right font-medium tabular-nums">{formatINR(r.amount)}</td>
+                    <td>{n(r.posted) ? <Badge variant="success">Posted</Badge> : <Badge variant="muted">Draft</Badge>}</td>
+                    <td>
+                      {r.document_path ? (
+                        <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[11px]" onClick={() => window.api.files.openDocument(String(r.document_path))}>
+                          <FileText className="h-3 w-3" /> Open
+                        </Button>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
+                    <td className="text-right">
+                      <div className="flex justify-end gap-1">
+                        <Button size="icon" variant="ghost" className="h-6 w-6" title="Edit" onClick={() => setRepayForm({ ...r })}>
+                          <CalendarClock className="h-3 w-3" />
+                        </Button>
+                        <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive" title="Delete" onClick={() => void removeRepayment(r)}>
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   const alertItems: { tone: string; icon: typeof AlertTriangle; label: string; items: string[] }[] = []
   if (alerts) {
     const exp = (alerts.lcExpiring as Row[]) || []
@@ -355,13 +572,170 @@ export function Treasury(): React.JSX.Element {
             <TabsTrigger value="lc">Letters of Credit ({lcs.length})</TabsTrigger>
             <TabsTrigger value="bd">Bill Discounting ({bills.length})</TabsTrigger>
             <TabsTrigger value="limits">Sanctioned Limits ({facilities.length})</TabsTrigger>
+            <TabsTrigger value="tracker">Payment Tracker ({tracker.filter((x) => !x.settled).length})</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="lc" className="mt-4">
+          <TabsContent value="tracker" className="mt-4">
+            <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
+              <div className="flex flex-wrap items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
+                <span className="text-[13px] font-bold uppercase tracking-widest">Payment Tracker</span>
+                <span className="text-[11px] text-[#1a2c56]/70">every LC bill and discounted bill, one due-date list</span>
+                <label className="ml-auto flex cursor-pointer items-center gap-1.5 text-[11px]">
+                  <input type="checkbox" className="h-3.5 w-3.5" checked={trackerShowSettled} onChange={(e) => setTrackerShowSettled(e.target.checked)} />
+                  Show settled
+                </label>
+              </div>
+              <Table className="text-[13px]">
+                <TableHeader>
+                  <TableRow className="bg-[#f1ecd9] hover:bg-[#f1ecd9]">
+                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Kind</TableHead>
+                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Reference · party</TableHead>
+                    <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Amount</TableHead>
+                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Due</TableHead>
+                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(() => {
+                    const rows = tracker.filter((x) => trackerShowSettled || !x.settled)
+                    if (rows.length === 0) {
+                      return (
+                        <TableRow>
+                          <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
+                            Nothing outstanding under LC or bill discounting.
+                          </TableCell>
+                        </TableRow>
+                      )
+                    }
+                    return rows.map((r) => (
+                      <TableRow key={`${r.kind}-${r.ref}-${r.due_date}-${r.amount}`} className="border-b border-dotted border-[#e5dfc8]">
+                        <TableCell>
+                          <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase', r.kind === 'lc_bill' ? 'bg-sky-100 text-sky-800' : 'bg-indigo-100 text-indigo-800')}>
+                            {r.kind_label}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <div className="font-semibold">{r.ref} {r.party ? `· ${r.party}` : ''}</div>
+                          {r.detail && <div className="text-[11px] text-muted-foreground">{r.detail}</div>}
+                        </TableCell>
+                        <TableCell className="text-right font-medium tabular-nums">{formatINR(r.amount)}</TableCell>
+                        <TableCell>
+                          <div className="tabular-nums">{r.due_date ? formatDate(r.due_date) : '—'}</div>
+                          {!r.settled && r.days_left != null && (
+                            <div className={cn('text-[10px]', r.overdue ? 'font-semibold text-red-600' : 'text-muted-foreground')}>
+                              {r.overdue ? `${Math.abs(r.days_left)}d overdue` : `${r.days_left}d left`}
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={r.settled ? 'success' : r.overdue ? 'destructive' : 'warning'} className="uppercase">
+                            {r.settled ? 'settled' : r.overdue ? 'overdue' : 'outstanding'}
+                          </Badge>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  })()}
+                </TableBody>
+              </Table>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="lc" className="mt-4 space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              {DUE_PERIODS.map((p) => (
+                <button
+                  key={p.key}
+                  type="button"
+                  onClick={() => setLcDuePeriod(p.key)}
+                  className={cn(
+                    'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
+                    lcDuePeriod === p.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
+                  )}
+                >
+                  {p.label}
+                </button>
+              ))}
+              <div className="ml-auto flex gap-1 rounded-md border border-[#d9d2b8] bg-white p-0.5">
+                <Button size="icon" variant={lcView === 'cards' ? 'default' : 'ghost'} className="h-7 w-7" title="Card view" onClick={() => setLcView('cards')}>
+                  <LayoutGrid className="h-3.5 w-3.5" />
+                </Button>
+                <Button size="icon" variant={lcView === 'table' ? 'default' : 'ghost'} className="h-7 w-7" title="Table view" onClick={() => setLcView('table')}>
+                  <List className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+
+            {lcView === 'cards' ? (
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <Card className="flex items-center justify-center border-dashed p-6">
+                  <Button className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '90', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress' })}>
+                    <Plus className="h-4 w-4" /> Open new LC
+                  </Button>
+                </Card>
+                {lcsFiltered.length === 0 ? (
+                  <Card className="p-6 text-center text-sm text-muted-foreground md:col-span-2 xl:col-span-2">Nothing in this due-period bucket.</Card>
+                ) : (
+                  lcsFiltered.map((l) => {
+                    const isOpen = openLc.has(Number(l.id))
+                    const pct = n(l.amount) > 0 ? Math.min(100, (n(l.utilized) / n(l.amount)) * 100) : 0
+                    return (
+                      <Card key={String(l.id)} className="flex flex-col gap-2 p-4">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="font-semibold">{l.lc_no}</div>
+                            <div className="text-[11px] text-muted-foreground">{l.bank} · {l.supplier_name || '—'}</div>
+                          </div>
+                          <div className="flex flex-col items-end gap-1">
+                            {l.purpose && <Badge variant="muted" className="capitalize">{l.purpose}</Badge>}
+                            {l.display_status === 'non_compliant' ? (
+                              <Badge variant="destructive">Non-compliant</Badge>
+                            ) : (
+                              <Badge variant={l.display_status === 'on_hold' ? 'warning' : 'success'} className="capitalize">
+                                {String(l.display_status || 'in_progress').replace('_', ' ')}
+                              </Badge>
+                            )}
+                          </div>
+                        </div>
+                        <div className="rounded-md bg-[#f1ecd9] px-3 py-2 text-center">
+                          <div className="text-[10px] uppercase tracking-widest text-[#1a2c56]/70">LC amount</div>
+                          <div className="text-xl font-bold tabular-nums text-[#1a2c56]">{formatINR(l.amount)}</div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-[11px]">
+                          <div><div className="text-muted-foreground">Utilised</div><div className="font-medium tabular-nums">{formatINR(l.utilized)}</div></div>
+                          <div><div className="text-muted-foreground">Available</div><div className={cn('font-medium tabular-nums', n(l.available) <= 0 ? 'text-rose-600' : 'text-emerald-700')}>{formatINR(l.available)}</div></div>
+                          <div><div className="text-muted-foreground">Repaid</div><div className="font-medium tabular-nums">{formatINR(l.repaid)}</div></div>
+                          <div><div className="text-muted-foreground">Outstanding</div><div className="font-medium tabular-nums">{formatINR(l.outstanding)}</div></div>
+                        </div>
+                        <div className="h-2 rounded-full bg-muted">
+                          <div className={cn('h-2 rounded-full', pct >= 95 ? 'bg-rose-500' : 'bg-sky-600')} style={{ width: `${pct}%` }} />
+                        </div>
+                        <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                          <span>{formatDate(l.open_date)} → {formatDate(l.expiry_date)}</span>
+                          <DueBadge date={l.due_date_effective} />
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1.5">
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setIssueForm({ lc_id: l.id, issue_date: todayISO() })}>Issue bill</Button>
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => void toggleLc(Number(l.id))}>
+                            {isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />} Details
+                          </Button>
+                          <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit LC" onClick={() => setLcForm({ ...l })}>
+                            <CalendarClock className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" title="Delete LC (reverses its vouchers)" onClick={async () => { if (confirm(`Delete LC ${l.lc_no}?`)) { await window.api.lc.remove(Number(l.id)); load() } }}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                        {isOpen && <div className="-mx-4 -mb-4 mt-1 border-t bg-[#f7f2e2]">{lcExpanded(l)}</div>}
+                      </Card>
+                    )
+                  })
+                )}
+              </div>
+            ) : (
             <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
               <div className="flex items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
                 <span className="text-[13px] font-bold uppercase tracking-widest">Letters of Credit</span>
-                <Button size="sm" className="ml-auto bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '90', margin_pct: '', charges: '' })}>
+                <Button size="sm" className="ml-auto bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '90', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress' })}>
                   <Plus className="h-4 w-4" /> Open new LC
                 </Button>
               </div>
@@ -378,13 +752,12 @@ export function Treasury(): React.JSX.Element {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {lcs.length === 0 ? (
-                    <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No letters of credit yet.</TableCell></TableRow>
+                  {lcsFiltered.length === 0 ? (
+                    <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No letters of credit in this bucket.</TableCell></TableRow>
                   ) : (
-                    lcs.map((l) => {
+                    lcsFiltered.map((l) => {
                       const isOpen = openLc.has(Number(l.id))
                       const pct = n(l.amount) > 0 ? Math.min(100, (n(l.utilized) / n(l.amount)) * 100) : 0
-                      const kids = issuances[Number(l.id)] || []
                       return (
                         <Fragment key={String(l.id)}>
                           <TableRow className="cursor-pointer border-b border-dotted border-[#e5dfc8] transition-colors hover:bg-amber-100/70" onClick={() => void toggleLc(Number(l.id))}>
@@ -428,52 +801,7 @@ export function Treasury(): React.JSX.Element {
                           </TableRow>
                           {isOpen && (
                             <TableRow className="bg-[#f7f2e2] hover:bg-[#f7f2e2]">
-                              <TableCell colSpan={7} className="p-0">
-                                <div className="px-8 py-3">
-                                  {kids.length === 0 ? (
-                                    <p className="text-xs text-muted-foreground">No bills issued under this LC yet.</p>
-                                  ) : (
-                                    <table className="w-full rounded-lg border bg-card text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:px-3 [&_th]:py-1.5">
-                                      <thead className="border-b bg-muted/50 text-left text-[10px] uppercase tracking-wide text-muted-foreground">
-                                        <tr>
-                                          <th>Bill / invoice</th><th>Issued</th><th>Due</th><th className="text-right">Amount</th><th>Status</th><th className="text-right">Actions</th>
-                                        </tr>
-                                      </thead>
-                                      <tbody>
-                                        {kids.map((b) => (
-                                          <tr key={String(b.id)} className="border-b last:border-0">
-                                            <td className="font-medium">{b.bill_no || b.invoice_no || '—'}</td>
-                                            <td className="tabular-nums">{formatDate(b.issue_date)}</td>
-                                            <td><span className="mr-1.5 tabular-nums">{formatDate(b.due_date)}</span>{String(b.status) !== 'settled' && <DueBadge date={b.due_date} />}</td>
-                                            <td className="text-right font-medium tabular-nums">{formatINR(b.amount)}</td>
-                                            <td>
-                                              {String(b.status) === 'settled'
-                                                ? <Badge variant="success">Settled {formatDate(b.settled_date)}</Badge>
-                                                : <Badge variant="warning">Outstanding</Badge>}
-                                            </td>
-                                            <td className="text-right">
-                                              <div className="flex justify-end gap-1">
-                                                {String(b.status) === 'settled' ? (
-                                                  <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[11px]" onClick={async () => { await window.api.treasury.reopenLcBill(Number(b.id)); void toggleLc(Number(l.id)); setOpenLc((p) => new Set(p).add(Number(l.id))); load() }}>
-                                                    <RotateCcw className="h-3 w-3" /> Reopen
-                                                  </Button>
-                                                ) : (
-                                                  <Button size="sm" variant="outline" className="h-6 px-1.5 text-[11px] text-emerald-700" onClick={async () => { try { await window.api.treasury.settleLcBill(Number(b.id)); toast.success('Bill settled — supplier paid through the books'); void toggleLc(Number(l.id)); setOpenLc((p) => new Set(p).add(Number(l.id))); load() } catch (e) { toast.error((e as Error).message) } }}>
-                                                    <Check className="h-3 w-3" /> Settle
-                                                  </Button>
-                                                )}
-                                                <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive" onClick={async () => { if (confirm('Delete this bill?')) { await window.api.lc.removeIssuance(Number(b.id)); void toggleLc(Number(l.id)); setOpenLc((p) => new Set(p).add(Number(l.id))); load() } }}>
-                                                  <Trash2 className="h-3 w-3" />
-                                                </Button>
-                                              </div>
-                                            </td>
-                                          </tr>
-                                        ))}
-                                      </tbody>
-                                    </table>
-                                  )}
-                                </div>
-                              </TableCell>
+                              <TableCell colSpan={7} className="p-0">{lcExpanded(l)}</TableCell>
                             </TableRow>
                           )}
                         </Fragment>
@@ -483,6 +811,7 @@ export function Treasury(): React.JSX.Element {
                 </TableBody>
               </Table>
             </div>
+            )}
           </TabsContent>
 
           <TabsContent value="bd" className="mt-4">
@@ -830,6 +1159,66 @@ export function Treasury(): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="grid gap-1.5">
+                <Label>Purpose</Label>
+                <Select value={String(lcForm.purpose || '')} onValueChange={(v) => setLcForm({ ...lcForm, purpose: v })}>
+                  <SelectTrigger><SelectValue placeholder="Select purpose" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="trading">Trading</SelectItem>
+                    <SelectItem value="manufacturing">Manufacturing</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Workflow status</Label>
+                <Select value={String(lcForm.workflow_status || 'in_progress')} onValueChange={(v) => setLcForm({ ...lcForm, workflow_status: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="in_progress">In progress</SelectItem>
+                    <SelectItem value="on_hold">On hold</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {String(lcForm.purpose) === 'trading' && (
+                <>
+                  <div className="grid gap-1.5">
+                    <Label>Linked purchase invoice</Label>
+                    <Select
+                      value={lcForm.linked_order_id ? String(lcForm.linked_order_id) : ''}
+                      onValueChange={(v) => {
+                        const o = orders.find((x) => String(x.id) === v)
+                        setLcForm({ ...lcForm, linked_order_id: v, amount: lcForm.amount || String(n(o?.net_amount)) })
+                      }}
+                    >
+                      <SelectTrigger><SelectValue placeholder="Pick the invoice this LC covers" /></SelectTrigger>
+                      <SelectContent className="max-h-64">
+                        {lcFormOrders.map((o) => (
+                          <SelectItem key={String(o.id)} value={String(o.id)}>
+                            {o.invoice_no} · {formatDate(o.order_date)} · {formatINR(o.net_amount)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label>Party payment will be received from</Label>
+                    <Select
+                      value={lcForm.receivable_party_id ? String(lcForm.receivable_party_id) : ''}
+                      onValueChange={(v) => setLcForm({ ...lcForm, receivable_party_id: v })}
+                    >
+                      <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
+                      <SelectContent className="max-h-64">
+                        {customers.map((x) => <SelectItem key={String(x.id)} value={String(x.id)}>{x.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {(!lcForm.linked_order_id || !lcForm.receivable_party_id) && (
+                    <div className="sm:col-span-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-1.5 text-[11px] text-rose-800">
+                      Non-compliant — a Trading LC needs both the linked invoice and the party repayment will come from.
+                    </div>
+                  )}
+                </>
+              )}
               <div className="grid gap-1.5 sm:col-span-2">
                 <Label>Sanctioned facility <span className="text-[10px] font-normal text-muted-foreground">(optional — draws against its limit)</span></Label>
                 <Select
@@ -867,13 +1256,38 @@ export function Treasury(): React.JSX.Element {
               <div className="grid gap-1.5"><Label>Open date</Label><DatePicker value={String(lcForm.open_date || '')} onChange={(v) => setLcForm({ ...lcForm, open_date: v })} /></div>
               <div className="grid gap-1.5"><Label>Expiry date *</Label><DatePicker value={String(lcForm.expiry_date || '')} onChange={(v) => setLcForm({ ...lcForm, expiry_date: v })} /></div>
               <div className="grid gap-1.5"><Label>Margin %</Label><Input type="number" value={lcForm.margin_pct ?? ''} onChange={(e) => setLcForm({ ...lcForm, margin_pct: e.target.value })} /></div>
-              <div className="grid gap-1.5"><Label>Bank charges (₹)</Label><Input type="number" value={lcForm.charges ?? ''} onChange={(e) => setLcForm({ ...lcForm, charges: e.target.value })} /></div>
+              <div className="grid gap-1.5">
+                <Label>Interest % p.a. (INT %)</Label>
+                <Input type="number" value={lcForm.interest_pct ?? ''} onChange={(e) => setLcForm({ ...lcForm, interest_pct: e.target.value })} />
+                <span className="text-[10px] text-muted-foreground">charged over the usance days above</span>
+              </div>
+              <div className="grid gap-1.5"><Label>LC charges (₹)</Label><Input type="number" value={lcForm.charges ?? ''} onChange={(e) => setLcForm({ ...lcForm, charges: e.target.value })} /></div>
               <div className="grid gap-1.5 sm:col-span-2"><Label>Note</Label><Input value={lcForm.note ?? ''} onChange={(e) => setLcForm({ ...lcForm, note: e.target.value })} /></div>
-              {n(lcForm.amount) > 0 && n(lcForm.margin_pct) > 0 && (
-                <p className="sm:col-span-2 rounded-md bg-sky-50 px-3 py-1.5 text-xs text-sky-900">
-                  Margin {formatINR((n(lcForm.amount) * n(lcForm.margin_pct)) / 100)} moves to LC MARGIN A/C when saved{n(lcForm.charges) > 0 ? `, plus ${formatINR(n(lcForm.charges))} bank charges` : ''}.
-                </p>
-              )}
+              {n(lcForm.amount) > 0 && (n(lcForm.margin_pct) > 0 || n(lcForm.interest_pct) > 0 || n(lcForm.charges) > 0) && (() => {
+                const invoiceAmount = lcForm.linked_order_id
+                  ? n(orders.find((o) => String(o.id) === String(lcForm.linked_order_id))?.net_amount) || n(lcForm.amount)
+                  : n(lcForm.amount)
+                const margin = round2((invoiceAmount * n(lcForm.margin_pct)) / 100)
+                const interest = round2((n(lcForm.amount) * n(lcForm.interest_pct) * n(lcForm.usance_days)) / (100 * 365))
+                const charges = round2(n(lcForm.charges))
+                const net = round2(margin + interest + charges)
+                const opening = round2(invoiceAmount + margin + charges)
+                return (
+                  <div className="sm:col-span-2 grid grid-cols-2 gap-2 rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-900 sm:grid-cols-4">
+                    <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Margin (upfront)</div><div className="font-semibold tabular-nums">{formatINR(margin)}</div></div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-sky-700">Interest ({n(lcForm.usance_days) || 0}d)</div>
+                      <div className="font-semibold tabular-nums">{formatINR(interest)}</div>
+                    </div>
+                    <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Charges</div><div className="font-semibold tabular-nums">{formatINR(charges)}</div></div>
+                    <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Net paid out now</div><div className="font-semibold tabular-nums">{formatINR(net)}</div></div>
+                    <div className="sm:col-span-4 border-t border-sky-200 pt-1.5">
+                      <div className="text-[10px] uppercase tracking-wide text-sky-700">LC opening amount = invoice + margin + charges</div>
+                      <div className="text-[15px] font-bold tabular-nums">{formatINR(opening)}</div>
+                    </div>
+                  </div>
+                )
+              })()}
             </div>
           )}
           <DialogFooter>
@@ -923,6 +1337,57 @@ export function Treasury(): React.JSX.Element {
           <DialogFooter>
             <Button variant="outline" onClick={() => setIssueForm(null)}>Cancel</Button>
             <Button disabled={busy} onClick={() => void saveIssue()}>{busy ? 'Saving…' : 'Issue bill'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Log / post an LC repayment */}
+      <Dialog open={!!repayForm} onOpenChange={(o) => !o && setRepayForm(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>{repayForm?.id ? 'Alter repayment' : 'Log an LC repayment'}</DialogTitle></DialogHeader>
+          {repayForm && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1.5 sm:col-span-2">
+                <Label>Party paying</Label>
+                <Select value={repayForm.party_id ? String(repayForm.party_id) : ''} onValueChange={(v) => setRepayForm({ ...repayForm, party_id: v })}>
+                  <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
+                  <SelectContent className="max-h-64">
+                    {customers.map((x) => <SelectItem key={String(x.id)} value={String(x.id)}>{x.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-1.5"><Label>Amount (₹) *</Label><Input type="number" value={repayForm.amount ?? ''} onChange={(e) => setRepayForm({ ...repayForm, amount: e.target.value })} /></div>
+              <div className="grid gap-1.5"><Label>Date</Label><DatePicker value={String(repayForm.repay_date || '')} onChange={(v) => setRepayForm({ ...repayForm, repay_date: v })} /></div>
+              <div className="grid gap-1.5 sm:col-span-2">
+                <Label>Bank document / payment letter</Label>
+                <div className="flex items-center gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={() => void pickRepaymentDocument()}>
+                    <Paperclip className="h-3.5 w-3.5" /> Attach file
+                  </Button>
+                  {repayForm.document_path ? (
+                    <span className="truncate text-[11px] text-muted-foreground" title={String(repayForm.document_path)}>
+                      {String(repayForm.document_path).split(/[\\/]/).pop()}
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground">No file attached</span>
+                  )}
+                </div>
+              </div>
+              <div className="grid gap-1.5 sm:col-span-2"><Label>Note</Label><Input value={repayForm.note ?? ''} onChange={(e) => setRepayForm({ ...repayForm, note: e.target.value })} /></div>
+              <label className="flex cursor-pointer items-center gap-2 text-[13px] sm:col-span-2">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={!!repayForm.posted}
+                  onChange={(e) => setRepayForm({ ...repayForm, posted: e.target.checked })}
+                />
+                Post to the books now — Dr Bank / Cr the paying party against this LC
+              </label>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRepayForm(null)}>Cancel</Button>
+            <Button disabled={busy} onClick={() => void saveRepayment()}>{busy ? 'Saving…' : repayForm?.posted ? 'Save & post' : 'Save as draft'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -315,11 +315,17 @@ export async function postPaymentJournal(v: {
   })
 }
 
-// Sale:  Dr {Customer}   amount
-//          Cr {FG} SALE A/C amount
 // Sale:  Dr {Customer}          net (taxable + output GST)
 //          Cr {FG} SALE A/C      taxable
 //          Cr GST OUTPUT A/C     gst
+// FOR delivery (we run and pay the transporter, priced into the rate so the
+// customer's own line is untouched):
+//        Dr FREIGHT OUTWARD A/C  freight
+//          Cr {Transporter}      freight
+// Freight has to be in THIS same voucher, not a second one keyed by the same
+// sale_id — deleteJournalByRef below wipes every entry for a ref regardless
+// of vchType, so two independent postJournal calls for one sale would each
+// erase the other's freight/sale lines on the next save.
 export async function postSaleJournal(v: {
   saleId: number
   date: string
@@ -329,6 +335,8 @@ export async function postSaleJournal(v: {
   amount: number
   gst?: number
   roundOff?: number
+  freightAmount?: number
+  transporterName?: string | null
   companyId?: number
 }): Promise<void> {
   await deleteJournalByRef('sale_id', v.saleId)
@@ -337,19 +345,28 @@ export async function postSaleJournal(v: {
   // Round off shifts the customer's net: +ve rounds the invoice up (customer
   // owes more, Cr ROUND OFF), −ve rounds down (Dr ROUND OFF).
   const ro = n(v.roundOff)
+  const freight = n(v.freightAmount)
+  const transporterName = String(v.transporterName || '').trim()
   if (taxable <= 0 && gst <= 0) return
+  const lines: JournalLine[] = [
+    { account: v.customerName || 'CASH CUSTOMER A/C', group: 'Sundry Debtors', dr: taxable + gst + ro },
+    { account: `${v.productCode} SALE A/C`, group: 'Sales Accounts', cr: taxable },
+    { account: 'GST OUTPUT A/C', group: 'Duties & Taxes', cr: gst },
+    { account: 'ROUND OFF A/C', group: 'Indirect Expenses', cr: ro > 0 ? ro : 0, dr: ro < 0 ? -ro : 0 }
+  ]
+  if (freight > 0 && transporterName) {
+    lines.push(
+      { account: 'FREIGHT OUTWARD A/C', group: 'Direct Expenses', dr: freight },
+      { account: transporterName, group: 'Sundry Creditors', cr: freight }
+    )
+  }
   await postJournal({
     date: v.date,
     vchType: 'SALE',
     vchNo: v.invoiceNo,
     saleId: v.saleId,
     companyId: v.companyId,
-    lines: [
-      { account: v.customerName || 'CASH CUSTOMER A/C', group: 'Sundry Debtors', dr: taxable + gst + ro },
-      { account: `${v.productCode} SALE A/C`, group: 'Sales Accounts', cr: taxable },
-      { account: 'GST OUTPUT A/C', group: 'Duties & Taxes', cr: gst },
-      { account: 'ROUND OFF A/C', group: 'Indirect Expenses', cr: ro > 0 ? ro : 0, dr: ro < 0 ? -ro : 0 }
-    ]
+    lines
   })
 }
 

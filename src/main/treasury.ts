@@ -35,6 +35,18 @@ function addDays(iso: string, days: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+// Buckets a due date's days-left into the categories the dashboard filters by.
+export function duePeriodOf(daysLeft: number | null): string {
+  if (daysLeft == null) return 'none'
+  if (daysLeft < 0) return 'overdue'
+  if (daysLeft <= 1) return 't1'
+  if (daysLeft <= 7) return 'week'
+  if (daysLeft <= 14) return 'fortnight'
+  if (daysLeft <= 30) return 'month'
+  if (daysLeft <= 90) return 'quarter'
+  return 'later'
+}
+
 // Remove one manual journal entry (with its bill-wise rows) by id — used to
 // reverse treasury vouchers we posted ourselves.
 async function dropEntry(entryId?: number | null): Promise<void> {
@@ -68,7 +80,10 @@ async function allocAgainst(entryId: number, partyName: string, ref: string | nu
 // Letter of Credit: open charges, usance due dates, maturity settlement.
 // ---------------------------------------------------------------------------
 
-// Margin + bank charges voucher when an LC is opened (skipped when both zero).
+// Margin + usance interest + bank charges voucher when an LC is opened
+// (skipped when all three are zero). Interest is simple interest over the
+// usance period: amount x interest_pct x usance_days / 365 — the same
+// day-count convention interest already uses elsewhere in the books.
 export async function postLcOpening(lcId: number): Promise<void> {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [lcId] })
@@ -76,8 +91,9 @@ export async function postLcOpening(lcId: number): Promise<void> {
   const lc = toPlain(res)[0]
   await dropEntry(n(lc.journal_entry_id) || null)
   const margin = round2((n(lc.amount) * n(lc.margin_pct)) / 100)
+  const interest = round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
   const charges = round2(n(lc.charges))
-  if (margin < 0.005 && charges < 0.005) {
+  if (margin < 0.005 && interest < 0.005 && charges < 0.005) {
     await c.execute({ sql: 'UPDATE letters_of_credit SET journal_entry_id = NULL WHERE id = ?', args: [lcId] })
     return
   }
@@ -85,12 +101,13 @@ export async function postLcOpening(lcId: number): Promise<void> {
     date: String(lc.open_date || todayISO()),
     vchType: 'JOURNAL',
     vchNo: String(lc.lc_no || ''),
-    narration: `LC ${lc.lc_no} opened at ${lc.bank} — margin ${margin.toFixed(2)}, charges ${charges.toFixed(2)}`,
+    narration: `LC ${lc.lc_no} opened at ${lc.bank} — margin ${margin.toFixed(2)}, interest ${interest.toFixed(2)}, charges ${charges.toFixed(2)}`,
     companyId: n(lc.company_id) || undefined,
     lines: [
       { account: 'LC MARGIN A/C', group: 'Deposits (Asset)', dr: margin },
+      { account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest },
       { account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: charges },
-      { account: 'BANK A/C', group: 'Bank Accounts', cr: round2(margin + charges) }
+      { account: 'BANK A/C', group: 'Bank Accounts', cr: round2(margin + interest + charges) }
     ]
   })
   await c.execute({ sql: 'UPDATE letters_of_credit SET journal_entry_id = ? WHERE id = ?', args: [je.id, lcId] })
@@ -145,6 +162,118 @@ export async function reopenLcBill(issuanceId: number): Promise<{ id: number }> 
     args: [issuanceId]
   })
   return { id: issuanceId }
+}
+
+// ---------------------------------------------------------------------------
+// LC repayment: money the receivable party sends back against a Trading LC's
+// exposure. Logged first (with its bank document), posted to the books only
+// once confirmed — `posted` is the yes/no gate the notes ask for.
+// ---------------------------------------------------------------------------
+
+export async function listLcRepayments(lcId: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT r.*, cu.name AS party_name FROM lc_repayments r
+          LEFT JOIN customers cu ON cu.id = r.party_id
+          WHERE r.lc_id = ? ORDER BY r.id DESC`,
+    args: [lcId]
+  })
+  return toPlain(res)
+}
+
+// Posts (or re-posts) the repayment's journal entry: the bank receives the
+// money, the receivable party's account is cleared against it.
+async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
+  const c = getClient()
+  const res = await c.execute({
+    sql: `SELECT r.*, l.lc_no, l.company_id, l.receivable_party_id, cu.name AS party_name
+          FROM lc_repayments r
+          JOIN letters_of_credit l ON l.id = r.lc_id
+          LEFT JOIN customers cu ON cu.id = r.party_id
+          WHERE r.id = ?`,
+    args: [repaymentId]
+  })
+  if (!res.rows.length) throw new Error('Repayment not found')
+  const rep = toPlain(res)[0]
+  if (rep.receivable_party_id && n(rep.party_id) !== n(rep.receivable_party_id)) {
+    throw new Error("This repayment's party does not match the party recorded on the LC to receive payment from")
+  }
+  const party = String(rep.party_name || '').trim()
+  if (!party) throw new Error('Pick the party this repayment is coming from')
+  await dropEntry(n(rep.journal_entry_id) || null)
+  const amount = round2(n(rep.amount))
+  const date = String(rep.repay_date || todayISO()).slice(0, 10)
+  const je = await postJournal({
+    date,
+    vchType: 'RECEIPT',
+    vchNo: rep.lc_no ? String(rep.lc_no) : null,
+    narration: `LC ${rep.lc_no} repayment received from ${party}`,
+    companyId: n(rep.company_id) || undefined,
+    lines: [
+      { account: 'BANK A/C', group: 'Bank Accounts', dr: amount },
+      { account: party, group: 'Sundry Debtors', cr: amount }
+    ]
+  })
+  await allocAgainst(je.id, party, null, amount)
+  await c.execute({ sql: 'UPDATE lc_repayments SET journal_entry_id = ? WHERE id = ?', args: [je.id, repaymentId] })
+}
+
+export async function saveLcRepayment(v: Row): Promise<{ id: number }> {
+  const c = getClient()
+  const lcId = n(v.lc_id)
+  if (!lcId) throw new Error('Pick the LC this repayment is against')
+  const amount = n(v.amount)
+  if (amount <= 0) throw new Error('Enter the repayment amount')
+  const posted = v.posted ? 1 : 0
+  const args = [
+    lcId,
+    v.party_id ? n(v.party_id) : null,
+    amount,
+    v.repay_date ? String(v.repay_date).slice(0, 10) : todayISO(),
+    posted,
+    v.document_path ? String(v.document_path) : null,
+    v.note ? String(v.note).trim() : null
+  ]
+  let id: number
+  if (v.id) {
+    id = n(v.id)
+    const prev = await c.execute({ sql: 'SELECT posted, journal_entry_id FROM lc_repayments WHERE id = ?', args: [id] })
+    if (!prev.rows.length) throw new Error('Repayment not found')
+    await c.execute({
+      sql: `UPDATE lc_repayments SET lc_id = ?, party_id = ?, amount = ?, repay_date = ?, posted = ?,
+            document_path = ?, note = ? WHERE id = ?`,
+      args: [...args, id]
+    })
+    if (n(prev.rows[0].posted) && !posted) {
+      await dropEntry(n(prev.rows[0].journal_entry_id) || null)
+      await c.execute({ sql: 'UPDATE lc_repayments SET journal_entry_id = NULL WHERE id = ?', args: [id] })
+    }
+  } else {
+    const ins = await c.execute({
+      sql: `INSERT INTO lc_repayments (lc_id, party_id, amount, repay_date, posted, document_path, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      args
+    })
+    id = Number(ins.lastInsertRowid)
+  }
+  if (posted) {
+    try {
+      await postLcRepaymentEntry(id)
+    } catch (e) {
+      // Never leave a row flagged posted (and so counted against the LC's
+      // outstanding/headroom) when the journal it claims to back doesn't exist.
+      await c.execute({ sql: 'UPDATE lc_repayments SET posted = 0 WHERE id = ?', args: [id] })
+      throw e
+    }
+  }
+  return { id }
+}
+
+export async function deleteLcRepayment(id: number): Promise<{ id: number }> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT journal_entry_id FROM lc_repayments WHERE id = ?', args: [id] })
+  if (res.rows.length && res.rows[0].journal_entry_id) await dropEntry(n(res.rows[0].journal_entry_id))
+  await c.execute({ sql: 'DELETE FROM lc_repayments WHERE id = ?', args: [id] })
+  return { id }
 }
 
 // ---------------------------------------------------------------------------
@@ -323,4 +452,73 @@ export async function treasuryAlerts(): Promise<Row> {
       billsDue.filter((b) => b.days_left < 0).length +
       lcExpiring.filter((l) => (l.days_left as number) < 0).length
   }
+}
+
+// Every payment obligation being run through treasury, in one place — LC
+// bills and discounted bills, regardless of how close their due date is
+// (treasuryAlerts only surfaces what's urgent). One list, one status, one
+// due date, sorted soonest-first, so nothing tracked here needs checking in
+// three different tabs.
+export async function listPaymentTracker(): Promise<Row[]> {
+  const c = getClient()
+  const cid = getActiveCompanyId()
+  const today = todayISO()
+
+  const lcBills = toPlain(
+    await c.execute({
+      sql: `SELECT i.id, i.amount, i.due_date, i.status, i.issue_date,
+                   l.lc_no AS ref, l.bank, s.name AS party, o.invoice_no
+            FROM lc_issuances i
+            JOIN letters_of_credit l ON l.id = i.lc_id
+            LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+            LEFT JOIN orders o ON o.id = i.order_id
+            WHERE l.company_id = ?`,
+      args: [cid]
+    })
+  ).map((r) => ({
+    kind: 'lc_bill' as const,
+    kind_label: 'LC bill',
+    ref: String(r.ref || ''),
+    detail: `${r.bank || ''}${r.invoice_no ? ` · inv ${r.invoice_no}` : ''}`,
+    party: String(r.party || ''),
+    amount: n(r.amount),
+    due_date: r.due_date ? String(r.due_date) : null,
+    status: String(r.status || 'outstanding'),
+    settled: String(r.status || 'outstanding') === 'settled'
+  }))
+
+  const bd = toPlain(
+    await c.execute({
+      sql: `SELECT id, amount, net_received, maturity_date, status, disc_bank, party_name, invoice_group, bill_nos
+            FROM bill_discounts WHERE company_id = ?`,
+      args: [cid]
+    })
+  ).map((r) => ({
+    kind: 'bill_discount' as const,
+    kind_label: 'Bill discounting',
+    ref: String(r.bill_nos || r.invoice_group || ''),
+    detail: String(r.disc_bank || ''),
+    party: String(r.party_name || ''),
+    amount: n(r.amount),
+    due_date: r.maturity_date ? String(r.maturity_date) : null,
+    status: String(r.status || 'outstanding'),
+    settled: String(r.status || '') === 'realized'
+  }))
+
+  const all = [...lcBills, ...bd].map((r) => {
+    const daysLeft = r.due_date ? daysBetween(today, r.due_date) : null
+    return {
+      ...r,
+      days_left: daysLeft,
+      due_period: duePeriodOf(daysLeft),
+      overdue: !r.settled && daysLeft != null && daysLeft < 0
+    }
+  })
+  all.sort((a, b) => {
+    if (a.settled !== b.settled) return a.settled ? 1 : -1 // open items first
+    const ad = a.days_left ?? Infinity
+    const bd2 = b.days_left ?? Infinity
+    return ad - bd2
+  })
+  return all
 }

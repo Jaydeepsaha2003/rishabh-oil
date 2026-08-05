@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { ipcMain, dialog, shell } from 'electron'
 import { ping, bumpRevision, getRevision, initDb, resetClient, getConfiguredUrl } from './db'
 import { saveStoredConfig } from './config'
 import { seedDefaultAdmin } from './auth'
@@ -80,12 +80,16 @@ import { daybook } from './daybook'
 import { dashboardStats } from './dashboard'
 import {
   treasuryAlerts,
+  listPaymentTracker,
   settleLcBill,
   reopenLcBill,
   discountBill,
   realizeBill,
   unrealizeBill,
-  deleteDiscountedBill
+  deleteDiscountedBill,
+  listLcRepayments,
+  saveLcRepayment,
+  deleteLcRepayment
 } from './treasury'
 import {
   createVoucher,
@@ -95,6 +99,7 @@ import {
   trialBalance,
   listGroups,
   listPendingRefs,
+  tradingAccount,
   TALLY_GROUPS,
   type VoucherInput
 } from './accounting'
@@ -277,7 +282,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^gate:partyCategories$|^treasury:alerts$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^files:pickDocument$|^files:openDocument$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -421,6 +426,9 @@ export function registerIpc(): void {
   handle('journal:groups', (_e, args?: { companyId?: number }) => listGroups(args?.companyId))
   handle('journal:groupNames', () => TALLY_GROUPS)
   handle('journal:pendingRefs', (_e, { account, companyId }: { account: string; companyId?: number }) => listPendingRefs(account, companyId))
+  handle('journal:tradingAccount', (_e, { from, to, companyId }: { from?: string; to?: string; companyId?: number }) =>
+    tradingAccount(from, to, companyId)
+  )
   handle('dashboard:stats', () => dashboardStats())
   handle('vouchers:list', (_e, args?: { from?: string; to?: string; vchType?: string; companyId?: number }) =>
     listVouchers(args?.from, args?.to, args?.vchType, args?.companyId)
@@ -568,6 +576,7 @@ export function registerIpc(): void {
 
   handle('lc:list', () => listLCs())
   handle('treasury:alerts', () => treasuryAlerts())
+  handle('treasury:paymentTracker', () => listPaymentTracker())
   handle('treasury:settleLcBill', (_e, { id, date }: { id: number; date?: string }) => settleLcBill(id, date))
   handle('treasury:reopenLcBill', (_e, { id }: { id: number }) => reopenLcBill(id))
   handle('treasury:discount', (_e, { values }: { values: Row }) => discountBill(values))
@@ -580,6 +589,21 @@ export function registerIpc(): void {
   handle('lc:delete', (_e, { id }: { id: number }) => deleteLC(id))
   handle('lc:issue', (_e, { values }: { values: Row }) => issueLC(values))
   handle('lc:deleteIssuance', (_e, { id }: { id: number }) => deleteLCIssuance(id))
+  handle('lc:repayments', (_e, { lcId }: { lcId: number }) => listLcRepayments(lcId))
+  handle('lc:saveRepayment', (_e, { values }: { values: Row }) => saveLcRepayment(values))
+  handle('lc:deleteRepayment', (_e, { id }: { id: number }) => deleteLcRepayment(id))
+
+  // File picker for the repayment's bank document — kept as a plain path to
+  // the source file (no copy) rather than reading it into the DB; "Open" just
+  // hands that path to the OS. Read-only: nothing changes until saved.
+  handle('files:pickDocument', async () => {
+    const r = await dialog.showOpenDialog({ properties: ['openFile'] })
+    return { path: r.canceled || !r.filePaths.length ? null : r.filePaths[0] }
+  })
+  handle('files:openDocument', (_e, { path }: { path: string }) => {
+    void shell.openPath(path)
+    return { ok: true }
+  })
 
   handle('facility:list', () => listFacilities())
   handle('facility:exposures', (_e, { facilityId }: { facilityId: number }) => listFacilityExposures(facilityId))

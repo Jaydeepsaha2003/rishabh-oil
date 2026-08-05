@@ -190,9 +190,8 @@ function Select({ value, onValueChange, disabled, children, searchable }: Select
       ref={panelRef}
       style={portal?.style}
       className={cn(
-        'rounded-md border bg-popover text-popover-foreground shadow-md uppercase',
-        portal ? 'z-[70]' : 'absolute left-0 top-full z-50 mt-1 w-full min-w-[10rem]',
-        contentClassName
+        'overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md uppercase',
+        portal ? 'z-[70]' : 'absolute left-0 top-full z-50 mt-1 w-full min-w-[10rem]'
       )}
     >
       {showSearch && (
@@ -212,8 +211,12 @@ function Select({ value, onValueChange, disabled, children, searchable }: Select
           />
         </div>
       )}
+      {/* The caller's className (e.g. a max-h-* cap) belongs on the scrollable
+          list itself, not the outer panel — putting it on the outer box left
+          it with no overflow control of its own, so a tall list could spill
+          out past the box instead of scrolling inside it. */}
       <div
-        className="max-h-[min(16rem,50vh)] overflow-y-auto p-1"
+        className={cn('max-h-[min(16rem,50vh)] overflow-y-auto p-1', contentClassName)}
         style={portal ? { maxHeight: Math.max(96, portal.listMaxH - (showSearch ? 45 : 0)) } : undefined}
       >
         {filtered.length === 0 ? (

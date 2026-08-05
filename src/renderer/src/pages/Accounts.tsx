@@ -48,7 +48,7 @@ const T = {
 
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
 
-type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg'
+type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg' | 'trading'
 type VchType = 'CONTRA' | 'PAYMENT' | 'RECEIPT' | 'JOURNAL' | 'DEBIT NOTE' | 'CREDIT NOTE'
 
 const VCH_TYPES: { key: VchType; fkey: string; label: string }[] = [
@@ -144,6 +144,15 @@ function AllocPanel({
     Math.round((lineAmount - allocs.reduce((sum, a, j) => (j === skip ? sum : sum + (Number(a.amount) || 0)), 0)) * 100) / 100
   const set = (j: number, patch: Partial<AllocRow>): void =>
     onChange(allocs.map((a, y) => (y === j ? { ...a, ...patch } : a)))
+  // A hand-typed New Ref / Advance that happens to spell an already-tracked
+  // bill exactly gets its amount silently merged into that bill's pending
+  // total on the backend (same ref_name, different row) — inflating it rather
+  // than settling it. Catch the collision here, before it can happen.
+  const knownRefs = new Set(refs.map((r) => String(r.ref).trim().toUpperCase()))
+  const collidesWithKnownBill = (name: string): boolean => {
+    const key = name.trim().toUpperCase()
+    return key.length > 0 && knownRefs.has(key)
+  }
   return (
     <div className="ml-3 mt-1.5 rounded border border-dashed border-amber-300 bg-amber-50/60 px-2.5 py-2">
       <div className="mb-1.5 flex items-center justify-between">
@@ -154,8 +163,11 @@ function AllocPanel({
           {allocs.length === 0 ? 'none — treated as plain balance' : `${formatINR(allocated)} of ${formatINR(lineAmount)} allocated`}
         </span>
       </div>
-      {allocs.map((a, j) => (
-        <div key={j} className="mb-1 grid grid-cols-[120px_1fr_120px_24px] items-center gap-1.5">
+      {allocs.map((a, j) => {
+        const collides = (a.method === 'new_ref' || a.method === 'advance') && collidesWithKnownBill(a.ref_name)
+        return (
+        <Fragment key={j}>
+        <div className="mb-1 grid grid-cols-[120px_1fr_120px_24px] items-center gap-1.5">
           <Select value={a.method} onValueChange={(v) => set(j, { method: v as AllocRow['method'], ref_name: '' })}>
             <SelectTrigger className="h-7 bg-white text-[12px]"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -186,7 +198,7 @@ function AllocPanel({
             <span className="px-1 text-[11px] italic text-muted-foreground">no reference — unallocated</span>
           ) : (
             <Input
-              className="h-7 bg-white text-[12px]"
+              className={cn('h-7 bg-white text-[12px]', collides && 'border-red-500 focus-visible:ring-red-500')}
               placeholder={a.method === 'advance' ? 'Advance reference (e.g. ADV-1)' : 'New reference name'}
               value={a.ref_name}
               onChange={(e) => set(j, { ref_name: e.target.value })}
@@ -206,7 +218,15 @@ function AllocPanel({
             <X className="h-3 w-3" />
           </button>
         </div>
-      ))}
+        {collides && (
+          <p className="mb-1 -mt-0.5 pl-1 text-[10px] font-medium text-red-600">
+            "{a.ref_name}" is already a real bill on this account — use Agst Ref to settle it, or the amount will
+            double up against that bill instead of a new one.
+          </p>
+        )}
+        </Fragment>
+        )
+      })}
       <Button
         variant="ghost"
         size="sm"
@@ -331,11 +351,17 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   const [editingId, setEditingId] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
   const dateRef = useRef<HTMLDivElement | null>(null)
-  // Tally-format payment/receipt entry state.
-  const [payAccount, setPayAccount] = useState<{ account: string; group: string }>({ account: '', group: '' })
+  // Tally-format payment/receipt entry state. The money side is a list too —
+  // a Payment/Receipt can split across more than one cash/bank account, the
+  // same way the party side already allows more than one party.
+  const [payAccounts, setPayAccounts] = useState<PayLine[]>([blankPayLine()])
   // Tally-style GST computation for debit/credit notes: taxable + GST% ->
   // GST leg + round off so the party total lands on a whole rupee.
   const [gstCalc, setGstCalc] = useState({ taxable: '', pct: '5', igst: false })
+  // Rate-difference helper (Journal only): a later price revision on an
+  // already-invoiced purchase/sale, settled through RATE DIFFERENCE A/C
+  // rather than reopening the original document.
+  const [rateDiff, setRateDiff] = useState({ party: '', group: '', amount: '', direction: 'owes_more' as 'owes_more' | 'owes_less' })
   // Tally invoice-mode for Debit/Credit notes: party -> original invoice ->
   // item lines (qty x rate) -> GST + round off, posted through the notes engine.
   const [noteMode, setNoteMode] = useState(true)
@@ -390,6 +416,10 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   const [tagForm, setTagForm] = useState<Row | null>(null)
   // Tag-a-sale-to-bill-discounting dialog — the sales-side mirror of Tag LC.
   const [tagBdForm, setTagBdForm] = useState<Row | null>(null)
+  // Trading Account report — per-oil-code purchase vs sale roll-up.
+  const [tradingRows, setTradingRows] = useState<Row[]>([])
+  const [tradingFrom, setTradingFrom] = useState('')
+  const [tradingTo, setTradingTo] = useState('')
 
   const loadRegisters = useCallback(async () => {
     const [o, s, l] = await Promise.all([
@@ -453,6 +483,15 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   }, [loadTb])
   useLiveRefresh(loadTb)
 
+  const loadTrading = useCallback(async () => {
+    if (screen !== 'trading' || !cid) return
+    setTradingRows(await window.api.journal.tradingAccount(tradingFrom || undefined, tradingTo || undefined, cid))
+  }, [screen, tradingFrom, tradingTo, cid])
+  useEffect(() => {
+    loadTrading()
+  }, [loadTrading])
+  useLiveRefresh(loadTrading)
+
   // ------- voucher helpers -------
   const totals = useMemo(() => {
     const dr = lines.reduce((s, l) => s + (l.side === 'dr' ? Number(l.amount) || 0 : 0), 0)
@@ -484,7 +523,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     setNoteItems([{ product_id: '', qty: '', rate: '' }])
     // Default the money side to the first bank ledger, like Tally remembers one.
     const bank = accounts.find((a) => String(a.name) === 'BANK A/C') || cashBankAccounts[0]
-    setPayAccount(bank ? { account: String(bank.name), group: String(bank.acc_group) } : { account: '', group: '' })
+    setPayAccounts([bank ? { account: String(bank.name), group: String(bank.acc_group), amount: '', allocs: [] } : blankPayLine()])
     setScreen('voucher')
   }
 
@@ -520,6 +559,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   })()
   const cashBankAccounts = accounts.filter((a) => CASH_BANK_GROUPS.includes(String(a.acc_group)))
   const payTotal = payLines.reduce((s, l) => s + (Number(l.amount) || 0), 0)
+  const payAccountTotal = payAccounts.reduce((s, l) => s + (Number(l.amount) || 0), 0)
 
   async function loadRefs(name: string): Promise<void> {
     if (!name || refsCache[name]) return
@@ -533,6 +573,19 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
 
   function setPayLine(i: number, patch: Partial<PayLine>): void {
     setPayLines((p) => p.map((l, j) => (j === i ? { ...l, ...patch } : l)))
+  }
+
+  function setPayAccountLine(i: number, patch: Partial<PayLine>): void {
+    setPayAccounts((p) => p.map((l, j) => (j === i ? { ...l, ...patch } : l)))
+  }
+
+  // Fill a blank money-side amount with whatever the party side still needs —
+  // the same "Tally suggestion" convenience the party lines already get.
+  function suggestPayAccountAmount(i: number): void {
+    if (payAccounts[i].amount) return
+    const restOfMoney = payAccounts.reduce((s, x, j) => (j === i ? s : s + (Number(x.amount) || 0)), 0)
+    const rest = Math.round((payTotal - restOfMoney) * 100) / 100
+    if (rest > 0.004) setPayAccountLine(i, { amount: String(rest) })
   }
 
   // Fill the amount that would balance the voucher — Tally's suggestion.
@@ -582,6 +635,25 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     toast.success(`Taxable ${formatINR(taxable)} + GST ${formatINR(gst)}${Math.abs(ro) >= 0.005 ? ` + round off ${formatINR(ro)}` : ''} = ${formatINR(total)}`)
   }
 
+  // A price revision on an already-invoiced purchase/sale, settled through
+  // RATE DIFFERENCE A/C instead of reopening the original document. "Owes
+  // more" always means the PARTY's own balance grows — which side that is
+  // depends on whether they're a customer (Dr) or a supplier (Cr).
+  function applyRateDiff(): void {
+    if (!rateDiff.party) return void toast.error('Pick the party')
+    const amt = Number(rateDiff.amount) || 0
+    if (amt <= 0) return void toast.error('Enter the rate-difference amount')
+    const isDebtor = rateDiff.group === 'Sundry Debtors'
+    const partySide: 'dr' | 'cr' =
+      rateDiff.direction === 'owes_more' ? (isDebtor ? 'dr' : 'cr') : (isDebtor ? 'cr' : 'dr')
+    const otherSide: 'dr' | 'cr' = partySide === 'dr' ? 'cr' : 'dr'
+    setLines([
+      { side: partySide, account: rateDiff.party, group: rateDiff.group, amount: String(amt), allocs: [] },
+      { side: otherSide, account: 'RATE DIFFERENCE A/C', group: 'Indirect Expenses', amount: String(amt), allocs: [] }
+    ])
+    toast.success(`${formatINR(amt)} rate difference posted ${rateDiff.direction === 'owes_more' ? 'against' : 'in favour of'} ${rateDiff.party}`)
+  }
+
   // Close a sub-rupee Dr/Cr gap with the ROUND OFF ledger — Tally's Alt+R habit.
   function addRoundOffLine(): void {
     const diff = Math.round((totals.dr - totals.cr) * 100) / 100
@@ -628,8 +700,23 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       const structuredLines = (): Row[] => {
         const party = payLines.filter((l) => l.account && Number(l.amount) > 0)
         if (!party.length) throw new Error('Add at least one party line')
-        if (!payAccount.account) throw new Error(`Pick the cash or bank account the money ${vchType === 'PAYMENT' ? 'goes out of' : 'comes into'}`)
+        const money = payAccounts.filter((l) => l.account)
+        if (!money.length) throw new Error(`Pick the cash or bank account the money ${vchType === 'PAYMENT' ? 'goes out of' : 'comes into'}`)
         const total = party.reduce((s, l) => s + Number(l.amount), 0)
+        // One account: it always carries the whole total, same as before this
+        // could split — no need to type an amount that could only ever be one
+        // value. More than one: each carries what was actually typed, and
+        // together they must add up to the party side.
+        const moneyAmounts =
+          money.length === 1
+            ? [total]
+            : money.map((l) => Number(l.amount) || 0)
+        if (money.length > 1) {
+          const moneySum = moneyAmounts.reduce((s, x) => s + x, 0)
+          if (Math.abs(moneySum - total) > 0.005) {
+            throw new Error(`The split across accounts (${moneySum.toFixed(2)}) does not add up to the total (${total.toFixed(2)})`)
+          }
+        }
         return [
           ...party.map((l) => ({
             account: l.account,
@@ -640,12 +727,12 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
               .filter((a) => Number(a.amount) > 0)
               .map((a) => ({ method: a.method, ref_name: a.ref_name || null, amount: Number(a.amount) }))
           })),
-          {
-            account: payAccount.account,
-            group: payAccount.group || undefined,
-            dr: vchType === 'RECEIPT' ? total : 0,
-            cr: vchType === 'PAYMENT' ? total : 0
-          }
+          ...money.map((l, i) => ({
+            account: l.account,
+            group: l.group || undefined,
+            dr: vchType === 'RECEIPT' ? moneyAmounts[i] : 0,
+            cr: vchType === 'PAYMENT' ? moneyAmounts[i] : 0
+          }))
         ]
       }
       const payload = {
@@ -720,15 +807,22 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     )
     for (const l of vLines) if (BILLWISE_GROUPS.includes(String(l.acc_group))) void loadRefs(String(l.account))
     setNoteMode(false)
-    // Payment/receipt vouchers with exactly one money-side line reopen in the
-    // Tally format, bill-wise details included; anything else falls back to
-    // the plain Dr/Cr grid.
+    // Payment/receipt vouchers whose money side is all cash/bank reopen in the
+    // Tally format (one line or a split across several), bill-wise details
+    // included; anything else falls back to the plain Dr/Cr grid.
     if (t === 'PAYMENT' || t === 'RECEIPT') {
       const moneySide = t === 'PAYMENT' ? 'cr' : 'dr'
       const money = vLines.filter((l) => Number(moneySide === 'cr' ? l.cr : l.dr) > 0 && CASH_BANK_GROUPS.includes(String(l.acc_group)))
       const parties = vLines.filter((l) => Number(moneySide === 'cr' ? l.dr : l.cr) > 0)
-      if (money.length === 1 && parties.length >= 1) {
-        setPayAccount({ account: String(money[0].account), group: String(money[0].acc_group || '') })
+      if (money.length >= 1 && parties.length >= 1) {
+        setPayAccounts(
+          money.map((l) => ({
+            account: String(l.account),
+            group: String(l.acc_group || ''),
+            amount: String(Number(moneySide === 'cr' ? l.cr : l.dr)),
+            allocs: []
+          }))
+        )
         setPayLines(
           parties.map((l) => ({
             account: String(l.account),
@@ -775,7 +869,8 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       // creating it here just registers it immediately for picking.
       await window.api.journal.createAccount(name, newLedger.group)
       await loadAccounts()
-      if (newLedger.target === 'payAccount') setPayAccount({ account: name, group: newLedger.group })
+      if (newLedger.target === 'payAccount' && newLedger.index != null)
+        setPayAccountLine(newLedger.index, { account: name, group: newLedger.group })
       else if (newLedger.target === 'payLine' && newLedger.index != null)
         setPayLine(newLedger.index, { account: name, group: newLedger.group })
       else if (newLedger.forLine != null) setLine(newLedger.forLine, { account: name, group: newLedger.group })
@@ -794,7 +889,8 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       { key: 'S', label: 'Sales Register', icon: Receipt, go: () => setScreen('salesreg') },
       { key: 'D', label: 'Day Book', icon: BookOpenText, go: () => setScreen('daybook') },
       { key: 'L', label: 'Ledger Accounts', icon: Wallet, go: () => setScreen('ledger') },
-      { key: 'T', label: 'Trial Balance', icon: Scale, go: () => setScreen('trial') }
+      { key: 'T', label: 'Trial Balance', icon: Scale, go: () => setScreen('trial') },
+      { key: 'U', label: 'Trading Account', icon: ArrowLeftRight, go: () => setScreen('trading') }
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
@@ -893,7 +989,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, gwIndex, viewRow, newLedger, editingId, lines, payLines, payAccount, rawAlter, vchDate, vchNo, narration, vchType, saving, onExit, company, companies, coIndex])
+  }, [screen, gwIndex, viewRow, newLedger, editingId, lines, payLines, payAccounts, rawAlter, vchDate, vchNo, narration, vchType, saving, onExit, company, companies, coIndex])
 
   // ------- derived -------
   const ledgerAccount = accounts.find((a) => Number(a.id) === ledgerId)
@@ -1016,6 +1112,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       <FKey k="D" label="Day Book" active={screen === 'daybook'} onClick={() => setScreen('daybook')} />
       <FKey k="L" label="Ledgers" active={screen === 'ledger'} onClick={() => setScreen('ledger')} />
       <FKey k="T" label="Trial Balance" active={screen === 'trial'} onClick={() => setScreen('trial')} />
+      <FKey k="U" label="Trading Account" active={screen === 'trading'} onClick={() => setScreen('trading')} />
       {screen === 'ledger' && (
         <>
           <div className="my-1 border-t border-white/20" />
@@ -1112,19 +1209,54 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
 
         {structured && (
           <div className="px-4 py-3">
-            <div className="mb-3 flex flex-wrap items-end gap-3">
-              <div className="grid w-80 gap-1">
-                <Label className="text-[10px] uppercase tracking-wide">
-                  Account — {vchType === 'PAYMENT' ? 'paid out of' : 'received into'}
-                </Label>
-                <AccountPicker
-                  value={payAccount.account}
-                  accounts={cashBankAccounts}
-                  onPick={(name, group) => setPayAccount({ account: name, group })}
-                  onCreate={(q) => setNewLedger({ name: q, group: 'Bank Accounts', forLine: null, target: 'payAccount' })}
-                />
+            <div className="mb-3">
+              <Label className="text-[10px] uppercase tracking-wide">
+                Account{payAccounts.length > 1 ? 's' : ''} — {vchType === 'PAYMENT' ? 'paid out of' : 'received into'}
+              </Label>
+              <div className="mt-1 rounded border" style={{ borderColor: '#d9d2b8' }}>
+                {payAccounts.map((l, i) => (
+                  <div key={i} className="flex items-center gap-2 border-b border-dotted px-2 py-1.5 last:border-0" style={{ borderColor: '#e5dfc8' }}>
+                    <div className="w-80">
+                      <AccountPicker
+                        value={l.account}
+                        accounts={cashBankAccounts}
+                        autoFocus={i === 0}
+                        onPick={(name, group) => setPayAccountLine(i, { account: name, group })}
+                        onCreate={(q) => setNewLedger({ name: q, group: 'Bank Accounts', forLine: null, target: 'payAccount', index: i })}
+                      />
+                    </div>
+                    {/* With a single account the amount is always the full total —
+                        the input only appears once the money is actually split
+                        across more than one, so the common case stays simple. */}
+                    {payAccounts.length > 1 && (
+                      <>
+                        <Input
+                          type="number"
+                          className="h-8 w-32 bg-white text-right tabular-nums"
+                          value={l.amount}
+                          onFocus={() => suggestPayAccountAmount(i)}
+                          onChange={(e) => setPayAccountLine(i, { amount: e.target.value })}
+                        />
+                        <button
+                          type="button"
+                          className="cursor-pointer text-muted-foreground hover:text-red-600"
+                          onClick={() => setPayAccounts((p) => p.filter((_, j) => j !== i))}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ))}
+                <div className="px-2 py-1">
+                  <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setPayAccounts((p) => [...p, blankPayLine()])}>
+                    <Plus className="h-3.5 w-3.5" /> Split across another account
+                  </Button>
+                </div>
               </div>
-              <span className="pb-2 text-[11px] text-muted-foreground">cash and bank ledgers only</span>
+              <span className="text-[11px] text-muted-foreground">
+                cash and bank ledgers only{payAccounts.length > 1 ? ` · total ${formatINR(payAccountTotal)}` : ''}
+              </span>
             </div>
 
             <div className="rounded border" style={{ borderColor: '#d9d2b8' }}>
@@ -1199,7 +1331,11 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
               <div className="flex items-center justify-between border-t-2 px-3 py-2 font-semibold" style={{ borderColor: '#1a2c56' }}>
                 <span className="text-[12px]">
                   {vchType === 'PAYMENT' ? 'Total paid' : 'Total received'}
-                  {payAccount.account ? ` — ${vchType === 'PAYMENT' ? 'Cr' : 'Dr'} ${payAccount.account}` : ''}
+                  {payAccounts.length === 1 && payAccounts[0].account
+                    ? ` — ${vchType === 'PAYMENT' ? 'Cr' : 'Dr'} ${payAccounts[0].account}`
+                    : payAccounts.length > 1
+                      ? ` — split across ${payAccounts.length} accounts`
+                      : ''}
                 </span>
                 <span className="tabular-nums">{formatINR(payTotal)}</span>
               </div>
@@ -1385,6 +1521,51 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
           </div>
         )}
 
+        {!structured && !noteInvoiceMode && vchType === 'JOURNAL' && (
+          <div className="mx-4 mt-3 flex flex-wrap items-end gap-3 rounded border border-dashed border-sky-300 bg-sky-50/60 px-3 py-2">
+            <span className="pb-1.5 text-[10px] font-bold uppercase tracking-widest text-sky-800">Rate difference helper</span>
+            <div className="grid w-56 gap-1">
+              <Label className="text-[10px] uppercase tracking-wide">Party</Label>
+              <AccountPicker
+                value={rateDiff.party}
+                accounts={accounts.filter((a) => a.acc_group === 'Sundry Debtors' || a.acc_group === 'Sundry Creditors')}
+                onPick={(name, group) => {
+                  setRateDiff((p) => ({ ...p, party: name, group }))
+                  void loadRefs(name)
+                }}
+                onCreate={(q) => setNewLedger({ name: q, group: '', forLine: null })}
+              />
+            </div>
+            <div className="grid gap-1">
+              <Label className="text-[10px] uppercase tracking-wide">Direction</Label>
+              <Select value={rateDiff.direction} onValueChange={(v) => setRateDiff((p) => ({ ...p, direction: v as 'owes_more' | 'owes_less' }))}>
+                <SelectTrigger className="h-8 w-40 bg-white text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="owes_more">Rate went up</SelectItem>
+                  <SelectItem value="owes_less">Rate went down</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1">
+              <Label className="text-[10px] uppercase tracking-wide">Amount (₹)</Label>
+              <Input
+                type="number"
+                className="h-8 w-32 bg-white text-right tabular-nums"
+                value={rateDiff.amount}
+                onChange={(e) => setRateDiff((p) => ({ ...p, amount: e.target.value }))}
+              />
+            </div>
+            <Button size="sm" variant="outline" className="h-8 bg-white text-xs" onClick={applyRateDiff}>
+              Build the legs
+            </Button>
+            <span className="pb-1.5 text-[11px] text-sky-800">
+              {rateDiff.party
+                ? `${rateDiff.direction === 'owes_more' ? 'Party owes more' : 'Party owes less'} against RATE DIFFERENCE A/C — settle bill-wise below if it's against a specific invoice.`
+                : "For a price revision on a bill already invoiced — settles through RATE DIFFERENCE A/C without reopening it."}
+            </span>
+          </div>
+        )}
+
         {!structured && !noteInvoiceMode && (
         <table className="w-full text-[13px]">
           <thead>
@@ -1416,13 +1597,17 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                 <td className="px-2 py-1.5">
                   <AccountPicker
                     value={l.account}
-                    accounts={accounts}
+                    // Contra only ever moves money between cash and bank — offering
+                    // every ledger here just let a wrong pick through to a
+                    // confusing rejection at save time instead of not being
+                    // choosable in the first place.
+                    accounts={vchType === 'CONTRA' ? cashBankAccounts : accounts}
                     autoFocus={i === 0}
                     onPick={(name, group) => {
                       setLine(i, { account: name, group, allocs: [] })
                       void loadRefs(name)
                     }}
-                    onCreate={(q) => setNewLedger({ name: q, group: '', forLine: i })}
+                    onCreate={(q) => setNewLedger({ name: q, group: vchType === 'CONTRA' ? 'Bank Accounts' : '', forLine: i })}
                   />
                 </td>
                 <td className="px-2 py-1.5">
@@ -1596,7 +1781,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       if (regFunding === 'lc' && !s.discount_id) return false
       if (regFunding === 'nolc' && s.discount_id) return false
       if (!q) return true
-      return [s.invoice_no, s.customer, s.product_name, s.discount_bank]
+      return [s.invoice_no, s.customer, s.product_name, s.discount_bank, s.gate_vehicle_no]
         .filter(Boolean).join(' ').toLowerCase().includes(q)
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1793,6 +1978,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
               <tr className="bg-[#f1ecd9] text-left text-[10px] uppercase tracking-widest text-muted-foreground">
                 <th className="px-3 py-2 font-semibold">Date</th>
                 <th className="px-3 py-2 font-semibold">Invoice</th>
+                <th className="px-3 py-2 font-semibold">Vehicle</th>
                 <th className="px-3 py-2 font-semibold">Customer</th>
                 <th className="px-3 py-2 font-semibold">Product</th>
                 <th className="px-3 py-2 text-right font-semibold">Qty</th>
@@ -1805,7 +1991,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
             </thead>
             <tbody>
               {salesRegRows.length === 0 ? (
-                <tr><td colSpan={10} className="py-12 text-center text-muted-foreground">No sales for this filter.</td></tr>
+                <tr><td colSpan={11} className="py-12 text-center text-muted-foreground">No sales for this filter.</td></tr>
               ) : (
                 salesRegRows.map((s) => {
                   const net = n(s.amount) + n(s.gst_amount) + n(s.round_off)
@@ -1815,6 +2001,16 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                     <tr key={String(s.id)} className="border-b border-dotted border-[#e5dfc8] hover:bg-amber-100/60">
                       <td className="whitespace-nowrap px-3 py-1.5 tabular-nums">{formatDate(s.sale_date)}</td>
                       <td className="px-3 py-1.5 font-medium">{s.invoice_no || '—'}</td>
+                      <td className="px-3 py-1.5">
+                        {s.gate_vehicle_no ? (
+                          <span className="inline-flex items-center gap-1">
+                            <span className="font-medium">{s.gate_vehicle_no}</span>
+                            <span className="text-[10px] text-muted-foreground">{s.gate_entry_no}</span>
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-muted-foreground">not gated out</span>
+                        )}
+                      </td>
                       <td className="max-w-[180px] truncate px-3 py-1.5" title={String(s.customer || '')}>{s.customer || '—'}</td>
                       <td className="px-3 py-1.5 text-muted-foreground">{s.product_name || '—'}</td>
                       <td className="px-3 py-1.5 text-right tabular-nums">{n(s.qty)} {s.uom || 'MT'}</td>
@@ -1877,7 +2073,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
             {salesRegRows.length > 0 && (
               <tfoot className="sticky bottom-0">
                 <tr className="border-t-2 border-amber-500 bg-amber-100 font-semibold">
-                  <td className="px-3 py-2 text-[11px] uppercase tracking-wide text-amber-900" colSpan={5}>
+                  <td className="px-3 py-2 text-[11px] uppercase tracking-wide text-amber-900" colSpan={6}>
                     {salesRegRows.length} sale{salesRegRows.length === 1 ? '' : 's'}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-amber-900">{formatINR(salesTotals.net)}</td>
@@ -2238,6 +2434,76 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     </div>
   )
 
+  const tradingTotals = tradingRows.reduce(
+    (a, r) => ({
+      pq: a.pq + n(r.purchase_qty), pv: a.pv + n(r.purchase_value),
+      sq: a.sq + n(r.sale_qty), sv: a.sv + n(r.sale_value), gross: a.gross + n(r.gross)
+    }),
+    { pq: 0, pv: 0, sq: 0, sv: 0, gross: 0 }
+  )
+
+  const tradingScreen = (
+    <div className="flex-1 p-3">
+      <div className={cn('rounded-md border shadow-lg', T.paperEdge, T.paper)}>
+        <div className={cn('flex flex-wrap items-center gap-3 rounded-t-md px-4 py-2', T.headBar)}>
+          <span className="text-[13px] font-bold uppercase tracking-widest">Trading Account</span>
+          <div className="ml-auto flex items-center gap-2">
+            <FyPicker from={tradingFrom} to={tradingTo} onRange={(f, t) => { setTradingFrom(f); setTradingTo(t) }} className="h-9 w-28 bg-white text-xs" />
+            <div className="w-40"><DatePicker value={tradingFrom} onChange={setTradingFrom} /></div>
+            <span className="text-[11px]">to</span>
+            <div className="w-40"><DatePicker value={tradingTo} onChange={setTradingTo} /></div>
+          </div>
+        </div>
+        <div className="max-h-[calc(100vh-225px)] overflow-auto">
+          <table className="w-full text-[13px]">
+            <thead className="sticky top-0 bg-[#f1ecd9]">
+              <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                <th className="px-4 py-1.5">Oil</th>
+                <th className="px-2 py-1.5 text-right">Purchase Qty</th>
+                <th className="px-2 py-1.5 text-right">Purchase Value</th>
+                <th className="px-2 py-1.5 text-right">Sale Qty</th>
+                <th className="px-2 py-1.5 text-right">Sale Value</th>
+                <th className="px-2 py-1.5 text-right">Gross</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tradingRows.length === 0 ? (
+                <tr><td colSpan={6} className="py-12 text-center text-muted-foreground">No purchase/sale activity for this range.</td></tr>
+              ) : (
+                tradingRows.map((r) => (
+                  <tr key={String(r.code)} className="border-b border-dotted hover:bg-amber-100/70" style={{ borderColor: '#e5dfc8' }}>
+                    <td className="px-4 py-1.5 font-medium">{r.name || r.code}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{n(r.purchase_qty) ? n(r.purchase_qty) : ''}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{n(r.purchase_value) ? formatINR(r.purchase_value) : ''}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{n(r.sale_qty) ? n(r.sale_qty) : ''}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{n(r.sale_value) ? formatINR(r.sale_value) : ''}</td>
+                    <td className={cn('px-2 py-1.5 text-right font-medium tabular-nums', n(r.gross) < -0.005 ? 'text-rose-700' : 'text-emerald-700')}>
+                      {formatINR(r.gross)}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+            {tradingRows.length > 0 && (
+              <tfoot>
+                <tr className="border-t-2 font-bold" style={{ borderColor: '#1a2c56' }}>
+                  <td className="px-4 py-2">Grand total</td>
+                  <td className="px-2 py-2 text-right tabular-nums">{tradingTotals.pq}</td>
+                  <td className="px-2 py-2 text-right tabular-nums">{formatINR(tradingTotals.pv)}</td>
+                  <td className="px-2 py-2 text-right tabular-nums">{tradingTotals.sq}</td>
+                  <td className="px-2 py-2 text-right tabular-nums">{formatINR(tradingTotals.sv)}</td>
+                  <td className={cn('px-2 py-2 text-right tabular-nums', tradingTotals.gross < -0.005 ? 'text-rose-700' : 'text-emerald-700')}>
+                    {formatINR(tradingTotals.gross)}
+                  </td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+
   return (
     <div className={cn('fixed inset-0 z-50 flex flex-col overflow-auto', T.frame)}>
       <div className="flex shrink-0 items-center gap-3 px-4 pb-1 pt-2">
@@ -2296,6 +2562,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
             {screen === 'daybook' && daybookScreen}
             {screen === 'ledger' && ledgerScreen}
             {screen === 'trial' && trialScreen}
+            {screen === 'trading' && tradingScreen}
           </div>
           {rightBar}
         </div>
@@ -2427,7 +2694,14 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
               >
                 <SelectTrigger><SelectValue placeholder="Pick a Tally group" /></SelectTrigger>
                 <SelectContent className="max-h-72">
-                  {groupNames.map((g) => (
+                  {(
+                    // Creating the money-side ledger for a Payment/Receipt, or
+                    // either side of a Contra, must land in a cash/bank group —
+                    // anything else would fail the same check a moment later.
+                    newLedger?.target === 'payAccount' || (newLedger?.forLine != null && vchType === 'CONTRA')
+                      ? groupNames.filter((g) => CASH_BANK_GROUPS.includes(g.name))
+                      : groupNames
+                  ).map((g) => (
                     <SelectItem key={g.name} value={g.name}>{g.name}</SelectItem>
                   ))}
                 </SelectContent>

@@ -20,7 +20,9 @@ function n(v: unknown): number {
   return Number.isFinite(x) ? x : 0
 }
 
-// LCs / discounting facilities with their utilisation (sum of issuances).
+// LCs / discounting facilities with their utilisation (sum of issuances),
+// the invoice they're linked to, the party repayment is expected from, the
+// opening-amount breakdown, and how much of the exposure has been repaid.
 export async function listLCs(): Promise<Row[]> {
   const res = await getClient().execute({
     args: [getActiveCompanyId()],
@@ -28,16 +30,38 @@ export async function listLCs(): Promise<Row[]> {
     SELECT l.*,
       s.name AS supplier_name,
       f.name AS facility_name,
+      o.invoice_no AS linked_invoice_no,
+      o.net_amount AS linked_invoice_amount,
+      rp.name AS receivable_party_name,
       COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS utilized,
-      l.amount - COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS available
+      l.amount - COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS available,
+      COALESCE((SELECT SUM(amount) FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid,
+      (SELECT MIN(due_date) FROM lc_issuances WHERE lc_id = l.id AND COALESCE(status, 'outstanding') != 'settled') AS next_due_date
     FROM letters_of_credit l
     LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
     LEFT JOIN bank_facilities f ON f.id = l.facility_id
+    LEFT JOIN orders o ON o.id = l.linked_order_id
+    LEFT JOIN customers rp ON rp.id = l.receivable_party_id
     WHERE l.company_id = ?
     ORDER BY l.id DESC
   `
   })
-  return toPlain(res)
+  return toPlain(res).map((l) => {
+    const invoiceAmount = l.linked_invoice_amount != null ? n(l.linked_invoice_amount) : n(l.amount)
+    const margin = Math.round((invoiceAmount * n(l.margin_pct)) / 100 * 100) / 100
+    const charges = Math.round(n(l.charges) * 100) / 100
+    // Trading LCs are only "compliant" once they carry both the invoice they
+    // were opened against and the party repayment will come from — without
+    // either, the register can't be trusted to reconcile on its own.
+    const compliant = String(l.purpose || '') !== 'trading' || (!!l.linked_order_id && !!l.receivable_party_id)
+    return {
+      ...l,
+      lc_opening_amount: Math.round((invoiceAmount + margin + charges) * 100) / 100,
+      outstanding: Math.round((n(l.amount) - n(l.repaid)) * 100) / 100,
+      compliant,
+      display_status: !compliant ? 'non_compliant' : String(l.workflow_status || 'in_progress')
+    }
+  })
 }
 
 export async function listLCIssuances(lcId: number): Promise<Row[]> {
@@ -67,13 +91,18 @@ const LC_COLS = [
   'status',
   'note',
   'facility_id',
-  'purpose'
+  'purpose',
+  'linked_order_id',
+  'receivable_party_id',
+  'workflow_status'
 ]
 
 function lcArgs(v: Row): (string | number | null)[] {
   return LC_COLS.map((k) => {
     const val = v[k]
-    if (val === '' || val === undefined || val === null) return null
+    if (val === '' || val === undefined || val === null) {
+      return k === 'workflow_status' ? 'in_progress' : null
+    }
     if (
       k === 'party_id' ||
       k === 'amount' ||
@@ -81,7 +110,9 @@ function lcArgs(v: Row): (string | number | null)[] {
       k === 'charges' ||
       k === 'usance_days' ||
       k === 'margin_pct' ||
-      k === 'facility_id'
+      k === 'facility_id' ||
+      k === 'linked_order_id' ||
+      k === 'receivable_party_id'
     ) {
       return n(val)
     }

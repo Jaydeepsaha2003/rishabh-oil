@@ -439,6 +439,11 @@ export async function listPendingRefs(accountName: string, companyId?: number): 
     bills.push(...toPlain(r))
   }
 
+  // A real bill's ref name, before anything hand-typed can touch it — a New
+  // Ref/Advance that happens to spell the same name as an actual invoice must
+  // never inflate that invoice's total, only its own separate running total.
+  const realRefs = new Set(bills.map((b) => String(b.ref)))
+
   // References this ledger's vouchers created (advances, opening bills) and
   // everything already settled against each reference.
   const made = await c.execute({
@@ -451,6 +456,13 @@ export async function listPendingRefs(accountName: string, companyId?: number): 
     args: [accountId, cid]
   })
   for (const m of toPlain(made)) {
+    if (realRefs.has(String(m.ref))) {
+      // Don't just drop it — a colliding New Ref/Advance is a real amount
+      // someone allocated, it just can't share the real bill's row. Keep it
+      // visible as its own flagged line so it gets reconciled, not lost.
+      bills.push({ ...m, ref: `${m.ref} (duplicate ref — check this)` })
+      continue
+    }
     const hit = bills.find((b) => String(b.ref) === String(m.ref))
     if (hit) hit.amount = n(hit.amount) + n(m.amount)
     else bills.push(m)
@@ -477,4 +489,54 @@ export async function listPendingRefs(accountName: string, companyId?: number): 
     }))
     .filter((b) => b.pending > 0.005)
     .sort((a, b) => a.bill_date.localeCompare(b.bill_date))
+}
+
+// Turnover per oil, over a period: what was loaded in (purchases) against
+// what went out (sales) — quantity and value both, so this doubles as the
+// oil-loading figures and the trading/turnover account in one table instead
+// of two disconnected screens.
+export async function tradingAccount(from?: string, to?: string, companyId?: number): Promise<Row[]> {
+  const c = getClient()
+  const cid = companyId || getActiveCompanyId()
+  const f = from || '0000-01-01'
+  const t = to || '9999-12-31'
+
+  const purchases = await c.execute({
+    sql: `SELECT COALESCE(NULLIF(p.code, ''), p.name) AS code, p.name AS name,
+                 SUM(COALESCE(o.received_qty, o.ordered_qty)) AS qty, SUM(o.taxable_value) AS value
+          FROM orders o JOIN products p ON p.id = o.oil_type_id
+          WHERE o.company_id = ? AND o.order_date BETWEEN ? AND ?
+          GROUP BY code`,
+    args: [cid, f, t]
+  })
+
+  const sales = await c.execute({
+    sql: `SELECT COALESCE(NULLIF(p.code, ''), p.name) AS code, p.name AS name,
+                 SUM(s.qty) AS qty, SUM(s.amount) AS value
+          FROM sales s JOIN products p ON p.id = s.product_id
+          WHERE s.company_id = ? AND s.sale_date BETWEEN ? AND ? AND s.status = 'done'
+          GROUP BY code`,
+    args: [cid, f, t]
+  })
+
+  const m = new Map<string, Row>()
+  for (const r of toPlain(purchases)) {
+    m.set(String(r.code), {
+      code: r.code, name: r.name,
+      purchase_qty: n(r.qty), purchase_value: n(r.value),
+      sale_qty: 0, sale_value: 0
+    })
+  }
+  for (const r of toPlain(sales)) {
+    const key = String(r.code)
+    const g = m.get(key) || { code: key, name: r.name, purchase_qty: 0, purchase_value: 0, sale_qty: 0, sale_value: 0 }
+    g.sale_qty = n(r.qty)
+    g.sale_value = n(r.value)
+    m.set(key, g)
+  }
+  const list: Row[] = Array.from(m.values()).map((g) => ({
+    ...g,
+    gross: Math.round((n(g.sale_value) - n(g.purchase_value)) * 100) / 100
+  }))
+  return list.sort((a, b) => String(a.code).localeCompare(String(b.code)))
 }

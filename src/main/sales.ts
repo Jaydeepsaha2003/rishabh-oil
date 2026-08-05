@@ -148,13 +148,27 @@ async function postCustomerReceivable(
 }
 
 // Tally journal for a sale: Dr Customer (incl. GST), Cr {FG} SALE A/C (taxable),
-// Cr GST OUTPUT A/C (output gst).
-async function postSaleEntry(saleId: number, v: Row, taxable: number, gst: number, roundOff = 0): Promise<void> {
+// Cr GST OUTPUT A/C (output gst), and — for a FOR delivery — Dr Freight
+// Outward / Cr Transporter, so freight actually lands in the books instead of
+// only the informal transporter/customer ledgers postSaleFreight maintains.
+async function postSaleEntry(
+  saleId: number,
+  v: Row,
+  taxable: number,
+  gst: number,
+  roundOff = 0,
+  freightAmount = 0
+): Promise<void> {
   const prod = await getClient().execute({
     sql: 'SELECT code, name FROM products WHERE id = ?',
     args: [n(v.product_id)]
   })
   const code = String(prod.rows[0]?.code || prod.rows[0]?.name || 'FG').toUpperCase()
+  let transporterName: string | null = null
+  if (freightAmount > 0 && v.transporter_id) {
+    const t = await getClient().execute({ sql: 'SELECT name FROM transporters WHERE id = ?', args: [n(v.transporter_id)] })
+    transporterName = t.rows.length ? String(t.rows[0].name) : null
+  }
   await postSaleJournal({
     saleId,
     date: String(v.sale_date),
@@ -163,7 +177,9 @@ async function postSaleEntry(saleId: number, v: Row, taxable: number, gst: numbe
     customerName: String(v.customer || '').trim(),
     amount: taxable,
     gst,
-    roundOff
+    roundOff,
+    freightAmount,
+    transporterName
   }).catch((e) => console.error('[journal] sale post failed:', (e as Error).message))
 }
 
@@ -200,7 +216,19 @@ export async function listSales(): Promise<Row[]> {
            (SELECT bd.maturity_date FROM bill_discounts bd
              WHERE bd.invoice_group = s.invoice_group AND s.invoice_group IS NOT NULL LIMIT 1) AS discount_due,
            COALESCE((SELECT SUM(cl.amount) FROM customer_ledger cl
-                      WHERE cl.sale_id = s.id AND cl.entry_type = 'payment'), 0) AS received_amount
+                      WHERE cl.sale_id = s.id AND cl.entry_type = 'payment'), 0) AS received_amount,
+           -- The vehicle that actually carried this invoice out, from the
+           -- gate register — Gate Out already links to a sale by invoice
+           -- group; this is that link read back onto the invoice itself.
+           (SELECT ge.tanker_no FROM gate_entries ge
+             WHERE ge.direction = 'out' AND ge.invoice_group = s.invoice_group AND s.invoice_group IS NOT NULL
+             ORDER BY ge.id DESC LIMIT 1) AS gate_vehicle_no,
+           (SELECT ge.gate_entry_no FROM gate_entries ge
+             WHERE ge.direction = 'out' AND ge.invoice_group = s.invoice_group AND s.invoice_group IS NOT NULL
+             ORDER BY ge.id DESC LIMIT 1) AS gate_entry_no,
+           (SELECT ge.status FROM gate_entries ge
+             WHERE ge.direction = 'out' AND ge.invoice_group = s.invoice_group AND s.invoice_group IS NOT NULL
+             ORDER BY ge.id DESC LIMIT 1) AS gate_status
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id
     LEFT JOIN sales_bargains sb ON sb.id = s.sales_bargain_id
@@ -576,11 +604,16 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   // A finished good WITH a formulation is made-to-order: dispatching it consumes
   // the recipe's raw/intermediate inputs (via a linked auto-production), not
   // finished stock. Without a formulation it draws finished stock as before.
-  const hasFormula = await productHasFormulation(productId)
+  // Trading: bought from one party and resold straight to another — no
+  // formulation draw, no stock guard, and (affects_stock, below) never counted
+  // in stock at all, on either the purchase or the sale side.
+  const isTrading = !!v.is_trading
+  const hasFormula = !isTrading && (await productHasFormulation(productId))
   // Off-stock: dispatch is allowed without booking stock only when explicitly
-  // forced (confirmed in the UI). Such a sale is not stock-tracked.
-  const trackStock = isDispatched(stage) && v.force_no_stock ? 0 : 1
-  if (isDispatched(stage)) {
+  // forced (confirmed in the UI) or the sale is a Trading pass-through. Such a
+  // sale is not stock-tracked.
+  const trackStock = isTrading || (isDispatched(stage) && v.force_no_stock) ? 0 : 1
+  if (isDispatched(stage) && !isTrading) {
     if (hasFormula) {
       if (!v.force_no_stock) await assertRawForFinished(productId, qty)
     } else if (trackStock === 1) {
@@ -593,8 +626,8 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   const res = await getClient().execute({
     sql: `INSERT INTO sales (company_id, sale_date, invoice_no, invoice_group, customer, customer_id, product_id, sales_bargain_id,
             qty, uom, rate, amount, gst_pct, gst_amount, gst_type, round_off, status, dispatch_stage, track_stock, loaded_date, transit_date, unloaded_date, note, sale_type, packaging_id, boxes, pouches, freight_term,
-            transporter_id, transport_rate, transport_amount)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            transporter_id, transport_rate, transport_amount, is_trading, affects_stock)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       v.sale_date,
@@ -626,7 +659,9 @@ export async function createSale(v: Row): Promise<{ id: number }> {
       v.freight_term === 'DLD' ? 'DLD' : 'FREIGHT_ON_GOODS',
       v.transporter_id ? n(v.transporter_id) : null,
       n(v.transport_rate),
-      transportAmount
+      transportAmount,
+      isTrading ? 1 : 0,
+      isTrading ? 0 : 1
     ]
   })
   const id = Number(res.lastInsertRowid)
@@ -636,7 +671,7 @@ export async function createSale(v: Row): Promise<{ id: number }> {
     await createSaleProduction(id, productId, qty, prodDate, uom)
   }
   await postCustomerReceivable(id, customerId, net, String(v.sale_date))
-  await postSaleEntry(id, v, amount, gstAmount, roundOff)
+  await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount)
   await postSaleFreight(id, v, qty)
   return { id }
 }
@@ -668,12 +703,13 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   const stage: DispatchStage = exTerm ? 'unloaded' : stageOf(v)
   const status = statusForStage(stage)
   const dates = resolveStageDates(stage, v, (exTerm && String(v.sale_date || '')) || todayLocal())
-  const hasFormula = await productHasFormulation(productId)
+  const isTrading = !!v.is_trading
+  const hasFormula = !isTrading && (await productHasFormulation(productId))
   // Keeping/putting this sale in a dispatched stage must be backed by stock:
   // formulation goods by their raw inputs, plain goods by finished stock —
-  // unless explicitly forced off-stock.
-  const trackStock = isDispatched(stage) && v.force_no_stock ? 0 : 1
-  if (isDispatched(stage)) {
+  // unless explicitly forced off-stock, or it's a Trading pass-through.
+  const trackStock = isTrading || (isDispatched(stage) && v.force_no_stock) ? 0 : 1
+  if (isDispatched(stage) && !isTrading) {
     if (hasFormula) {
       if (!v.force_no_stock) await assertRawForFinished(productId, qty, id)
     } else if (trackStock === 1) {
@@ -729,7 +765,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
     await deleteSaleProductions(id)
   }
   await postCustomerReceivable(id, customerId, net, String(v.sale_date))
-  await postSaleEntry(id, v, amount, gstAmount, roundOff)
+  await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount)
   await postSaleFreight(id, v, qty)
   return { id }
 }
@@ -826,7 +862,8 @@ function mergeInvoiceItem(header: Row, item: Row, group: string): Row {
     loaded_date: header.loaded_date,
     transit_date: header.transit_date,
     unloaded_date: header.unloaded_date,
-    force_no_stock: header.force_no_stock
+    force_no_stock: header.force_no_stock,
+    is_trading: header.is_trading
   }
 }
 

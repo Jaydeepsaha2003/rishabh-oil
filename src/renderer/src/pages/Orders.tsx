@@ -214,13 +214,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const [formPage, setFormPage] = useState(false)
   const [editing, setEditing] = useState<Row | null>(null)
   const [form, setForm] = useState<Row>({})
+  const [products, setProducts] = useState<Row[]>([])
   const [selected, setSelected] = useState<number[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [o, pt, b, s, src, tr, cfg, ge, um, co, act] = await Promise.all([
+    const [o, pt, b, s, src, tr, cfg, ge, um, co, act, prod] = await Promise.all([
       window.api.orders.list(),
       window.api.tankers.list(),
       window.api.bargains.list(),
@@ -231,7 +232,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       window.api.gate.list(),
       window.api.orders.unmapped(),
       window.api.company.list(),
-      window.api.company.getActive()
+      window.api.company.getActive(),
+      window.api.data.list('products')
     ])
     setRows(o)
     setTankers(pt)
@@ -244,6 +246,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     setUnmapped(um)
     setCompanies(co.filter((x) => x.active))
     setActiveCompany(Number(act?.id) || 0)
+    setProducts(prod.filter((x) => x.active))
     setLoading(false)
   }, [])
 
@@ -953,6 +956,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       !!suppliers.find((s) => String(s.id) === String(form.supplier_id || ''))?.skip_tanker_stages,
     [suppliers, form.supplier_id, editing]
   )
+  // Trading: bought from one party and sold straight to another. No bargain,
+  // no tanker, and (on the backend) never counted in stock — a standalone mode,
+  // not a variant of the direct/consignment flow above (that one still assumes
+  // real consignment stock, which a Trading purchase has none of).
+  const isTrading = !!(editing ? editing.is_trading : form.is_trading)
   // Consignment tankers logged for this supplier that no purchase has drawn yet
   // — the purchase form offers these first, then a bargain is assigned to them.
   const [lots, setLots] = useState<Row[]>([])
@@ -1269,7 +1277,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   }, [directMode, bargains, form.bargain_id])
   // Direct purchases add up the consignment tankers they draw; with no tankers
   // logged the quantity is typed in instead.
-  const totalQty = directMode
+  const totalQty = directMode || isTrading
     ? Number(form.ordered_qty) || 0
     : chosenTankers.reduce((sum, x) => sum + Number(x.loaded_qty || 0), 0)
   // Quantity-weighted average bargain rate across the allocation.
@@ -1368,7 +1376,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   async function savePurchase(): Promise<void> {
     if (!form.company_id) return setError('Choose the company this purchase belongs to')
     if (!form.supplier_id) return setError('Select the supplier')
-    if (directMode) {
+    if (isTrading) {
+      if (!form.oil_type_id) return setError('Choose the product being invoiced')
+      if (totalQty <= 0) return setError('Enter the quantity being invoiced')
+    } else if (directMode) {
       if (!form.oil_type_id) return setError('Choose the product being invoiced')
       if (totalQty <= 0) return setError('Enter the quantity being invoiced')
       if (directAvailable != null && totalQty > directAvailable + 1e-6) {
@@ -1401,21 +1412,23 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       gst_pct: Number(form.gst_pct) || 0,
       tds_pct: Number(form.tds_pct) || 0,
       company_id: Number(form.company_id) || undefined,
-      tanker_ids: directMode ? [] : selected,
-      is_consignment: directMode,
+      tanker_ids: directMode || isTrading ? [] : selected,
+      is_consignment: !isTrading && directMode,
+      is_trading: isTrading,
+      bargain_id: isTrading ? null : form.bargain_id,
       consignment_lot_ids: [],
-      bargain_lines: directMode
+      bargain_lines: !isTrading && directMode
         ? bgLines
             .filter((l) => l.bargain_id && (Number(l.qty) || 0) > 0)
             .map((l) => ({ bargain_id: Number(l.bargain_id), qty: Number(l.qty) || 0 }))
         : [],
-      transporter_id: directMode || !form.transporter_id ? null : Number(form.transporter_id),
+      transporter_id: directMode || isTrading || !form.transporter_id ? null : Number(form.transporter_id),
       allowed_shortage_pct:
         form.allowed_shortage_pct === '' || form.allowed_shortage_pct == null
           ? null
           : Number(form.allowed_shortage_pct),
       round_off: Number(form.round_off) || 0,
-      financed_by_party: !directMode && selected.length > 0 && financedCount === selected.length,
+      financed_by_party: !directMode && !isTrading && selected.length > 0 && financedCount === selected.length,
       payment_date: form.order_date
     }
     try {
@@ -1542,7 +1555,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             <span className="ml-auto text-[11px] font-medium">
               {form.invoice_no ? `No ${form.invoice_no}` : 'No: not yet given'}
               {form.order_date ? ` · ${formatDate(form.order_date)}` : ''}
-              {directMode ? ' · direct, no tanker movement' : ''}
+              {isTrading ? ' · trading, no bargain/stock' : directMode ? ' · direct, no tanker movement' : ''}
             </span>
           </div>
 
@@ -1591,12 +1604,26 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       </SelectContent>
                     </Select>
                     <span className="text-[11px] text-muted-foreground">
-                      {directMode
-                        ? 'Direct-purchase supplier — pick the bargain and quantity below; no tankers are involved.'
-                        : form.bargain_id
-                          ? `Bargain ${bargains.find((b) => String(b.id) === String(form.bargain_id))?.bargain_no || ''} — taken from the selected tankers.`
-                          : 'The bargain is picked up automatically from the tankers you select.'}
+                      {isTrading
+                        ? 'Trading purchase — no bargain, no tanker; not counted in stock.'
+                        : directMode
+                          ? 'Direct-purchase supplier — pick the bargain and quantity below; no tankers are involved.'
+                          : form.bargain_id
+                            ? `Bargain ${bargains.find((b) => String(b.id) === String(form.bargain_id))?.bargain_no || ''} — taken from the selected tankers.`
+                            : 'The bargain is picked up automatically from the tankers you select.'}
                     </span>
+                  </div>
+                  <div className="grid gap-1.5 md:col-span-3">
+                    <label className={cn('flex items-center gap-2 text-[13px]', !!editing && 'opacity-50')}>
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={isTrading}
+                        disabled={!!editing}
+                        onChange={(e) => setForm((p) => ({ ...p, is_trading: e.target.checked }))}
+                      />
+                      Trading purchase — bought to resell straight through, no bargain, does not affect stock
+                    </label>
                   </div>
                   <div className="grid gap-1.5">
                     <Label>Invoice number *</Label>
@@ -1633,7 +1660,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm">
                       {tankerTransporterName || (
                         <span className="text-muted-foreground">
-                          {directMode
+                          {directMode || isTrading
                             ? 'Not applicable — direct purchase'
                             : chosenTankers.length
                               ? 'Supplier-delivered / from tankers'
@@ -1642,7 +1669,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       )}
                     </div>
                     <span className="text-[11px] text-muted-foreground">
-                      {directMode ? 'No tanker movement, so no transporter.' : 'Taken from the selected tankers.'}
+                      {directMode || isTrading ? 'No tanker movement, so no transporter.' : 'Taken from the selected tankers.'}
                     </span>
                   </div>
                   <div className={cn('grid gap-1.5', !tankerTransporterId && 'opacity-50')}>
@@ -1734,7 +1761,49 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 </div>
               </section>
 
-              {directMode ? (
+              {isTrading ? (
+                <section className="rounded border border-teal-300 bg-teal-50/40 p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
+                  <div className="mb-3 flex items-center justify-between gap-3 border-b border-dotted border-teal-200 pb-1.5">
+                    <h3 className="text-[11px] font-bold uppercase tracking-widest text-teal-900">Trading — no bargain, no stock</h3>
+                    <Badge className="bg-teal-600 hover:bg-teal-600">Trading</Badge>
+                  </div>
+                  {!form.supplier_id ? (
+                    <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
+                      Select the supplier first.
+                    </div>
+                  ) : (
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="grid gap-1.5">
+                        <Label>Product *</Label>
+                        <Select
+                          value={String(form.oil_type_id || '')}
+                          onValueChange={(v) => setForm((p) => ({ ...p, oil_type_id: v }))}
+                          disabled={!!editing}
+                        >
+                          <SelectTrigger><SelectValue placeholder="Select the product" /></SelectTrigger>
+                          <SelectContent className="max-h-64">
+                            {products.map((p) => (
+                              <SelectItem key={String(p.id)} value={String(p.id)}>{p.code || p.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label>Quantity to invoice * ({form.uom || 'MT'})</Label>
+                        <Input
+                          type="number"
+                          value={form.ordered_qty ?? ''}
+                          placeholder="0.000"
+                          onChange={(e) => setForm((p) => ({ ...p, ordered_qty: e.target.value }))}
+                        />
+                      </div>
+                      <div className="md:col-span-2 rounded-md border border-teal-200 bg-white/60 px-3 py-2 text-xs text-teal-900">
+                        Bought from this supplier, resold straight to a customer — no bargain is drawn and this quantity never enters or leaves stock.
+                      </div>
+                    </div>
+                  )}
+                </section>
+              ) : directMode ? (
                 <section className="rounded border border-violet-300 bg-violet-50/40 p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
                   <div className="mb-3 flex items-center justify-between gap-3 border-b border-dotted border-violet-200 pb-1.5">
                     <h3 className="text-[11px] font-bold uppercase tracking-widest text-violet-900">Direct purchase — no tanker movement</h3>
@@ -2024,7 +2093,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               <h3 className="mb-2 border-b border-[#d9d2b8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
                 Purchase summary
               </h3>
-              {directMode ? (
+              {isTrading ? (
+                <>
+                  <MoneyRow label="Purchase type" value="Trading — no bargain, no stock" />
+                  <MoneyRow label="Quantity invoiced" value={`${formatNum(totalQty)} ${form.uom || 'MT'}`} strong />
+                </>
+              ) : directMode ? (
                 <>
                   <MoneyRow label="Purchase type" value="Direct — no tanker movement" />
                   {directAvailable != null && (
@@ -2522,7 +2596,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           <TableCell className="text-right tabular-nums">{formatINR(r.invoice_rate)}</TableCell>
                           <TableCell className="text-right font-semibold tabular-nums">{formatINR(r.taxable_value)}</TableCell>
                           <TableCell className="max-w-[160px] truncate text-muted-foreground">
-                            {r.tanker_nos || (Number(r.is_consignment) === 1 ? 'consignment' : '—')}
+                            {r.tanker_nos || (Number(r.is_trading) === 1 ? 'trading' : Number(r.is_consignment) === 1 ? 'consignment' : '—')}
                           </TableCell>
                           <TableCell>
                             <Badge variant={Number(r.was_linked) === 1 ? 'destructive' : 'warning'}>

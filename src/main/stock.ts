@@ -30,10 +30,12 @@ export async function stockLevels(
   // Each movement source with its effective date. Note the sold query counts
   // OFF-STOCK (track_stock = 0) sales too: off-stock only means the
   // not-enough-stock guard was skipped at dispatch; the goods still physically
-  // left, so stock must reflect it (and may go negative).
+  // left, so stock must reflect it (and may go negative). Trading purchases/
+  // sales (affects_stock = 0) are the one true exclusion: goods bought and
+  // sold straight through, on our books but never on our floor.
   const SOURCES = {
     received: {
-      base: `SELECT oil_type_id AS pid, SUM(received_qty) AS q FROM orders WHERE status = 'received' AND company_id IN (${ph})`,
+      base: `SELECT oil_type_id AS pid, SUM(received_qty) AS q FROM orders WHERE status = 'received' AND COALESCE(affects_stock, 1) = 1 AND company_id IN (${ph})`,
       date: 'COALESCE(received_date, order_date)',
       group: 'GROUP BY oil_type_id'
     },
@@ -49,7 +51,7 @@ export async function stockLevels(
       group: 'GROUP BY i.product_id'
     },
     sold: {
-      base: `SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status = 'done' AND company_id IN (${ph})`,
+      base: `SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status = 'done' AND COALESCE(affects_stock, 1) = 1 AND company_id IN (${ph})`,
       date: 'COALESCE(unloaded_date, sale_date)',
       group: 'GROUP BY product_id'
     },
@@ -144,7 +146,7 @@ export async function productValuationRates(): Promise<Map<number, number>> {
   // Raw / purchased: weighted average of adjusted landed rate over received qty.
   const raw = await c.execute({
     sql: `SELECT oil_type_id AS pid, SUM(adjusted_rate * received_qty) AS v, SUM(received_qty) AS q
-          FROM orders WHERE status = 'received' AND company_id = ?
+          FROM orders WHERE status = 'received' AND COALESCE(affects_stock, 1) = 1 AND company_id = ?
           GROUP BY oil_type_id`,
     args: [cid]
   })
@@ -200,10 +202,10 @@ async function productStockForCompany(companyId: number, productId: number): Pro
     const r = await c.execute({ sql, args: [companyId, productId] })
     return Number(r.rows[0]?.q) || 0
   }
-  const rec = await one("SELECT COALESCE(SUM(received_qty), 0) AS q FROM orders WHERE status = 'received' AND company_id = ? AND oil_type_id = ?")
+  const rec = await one("SELECT COALESCE(SUM(received_qty), 0) AS q FROM orders WHERE status = 'received' AND COALESCE(affects_stock, 1) = 1 AND company_id = ? AND oil_type_id = ?")
   const prod = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM production WHERE company_id = ? AND product_id = ?')
   const cons = await one('SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE p.company_id = ? AND i.product_id = ?')
-  const sld = await one("SELECT COALESCE(SUM(qty), 0) AS q FROM sales WHERE status = 'done' AND company_id = ? AND product_id = ?")
+  const sld = await one("SELECT COALESCE(SUM(qty), 0) AS q FROM sales WHERE status = 'done' AND COALESCE(affects_stock, 1) = 1 AND company_id = ? AND product_id = ?")
   const tIn = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE to_company_id = ? AND product_id = ?')
   const tOut = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE from_company_id = ? AND product_id = ?')
   return rec + prod + tIn - cons - sld - tOut
@@ -251,7 +253,7 @@ export async function stockPartyBreakdown(
           FROM orders o
           LEFT JOIN suppliers s ON s.id = o.supplier_id
           LEFT JOIN companies co ON co.id = o.company_id
-          WHERE o.status = 'received' AND o.company_id IN (${ph}) ${recB.sql}
+          WHERE o.status = 'received' AND COALESCE(o.affects_stock, 1) = 1 AND o.company_id IN (${ph}) ${recB.sql}
           GROUP BY o.oil_type_id, s.name, o.company_id
           HAVING SUM(o.received_qty) > 0
           ORDER BY qty DESC`,
@@ -268,7 +270,7 @@ export async function stockPartyBreakdown(
           FROM sales s
           LEFT JOIN customers cu ON cu.id = s.customer_id
           LEFT JOIN companies co ON co.id = s.company_id
-          WHERE s.status = 'done' AND s.company_id IN (${ph}) ${dispB.sql}
+          WHERE s.status = 'done' AND COALESCE(s.affects_stock, 1) = 1 AND s.company_id IN (${ph}) ${dispB.sql}
           GROUP BY s.product_id, COALESCE(cu.name, s.customer), s.company_id
           HAVING SUM(s.qty) > 0
           ORDER BY qty DESC`,
@@ -299,7 +301,7 @@ export async function productStockAvailable(
   const exP = opts.excludeProductionId
   const exS = opts.excludeSaleId
   const rec = await one(
-    "SELECT COALESCE(SUM(received_qty), 0) AS q FROM orders WHERE status = 'received' AND company_id = ? AND oil_type_id = ?",
+    "SELECT COALESCE(SUM(received_qty), 0) AS q FROM orders WHERE status = 'received' AND COALESCE(affects_stock, 1) = 1 AND company_id = ? AND oil_type_id = ?",
     [cid, productId]
   )
   const prod = await one(
@@ -311,7 +313,7 @@ export async function productStockAvailable(
     exP ? [cid, productId, exP] : [cid, productId]
   )
   const sld = await one(
-    `SELECT COALESCE(SUM(qty), 0) AS q FROM sales WHERE status = 'done' AND company_id = ? AND product_id = ?${exS ? ' AND id <> ?' : ''}`,
+    `SELECT COALESCE(SUM(qty), 0) AS q FROM sales WHERE status = 'done' AND COALESCE(affects_stock, 1) = 1 AND company_id = ? AND product_id = ?${exS ? ' AND id <> ?' : ''}`,
     exS ? [cid, productId, exS] : [cid, productId]
   )
   const tIn = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE to_company_id = ? AND product_id = ?', [cid, productId])
@@ -400,7 +402,7 @@ export async function productionNeeds(): Promise<Row[]> {
   }
 
   const pending = await num(
-    "SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status != 'done' AND company_id = ? GROUP BY product_id",
+    "SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status != 'done' AND COALESCE(affects_stock, 1) = 1 AND company_id = ? GROUP BY product_id",
     'pid'
   )
 

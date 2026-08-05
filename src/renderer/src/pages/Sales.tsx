@@ -999,6 +999,18 @@ function SalesTab({
               </Select>
             </div>
             <div className="grid gap-1.5">
+              <label className={cn('flex items-center gap-2 text-[13px]', !!editingGroup && 'opacity-50')}>
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={!!header.is_trading}
+                  disabled={!!editingGroup}
+                  onChange={(e) => setHeaderField('is_trading', e.target.checked)}
+                />
+                Trading sale — resold from a trading purchase, does not affect stock
+              </label>
+            </div>
+            <div className="grid gap-1.5">
               <Label>Freight term</Label>
               <Select value={header.freight_term || 'FREIGHT_ON_GOODS'} onValueChange={(v) => setHeaderField('freight_term', v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>

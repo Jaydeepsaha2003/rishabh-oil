@@ -117,6 +117,8 @@ const api = {
     groups: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('journal:groups', { companyId }),
     groupNames: (): Promise<{ name: string; nature: string }[]> => ipcRenderer.invoke('journal:groupNames'),
     pendingRefs: (account: string, companyId?: number): Promise<Row[]> => ipcRenderer.invoke('journal:pendingRefs', { account, companyId }),
+    tradingAccount: (from?: string, to?: string, companyId?: number): Promise<Row[]> =>
+      ipcRenderer.invoke('journal:tradingAccount', { from, to, companyId }),
     accounts: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('journal:accounts', { companyId }),
     createAccount: (name: string, group?: string): Promise<{ id: number }> =>
       ipcRenderer.invoke('journal:createAccount', { name, group }),
@@ -281,6 +283,7 @@ const api = {
   },
   treasury: {
     alerts: (): Promise<Row> => ipcRenderer.invoke('treasury:alerts'),
+    paymentTracker: (): Promise<Row[]> => ipcRenderer.invoke('treasury:paymentTracker'),
     settleLcBill: (id: number, date?: string): Promise<{ id: number }> =>
       ipcRenderer.invoke('treasury:settleLcBill', { id, date }),
     reopenLcBill: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('treasury:reopenLcBill', { id }),
@@ -298,7 +301,17 @@ const api = {
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('lc:delete', { id }),
     issue: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('lc:issue', { values }),
     removeIssuance: (id: number): Promise<{ id: number }> =>
-      ipcRenderer.invoke('lc:deleteIssuance', { id })
+      ipcRenderer.invoke('lc:deleteIssuance', { id }),
+    repayments: (lcId: number): Promise<Row[]> => ipcRenderer.invoke('lc:repayments', { lcId }),
+    saveRepayment: (values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('lc:saveRepayment', { values }),
+    removeRepayment: (id: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('lc:deleteRepayment', { id })
+  },
+  files: {
+    pickDocument: (): Promise<{ path: string | null }> => ipcRenderer.invoke('files:pickDocument'),
+    openDocument: (path: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('files:openDocument', { path })
   },
   facility: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('facility:list'),

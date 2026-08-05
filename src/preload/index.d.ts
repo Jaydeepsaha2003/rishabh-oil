@@ -86,6 +86,7 @@ export interface Api {
     groups: (companyId?: number) => Promise<Row[]>
     groupNames: () => Promise<{ name: string; nature: string }[]>
     pendingRefs: (account: string, companyId?: number) => Promise<Row[]>
+    tradingAccount: (from?: string, to?: string, companyId?: number) => Promise<Row[]>
     accounts: (companyId?: number) => Promise<Row[]>
     createAccount: (name: string, group?: string) => Promise<{ id: number }>
     statement: (accountId: number, companyId?: number) => Promise<Row[]>
@@ -206,6 +207,7 @@ export interface Api {
   }
   treasury: {
     alerts: () => Promise<Row>
+    paymentTracker: () => Promise<Row[]>
     settleLcBill: (id: number, date?: string) => Promise<{ id: number }>
     reopenLcBill: (id: number) => Promise<{ id: number }>
     discount: (values: Row) => Promise<{ id: number }>
@@ -221,6 +223,13 @@ export interface Api {
     remove: (id: number) => Promise<{ id: number }>
     issue: (values: Row) => Promise<{ id: number }>
     removeIssuance: (id: number) => Promise<{ id: number }>
+    repayments: (lcId: number) => Promise<Row[]>
+    saveRepayment: (values: Row) => Promise<{ id: number }>
+    removeRepayment: (id: number) => Promise<{ id: number }>
+  }
+  files: {
+    pickDocument: () => Promise<{ path: string | null }>
+    openDocument: (path: string) => Promise<{ ok: boolean }>
   }
   facility: {
     list: () => Promise<Row[]>

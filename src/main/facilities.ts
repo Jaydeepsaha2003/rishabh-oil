@@ -22,7 +22,8 @@ const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
 export async function listFacilities(): Promise<Row[]> {
   const res = await getClient().execute({
     sql: `SELECT f.*,
-            COALESCE((SELECT SUM(l.amount) FROM letters_of_credit l
+            COALESCE((SELECT SUM(l.amount - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
+                       WHERE r.lc_id = l.id AND r.posted = 1), 0)) FROM letters_of_credit l
                        WHERE l.facility_id = f.id AND l.status != 'closed'), 0) AS lc_committed,
             COALESCE((SELECT SUM(i.amount) FROM lc_issuances i
                        JOIN letters_of_credit l2 ON l2.id = i.lc_id
@@ -151,8 +152,9 @@ export async function facilityHeadroom(facilityId: number, excludeLcId = 0): Pro
   const f = await c.execute({ sql: 'SELECT * FROM bank_facilities WHERE id = ?', args: [facilityId] })
   if (!f.rows.length) throw new Error('That facility no longer exists')
   const lc = await c.execute({
-    sql: `SELECT COALESCE(SUM(amount), 0) AS a FROM letters_of_credit
-          WHERE facility_id = ? AND status != 'closed' AND id != ?`,
+    sql: `SELECT COALESCE(SUM(l.amount - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
+                 WHERE r.lc_id = l.id AND r.posted = 1), 0)), 0) AS a
+          FROM letters_of_credit l WHERE l.facility_id = ? AND l.status != 'closed' AND l.id != ?`,
     args: [facilityId, excludeLcId]
   })
   const other = await c.execute({

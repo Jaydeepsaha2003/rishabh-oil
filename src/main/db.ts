@@ -617,7 +617,38 @@ const MIGRATIONS = [
   // A hand-written reference kept alongside the auto-generated bargain_no —
   // e.g. the number the party quotes on their own paperwork — never used for
   // anything but display.
-  'ALTER TABLE sales_bargains ADD COLUMN manual_bargain_no TEXT'
+  'ALTER TABLE sales_bargains ADD COLUMN manual_bargain_no TEXT',
+  // Trading LCs: the purchase invoice the LC was opened against, the party the
+  // sale proceeds (repayment) will come from, and a workflow status distinct
+  // from the open/utilized/closed lifecycle — the notes ask for In Progress /
+  // On Hold as something the user sets, separate from whether it's drawn.
+  'ALTER TABLE letters_of_credit ADD COLUMN linked_order_id INTEGER',
+  'ALTER TABLE letters_of_credit ADD COLUMN receivable_party_id INTEGER',
+  "ALTER TABLE letters_of_credit ADD COLUMN workflow_status TEXT NOT NULL DEFAULT 'in_progress'",
+  // A repayment against an LC's exposure — the money coming back from the
+  // receivable party. `posted` gates whether it has hit the books yet: a
+  // repayment can be logged (with its bank document) before being confirmed.
+  `CREATE TABLE IF NOT EXISTS lc_repayments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lc_id INTEGER NOT NULL REFERENCES letters_of_credit(id),
+    party_id INTEGER,
+    amount REAL NOT NULL DEFAULT 0,
+    repay_date TEXT,
+    posted INTEGER NOT NULL DEFAULT 0,
+    document_path TEXT,
+    journal_entry_id INTEGER,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_lc_repayments_lc ON lc_repayments(lc_id)',
+  // Trading purchases/sales: bought from one party and sold straight to
+  // another, never actually landing in our stock — no bargain, no tanker,
+  // and (the one thing nothing else already gave us) excluded from every
+  // stock computation via affects_stock.
+  'ALTER TABLE orders ADD COLUMN is_trading INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE orders ADD COLUMN affects_stock INTEGER NOT NULL DEFAULT 1',
+  'ALTER TABLE sales ADD COLUMN is_trading INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE sales ADD COLUMN affects_stock INTEGER NOT NULL DEFAULT 1'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

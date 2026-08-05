@@ -443,7 +443,11 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   // No tanker movement: the goods are already at our site, so the invoice is
   // booked in one step (no transporter, straight to 'received'). Either an
   // explicit consignment draw or a supplier the master flags as direct.
-  const isConsignment = !!v.is_consignment || !!supplier?.skip_tanker_stages
+  // Trading: bought and sold straight through, no bargain and no tanker — it
+  // takes the same no-movement booking path as a consignment/direct purchase,
+  // it just also never lands in stock (affects_stock, set below).
+  const isTrading = !!v.is_trading
+  const isConsignment = !!v.is_consignment || !!supplier?.skip_tanker_stages || isTrading
   // Tankers picked from Log Consignment Stock, each with the bargain(s) it draws
   // against. The invoiced quantity is their sum, exactly as a tanker-based
   // invoice adds up its loaded qty. Validated up front so a bad pick never
@@ -476,8 +480,10 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     // Whenever the party actually holds stock with us, the invoice can never
     // draw more than its balance — whether the tankers were named or the
     // quantity typed. A plain direct-purchase supplier holds nothing, so it is
-    // unrestricted.
-    const deposited = await consignmentDeposited(n(v.supplier_id), n(v.oil_type_id))
+    // unrestricted. A Trading purchase never draws on consigned stock at all —
+    // it is a separate pass-through deal, not a draw against what that
+    // supplier has deposited with us.
+    const deposited = isTrading ? 0 : await consignmentDeposited(n(v.supplier_id), n(v.oil_type_id))
     if (deposited > 0) {
       const avail = await consignmentAvailable(n(v.supplier_id), n(v.oil_type_id))
       if (n(v.ordered_qty) > avail + 1e-6) {
@@ -524,8 +530,9 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
        gst_pct, gst_type, gst_amount, tds_pct, tds_amount, round_off, net_amount,
        final_taxable_value, final_gst_amount, final_tds_amount, final_net_amount,
        tanker_no, transporter_id, allowed_shortage_pct, is_registered_transporter, posting, financed_by_party,
-       payment_cleared_date, remarks, freight_paid_to_supplier, is_consignment, received_qty, received_date, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       payment_cleared_date, remarks, freight_paid_to_supplier, is_consignment, received_qty, received_date, status,
+       is_trading, affects_stock)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       bookInCompany,
       v.invoice_no,
@@ -567,7 +574,9 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       // consignment goods are already at site → received on booking
       isConsignment ? n(v.ordered_qty) : null,
       isConsignment ? v.order_date : null,
-      isConsignment ? 'received' : 'loaded'
+      isConsignment ? 'received' : 'loaded',
+      isTrading ? 1 : 0,
+      isTrading ? 0 : 1
     ]
   })
   const id = Number(res.lastInsertRowid)
