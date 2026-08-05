@@ -659,6 +659,14 @@ const MIGRATIONS = [
   "ALTER TABLE letters_of_credit ADD COLUMN stage TEXT NOT NULL DEFAULT 'application'",
   // The fixed deposit lodged as security for the LC — mandatory in the UI.
   'ALTER TABLE letters_of_credit ADD COLUMN fd_no TEXT',
+  // Entered at the Payment received stage, alongside maturity date — usance
+  // days (relabeled Interest days) is then calculated from the two rather
+  // than typed by hand.
+  'ALTER TABLE letters_of_credit ADD COLUMN payment_received_date TEXT',
+  // open_date already carries the Application date (see the earlier
+  // Open date -> Application date relabel); the LC's actual opening — a
+  // later, separate step — gets its own column.
+  'ALTER TABLE letters_of_credit ADD COLUMN opened_date TEXT',
   // Which of the party's open invoices this LC covers — one LC can now cover
   // several, so it's a table rather than the single linked_order_id column.
   `CREATE TABLE IF NOT EXISTS lc_linked_orders (

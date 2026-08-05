@@ -1073,11 +1073,12 @@ function SalesTab({
               <div className="grid gap-1.5">
                 <Label>Freight rate / unit</Label>
                 <Input type="number" className="bg-white" value={header.transport_rate ?? ''} onChange={(e) => setHeaderField('transport_rate', e.target.value)} />
+                <span className="text-[10px] text-muted-foreground">per case for a packed item, per MT for a loose one</span>
               </div>
               <p className="col-span-full text-[11px] text-sky-800">
                 {header.deduct_freight
-                  ? 'Freight is posted to the transporter ledger per item (rate × qty) and deducted from what the customer owes — the invoice total excludes it.'
-                  : 'Freight is posted to the transporter ledger per item (rate × qty) and recovered from the customer on top of the invoice total.'}
+                  ? 'Freight is posted to the transporter ledger per item (rate × cases, or rate × MT if loose) and deducted from what the customer owes — the invoice total excludes it.'
+                  : 'Freight is posted to the transporter ledger per item (rate × cases, or rate × MT if loose) and recovered from the customer on top of the invoice total.'}
               </p>
             </div>
           )}

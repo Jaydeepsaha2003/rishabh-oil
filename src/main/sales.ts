@@ -545,6 +545,25 @@ async function resolveSaleQty(v: Row): Promise<{ qty: number; uom: string }> {
   return { qty: n(v.qty), uom: target }
 }
 
+// Freight is billed per the unit the transporter actually charges against —
+// per CASE for a packed dispatch, per TONNE (the resolved sale qty) for a
+// loose one — not the tonnage-equivalent quantity resolveSaleQty resolves
+// for stock-drawing purposes (1000 cases of 15kg reads as 15 MT there, but
+// the transporter's rate is quoted per case, not per those 15 MT).
+async function resolveFreightQty(v: Row, qty: number): Promise<number> {
+  if (String(v.sale_type) === 'PACKED' && v.packaging_id) {
+    const p = await getClient().execute({
+      sql: 'SELECT pouches_per_box FROM packagings WHERE id = ?',
+      args: [n(v.packaging_id)]
+    })
+    const ppb = p.rows.length ? n(p.rows[0].pouches_per_box) : 0
+    const boxes = n(v.boxes)
+    const pouches = n(v.pouches)
+    return ppb > 0 ? boxes + pouches / ppb : boxes
+  }
+  return qty
+}
+
 // DLD deliveries: we manage the transporter, so post the freight to the
 // transporter ledger (we owe them) and recover it from the customer (they owe
 // us). Freight-on-goods deliveries post nothing. Replaces any prior entries.
@@ -624,8 +643,9 @@ export async function createSale(v: Row): Promise<{ id: number }> {
       await assertFinishedStock(productId, qty, await productLabel(productId))
     }
   }
+  const freightQty = await resolveFreightQty(v, qty)
   const transportAmount = String(v.freight_term) === 'DLD'
-    ? (n(v.transport_amount) > 0 ? n(v.transport_amount) : qty * n(v.transport_rate))
+    ? (n(v.transport_amount) > 0 ? n(v.transport_amount) : freightQty * n(v.transport_rate))
     : 0
   const res = await getClient().execute({
     sql: `INSERT INTO sales (company_id, sale_date, invoice_no, invoice_group, customer, customer_id, product_id, sales_bargain_id,
@@ -677,7 +697,7 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   }
   await postCustomerReceivable(id, customerId, net, String(v.sale_date))
   await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount)
-  await postSaleFreight(id, v, qty)
+  await postSaleFreight(id, v, freightQty)
   return { id }
 }
 
@@ -721,8 +741,9 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       await assertFinishedStock(productId, qty, await productLabel(productId), id)
     }
   }
+  const freightQty = await resolveFreightQty(v, qty)
   const transportAmount = String(v.freight_term) === 'DLD'
-    ? (n(v.transport_amount) > 0 ? n(v.transport_amount) : qty * n(v.transport_rate))
+    ? (n(v.transport_amount) > 0 ? n(v.transport_amount) : freightQty * n(v.transport_rate))
     : 0
   await getClient().execute({
     sql: `UPDATE sales SET sale_date = ?, invoice_no = ?, customer = ?, customer_id = ?, product_id = ?, sales_bargain_id = ?,
@@ -772,7 +793,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   }
   await postCustomerReceivable(id, customerId, net, String(v.sale_date))
   await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount)
-  await postSaleFreight(id, v, qty)
+  await postSaleFreight(id, v, freightQty)
   return { id }
 }
 

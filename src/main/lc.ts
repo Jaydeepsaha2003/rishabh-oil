@@ -118,7 +118,9 @@ const LC_COLS = [
   'receivable_party_id',
   'workflow_status',
   'stage',
-  'fd_no'
+  'fd_no',
+  'payment_received_date',
+  'opened_date'
 ]
 
 function lcArgs(v: Row): (string | number | null)[] {
@@ -162,10 +164,30 @@ async function assertWithinFacility(v: Row, excludeLcId = 0): Promise<void> {
   }
 }
 
+// A Trading LC's open amount is a limit against the invoices it covers — it
+// must never be struck for more than what those invoices actually total.
+async function assertWithinInvoiceCover(v: Row): Promise<void> {
+  if (String(v.purpose || '') !== 'trading') return
+  const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x: unknown) => n(x)).filter((x: number) => x > 0) : []
+  if (!ids.length) return
+  const res = await getClient().execute({
+    sql: `SELECT COALESCE(SUM(net_amount), 0) AS total FROM orders WHERE id IN (${ids.map(() => '?').join(', ')})`,
+    args: ids
+  })
+  const total = n(res.rows[0]?.total)
+  const amount = n(v.amount)
+  if (amount > total + 0.005) {
+    throw new Error(
+      `The open amount (${amount.toFixed(2)}) cannot exceed the ${total.toFixed(2)} total of the selected invoices.`
+    )
+  }
+}
+
 export async function createLC(v: Row): Promise<{ id: number }> {
   if (!v.lc_no || !v.bank) throw new Error('LC number and bank are required')
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v)
+  await assertWithinInvoiceCover(v)
   const res = await getClient().execute({
     sql: `INSERT INTO letters_of_credit (company_id, ${LC_COLS.join(', ')})
           VALUES (?, ${LC_COLS.map(() => '?').join(', ')})`,
@@ -181,6 +203,7 @@ export async function createLC(v: Row): Promise<{ id: number }> {
 export async function updateLC(id: number, v: Row): Promise<{ id: number }> {
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v, id)
+  await assertWithinInvoiceCover(v)
   await getClient().execute({
     sql: `UPDATE letters_of_credit SET ${LC_COLS.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`,
     args: [...lcArgs(v), id]
