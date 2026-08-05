@@ -51,6 +51,7 @@ import { exportRowsToExcel } from '@/lib/excel'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useCategories } from '@/lib/useCategories'
+import { useGlobalDateRange } from '@/lib/globalDateRange'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -180,6 +181,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
   const [dateTo, setDateTo] = useState(todayISO())
   const F = dateFrom || '0000-01-01'
   const T = dateTo || todayISO()
+  // Alt+F2 broadcasts a period from anywhere — adopt it here too.
+  const globalRange = useGlobalDateRange()
+  useEffect(() => {
+    if (globalRange.version > 0) { setDateFrom(globalRange.from); setDateTo(globalRange.to) }
+  }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Row | null>(null)

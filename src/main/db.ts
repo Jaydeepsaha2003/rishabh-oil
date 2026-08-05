@@ -648,7 +648,27 @@ const MIGRATIONS = [
   'ALTER TABLE orders ADD COLUMN is_trading INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE orders ADD COLUMN affects_stock INTEGER NOT NULL DEFAULT 1',
   'ALTER TABLE sales ADD COLUMN is_trading INTEGER NOT NULL DEFAULT 0',
-  'ALTER TABLE sales ADD COLUMN affects_stock INTEGER NOT NULL DEFAULT 1'
+  'ALTER TABLE sales ADD COLUMN affects_stock INTEGER NOT NULL DEFAULT 1',
+  // FOR (DLD) sales: by default freight is recovered from the customer on top
+  // of the goods value. This flips it — freight is deducted from the invoice
+  // total instead, the transporter is still paid in full by us.
+  'ALTER TABLE sales ADD COLUMN deduct_freight INTEGER NOT NULL DEFAULT 0',
+  // The LC's own lifecycle, as the client works it day to day — separate from
+  // the internal open/utilized/closed status (still used for facility
+  // headroom) and from the Trading compliance flag.
+  "ALTER TABLE letters_of_credit ADD COLUMN stage TEXT NOT NULL DEFAULT 'application'",
+  // The fixed deposit lodged as security for the LC — mandatory in the UI.
+  'ALTER TABLE letters_of_credit ADD COLUMN fd_no TEXT',
+  // Which of the party's open invoices this LC covers — one LC can now cover
+  // several, so it's a table rather than the single linked_order_id column.
+  `CREATE TABLE IF NOT EXISTS lc_linked_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lc_id INTEGER NOT NULL REFERENCES letters_of_credit(id),
+    order_id INTEGER NOT NULL REFERENCES orders(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(lc_id, order_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_lc_linked_orders_lc ON lc_linked_orders(lc_id)'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

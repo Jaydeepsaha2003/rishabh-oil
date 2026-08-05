@@ -18,6 +18,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { errText, formatDate, formatNum, todayISO } from '@/lib/format'
 import { ExcelButton } from '@/components/ExcelButton'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { useGlobalDateRange } from '@/lib/globalDateRange'
 import { useCategories } from '@/lib/useCategories'
 import { Pagination, usePaged } from '@/components/Pagination'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -76,6 +77,11 @@ export function GateEntry(): React.JSX.Element {
   const [gFrom, setGFrom] = useState('')
   const [gTo, setGTo] = useState('')
   const [gCat, setGCat] = useState('ALL')
+  // Alt+F2 broadcasts a period from anywhere.
+  const globalRange = useGlobalDateRange()
+  useEffect(() => {
+    if (globalRange.version > 0) { setGFrom(globalRange.from); setGTo(globalRange.to) }
+  }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
   const [gSearch, setGSearch] = useState('')
   const [gDir, setGDir] = useState<'ALL' | 'in' | 'out'>('ALL')
   const gCats = useMemo(

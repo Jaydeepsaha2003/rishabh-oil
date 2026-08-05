@@ -3,7 +3,9 @@ import { toast } from 'sonner'
 import {
   AlertTriangle,
   Banknote,
+  Building2,
   CalendarClock,
+  CalendarRange,
   Check,
   ChevronDown,
   ChevronRight,
@@ -12,9 +14,11 @@ import {
   Landmark,
   List,
   Paperclip,
+  Percent,
   Plus,
   RotateCcw,
-  Trash2
+  Trash2,
+  Users
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -72,6 +76,27 @@ function DueBadge({ date }: { date: unknown }): React.JSX.Element | null {
     <Badge variant={d < 0 ? 'destructive' : d <= 7 ? 'warning' : 'muted'} className="tabular-nums">
       {label}
     </Badge>
+  )
+}
+
+const STAGE_LABEL: Record<string, string> = {
+  application: 'Application',
+  open: 'Open',
+  payment_received: 'Payment received'
+}
+
+// The LC's own lifecycle — Application → Open → Payment received.
+function StageBadge({ stage }: { stage: string }): React.JSX.Element {
+  const tone =
+    stage === 'payment_received'
+      ? 'bg-emerald-100 text-emerald-800'
+      : stage === 'open'
+        ? 'bg-sky-100 text-sky-800'
+        : 'bg-amber-100 text-amber-800'
+  return (
+    <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide', tone)}>
+      {STAGE_LABEL[stage] || stage}
+    </span>
   )
 }
 
@@ -227,6 +252,7 @@ export function Treasury(): React.JSX.Element {
 
   async function saveLc(): Promise<void> {
     if (!lcForm) return
+    if (!String(lcForm.fd_no || '').trim()) return void toast.error('FD No is required')
     setBusy(true)
     try {
       const payload = {
@@ -668,7 +694,7 @@ export function Treasury(): React.JSX.Element {
             {lcView === 'cards' ? (
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 <Card className="flex items-center justify-center border-dashed p-6">
-                  <Button className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '90', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress' })}>
+                  <Button className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '90', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application' })}>
                     <Plus className="h-4 w-4" /> Open new LC
                   </Button>
                 </Card>
@@ -682,8 +708,12 @@ export function Treasury(): React.JSX.Element {
                       <Card key={String(l.id)} className="flex flex-col gap-2 p-4">
                         <div className="flex items-start justify-between gap-2">
                           <div>
-                            <div className="font-semibold">{l.lc_no}</div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-semibold">{l.lc_no}</span>
+                              <StageBadge stage={String(l.stage || 'application')} />
+                            </div>
                             <div className="text-[11px] text-muted-foreground">{l.bank} · {l.supplier_name || '—'}</div>
+                            {l.fd_no && <div className="text-[10px] text-muted-foreground">FD {l.fd_no}</div>}
                           </div>
                           <div className="flex flex-col items-end gap-1">
                             {l.purpose && <Badge variant="muted" className="capitalize">{l.purpose}</Badge>}
@@ -735,7 +765,7 @@ export function Treasury(): React.JSX.Element {
             <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
               <div className="flex items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
                 <span className="text-[13px] font-bold uppercase tracking-widest">Letters of Credit</span>
-                <Button size="sm" className="ml-auto bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '90', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress' })}>
+                <Button size="sm" className="ml-auto bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '90', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application' })}>
                   <Plus className="h-4 w-4" /> Open new LC
                 </Button>
               </div>
@@ -765,7 +795,10 @@ export function Treasury(): React.JSX.Element {
                               <div className="flex items-center gap-1.5">
                                 {isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                                 <div>
-                                  <div className="font-semibold">{l.lc_no}</div>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-semibold">{l.lc_no}</span>
+                                    <StageBadge stage={String(l.stage || 'application')} />
+                                  </div>
                                   <div className="text-[11px] text-muted-foreground">{l.bank} · usance {n(l.usance_days)}d{n(l.margin_pct) ? ` · margin ${l.margin_pct}%` : ''}</div>
                                 </div>
                               </div>
@@ -1144,155 +1177,208 @@ export function Treasury(): React.JSX.Element {
 
       {/* New / edit LC */}
       <Dialog open={!!lcForm} onOpenChange={(o) => !o && setLcForm(null)}>
-        <DialogContent className="max-w-xl">
-          <DialogHeader><DialogTitle>{lcForm?.id ? `Alter LC ${lcForm.lc_no}` : 'Open a letter of credit'}</DialogTitle></DialogHeader>
+        <DialogContent className="max-w-5xl max-h-[88vh] overflow-y-auto p-0 [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100">
+          <div className="flex items-center gap-3 rounded-t-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-6 py-4 text-white">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/15">
+              <Landmark className="h-5 w-5" />
+            </div>
+            <div>
+              <DialogTitle className="text-[16px] font-bold text-white">
+                {lcForm?.id ? `Alter LC ${lcForm.lc_no}` : 'Open a letter of credit'}
+              </DialogTitle>
+              <p className="text-[12px] text-white/70">Track the LC from application through to payment received.</p>
+            </div>
+          </div>
           {lcForm && (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="grid gap-1.5"><Label>LC no *</Label><Input value={lcForm.lc_no ?? ''} onChange={(e) => setLcForm({ ...lcForm, lc_no: e.target.value })} /></div>
-              <div className="grid gap-1.5"><Label>Bank *</Label><Input value={lcForm.bank ?? ''} onChange={(e) => setLcForm({ ...lcForm, bank: e.target.value })} /></div>
-              <div className="grid gap-1.5 sm:col-span-2">
-                <Label>Supplier (beneficiary)</Label>
-                <Select value={lcForm.party_id ? String(lcForm.party_id) : ''} onValueChange={(v) => setLcForm({ ...lcForm, party_id: v })}>
-                  <SelectTrigger><SelectValue placeholder="Select supplier" /></SelectTrigger>
-                  <SelectContent className="max-h-64">
-                    {suppliers.map((x) => <SelectItem key={String(x.id)} value={String(x.id)}>{x.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Purpose</Label>
-                <Select value={String(lcForm.purpose || '')} onValueChange={(v) => setLcForm({ ...lcForm, purpose: v })}>
-                  <SelectTrigger><SelectValue placeholder="Select purpose" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="trading">Trading</SelectItem>
-                    <SelectItem value="manufacturing">Manufacturing</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Workflow status</Label>
-                <Select value={String(lcForm.workflow_status || 'in_progress')} onValueChange={(v) => setLcForm({ ...lcForm, workflow_status: v })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="in_progress">In progress</SelectItem>
-                    <SelectItem value="on_hold">On hold</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {String(lcForm.purpose) === 'trading' && (
-                <>
-                  <div className="grid gap-1.5">
-                    <Label>Linked purchase invoice</Label>
-                    <Select
-                      value={lcForm.linked_order_id ? String(lcForm.linked_order_id) : ''}
-                      onValueChange={(v) => {
-                        const o = orders.find((x) => String(x.id) === v)
-                        setLcForm({ ...lcForm, linked_order_id: v, amount: lcForm.amount || String(n(o?.net_amount)) })
-                      }}
-                    >
-                      <SelectTrigger><SelectValue placeholder="Pick the invoice this LC covers" /></SelectTrigger>
-                      <SelectContent className="max-h-64">
-                        {lcFormOrders.map((o) => (
-                          <SelectItem key={String(o.id)} value={String(o.id)}>
-                            {o.invoice_no} · {formatDate(o.order_date)} · {formatINR(o.net_amount)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="grid gap-1.5">
-                    <Label>Party payment will be received from</Label>
-                    <Select
-                      value={lcForm.receivable_party_id ? String(lcForm.receivable_party_id) : ''}
-                      onValueChange={(v) => setLcForm({ ...lcForm, receivable_party_id: v })}
-                    >
-                      <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
-                      <SelectContent className="max-h-64">
-                        {customers.map((x) => <SelectItem key={String(x.id)} value={String(x.id)}>{x.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {(!lcForm.linked_order_id || !lcForm.receivable_party_id) && (
-                    <div className="sm:col-span-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-1.5 text-[11px] text-rose-800">
-                      Non-compliant — a Trading LC needs both the linked invoice and the party repayment will come from.
+            <div className="grid gap-4 p-6 lg:grid-cols-2">
+              <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
+                <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><Landmark className="h-3 w-3 text-[#1a2c56]" /></span>
+                  LC & stage
+                </h3>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-1.5"><Label>LC no *</Label><Input value={lcForm.lc_no ?? ''} onChange={(e) => setLcForm({ ...lcForm, lc_no: e.target.value })} /></div>
+                  <div className="grid gap-1.5"><Label>Bank / discounting bank *</Label><Input value={lcForm.bank ?? ''} onChange={(e) => setLcForm({ ...lcForm, bank: e.target.value })} /></div>
+                  <div className="grid gap-1.5"><Label>FD No *</Label><Input value={lcForm.fd_no ?? ''} onChange={(e) => setLcForm({ ...lcForm, fd_no: e.target.value })} placeholder="Fixed deposit lodged as security" /></div>
+                  <div className="grid gap-1.5 sm:col-span-2">
+                    <Label>Stage</Label>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {(['application', 'open', 'payment_received'] as const).map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => setLcForm({ ...lcForm, stage: s })}
+                          className={cn(
+                            'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
+                            String(lcForm.stage || 'application') === s
+                              ? s === 'payment_received' ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : s === 'open' ? 'border-sky-500 bg-sky-50 text-sky-800' : 'border-amber-500 bg-amber-50 text-amber-800'
+                              : 'border-[#e5dfc8] text-muted-foreground hover:bg-muted/40'
+                          )}
+                        >
+                          {STAGE_LABEL[s]}
+                        </button>
+                      ))}
                     </div>
-                  )}
-                </>
-              )}
-              <div className="grid gap-1.5 sm:col-span-2">
-                <Label>Sanctioned facility <span className="text-[10px] font-normal text-muted-foreground">(optional — draws against its limit)</span></Label>
-                <Select
-                  value={lcForm.facility_id ? String(lcForm.facility_id) : 'none'}
-                  onValueChange={(v) => setLcForm({ ...lcForm, facility_id: v === 'none' ? '' : v })}
-                >
-                  <SelectTrigger><SelectValue placeholder="Not tied to a sanctioned limit" /></SelectTrigger>
-                  <SelectContent className="max-h-64">
-                    <SelectItem value="none">Not tied to a sanctioned limit</SelectItem>
-                    {facilities.filter((f) => Number(f.active) !== 0).map((f) => (
-                      <SelectItem key={String(f.id)} value={String(f.id)}>
-                        {f.name} · {f.bank} · {formatINR(f.available)} free
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {(() => {
-                  const f = facilities.find((x) => String(x.id) === String(lcForm.facility_id))
-                  if (!f) return null
-                  // Headroom excluding this LC's own current commitment, so
-                  // editing an existing LC is judged against the others.
-                  const mine = lcForm.id ? n(lcs.find((x) => String(x.id) === String(lcForm.id))?.amount) : 0
-                  const free = n(f.available) + mine
-                  const over = n(lcForm.amount) - free
-                  return (
-                    <span className={cn('text-[11px]', over > 0.005 ? 'font-medium text-rose-700' : 'text-muted-foreground')}>
-                      {formatINR(free)} free of {formatINR(f.sanctioned_limit)} sanctioned
-                      {over > 0.005 ? ` — this LC is ${formatINR(over)} over the limit` : ''}
-                    </span>
-                  )
-                })()}
-              </div>
-              <div className="grid gap-1.5"><Label>Limit (₹) *</Label><Input type="number" value={lcForm.amount ?? ''} onChange={(e) => setLcForm({ ...lcForm, amount: e.target.value })} /></div>
-              <div className="grid gap-1.5"><Label>Usance days</Label><Input type="number" value={lcForm.usance_days ?? ''} onChange={(e) => setLcForm({ ...lcForm, usance_days: e.target.value })} /></div>
-              <div className="grid gap-1.5"><Label>Open date</Label><DatePicker value={String(lcForm.open_date || '')} onChange={(v) => setLcForm({ ...lcForm, open_date: v })} /></div>
-              <div className="grid gap-1.5"><Label>Expiry date *</Label><DatePicker value={String(lcForm.expiry_date || '')} onChange={(v) => setLcForm({ ...lcForm, expiry_date: v })} /></div>
-              <div className="grid gap-1.5"><Label>Margin %</Label><Input type="number" value={lcForm.margin_pct ?? ''} onChange={(e) => setLcForm({ ...lcForm, margin_pct: e.target.value })} /></div>
-              <div className="grid gap-1.5">
-                <Label>Interest % p.a. (INT %)</Label>
-                <Input type="number" value={lcForm.interest_pct ?? ''} onChange={(e) => setLcForm({ ...lcForm, interest_pct: e.target.value })} />
-                <span className="text-[10px] text-muted-foreground">charged over the usance days above</span>
-              </div>
-              <div className="grid gap-1.5"><Label>LC charges (₹)</Label><Input type="number" value={lcForm.charges ?? ''} onChange={(e) => setLcForm({ ...lcForm, charges: e.target.value })} /></div>
-              <div className="grid gap-1.5 sm:col-span-2"><Label>Note</Label><Input value={lcForm.note ?? ''} onChange={(e) => setLcForm({ ...lcForm, note: e.target.value })} /></div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
+                <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><Users className="h-3 w-3 text-[#1a2c56]" /></span>
+                  Party & purpose
+                </h3>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-1.5">
+                    <Label>Supplier (beneficiary)</Label>
+                    <Select value={lcForm.party_id ? String(lcForm.party_id) : ''} onValueChange={(v) => setLcForm({ ...lcForm, party_id: v })}>
+                      <SelectTrigger><SelectValue placeholder="Select supplier" /></SelectTrigger>
+                      <SelectContent className="max-h-64">
+                        {suppliers.map((x) => <SelectItem key={String(x.id)} value={String(x.id)}>{x.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label>Purpose</Label>
+                    <Select value={String(lcForm.purpose || '')} onValueChange={(v) => setLcForm({ ...lcForm, purpose: v })}>
+                      <SelectTrigger><SelectValue placeholder="Select purpose" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="trading">Trading</SelectItem>
+                        <SelectItem value="manufacturing">Manufacturing</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                {!!lcForm.party_id && (
+                  <div className="mt-3 rounded-lg border border-teal-200 bg-teal-50/50 p-3">
+                    <Label>Open invoices for this party <span className="text-[10px] font-normal text-muted-foreground">(select one or more this LC covers)</span></Label>
+                    {lcFormOrders.length === 0 ? (
+                      <p className="mt-1.5 text-[11px] text-muted-foreground">No invoices booked against this supplier yet.</p>
+                    ) : (
+                      <div className="mt-1.5 max-h-40 space-y-1 overflow-y-auto rounded-md border bg-white p-1.5">
+                        {lcFormOrders.map((o) => {
+                          const ids: number[] = Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []
+                          const checked = ids.map(String).includes(String(o.id))
+                          return (
+                            <label key={String(o.id)} className={cn('flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px]', checked ? 'bg-teal-100' : 'hover:bg-muted/40')}>
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5"
+                                checked={checked}
+                                onChange={(e) => {
+                                  const next = e.target.checked
+                                    ? [...ids, Number(o.id)]
+                                    : ids.filter((x) => String(x) !== String(o.id))
+                                  const total = orders
+                                    .filter((x) => next.map(String).includes(String(x.id)))
+                                    .reduce((s, x) => s + n(x.net_amount), 0)
+                                  setLcForm({ ...lcForm, linked_order_ids: next, amount: lcForm.amount || (total > 0 ? String(total) : lcForm.amount) })
+                                }}
+                              />
+                              <span className="flex-1">{o.invoice_no} · {formatDate(o.order_date)}</span>
+                              <span className="font-medium tabular-nums">{formatINR(o.net_amount)}</span>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {String(lcForm.purpose) === 'trading' && (
+                  <div className="mt-3 grid gap-3 rounded-lg border border-teal-200 bg-teal-50/50 p-3">
+                    <div className="grid gap-1.5">
+                      <Label>Party payment will be received from</Label>
+                      <Select
+                        value={lcForm.receivable_party_id ? String(lcForm.receivable_party_id) : ''}
+                        onValueChange={(v) => setLcForm({ ...lcForm, receivable_party_id: v })}
+                      >
+                        <SelectTrigger className="bg-white"><SelectValue placeholder="Select customer" /></SelectTrigger>
+                        <SelectContent className="max-h-64">
+                          {customers.map((x) => <SelectItem key={String(x.id)} value={String(x.id)}>{x.name}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {(!Array.isArray(lcForm.linked_order_ids) || !lcForm.linked_order_ids.length || !lcForm.receivable_party_id) && (
+                      <div className="flex items-center gap-1.5 rounded-md border border-rose-300 bg-rose-50 px-3 py-1.5 text-[11px] text-rose-800">
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                        Non-compliant — a Trading LC needs at least one open invoice and the party repayment will come from.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </section>
+
+              <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
+                <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><CalendarRange className="h-3 w-3 text-[#1a2c56]" /></span>
+                  Amount & validity
+                </h3>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-1.5 sm:col-span-2"><Label>Open amount (₹) *</Label><Input type="number" value={lcForm.amount ?? ''} onChange={(e) => setLcForm({ ...lcForm, amount: e.target.value })} /></div>
+                  <div className="grid gap-1.5"><Label>Usance days</Label><Input type="number" value={lcForm.usance_days ?? ''} onChange={(e) => setLcForm({ ...lcForm, usance_days: e.target.value })} /></div>
+                  <div />
+                  <div className="grid gap-1.5"><Label>Application date</Label><DatePicker value={String(lcForm.open_date || '')} onChange={(v) => setLcForm({ ...lcForm, open_date: v })} /></div>
+                  <div className="grid gap-1.5"><Label>Maturity date *</Label><DatePicker value={String(lcForm.expiry_date || '')} onChange={(v) => setLcForm({ ...lcForm, expiry_date: v })} /></div>
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
+                <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><Percent className="h-3 w-3 text-[#1a2c56]" /></span>
+                  Margin, interest & charges
+                </h3>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="grid gap-1.5"><Label>Margin %</Label><Input type="number" value={lcForm.margin_pct ?? ''} onChange={(e) => setLcForm({ ...lcForm, margin_pct: e.target.value })} /></div>
+                  <div className="grid gap-1.5">
+                    <Label>Interest % p.a.</Label>
+                    <Input type="number" value={lcForm.interest_pct ?? ''} onChange={(e) => setLcForm({ ...lcForm, interest_pct: e.target.value })} />
+                  </div>
+                  <div className="grid gap-1.5"><Label>LC charges (₹)</Label><Input type="number" value={lcForm.charges ?? ''} onChange={(e) => setLcForm({ ...lcForm, charges: e.target.value })} /></div>
+                </div>
+                <span className="mt-1 block text-[10px] text-muted-foreground">Interest is charged over the usance days above.</span>
+              </section>
+
               {n(lcForm.amount) > 0 && (n(lcForm.margin_pct) > 0 || n(lcForm.interest_pct) > 0 || n(lcForm.charges) > 0) && (() => {
-                const invoiceAmount = lcForm.linked_order_id
-                  ? n(orders.find((o) => String(o.id) === String(lcForm.linked_order_id))?.net_amount) || n(lcForm.amount)
-                  : n(lcForm.amount)
+                const linkedIds: number[] = Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []
+                const linkedTotal = orders
+                  .filter((o) => linkedIds.map(String).includes(String(o.id)))
+                  .reduce((s, o) => s + n(o.net_amount), 0)
+                const invoiceAmount = linkedTotal > 0 ? linkedTotal : n(lcForm.amount)
+                const openAmount = n(lcForm.amount)
                 const margin = round2((invoiceAmount * n(lcForm.margin_pct)) / 100)
-                const interest = round2((n(lcForm.amount) * n(lcForm.interest_pct) * n(lcForm.usance_days)) / (100 * 365))
+                const interest = round2((openAmount * n(lcForm.interest_pct) * n(lcForm.usance_days)) / (100 * 365))
                 const charges = round2(n(lcForm.charges))
-                const net = round2(margin + interest + charges)
-                const opening = round2(invoiceAmount + margin + charges)
+                // Back-calculation: the open amount is the limit as struck with
+                // the bank — interest and charges come OUT of it, not on top.
+                const netAvailable = round2(openAmount - interest - charges)
                 return (
-                  <div className="sm:col-span-2 grid grid-cols-2 gap-2 rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-900 sm:grid-cols-4">
-                    <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Margin (upfront)</div><div className="font-semibold tabular-nums">{formatINR(margin)}</div></div>
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wide text-sky-700">Interest ({n(lcForm.usance_days) || 0}d)</div>
-                      <div className="font-semibold tabular-nums">{formatINR(interest)}</div>
+                  <div className="rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm lg:col-span-2">
+                    <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-sky-900">
+                      <Banknote className="h-3.5 w-3.5" /> Back-calculated from the open amount
+                    </h3>
+                    <div className="grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
+                      <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Open amount</div><div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(openAmount)}</div></div>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wide text-sky-700">− Interest ({n(lcForm.usance_days) || 0}d)</div>
+                        <div className="text-[15px] font-semibold tabular-nums text-rose-700">{formatINR(interest)}</div>
+                      </div>
+                      <div><div className="text-[10px] uppercase tracking-wide text-sky-700">− Charges</div><div className="text-[15px] font-semibold tabular-nums text-rose-700">{formatINR(charges)}</div></div>
+                      <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Margin (upfront, info only)</div><div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(margin)}</div></div>
                     </div>
-                    <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Charges</div><div className="font-semibold tabular-nums">{formatINR(charges)}</div></div>
-                    <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Net paid out now</div><div className="font-semibold tabular-nums">{formatINR(net)}</div></div>
-                    <div className="sm:col-span-4 border-t border-sky-200 pt-1.5">
-                      <div className="text-[10px] uppercase tracking-wide text-sky-700">LC opening amount = invoice + margin + charges</div>
-                      <div className="text-[15px] font-bold tabular-nums">{formatINR(opening)}</div>
+                    <div className="mt-3 flex items-center justify-between rounded-lg bg-white/70 px-4 py-2.5">
+                      <span className="text-[11px] font-medium uppercase tracking-wide text-sky-800">Net available = open amount − interest − charges</span>
+                      <span className="text-xl font-bold tabular-nums text-[#1a2c56]">{formatINR(netAvailable)}</span>
                     </div>
                   </div>
                 )
               })()}
+
+              <div className="grid gap-1.5 lg:col-span-2"><Label>Note</Label><Input value={lcForm.note ?? ''} onChange={(e) => setLcForm({ ...lcForm, note: e.target.value })} /></div>
             </div>
           )}
-          <DialogFooter>
+          <DialogFooter className="border-t border-[#e5dfc8] bg-muted/20 px-6 py-4">
             <Button variant="outline" onClick={() => setLcForm(null)}>Cancel</Button>
-            <Button disabled={busy} onClick={() => void saveLc()}>{busy ? 'Saving…' : 'Save LC'}</Button>
+            <Button disabled={busy} className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => void saveLc()}>{busy ? 'Saving…' : 'Save LC'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

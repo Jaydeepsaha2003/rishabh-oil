@@ -30,6 +30,7 @@ import { FyPicker } from '@/components/FyPicker'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { useGlobalDateRange } from '@/lib/globalDateRange'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -420,6 +421,18 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   const [tradingRows, setTradingRows] = useState<Row[]>([])
   const [tradingFrom, setTradingFrom] = useState('')
   const [tradingTo, setTradingTo] = useState('')
+
+  // Alt+F2 broadcasts a period from anywhere — every date-filtered tab here
+  // (Day Book, Ledger, Trial Balance, registers, Trading Account) adopts it.
+  const globalRange = useGlobalDateRange()
+  useEffect(() => {
+    if (globalRange.version === 0) return
+    setDbFrom(globalRange.from); setDbTo(globalRange.to)
+    setLgFrom(globalRange.from); setLgTo(globalRange.to)
+    setTbFrom(globalRange.from); setTbTo(globalRange.to)
+    setRegFrom(globalRange.from); setRegTo(globalRange.to)
+    setTradingFrom(globalRange.from); setTradingTo(globalRange.to)
+  }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadRegisters = useCallback(async () => {
     const [o, s, l] = await Promise.all([

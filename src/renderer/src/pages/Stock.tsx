@@ -29,6 +29,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { useGlobalDateRange } from '@/lib/globalDateRange'
 import { downloadDayCloseExcel, parseDayCloseExcel } from '@/lib/dayCloseExcel'
 import { downloadSkuCountExcel, parseSkuCountExcel } from '@/lib/skuCountExcel'
 import { ExcelButton } from '@/components/ExcelButton'
@@ -1108,6 +1109,11 @@ function MncStock(): React.JSX.Element {
   const [mncFrom, setMncFrom] = useState('')
   const [mncTo, setMncTo] = useState('')
   const mncRanged = !!(mncFrom || mncTo)
+  // Alt+F2 broadcasts a period from anywhere.
+  const globalRangeMnc = useGlobalDateRange()
+  useEffect(() => {
+    if (globalRangeMnc.version > 0) { setMncFrom(globalRangeMnc.from); setMncTo(globalRangeMnc.to) }
+  }, [globalRangeMnc.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1877,6 +1883,11 @@ export function Stock(): React.JSX.Element {
   const [breakdown, setBreakdown] = useState<Record<number, { receipt: Row[]; dispatch: Row[] }>>({})
   const [range, setRange] = useState({ from: '', to: '' })
   const ranged = !!(range.from || range.to)
+  // Alt+F2 broadcasts a period from anywhere.
+  const globalRangeStock = useGlobalDateRange()
+  useEffect(() => {
+    if (globalRangeStock.version > 0) setRange({ from: globalRangeStock.from, to: globalRangeStock.to })
+  }, [globalRangeStock.version]) // eslint-disable-line react-hooks/exhaustive-deps
   const [companies, setCompanies] = useState<Row[]>([])
   const [activeCid, setActiveCid] = useState(0)
   const [cids, setCids] = useState<number[]>([])

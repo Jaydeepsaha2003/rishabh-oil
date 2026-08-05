@@ -37,6 +37,7 @@ import { convertQty, errText, formatDate, formatINR, formatNum, todayISO } from 
 import { ExcelButton } from '@/components/ExcelButton'
 import { downloadSkuRateExcel, parseSkuRateExcel, caseMT } from '@/lib/skuRateExcel'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { useGlobalDateRange } from '@/lib/globalDateRange'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -159,6 +160,11 @@ function SalesTab({
   const [dateFrom, setDateFrom] = useState(monthStartISO())
   const [dateTo, setDateTo] = useState(todayISO())
   const [productType, setProductType] = useState('ALL')
+  // Alt+F2 broadcasts a period from anywhere.
+  const globalRange = useGlobalDateRange()
+  useEffect(() => {
+    if (globalRange.version > 0) { setDateFrom(globalRange.from); setDateTo(globalRange.to) }
+  }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -283,6 +289,8 @@ function SalesTab({
       freight_term: f.freight_term ?? 'FREIGHT_ON_GOODS',
       transporter_id: f.transporter_id ? String(f.transporter_id) : '',
       transport_rate: f.transport_rate ?? '',
+      deduct_freight: !!f.deduct_freight,
+      is_trading: !!f.is_trading,
       dispatch_stage: f.dispatch_stage ?? (f.status === 'done' ? 'unloaded' : 'pending'),
       loaded_date: f.loaded_date ?? '',
       transit_date: f.transit_date ?? '',
@@ -1051,10 +1059,26 @@ function SalesTab({
                 </Select>
               </div>
               <div className="grid gap-1.5">
+                <Label>&nbsp;</Label>
+                <label className="flex h-9 items-center gap-2 rounded-md border border-sky-200 bg-white px-2.5 text-[12px] font-medium text-sky-900">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4"
+                    checked={!!header.deduct_freight}
+                    onChange={(e) => setHeaderField('deduct_freight', e.target.checked)}
+                  />
+                  Deduct freight from invoice total
+                </label>
+              </div>
+              <div className="grid gap-1.5">
                 <Label>Freight rate / unit</Label>
                 <Input type="number" className="bg-white" value={header.transport_rate ?? ''} onChange={(e) => setHeaderField('transport_rate', e.target.value)} />
               </div>
-              <p className="col-span-full text-[11px] text-sky-800">Freight is posted to the transporter ledger per item (rate × qty) and recovered from the customer.</p>
+              <p className="col-span-full text-[11px] text-sky-800">
+                {header.deduct_freight
+                  ? 'Freight is posted to the transporter ledger per item (rate × qty) and deducted from what the customer owes — the invoice total excludes it.'
+                  : 'Freight is posted to the transporter ledger per item (rate × qty) and recovered from the customer on top of the invoice total.'}
+              </p>
             </div>
           )}
 
@@ -1600,6 +1624,11 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
   const [dateTo, setDateTo] = useState(todayISO())
   const F = dateFrom || '0000-01-01'
   const T = dateTo || todayISO()
+  // Alt+F2 broadcasts a period from anywhere.
+  const globalRange = useGlobalDateRange()
+  useEffect(() => {
+    if (globalRange.version > 0) { setDateFrom(globalRange.from); setDateTo(globalRange.to) }
+  }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Row | null>(null)

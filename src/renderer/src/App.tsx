@@ -28,6 +28,8 @@ import { Brokers } from './pages/Brokers'
 import { Packaging } from './pages/Packaging'
 import { Approvals } from './pages/Approvals'
 import { NotificationBell } from './components/NotificationBell'
+import { GlobalDateRangeDialog } from './components/GlobalDateRangeDialog'
+import { GlobalDateRangeProvider } from './lib/globalDateRange'
 import { clearUser, loadUser, saveUser, type AppUser } from './lib/session'
 import { MODULES, canAccess } from './lib/modules'
 
@@ -94,6 +96,20 @@ function App(): React.JSX.Element {
 
   // Human label of the page a drill-through came from (for the Back button).
   const backLabel = returnTo ? MODULES.find((m) => m.key === returnTo)?.label || 'previous page' : ''
+
+  // Alt+F2 (Tally's period-change key) — works from anywhere in the app, not
+  // just one page, since every date-range filter listens for the same broadcast.
+  const [periodOpen, setPeriodOpen] = useState(false)
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void {
+      if (e.altKey && e.key === 'F2') {
+        e.preventDefault()
+        setPeriodOpen(true)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // On launch, test the (auto-configured) connection. No internet → a friendly
   // "check your connection" screen (NOT the credentials screen); any other
@@ -259,6 +275,7 @@ function App(): React.JSX.Element {
   const view = allowed.includes(page) ? page : (allowed[0] as Page)
 
   return (
+    <GlobalDateRangeProvider>
     <div className="flex h-screen overflow-hidden bg-muted/30 text-foreground">
       <Sidebar
         page={view}
@@ -317,8 +334,10 @@ function App(): React.JSX.Element {
       </main>
       <NotificationBell user={user} onNavigate={(p) => navigate(p as Page)} />
       <UpdateBanner />
+      <GlobalDateRangeDialog open={periodOpen} onOpenChange={setPeriodOpen} />
       <Toaster richColors position="bottom-right" />
     </div>
+    </GlobalDateRangeProvider>
   )
 }
 

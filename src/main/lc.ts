@@ -30,9 +30,13 @@ export async function listLCs(): Promise<Row[]> {
     SELECT l.*,
       s.name AS supplier_name,
       f.name AS facility_name,
-      o.invoice_no AS linked_invoice_no,
-      o.net_amount AS linked_invoice_amount,
       rp.name AS receivable_party_name,
+      (SELECT GROUP_CONCAT(lo.order_id) FROM lc_linked_orders lo WHERE lo.lc_id = l.id) AS linked_order_ids_csv,
+      (SELECT GROUP_CONCAT(o.invoice_no, ', ') FROM lc_linked_orders lo
+         JOIN orders o ON o.id = lo.order_id WHERE lo.lc_id = l.id) AS linked_invoice_nos,
+      (SELECT COALESCE(SUM(o.net_amount), 0) FROM lc_linked_orders lo
+         JOIN orders o ON o.id = lo.order_id WHERE lo.lc_id = l.id) AS linked_invoice_amount_total,
+      (SELECT COUNT(*) FROM lc_linked_orders lo WHERE lo.lc_id = l.id) AS linked_invoice_count,
       COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS utilized,
       l.amount - COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS available,
       COALESCE((SELECT SUM(amount) FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid,
@@ -40,28 +44,47 @@ export async function listLCs(): Promise<Row[]> {
     FROM letters_of_credit l
     LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
     LEFT JOIN bank_facilities f ON f.id = l.facility_id
-    LEFT JOIN orders o ON o.id = l.linked_order_id
     LEFT JOIN customers rp ON rp.id = l.receivable_party_id
     WHERE l.company_id = ?
     ORDER BY l.id DESC
   `
   })
   return toPlain(res).map((l) => {
-    const invoiceAmount = l.linked_invoice_amount != null ? n(l.linked_invoice_amount) : n(l.amount)
+    const linkedCount = n(l.linked_invoice_count)
+    const invoiceAmount = linkedCount > 0 ? n(l.linked_invoice_amount_total) : n(l.amount)
     const margin = Math.round((invoiceAmount * n(l.margin_pct)) / 100 * 100) / 100
+    const interest = Math.round(((n(l.amount) * n(l.interest_pct) * n(l.usance_days)) / (100 * 365)) * 100) / 100
     const charges = Math.round(n(l.charges) * 100) / 100
-    // Trading LCs are only "compliant" once they carry both the invoice they
-    // were opened against and the party repayment will come from — without
-    // either, the register can't be trusted to reconcile on its own.
-    const compliant = String(l.purpose || '') !== 'trading' || (!!l.linked_order_id && !!l.receivable_party_id)
+    // Trading LCs are only "compliant" once they carry at least one open
+    // invoice and the party repayment will come from — without either, the
+    // register can't be trusted to reconcile on its own.
+    const compliant = String(l.purpose || '') !== 'trading' || (linkedCount > 0 && !!l.receivable_party_id)
     return {
       ...l,
-      lc_opening_amount: Math.round((invoiceAmount + margin + charges) * 100) / 100,
+      linked_order_ids: String(l.linked_order_ids_csv || '')
+        .split(',')
+        .map((x) => Number(x))
+        .filter((x) => x > 0),
+      // Back-calculated: the open amount is the limit struck with the bank —
+      // interest and charges come OUT of it, not added on top.
+      lc_net_available: Math.round((n(l.amount) - interest - charges) * 100) / 100,
       outstanding: Math.round((n(l.amount) - n(l.repaid)) * 100) / 100,
       compliant,
       display_status: !compliant ? 'non_compliant' : String(l.workflow_status || 'in_progress')
     }
   })
+}
+
+async function syncLinkedOrders(lcId: number, orderIds: unknown): Promise<void> {
+  const c = getClient()
+  await c.execute({ sql: 'DELETE FROM lc_linked_orders WHERE lc_id = ?', args: [lcId] })
+  const ids = Array.isArray(orderIds) ? orderIds.map((x) => n(x)).filter((x) => x > 0) : []
+  for (const oid of ids) {
+    await c.execute({
+      sql: 'INSERT OR IGNORE INTO lc_linked_orders (lc_id, order_id) VALUES (?, ?)',
+      args: [lcId, oid]
+    })
+  }
 }
 
 export async function listLCIssuances(lcId: number): Promise<Row[]> {
@@ -92,16 +115,19 @@ const LC_COLS = [
   'note',
   'facility_id',
   'purpose',
-  'linked_order_id',
   'receivable_party_id',
-  'workflow_status'
+  'workflow_status',
+  'stage',
+  'fd_no'
 ]
 
 function lcArgs(v: Row): (string | number | null)[] {
   return LC_COLS.map((k) => {
     const val = v[k]
     if (val === '' || val === undefined || val === null) {
-      return k === 'workflow_status' ? 'in_progress' : null
+      if (k === 'workflow_status') return 'in_progress'
+      if (k === 'stage') return 'application'
+      return null
     }
     if (
       k === 'party_id' ||
@@ -111,7 +137,6 @@ function lcArgs(v: Row): (string | number | null)[] {
       k === 'usance_days' ||
       k === 'margin_pct' ||
       k === 'facility_id' ||
-      k === 'linked_order_id' ||
       k === 'receivable_party_id'
     ) {
       return n(val)
@@ -139,6 +164,7 @@ async function assertWithinFacility(v: Row, excludeLcId = 0): Promise<void> {
 
 export async function createLC(v: Row): Promise<{ id: number }> {
   if (!v.lc_no || !v.bank) throw new Error('LC number and bank are required')
+  if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v)
   const res = await getClient().execute({
     sql: `INSERT INTO letters_of_credit (company_id, ${LC_COLS.join(', ')})
@@ -146,17 +172,20 @@ export async function createLC(v: Row): Promise<{ id: number }> {
     args: [getActiveCompanyId(), ...lcArgs(v)]
   })
   const id = Number(res.lastInsertRowid)
+  await syncLinkedOrders(id, v.linked_order_ids)
   // Margin + charges voucher into the books (skipped when both are zero).
   await postLcOpening(id).catch((e) => console.error('[lc] opening voucher failed:', (e as Error).message))
   return { id }
 }
 
 export async function updateLC(id: number, v: Row): Promise<{ id: number }> {
+  if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v, id)
   await getClient().execute({
     sql: `UPDATE letters_of_credit SET ${LC_COLS.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`,
     args: [...lcArgs(v), id]
   })
+  await syncLinkedOrders(id, v.linked_order_ids)
   await postLcOpening(id).catch((e) => console.error('[lc] opening voucher failed:', (e as Error).message))
   return { id }
 }
@@ -169,6 +198,7 @@ export async function deleteLC(id: number): Promise<{ id: number }> {
   const lc = await c.execute({ sql: 'SELECT journal_entry_id FROM letters_of_credit WHERE id = ?', args: [id] })
   if (lc.rows.length && lc.rows[0].journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].journal_entry_id))
   await c.execute({ sql: 'DELETE FROM lc_issuances WHERE lc_id = ?', args: [id] })
+  await c.execute({ sql: 'DELETE FROM lc_linked_orders WHERE lc_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM letters_of_credit WHERE id = ?', args: [id] })
   return { id }
 }

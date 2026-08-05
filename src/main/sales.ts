@@ -562,8 +562,12 @@ async function postSaleFreight(saleId: number, v: Row, qty: number): Promise<num
           VALUES (?, ?, ?, 'freight', ?, 'Delivery freight', ?)`,
     args: [transporterId, saleId, v.sale_date, amount, companyId]
   })
+  // Default: freight is recovered from the customer, on top of the goods
+  // value. deduct_freight flips that — the customer is never charged it (the
+  // journal already excludes freight from the customer's Dr line either way,
+  // so this just brings the informal ledger in line with "deducted").
   const customerId = v.customer_id ? n(v.customer_id) : null
-  if (customerId) {
+  if (customerId && !v.deduct_freight) {
     await c.execute({
       sql: `INSERT INTO customer_ledger (customer_id, sale_id, entry_date, entry_type, amount, note, company_id)
             VALUES (?, ?, ?, 'freight', ?, 'Delivery freight recovered', ?)`,
@@ -626,8 +630,8 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   const res = await getClient().execute({
     sql: `INSERT INTO sales (company_id, sale_date, invoice_no, invoice_group, customer, customer_id, product_id, sales_bargain_id,
             qty, uom, rate, amount, gst_pct, gst_amount, gst_type, round_off, status, dispatch_stage, track_stock, loaded_date, transit_date, unloaded_date, note, sale_type, packaging_id, boxes, pouches, freight_term,
-            transporter_id, transport_rate, transport_amount, is_trading, affects_stock)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            transporter_id, transport_rate, transport_amount, is_trading, affects_stock, deduct_freight)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       v.sale_date,
@@ -661,7 +665,8 @@ export async function createSale(v: Row): Promise<{ id: number }> {
       n(v.transport_rate),
       transportAmount,
       isTrading ? 1 : 0,
-      isTrading ? 0 : 1
+      isTrading ? 0 : 1,
+      v.deduct_freight ? 1 : 0
     ]
   })
   const id = Number(res.lastInsertRowid)
@@ -722,7 +727,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   await getClient().execute({
     sql: `UPDATE sales SET sale_date = ?, invoice_no = ?, customer = ?, customer_id = ?, product_id = ?, sales_bargain_id = ?,
           qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, round_off = ?, status = ?, dispatch_stage = ?, track_stock = ?, loaded_date = ?, transit_date = ?, unloaded_date = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
-          pouches = ?, freight_term = ?, transporter_id = ?, transport_rate = ?, transport_amount = ? WHERE id = ?`,
+          pouches = ?, freight_term = ?, transporter_id = ?, transport_rate = ?, transport_amount = ?, deduct_freight = ? WHERE id = ?`,
     args: [
       v.sale_date,
       v.invoice_no || null,
@@ -753,6 +758,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       v.transporter_id ? n(v.transporter_id) : null,
       n(v.transport_rate),
       transportAmount,
+      v.deduct_freight ? 1 : 0,
       id
     ]
   })
@@ -863,7 +869,8 @@ function mergeInvoiceItem(header: Row, item: Row, group: string): Row {
     transit_date: header.transit_date,
     unloaded_date: header.unloaded_date,
     force_no_stock: header.force_no_stock,
-    is_trading: header.is_trading
+    is_trading: header.is_trading,
+    deduct_freight: header.deduct_freight
   }
 }
 

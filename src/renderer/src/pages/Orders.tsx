@@ -21,6 +21,7 @@ import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { computeMoney, computeShortage } from '@/lib/orderCalc'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { useGlobalDateRange } from '@/lib/globalDateRange'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -458,6 +459,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const [poFrom, setPoFrom] = useState('')
   const [poTo, setPoTo] = useState('')
   const [poCategory, setPoCategory] = useState('ALL')
+  // Alt+F2 broadcasts a period from anywhere.
+  const globalRange = useGlobalDateRange()
+  useEffect(() => {
+    if (globalRange.version === 0) return
+    setPoFrom(globalRange.from); setPoTo(globalRange.to)
+    setRepFrom(globalRange.from); setRepTo(globalRange.to)
+  }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
   const poCategories = useMemo(
     () => Array.from(new Set(rows.map((r) => String(r.product_category || '')).filter(Boolean))).sort(),
     [rows]
