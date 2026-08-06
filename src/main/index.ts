@@ -1,5 +1,12 @@
 import { app, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
+// Remote desktop / virtual-display sessions often report a fractional or
+// stale scale factor to Chromium, which then renders at a mismatched
+// resolution and gets stretched — the classic "blurry Electron app" symptom.
+// Pinning to a whole-number scale factor before the app is ready sidesteps
+// that misreporting; it's a no-op on a normal 100%-scaled physical display.
+app.commandLine.appendSwitch('high-dpi-support', '1')
+app.commandLine.appendSwitch('force-device-scale-factor', '1')
 import { registerIpc } from './ipc'
 import { registerUpdater } from './updater'
 import { initDb, startRevisionWatcher } from './db'

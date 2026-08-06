@@ -667,6 +667,23 @@ const MIGRATIONS = [
   // Open date -> Application date relabel); the LC's actual opening — a
   // later, separate step — gets its own column.
   'ALTER TABLE letters_of_credit ADD COLUMN opened_date TEXT',
+  // Swapping a tanker mid-transit (accident, breakdown) keeps the same
+  // purchase_tankers row — bargain/order/financials stay put — but its
+  // number changes and whatever quantity was lost comes off loaded_qty, so
+  // the bargain balance and the gate's later weighment both reconcile
+  // against what the replacement can actually still deliver.
+  'ALTER TABLE purchase_tankers ADD COLUMN loss_qty REAL NOT NULL DEFAULT 0',
+  `CREATE TABLE IF NOT EXISTS tanker_replacements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tanker_id INTEGER NOT NULL REFERENCES purchase_tankers(id),
+    old_tanker_no TEXT,
+    new_tanker_no TEXT NOT NULL,
+    loss_qty REAL NOT NULL DEFAULT 0,
+    reason TEXT,
+    replaced_date TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_tanker_replacements_tanker ON tanker_replacements(tanker_id)',
   // Which of the party's open invoices this LC covers — one LC can now cover
   // several, so it's a table rather than the single linked_order_id column.
   `CREATE TABLE IF NOT EXISTS lc_linked_orders (

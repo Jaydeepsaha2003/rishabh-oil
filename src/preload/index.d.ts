@@ -70,6 +70,7 @@ export interface Api {
     remove: (id: number) => Promise<{ id: number }>
     advance: (id: number, toStatus: string, data: Row) => Promise<{ id: number }>
     revert: (id: number) => Promise<{ id: number; status: string }>
+    replace: (id: number, values: Row) => Promise<{ id: number }>
   }
   dashboard: {
     stats: () => Promise<Row>

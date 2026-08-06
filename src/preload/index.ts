@@ -97,7 +97,8 @@ const api = {
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('tankers:delete', { id }),
     advance: (id: number, toStatus: string, data: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('tankers:advance', { id, toStatus, data }),
-    revert: (id: number): Promise<{ id: number; status: string }> => ipcRenderer.invoke('tankers:revert', { id })
+    revert: (id: number): Promise<{ id: number; status: string }> => ipcRenderer.invoke('tankers:revert', { id }),
+    replace: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('tankers:replace', { id, values })
   },
   dashboard: {
     stats: (): Promise<Row> => ipcRenderer.invoke('dashboard:stats')

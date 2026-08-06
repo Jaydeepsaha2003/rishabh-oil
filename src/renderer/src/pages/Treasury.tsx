@@ -47,25 +47,17 @@ function daysTo(date: unknown): number | null {
   return Math.round((new Date(`${s}T00:00:00`).getTime() - new Date(`${todayISO()}T00:00:00`).getTime()) / 86400000)
 }
 
-const DUE_PERIODS = [
+// Cumulative "due within" windows — matching how these filters actually read:
+// "This week" means everything due within 7 days (including what's already
+// overdue or due tomorrow), not only the items landing in a 2-7 day slice.
+const DUE_PERIODS: { key: string; label: string; maxDays?: number }[] = [
   { key: 'all', label: 'All' },
-  { key: 't1', label: 'T+1 due' },
-  { key: 'week', label: 'This week' },
-  { key: 'fortnight', label: 'Fortnight' },
-  { key: 'month', label: 'Monthly' },
-  { key: 'quarter', label: 'Quarterly' }
+  { key: 't1', label: 'T+1 due', maxDays: 1 },
+  { key: 'week', label: 'This week', maxDays: 7 },
+  { key: 'fortnight', label: 'Fortnight', maxDays: 14 },
+  { key: 'month', label: 'Monthly', maxDays: 30 },
+  { key: 'quarter', label: 'Quarterly', maxDays: 90 }
 ]
-
-function duePeriodOf(daysLeft: number | null): string {
-  if (daysLeft == null) return 'none'
-  if (daysLeft < 0) return 'overdue'
-  if (daysLeft <= 1) return 't1'
-  if (daysLeft <= 7) return 'week'
-  if (daysLeft <= 14) return 'fortnight'
-  if (daysLeft <= 30) return 'month'
-  if (daysLeft <= 90) return 'quarter'
-  return 'later'
-}
 
 // Countdown chip: red overdue, amber close, muted otherwise.
 function DueBadge({ date }: { date: unknown }): React.JSX.Element | null {
@@ -186,6 +178,64 @@ export function Treasury(): React.JSX.Element {
   const [issueForm, setIssueForm] = useState<Row | null>(null)
   const [busy, setBusy] = useState(false)
 
+  // ---------------- LC stage advance (Application -> Open -> Payment received) ----------------
+  // A guided step, separate from the full Alter form: advancing asks only for
+  // that stage's own date(s), so the LC's status and its dates can never
+  // drift out of sync with each other.
+  const [stageRow, setStageRow] = useState<Row | null>(null)
+  const [stageForm, setStageForm] = useState<Row>({})
+  const [stageSaving, setStageSaving] = useState(false)
+  const [stageError, setStageError] = useState<string | null>(null)
+
+  function nextLcStage(stage: string): 'open' | 'payment_received' | null {
+    if (stage === 'application') return 'open'
+    if (stage === 'open') return 'payment_received'
+    return null
+  }
+
+  function openStageAdvance(l: Row): void {
+    const next = nextLcStage(String(l.stage || 'application'))
+    if (!next) return
+    setStageRow(l)
+    setStageForm(
+      next === 'open'
+        ? { opened_date: todayISO() }
+        : { payment_received_date: todayISO(), expiry_date: l.expiry_date || '' }
+    )
+    setStageError(null)
+  }
+
+  async function saveStageAdvance(): Promise<void> {
+    if (!stageRow) return
+    const next = nextLcStage(String(stageRow.stage || 'application'))
+    if (!next) return
+    if (next === 'open' && !stageForm.opened_date) return setStageError('Enter the date the LC actually opened')
+    if (next === 'payment_received' && (!stageForm.payment_received_date || !stageForm.expiry_date)) {
+      return setStageError('Both the payment received date and the maturity date are needed')
+    }
+    setStageSaving(true)
+    setStageError(null)
+    try {
+      await window.api.lc.update(Number(stageRow.id), {
+        ...stageRow,
+        facility_type: 'lc',
+        party_type: 'supplier',
+        party_id: stageRow.party_id ? Number(stageRow.party_id) : null,
+        facility_id: stageRow.facility_id ? Number(stageRow.facility_id) : null,
+        status: stageRow.status || 'open',
+        stage: next,
+        ...stageForm
+      })
+      toast.success(next === 'open' ? 'LC marked Open' : 'Payment received — bill(s) settled through the books')
+      setStageRow(null)
+      load()
+    } catch (e) {
+      setStageError((e as Error).message)
+    } finally {
+      setStageSaving(false)
+    }
+  }
+
   // ---------------- Facilities and exposures ----------------
   const [facForm, setFacForm] = useState<Row | null>(null)
   const [expForm, setExpForm] = useState<Row | null>(null)
@@ -253,13 +303,13 @@ export function Treasury(): React.JSX.Element {
   async function saveLc(): Promise<void> {
     if (!lcForm) return
     if (!String(lcForm.fd_no || '').trim()) return void toast.error('FD No is required')
-    if (String(lcForm.purpose) === 'trading') {
+    {
       const linkedIds: number[] = Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []
       const linkedTotal = orders
         .filter((o) => linkedIds.map(String).includes(String(o.id)))
         .reduce((s, o) => s + n(o.net_amount), 0)
-      if (linkedIds.length && n(lcForm.amount) > linkedTotal + 0.005) {
-        return void toast.error(`The open amount cannot exceed ${formatINR(linkedTotal)}, the total of the selected invoices`)
+      if (linkedIds.length && n(lcForm.amount) < linkedTotal - 0.005) {
+        return void toast.error(`The open amount cannot be less than ${formatINR(linkedTotal)}, the total of the selected invoices`)
       }
     }
     setBusy(true)
@@ -288,6 +338,21 @@ export function Treasury(): React.JSX.Element {
     if (!lcForm) return []
     return orders.filter((o) => !lcForm.party_id || Number(o.supplier_id) === Number(lcForm.party_id))
   }, [lcForm, orders])
+
+  // Banks already on record — from LCs and sanctioned facilities — so the
+  // field can offer a pick-list while still taking a bank that isn't in it yet.
+  const bankOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const l of lcs) if (l.bank) set.add(String(l.bank).trim())
+    for (const f of facilities) if (f.bank) set.add(String(f.bank).trim())
+    return Array.from(set).sort()
+  }, [lcs, facilities])
+  const NEW_BANK = '__new_bank__'
+  const [addingNewBank, setAddingNewBank] = useState(false)
+  const lcFormOpen = !!lcForm
+  useEffect(() => {
+    if (lcFormOpen) setAddingNewBank(false)
+  }, [lcFormOpen])
 
   const issueOrders = useMemo(() => {
     if (!issueForm) return []
@@ -432,15 +497,19 @@ export function Treasury(): React.JSX.Element {
       lcs.map((l) => {
         const dueDate = l.next_due_date || l.expiry_date
         const daysLeft = daysTo(dueDate)
-        const row: Row = { ...l, due_date_effective: dueDate, days_left_effective: daysLeft, due_period: duePeriodOf(daysLeft) }
+        const row: Row = { ...l, due_date_effective: dueDate, days_left_effective: daysLeft }
         return row
       }),
     [lcs]
   )
-  const lcsFiltered = useMemo(
-    () => (lcDuePeriod === 'all' ? lcsWithDue : lcsWithDue.filter((l) => l.due_period === lcDuePeriod || (lcDuePeriod === 't1' && l.due_period === 'overdue'))),
-    [lcsWithDue, lcDuePeriod]
-  )
+  const lcsFiltered = useMemo(() => {
+    if (lcDuePeriod === 'all') return lcsWithDue
+    const maxDays = DUE_PERIODS.find((p) => p.key === lcDuePeriod)?.maxDays
+    if (maxDays == null) return lcsWithDue
+    // Cumulative: overdue and everything due sooner counts too, not just the
+    // slice of days that falls exactly in this bucket.
+    return lcsWithDue.filter((l) => l.days_left_effective != null && l.days_left_effective <= maxDays)
+  }, [lcsWithDue, lcDuePeriod])
 
   // Bills issued under an LC, and repayments logged against it — shared by
   // both the card and table views so expanding an LC looks the same either way.
@@ -449,11 +518,9 @@ export function Treasury(): React.JSX.Element {
     const reps = repayments[Number(l.id)] || []
     return (
       <div className="space-y-3 px-4 py-3 sm:px-8">
-        <div>
-          <div className="mb-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Bills under this LC</div>
-          {kids.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No bills issued under this LC yet.</p>
-          ) : (
+        {kids.length > 0 && (
+          <div>
+            <div className="mb-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Bills under this LC</div>
             <table className="w-full rounded-lg border bg-card text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:px-3 [&_th]:py-1.5">
               <thead className="border-b bg-muted/50 text-left text-[10px] uppercase tracking-wide text-muted-foreground">
                 <tr>
@@ -492,8 +559,8 @@ export function Treasury(): React.JSX.Element {
                 ))}
               </tbody>
             </table>
-          )}
-        </div>
+          </div>
+        )}
         <div>
           <div className="mb-1 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
             Repayments
@@ -753,6 +820,15 @@ export function Treasury(): React.JSX.Element {
                           <DueBadge date={l.due_date_effective} />
                         </div>
                         <div className="mt-1 flex flex-wrap gap-1.5">
+                          {(() => {
+                            const next = nextLcStage(String(l.stage || 'application'))
+                            if (!next) return null
+                            return (
+                              <Button size="sm" className="h-7 bg-[#1a2c56] px-2 text-xs hover:bg-[#24407e]" onClick={() => openStageAdvance(l)}>
+                                Mark {STAGE_LABEL[next]}
+                              </Button>
+                            )
+                          })()}
                           <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setIssueForm({ lc_id: l.id, issue_date: todayISO() })}>Issue bill</Button>
                           <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => void toggleLc(Number(l.id))}>
                             {isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />} Details
@@ -829,6 +905,15 @@ export function Treasury(): React.JSX.Element {
                             </TableCell>
                             <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex justify-end gap-1">
+                                {(() => {
+                                  const next = nextLcStage(String(l.stage || 'application'))
+                                  if (!next) return null
+                                  return (
+                                    <Button size="sm" className="h-7 bg-[#1a2c56] px-2 text-xs hover:bg-[#24407e]" onClick={() => openStageAdvance(l)}>
+                                      Mark {STAGE_LABEL[next]}
+                                    </Button>
+                                  )
+                                })()}
                                 <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setIssueForm({ lc_id: l.id, issue_date: todayISO() })}>
                                   Issue bill
                                 </Button>
@@ -1184,9 +1269,54 @@ export function Treasury(): React.JSX.Element {
         </DialogContent>
       </Dialog>
 
+      {/* Guided stage advance — asks only for that stage's own date(s) */}
+      <Dialog open={!!stageRow} onOpenChange={(o) => !o && setStageRow(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              Mark {stageRow?.lc_no} {STAGE_LABEL[nextLcStage(String(stageRow?.stage || 'application')) || '']}
+            </DialogTitle>
+          </DialogHeader>
+          {stageRow && (() => {
+            const next = nextLcStage(String(stageRow.stage || 'application'))
+            return (
+              <div className="grid gap-3">
+                {next === 'open' && (
+                  <div className="grid gap-1.5">
+                    <Label>Open date *</Label>
+                    <DatePicker value={String(stageForm.opened_date || '')} onChange={(v) => setStageForm({ ...stageForm, opened_date: v })} />
+                    <span className="text-[10px] text-muted-foreground">The date the bank actually opened this LC.</span>
+                  </div>
+                )}
+                {next === 'payment_received' && (
+                  <>
+                    <div className="grid gap-1.5">
+                      <Label>Payment received date *</Label>
+                      <DatePicker value={String(stageForm.payment_received_date || '')} onChange={(v) => setStageForm({ ...stageForm, payment_received_date: v })} />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label>Maturity date *</Label>
+                      <DatePicker value={String(stageForm.expiry_date || '')} onChange={(v) => setStageForm({ ...stageForm, expiry_date: v })} />
+                    </div>
+                    <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+                      Marking this Payment Received also issues (if not already) and settles this LC's bill(s) through the books.
+                    </div>
+                  </>
+                )}
+                {stageError && <p className="text-sm text-destructive">{stageError}</p>}
+              </div>
+            )
+          })()}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setStageRow(null)} disabled={stageSaving}>Cancel</Button>
+            <Button onClick={() => void saveStageAdvance()} disabled={stageSaving}>{stageSaving ? 'Saving…' : 'Confirm'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* New / edit LC */}
       <Dialog open={!!lcForm} onOpenChange={(o) => !o && setLcForm(null)}>
-        <DialogContent className="max-w-5xl max-h-[88vh] overflow-y-auto p-0 [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100">
+        <DialogContent className="max-w-5xl max-h-[88vh] overflow-y-auto p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100">
           <div className="flex items-center gap-3 rounded-t-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-6 py-4 text-white">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/15">
               <Landmark className="h-5 w-5" />
@@ -1207,8 +1337,50 @@ export function Treasury(): React.JSX.Element {
                 </h3>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="grid gap-1.5"><Label>LC no *</Label><Input value={lcForm.lc_no ?? ''} onChange={(e) => setLcForm({ ...lcForm, lc_no: e.target.value })} /></div>
-                  <div className="grid gap-1.5"><Label>Bank / discounting bank *</Label><Input value={lcForm.bank ?? ''} onChange={(e) => setLcForm({ ...lcForm, bank: e.target.value })} /></div>
-                  <div className="grid gap-1.5"><Label>FD No *</Label><Input value={lcForm.fd_no ?? ''} onChange={(e) => setLcForm({ ...lcForm, fd_no: e.target.value })} placeholder="Fixed deposit lodged as security" /></div>
+                  <div className="grid gap-1.5">
+                    <Label>Bank / discounting bank *</Label>
+                    {(() => {
+                      const bank = String(lcForm.bank || '')
+                      // A bank typed once (not in the list yet) still counts as
+                      // "adding new" on reopen, so editing an existing LC with a
+                      // one-off bank name doesn't silently blank the field.
+                      const showTextInput = addingNewBank || (bank !== '' && !bankOptions.includes(bank))
+                      return showTextInput ? (
+                        <div className="flex gap-1.5">
+                          <Input
+                            autoFocus={addingNewBank}
+                            value={bank}
+                            onChange={(e) => setLcForm({ ...lcForm, bank: e.target.value })}
+                            placeholder="Type the new bank's name"
+                          />
+                          {bankOptions.length > 0 && (
+                            <Button type="button" variant="outline" size="icon" className="h-9 w-9 shrink-0" title="Pick from the list instead" onClick={() => { setAddingNewBank(false); setLcForm({ ...lcForm, bank: '' }) }}>
+                              <ChevronDown className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
+                      ) : (
+                        <Select
+                          value={bank}
+                          onValueChange={(v) => {
+                            if (v === NEW_BANK) { setAddingNewBank(true); setLcForm({ ...lcForm, bank: '' }) }
+                            else setLcForm({ ...lcForm, bank: v })
+                          }}
+                        >
+                          <SelectTrigger><SelectValue placeholder="Select a bank" /></SelectTrigger>
+                          <SelectContent className="max-h-64">
+                            {bankOptions.map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+                            <SelectItem value={NEW_BANK}>+ Add new bank</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      )
+                    })()}
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label>FD No *</Label>
+                    <Input value={lcForm.fd_no ?? ''} onChange={(e) => setLcForm({ ...lcForm, fd_no: e.target.value })} placeholder="e.g. FD/2026/045" />
+                    <span className="text-[10px] text-muted-foreground">Fixed deposit lodged as security</span>
+                  </div>
                   <div className="grid gap-1.5 sm:col-span-2">
                     <Label>Stage</Label>
                     <div className="grid grid-cols-3 gap-1.5">
@@ -1281,7 +1453,11 @@ export function Treasury(): React.JSX.Element {
                                   const total = orders
                                     .filter((x) => next.map(String).includes(String(x.id)))
                                     .reduce((s, x) => s + n(x.net_amount), 0)
-                                  setLcForm({ ...lcForm, linked_order_ids: next, amount: lcForm.amount || (total > 0 ? String(total) : lcForm.amount) })
+                                  // Suggest the total, but never overwrite an amount
+                                  // the user has already raised above it by hand —
+                                  // only bump up if the growing selection would
+                                  // otherwise fall foul of the floor.
+                                  setLcForm({ ...lcForm, linked_order_ids: next, amount: total > n(lcForm.amount) ? String(total) : lcForm.amount })
                                 }}
                               />
                               <span className="flex-1">{o.invoice_no} · {formatDate(o.order_date)}</span>
@@ -1297,13 +1473,13 @@ export function Treasury(): React.JSX.Element {
                       const total = orders
                         .filter((o) => ids.map(String).includes(String(o.id)))
                         .reduce((s, o) => s + n(o.net_amount), 0)
-                      const over = n(lcForm.amount) - total
+                      const short = total - n(lcForm.amount)
                       return (
-                        <div className={cn('mt-1.5 flex items-center justify-between text-[11px]', over > 0.005 ? 'font-medium text-rose-700' : 'text-teal-800')}>
+                        <div className={cn('mt-1.5 flex items-center justify-between text-[11px]', short > 0.005 ? 'font-medium text-rose-700' : 'text-teal-800')}>
                           <span>Selected invoices total</span>
                           <span className="tabular-nums">
                             {formatINR(total)}
-                            {String(lcForm.purpose) === 'trading' && over > 0.005 ? ` — open amount is ${formatINR(over)} over this` : ''}
+                            {short > 0.005 ? ` — open amount is ${formatINR(short)} short of this` : ''}
                           </span>
                         </div>
                       )
@@ -1340,7 +1516,23 @@ export function Treasury(): React.JSX.Element {
                   Amount & validity
                 </h3>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="grid gap-1.5 sm:col-span-2"><Label>Open amount (₹) *</Label><Input type="number" value={lcForm.amount ?? ''} onChange={(e) => setLcForm({ ...lcForm, amount: e.target.value })} /></div>
+                  {(() => {
+                    const linkedIds: number[] = Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []
+                    const hasInvoices = linkedIds.length > 0
+                    return (
+                      <div className="grid gap-1.5 sm:col-span-2">
+                        <Label>Open amount (₹) *</Label>
+                        <Input
+                          type="number"
+                          value={lcForm.amount ?? ''}
+                          onChange={(e) => setLcForm({ ...lcForm, amount: e.target.value })}
+                        />
+                        {hasInvoices && (
+                          <span className="text-[10px] text-muted-foreground">Suggested from the selected invoices — edit freely, but it can't go below their total.</span>
+                        )}
+                      </div>
+                    )
+                  })()}
                   {(() => {
                     const stage = String(lcForm.stage || 'application')
                     // daysTo(x) = x − today, so this difference cancels "today"
@@ -1355,15 +1547,16 @@ export function Treasury(): React.JSX.Element {
                           <DatePicker value={String(lcForm.open_date || '')} onChange={(v) => setLcForm({ ...lcForm, open_date: v })} />
                         </div>
                         <div className="grid gap-1.5">
-                          <Label>Open date {stage === 'application' && <span className="text-[10px] font-normal text-muted-foreground">(set once Open)</span>}</Label>
+                          <Label>Open date</Label>
                           <DatePicker
                             value={String(lcForm.opened_date || '')}
                             onChange={(v) => setLcForm({ ...lcForm, opened_date: v })}
                             disabled={stage === 'application'}
                           />
+                          {stage === 'application' && <span className="text-[10px] text-muted-foreground">Set once the stage moves to Open</span>}
                         </div>
                         <div className="grid gap-1.5">
-                          <Label>Payment received date {stage !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set once received)</span>}</Label>
+                          <Label>Payment received date</Label>
                           <DatePicker
                             value={String(lcForm.payment_received_date || '')}
                             onChange={(v) => {
@@ -1372,9 +1565,10 @@ export function Treasury(): React.JSX.Element {
                             }}
                             disabled={stage !== 'payment_received'}
                           />
+                          {stage !== 'payment_received' && <span className="text-[10px] text-muted-foreground">Set once payment is received</span>}
                         </div>
                         <div className="grid gap-1.5">
-                          <Label>Maturity date {stage !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set with payment received)</span>}</Label>
+                          <Label>Maturity date</Label>
                           <DatePicker
                             value={String(lcForm.expiry_date || '')}
                             onChange={(v) => {
@@ -1383,10 +1577,20 @@ export function Treasury(): React.JSX.Element {
                             }}
                             disabled={stage !== 'payment_received'}
                           />
+                          {stage !== 'payment_received' && <span className="text-[10px] text-muted-foreground">Set together with payment received</span>}
                         </div>
                         <div className="grid gap-1.5 sm:col-span-2">
                           <Label>Interest days</Label>
-                          <Input readOnly disabled value={days != null ? days : ''} placeholder="Calculated from maturity date − payment received date" className="bg-muted/40" />
+                          {days != null ? (
+                            <div className="flex h-11 items-center justify-between rounded-md border border-sky-300 bg-sky-50 px-3">
+                              <span className="text-lg font-bold tabular-nums text-sky-950">{days} days</span>
+                              <span className="rounded-full bg-sky-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">Auto</span>
+                            </div>
+                          ) : (
+                            <div className="flex h-11 items-center rounded-md border border-dashed bg-muted/20 px-3 text-[12px] italic text-muted-foreground">
+                              Calculated once maturity date &amp; payment received date are set
+                            </div>
+                          )}
                         </div>
                       </>
                     )

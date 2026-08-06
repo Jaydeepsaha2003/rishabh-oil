@@ -29,7 +29,10 @@ export function GlobalDateRangeDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
+  const invalidRange = !!from && !!to && from > to
+
   function apply(): void {
+    if (invalidRange) return
     setGlobalRange(from, to)
     onOpenChange(false)
   }
@@ -59,18 +62,21 @@ export function GlobalDateRangeDialog({
           <div className="grid grid-cols-2 gap-3">
             <div className="grid gap-1.5">
               <Label>From</Label>
-              <DatePicker value={from} onChange={(v) => setFrom(v || '')} />
+              <DatePicker value={from} onChange={(v) => setFrom(v || '')} max={to || undefined} />
             </div>
             <div className="grid gap-1.5">
               <Label>To</Label>
-              <DatePicker value={to} onChange={(v) => setTo(v || '')} />
+              <DatePicker value={to} onChange={(v) => setTo(v || '')} min={from || undefined} />
             </div>
           </div>
+          {invalidRange && (
+            <p className="text-[12px] font-medium text-rose-600">The From date must be on or before the To date.</p>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={clear}>Clear period</Button>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={apply}>Apply everywhere</Button>
+          <Button onClick={apply} disabled={invalidRange}>Apply everywhere</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

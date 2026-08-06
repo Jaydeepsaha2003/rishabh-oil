@@ -860,7 +860,9 @@ export async function listPurchaseTankers(allCompanies = false): Promise<Row[]> 
            -- the vehicle number written down there, which is the number the
            -- yard actually saw.
            ge.gate_entry_no, ge.tanker_no AS gate_tanker_no, ge.entry_date AS gate_date,
-           ge.received_qty AS gate_qty
+           ge.received_qty AS gate_qty,
+           (SELECT old_tanker_no || ' -> ' || new_tanker_no || ' (' || loss_qty || ' lost)'
+              FROM tanker_replacements WHERE tanker_id = pt.id ORDER BY id DESC LIMIT 1) AS last_replacement
     FROM purchase_tankers pt
     LEFT JOIN orders o ON o.id = pt.order_id
     LEFT JOIN bargains b ON b.id = pt.bargain_id
@@ -1203,6 +1205,43 @@ export async function backfillOrderStatuses(): Promise<void> {
 // abandoned stage's date. Never below 'loaded' (loading fixed the quantity and
 // drew the bargain). If the tanker belongs to an invoice, the order's status
 // re-syncs, so a received purchase correctly drops back to loaded.
+// Swap the physical vehicle mid-transit — accident, breakdown, whatever
+// stops the original tanker completing the trip. The bargain/order/financials
+// on this tanker row stay exactly as they were; only its number changes, and
+// whatever quantity didn't make it onto the replacement comes off loaded_qty
+// (so the bargain's balance and the gate's later weighment both reconcile
+// against what actually still arrives). Restricted to Transit — before the
+// tanker is billed (Outside Factory onward requires an invoice already tied
+// to its original loaded_qty, which a retroactive cut would desync).
+export async function replaceTanker(id: number, v: Row): Promise<{ id: number }> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT * FROM purchase_tankers WHERE id = ?', args: [id] })
+  if (!res.rows.length) throw new Error('Tanker not found')
+  const tanker = toPlain(res)[0]
+  if (String(tanker.status) !== 'transit') {
+    throw new Error('A tanker can only be replaced while In Transit — it is already billed once past that stage')
+  }
+  const newTankerNo = String(v.new_tanker_no || '').trim()
+  if (!newTankerNo) throw new Error('Enter the replacement tanker number')
+  const lossQty = n(v.loss_qty)
+  if (lossQty < 0) throw new Error('Loss quantity cannot be negative')
+  if (lossQty >= n(tanker.loaded_qty)) {
+    throw new Error(`Loss cannot be at or above the ${n(tanker.loaded_qty)} ${tanker.uom || 'MT'} loaded — nothing would remain to replace`)
+  }
+  const newLoadedQty = Math.round((n(tanker.loaded_qty) - lossQty) * 1000) / 1000
+  const replacedDate = v.date ? String(v.date).slice(0, 10) : new Date().toISOString().slice(0, 10)
+  await c.execute({
+    sql: 'UPDATE purchase_tankers SET tanker_no = ?, loaded_qty = ?, loss_qty = loss_qty + ? WHERE id = ?',
+    args: [newTankerNo, newLoadedQty, lossQty, id]
+  })
+  await c.execute({
+    sql: `INSERT INTO tanker_replacements (tanker_id, old_tanker_no, new_tanker_no, loss_qty, reason, replaced_date)
+          VALUES (?, ?, ?, ?, ?, ?)`,
+    args: [id, tanker.tanker_no || null, newTankerNo, lossQty, v.reason ? String(v.reason).trim() : null, replacedDate]
+  })
+  return { id }
+}
+
 export async function revertPurchaseTanker(id: number): Promise<{ id: number; status: string }> {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT * FROM purchase_tankers WHERE id = ?', args: [id] })

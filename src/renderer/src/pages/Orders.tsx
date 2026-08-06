@@ -81,7 +81,13 @@ function dayDiff(fromISO: string, toISO: string): number {
 function tankerDelay(row: Row): { label: string; tone: string } | null {
   if (row.status !== 'transit' && row.status !== 'outside_factory') return null
   const exp = String(row.expected_delivery_date || '').slice(0, 10)
-  if (!exp) return null
+  if (!exp) {
+    // No ETA without a source to carry transit days — say why, rather than
+    // just showing nothing under the stage badge.
+    return row.source_id
+      ? null
+      : { label: 'No ETA — set a source (Edit)', tone: 'text-muted-foreground italic' }
+  }
   const days = dayDiff(exp, todayISO())
   if (days > 0) return { label: `Delayed ${days} day${days === 1 ? '' : 's'}`, tone: 'text-red-600' }
   if (days === 0) return { label: 'Due today', tone: 'text-amber-600' }
@@ -652,6 +658,42 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       load()
     } catch (e) {
       toast.error((e as Error).message)
+    }
+  }
+
+  // Swap the physical vehicle mid-transit (accident, breakdown) — the bargain
+  // and financials on this tanker stay put, only the number changes and
+  // whatever quantity was lost comes off what it's now expected to deliver.
+  const [replaceRow, setReplaceRow] = useState<Row | null>(null)
+  const [replaceForm, setReplaceForm] = useState<Row>({})
+  const [replaceSaving, setReplaceSaving] = useState(false)
+  const [replaceError, setReplaceError] = useState<string | null>(null)
+
+  function openReplaceTanker(row: Row): void {
+    setReplaceRow(row)
+    setReplaceForm({ new_tanker_no: '', loss_qty: '', reason: '', date: todayISO() })
+    setReplaceError(null)
+  }
+
+  async function saveReplaceTanker(): Promise<void> {
+    if (!replaceRow) return
+    if (!String(replaceForm.new_tanker_no || '').trim()) return setReplaceError('Enter the replacement tanker number')
+    setReplaceSaving(true)
+    setReplaceError(null)
+    try {
+      await window.api.tankers.replace(Number(replaceRow.id), {
+        new_tanker_no: replaceForm.new_tanker_no,
+        loss_qty: Number(replaceForm.loss_qty) || 0,
+        reason: replaceForm.reason || null,
+        date: replaceForm.date || todayISO()
+      })
+      toast.success(`Tanker replaced with ${replaceForm.new_tanker_no}`)
+      setReplaceRow(null)
+      load()
+    } catch (e) {
+      setReplaceError((e as Error).message)
+    } finally {
+      setReplaceSaving(false)
     }
   }
 
@@ -2450,6 +2492,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                   : ''}
                                 {Number(row.gate_qty) > 0 ? ` · weighed ${formatNum(row.gate_qty)}` : ''}
                               </div>
+                            )}{!!row.last_replacement && (
+                              <div className="mt-0.5 text-[11px] text-amber-700" title="Tanker replaced en route">
+                                Replaced: {row.last_replacement}
+                              </div>
                             )}</TableCell>
                             <TableCell>
                               <div>{row.supplier_name}</div>
@@ -2485,6 +2531,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                 </Button>
                               )}
                               {next && <Button size="sm" variant="outline" onClick={() => openTankerAction(row)}>{TANKER_LABEL[next]}</Button>}
+                              {row.status === 'transit' && (
+                                <Button size="sm" variant="outline" className="text-amber-700" title="Replace this tanker (accident/breakdown)" onClick={() => openReplaceTanker(row)}>
+                                  <Truck className="h-4 w-4" /> Replace
+                                </Button>
+                              )}
                               <Button size="icon" variant="ghost" className="h-8 w-8" title="Edit stage entries" onClick={() => openEditTanker(row)}><Pencil className="h-4 w-4" /></Button>
                               {!row.order_id && <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => deleteTanker(row)}><Trash2 className="h-4 w-4" /></Button>}
                             </div></TableCell>
@@ -3131,6 +3182,51 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             <Button onClick={() => saveMapping(false)} disabled={mapping}>
               {mapping ? 'Saving…' : Math.abs(mapValueDiff) > 1 ? 'Check and assign' : 'Assign bargains'}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Replace a tanker mid-transit (accident/breakdown) */}
+      <Dialog open={!!replaceRow} onOpenChange={(open) => !open && setReplaceRow(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Replace tanker {replaceRow?.tanker_no}</DialogTitle>
+          </DialogHeader>
+          {replaceRow && (
+            <div className="grid gap-3">
+              <p className="text-[12px] text-muted-foreground">
+                Bargain, financials and the invoice link stay on this record — only the vehicle number changes, and
+                any quantity lost comes off what it's now expected to deliver ({formatNum(replaceRow.loaded_qty)} {replaceRow.uom} loaded so far).
+              </p>
+              <div className="grid gap-1.5">
+                <Label>Replacement tanker number *</Label>
+                <Input value={replaceForm.new_tanker_no ?? ''} onChange={(e) => setReplaceForm({ ...replaceForm, new_tanker_no: e.target.value })} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-1.5">
+                  <Label>Quantity lost ({replaceRow.uom})</Label>
+                  <Input type="number" value={replaceForm.loss_qty ?? ''} onChange={(e) => setReplaceForm({ ...replaceForm, loss_qty: e.target.value })} placeholder="0" />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label>Date</Label>
+                  <DatePicker value={replaceForm.date || ''} onChange={(v) => setReplaceForm({ ...replaceForm, date: v })} />
+                </div>
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Reason</Label>
+                <Input value={replaceForm.reason ?? ''} onChange={(e) => setReplaceForm({ ...replaceForm, reason: e.target.value })} placeholder="e.g. accident en route" />
+              </div>
+              {Number(replaceForm.loss_qty) > 0 && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+                  New expected quantity: {formatNum(Math.max(0, Number(replaceRow.loaded_qty) - Number(replaceForm.loss_qty)))} {replaceRow.uom}
+                </div>
+              )}
+              {replaceError && <p className="text-sm text-destructive">{replaceError}</p>}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReplaceRow(null)} disabled={replaceSaving}>Cancel</Button>
+            <Button onClick={() => void saveReplaceTanker()} disabled={replaceSaving}>{replaceSaving ? 'Saving…' : 'Replace tanker'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

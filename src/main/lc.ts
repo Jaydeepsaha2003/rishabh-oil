@@ -1,7 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
-import { postLcOpening } from './treasury'
+import { postLcOpening, settleLcBill } from './treasury'
 import { facilityHeadroom } from './facilities'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -87,6 +87,53 @@ async function syncLinkedOrders(lcId: number, orderIds: unknown): Promise<void> 
   }
 }
 
+// Pasting a Payment received date means the loop is closed: the bill(s) it
+// covers should show up under the LC rather than leaving "No bills issued
+// under this LC yet" (created once, per linked invoice, or one for the whole
+// open amount if there's no invoice to split by — never touches an issuance
+// the user already has), AND the beneficiary should get paid through the
+// books straight away, the same as a manual Settle.
+async function syncPaymentReceivedIssuance(lcId: number, v: Row): Promise<void> {
+  const paymentDate = String(v.payment_received_date || '').slice(0, 10)
+  if (!paymentDate) return
+  const c = getClient()
+  const existing = await c.execute({ sql: 'SELECT COUNT(*) AS n FROM lc_issuances WHERE lc_id = ?', args: [lcId] })
+  if (n(existing.rows[0]?.n) === 0) {
+    const issueDate = String(v.open_date || paymentDate).slice(0, 10)
+    const dueDate = String(v.expiry_date || paymentDate).slice(0, 10)
+    const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x: unknown) => n(x)).filter((x: number) => x > 0) : []
+    if (ids.length) {
+      for (const oid of ids) {
+        const o = await c.execute({ sql: 'SELECT invoice_no, net_amount FROM orders WHERE id = ?', args: [oid] })
+        if (!o.rows.length) continue
+        await c.execute({
+          sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, order_id, bill_no, due_date, status)
+                VALUES (?, ?, ?, ?, ?, ?, 'outstanding')`,
+          args: [lcId, issueDate, n(o.rows[0].net_amount), oid, String(o.rows[0].invoice_no || ''), dueDate]
+        })
+      }
+    } else if (n(v.amount) > 0) {
+      await c.execute({
+        sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, bill_no, due_date, status)
+              VALUES (?, ?, ?, ?, ?, 'outstanding')`,
+        args: [lcId, issueDate, n(v.amount), String(v.lc_no || ''), dueDate]
+      })
+    }
+  }
+  // Pay the beneficiary through the books for every bill still outstanding —
+  // receiving payment closes the loop, so settling is automatic here rather
+  // than a separate manual step.
+  const outstanding = await c.execute({
+    sql: "SELECT id FROM lc_issuances WHERE lc_id = ? AND COALESCE(status, 'outstanding') != 'settled'",
+    args: [lcId]
+  })
+  for (const row of outstanding.rows) {
+    await settleLcBill(Number(row.id), paymentDate).catch((e) =>
+      console.error('[lc] auto-settle on payment received failed:', (e as Error).message)
+    )
+  }
+}
+
 export async function listLCIssuances(lcId: number): Promise<Row[]> {
   const res = await getClient().execute({
     sql: `SELECT i.*, o.invoice_no
@@ -129,6 +176,10 @@ function lcArgs(v: Row): (string | number | null)[] {
     if (val === '' || val === undefined || val === null) {
       if (k === 'workflow_status') return 'in_progress'
       if (k === 'stage') return 'application'
+      // NOT NULL columns — Interest days in particular is blank until both
+      // maturity and payment-received dates are set, so a fresh LC must still
+      // insert cleanly with 0 rather than null.
+      if (k === 'amount' || k === 'usance_days' || k === 'margin_pct') return 0
       return null
     }
     if (
@@ -164,10 +215,10 @@ async function assertWithinFacility(v: Row, excludeLcId = 0): Promise<void> {
   }
 }
 
-// A Trading LC's open amount is a limit against the invoices it covers — it
-// must never be struck for more than what those invoices actually total.
+// An LC covering specific invoices can be edited freely, but it can never be
+// struck for less than what those invoices actually total — the LC has to
+// cover the trade it's backing.
 async function assertWithinInvoiceCover(v: Row): Promise<void> {
-  if (String(v.purpose || '') !== 'trading') return
   const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x: unknown) => n(x)).filter((x: number) => x > 0) : []
   if (!ids.length) return
   const res = await getClient().execute({
@@ -176,9 +227,9 @@ async function assertWithinInvoiceCover(v: Row): Promise<void> {
   })
   const total = n(res.rows[0]?.total)
   const amount = n(v.amount)
-  if (amount > total + 0.005) {
+  if (amount < total - 0.005) {
     throw new Error(
-      `The open amount (${amount.toFixed(2)}) cannot exceed the ${total.toFixed(2)} total of the selected invoices.`
+      `The open amount (${amount.toFixed(2)}) cannot be less than the ${total.toFixed(2)} total of the selected invoices.`
     )
   }
 }
@@ -195,6 +246,7 @@ export async function createLC(v: Row): Promise<{ id: number }> {
   })
   const id = Number(res.lastInsertRowid)
   await syncLinkedOrders(id, v.linked_order_ids)
+  await syncPaymentReceivedIssuance(id, v)
   // Margin + charges voucher into the books (skipped when both are zero).
   await postLcOpening(id).catch((e) => console.error('[lc] opening voucher failed:', (e as Error).message))
   return { id }
@@ -209,6 +261,7 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number }> {
     args: [...lcArgs(v), id]
   })
   await syncLinkedOrders(id, v.linked_order_ids)
+  await syncPaymentReceivedIssuance(id, v)
   await postLcOpening(id).catch((e) => console.error('[lc] opening voucher failed:', (e as Error).message))
   return { id }
 }
