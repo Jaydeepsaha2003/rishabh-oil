@@ -1379,7 +1379,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     tdsThreshold: Number(form.tds_threshold) || 0,
     tdsPctAbove: Number(form.tds_pct) || 0,
     tdsPrior: Number(form.tds_prior) || 0,
-    lines: rateAlloc.map((a) => ({ rate: a.rate, qty: a.qty }))
+    lines: rateAlloc.map((a) => ({ rate: a.rate, qty: a.qty })),
+    roundOff: Number(form.round_off) || 0
   }), [form, totalQty, rateAlloc])
 
   // Default the per-invoice interest toggle: ON when the supplier charges
