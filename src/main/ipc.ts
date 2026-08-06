@@ -145,6 +145,30 @@ import {
   deleteLCIssuance
 } from './lc'
 import {
+  importBankStatement,
+  listBankStatementImports,
+  deleteBankStatementImport,
+  listBankStatementLines,
+  suggestBankLineMatch,
+  reconcileBankLine,
+  markBankLineMisc,
+  unreconcileBankLine,
+  setBankLineSubEntry
+} from './bankRecon'
+import {
+  listBdParties,
+  createBdParty,
+  updateBdParty,
+  deleteBdParty,
+  listBdEntries,
+  createBdEntry,
+  markBdEntryPaid,
+  markBdEntryRepaid,
+  recordBdInterest,
+  deleteBdEntry,
+  bdFundFlowSummary
+} from './billDiscounting'
+import {
   listFacilities,
   listFacilityExposures,
   facilityHeadroom,
@@ -283,7 +307,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^files:pickDocument$|^files:openDocument$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:parties$|^bd:entries$|^bd:fundFlow$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -606,6 +630,28 @@ export function registerIpc(): void {
     void shell.openPath(path)
     return { ok: true }
   })
+
+  handle('bankRecon:import', (_e, { values }: { values: Row }) => importBankStatement(values))
+  handle('bankRecon:imports', () => listBankStatementImports())
+  handle('bankRecon:deleteImport', (_e, { id }: { id: number }) => deleteBankStatementImport(id))
+  handle('bankRecon:list', (_e, { filter }: { filter: Row }) => listBankStatementLines(filter))
+  handle('bankRecon:suggest', (_e, { lineId }: { lineId: number }) => suggestBankLineMatch(lineId))
+  handle('bankRecon:reconcile', (_e, { lineId, values }: { lineId: number; values: Row }) => reconcileBankLine(lineId, values))
+  handle('bankRecon:markMisc', (_e, { lineId }: { lineId: number }) => markBankLineMisc(lineId))
+  handle('bankRecon:unreconcile', (_e, { lineId }: { lineId: number }) => unreconcileBankLine(lineId))
+  handle('bankRecon:setSubEntry', (_e, { lineId, values }: { lineId: number; values: Row }) => setBankLineSubEntry(lineId, values))
+
+  handle('bd:parties', () => listBdParties())
+  handle('bd:createParty', (_e, { values }: { values: Row }) => createBdParty(values))
+  handle('bd:updateParty', (_e, { id, values }: { id: number; values: Row }) => updateBdParty(id, values))
+  handle('bd:deleteParty', (_e, { id }: { id: number }) => deleteBdParty(id))
+  handle('bd:entries', (_e, { filter }: { filter: Row }) => listBdEntries(filter))
+  handle('bd:createEntry', (_e, { values }: { values: Row }) => createBdEntry(values))
+  handle('bd:markPaid', (_e, { id, date }: { id: number; date?: string }) => markBdEntryPaid(id, date))
+  handle('bd:markRepaid', (_e, { id, date }: { id: number; date?: string }) => markBdEntryRepaid(id, date))
+  handle('bd:recordInterest', (_e, { id, values }: { id: number; values: Row }) => recordBdInterest(id, values))
+  handle('bd:deleteEntry', (_e, { id }: { id: number }) => deleteBdEntry(id))
+  handle('bd:fundFlow', () => bdFundFlowSummary())
 
   handle('facility:list', () => listFacilities())
   handle('facility:exposures', (_e, { facilityId }: { facilityId: number }) => listFacilityExposures(facilityId))

@@ -165,9 +165,12 @@ export async function reopenLcBill(issuanceId: number): Promise<{ id: number }> 
 }
 
 // ---------------------------------------------------------------------------
-// LC repayment: money the receivable party sends back against a Trading LC's
-// exposure. Logged first (with its bank document), posted to the books only
-// once confirmed — `posted` is the yes/no gate the notes ask for.
+// LC repayment: US repaying the BANK against a Trading LC's exposure — an
+// outflow, not the receivable party paying us (that's tracked separately via
+// the LC's own payment-received date). The bank often deducts a variable
+// maturity charge at the same moment, so both come off our account as ONE
+// combined withdrawal. Logged first (with its bank document), posted to the
+// books only once confirmed — `posted` is the yes/no gate the notes ask for.
 // ---------------------------------------------------------------------------
 
 export async function listLcRepayments(lcId: number): Promise<Row[]> {
@@ -180,40 +183,39 @@ export async function listLcRepayments(lcId: number): Promise<Row[]> {
   return toPlain(res)
 }
 
-// Posts (or re-posts) the repayment's journal entry: the bank receives the
-// money, the receivable party's account is cleared against it.
+// Posts (or re-posts) the repayment's journal entry: money leaves our bank —
+// the repayment itself and any maturity charge combine into that one Bank
+// credit line, matching the single combined debit the bank statement shows.
 async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   const c = getClient()
   const res = await c.execute({
-    sql: `SELECT r.*, l.lc_no, l.company_id, l.receivable_party_id, cu.name AS party_name
+    sql: `SELECT r.*, l.lc_no, l.company_id, l.bank
           FROM lc_repayments r
           JOIN letters_of_credit l ON l.id = r.lc_id
-          LEFT JOIN customers cu ON cu.id = r.party_id
           WHERE r.id = ?`,
     args: [repaymentId]
   })
   if (!res.rows.length) throw new Error('Repayment not found')
   const rep = toPlain(res)[0]
-  if (rep.receivable_party_id && n(rep.party_id) !== n(rep.receivable_party_id)) {
-    throw new Error("This repayment's party does not match the party recorded on the LC to receive payment from")
-  }
-  const party = String(rep.party_name || '').trim()
-  if (!party) throw new Error('Pick the party this repayment is coming from')
   await dropEntry(n(rep.journal_entry_id) || null)
   const amount = round2(n(rep.amount))
+  const maturityCharges = round2(n(rep.maturity_charges))
   const date = String(rep.repay_date || todayISO()).slice(0, 10)
+  const lines: { account: string; group: string; dr?: number; cr?: number }[] = [
+    { account: 'LC REPAYMENT A/C', group: 'Loans (Liability)', dr: amount }
+  ]
+  if (maturityCharges > 0.005) {
+    lines.push({ account: 'MATURITY CHARGES A/C', group: 'Indirect Expenses', dr: maturityCharges })
+  }
+  lines.push({ account: 'BANK A/C', group: 'Bank Accounts', cr: round2(amount + maturityCharges) })
   const je = await postJournal({
     date,
-    vchType: 'RECEIPT',
+    vchType: 'PAYMENT',
     vchNo: rep.lc_no ? String(rep.lc_no) : null,
-    narration: `LC ${rep.lc_no} repayment received from ${party}`,
+    narration: `LC ${rep.lc_no} repaid to ${rep.bank || 'the bank'}${maturityCharges > 0.005 ? ` (incl. ${maturityCharges.toFixed(2)} maturity charges)` : ''}`,
     companyId: n(rep.company_id) || undefined,
-    lines: [
-      { account: 'BANK A/C', group: 'Bank Accounts', dr: amount },
-      { account: party, group: 'Sundry Debtors', cr: amount }
-    ]
+    lines
   })
-  await allocAgainst(je.id, party, null, amount)
   await c.execute({ sql: 'UPDATE lc_repayments SET journal_entry_id = ? WHERE id = ?', args: [je.id, repaymentId] })
 }
 
@@ -228,6 +230,7 @@ export async function saveLcRepayment(v: Row): Promise<{ id: number }> {
     lcId,
     v.party_id ? n(v.party_id) : null,
     amount,
+    n(v.maturity_charges),
     v.repay_date ? String(v.repay_date).slice(0, 10) : todayISO(),
     posted,
     v.document_path ? String(v.document_path) : null,
@@ -239,7 +242,7 @@ export async function saveLcRepayment(v: Row): Promise<{ id: number }> {
     const prev = await c.execute({ sql: 'SELECT posted, journal_entry_id FROM lc_repayments WHERE id = ?', args: [id] })
     if (!prev.rows.length) throw new Error('Repayment not found')
     await c.execute({
-      sql: `UPDATE lc_repayments SET lc_id = ?, party_id = ?, amount = ?, repay_date = ?, posted = ?,
+      sql: `UPDATE lc_repayments SET lc_id = ?, party_id = ?, amount = ?, maturity_charges = ?, repay_date = ?, posted = ?,
             document_path = ?, note = ? WHERE id = ?`,
       args: [...args, id]
     })
@@ -249,8 +252,8 @@ export async function saveLcRepayment(v: Row): Promise<{ id: number }> {
     }
   } else {
     const ins = await c.execute({
-      sql: `INSERT INTO lc_repayments (lc_id, party_id, amount, repay_date, posted, document_path, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      sql: `INSERT INTO lc_repayments (lc_id, party_id, amount, maturity_charges, repay_date, posted, document_path, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       args
     })
     id = Number(ins.lastInsertRowid)

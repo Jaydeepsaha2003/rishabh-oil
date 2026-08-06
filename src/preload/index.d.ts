@@ -232,6 +232,30 @@ export interface Api {
     pickDocument: () => Promise<{ path: string | null }>
     openDocument: (path: string) => Promise<{ ok: boolean }>
   }
+  bankRecon: {
+    import: (values: Row) => Promise<{ id: number; count: number }>
+    imports: () => Promise<Row[]>
+    deleteImport: (id: number) => Promise<{ id: number }>
+    list: (filter: Row) => Promise<Row[]>
+    suggest: (lineId: number) => Promise<Row | null>
+    reconcile: (lineId: number, values: Row) => Promise<{ id: number }>
+    markMisc: (lineId: number) => Promise<{ id: number }>
+    unreconcile: (lineId: number) => Promise<{ id: number }>
+    setSubEntry: (lineId: number, values: Row) => Promise<{ id: number }>
+  }
+  billDiscounting: {
+    parties: () => Promise<Row[]>
+    createParty: (values: Row) => Promise<{ id: number }>
+    updateParty: (id: number, values: Row) => Promise<{ id: number }>
+    deleteParty: (id: number) => Promise<{ id: number }>
+    entries: (filter: Row) => Promise<Row[]>
+    createEntry: (values: Row) => Promise<{ id: number }>
+    markPaid: (id: number, date?: string) => Promise<{ id: number }>
+    markRepaid: (id: number, date?: string) => Promise<{ id: number }>
+    recordInterest: (id: number, values: Row) => Promise<{ id: number }>
+    deleteEntry: (id: number) => Promise<{ id: number }>
+    fundFlow: () => Promise<Row>
+  }
   facility: {
     list: () => Promise<Row[]>
     exposures: (facilityId: number) => Promise<Row[]>

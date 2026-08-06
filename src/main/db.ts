@@ -693,7 +693,79 @@ const MIGRATIONS = [
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(lc_id, order_id)
   )`,
-  'CREATE INDEX IF NOT EXISTS idx_lc_linked_orders_lc ON lc_linked_orders(lc_id)'
+  'CREATE INDEX IF NOT EXISTS idx_lc_linked_orders_lc ON lc_linked_orders(lc_id)',
+  // LC repayment is US repaying the BANK (an outflow), not the receivable
+  // party paying us — the bank often deducts a variable maturity charge at
+  // the same moment, debited from our account as one combined withdrawal
+  // alongside the repayment itself.
+  'ALTER TABLE lc_repayments ADD COLUMN maturity_charges REAL NOT NULL DEFAULT 0',
+  // Bank statement reconciliation: an import batch (one per uploaded file) and
+  // its lines. A line either LINKS to a payment/LC entry already posted
+  // elsewhere (no new posting — just marks it reconciled) or falls to 'misc'
+  // when nothing recognizes it. sub_entry_* is a manual party/purpose note,
+  // independent of the reconciliation status itself.
+  `CREATE TABLE IF NOT EXISTS bank_statement_imports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bank TEXT NOT NULL,
+    file_name TEXT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    imported_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS bank_statement_lines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    import_id INTEGER NOT NULL REFERENCES bank_statement_imports(id),
+    bank TEXT NOT NULL,
+    txn_date TEXT NOT NULL,
+    narration TEXT,
+    debit REAL NOT NULL DEFAULT 0,
+    credit REAL NOT NULL DEFAULT 0,
+    balance REAL,
+    category TEXT,
+    link_type TEXT,
+    link_ref_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    sub_entry_enabled INTEGER NOT NULL DEFAULT 0,
+    sub_entry_note TEXT,
+    reviewed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_bank_statement_lines_import ON bank_statement_lines(import_id)',
+  'CREATE INDEX IF NOT EXISTS idx_bank_statement_lines_status ON bank_statement_lines(status)',
+  // Bill Discounting: no stages like an LC — just submit an invoice and the
+  // discounter pays out T/T+1 on its own advice, so there's nothing here to
+  // gate on dates the way LCs are. Each party carries its own rate/limit
+  // (PID/SID, security, interest terms); entries draw against that limit.
+  `CREATE TABLE IF NOT EXISTS bd_parties (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    party_name TEXT NOT NULL,
+    discounter TEXT,
+    rate_pct REAL NOT NULL DEFAULT 0,
+    finance_type TEXT NOT NULL DEFAULT 'PID',
+    purpose TEXT,
+    security_given INTEGER NOT NULL DEFAULT 0,
+    interest_bearing INTEGER NOT NULL DEFAULT 0,
+    interest_payment_schedule TEXT,
+    sanctioned_limit REAL NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS bd_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bd_party_id INTEGER NOT NULL REFERENCES bd_parties(id),
+    invoice_no TEXT,
+    amount REAL NOT NULL DEFAULT 0,
+    submitted_date TEXT NOT NULL,
+    payment_date TEXT,
+    status TEXT NOT NULL DEFAULT 'submitted',
+    repaid_date TEXT,
+    interest_amount REAL NOT NULL DEFAULT 0,
+    interest_received_date TEXT,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_bd_entries_party ON bd_entries(bd_party_id)'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

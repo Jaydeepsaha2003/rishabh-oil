@@ -180,6 +180,9 @@ function lcArgs(v: Row): (string | number | null)[] {
       // maturity and payment-received dates are set, so a fresh LC must still
       // insert cleanly with 0 rather than null.
       if (k === 'amount' || k === 'usance_days' || k === 'margin_pct') return 0
+      // lc_no is NOT NULL but genuinely unknown until Open — an empty string
+      // satisfies the column without pretending to have a real number.
+      if (k === 'lc_no') return ''
       return null
     }
     if (
@@ -215,9 +218,9 @@ async function assertWithinFacility(v: Row, excludeLcId = 0): Promise<void> {
   }
 }
 
-// An LC covering specific invoices can be edited freely, but it can never be
-// struck for less than what those invoices actually total — the LC has to
-// cover the trade it's backing.
+// An LC covering specific invoices can be struck for less than their total
+// (part-covered by the LC, the rest funded another way) but never for more —
+// the bank isn't extending credit beyond the trade it's backing.
 async function assertWithinInvoiceCover(v: Row): Promise<void> {
   const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x: unknown) => n(x)).filter((x: number) => x > 0) : []
   if (!ids.length) return
@@ -227,15 +230,24 @@ async function assertWithinInvoiceCover(v: Row): Promise<void> {
   })
   const total = n(res.rows[0]?.total)
   const amount = n(v.amount)
-  if (amount < total - 0.005) {
+  if (amount > total + 0.005) {
     throw new Error(
-      `The open amount (${amount.toFixed(2)}) cannot be less than the ${total.toFixed(2)} total of the selected invoices.`
+      `The open amount (${amount.toFixed(2)}) cannot exceed the ${total.toFixed(2)} total of the selected invoices.`
     )
   }
 }
 
+// The LC number itself isn't known until the bank actually opens the LC —
+// at Application it's just a request, so only Open onward requires it.
+function assertLcNoIfPastApplication(v: Row): void {
+  if (String(v.stage || 'application') !== 'application' && !String(v.lc_no || '').trim()) {
+    throw new Error('LC number is required once the LC is Open')
+  }
+}
+
 export async function createLC(v: Row): Promise<{ id: number }> {
-  if (!v.lc_no || !v.bank) throw new Error('LC number and bank are required')
+  if (!v.bank) throw new Error('Bank is required')
+  assertLcNoIfPastApplication(v)
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v)
   await assertWithinInvoiceCover(v)
@@ -253,6 +265,8 @@ export async function createLC(v: Row): Promise<{ id: number }> {
 }
 
 export async function updateLC(id: number, v: Row): Promise<{ id: number }> {
+  if (!v.bank) throw new Error('Bank is required')
+  assertLcNoIfPastApplication(v)
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v, id)
   await assertWithinInvoiceCover(v)

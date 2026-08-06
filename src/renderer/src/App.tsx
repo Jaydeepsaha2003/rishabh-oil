@@ -13,6 +13,8 @@ import { Consignment } from './pages/Consignment'
 import { GateEntry } from './pages/GateEntry'
 import { Accounts } from './pages/Accounts'
 import { Treasury } from './pages/Treasury'
+import { BankReconciliation } from './pages/BankReconciliation'
+import { BillDiscounting } from './pages/BillDiscounting'
 import { Payments } from './pages/Payments'
 import { Products } from './pages/Products'
 import { Categories } from './pages/Categories'
@@ -309,6 +311,8 @@ function App(): React.JSX.Element {
         )}
         {view === 'accounts' && <Accounts onExit={() => setPage('dashboard')} />}
         {view === 'treasury' && <Treasury />}
+        {view === 'bankRecon' && <BankReconciliation />}
+        {view === 'billDiscounting' && <BillDiscounting />}
         {view === 'products' && <Products />}
         {view === 'categories' && <Categories />}
         {view === 'formulation' && <Formulation />}

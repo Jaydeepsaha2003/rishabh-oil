@@ -199,8 +199,13 @@ export function Treasury(): React.JSX.Element {
     setStageRow(l)
     setStageForm(
       next === 'open'
-        ? { opened_date: todayISO() }
-        : { payment_received_date: todayISO(), expiry_date: l.expiry_date || '' }
+        ? { opened_date: todayISO(), lc_no: l.lc_no || '' }
+        : {
+            payment_received_date: todayISO(),
+            expiry_date: l.expiry_date || '',
+            interest_pct: l.interest_pct || '',
+            charges: l.charges || ''
+          }
     )
     setStageError(null)
   }
@@ -209,7 +214,9 @@ export function Treasury(): React.JSX.Element {
     if (!stageRow) return
     const next = nextLcStage(String(stageRow.stage || 'application'))
     if (!next) return
-    if (next === 'open' && !stageForm.opened_date) return setStageError('Enter the date the LC actually opened')
+    if (next === 'open' && (!stageForm.opened_date || !String(stageForm.lc_no || '').trim())) {
+      return setStageError('The LC number and the date it opened are both needed')
+    }
     if (next === 'payment_received' && (!stageForm.payment_received_date || !stageForm.expiry_date)) {
       return setStageError('Both the payment received date and the maturity date are needed')
     }
@@ -303,13 +310,16 @@ export function Treasury(): React.JSX.Element {
   async function saveLc(): Promise<void> {
     if (!lcForm) return
     if (!String(lcForm.fd_no || '').trim()) return void toast.error('FD No is required')
+    if (String(lcForm.stage || 'application') !== 'application' && !String(lcForm.lc_no || '').trim()) {
+      return void toast.error('LC number is required once the LC is Open')
+    }
     {
       const linkedIds: number[] = Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []
       const linkedTotal = orders
         .filter((o) => linkedIds.map(String).includes(String(o.id)))
         .reduce((s, o) => s + n(o.net_amount), 0)
-      if (linkedIds.length && n(lcForm.amount) < linkedTotal - 0.005) {
-        return void toast.error(`The open amount cannot be less than ${formatINR(linkedTotal)}, the total of the selected invoices`)
+      if (linkedIds.length && n(lcForm.amount) > linkedTotal + 0.005) {
+        return void toast.error(`The open amount cannot exceed ${formatINR(linkedTotal)}, the total of the selected invoices`)
       }
     }
     setBusy(true)
@@ -405,6 +415,7 @@ export function Treasury(): React.JSX.Element {
         lc_id: Number(repayForm.lc_id),
         party_id: repayForm.party_id ? Number(repayForm.party_id) : null,
         amount: Number(repayForm.amount),
+        maturity_charges: Number(repayForm.maturity_charges) || 0,
         posted: !!repayForm.posted
       })
       toast.success(repayForm.posted ? 'Repayment posted to the books' : 'Repayment logged')
@@ -579,15 +590,16 @@ export function Treasury(): React.JSX.Element {
             <table className="w-full rounded-lg border bg-card text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:px-3 [&_th]:py-1.5">
               <thead className="border-b bg-muted/50 text-left text-[10px] uppercase tracking-wide text-muted-foreground">
                 <tr>
-                  <th>Party</th><th>Date</th><th className="text-right">Amount</th><th>Posted</th><th>Document</th><th className="text-right">Actions</th>
+                  <th>Date</th><th className="text-right">Repayment</th><th className="text-right">Maturity chgs</th><th className="text-right">Total debited</th><th>Posted</th><th>Document</th><th className="text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {reps.map((r) => (
                   <tr key={String(r.id)} className="border-b last:border-0">
-                    <td className="font-medium">{r.party_name || '—'}</td>
                     <td className="tabular-nums">{formatDate(r.repay_date)}</td>
                     <td className="text-right font-medium tabular-nums">{formatINR(r.amount)}</td>
+                    <td className="text-right tabular-nums text-muted-foreground">{n(r.maturity_charges) > 0 ? formatINR(r.maturity_charges) : '—'}</td>
+                    <td className="text-right font-medium tabular-nums">{formatINR(n(r.amount) + n(r.maturity_charges))}</td>
                     <td>{n(r.posted) ? <Badge variant="success">Posted</Badge> : <Badge variant="muted">Draft</Badge>}</td>
                     <td>
                       {r.document_path ? (
@@ -785,7 +797,7 @@ export function Treasury(): React.JSX.Element {
                         <div className="flex items-start justify-between gap-2">
                           <div>
                             <div className="flex items-center gap-1.5">
-                              <span className="font-semibold">{l.lc_no}</span>
+                              <span className={cn('font-semibold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
                               <StageBadge stage={String(l.stage || 'application')} />
                             </div>
                             <div className="text-[11px] text-muted-foreground">{l.bank} · {l.supplier_name || '—'}</div>
@@ -881,7 +893,7 @@ export function Treasury(): React.JSX.Element {
                                 {isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                                 <div>
                                   <div className="flex items-center gap-1.5">
-                                    <span className="font-semibold">{l.lc_no}</span>
+                                    <span className={cn('font-semibold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
                                     <StageBadge stage={String(l.stage || 'application')} />
                                   </div>
                                   <div className="text-[11px] text-muted-foreground">{l.bank} · {n(l.usance_days)} interest days{n(l.margin_pct) ? ` · margin ${l.margin_pct}%` : ''}</div>
@@ -1274,7 +1286,7 @@ export function Treasury(): React.JSX.Element {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>
-              Mark {stageRow?.lc_no} {STAGE_LABEL[nextLcStage(String(stageRow?.stage || 'application')) || '']}
+              Mark {stageRow?.lc_no || 'this application'} {STAGE_LABEL[nextLcStage(String(stageRow?.stage || 'application')) || '']}
             </DialogTitle>
           </DialogHeader>
           {stageRow && (() => {
@@ -1282,11 +1294,17 @@ export function Treasury(): React.JSX.Element {
             return (
               <div className="grid gap-3">
                 {next === 'open' && (
-                  <div className="grid gap-1.5">
-                    <Label>Open date *</Label>
-                    <DatePicker value={String(stageForm.opened_date || '')} onChange={(v) => setStageForm({ ...stageForm, opened_date: v })} />
-                    <span className="text-[10px] text-muted-foreground">The date the bank actually opened this LC.</span>
-                  </div>
+                  <>
+                    <div className="grid gap-1.5">
+                      <Label>LC no *</Label>
+                      <Input value={stageForm.lc_no ?? ''} onChange={(e) => setStageForm({ ...stageForm, lc_no: e.target.value })} />
+                      <span className="text-[10px] text-muted-foreground">Issued by the bank now that the LC is actually open.</span>
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label>Open date *</Label>
+                      <DatePicker value={String(stageForm.opened_date || '')} onChange={(v) => setStageForm({ ...stageForm, opened_date: v })} />
+                    </div>
+                  </>
                 )}
                 {next === 'payment_received' && (
                   <>
@@ -1297,6 +1315,16 @@ export function Treasury(): React.JSX.Element {
                     <div className="grid gap-1.5">
                       <Label>Maturity date *</Label>
                       <DatePicker value={String(stageForm.expiry_date || '')} onChange={(v) => setStageForm({ ...stageForm, expiry_date: v })} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="grid gap-1.5">
+                        <Label>Interest % p.a. (ROI)</Label>
+                        <Input type="number" value={stageForm.interest_pct ?? ''} onChange={(e) => setStageForm({ ...stageForm, interest_pct: e.target.value })} />
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label>LC charges (₹)</Label>
+                        <Input type="number" value={stageForm.charges ?? ''} onChange={(e) => setStageForm({ ...stageForm, charges: e.target.value })} />
+                      </div>
                     </div>
                     <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
                       Marking this Payment Received also issues (if not already) and settles this LC's bill(s) through the books.
@@ -1323,7 +1351,7 @@ export function Treasury(): React.JSX.Element {
             </div>
             <div>
               <DialogTitle className="text-[16px] font-bold text-white">
-                {lcForm?.id ? `Alter LC ${lcForm.lc_no}` : 'Open a letter of credit'}
+                {lcForm?.id ? `Alter LC ${lcForm.lc_no || '(pending no.)'}` : 'Open a letter of credit'}
               </DialogTitle>
               <p className="text-[12px] text-white/70">Track the LC from application through to payment received.</p>
             </div>
@@ -1336,7 +1364,10 @@ export function Treasury(): React.JSX.Element {
                   LC & stage
                 </h3>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="grid gap-1.5"><Label>LC no *</Label><Input value={lcForm.lc_no ?? ''} onChange={(e) => setLcForm({ ...lcForm, lc_no: e.target.value })} /></div>
+                  <div className="grid gap-1.5">
+                    <Label>LC no {String(lcForm.stage || 'application') !== 'application' && '*'}</Label>
+                    <Input value={lcForm.lc_no ?? ''} onChange={(e) => setLcForm({ ...lcForm, lc_no: e.target.value })} placeholder={String(lcForm.stage || 'application') === 'application' ? 'Obtained once the LC is Open' : ''} />
+                  </div>
                   <div className="grid gap-1.5">
                     <Label>Bank / discounting bank *</Label>
                     {(() => {
@@ -1454,10 +1485,10 @@ export function Treasury(): React.JSX.Element {
                                     .filter((x) => next.map(String).includes(String(x.id)))
                                     .reduce((s, x) => s + n(x.net_amount), 0)
                                   // Suggest the total, but never overwrite an amount
-                                  // the user has already raised above it by hand —
-                                  // only bump up if the growing selection would
-                                  // otherwise fall foul of the floor.
-                                  setLcForm({ ...lcForm, linked_order_ids: next, amount: total > n(lcForm.amount) ? String(total) : lcForm.amount })
+                                  // the user has already set below it by hand — only
+                                  // pull it down if the shrinking selection would
+                                  // otherwise put it over the new ceiling.
+                                  setLcForm({ ...lcForm, linked_order_ids: next, amount: !n(lcForm.amount) || total < n(lcForm.amount) ? String(total) : lcForm.amount })
                                 }}
                               />
                               <span className="flex-1">{o.invoice_no} · {formatDate(o.order_date)}</span>
@@ -1473,13 +1504,13 @@ export function Treasury(): React.JSX.Element {
                       const total = orders
                         .filter((o) => ids.map(String).includes(String(o.id)))
                         .reduce((s, o) => s + n(o.net_amount), 0)
-                      const short = total - n(lcForm.amount)
+                      const over = n(lcForm.amount) - total
                       return (
-                        <div className={cn('mt-1.5 flex items-center justify-between text-[11px]', short > 0.005 ? 'font-medium text-rose-700' : 'text-teal-800')}>
+                        <div className={cn('mt-1.5 flex items-center justify-between text-[11px]', over > 0.005 ? 'font-medium text-rose-700' : 'text-teal-800')}>
                           <span>Selected invoices total</span>
                           <span className="tabular-nums">
                             {formatINR(total)}
-                            {short > 0.005 ? ` — open amount is ${formatINR(short)} short of this` : ''}
+                            {over > 0.005 ? ` — open amount is ${formatINR(over)} over this` : ''}
                           </span>
                         </div>
                       )
@@ -1528,7 +1559,7 @@ export function Treasury(): React.JSX.Element {
                           onChange={(e) => setLcForm({ ...lcForm, amount: e.target.value })}
                         />
                         {hasInvoices && (
-                          <span className="text-[10px] text-muted-foreground">Suggested from the selected invoices — edit freely, but it can't go below their total.</span>
+                          <span className="text-[10px] text-muted-foreground">Suggested from the selected invoices — edit freely, but it can't exceed their total.</span>
                         )}
                       </div>
                     )
@@ -1606,12 +1637,15 @@ export function Treasury(): React.JSX.Element {
                 <div className="grid gap-3 sm:grid-cols-3">
                   <div className="grid gap-1.5"><Label>Margin %</Label><Input type="number" value={lcForm.margin_pct ?? ''} onChange={(e) => setLcForm({ ...lcForm, margin_pct: e.target.value })} /></div>
                   <div className="grid gap-1.5">
-                    <Label>Interest % p.a.</Label>
-                    <Input type="number" value={lcForm.interest_pct ?? ''} onChange={(e) => setLcForm({ ...lcForm, interest_pct: e.target.value })} />
+                    <Label>Interest % p.a. (ROI) {String(lcForm.stage) !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set with payment received)</span>}</Label>
+                    <Input type="number" value={lcForm.interest_pct ?? ''} onChange={(e) => setLcForm({ ...lcForm, interest_pct: e.target.value })} disabled={String(lcForm.stage) !== 'payment_received'} />
                   </div>
-                  <div className="grid gap-1.5"><Label>LC charges (₹)</Label><Input type="number" value={lcForm.charges ?? ''} onChange={(e) => setLcForm({ ...lcForm, charges: e.target.value })} /></div>
+                  <div className="grid gap-1.5">
+                    <Label>LC charges (₹) {String(lcForm.stage) !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set with payment received)</span>}</Label>
+                    <Input type="number" value={lcForm.charges ?? ''} onChange={(e) => setLcForm({ ...lcForm, charges: e.target.value })} disabled={String(lcForm.stage) !== 'payment_received'} />
+                  </div>
                 </div>
-                <span className="mt-1 block text-[10px] text-muted-foreground">Interest is charged over the interest days (maturity date − payment received date).</span>
+                <span className="mt-1 block text-[10px] text-muted-foreground">ROI and LC charges are obtained once payment is received; interest is charged over the interest days (maturity date − payment received date).</span>
               </section>
 
               {n(lcForm.amount) > 0 && (n(lcForm.margin_pct) > 0 || n(lcForm.interest_pct) > 0 || n(lcForm.charges) > 0) && (() => {
@@ -1710,7 +1744,7 @@ export function Treasury(): React.JSX.Element {
           {repayForm && (
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-1.5 sm:col-span-2">
-                <Label>Party paying</Label>
+                <Label>Related party <span className="text-[10px] font-normal text-muted-foreground">(optional — for reference only, not posted)</span></Label>
                 <Select value={repayForm.party_id ? String(repayForm.party_id) : ''} onValueChange={(v) => setRepayForm({ ...repayForm, party_id: v })}>
                   <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
                   <SelectContent className="max-h-64">
@@ -1718,8 +1752,17 @@ export function Treasury(): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-1.5"><Label>Amount (₹) *</Label><Input type="number" value={repayForm.amount ?? ''} onChange={(e) => setRepayForm({ ...repayForm, amount: e.target.value })} /></div>
+              <div className="grid gap-1.5"><Label>Repayment amount (₹) *</Label><Input type="number" value={repayForm.amount ?? ''} onChange={(e) => setRepayForm({ ...repayForm, amount: e.target.value })} /></div>
+              <div className="grid gap-1.5"><Label>Maturity charges (₹)</Label><Input type="number" value={repayForm.maturity_charges ?? ''} onChange={(e) => setRepayForm({ ...repayForm, maturity_charges: e.target.value })} /></div>
               <div className="grid gap-1.5"><Label>Date</Label><DatePicker value={String(repayForm.repay_date || '')} onChange={(v) => setRepayForm({ ...repayForm, repay_date: v })} /></div>
+              {(n(repayForm.amount) > 0 || n(repayForm.maturity_charges) > 0) && (
+                <div className="grid gap-1.5">
+                  <Label>Total debited from bank</Label>
+                  <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm font-medium">
+                    {formatINR(n(repayForm.amount) + n(repayForm.maturity_charges))}
+                  </div>
+                </div>
+              )}
               <div className="grid gap-1.5 sm:col-span-2">
                 <Label>Bank document / payment letter</Label>
                 <div className="flex items-center gap-2">
@@ -1743,7 +1786,7 @@ export function Treasury(): React.JSX.Element {
                   checked={!!repayForm.posted}
                   onChange={(e) => setRepayForm({ ...repayForm, posted: e.target.checked })}
                 />
-                Post to the books now — Dr Bank / Cr the paying party against this LC
+                Post to the books now — Dr LC Repayment (+ Maturity charges) / Cr Bank
               </label>
             </div>
           )}

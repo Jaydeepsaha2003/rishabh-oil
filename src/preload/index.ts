@@ -314,6 +314,35 @@ const api = {
     openDocument: (path: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('files:openDocument', { path })
   },
+  bankRecon: {
+    import: (values: Row): Promise<{ id: number; count: number }> =>
+      ipcRenderer.invoke('bankRecon:import', { values }),
+    imports: (): Promise<Row[]> => ipcRenderer.invoke('bankRecon:imports'),
+    deleteImport: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bankRecon:deleteImport', { id }),
+    list: (filter: Row): Promise<Row[]> => ipcRenderer.invoke('bankRecon:list', { filter }),
+    suggest: (lineId: number): Promise<Row | null> => ipcRenderer.invoke('bankRecon:suggest', { lineId }),
+    reconcile: (lineId: number, values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('bankRecon:reconcile', { lineId, values }),
+    markMisc: (lineId: number): Promise<{ id: number }> => ipcRenderer.invoke('bankRecon:markMisc', { lineId }),
+    unreconcile: (lineId: number): Promise<{ id: number }> => ipcRenderer.invoke('bankRecon:unreconcile', { lineId }),
+    setSubEntry: (lineId: number, values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('bankRecon:setSubEntry', { lineId, values })
+  },
+  billDiscounting: {
+    parties: (): Promise<Row[]> => ipcRenderer.invoke('bd:parties'),
+    createParty: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('bd:createParty', { values }),
+    updateParty: (id: number, values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('bd:updateParty', { id, values }),
+    deleteParty: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:deleteParty', { id }),
+    entries: (filter: Row): Promise<Row[]> => ipcRenderer.invoke('bd:entries', { filter }),
+    createEntry: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('bd:createEntry', { values }),
+    markPaid: (id: number, date?: string): Promise<{ id: number }> => ipcRenderer.invoke('bd:markPaid', { id, date }),
+    markRepaid: (id: number, date?: string): Promise<{ id: number }> => ipcRenderer.invoke('bd:markRepaid', { id, date }),
+    recordInterest: (id: number, values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('bd:recordInterest', { id, values }),
+    deleteEntry: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:deleteEntry', { id }),
+    fundFlow: (): Promise<Row> => ipcRenderer.invoke('bd:fundFlow')
+  },
   facility: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('facility:list'),
     exposures: (facilityId: number): Promise<Row[]> => ipcRenderer.invoke('facility:exposures', { facilityId }),

@@ -46,6 +46,8 @@ export type Page =
   | 'gateEntry'
   | 'accounts'
   | 'treasury'
+  | 'bankRecon'
+  | 'billDiscounting'
   | 'payments'
   | 'categories'
   | 'products'
@@ -70,6 +72,8 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   gateEntry: { label: 'Gate Entry', icon: DoorOpen },
   accounts: { label: 'Accounting', icon: BookOpenCheck },
   treasury: { label: 'Treasury', icon: Landmark },
+  bankRecon: { label: 'Bank Reconciliation', icon: Wallet },
+  billDiscounting: { label: 'Bill Discounting', icon: FileMinus2 },
   payments: { label: 'Payments', icon: CreditCard },
   categories: { label: 'Categories', icon: Tags },
   products: { label: 'Products', icon: Boxes },
@@ -93,7 +97,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Purchase', ids: ['bargains', 'orders', 'consignment', 'gateEntry'] },
   { label: 'Production', ids: ['products', 'formulation', 'production', 'stock'] },
   { label: 'Sales', ids: ['salesBargains', 'sales'] },
-  { label: 'Accounts', ids: ['accounts', 'treasury', 'payments'] },
+  { label: 'Accounts', ids: ['accounts', 'treasury', 'bankRecon', 'billDiscounting', 'payments'] },
   { label: 'Masters', ids: ['categories', 'suppliers', 'transporters', 'customers', 'ports', 'brokers', 'packaging'] },
   { label: 'System', ids: ['approvals', 'settings'] }
 ]
