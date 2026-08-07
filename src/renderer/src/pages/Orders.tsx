@@ -968,20 +968,35 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     return () => { active = false }
   }, [form.supplier_id, form.order_date, editing])
 
+  // "Book into company" can target a company other than the sidebar's active
+  // one — its supplier/tanker pickers need THAT company's tankers, not the
+  // active company's (which is all `tankers` ever holds), so fetch across
+  // companies whenever the two diverge.
+  useEffect(() => {
+    if (!formPage || !form.company_id || String(form.company_id) === String(activeCompany)) return
+    let live = true
+    window.api.tankers.list(true).then((r) => { if (live) setAllTankers(r) })
+    return () => { live = false }
+  }, [formPage, form.company_id, activeCompany])
+  const tankersForBooking = useMemo(() => {
+    if (!form.company_id || String(form.company_id) === String(activeCompany)) return tankers
+    return allTankers.filter((t) => String(t.company_id) === String(form.company_id))
+  }, [tankers, allTankers, form.company_id, activeCompany])
+
   const selectableTankers = useMemo(
-    () => tankers.filter((x) =>
+    () => tankersForBooking.filter((x) =>
       String(x.supplier_id) === String(form.supplier_id || '') &&
       x.status !== 'supplier_factory' &&
       Number(x.loaded_qty) > 0 &&
       (x.order_id == null || x.order_id === editing?.id)
     ),
-    [tankers, form.supplier_id, editing]
+    [tankersForBooking, form.supplier_id, editing]
   )
   // Only suppliers that actually have billable tankers appear in the picker
   // (plus the invoice's own supplier when editing).
   const invoiceSuppliers = useMemo(() => {
     const billable = new Set(
-      tankers
+      tankersForBooking
         .filter((x) =>
           x.status !== 'supplier_factory' &&
           Number(x.loaded_qty) > 0 &&
@@ -994,7 +1009,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         !!s.skip_tanker_stages ||
         String(s.id) === String(form.supplier_id || '')
     )
-  }, [suppliers, tankers, editing, form.supplier_id])
+  }, [suppliers, tankersForBooking, editing, form.supplier_id])
   // A supplier flagged "Direct purchase" in the master keeps its goods at our
   // site already, so there is no send-to-supplier → transit → outside → inside
   // → empty cycle: the invoice is booked in one step against a bargain with the
