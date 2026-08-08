@@ -46,7 +46,7 @@ import {
   deleteBillDiscount
 } from './payments'
 import { listUnmappedOrders, unmappedCount, mapOrderToBargains } from './unmapped'
-import { listTradingDeals, createTradingDeal, deleteTradingDeal } from './trading'
+import { listTradingDeals, createTradingDeal, updateTradingDeal, deleteTradingDeal } from './trading'
 import { assertAllowed, clearAccessCache } from './access-gate'
 import { listSkuRates, saveSkuRates, listPackagingParties, setPackagingParties } from './skurates'
 import {
@@ -656,6 +656,7 @@ export function registerIpc(): void {
 
   handle('trading:list', () => listTradingDeals())
   handle('trading:create', (_e, { values }: { values: Row }) => createTradingDeal(values))
+  handle('trading:update', (_e, { id, values }: { id: number; values: Row }) => updateTradingDeal(id, values))
   handle('trading:delete', (_e, { id }: { id: number }) => deleteTradingDeal(id))
 
   handle('facility:list', () => listFacilities())

@@ -346,6 +346,7 @@ const api = {
   trading: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('trading:list'),
     create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('trading:create', { values }),
+    update: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('trading:update', { id, values }),
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('trading:delete', { id })
   },
   facility: {

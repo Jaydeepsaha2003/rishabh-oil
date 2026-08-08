@@ -259,6 +259,7 @@ export interface Api {
   trading: {
     list: () => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
+    update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
   }
   facility: {
