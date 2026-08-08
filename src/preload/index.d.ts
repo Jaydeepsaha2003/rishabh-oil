@@ -193,7 +193,12 @@ export interface Api {
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     complete: (id: number, gross: number, tare: number) => Promise<{ id: number }>
-    weights: (id: number, gross: number | null, tare: number | null) => Promise<{ id: number; status: string; net: number | null; missing: string | null }>
+    weights: (
+      id: number,
+      gross: number | null,
+      tare: number | null,
+      awaitingGrossOut?: boolean | null
+    ) => Promise<{ id: number; status: string; net: number | null; missing: string | null }>
     skipWeighment: (id: number) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
   }

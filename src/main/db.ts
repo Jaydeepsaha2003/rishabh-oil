@@ -789,7 +789,11 @@ const MIGRATIONS = [
   // invoice_group, so that system-generated group id is the exact link
   // there instead of a single row id.
   'ALTER TABLE journal_bill_allocs ADD COLUMN order_id INTEGER REFERENCES orders(id)',
-  'ALTER TABLE journal_bill_allocs ADD COLUMN sale_invoice_group TEXT'
+  'ALTER TABLE journal_bill_allocs ADD COLUMN sale_invoice_group TEXT',
+  // A Gate In vehicle weighed Tare-only (arriving empty, before its Gross
+  // comes later at Gate Out) can be flagged so it surfaces in Gate Out's own
+  // "Awaiting Gross" picker instead of only sitting in Gate In's queue.
+  'ALTER TABLE gate_entries ADD COLUMN awaiting_gross_out INTEGER NOT NULL DEFAULT 0'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

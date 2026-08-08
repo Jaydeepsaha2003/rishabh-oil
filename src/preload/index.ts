@@ -264,8 +264,13 @@ const api = {
       ipcRenderer.invoke('gate:update', { id, values }),
     complete: (id: number, gross: number, tare: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('gate:complete', { id, gross, tare }),
-    weights: (id: number, gross: number | null, tare: number | null): Promise<{ id: number; status: string; net: number | null; missing: string | null }> =>
-      ipcRenderer.invoke('gate:weights', { id, gross, tare }),
+    weights: (
+      id: number,
+      gross: number | null,
+      tare: number | null,
+      awaitingGrossOut?: boolean | null
+    ): Promise<{ id: number; status: string; net: number | null; missing: string | null }> =>
+      ipcRenderer.invoke('gate:weights', { id, gross, tare, awaitingGrossOut }),
     skipWeighment: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('gate:skipWeighment', { id }),
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('gate:delete', { id })
   },

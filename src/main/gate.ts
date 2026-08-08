@@ -207,7 +207,8 @@ export async function completeGateEntry(
 export async function saveGateWeights(
   id: number,
   gross: number | null,
-  tare: number | null
+  tare: number | null,
+  awaitingGrossOut?: boolean | null
 ): Promise<{ id: number; status: string; net: number | null; missing: string | null }> {
   const c = getClient()
   const cur = await c.execute({ sql: 'SELECT * FROM gate_entries WHERE id = ?', args: [id] })
@@ -229,11 +230,15 @@ export async function saveGateWeights(
   if (both && (net as number) <= 0) {
     throw new Error('Net weight (gross − tare) must be greater than zero — check the two figures')
   }
+  // Only touch the flag when the caller actually decided one way or the
+  // other — leave it as whatever it already was otherwise (e.g. a later
+  // gross-only save from the new Gate Out picker shouldn't reset it).
+  const flag = typeof awaitingGrossOut === 'boolean' ? (awaitingGrossOut ? 1 : 0) : n(row.awaiting_gross_out)
   await c.execute({
     sql: `UPDATE gate_entries
-          SET gross_weight = ?, tare_weight = ?, received_qty = ?, status = ?
+          SET gross_weight = ?, tare_weight = ?, received_qty = ?, status = ?, awaiting_gross_out = ?
           WHERE id = ?`,
-    args: [g, t, both ? net : 0, both ? 'completed' : 'pending', id]
+    args: [g, t, both ? net : 0, both ? 'completed' : 'pending', flag, id]
   })
   return {
     id,

@@ -1449,8 +1449,20 @@ export function Treasury(): React.JSX.Element {
                         <Select
                           value={bank}
                           onValueChange={(v) => {
-                            if (v === NEW_BANK) { setAddingNewBank(true); setLcForm({ ...lcForm, bank: '' }) }
-                            else setLcForm({ ...lcForm, bank: v })
+                            if (v === NEW_BANK) {
+                              // Deferred past this click's own render pass — the
+                              // custom Select portals its panel manually and is
+                              // still closing itself when onValueChange fires.
+                              // Swapping it out for the text input synchronously
+                              // here unmounts it mid-click and crashes the
+                              // portal (the dialog "gets stuck" with an error).
+                              setTimeout(() => {
+                                setAddingNewBank(true)
+                                setLcForm((p) => (p ? { ...p, bank: '' } : p))
+                              }, 0)
+                            } else {
+                              setLcForm({ ...lcForm, bank: v })
+                            }
                           }}
                         >
                           <SelectTrigger><SelectValue placeholder="Select a bank" /></SelectTrigger>

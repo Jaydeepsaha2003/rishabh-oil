@@ -166,6 +166,16 @@ export function GateEntry(): React.JSX.Element {
   const [weights, setWeights] = useState<Record<number, { gross: string; tare: string }>>({})
   const [editRow, setEditRow] = useState<Row | null>(null)
   const [editForm, setEditForm] = useState<Row>({})
+  // A Gate In vehicle flagged "Gross comes later at Gate Out" — picked here,
+  // then weighed on the spot.
+  const [grossPickId, setGrossPickId] = useState('')
+  const [grossPickValue, setGrossPickValue] = useState('')
+  const [grossPickSaving, setGrossPickSaving] = useState(false)
+  // Custom prompt (replaces the browser's plain confirm()) asked when a Gate
+  // In vehicle is saved Tare-only for the first time — a gate operator reads
+  // this, not a developer, so it needs to be plain and unmissable.
+  const [grossOutPrompt, setGrossOutPrompt] = useState<{ row: Row; tare: number } | null>(null)
+  const [grossOutSaving, setGrossOutSaving] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -199,8 +209,33 @@ export function GateEntry(): React.JSX.Element {
   useLiveRefresh(load)
 
   const pending = rows.filter((r) => r.status === 'pending')
-  const pendingIn = pending.filter((r) => String(r.direction || 'in') === 'in').length
-  const pendingOut = pending.filter((r) => String(r.direction || 'in') === 'out').length
+  // Gate In vehicles weighed Tare-only and flagged to have their Gross taken
+  // here at Gate Out instead of back at Gate In's own queue — they've fully
+  // moved over, so both the queue and the tab counts should agree.
+  const awaitingGross = pending.filter(
+    (r) => String(r.direction || 'in') === 'in' && !!r.awaiting_gross_out && r.gross_weight == null
+  )
+  const pendingIn = pending.filter((r) => String(r.direction || 'in') === 'in').length - awaitingGross.length
+  const pendingOut = pending.filter((r) => String(r.direction || 'in') === 'out').length + awaitingGross.length
+
+  async function saveAwaitingGross(): Promise<void> {
+    const row = awaitingGross.find((r) => String(r.id) === grossPickId)
+    if (!row) return
+    const gross = Number(grossPickValue)
+    if (!grossPickValue || !Number.isFinite(gross) || gross <= 0) return void toast.error('Enter the gross weight')
+    setGrossPickSaving(true)
+    try {
+      const r = await window.api.gate.weights(row.id, gross, null)
+      toast.success(`${row.tanker_no} completed — net ${formatNum(r.net || 0)} ${row.uom}`)
+      setGrossPickId('')
+      setGrossPickValue('')
+      await load()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setGrossPickSaving(false)
+    }
+  }
   const completed = rows.filter((r) => r.status !== 'pending')
 
   // Tankers that can still arrive: not emptied yet and no gate entry so far.
@@ -383,13 +418,9 @@ export function GateEntry(): React.JSX.Element {
   // Step 2 — gross & tare arrive from the weighbridge; net completes the entry.
   // Save whatever is on the weighbridge slip so far. One figure keeps the
   // vehicle in the queue; both complete it.
-  async function saveWeight(row: Row): Promise<void> {
-    const w = storedWeights(row)
-    const gross = w.gross === '' ? null : Number(w.gross)
-    const tare = w.tare === '' ? null : Number(w.tare)
-    if (gross == null && tare == null) return void toast.error('Enter the gross or the tare weight')
+  async function doSaveWeight(row: Row, gross: number | null, tare: number | null, awaitingGrossOut?: boolean): Promise<void> {
     try {
-      const r = await window.api.gate.weights(row.id, gross, tare)
+      const r = await window.api.gate.weights(row.id, gross, tare, awaitingGrossOut)
       if (r.status === 'completed') {
         toast.success(`${row.tanker_no} completed — net ${formatNum(r.net || 0)} ${row.uom}`)
       } else {
@@ -403,6 +434,35 @@ export function GateEntry(): React.JSX.Element {
       await load()
     } catch (e) {
       toast.error(errText(e))
+    }
+  }
+
+  async function saveWeight(row: Row): Promise<void> {
+    const w = storedWeights(row)
+    const gross = w.gross === '' ? null : Number(w.gross)
+    const tare = w.tare === '' ? null : Number(w.tare)
+    if (gross == null && tare == null) return void toast.error('Enter the gross or the tare weight')
+
+    // Tare recorded first, on a Gate In arrival, before Gross even exists yet —
+    // ask whether this vehicle's Gross will come later at Gate Out, so it can
+    // be flagged into that screen's own picker instead of only sitting here.
+    const isGateIn = String(row.direction || 'in') === 'in'
+    const tareOnlyFirstTime = tare != null && gross == null && row.tare_weight == null && row.gross_weight == null
+    if (isGateIn && tareOnlyFirstTime) {
+      setGrossOutPrompt({ row, tare })
+      return
+    }
+    await doSaveWeight(row, gross, tare)
+  }
+
+  async function resolveGrossOutPrompt(showAtGateOut: boolean): Promise<void> {
+    if (!grossOutPrompt) return
+    setGrossOutSaving(true)
+    try {
+      await doSaveWeight(grossOutPrompt.row, null, grossOutPrompt.tare, showAtGateOut)
+    } finally {
+      setGrossOutSaving(false)
+      setGrossOutPrompt(null)
     }
   }
 
@@ -546,7 +606,12 @@ export function GateEntry(): React.JSX.Element {
   // The weighbridge queue for ONE direction, so Gate in and Gate out each
   // finish the vehicles they recorded instead of sharing one mixed list.
   function weighQueue(dir: 'in' | 'out'): React.JSX.Element {
-    const list = pending.filter((r) => String(r.direction || 'in') === dir)
+    // A Gate In vehicle flagged "weigh Gross at Gate Out" moves entirely to
+    // that screen's own "Awaiting Gross" picker — it shouldn't still sit here
+    // too, waiting on a weight this queue will never receive.
+    const list = pending.filter(
+      (r) => String(r.direction || 'in') === dir && !(dir === 'in' && r.awaiting_gross_out && r.gross_weight == null)
+    )
     return (
         <section>
           <div className="mb-2 flex items-center gap-2">
@@ -1180,6 +1245,54 @@ export function GateEntry(): React.JSX.Element {
           </div>
         </section>
 
+        {awaitingGross.length > 0 && (
+          <section className="rounded-md border border-amber-300 bg-amber-50 p-4 shadow-sm">
+            <div className="mb-3 flex items-center gap-2 border-b border-dotted border-amber-300 pb-1.5">
+              <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-100 text-amber-700">
+                <Scale className="h-4 w-4" />
+              </div>
+              <h3 className="text-[11px] font-bold uppercase tracking-widest text-amber-900">Awaiting Gross (from Gate In)</h3>
+              <InfoTip text="Vehicles that were weighed Tare-only at Gate In and flagged to have their Gross weight taken here instead. Pick one, enter its Gross weight, and it completes on the spot." />
+              <Badge variant="warning" className="ml-1">{awaitingGross.length}</Badge>
+            </div>
+            <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-3">
+              <div className="grid min-w-0 gap-1 sm:col-span-2">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Vehicle</Label>
+                <Select value={grossPickId} onValueChange={setGrossPickId}>
+                  <SelectTrigger className="h-8 bg-white text-[13px]"><SelectValue placeholder="Select a vehicle" /></SelectTrigger>
+                  <SelectContent>
+                    {awaitingGross.map((r) => (
+                      <SelectItem key={r.id} value={String(r.id)}>
+                        {r.tanker_no} · Tare {formatNum(r.tare_weight)} {r.uom} · {formatDate(r.entry_date)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid min-w-0 gap-1">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Gross weight *</Label>
+                <div className="flex gap-2">
+                  <Input
+                    type="number"
+                    className="h-8 bg-white text-[13px]"
+                    placeholder="0.000"
+                    value={grossPickValue}
+                    onChange={(e) => setGrossPickValue(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && void saveAwaitingGross()}
+                  />
+                  <Button
+                    className="h-8 shrink-0 bg-amber-600 px-3 text-[12px] hover:bg-amber-700"
+                    disabled={!grossPickId || grossPickSaving}
+                    onClick={() => void saveAwaitingGross()}
+                  >
+                    {grossPickSaving ? 'Saving…' : 'Complete'}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
         {weighQueue('out')}
         </>)}
           </TabsContent>
@@ -1276,6 +1389,42 @@ export function GateEntry(): React.JSX.Element {
           </TabsContent>
         </Tabs>
       </div>
+
+      {/* Tare-first confirmation — plain, big, unmissable for a gate operator. */}
+      <Dialog open={!!grossOutPrompt} onOpenChange={(o) => !o && !grossOutSaving && setGrossOutPrompt(null)}>
+        <DialogContent className="max-w-md text-center">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-amber-700">
+            <Scale className="h-7 w-7" />
+          </div>
+          <DialogHeader className="items-center text-center sm:text-center">
+            <DialogTitle className="text-[17px]">Tare weight saved</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-1">
+            <p className="text-[15px] font-semibold">{grossOutPrompt?.row.tanker_no}</p>
+            <p className="text-[13px] text-muted-foreground">
+              Empty weight (Tare): <span className="font-medium text-foreground">{formatNum(grossOutPrompt?.tare)} {grossOutPrompt?.row.uom}</span>
+            </p>
+          </div>
+          <p className="mt-2 text-[15px] font-medium">Will this vehicle be weighed again (Gross) at Gate Out, when it leaves?</p>
+          <div className="mt-4 grid gap-2">
+            <Button
+              className="h-12 bg-emerald-600 text-[15px] font-semibold hover:bg-emerald-700"
+              disabled={grossOutSaving}
+              onClick={() => void resolveGrossOutPrompt(true)}
+            >
+              Yes — weigh it at Gate Out
+            </Button>
+            <Button
+              variant="outline"
+              className="h-12 text-[15px] font-semibold"
+              disabled={grossOutSaving}
+              onClick={() => void resolveGrossOutPrompt(false)}
+            >
+              No — keep it here at Gate In
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Correction dialog (office use) */}
       <Dialog open={!!editRow} onOpenChange={(o) => !o && setEditRow(null)}>
