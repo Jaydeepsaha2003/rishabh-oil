@@ -758,10 +758,14 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     ]
   })
   // A direct/consignment invoice has no tankers of its own; keep the received
-  // qty locked to the invoiced qty instead of walking the movement stages.
+  // qty locked to the invoiced qty instead of walking the movement stages, and
+  // re-assert status='received' — createOrder sets this at booking time, but
+  // an edit never touched it, so a row that somehow drifted to 'loaded'
+  // (or was created before this invariant existed) would stay stuck there,
+  // silently excluded from stock, forever.
   if (wasConsignment) {
     await getClient().execute({
-      sql: 'UPDATE orders SET received_qty = ? WHERE id = ?',
+      sql: "UPDATE orders SET received_qty = ?, status = 'received' WHERE id = ?",
       args: [n(v.ordered_qty), id]
     })
     // Re-pick the consignment tankers this invoice draws, and re-state how the

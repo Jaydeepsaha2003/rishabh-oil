@@ -34,6 +34,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { BillDiscounting } from './BillDiscounting'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -1047,6 +1048,9 @@ export function Treasury(): React.JSX.Element {
                 </TableBody>
               </Table>
             </div>
+
+            <div className="my-4 border-t border-dashed" />
+            <BillDiscounting />
           </TabsContent>
 
           {/* Sanctioned limits: what the bank allows, what is already committed

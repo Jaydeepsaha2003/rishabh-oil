@@ -369,8 +369,12 @@ function DayClose(): React.JSX.Element {
   }
 
   const rateOf = (r: Row): number => Number(r.rate) || 0
-  const actualValueOf = (r: Row): number => (Number(r.actual_qty) || 0) * rateOf(r)
-  const diffOf = (r: Row): number => Number(r.book_qty || 0) - Number(r.actual_qty || 0)
+  // The physical count is Raw qty (actual_qty) + PP combined — that's what
+  // actually exists on the ground, so valuation and the book/actual
+  // reconciliation both run off the combined total, not Raw alone.
+  const totalOf = (r: Row): number => (Number(r.actual_qty) || 0) + (Number(r.pp_qty) || 0)
+  const actualValueOf = (r: Row): number => totalOf(r) * rateOf(r)
+  const diffOf = (r: Row): number => Number(r.book_qty || 0) - totalOf(r)
 
   async function save(): Promise<void> {
     setSaving(true)
@@ -449,13 +453,18 @@ function DayClose(): React.JSX.Element {
               rateOf={rateOf}
               actualValueOf={actualValueOf}
               diffOf={diffOf}
+              totalOf={totalOf}
             />
           </TabsContent>
         ))}
       </Tabs>
 
       <p className="text-xs text-muted-foreground">
-        Book qty is the system-computed stock (received + produced − consumed − sold). PP is the presentation stock counted alongside the physical figure. Difference = book − actual; a positive value means physical stock is short of the books. Actual value is valued automatically at the weighted-average cost (rate × actual qty). Download a protected Excel per section — only the Actual qty and Note cells are editable — hand it to the person counting, then upload it back — uploading records the counts immediately.
+        Book qty is the system-computed stock (received + produced − consumed − sold). Total = Raw qty + PP, the actual
+        physical count. Difference = book − total; a positive value means physical stock is short of the books. Actual
+        value is valued automatically at the weighted-average cost (rate × total). Download a protected Excel per
+        section — only the Raw qty, PP and Note cells are editable — hand it to the person counting, then upload it
+        back — uploading records the counts immediately.
       </p>
     </div>
   )
@@ -471,7 +480,8 @@ function DayCloseSection({
   onImport,
   rateOf,
   actualValueOf,
-  diffOf
+  diffOf,
+  totalOf
 }: {
   section: { key: string; title: string; cats: string[] }
   date: string
@@ -482,6 +492,7 @@ function DayCloseSection({
   rateOf: (r: Row) => number
   actualValueOf: (r: Row) => number
   diffOf: (r: Row) => number
+  totalOf: (r: Row) => number
 }): React.JSX.Element {
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -550,7 +561,7 @@ function DayCloseSection({
                 <Download className="mr-2 h-4 w-4" /> Excel
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Download the protected {section.title} sheet (only Actual qty + Note editable)</TooltipContent>
+            <TooltipContent>Download the protected {section.title} sheet (only Raw qty, PP + Note editable)</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -570,10 +581,9 @@ function DayCloseSection({
               <TableHead>Product</TableHead>
               <TableHead>Category</TableHead>
               <TableHead className="text-right">Book qty</TableHead>
-              <TableHead className="w-[130px] text-right">Actual qty</TableHead>
-              <TableHead className="w-[120px] text-right">
-                PP <span className="text-[10px] font-normal text-muted-foreground">(presentation)</span>
-              </TableHead>
+              <TableHead className="w-[130px] text-right">Raw qty</TableHead>
+              <TableHead className="w-[120px] text-right">PP</TableHead>
+              <TableHead className="text-right">Total</TableHead>
               <TableHead className="text-right">Difference</TableHead>
               <TableHead className="text-right">Rate (₹)</TableHead>
               <TableHead className="text-right">Actual value (₹)</TableHead>
@@ -582,12 +592,12 @@ function DayCloseSection({
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={10} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
             ) : rows.length === 0 ? (
-              <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">No products in this section.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={10} className="py-10 text-center text-muted-foreground">No products in this section.</TableCell></TableRow>
             ) : (
               rows.map((r) => {
-                const has = r.actual_qty !== null && r.actual_qty !== ''
+                const has = (r.actual_qty !== null && r.actual_qty !== '') || (r.pp_qty !== null && r.pp_qty !== '')
                 const diff = diffOf(r)
                 const off = has && Math.abs(diff) > 0.0005
                 return (
@@ -612,6 +622,9 @@ function DayCloseSection({
                         value={r.pp_qty ?? ''}
                         onChange={(e) => setField(r.product_id, 'pp_qty', e.target.value)}
                       />
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums font-semibold">
+                      {has ? formatNum(totalOf(r)) : '—'}
                     </TableCell>
                     <TableCell className={cn('text-right tabular-nums', off ? (diff > 0 ? 'text-amber-700' : 'text-red-600') : 'text-muted-foreground')}>
                       {has ? formatNum(diff) : '—'}
@@ -643,9 +656,13 @@ function DayCloseSection({
                   {formatNum(rows.reduce((a, r) => a + (Number(r.pp_qty) || 0), 0))}
                 </TableCell>
                 <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                  {formatNum(rows.reduce((a, r) => a + totalOf(r), 0))}
+                </TableCell>
+                <TableCell className="text-right font-bold tabular-nums text-amber-900">
                   {formatNum(
                     rows.reduce(
-                      (a, r) => a + (r.actual_qty !== null && r.actual_qty !== '' ? diffOf(r) : 0),
+                      (a, r) =>
+                        a + ((r.actual_qty !== null && r.actual_qty !== '') || (r.pp_qty !== null && r.pp_qty !== '') ? diffOf(r) : 0),
                       0
                     )
                   )}

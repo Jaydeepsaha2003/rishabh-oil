@@ -15,7 +15,6 @@ import { Trading } from './pages/Trading'
 import { Accounts } from './pages/Accounts'
 import { Treasury } from './pages/Treasury'
 import { BankReconciliation } from './pages/BankReconciliation'
-import { BillDiscounting } from './pages/BillDiscounting'
 import { Products } from './pages/Products'
 import { Categories } from './pages/Categories'
 import { Formulation } from './pages/Formulation'
@@ -305,7 +304,6 @@ function App(): React.JSX.Element {
         {view === 'accounts' && <Accounts onExit={() => setPage('dashboard')} />}
         {view === 'treasury' && <Treasury />}
         {view === 'bankRecon' && <BankReconciliation />}
-        {view === 'billDiscounting' && <BillDiscounting />}
         {view === 'products' && <Products />}
         {view === 'categories' && <Categories />}
         {view === 'formulation' && <Formulation />}

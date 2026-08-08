@@ -1082,7 +1082,12 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                         </thead>
                                         <tbody>
                                           {drawn.map((d) => (
-                                            <tr key={`${d.order_id}-${d.bargain_id}`} className="border-b last:border-0">
+                                            <tr
+                                              key={`${d.order_id}-${d.bargain_id}`}
+                                              className={cn('border-b last:border-0', d.order_id && onOpenOrder && 'cursor-pointer hover:bg-sky-50')}
+                                              title={d.order_id ? 'Open the purchase invoice' : undefined}
+                                              onClick={() => d.order_id && onOpenOrder?.(Number(d.order_id))}
+                                            >
                                               <td className="px-3 py-1 font-medium">{d.invoice_no}</td>
                                               <td className="whitespace-nowrap px-3 py-1">{formatDate(d.order_date)}</td>
                                               <td className="px-3 py-1">{d.supplier_name}</td>

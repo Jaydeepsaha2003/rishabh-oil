@@ -15,7 +15,6 @@ import {
   Factory,
   FileText,
   FlaskConical,
-  FileMinus2,
   FilePlus2,
   LayoutDashboard,
   LogOut,
@@ -48,7 +47,6 @@ export type Page =
   | 'accounts'
   | 'treasury'
   | 'bankRecon'
-  | 'billDiscounting'
   | 'categories'
   | 'products'
   | 'formulation'
@@ -73,7 +71,6 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   accounts: { label: 'Accounting', icon: BookOpenCheck },
   treasury: { label: 'Treasury', icon: Landmark },
   bankRecon: { label: 'Bank Reconciliation', icon: Wallet },
-  billDiscounting: { label: 'Bill Discounting', icon: FileMinus2 },
   categories: { label: 'Categories', icon: Tags },
   products: { label: 'Products', icon: Boxes },
   formulation: { label: 'Formulation', icon: FlaskConical },
@@ -98,7 +95,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Production', ids: ['products', 'formulation', 'production', 'stock'] },
   { label: 'Sales', ids: ['salesBargains', 'sales'] },
   { label: 'Trading', ids: ['trading'] },
-  { label: 'Accounts', ids: ['accounts', 'treasury', 'bankRecon', 'billDiscounting'] },
+  { label: 'Accounts', ids: ['accounts', 'treasury', 'bankRecon'] },
   { label: 'Masters', ids: ['categories', 'suppliers', 'transporters', 'customers', 'ports', 'brokers', 'packaging'] },
   { label: 'System', ids: ['approvals', 'settings'] }
 ]

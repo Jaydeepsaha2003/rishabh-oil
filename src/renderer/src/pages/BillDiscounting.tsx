@@ -10,7 +10,6 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { PageHeader } from '@/components/PageHeader'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
@@ -139,12 +138,15 @@ export function BillDiscounting(): React.JSX.Element {
   }
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-auto p-6">
-      <PageHeader
-        title="Bill Discounting"
-        subtitle="No stages like an LC — submit an invoice, the discounter pays out on its own advice, we just track it"
-        hint="Each party carries its own rate, finance type (PID/SID), security and interest terms, and a sanctioned limit that entries draw against. This tracks limits, repayment and interest receipts for fund-flow visibility — actual bank postings still go through Payments/Journal Voucher."
-      />
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-3 rounded-md border border-dashed border-muted-foreground/30 bg-muted/20 px-3 py-2 text-[12px] text-muted-foreground">
+        <span>
+          <span className="font-semibold text-foreground">Trade finance (PID/SID)</span> — no stages like an LC; submit
+          an invoice, the discounter pays out on its own advice. Each party carries its own rate, finance type,
+          security/interest terms and a sanctioned limit entries draw against. Actual bank postings still go through
+          Payments/Journal Voucher.
+        </span>
+      </div>
 
       {fundFlow && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">

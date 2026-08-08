@@ -16,7 +16,6 @@ export const MODULES: ModuleDef[] = [
   { key: 'accounts', label: 'Accounting' },
   { key: 'treasury', label: 'Treasury' },
   { key: 'bankRecon', label: 'Bank Reconciliation' },
-  { key: 'billDiscounting', label: 'Bill Discounting' },
   { key: 'categories', label: 'Categories' },
   { key: 'products', label: 'Products' },
   { key: 'formulation', label: 'Formulation' },
