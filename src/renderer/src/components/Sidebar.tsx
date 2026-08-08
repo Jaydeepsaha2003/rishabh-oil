@@ -22,6 +22,7 @@ import {
   LogOut,
   Package,
   PackageOpen,
+  Repeat,
   ScrollText,
   Settings as SettingsIcon,
   ShoppingCart,
@@ -44,6 +45,7 @@ export type Page =
   | 'orders'
   | 'consignment'
   | 'gateEntry'
+  | 'trading'
   | 'accounts'
   | 'treasury'
   | 'bankRecon'
@@ -88,6 +90,7 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   ports: { label: 'Ports', icon: Anchor },
   brokers: { label: 'Brokers', icon: Briefcase },
   packaging: { label: 'Packed SKU', icon: Package },
+  trading: { label: 'Trading', icon: Repeat },
   approvals: { label: 'Approvals', icon: ClipboardCheck },
   settings: { label: 'Settings', icon: SettingsIcon }
 }
@@ -97,6 +100,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Purchase', ids: ['bargains', 'orders', 'consignment', 'gateEntry'] },
   { label: 'Production', ids: ['products', 'formulation', 'production', 'stock'] },
   { label: 'Sales', ids: ['salesBargains', 'sales'] },
+  { label: 'Trading', ids: ['trading'] },
   { label: 'Accounts', ids: ['accounts', 'treasury', 'bankRecon', 'billDiscounting', 'payments'] },
   { label: 'Masters', ids: ['categories', 'suppliers', 'transporters', 'customers', 'ports', 'brokers', 'packaging'] },
   { label: 'System', ids: ['approvals', 'settings'] }

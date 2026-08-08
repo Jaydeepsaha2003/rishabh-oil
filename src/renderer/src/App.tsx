@@ -11,6 +11,7 @@ import { Bargains } from './pages/Bargains'
 import { Orders } from './pages/Orders'
 import { Consignment } from './pages/Consignment'
 import { GateEntry } from './pages/GateEntry'
+import { Trading } from './pages/Trading'
 import { Accounts } from './pages/Accounts'
 import { Treasury } from './pages/Treasury'
 import { BankReconciliation } from './pages/BankReconciliation'
@@ -301,6 +302,7 @@ function App(): React.JSX.Element {
         )}
         {view === 'consignment' && <Consignment />}
         {view === 'gateEntry' && <GateEntry />}
+        {view === 'trading' && <Trading />}
         {view === 'payments' && (
           <Payments
             focusId={focus?.page === 'payments' ? focus.id : null}

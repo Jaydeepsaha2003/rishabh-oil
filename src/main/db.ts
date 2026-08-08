@@ -765,7 +765,22 @@ const MIGRATIONS = [
     note TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
-  'CREATE INDEX IF NOT EXISTS idx_bd_entries_party ON bd_entries(bd_party_id)'
+  'CREATE INDEX IF NOT EXISTS idx_bd_entries_party ON bd_entries(bd_party_id)',
+  // Purchase & Sales Trading: one dedicated screen for a raw-product
+  // pass-through deal (buy from a supplier, sell the same quantity straight
+  // to a customer) — no tanker movement, no stock entries. Reuses the
+  // existing orders/sales is_trading path under the hood; this table just
+  // links the resulting purchase + sale as one deal for its own listing.
+  `CREATE TABLE IF NOT EXISTS trading_deals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    deal_date TEXT NOT NULL,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    order_id INTEGER REFERENCES orders(id),
+    sale_id INTEGER REFERENCES sales(id),
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

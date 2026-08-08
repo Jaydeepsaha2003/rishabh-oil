@@ -256,6 +256,11 @@ export interface Api {
     deleteEntry: (id: number) => Promise<{ id: number }>
     fundFlow: () => Promise<Row>
   }
+  trading: {
+    list: () => Promise<Row[]>
+    create: (values: Row) => Promise<{ id: number }>
+    remove: (id: number) => Promise<{ id: number }>
+  }
   facility: {
     list: () => Promise<Row[]>
     exposures: (facilityId: number) => Promise<Row[]>

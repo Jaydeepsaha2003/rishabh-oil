@@ -343,6 +343,11 @@ const api = {
     deleteEntry: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:deleteEntry', { id }),
     fundFlow: (): Promise<Row> => ipcRenderer.invoke('bd:fundFlow')
   },
+  trading: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('trading:list'),
+    create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('trading:create', { values }),
+    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('trading:delete', { id })
+  },
   facility: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('facility:list'),
     exposures: (facilityId: number): Promise<Row[]> => ipcRenderer.invoke('facility:exposures', { facilityId }),

@@ -621,13 +621,17 @@ export function GateEntry(): React.JSX.Element {
                         <div className="mt-auto">
                           <div className="mt-2.5 grid grid-cols-2 gap-1.5">
                             <div className="grid gap-0.5">
-                              <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Gross ({row.uom})</span>
+                              <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                Gross ({row.uom}) <span className="font-normal">· {row.direction === 'out' ? 'loaded, at exit' : 'loaded, at arrival'}</span>
+                              </span>
                               <Input type="number" className="h-8 text-right tabular-nums" placeholder="0.000" value={w.gross}
                                 onChange={(e) => setW('gross', e.target.value)}
                                 onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
                             </div>
                             <div className="grid gap-0.5">
-                              <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Tare ({row.uom})</span>
+                              <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                Tare ({row.uom}) <span className="font-normal">· {row.direction === 'out' ? 'empty, at arrival' : 'empty, at exit'}</span>
+                              </span>
                               <Input type="number" className="h-8 text-right tabular-nums" placeholder="0.000" value={w.tare}
                                 onChange={(e) => setW('tare', e.target.value)}
                                 onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
@@ -1031,7 +1035,7 @@ export function GateEntry(): React.JSX.Element {
               <LogOut className="h-4 w-4" />
             </div>
             <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Gate out</h3>
-            <InfoTip text="Record a sale dispatch leaving the factory. Only dispatched sales (Loaded / In transit / Unloaded) that haven't gone out yet are listed. The exit weight completes it." />
+            <InfoTip text="Record a sale tanker here — even the moment it arrives EMPTY for loading, before the invoice is ready (pick the party + a reason). It stays in the weighing queue below: enter its Tare (empty) weight now, then come back and enter the Gross (loaded) weight once it leaves — either order, either first. Net = Gross − Tare completes it." />
           </div>
           <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             <div className="grid min-w-0 gap-1 sm:col-span-2 lg:col-span-1">
@@ -1067,7 +1071,7 @@ export function GateEntry(): React.JSX.Element {
               </Label>
               <Input
                 value={gateOut.note || ''}
-                placeholder="e.g. empty tanker returning"
+                placeholder="e.g. empty tanker arrived for loading"
                 onChange={(e) => setGateOut((p) => ({ ...p, note: e.target.value }))}
               />
             </div>
@@ -1171,7 +1175,7 @@ export function GateEntry(): React.JSX.Element {
           <div className="mt-4 flex justify-end">
             <Button className="h-8 bg-sky-600 px-4 text-[13px] font-semibold hover:bg-sky-700" onClick={recordGateOut} disabled={savingOut}>
               <LogOut className="h-4 w-4" />
-              {savingOut ? 'Saving…' : 'Vehicle out'}
+              {savingOut ? 'Saving…' : 'Record tanker'}
             </Button>
           </div>
         </section>

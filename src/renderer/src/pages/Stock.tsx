@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowRightLeft, Building2, ChevronDown, ChevronRight, Download, Plus, SlidersHorizontal, Trash2, Upload } from 'lucide-react'
+import { ArrowRightLeft, Building2, Check, ChevronDown, ChevronRight, Download, Plus, SlidersHorizontal, Trash2, Upload, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -16,6 +16,8 @@ import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import {
   Table,
   TableBody,
@@ -662,6 +664,93 @@ function DayCloseSection({
   )
 }
 
+// Searchable multi-select for narrowing the Packed SKU table to specific
+// SKUs — a long SKU list is unworkable as a plain dropdown, so this is a
+// checklist-style combobox (type to filter, click to toggle, chips to undo).
+function SkuMultiSelect({
+  skus,
+  value,
+  onChange
+}: {
+  skus: Row[]
+  value: string[]
+  onChange: (v: string[]) => void
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const picked = new Set(value)
+  const selectedRows = skus.filter((s) => picked.has(String(s.id)))
+
+  function toggle(id: string): void {
+    const next = new Set(value)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    onChange(Array.from(next))
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            'flex h-8 min-w-[11rem] max-w-xs items-center gap-1.5 rounded-md border bg-white px-2.5 text-[13px]',
+            'focus:outline-none focus:ring-2 focus:ring-primary/40',
+            !value.length && 'text-muted-foreground'
+          )}
+        >
+          <span className="truncate">
+            {value.length === 0
+              ? 'Filter by SKU…'
+              : value.length === 1
+                ? selectedRows[0]?.name || '1 selected'
+                : `${value.length} SKUs selected`}
+          </span>
+          <ChevronDown className="ml-auto h-3.5 w-3.5 shrink-0 opacity-60" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[300px] p-0">
+        <Command>
+          <CommandInput placeholder="Search SKU…" />
+          <CommandList className="max-h-72">
+            <CommandEmpty>No SKU matches.</CommandEmpty>
+            {skus.map((s) => {
+              const id = String(s.id)
+              const isPicked = picked.has(id)
+              return (
+                <CommandItem key={id} value={String(s.name || '')} onSelect={() => toggle(id)}>
+                  <span
+                    className={cn(
+                      'mr-2 flex h-4 w-4 shrink-0 items-center justify-center rounded border',
+                      isPicked ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40'
+                    )}
+                  >
+                    {isPicked && <Check className="h-3 w-3" />}
+                  </span>
+                  <span className="truncate">{s.name}</span>
+                </CommandItem>
+              )
+            })}
+          </CommandList>
+          {value.length > 0 && (
+            <div className="flex items-center justify-between border-t p-1.5">
+              <span className="px-1 text-[11px] text-muted-foreground">{value.length} selected</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-6 gap-1 px-1.5 text-[11px]"
+                onClick={() => onChange([])}
+              >
+                <X className="h-3 w-3" /> Clear
+              </Button>
+            </div>
+          )}
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 // Packed finished stock per SKU (packaging). A lightweight, manually-maintained
 // count: add packs in / remove, and it's reduced automatically by dispatched
 // PACKED sales of that SKU. on-hand = packed in − packed sold (in units).
@@ -738,20 +827,24 @@ function SkuStock(): React.JSX.Element {
   const totalOnHand = rows.reduce((s, r) => s + (Number(r.on_hand) || 0), 0)
   const negatives = rows.filter((r) => Number(r.on_hand) < -1e-6).length
 
-  // Search + hide-empty, so a long SKU list stays workable.
+  // Search + hide-empty, so a long SKU list stays workable. skuPick narrows to
+  // specific SKUs (searchable multi-select) — empty means no narrowing.
   const [search, setSearch] = useState('')
   const [hideEmpty, setHideEmpty] = useState(false)
+  const [skuPick, setSkuPick] = useState<string[]>([])
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase()
+    const picked = new Set(skuPick)
     return rows.filter((r) => {
       if (q && !String(r.name || '').toLowerCase().includes(q)) return false
+      if (picked.size && !picked.has(String(r.id))) return false
       if (hideEmpty) {
         const moved = (Number(r.opening) || 0) + (Number(r.added_on ?? r.added) || 0) + (Number(r.sold_on ?? r.sold) || 0)
         if (Math.abs(Number(r.on_hand) || 0) < 1e-6 && Math.abs(moved) < 1e-6) return false
       }
       return true
     })
-  }, [rows, search, hideEmpty])
+  }, [rows, search, hideEmpty, skuPick])
   const shownMT = useMemo(() => shown.reduce((s, r) => s + skuMT(r), 0), [shown]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Excel count sheet -------------------------------------------------
@@ -859,8 +952,9 @@ function SkuStock(): React.JSX.Element {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search SKU…"
-          className="h-8 w-44 text-[13px]"
+          className="h-8 w-40 text-[13px]"
         />
+        <SkuMultiSelect skus={rows} value={skuPick} onChange={setSkuPick} />
         <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-muted-foreground">
           <Switch checked={hideEmpty} onCheckedChange={setHideEmpty} />
           Hide untouched

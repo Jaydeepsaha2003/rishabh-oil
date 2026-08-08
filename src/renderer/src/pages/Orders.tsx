@@ -76,10 +76,12 @@ function dayDiff(fromISO: string, toISO: string): number {
   return Math.round((b - a) / 86400000)
 }
 
-// Delay status for a tanker still en route (transit / outside factory), based
-// on the expected delivery date computed from the port's transit days.
+// Delay status for a tanker that hasn't reached Empty yet, based on the
+// expected delivery date computed from the port's transit days. Shown through
+// every in-progress stage (transit, outside factory, inside factory) so a
+// late tanker keeps flagging until it's actually done — not just en route.
 function tankerDelay(row: Row): { label: string; tone: string } | null {
-  if (row.status !== 'transit' && row.status !== 'outside_factory') return null
+  if (!['transit', 'outside_factory', 'inside_factory'].includes(String(row.status))) return null
   const exp = String(row.expected_delivery_date || '').slice(0, 10)
   if (!exp) {
     // No ETA without a source to carry transit days — say why, rather than
@@ -455,6 +457,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       })
     }
     return moveTankers.filter((t) => {
+      if (!inCategory(t)) return false
+      // A tanker still short of Empty is outstanding work, not "history" —
+      // it stays visible regardless of the date window (and so does its
+      // delay flag) until it actually reaches Empty.
+      if (String(t.status) !== 'empty') return true
       const d = String(t.loaded_date || t.factory_entry_date || t.created_at || '').slice(0, 10)
       return !!d && d >= start && d <= end
     })
@@ -2387,6 +2394,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     {(pivotStart !== monthStartISO() || pivotEnd !== todayISO()) && (
                       <Button variant="ghost" size="sm" onClick={() => { setPivotStart(monthStartISO()); setPivotEnd(todayISO()) }}>This month</Button>
                     )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 shrink-0 text-[11px]"
+                      title="Widen the range to browse old (already Empty) tankers too — in-progress tankers show regardless"
+                      onClick={() => { setPivotStart('2000-01-01'); setPivotEnd(todayISO()) }}
+                    >
+                      View all history
+                    </Button>
                     <ExcelButton
                       filename={`tanker-movement-${pivotEnd}`}
                       sheetName="Tanker movement"
