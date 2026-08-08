@@ -84,10 +84,15 @@ export async function listGroups(companyId?: number): Promise<Row[]> {
 
 export type VoucherType = 'CONTRA' | 'PAYMENT' | 'RECEIPT' | 'JOURNAL' | 'DEBIT NOTE' | 'CREDIT NOTE'
 
-// One bill-wise adjustment on a party line, Tally style.
+// One bill-wise adjustment on a party line, Tally style. order_id/sale_invoice_group
+// are the exact link to the bill being settled when the UI picked one from the
+// pending-refs list — ref_name alone (free text) can collide across bills or
+// miss entirely when an invoice number is blank or duplicated.
 export interface BillAlloc {
   method: 'agst_ref' | 'advance' | 'on_account' | 'new_ref'
   ref_name?: string | null
+  order_id?: number | null
+  sale_invoice_group?: string | null
   amount: number
 }
 
@@ -121,6 +126,8 @@ async function validateVoucher(v: VoucherInput): Promise<LineWithAllocs[]> {
         .map((a) => ({
           method: a.method,
           ref_name: a.ref_name ? String(a.ref_name).trim() : null,
+          order_id: a.order_id ? Number(a.order_id) : null,
+          sale_invoice_group: a.sale_invoice_group ? String(a.sale_invoice_group).trim() : null,
           amount: n(a.amount)
         }))
         .filter((a) => a.amount > 0.004)
@@ -202,8 +209,17 @@ async function writeAllocs(entryId: number, lines: LineWithAllocs[]): Promise<vo
   for (let i = 0; i < lines.length && i < saved.rows.length; i++) {
     for (const a of lines[i].allocs) {
       await c.execute({
-        sql: 'INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount) VALUES (?, ?, ?, ?, ?)',
-        args: [Number(saved.rows[i].id), Number(saved.rows[i].account_id), a.method, a.ref_name || null, a.amount]
+        sql: `INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount, order_id, sale_invoice_group)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          Number(saved.rows[i].id),
+          Number(saved.rows[i].account_id),
+          a.method,
+          a.ref_name || null,
+          a.amount,
+          a.order_id || null,
+          a.sale_invoice_group || null
+        ]
       })
     }
   }
@@ -284,7 +300,7 @@ export async function getVoucher(id: number): Promise<Row | null> {
   entry.lines = toPlain(lines)
   for (const l of entry.lines as Row[]) {
     const al = await c.execute({
-      sql: 'SELECT method, ref_name, amount FROM journal_bill_allocs WHERE line_id = ? ORDER BY id',
+      sql: 'SELECT method, ref_name, order_id, sale_invoice_group, amount FROM journal_bill_allocs WHERE line_id = ? ORDER BY id',
       args: [Number(l.id)]
     })
     l.allocs = toPlain(al)
@@ -407,6 +423,13 @@ function dayBefore(iso: string): string {
 // bills from sale invoices (what they owe), each net of everything already
 // allocated against that reference. References created by Advance / New Ref
 // lines appear too, so an advance can be settled later.
+//
+// Real bills carry an exact id (order_id for a purchase — one order is one
+// bill; sale_invoice_group for a sale — one invoice can span several `sales`
+// rows sharing that group) rather than relying on the invoice_no TEXT alone,
+// which can be blank or duplicated across unrelated bills. Advance/New Ref
+// entries have no such id — they're a hand-typed name from the start — so
+// those stay matched by ref_name as before.
 export async function listPendingRefs(accountName: string, companyId?: number): Promise<Row[]> {
   const c = getClient()
   const cid = companyId || getActiveCompanyId()
@@ -417,35 +440,39 @@ export async function listPendingRefs(accountName: string, companyId?: number): 
   const accountId = Number(acc.rows[0].id)
   const group = String(acc.rows[0].acc_group || '')
 
-  const bills: Row[] = []
+  type Bill = { ref: string; bill_date: string; amount: number; order_id: number | null; sale_invoice_group: string | null }
+  const bills: Bill[] = []
   if (group === 'Sundry Creditors') {
     const r = await c.execute({
-      sql: `SELECT o.invoice_no AS ref, MIN(o.order_date) AS bill_date, SUM(o.net_amount) AS amount
+      sql: `SELECT o.id AS order_id, o.invoice_no AS ref, o.order_date AS bill_date, o.net_amount AS amount
             FROM orders o JOIN suppliers s ON s.id = o.supplier_id
-            WHERE o.company_id = ? AND UPPER(s.name) = ? AND o.invoice_no IS NOT NULL AND o.invoice_no != ''
-            GROUP BY o.invoice_no`,
+            WHERE o.company_id = ? AND UPPER(s.name) = ? AND o.invoice_no IS NOT NULL AND o.invoice_no != ''`,
       args: [cid, name]
     })
-    bills.push(...toPlain(r))
+    for (const b of toPlain(r)) {
+      bills.push({ ref: String(b.ref), bill_date: String(b.bill_date || ''), amount: n(b.amount), order_id: n(b.order_id), sale_invoice_group: null })
+    }
   } else if (group === 'Sundry Debtors') {
     const r = await c.execute({
-      sql: `SELECT s.invoice_no AS ref, MIN(s.sale_date) AS bill_date,
+      sql: `SELECT COALESCE(s.invoice_group, s.invoice_no) AS grp, MIN(s.invoice_no) AS ref, MIN(s.sale_date) AS bill_date,
                    SUM(s.amount + s.gst_amount + s.round_off) AS amount
             FROM sales s
             WHERE s.company_id = ? AND UPPER(COALESCE(s.customer, '')) = ? AND s.invoice_no IS NOT NULL AND s.invoice_no != ''
-            GROUP BY s.invoice_no`,
+            GROUP BY grp`,
       args: [cid, name]
     })
-    bills.push(...toPlain(r))
+    for (const b of toPlain(r)) {
+      bills.push({ ref: String(b.ref), bill_date: String(b.bill_date || ''), amount: n(b.amount), order_id: null, sale_invoice_group: String(b.grp) })
+    }
   }
 
   // A real bill's ref name, before anything hand-typed can touch it — a New
   // Ref/Advance that happens to spell the same name as an actual invoice must
   // never inflate that invoice's total, only its own separate running total.
-  const realRefs = new Set(bills.map((b) => String(b.ref)))
+  const realRefs = new Set(bills.map((b) => b.ref))
 
-  // References this ledger's vouchers created (advances, opening bills) and
-  // everything already settled against each reference.
+  // References this ledger's vouchers created (advances, opening bills) — no
+  // id of their own, so still grouped and matched purely by name.
   const made = await c.execute({
     sql: `SELECT ba.ref_name AS ref, MIN(je.entry_date) AS bill_date, SUM(ba.amount) AS amount
           FROM journal_bill_allocs ba
@@ -455,37 +482,49 @@ export async function listPendingRefs(accountName: string, companyId?: number): 
           GROUP BY ba.ref_name`,
     args: [accountId, cid]
   })
+  const madeRows: Bill[] = []
   for (const m of toPlain(made)) {
     if (realRefs.has(String(m.ref))) {
       // Don't just drop it — a colliding New Ref/Advance is a real amount
       // someone allocated, it just can't share the real bill's row. Keep it
       // visible as its own flagged line so it gets reconciled, not lost.
-      bills.push({ ...m, ref: `${m.ref} (duplicate ref — check this)` })
+      madeRows.push({ ref: `${m.ref} (duplicate ref — check this)`, bill_date: String(m.bill_date || ''), amount: n(m.amount), order_id: null, sale_invoice_group: null })
       continue
     }
-    const hit = bills.find((b) => String(b.ref) === String(m.ref))
-    if (hit) hit.amount = n(hit.amount) + n(m.amount)
-    else bills.push(m)
+    madeRows.push({ ref: String(m.ref), bill_date: String(m.bill_date || ''), amount: n(m.amount), order_id: null, sale_invoice_group: null })
   }
 
+  // Every settlement against this ledger, fetched once — matched per bill
+  // below by whichever key that bill actually has (id first, name as the
+  // fallback for entries with no id, e.g. advances).
   const settled = await c.execute({
-    sql: `SELECT ba.ref_name AS ref, SUM(ba.amount) AS amount
+    sql: `SELECT ba.ref_name AS ref, ba.order_id AS order_id, ba.sale_invoice_group AS sale_invoice_group, ba.amount AS amount
           FROM journal_bill_allocs ba
           JOIN journal_lines jl ON jl.id = ba.line_id
           JOIN journal_entries je ON je.id = jl.entry_id
-          WHERE ba.account_id = ? AND je.company_id = ? AND ba.method = 'agst_ref' AND ba.ref_name IS NOT NULL
-          GROUP BY ba.ref_name`,
+          WHERE ba.account_id = ? AND je.company_id = ? AND ba.method = 'agst_ref'`,
     args: [accountId, cid]
   })
-  const done = new Map<string, number>()
-  for (const r of toPlain(settled)) done.set(String(r.ref), n(r.amount))
+  const settledRows = toPlain(settled)
+  const settledFor = (b: Bill): number => {
+    let total = 0
+    for (const s of settledRows) {
+      const byOrder = b.order_id != null && n(s.order_id) === b.order_id
+      const byGroup = b.sale_invoice_group != null && String(s.sale_invoice_group || '') === b.sale_invoice_group
+      const byNameOnly = b.order_id == null && b.sale_invoice_group == null && !s.order_id && !s.sale_invoice_group && String(s.ref || '') === b.ref
+      if (byOrder || byGroup || byNameOnly) total += n(s.amount)
+    }
+    return total
+  }
 
-  return bills
+  return [...bills, ...madeRows]
     .map((b) => ({
-      ref: String(b.ref),
-      bill_date: String(b.bill_date || ''),
+      ref: b.ref,
+      bill_date: b.bill_date,
       amount: n(b.amount),
-      pending: Math.round((n(b.amount) - (done.get(String(b.ref)) || 0)) * 100) / 100
+      order_id: b.order_id,
+      sale_invoice_group: b.sale_invoice_group,
+      pending: Math.round((n(b.amount) - settledFor(b)) * 100) / 100
     }))
     .filter((b) => b.pending > 0.005)
     .sort((a, b) => a.bill_date.localeCompare(b.bill_date))

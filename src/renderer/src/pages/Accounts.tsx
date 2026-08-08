@@ -74,6 +74,8 @@ interface VLine {
 interface AllocRow {
   method: 'agst_ref' | 'advance' | 'on_account' | 'new_ref'
   ref_name: string
+  order_id?: number | null
+  sale_invoice_group?: string | null
   amount: string
 }
 interface PayLine {
@@ -154,6 +156,11 @@ function AllocPanel({
     const key = name.trim().toUpperCase()
     return key.length > 0 && knownRefs.has(key)
   }
+  // Two different bills can legitimately show the same ref text (a duplicate
+  // or blank invoice number on the same party) — key the picker on the exact
+  // bill identity, not the text, so they never collide.
+  const billKey = (ref: unknown, orderId: unknown, saleGroup: unknown): string =>
+    `${ref ?? ''}::${orderId ?? ''}::${saleGroup ?? ''}`
   return (
     <div className="ml-3 mt-1.5 rounded border border-dashed border-amber-300 bg-amber-50/60 px-2.5 py-2">
       <div className="mb-1.5 flex items-center justify-between">
@@ -169,7 +176,7 @@ function AllocPanel({
         return (
         <Fragment key={j}>
         <div className="mb-1 grid grid-cols-[120px_1fr_120px_24px] items-center gap-1.5">
-          <Select value={a.method} onValueChange={(v) => set(j, { method: v as AllocRow['method'], ref_name: '' })}>
+          <Select value={a.method} onValueChange={(v) => set(j, { method: v as AllocRow['method'], ref_name: '', order_id: null, sale_invoice_group: null })}>
             <SelectTrigger className="h-7 bg-white text-[12px]"><SelectValue /></SelectTrigger>
             <SelectContent>
               {METHODS.map((m) => <SelectItem key={m.key} value={m.key}>{m.label}</SelectItem>)}
@@ -177,11 +184,16 @@ function AllocPanel({
           </Select>
           {a.method === 'agst_ref' ? (
             <Select
-              value={a.ref_name}
+              value={billKey(a.ref_name, a.order_id, a.sale_invoice_group)}
               onValueChange={(v) => {
-                const bill = refs.find((r) => String(r.ref) === v)
+                const bill = refs.find((r) => billKey(r.ref, r.order_id, r.sale_invoice_group) === v)
                 const rest = remaining(j)
-                set(j, { ref_name: v, amount: a.amount || String(Math.min(Number(bill?.pending) || rest, rest)) })
+                set(j, {
+                  ref_name: bill ? String(bill.ref) : '',
+                  order_id: bill?.order_id ?? null,
+                  sale_invoice_group: bill?.sale_invoice_group ?? null,
+                  amount: a.amount || String(Math.min(Number(bill?.pending) || rest, rest))
+                })
               }}
             >
               <SelectTrigger className="h-7 bg-white text-[12px]">
@@ -189,7 +201,7 @@ function AllocPanel({
               </SelectTrigger>
               <SelectContent className="max-h-64">
                 {refs.map((r) => (
-                  <SelectItem key={String(r.ref)} value={String(r.ref)}>
+                  <SelectItem key={billKey(r.ref, r.order_id, r.sale_invoice_group)} value={billKey(r.ref, r.order_id, r.sale_invoice_group)}>
                     {String(r.ref)} — {formatINR(r.pending)} pending
                   </SelectItem>
                 ))}
@@ -738,7 +750,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
             cr: vchType === 'RECEIPT' ? Number(l.amount) : 0,
             allocs: l.allocs
               .filter((a) => Number(a.amount) > 0)
-              .map((a) => ({ method: a.method, ref_name: a.ref_name || null, amount: Number(a.amount) }))
+              .map((a) => ({ method: a.method, ref_name: a.ref_name || null, order_id: a.order_id || null, sale_invoice_group: a.sale_invoice_group || null, amount: Number(a.amount) }))
           })),
           ...money.map((l, i) => ({
             account: l.account,
@@ -814,6 +826,8 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         allocs: ((l.allocs as Row[]) || []).map((a) => ({
           method: String(a.method) as AllocRow['method'],
           ref_name: String(a.ref_name || ''),
+          order_id: a.order_id != null ? Number(a.order_id) : null,
+          sale_invoice_group: a.sale_invoice_group || null,
           amount: String(a.amount)
         }))
       }))
@@ -844,6 +858,8 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
             allocs: ((l.allocs as Row[]) || []).map((a) => ({
               method: String(a.method) as AllocRow['method'],
               ref_name: String(a.ref_name || ''),
+              order_id: a.order_id != null ? Number(a.order_id) : null,
+              sale_invoice_group: a.sale_invoice_group || null,
               amount: String(a.amount)
             }))
           }))

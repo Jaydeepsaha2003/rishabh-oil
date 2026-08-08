@@ -10,7 +10,6 @@ import {
   BookOpenText,
   ClipboardCheck,
   Contact,
-  CreditCard,
   DoorOpen,
   Droplets,
   Factory,
@@ -50,7 +49,6 @@ export type Page =
   | 'treasury'
   | 'bankRecon'
   | 'billDiscounting'
-  | 'payments'
   | 'categories'
   | 'products'
   | 'formulation'
@@ -76,7 +74,6 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   treasury: { label: 'Treasury', icon: Landmark },
   bankRecon: { label: 'Bank Reconciliation', icon: Wallet },
   billDiscounting: { label: 'Bill Discounting', icon: FileMinus2 },
-  payments: { label: 'Payments', icon: CreditCard },
   categories: { label: 'Categories', icon: Tags },
   products: { label: 'Products', icon: Boxes },
   formulation: { label: 'Formulation', icon: FlaskConical },
@@ -101,7 +98,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Production', ids: ['products', 'formulation', 'production', 'stock'] },
   { label: 'Sales', ids: ['salesBargains', 'sales'] },
   { label: 'Trading', ids: ['trading'] },
-  { label: 'Accounts', ids: ['accounts', 'treasury', 'bankRecon', 'billDiscounting', 'payments'] },
+  { label: 'Accounts', ids: ['accounts', 'treasury', 'bankRecon', 'billDiscounting'] },
   { label: 'Masters', ids: ['categories', 'suppliers', 'transporters', 'customers', 'ports', 'brokers', 'packaging'] },
   { label: 'System', ids: ['approvals', 'settings'] }
 ]

@@ -16,7 +16,6 @@ import { Accounts } from './pages/Accounts'
 import { Treasury } from './pages/Treasury'
 import { BankReconciliation } from './pages/BankReconciliation'
 import { BillDiscounting } from './pages/BillDiscounting'
-import { Payments } from './pages/Payments'
 import { Products } from './pages/Products'
 import { Categories } from './pages/Categories'
 import { Formulation } from './pages/Formulation'
@@ -77,7 +76,7 @@ function App(): React.JSX.Element {
   // document → Back → Ledgers, with the ledger it opened from still showing).
   const [returnTo, setReturnTo] = useState<Page | null>(null)
 
-  function openRecord(target: 'orders' | 'sales' | 'payments', id: number): void {
+  function openRecord(target: 'orders' | 'sales', id: number): void {
     setReturnTo(page)
     setFocus({ page: target, id })
     setPage(target)
@@ -303,14 +302,6 @@ function App(): React.JSX.Element {
         {view === 'consignment' && <Consignment />}
         {view === 'gateEntry' && <GateEntry />}
         {view === 'trading' && <Trading />}
-        {view === 'payments' && (
-          <Payments
-            focusId={focus?.page === 'payments' ? focus.id : null}
-            onFocusHandled={() => setFocus(null)}
-            onBack={view === 'payments' && returnTo ? goBack : undefined}
-            backLabel={backLabel}
-          />
-        )}
         {view === 'accounts' && <Accounts onExit={() => setPage('dashboard')} />}
         {view === 'treasury' && <Treasury />}
         {view === 'bankRecon' && <BankReconciliation />}

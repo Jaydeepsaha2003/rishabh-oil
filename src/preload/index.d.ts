@@ -101,17 +101,8 @@ export interface Api {
     addEntry: (data: Row) => Promise<{ id: number }>
     deleteEntry: (partyType: string, id: number) => Promise<{ id: number }>
   }
-  payments: {
-    list: () => Promise<Row[]>
-    record: (data: Row) => Promise<{ id: number }>
-    remove: (id: number) => Promise<{ id: number }>
-    outstanding: (partyType: string, partyId: number) => Promise<Row[]>
-  }
   billDiscounts: {
     list: () => Promise<Row[]>
-    create: (values: Row) => Promise<{ id: number }>
-    update: (id: number, values: Row) => Promise<{ id: number }>
-    remove: (id: number) => Promise<{ id: number }>
   }
   auth: {
     login: (username: string, password: string) => Promise<Row>

@@ -115,9 +115,10 @@ export function Treasury(): React.JSX.Element {
   // of urgency — the alerts above only surface what's already close.
   const [tracker, setTracker] = useState<Row[]>([])
   const [trackerShowSettled, setTrackerShowSettled] = useState(false)
+  const [activeCompany, setActiveCompany] = useState(0)
 
   const load = useCallback(async () => {
-    const [l, b, a, sup, cust, sl, od, fac, tr] = await Promise.all([
+    const [l, b, a, sup, cust, sl, od, fac, tr, act] = await Promise.all([
       window.api.lc.list(),
       window.api.billDiscounts.list(),
       window.api.treasury.alerts(),
@@ -126,7 +127,8 @@ export function Treasury(): React.JSX.Element {
       window.api.sales.list(),
       window.api.orders.list(),
       window.api.facility.list(),
-      window.api.treasury.paymentTracker()
+      window.api.treasury.paymentTracker(),
+      window.api.company.getActive()
     ])
     setLcs(l.filter((x) => String(x.facility_type || 'lc') === 'lc'))
     setBills(b.filter((x) => String(x.medium || '') === 'bill_discounting' || x.rate_pct != null))
@@ -137,6 +139,7 @@ export function Treasury(): React.JSX.Element {
     setOrders(od)
     setFacilities(fac)
     setTracker(tr)
+    setActiveCompany(Number(act?.id) || 0)
   }, [])
 
   async function toggleFacility(id: number): Promise<void> {
@@ -243,6 +246,22 @@ export function Treasury(): React.JSX.Element {
     }
   }
 
+  // Live preview for the Payment Received step — same interest/charges math
+  // lc.ts uses server-side to derive lc_net_available, so what's shown here
+  // matches what actually gets stored.
+  const stagePreview = useMemo(() => {
+    if (!stageRow || nextLcStage(String(stageRow.stage || 'application')) !== 'payment_received') return null
+    const amount = n(stageRow.amount)
+    const from = daysTo(stageForm.payment_received_date)
+    const to = daysTo(stageForm.expiry_date)
+    const days = from != null && to != null ? to - from : null
+    const interestPct = n(stageForm.interest_pct)
+    const charges = n(stageForm.charges)
+    const interest = days != null ? round2((amount * interestPct * days) / (100 * 365)) : 0
+    const netAvailable = round2(amount - interest - charges)
+    return { amount, days, interest, charges, netAvailable }
+  }, [stageRow, stageForm.payment_received_date, stageForm.expiry_date, stageForm.interest_pct, stageForm.charges])
+
   // ---------------- Facilities and exposures ----------------
   const [facForm, setFacForm] = useState<Row | null>(null)
   const [expForm, setExpForm] = useState<Row | null>(null)
@@ -344,10 +363,16 @@ export function Treasury(): React.JSX.Element {
     }
   }
 
+  // Only the active company's own invoices — an LC can't cover a bill booked
+  // into a different company's books.
   const lcFormOrders = useMemo(() => {
     if (!lcForm) return []
-    return orders.filter((o) => !lcForm.party_id || Number(o.supplier_id) === Number(lcForm.party_id))
-  }, [lcForm, orders])
+    return orders.filter(
+      (o) =>
+        (!lcForm.party_id || Number(o.supplier_id) === Number(lcForm.party_id)) &&
+        Number(o.company_id) === Number(activeCompany)
+    )
+  }, [lcForm, orders, activeCompany])
 
   // Banks already on record — from LCs and sanctioned facilities — so the
   // field can offer a pick-list while still taking a bank that isn't in it yet.
@@ -1326,6 +1351,32 @@ export function Treasury(): React.JSX.Element {
                         <Input type="number" value={stageForm.charges ?? ''} onChange={(e) => setStageForm({ ...stageForm, charges: e.target.value })} />
                       </div>
                     </div>
+                    {stagePreview && (
+                      <div className="rounded-md border border-[#d9d2b8] bg-[#f7f2e2] p-3 text-[12px]">
+                        <div className="mb-1.5 text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Back-calculated from the open amount</div>
+                        <div className="flex items-center justify-between py-0.5">
+                          <span className="text-muted-foreground">Open amount</span>
+                          <span className="tabular-nums">{formatINR(stagePreview.amount)}</span>
+                        </div>
+                        <div className="flex items-center justify-between py-0.5">
+                          <span className="text-muted-foreground">Interest days (maturity − payment received)</span>
+                          <span className="tabular-nums">{stagePreview.days ?? '—'}</span>
+                        </div>
+                        <div className="flex items-center justify-between py-0.5">
+                          <span className="text-muted-foreground">Interest</span>
+                          <span className="tabular-nums">− {formatINR(stagePreview.interest)}</span>
+                        </div>
+                        <div className="flex items-center justify-between py-0.5">
+                          <span className="text-muted-foreground">LC charges</span>
+                          <span className="tabular-nums">− {formatINR(stagePreview.charges)}</span>
+                        </div>
+                        <div className="my-1.5 border-t-2 border-[#1a2c56]" />
+                        <div className="flex items-center justify-between py-0.5 font-semibold text-[#1a2c56]">
+                          <span>Net available</span>
+                          <span className="tabular-nums">{formatINR(stagePreview.netAvailable)}</span>
+                        </div>
+                      </div>
+                    )}
                     <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
                       Marking this Payment Received also issues (if not already) and settles this LC's bill(s) through the books.
                     </div>

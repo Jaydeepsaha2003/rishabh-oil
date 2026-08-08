@@ -35,16 +35,7 @@ import {
   addLedgerEntry,
   deleteLedgerEntry
 } from './orders'
-import {
-  listPayments,
-  recordPayment,
-  deletePayment,
-  outstandingInvoices,
-  listBillDiscounts,
-  createBillDiscount,
-  updateBillDiscount,
-  deleteBillDiscount
-} from './payments'
+import { listBillDiscounts } from './payments'
 import { listUnmappedOrders, unmappedCount, mapOrderToBargains } from './unmapped'
 import { listTradingDeals, createTradingDeal, updateTradingDeal, deleteTradingDeal } from './trading'
 import { assertAllowed, clearAccessCache } from './access-gate'
@@ -212,7 +203,6 @@ const NS_ENTITY: Record<string, string> = {
   consignment: 'Consignment',
   sales: 'Sale',
   salesBargains: 'Sales bargain',
-  payments: 'Payment',
   billDiscount: 'Bill discount',
   lc: 'Letter of credit',
   journal: 'Journal',
@@ -476,23 +466,9 @@ export function registerIpc(): void {
     deleteLedgerEntry(partyType, id)
   )
 
-  handle('payments:list', () => listPayments())
-  handle('payments:record', (_e, { data }: { data: Row }) => recordPayment(data))
-  handle('payments:delete', (_e, { id }: { id: number }) => deletePayment(id))
-  handle(
-    'payments:outstanding',
-    (_e, { partyType, partyId }: { partyType: string; partyId: number }) =>
-      outstandingInvoices(partyType, partyId)
-  )
-
+  // Bill discounting is read-only here — creating/altering happens from
+  // Treasury now, which owns that flow end to end.
   handle('billDiscounts:list', () => listBillDiscounts())
-  handle('billDiscounts:create', (_e, { values }: { values: Row }) =>
-    createBillDiscount(values)
-  )
-  handle('billDiscounts:update', (_e, { id, values }: { id: number; values: Row }) =>
-    updateBillDiscount(id, values)
-  )
-  handle('billDiscounts:delete', (_e, { id }: { id: number }) => deleteBillDiscount(id))
 
   handle('auth:login', (_e, { username, password }: { username: string; password: string }) =>
     login(username, password)

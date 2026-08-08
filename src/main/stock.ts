@@ -36,7 +36,11 @@ export async function stockLevels(
   const SOURCES = {
     received: {
       base: `SELECT oil_type_id AS pid, SUM(received_qty) AS q FROM orders WHERE status = 'received' AND COALESCE(affects_stock, 1) = 1 AND company_id IN (${ph})`,
-      date: 'COALESCE(received_date, order_date)',
+      // By invoice date, not when the tanker physically arrived — matches the
+      // Purchases register (which lists by order_date), so a purchase invoiced
+      // last month never shows as this month's receipt just because it
+      // happened to get marked received a few days late.
+      date: 'order_date',
       group: 'GROUP BY oil_type_id'
     },
     produced: {
@@ -241,7 +245,7 @@ export async function stockPartyBreakdown(
     }
     return { sql: parts.join(' '), args }
   }
-  const recB = bounds('COALESCE(o.received_date, o.order_date)')
+  const recB = bounds('o.order_date')
   const dispB = bounds('COALESCE(s.unloaded_date, s.sale_date)')
   const out: Record<number, { receipt: Row[]; dispatch: Row[] }> = {}
   const ensure = (pid: number): { receipt: Row[]; dispatch: Row[] } => (out[pid] ??= { receipt: [], dispatch: [] })

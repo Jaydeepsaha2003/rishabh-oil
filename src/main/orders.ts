@@ -298,7 +298,10 @@ export async function listOrders(): Promise<Row[]> {
              WHERE li.order_id = o.id AND COALESCE(li.status, 'outstanding') != 'settled') AS lc_bills_open,
            (SELECT MIN(li.due_date) FROM lc_issuances li
              WHERE li.order_id = o.id AND COALESCE(li.status, 'outstanding') != 'settled') AS lc_next_due,
-           COALESCE((SELECT SUM(pa.amount) FROM payment_allocations pa WHERE pa.order_id = o.id), 0) AS paid_amount
+           -- Settled via the Payment/Receipt voucher's bill-wise allocation
+           -- (Accounting), linked to this exact order — not the old
+           -- payments-page mechanism, which is being removed.
+           COALESCE((SELECT SUM(ba.amount) FROM journal_bill_allocs ba WHERE ba.order_id = o.id AND ba.method = 'agst_ref'), 0) AS paid_amount
     FROM orders o
     LEFT JOIN suppliers s ON s.id = o.supplier_id
     LEFT JOIN products pr ON pr.id = o.oil_type_id

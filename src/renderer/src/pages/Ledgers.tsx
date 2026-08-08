@@ -39,15 +39,16 @@ type Row = Record<string, any>
 const VCH_TYPES = ['JOURNAL', 'DEBIT NOTE', 'CREDIT NOTE', 'PAYMENT', 'RECEIPT', 'CONTRA', 'OPENING BALANCE']
 
 // Which source page a voucher line drills through to (its originating document).
-function lineTarget(l: Row): 'orders' | 'sales' | 'payments' | null {
+// A payment_id line has no page to drill into anymore (the Payments page is
+// gone — settlement now happens via bill-wise allocation in Accounting).
+function lineTarget(l: Row): 'orders' | 'sales' | null {
   if (l.order_id != null) return 'orders'
   if (l.sale_id != null) return 'sales'
-  if (l.payment_id != null) return 'payments'
   return null
 }
 
 interface Props {
-  onOpenRecord?: (page: 'orders' | 'sales' | 'payments', id: number) => void
+  onOpenRecord?: (page: 'orders' | 'sales', id: number) => void
 }
 
 // Tally-style ledger over the double-entry journal. Purchases post

@@ -138,21 +138,8 @@ const api = {
     deleteEntry: (partyType: string, id: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('ledger:deleteEntry', { partyType, id })
   },
-  payments: {
-    list: (): Promise<Row[]> => ipcRenderer.invoke('payments:list'),
-    record: (data: Row): Promise<{ id: number }> => ipcRenderer.invoke('payments:record', { data }),
-    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('payments:delete', { id }),
-    outstanding: (partyType: string, partyId: number): Promise<Row[]> =>
-      ipcRenderer.invoke('payments:outstanding', { partyType, partyId })
-  },
   billDiscounts: {
-    list: (): Promise<Row[]> => ipcRenderer.invoke('billDiscounts:list'),
-    create: (values: Row): Promise<{ id: number }> =>
-      ipcRenderer.invoke('billDiscounts:create', { values }),
-    update: (id: number, values: Row): Promise<{ id: number }> =>
-      ipcRenderer.invoke('billDiscounts:update', { id, values }),
-    remove: (id: number): Promise<{ id: number }> =>
-      ipcRenderer.invoke('billDiscounts:delete', { id })
+    list: (): Promise<Row[]> => ipcRenderer.invoke('billDiscounts:list')
   },
   auth: {
     login: (username: string, password: string): Promise<Row> =>

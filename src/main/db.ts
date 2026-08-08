@@ -780,7 +780,16 @@ const MIGRATIONS = [
     sale_id INTEGER REFERENCES sales(id),
     note TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`
+  )`,
+  // Bill-wise settlement used to tie a payment/receipt only to a free-typed
+  // ref_name string matched against a supplier/customer's invoice_no — two
+  // orders sharing (or missing) an invoice number could collide or miss
+  // entirely. order_id is an exact link for purchases (one order = one
+  // bill); sales invoices can span several `sales` rows sharing one
+  // invoice_group, so that system-generated group id is the exact link
+  // there instead of a single row id.
+  'ALTER TABLE journal_bill_allocs ADD COLUMN order_id INTEGER REFERENCES orders(id)',
+  'ALTER TABLE journal_bill_allocs ADD COLUMN sale_invoice_group TEXT'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to
