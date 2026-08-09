@@ -608,7 +608,12 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   const gstAmount = Math.round(amount * (gstPct / 100) * 100) / 100
   // Invoice-level round off (carried on the first line of the group only).
   const roundOff = Math.round((n(v.round_off) || 0) * 100) / 100
-  const net = amount + gstAmount + roundOff
+  // TDS the customer withholds, charged on the invoice total like the
+  // purchase side. Nothing sets a rate unless it is asked for, so this is 0
+  // and the receivable is unchanged for every other kind of sale.
+  const tdsPct = n(v.tds_pct)
+  const tdsAmount = Math.round((amount + gstAmount + roundOff) * (tdsPct / 100) * 100) / 100
+  const net = amount + gstAmount + roundOff - tdsAmount
   const customerId = v.customer_id ? n(v.customer_id) : null
   // Can't dispatch more than the chosen sales bargain still has open.
   if (v.sales_bargain_id) {
@@ -649,9 +654,9 @@ export async function createSale(v: Row): Promise<{ id: number }> {
     : 0
   const res = await getClient().execute({
     sql: `INSERT INTO sales (company_id, sale_date, invoice_no, invoice_group, customer, customer_id, product_id, sales_bargain_id,
-            qty, uom, rate, amount, gst_pct, gst_amount, gst_type, round_off, status, dispatch_stage, track_stock, loaded_date, transit_date, unloaded_date, note, sale_type, packaging_id, boxes, pouches, freight_term,
+            qty, uom, rate, amount, gst_pct, gst_amount, gst_type, round_off, tds_pct, tds_amount, status, dispatch_stage, track_stock, loaded_date, transit_date, unloaded_date, note, sale_type, packaging_id, boxes, pouches, freight_term,
             transporter_id, transport_rate, transport_amount, is_trading, affects_stock, deduct_freight)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       v.sale_date,
@@ -669,6 +674,8 @@ export async function createSale(v: Row): Promise<{ id: number }> {
       gstAmount,
       v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
       roundOff,
+      tdsPct,
+      tdsAmount,
       status,
       stage,
       trackStock,
@@ -713,7 +720,10 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   const gstAmount = Math.round(amount * (gstPct / 100) * 100) / 100
   // Invoice-level round off (carried on the first line of the group only).
   const roundOff = Math.round((n(v.round_off) || 0) * 100) / 100
-  const net = amount + gstAmount + roundOff
+  // TDS the customer withholds — see createSale.
+  const tdsPct = n(v.tds_pct)
+  const tdsAmount = Math.round((amount + gstAmount + roundOff) * (tdsPct / 100) * 100) / 100
+  const net = amount + gstAmount + roundOff - tdsAmount
   const customerId = v.customer_id ? n(v.customer_id) : null
   if (v.sales_bargain_id) {
     const bal = await salesBargainBalanceFor(n(v.sales_bargain_id), id)
@@ -747,7 +757,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
     : 0
   await getClient().execute({
     sql: `UPDATE sales SET sale_date = ?, invoice_no = ?, customer = ?, customer_id = ?, product_id = ?, sales_bargain_id = ?,
-          qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, round_off = ?, status = ?, dispatch_stage = ?, track_stock = ?, loaded_date = ?, transit_date = ?, unloaded_date = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
+          qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, round_off = ?, tds_pct = ?, tds_amount = ?, status = ?, dispatch_stage = ?, track_stock = ?, loaded_date = ?, transit_date = ?, unloaded_date = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
           pouches = ?, freight_term = ?, transporter_id = ?, transport_rate = ?, transport_amount = ?, deduct_freight = ? WHERE id = ?`,
     args: [
       v.sale_date,
@@ -764,6 +774,8 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       gstAmount,
       v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
       roundOff,
+      tdsPct,
+      tdsAmount,
       status,
       stage,
       trackStock,

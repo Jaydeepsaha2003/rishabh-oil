@@ -802,7 +802,32 @@ const MIGRATIONS = [
   // A packed SKU that does not pack one of the finished products (product_id)
   // can instead carry a short product name typed by hand. Exactly one of the
   // two is used — the linked product's name wins when both are set.
-  'ALTER TABLE packagings ADD COLUMN product_label TEXT'
+  'ALTER TABLE packagings ADD COLUMN product_label TEXT',
+  // A trading deal buys across several purchase invoices and sells across
+  // several sale invoices, so its orders/sales are listed here rather than in
+  // the single trading_deals.order_id / sale_id pair. Those two columns stay
+  // as they are and still point at the deal's first invoice on each side, so
+  // deals booked before this — which have no rows here at all — keep reading
+  // and deleting exactly as they did.
+  `CREATE TABLE IF NOT EXISTS trading_deal_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id INTEGER NOT NULL REFERENCES trading_deals(id),
+    order_id INTEGER NOT NULL REFERENCES orders(id),
+    line_no INTEGER NOT NULL DEFAULT 0
+  )`,
+  `CREATE TABLE IF NOT EXISTS trading_deal_sales (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id INTEGER NOT NULL REFERENCES trading_deals(id),
+    sale_id INTEGER NOT NULL REFERENCES sales(id),
+    line_no INTEGER NOT NULL DEFAULT 0
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_tdo_deal ON trading_deal_orders(deal_id)',
+  'CREATE INDEX IF NOT EXISTS idx_tds_deal ON trading_deal_sales(deal_id)',
+  // TDS the customer withholds on a sale invoice, mirroring the purchase side.
+  // Defaults to 0, so every sale booked before this — and every sale that
+  // never sets a rate — keeps exactly the receivable it already had.
+  'ALTER TABLE sales ADD COLUMN tds_pct REAL NOT NULL DEFAULT 0',
+  'ALTER TABLE sales ADD COLUMN tds_amount REAL NOT NULL DEFAULT 0'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

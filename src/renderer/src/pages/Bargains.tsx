@@ -52,6 +52,7 @@ import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useCategories } from '@/lib/useCategories'
 import { useGlobalDateRange } from '@/lib/globalDateRange'
+import { isManufacturingParty } from '@/lib/constants'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -392,6 +393,16 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
 
   const { categories: bargainCats } = useCategories(suppliers.map((x) => x.supplier_type), 'purchase')
   const noMasters = suppliers.length === 0 || oilTypes.length === 0
+  // Same rule as the purchase invoice: a bargain is a manufacturing rate
+  // contract, so Trading suppliers are left out — but the bargain's own
+  // supplier stays listed so an existing one still opens and edits.
+  const bargainSuppliers = useMemo(
+    () =>
+      suppliers.filter(
+        (s) => isManufacturingParty(s) || String(s.id) === String(form.supplier_id || '')
+      ),
+    [suppliers, form.supplier_id]
+  )
   // The tabs follow the Categories master, with ALL pinned at the end.
   const TYPE_FILTERS = [...bargainCats, 'ALL']
   // Enrich each bargain with its period register figures (used for the columns
@@ -1273,7 +1284,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   <SelectValue placeholder="Select supplier" />
                 </SelectTrigger>
                 <SelectContent>
-                  {suppliers.map((s) => (
+                  {bargainSuppliers.map((s) => (
                     <SelectItem key={s.id} value={String(s.id)}>
                       {s.name}
                     </SelectItem>

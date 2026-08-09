@@ -25,3 +25,11 @@ export const BUSINESS_TYPES: { value: string; label: string }[] = [
   { value: 'Manufacturing', label: 'Manufacturing' },
   { value: 'Trading', label: 'Trading' }
 ]
+
+// Whether a party belongs on the manufacturing side of the business. Anything
+// not explicitly marked Trading counts as manufacturing, so a party saved
+// before the field existed is never hidden from a picker.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isManufacturingParty(party: Record<string, any> | undefined | null): boolean {
+  return String(party?.business_type ?? '').trim().toLowerCase() !== 'trading'
+}

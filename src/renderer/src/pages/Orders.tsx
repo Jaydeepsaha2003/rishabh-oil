@@ -22,6 +22,7 @@ import { cn } from '@/lib/utils'
 import { computeMoney, computeShortage } from '@/lib/orderCalc'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange } from '@/lib/globalDateRange'
+import { isManufacturingParty } from '@/lib/constants'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -1000,7 +1001,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     [tankersForBooking, form.supplier_id, editing]
   )
   // Only suppliers that actually have billable tankers appear in the picker
-  // (plus the invoice's own supplier when editing).
+  // (plus the invoice's own supplier when editing). Trading suppliers are left
+  // out — a pass-through deal is booked on the Trading screen, not here — but
+  // the invoice's own supplier always stays listed, so an invoice already
+  // booked against one still opens and edits normally.
   const invoiceSuppliers = useMemo(() => {
     const billable = new Set(
       tankersForBooking
@@ -1010,12 +1014,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           (x.order_id == null || x.order_id === editing?.id))
         .map((x) => String(x.supplier_id))
     )
-    return suppliers.filter(
-      (s) =>
-        billable.has(String(s.id)) ||
-        !!s.skip_tanker_stages ||
-        String(s.id) === String(form.supplier_id || '')
-    )
+    return suppliers.filter((s) => {
+      const isCurrent = String(s.id) === String(form.supplier_id || '')
+      if (!isCurrent && !isManufacturingParty(s)) return false
+      return billable.has(String(s.id)) || !!s.skip_tanker_stages || isCurrent
+    })
   }, [suppliers, tankersForBooking, editing, form.supplier_id])
   // A supplier flagged "Direct purchase" in the master keeps its goods at our
   // site already, so there is no send-to-supplier → transit → outside → inside

@@ -38,6 +38,7 @@ import { ExcelButton } from '@/components/ExcelButton'
 import { downloadSkuRateExcel, parseSkuRateExcel, caseMT } from '@/lib/skuRateExcel'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange } from '@/lib/globalDateRange'
+import { isManufacturingParty } from '@/lib/constants'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -202,6 +203,17 @@ function SalesTab({
 
   useEffect(() => { load() }, [load])
   useLiveRefresh(load)
+
+  // Trading customers are left out — a pass-through deal is booked on the
+  // Trading screen, not here. The invoice's own customer always stays listed,
+  // so an invoice already raised on one still opens and edits normally.
+  const invoiceCustomers = useMemo(
+    () =>
+      customers.filter(
+        (c) => isManufacturingParty(c) || String(c.id) === String(header.customer_id || '')
+      ),
+    [customers, header.customer_id]
+  )
 
   // Sales grouped into invoices (line items sharing an invoice_group).
   const invoices = useMemo(() => {
@@ -1013,7 +1025,7 @@ function SalesTab({
               <Select value={header.customer_id ? String(header.customer_id) : ''} onValueChange={chooseCustomer}>
                 <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
                 <SelectContent>
-                  {customers.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                  {invoiceCustomers.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -1675,6 +1687,17 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
     setCustomers(cu.filter((x) => x.active))
     setPackagings(pk.filter((x) => x.active))
   }, [F, T])
+
+  // Same rule as the Sales invoice form: a bargain is a manufacturing rate
+  // contract, so Trading customers are left out — but the bargain's own
+  // customer stays listed so an existing one still opens and edits.
+  const bargainCustomers = useMemo(
+    () =>
+      customers.filter(
+        (c) => isManufacturingParty(c) || String(c.id) === String(form.customer_id || '')
+      ),
+    [customers, form.customer_id]
+  )
 
   // Dispatches (sales) grouped by the bargain they drew down, for the expand row.
   const dispatchesByBargain = useMemo(() => {
@@ -2473,7 +2496,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                   {!form.customer_id && form.customer && (
                     <SelectItem value="legacy">{String(form.customer)} (unlinked — re-select to link)</SelectItem>
                   )}
-                  {customers.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                  {bargainCustomers.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
