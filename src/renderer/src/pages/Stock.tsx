@@ -681,9 +681,33 @@ function DayCloseSection({
   )
 }
 
-// Searchable multi-select for narrowing the Packed SKU table to specific
-// SKUs — a long SKU list is unworkable as a plain dropdown, so this is a
-// checklist-style combobox (type to filter, click to toggle, chips to undo).
+// The filter list is keyed on what a SKU packs, not on the SKU itself: one
+// entry per product (its linked finished product, or the short name typed on
+// the SKU), which selects every SKU of that product at once. SKUs with no
+// product named at all have nothing to group under, so they are listed
+// individually by SKU name. `value` stays a list of SKU ids either way.
+function skuFilterOptions(skus: Row[]): { key: string; label: string; ids: string[]; count: number }[] {
+  const byProduct = new Map<string, string[]>()
+  const loose: { key: string; label: string; ids: string[]; count: number }[] = []
+  for (const s of skus) {
+    const id = String(s.id)
+    const product = String(s.product_name || '').trim()
+    if (product) byProduct.set(product, [...(byProduct.get(product) ?? []), id])
+    else loose.push({ key: `sku:${id}`, label: String(s.name || ''), ids: [id], count: 0 })
+  }
+  const products = Array.from(byProduct, ([label, ids]) => ({
+    key: `product:${label}`,
+    label,
+    ids,
+    count: ids.length
+  })).sort((a, b) => a.label.localeCompare(b.label))
+  loose.sort((a, b) => a.label.localeCompare(b.label))
+  return [...products, ...loose]
+}
+
+// Searchable multi-select for narrowing the Packed SKU table — a long list is
+// unworkable as a plain dropdown, so this is a checklist-style combobox (type
+// to filter, click to toggle).
 function SkuMultiSelect({
   skus,
   value,
@@ -695,12 +719,14 @@ function SkuMultiSelect({
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const picked = new Set(value)
-  const selectedRows = skus.filter((s) => picked.has(String(s.id)))
+  const options = useMemo(() => skuFilterOptions(skus), [skus])
+  const selectedOptions = options.filter((o) => o.ids.every((id) => picked.has(id)))
 
-  function toggle(id: string): void {
+  // A product entry is all-or-nothing: it turns every SKU under it on or off.
+  function toggle(ids: string[]): void {
     const next = new Set(value)
-    if (next.has(id)) next.delete(id)
-    else next.add(id)
+    if (ids.every((id) => next.has(id))) ids.forEach((id) => next.delete(id))
+    else ids.forEach((id) => next.add(id))
     onChange(Array.from(next))
   }
 
@@ -717,51 +743,77 @@ function SkuMultiSelect({
         >
           <span className="truncate">
             {value.length === 0
-              ? 'Filter by SKU…'
-              : value.length === 1
-                ? selectedRows[0]?.name || '1 selected'
-                : `${value.length} SKUs selected`}
+              ? 'Filter by product…'
+              : value.length === skus.length
+                ? 'All products'
+                : selectedOptions.length === 1
+                  ? selectedOptions[0].label
+                  : `${value.length} SKUs selected`}
           </span>
           <ChevronDown className="ml-auto h-3.5 w-3.5 shrink-0 opacity-60" />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-[300px] p-0">
         <Command>
-          <CommandInput placeholder="Search SKU…" />
+          <CommandInput placeholder="Search product or SKU…" />
           <CommandList className="max-h-72">
-            <CommandEmpty>No SKU matches.</CommandEmpty>
-            {skus.map((s) => {
-              const id = String(s.id)
-              const isPicked = picked.has(id)
+            <CommandEmpty>Nothing matches.</CommandEmpty>
+            {options.map((o) => {
+              const all = o.ids.every((id) => picked.has(id))
+              const some = !all && o.ids.some((id) => picked.has(id))
               return (
-                <CommandItem key={id} value={String(s.name || '')} onSelect={() => toggle(id)}>
+                <CommandItem key={o.key} value={o.label} onSelect={() => toggle(o.ids)}>
                   <span
                     className={cn(
                       'mr-2 flex h-4 w-4 shrink-0 items-center justify-center rounded border',
-                      isPicked ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40'
+                      all
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : some
+                          ? 'border-primary text-primary'
+                          : 'border-muted-foreground/40'
                     )}
                   >
-                    {isPicked && <Check className="h-3 w-3" />}
+                    {all ? <Check className="h-3 w-3" /> : some ? <span className="h-0.5 w-2 bg-primary" /> : null}
                   </span>
-                  <span className="truncate">{s.name}</span>
+                  <span className="truncate">{o.label}</span>
+                  {o.count > 0 && (
+                    <span className="ml-auto shrink-0 pl-2 text-[11px] text-muted-foreground">
+                      {o.count} SKU{o.count === 1 ? '' : 's'}
+                    </span>
+                  )}
                 </CommandItem>
               )
             })}
           </CommandList>
-          {value.length > 0 && (
-            <div className="flex items-center justify-between border-t p-1.5">
-              <span className="px-1 text-[11px] text-muted-foreground">{value.length} selected</span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-6 gap-1 px-1.5 text-[11px]"
-                onClick={() => onChange([])}
-              >
-                <X className="h-3 w-3" /> Clear
-              </Button>
+          <div className="flex items-center justify-between border-t p-1.5">
+            <span className="px-1 text-[11px] text-muted-foreground">
+              {value.length} of {skus.length} SKUs
+            </span>
+            <div className="flex items-center gap-0.5">
+              {value.length < skus.length && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 gap-1 px-1.5 text-[11px]"
+                  onClick={() => onChange(skus.map((s) => String(s.id)))}
+                >
+                  <Check className="h-3 w-3" /> Select all
+                </Button>
+              )}
+              {value.length > 0 && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 gap-1 px-1.5 text-[11px]"
+                  onClick={() => onChange([])}
+                >
+                  <X className="h-3 w-3" /> Clear
+                </Button>
+              )}
             </div>
-          )}
+          </div>
         </Command>
       </PopoverContent>
     </Popover>
@@ -845,15 +897,33 @@ function SkuStock(): React.JSX.Element {
   const negatives = rows.filter((r) => Number(r.on_hand) < -1e-6).length
 
   // Search + hide-empty, so a long SKU list stays workable. skuPick narrows to
-  // specific SKUs (searchable multi-select) — empty means no narrowing.
+  // specific SKUs (searchable multi-select) — it starts with everything ticked,
+  // and an empty pick means no narrowing rather than an empty table.
   const [search, setSearch] = useState('')
   const [hideEmpty, setHideEmpty] = useState(false)
   const [skuPick, setSkuPick] = useState<string[]>([])
+  // Everything starts ticked, so the filter reads as "all of this is showing"
+  // rather than an empty box. Any SKU added later is ticked too, but only
+  // while nothing has been unticked by hand — once it has, the picks stand.
+  const seeded = useRef(false)
+  const allPicked = useRef(true)
+  useEffect(() => {
+    if (!rows.length) return
+    const ids = rows.map((r) => String(r.id))
+    if (!seeded.current) {
+      seeded.current = true
+      setSkuPick(ids)
+      return
+    }
+    if (allPicked.current) setSkuPick(ids)
+  }, [rows])
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase()
     const picked = new Set(skuPick)
     return rows.filter((r) => {
-      if (q && !String(r.name || '').toLowerCase().includes(q)) return false
+      // Matches the SKU name or the product it packs (linked finished product,
+      // or the short name typed on the SKU).
+      if (q && ![r.name, r.product_name].some((v) => String(v || '').toLowerCase().includes(q))) return false
       if (picked.size && !picked.has(String(r.id))) return false
       if (hideEmpty) {
         const moved = (Number(r.opening) || 0) + (Number(r.added_on ?? r.added) || 0) + (Number(r.sold_on ?? r.sold) || 0)
@@ -968,10 +1038,17 @@ function SkuStock(): React.JSX.Element {
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search SKU…"
-          className="h-8 w-40 text-[13px]"
+          placeholder="Search SKU or product…"
+          className="h-8 w-48 text-[13px]"
         />
-        <SkuMultiSelect skus={rows} value={skuPick} onChange={setSkuPick} />
+        <SkuMultiSelect
+          skus={rows}
+          value={skuPick}
+          onChange={(v) => {
+            allPicked.current = v.length === rows.length
+            setSkuPick(v)
+          }}
+        />
         <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-muted-foreground">
           <Switch checked={hideEmpty} onCheckedChange={setHideEmpty} />
           Hide untouched

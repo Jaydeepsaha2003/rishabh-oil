@@ -15,7 +15,7 @@ type Row = Record<string, any>
 // A packaging SKU: N units per case, each unit a given size (e.g. DALDA JAR
 // 4.2 KG × 4). Stock is drawn in the base unit (KG or L); base_per_pouch and
 // base_uom are derived from the natural unit size.
-const fields: FieldDef[] = [
+const baseFields: FieldDef[] = [
   { key: 'name', label: 'SKU name', type: 'text', required: true, placeholder: 'e.g. DALDA JAR 4.2 KG × 4' },
   {
     key: 'pouch_label',
@@ -49,11 +49,25 @@ const fields: FieldDef[] = [
   // Derived for stock conversion — auto-filled from unit size/UOM, editable.
   { key: 'base_per_pouch', label: 'Base qty / unit (auto)', type: 'number', default: 0 },
   { key: 'base_uom', label: 'Base unit (auto)', type: 'text', default: 'KG' },
+  // Which finished product this SKU packs (DALDA 15 KG TIN → DALDA), so packed
+  // pieces reconcile in tonnage against that product's stock. Options are
+  // filled in from the product master below.
+  { key: 'product_id', label: 'Product', type: 'select', options: [] },
+  // Not one of the finished products? Type the short product name instead.
+  // Only one of the two applies, so this is off once a product is linked.
+  {
+    key: 'product_label',
+    label: 'Or type a short product name',
+    type: 'text',
+    placeholder: 'e.g. SWAD',
+    enabledWhen: (f) => !f.product_id
+  },
   { key: 'active', label: 'Active', type: 'switch', default: true }
 ]
 
-const columns: ColumnDef[] = [
+const baseColumns: ColumnDef[] = [
   { key: 'name', label: 'SKU' },
+  { key: 'product_id', label: 'Product' },
   { key: 'pouch_label', label: 'Type' },
   { key: 'unit_size', label: 'Unit size', align: 'right' },
   { key: 'unit_uom', label: 'UOM' },
@@ -76,13 +90,34 @@ export function Packaging(): React.JSX.Element {
   // to the bargain party's SKUs when links exist.
   const [linkRow, setLinkRow] = useState<Row | null>(null)
   const [customers, setCustomers] = useState<Row[]>([])
+  const [products, setProducts] = useState<Row[]>([])
   const [sel, setSel] = useState<number[]>([])
   const [custSearch, setCustSearch] = useState('')
   const [savingLinks, setSavingLinks] = useState(false)
 
   useEffect(() => {
     window.api.data.list('customers').then(setCustomers).catch(() => {})
+    window.api.data.list('products').then(setProducts).catch(() => {})
   }, [])
+
+  // A packed SKU packs a finished good — offer those, plus intermediates,
+  // which is the same pair Production treats as an output.
+  const productOptions = products
+    .filter((p) => p.category === 'finished' || p.category === 'intermediate')
+    .map((p) => ({ value: String(p.id), label: String(p.name) }))
+  const fields = baseFields.map((f) => (f.key === 'product_id' ? { ...f, options: productOptions } : f))
+  // One Product column for both ways of naming it: the linked finished
+  // product, or the short name typed when it isn't one of them.
+  const columns = baseColumns.map((c) =>
+    c.key === 'product_id'
+      ? {
+          ...c,
+          value: (row: Row) =>
+            productOptions.find((o) => o.value === String(row.product_id))?.label ||
+            String(row.product_label || '')
+        }
+      : c
+  )
 
   async function openLinks(row: Row): Promise<void> {
     setLinkRow(row)
@@ -130,9 +165,13 @@ export function Packaging(): React.JSX.Element {
           fields={fields}
           columns={columns}
           readOnly={!canWrite(loadUser(), 'packaging')}
-          onFieldChange={(key, _value, form) =>
-            key === 'unit_size' || key === 'unit_uom' ? deriveBase(form) : undefined
-          }
+          onFieldChange={(key, value, form) => {
+            if (key === 'unit_size' || key === 'unit_uom') return deriveBase(form)
+            // The two ways of naming the product are exclusive — linking one
+            // drops any short name typed earlier.
+            if (key === 'product_id' && value) return { product_label: '' }
+            return undefined
+          }}
           rowAction={{ title: 'Link buyer parties (narrows the rate card)', icon: Users, onClick: (row) => void openLinks(row) }}
         />
       </div>

@@ -793,7 +793,16 @@ const MIGRATIONS = [
   // A Gate In vehicle weighed Tare-only (arriving empty, before its Gross
   // comes later at Gate Out) can be flagged so it surfaces in Gate Out's own
   // "Awaiting Gross" picker instead of only sitting in Gate In's queue.
-  'ALTER TABLE gate_entries ADD COLUMN awaiting_gross_out INTEGER NOT NULL DEFAULT 0'
+  'ALTER TABLE gate_entries ADD COLUMN awaiting_gross_out INTEGER NOT NULL DEFAULT 0',
+  // Whether a supplier/transporter's business is Trading or Manufacturing.
+  // The DEFAULT backfills every existing row to Manufacturing (the historical
+  // assumption); new rows can choose either from here on.
+  "ALTER TABLE suppliers ADD COLUMN business_type TEXT NOT NULL DEFAULT 'Manufacturing'",
+  "ALTER TABLE customers ADD COLUMN business_type TEXT NOT NULL DEFAULT 'Manufacturing'",
+  // A packed SKU that does not pack one of the finished products (product_id)
+  // can instead carry a short product name typed by hand. Exactly one of the
+  // two is used — the linked product's name wins when both are set.
+  'ALTER TABLE packagings ADD COLUMN product_label TEXT'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

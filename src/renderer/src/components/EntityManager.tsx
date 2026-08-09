@@ -62,6 +62,9 @@ export interface ColumnDef {
   label: string
   type?: ColumnType
   align?: 'left' | 'right'
+  // Derives what the cell shows, for columns that are not a plain field —
+  // e.g. an id resolved to the linked record's name.
+  value?: (row: Row) => string
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -254,7 +257,7 @@ export function EntityManager({
   const nameBlocked = !!clash && (editingId == null || norm(rows.find((r) => Number(r.id) === Number(editingId))?.name) !== typedName)
 
   function renderCell(row: Row, col: ColumnDef): string {
-    const v = row[col.key]
+    const v = col.value ? col.value(row) : row[col.key]
     if (col.type === 'switch') return v ? 'Yes' : 'No'
     if (col.type === 'date') return fmtDate(v)
     if (v == null || v === '') return '—'

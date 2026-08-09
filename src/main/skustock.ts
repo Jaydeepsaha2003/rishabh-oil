@@ -35,6 +35,9 @@ export async function listSkuStock(date?: string): Promise<Row[]> {
     sql: `
     SELECT pk.id, pk.name, pk.box_label, pk.pouch_label, pk.pouches_per_box,
            pk.base_per_pouch, pk.base_uom, pk.unit_size, pk.unit_uom,
+           -- What this SKU packs: the linked finished product, else the short
+           -- name typed on the SKU. Used to filter the packed-stock list.
+           COALESCE(pr.name, pk.product_label) AS product_name,
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
                      WHERE packaging_id = pk.id AND company_id = ?), 0) AS added,
            COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
@@ -55,6 +58,7 @@ export async function listSkuStock(date?: string): Promise<Row[]> {
                        AND s.status = 'done' AND s.company_id = ?
                        AND substr(s.sale_date, 1, 10) = ?), 0) AS sold_on
     FROM packagings pk
+    LEFT JOIN products pr ON pr.id = pk.product_id
     WHERE pk.active = 1
     ORDER BY pk.name COLLATE NOCASE ASC`,
     args: [cid, cid, cid, d, d, cid, d, d, cid, d, cid, d]

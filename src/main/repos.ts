@@ -12,6 +12,7 @@ const TABLES: Record<string, string[]> = {
     'name',
     'supplier_type',
     'company_type',
+    'business_type',
     'gstin',
     'state',
     'gst_pct',
@@ -44,6 +45,7 @@ const TABLES: Record<string, string[]> = {
     'name',
     'category',
     'company_type',
+    'business_type',
     'gstin',
     'state',
     'gst_pct',
@@ -60,7 +62,7 @@ const TABLES: Record<string, string[]> = {
   uoms: ['name', 'active'],
   brokers: ['name', 'contact_person', 'phone', 'brokerage_pct', 'address', 'note', 'active'],
   companies: ['name', 'active'],
-  packagings: ['name', 'box_label', 'pouch_label', 'pouches_per_box', 'unit_size', 'unit_uom', 'base_per_pouch', 'base_uom', 'product_id', 'active']
+  packagings: ['name', 'box_label', 'pouch_label', 'pouches_per_box', 'unit_size', 'unit_uom', 'base_per_pouch', 'base_uom', 'product_id', 'product_label', 'active']
 }
 
 type Row = Record<string, unknown>
@@ -72,9 +74,13 @@ function assertTable(table: string): string[] {
 }
 
 // Coerce JS values into something libsql accepts as a bound parameter.
-function toArg(v: unknown): InValue {
+// An id column left blank in a form arrives as '' — store it as NULL, since
+// "no link" is checked with IS NULL everywhere and '' would match neither
+// that nor a real id.
+function toArg(v: unknown, key?: string): InValue {
   if (typeof v === 'boolean') return v ? 1 : 0
   if (v === undefined) return null
+  if (v === '' && key?.endsWith('_id')) return null
   return v as InValue
 }
 
@@ -142,7 +148,7 @@ export async function create(table: string, values: Row): Promise<{ id: number }
   const placeholders = keys.map(() => '?').join(', ')
   const res = await getClient().execute({
     sql: `INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders})`,
-    args: keys.map((k) => toArg(values[k]))
+    args: keys.map((k) => toArg(values[k], k))
   })
   return { id: Number(res.lastInsertRowid) }
 }
@@ -155,7 +161,7 @@ export async function update(table: string, id: number, values: Row): Promise<{ 
   const setClause = keys.map((k) => `${k} = ?`).join(', ')
   await getClient().execute({
     sql: `UPDATE ${table} SET ${setClause} WHERE id = ?`,
-    args: [...keys.map((k) => toArg(values[k])), id]
+    args: [...keys.map((k) => toArg(values[k], k)), id]
   })
   return { id }
 }

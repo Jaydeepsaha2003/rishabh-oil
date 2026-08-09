@@ -76,10 +76,20 @@ function monthStartISO(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
 }
 
+// SUM() over many dispatch/adjustment rows can carry floating-point residue
+// past a real zero (e.g. 0.00002) — round every register figure to 3 decimals
+// so `inRegister`'s zero-balance check actually lands on exact zero, same fix
+// already applied to adjustSalesBargainQty's balance_qty rounding.
+function round3(v: number): number {
+  return Math.round(v * 1000) / 1000
+}
+
 // Period register figures for a bargain, relative to [from,to].
 // opening (b/f) + addition (created in period) + adjusted (manual add/remove
-// in period) − dispatch (in period) = closing.
-function bargainRegister(r: Row, from: string, to: string): { opening: number; addition: number; adjusted: number; dispatch: number; closing: number } {
+// in period) − dispatch (in period) = closing. `futureAdjusted` is any
+// adjustment dated after `to` — excluded from the period math (it hasn't
+// happened yet as of `to`) but surfaced separately so it isn't just dropped.
+function bargainRegister(r: Row, from: string, to: string): { opening: number; addition: number; adjusted: number; dispatch: number; closing: number; futureAdjusted: number } {
   const qty = Number(r.qty) || 0
   const before = Number(r.disp_before) || 0
   const inP = Number(r.disp_period) || 0
@@ -93,11 +103,12 @@ function bargainRegister(r: Row, from: string, to: string): { opening: number; a
   // Adjusted figure in the month they were made, not folded into Opening or
   // blended into Addition).
   const baseQty = qty - adjBefore - adjIn - adjAfter
-  const opening = createdBefore ? Math.max(0, baseQty + adjBefore - before) : 0
-  const addition = createdInRange ? baseQty : 0
-  const adjusted = adjIn
-  const dispatch = inP
-  return { opening, addition, adjusted, dispatch, closing: opening + addition + adjusted - dispatch }
+  const opening = round3(createdBefore ? Math.max(0, baseQty + adjBefore - before) : 0)
+  const addition = round3(createdInRange ? baseQty : 0)
+  const adjusted = round3(adjIn)
+  const dispatch = round3(inP)
+  const closing = round3(opening + addition + adjusted - dispatch)
+  return { opening, addition, adjusted, dispatch, closing, futureAdjusted: round3(adjAfter) }
 }
 
 // Whether a bargain belongs in the register for [from,to]: created on/before the
@@ -2294,6 +2305,14 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                             <span className={reg.adjusted < -1e-9 ? 'text-red-600' : reg.adjusted > 0 ? 'text-emerald-700' : ''}>
                               {reg.adjusted ? formatNum(reg.adjusted) : '—'}
                             </span>
+                            {Math.abs(reg.futureAdjusted) > 1e-9 && (
+                              <span
+                                className="ml-1 text-[10px] font-medium text-amber-600"
+                                title={`Adjustment of ${formatNum(reg.futureAdjusted)} dated after ${formatDate(T)} — widen the date range to include it`}
+                              >
+                                ({reg.futureAdjusted > 0 ? '+' : ''}{formatNum(reg.futureAdjusted)} later)
+                              </span>
+                            )}
                           </TableCell>
                           <TableCell className="text-right tabular-nums">{formatINR(row.rate)}</TableCell>
                           <TableCell className={cn('text-right tabular-nums', reg.dispatch && 'font-bold text-red-600')}>{reg.dispatch ? formatNum(reg.dispatch) : '—'}</TableCell>

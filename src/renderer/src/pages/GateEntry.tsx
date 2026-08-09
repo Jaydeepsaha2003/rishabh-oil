@@ -1390,37 +1390,33 @@ export function GateEntry(): React.JSX.Element {
         </Tabs>
       </div>
 
-      {/* Tare-first confirmation — plain, big, unmissable for a gate operator. */}
+      {/* Tare-first confirmation — one plain question, a graphic, two big
+          buttons. No paragraphs: this is read by a gate operator, not typed
+          out and studied. */}
       <Dialog open={!!grossOutPrompt} onOpenChange={(o) => !o && !grossOutSaving && setGrossOutPrompt(null)}>
-        <DialogContent className="max-w-md text-center">
-          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-amber-700">
-            <Scale className="h-7 w-7" />
+        <DialogContent className="max-w-sm text-center">
+          <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-sky-100 text-sky-700">
+            <Truck className="h-10 w-10" />
           </div>
           <DialogHeader className="items-center text-center sm:text-center">
-            <DialogTitle className="text-[17px]">Tare weight saved</DialogTitle>
+            <DialogTitle className="text-[20px] font-bold">{grossOutPrompt?.row.tanker_no}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-1">
-            <p className="text-[15px] font-semibold">{grossOutPrompt?.row.tanker_no}</p>
-            <p className="text-[13px] text-muted-foreground">
-              Empty weight (Tare): <span className="font-medium text-foreground">{formatNum(grossOutPrompt?.tare)} {grossOutPrompt?.row.uom}</span>
-            </p>
-          </div>
-          <p className="mt-2 text-[15px] font-medium">Will this vehicle be weighed again (Gross) at Gate Out, when it leaves?</p>
-          <div className="mt-4 grid gap-2">
+          <p className="-mt-2 text-[18px] font-semibold">Is this tanker for sale?</p>
+          <div className="mt-3 grid grid-cols-2 gap-3">
             <Button
-              className="h-12 bg-emerald-600 text-[15px] font-semibold hover:bg-emerald-700"
+              className="h-16 bg-emerald-600 text-[16px] font-bold hover:bg-emerald-700"
               disabled={grossOutSaving}
               onClick={() => void resolveGrossOutPrompt(true)}
             >
-              Yes — weigh it at Gate Out
+              Yes
             </Button>
             <Button
               variant="outline"
-              className="h-12 text-[15px] font-semibold"
+              className="h-16 text-[16px] font-bold"
               disabled={grossOutSaving}
               onClick={() => void resolveGrossOutPrompt(false)}
             >
-              No — keep it here at Gate In
+              No
             </Button>
           </div>
         </DialogContent>

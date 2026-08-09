@@ -3,13 +3,14 @@ import { EntityManager, type ColumnDef, type FieldDef } from '@/components/Entit
 import { loadUser } from '@/lib/session'
 import { canWrite } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
-import { COMPANY_TYPES } from '@/lib/constants'
+import { COMPANY_TYPES, BUSINESS_TYPES } from '@/lib/constants'
 
 const baseFields: FieldDef[] = [
   { key: 'name', label: 'Name', type: 'text', required: true },
   // Category comes from the Categories master, same list as everywhere else.
   { key: 'supplier_type', label: 'Category', type: 'creatable', options: [] },
   { key: 'company_type', label: 'Company type', type: 'select', options: COMPANY_TYPES },
+  { key: 'business_type', label: 'Trading or Manufacturing', type: 'select', options: BUSINESS_TYPES, default: 'Manufacturing' },
   { key: 'gstin', label: 'GSTIN', type: 'text' },
   { key: 'state', label: 'State', type: 'text' },
   { key: 'gst_pct', label: 'GST %', type: 'number', default: 0 },
@@ -41,6 +42,7 @@ const TYPE_DEFAULTS: Record<string, Record<string, number | boolean>> = {
 const columns: ColumnDef[] = [
   { key: 'name', label: 'Name' },
   { key: 'supplier_type', label: 'Type' },
+  { key: 'business_type', label: 'Trading/Mfg' },
   { key: 'gst_pct', label: 'GST %', align: 'right' },
   { key: 'tds_pct', label: 'TDS %', align: 'right' },
   { key: 'credit_period_days', label: 'Credit days', align: 'right' },

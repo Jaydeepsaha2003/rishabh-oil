@@ -34,27 +34,49 @@ import { GlobalDateRangeProvider } from './lib/globalDateRange'
 import { clearUser, loadUser, saveUser, type AppUser } from './lib/session'
 import { MODULES, canAccess } from './lib/modules'
 
-// Floating "Update" pill — appears automatically once a new version has been
-// downloaded in the background; one click restarts into the new version.
-function UpdateBanner(): React.JSX.Element | null {
-  const [ready, setReady] = useState<string | null>(null)
+// Full-width bar pinned above the sidebar+page area — visible on every page,
+// not just once the download finishes, so no one is caught mid-task on a
+// stale build. Shows as soon as `update-available` fires and stays up
+// through download; turns into a one-click restart once ready.
+function UpdateTopBar(): React.JSX.Element | null {
+  const [status, setStatus] = useState<{ state: string; version?: string; percent?: number } | null>(null)
   useEffect(
     () =>
       window.api.updates.onStatus((s) => {
-        if (s.state === 'downloaded') setReady(String(s.version || ''))
+        const state = String(s.state || '')
+        if (state === 'available' || state === 'downloading' || state === 'downloaded') {
+          setStatus({ state, version: s.version, percent: s.percent })
+        } else if (state === 'none' || state === 'error') {
+          setStatus(null)
+        }
       }),
     []
   )
-  if (ready == null) return null
+  if (!status) return null
+  const ready = status.state === 'downloaded'
   return (
-    <button
-      onClick={() => window.api.updates.install()}
-      className="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg transition-colors hover:bg-emerald-700"
-      title={`Version ${ready} downloaded — click to restart and update`}
+    <div
+      className={`flex items-center justify-center gap-3 px-4 py-1.5 text-sm font-medium text-white ${ready ? 'bg-emerald-600' : 'bg-amber-600'}`}
     >
       <Download className="h-4 w-4" />
-      Update{ready ? ` to v${ready}` : ''}
-    </button>
+      {ready ? (
+        <>
+          <span>Version {status.version} is ready to install.</span>
+          <button
+            onClick={() => window.api.updates.install()}
+            className="rounded-full bg-white/20 px-3 py-0.5 font-semibold hover:bg-white/30"
+          >
+            Restart & update
+          </button>
+        </>
+      ) : (
+        <span>
+          {status.state === 'downloading'
+            ? `Downloading version ${status.version || ''}${status.percent != null ? ` — ${status.percent}%` : ''}…`
+            : `A new version${status.version ? ` (${status.version})` : ''} is available and downloading in the background…`}
+        </span>
+      )}
+    </div>
   )
 }
 
@@ -277,7 +299,9 @@ function App(): React.JSX.Element {
 
   return (
     <GlobalDateRangeProvider>
-    <div className="flex h-screen overflow-hidden bg-muted/30 text-foreground">
+    <div className="flex h-screen flex-col overflow-hidden bg-muted/30 text-foreground">
+      <UpdateTopBar />
+      <div className="flex flex-1 overflow-hidden">
       <Sidebar
         page={view}
         onNavigate={navigate}
@@ -328,7 +352,7 @@ function App(): React.JSX.Element {
         {view === 'settings' && <Settings user={user} />}
       </main>
       <NotificationBell user={user} onNavigate={(p) => navigate(p as Page)} />
-      <UpdateBanner />
+      </div>
       <GlobalDateRangeDialog open={periodOpen} onOpenChange={setPeriodOpen} />
       <Toaster richColors position="bottom-right" />
     </div>

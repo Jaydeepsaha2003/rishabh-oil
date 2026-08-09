@@ -11,7 +11,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { PageHeader } from '@/components/PageHeader'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { useGlobalDateRange } from '@/lib/globalDateRange'
 import { computeMoney } from '@/lib/orderCalc'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -47,6 +49,9 @@ const emptyForm = (): Row => ({
 })
 
 export function Trading(): React.JSX.Element {
+  // Alt+F2's period picker filters this list by deal date — deliberately no
+  // visible date-range control of its own on this page.
+  const globalRange = useGlobalDateRange()
   const [deals, setDeals] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
   const [suppliers, setSuppliers] = useState<Row[]>([])
@@ -252,12 +257,17 @@ export function Trading(): React.JSX.Element {
 
   const filteredDeals = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (!q) return deals
-    return deals.filter((d) =>
-      [d.product_code, d.product_name, d.supplier_name, d.customer_name, d.purchase_invoice_no, d.sale_invoice_no]
+    const inRange = globalRange.version > 0
+    return deals.filter((d) => {
+      if (inRange) {
+        const dd = String(d.deal_date || '').slice(0, 10)
+        if (dd < globalRange.from || dd > globalRange.to) return false
+      }
+      if (!q) return true
+      return [d.product_code, d.product_name, d.supplier_name, d.customer_name, d.purchase_invoice_no, d.sale_invoice_no]
         .some((f) => String(f || '').toLowerCase().includes(q))
-    )
-  }, [deals, search])
+    })
+  }, [deals, search, globalRange])
 
   if (formPage) {
     return (
@@ -533,14 +543,14 @@ export function Trading(): React.JSX.Element {
         />
       </div>
 
-      <Card className="overflow-auto p-0">
+      <Card className="overflow-hidden rounded-xl p-0 shadow-sm">
         {loading ? (
           <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">Loading…</div>
         ) : filteredDeals.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 py-14 text-center">
             <Inbox className="h-8 w-8 text-muted-foreground/50" />
             <p className="text-sm text-muted-foreground">
-              {deals.length === 0 ? 'No trading deals booked yet.' : 'No deals match your search.'}
+              {deals.length === 0 ? 'No trading deals booked yet.' : 'No deals match your filters.'}
             </p>
             {deals.length === 0 && (
               <Button size="sm" variant="outline" className="mt-1 gap-1.5" onClick={openNew}>
@@ -549,44 +559,48 @@ export function Trading(): React.JSX.Element {
             )}
           </div>
         ) : (
+          <div className="overflow-x-auto">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Product</TableHead>
-                <TableHead className="text-right">Qty</TableHead>
-                <TableHead>Supplier</TableHead>
-                <TableHead className="text-right">Purchase (net)</TableHead>
-                <TableHead>Customer</TableHead>
-                <TableHead className="text-right">Sale (total)</TableHead>
-                <TableHead className="text-right">Margin</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+              <TableRow className="bg-muted/60 hover:bg-muted/60">
+                <TableHead className="h-10 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Date</TableHead>
+                <TableHead className="h-10 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Product</TableHead>
+                <TableHead className="h-10 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Qty</TableHead>
+                <TableHead className="h-10 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Supplier</TableHead>
+                <TableHead className="h-10 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Purchase (net)</TableHead>
+                <TableHead className="h-10 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Customer</TableHead>
+                <TableHead className="h-10 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Sale (total)</TableHead>
+                <TableHead className="h-10 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Margin</TableHead>
+                <TableHead className="h-10 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredDeals.map((d) => (
-                <TableRow key={String(d.id)} className="group">
-                  <TableCell className="tabular-nums text-muted-foreground">{formatDate(d.deal_date)}</TableCell>
-                  <TableCell className="font-medium">{d.product_code || d.product_name}</TableCell>
-                  <TableCell className="text-right tabular-nums">{formatNum(d.purchase_qty)} {d.purchase_uom}</TableCell>
-                  <TableCell>
-                    <div>{d.supplier_name || '—'}</div>
+              {filteredDeals.map((d, i) => (
+                <TableRow
+                  key={String(d.id)}
+                  className={cn('group border-b border-border/60 transition-colors hover:bg-sky-50/60', i % 2 === 1 && 'bg-muted/20')}
+                >
+                  <TableCell className="py-2.5 tabular-nums text-muted-foreground">{formatDate(d.deal_date)}</TableCell>
+                  <TableCell className="py-2.5 font-semibold">{d.product_code || d.product_name}</TableCell>
+                  <TableCell className="py-2.5 text-right tabular-nums">{formatNum(d.purchase_qty)} <span className="text-muted-foreground">{d.purchase_uom}</span></TableCell>
+                  <TableCell className="py-2.5">
+                    <div className="font-medium">{d.supplier_name || '—'}</div>
                     {d.purchase_invoice_no && <div className="text-[11px] text-muted-foreground">{d.purchase_invoice_no}</div>}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">{formatINR(d.purchase_net)}</TableCell>
-                  <TableCell>
-                    <div>{d.customer_name || '—'}</div>
+                  <TableCell className="py-2.5 text-right tabular-nums">{formatINR(d.purchase_net)}</TableCell>
+                  <TableCell className="py-2.5">
+                    <div className="font-medium">{d.customer_name || '—'}</div>
                     {d.sale_invoice_no && <div className="text-[11px] text-muted-foreground">{d.sale_invoice_no}</div>}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">{formatINR(d.sale_net)}</TableCell>
-                  <TableCell className="text-right">
-                    <Badge variant={n(d.margin) < 0 ? 'destructive' : 'success'} className="gap-1 tabular-nums">
+                  <TableCell className="py-2.5 text-right tabular-nums">{formatINR(d.sale_net)}</TableCell>
+                  <TableCell className="py-2.5 text-right">
+                    <Badge variant={n(d.margin) < 0 ? 'destructive' : 'success'} className="gap-1 whitespace-nowrap tabular-nums">
                       {n(d.margin) < 0 ? <TrendingDown className="h-3 w-3" /> : <TrendingUp className="h-3 w-3" />}
                       {formatINR(d.margin)}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-1 opacity-70 group-hover:opacity-100">
+                  <TableCell className="py-2.5 text-right">
+                    <div className="flex justify-end gap-1 opacity-60 group-hover:opacity-100">
                       <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit this deal" onClick={() => openEdit(d)}>
                         <Pencil className="h-3.5 w-3.5" />
                       </Button>
@@ -599,6 +613,7 @@ export function Trading(): React.JSX.Element {
               ))}
             </TableBody>
           </Table>
+          </div>
         )}
       </Card>
     </div>

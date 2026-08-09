@@ -17,3 +17,11 @@ export const COMPANY_TYPES: { value: string; label: string }[] = [
   { value: 'Trust', label: 'Trust' },
   { value: 'Other', label: 'Other' }
 ]
+
+// Whether a party's business is Trading (buys/sells the same goods) or
+// Manufacturing (processes goods). Existing suppliers/transporters default to
+// Manufacturing (the historical assumption); new ones can pick either.
+export const BUSINESS_TYPES: { value: string; label: string }[] = [
+  { value: 'Manufacturing', label: 'Manufacturing' },
+  { value: 'Trading', label: 'Trading' }
+]

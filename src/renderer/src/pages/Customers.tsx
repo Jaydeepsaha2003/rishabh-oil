@@ -3,7 +3,7 @@ import { EntityManager, type ColumnDef, type FieldDef } from '@/components/Entit
 import { loadUser } from '@/lib/session'
 import { canWrite } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
-import { COMPANY_TYPES } from '@/lib/constants'
+import { COMPANY_TYPES, BUSINESS_TYPES } from '@/lib/constants'
 
 const baseFields: FieldDef[] = [
   { key: 'name', label: 'Name', type: 'text', required: true },
@@ -11,6 +11,7 @@ const baseFields: FieldDef[] = [
   // only the customers who deal in the goods at the barrier.
   { key: 'category', label: 'Category', type: 'creatable', options: [] },
   { key: 'company_type', label: 'Company type', type: 'select', options: COMPANY_TYPES },
+  { key: 'business_type', label: 'Trading or Manufacturing', type: 'select', options: BUSINESS_TYPES, default: 'Manufacturing' },
   { key: 'gstin', label: 'GSTIN', type: 'text' },
   { key: 'state', label: 'State', type: 'text' },
   { key: 'gst_pct', label: 'GST %', type: 'number', default: 0 },
@@ -27,6 +28,7 @@ const baseFields: FieldDef[] = [
 const columns: ColumnDef[] = [
   { key: 'name', label: 'Name' },
   { key: 'category', label: 'Category', type: 'select' },
+  { key: 'business_type', label: 'Trading/Mfg' },
   { key: 'gst_pct', label: 'GST %', align: 'right' },
   { key: 'tds_pct', label: 'TDS %', align: 'right' },
   { key: 'credit_period_days', label: 'Credit days', align: 'right' },
