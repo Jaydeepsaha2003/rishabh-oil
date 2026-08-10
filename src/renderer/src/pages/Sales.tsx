@@ -284,7 +284,8 @@ function SalesTab({
       transit_date: '',
       unloaded_date: '',
       round_off: '',
-      round_off_manual: false
+      round_off_manual: false,
+      tds_pct: ''
     }
   }
   function blankItem(): Row {
@@ -321,7 +322,8 @@ function SalesTab({
       // Round off lives on the first line of the group; sum is safe either way.
       round_off: inv.lines.reduce((s, r) => s + (Number(r.round_off) || 0), 0) || '',
       // A stored round off is kept as typed — auto would silently reprice it.
-      round_off_manual: inv.lines.some((r) => Math.abs(Number(r.round_off) || 0) > 0.004)
+      round_off_manual: inv.lines.some((r) => Math.abs(Number(r.round_off) || 0) > 0.004),
+      tds_pct: f.tds_pct ?? ''
     })
     setItems(inv.lines.map((r) => ({
       product_id: String(r.product_id ?? ''),
@@ -440,6 +442,42 @@ function SalesTab({
     if (String(header.round_off ?? '') !== val) setHeaderField('round_off', val)
   }, [invoiceRawTotal, header.round_off_manual, header.round_off])
 
+  // TDS preview, on the customer master's own terms — the same slab the main
+  // process applies on save. Below the FY threshold nothing is withheld when
+  // the master says "no TDS below the slab"; above it the invoice's rate runs.
+  const invoiceTotal = totals.amount + totals.gst + (Number(header.round_off) || 0)
+  const tds = useMemo(() => {
+    const pct = Number(header.tds_pct) || 0
+    const cust = customers.find((c) => String(c.id) === String(header.customer_id || ''))
+    if (!cust || pct <= 0 || invoiceTotal <= 0) return { amount: 0, threshold: 0, belowSlab: false }
+    const threshold = Number(cust.tds_threshold) || 0
+    const basePct = cust.tds_above_only ? 0 : pct
+    if (threshold <= 0) return { amount: (invoiceTotal * pct) / 100, threshold: 0, belowSlab: false }
+    // What this customer has already been billed this financial year, taken
+    // from the invoices on screen (this invoice itself excluded when editing).
+    const d = new Date(String(header.sale_date || todayISO()))
+    const startY = d.getMonth() + 1 >= 4 ? d.getFullYear() : d.getFullYear() - 1
+    const fyStart = `${startY}-04-01`
+    const upto = String(header.sale_date || todayISO()).slice(0, 10)
+    const prior = rows
+      .filter(
+        (r) =>
+          String(r.customer_id ?? '') === String(header.customer_id) &&
+          String(r.sale_date ?? '').slice(0, 10) >= fyStart &&
+          String(r.sale_date ?? '').slice(0, 10) <= upto &&
+          (!editingGroup || String(r.invoice_group ?? '') !== String(editingGroup))
+      )
+      .reduce((s, r) => s + (Number(r.amount) || 0), 0)
+    const below = Math.max(0, Math.min(threshold - prior, invoiceTotal))
+    const above = invoiceTotal - below
+    return {
+      amount: (below * basePct) / 100 + (above * pct) / 100,
+      threshold,
+      belowSlab: !!cust.tds_above_only && above <= 0
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [header.tds_pct, header.customer_id, header.sale_date, invoiceTotal, customers, rows, editingGroup])
+
   // Rate cards for the bargains used on this invoice, keyed by bargain id then
   // packaging id. Loaded when a line names a bargain; the rate it yields is
   // offered, never forced — the line stays editable.
@@ -519,7 +557,13 @@ function SalesTab({
 
   function chooseCustomer(v: string): void {
     const cust = customers.find((c) => String(c.id) === v)
-    setHeader((p) => ({ ...p, customer_id: v, customer: cust?.name ?? p.customer }))
+    setHeader((p) => ({
+      ...p,
+      customer_id: v,
+      customer: cust?.name ?? p.customer,
+      // TDS comes off the customer master, like GST does — still editable.
+      tds_pct: cust && Number(cust.tds_pct) > 0 ? cust.tds_pct : ''
+    }))
     // Drop item bargains that belong to another customer.
     setItems((prev) => prev.map((it) => {
       const b = bargains.find((x) => String(x.id) === String(it.sales_bargain_id))
@@ -733,6 +777,7 @@ function SalesTab({
       customer_id: header.customer_id ? Number(header.customer_id) : null,
       transporter_id: header.transporter_id ? Number(header.transporter_id) : null,
       round_off: Number(header.round_off) || 0,
+      tds_pct: Number(header.tds_pct) || 0,
       items: lines.map((it) => ({
         product_id: Number(it.product_id),
         sales_bargain_id: it.sales_bargain_id ? Number(it.sales_bargain_id) : null,
@@ -1462,8 +1507,37 @@ function SalesTab({
           </div>
           <div className="mt-1 flex items-center justify-between border-t-2 border-[#1a2c56] pt-1.5 text-[15px] font-bold text-[#1a2c56]">
             <span>Invoice total</span>
-            <span className="tabular-nums">{formatINR(totals.amount + totals.gst + (Number(header.round_off) || 0))}</span>
+            <span className="tabular-nums">{formatINR(invoiceTotal)}</span>
           </div>
+          <div className="flex items-center justify-between py-0.5">
+            <span className="text-muted-foreground">TDS %</span>
+            <Input
+              type="number"
+              step="0.01"
+              className="h-7 w-24 bg-white text-right"
+              placeholder="0"
+              title="Withheld by the customer on the invoice total. Filled in from the customer master; the slab on that master decides how much actually applies."
+              value={header.tds_pct ?? ''}
+              onChange={(e) => setHeaderField('tds_pct', e.target.value)}
+            />
+          </div>
+          {Number(header.tds_pct) > 0 && (
+            <>
+              <div className="flex items-center justify-between py-0.5">
+                <span className="text-muted-foreground">
+                  TDS
+                  {tds.belowSlab && (
+                    <span className="ml-1 text-[11px]">— under the ₹{formatNum(tds.threshold)} slab, nothing withheld</span>
+                  )}
+                </span>
+                <span className="tabular-nums">{formatINR(tds.amount)}</span>
+              </div>
+              <div className="flex items-center justify-between border-t pt-1 font-semibold text-[#1a2c56]">
+                <span>Net receivable</span>
+                <span className="tabular-nums">{formatINR(invoiceTotal - tds.amount)}</span>
+              </div>
+            </>
+          )}
           </div>
         </div>
 

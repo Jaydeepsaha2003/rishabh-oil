@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { ArrowLeft, ChevronDown, ChevronRight, Inbox, Pencil, Plus, Repeat, Search, TrendingDown, TrendingUp, Trash2 } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -15,6 +14,7 @@ import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange } from '@/lib/globalDateRange'
 import { computeMoney } from '@/lib/orderCalc'
+import { isTradingParty } from '@/lib/constants'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -97,6 +97,19 @@ function InvoiceLines({
   )
 }
 
+// A labelled figure in the expanded deal's summary strip.
+function Fact({ label, value, hint }: { label: string; value: string; hint?: string }): React.JSX.Element {
+  return (
+    <div className="min-w-0">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="truncate font-semibold tabular-nums text-[#1a2c56]">
+        {value}
+        {hint && <span className="ml-1 text-[11px] font-normal text-muted-foreground">({hint})</span>}
+      </div>
+    </div>
+  )
+}
+
 // One side's invoices, shown when a deal row is expanded: every invoice with
 // its own qty and rate, and the side's totals underneath.
 function DealLineTable({
@@ -115,51 +128,53 @@ function DealLineTable({
   const totalQty = lines.reduce((s, l) => s + n(l.qty), 0)
   const totalValue = lines.reduce((s, l) => s + n(l.qty) * n(l.rate), 0)
   return (
-    <div className="overflow-hidden rounded-lg border bg-white">
+    <div className="overflow-hidden rounded border border-[#d9d2b8] bg-[#fffdf4] shadow-sm">
       <div
         className={cn(
-          'flex items-baseline justify-between gap-2 px-3 py-1.5',
-          tone === 'rose' ? 'bg-rose-50 text-rose-900' : 'bg-emerald-50 text-emerald-900'
+          'flex items-baseline justify-between gap-2 border-b px-3 py-1.5',
+          tone === 'rose'
+            ? 'border-rose-200 bg-rose-50/80 text-rose-900'
+            : 'border-emerald-200 bg-emerald-50/80 text-emerald-900'
         )}
       >
         <span className="text-[10px] font-bold uppercase tracking-widest">{heading}</span>
-        <span className="truncate text-[11px] font-medium">{party}</span>
+        <span className="truncate text-[11px] font-semibold">{party}</span>
       </div>
-      <table className="w-full text-[12px]">
+      <table className="w-full border-collapse text-[12px] [&_td]:border-r [&_td]:border-[#e8e2cc] [&_td:last-child]:border-r-0 [&_th]:border-r [&_th]:border-[#e8e2cc] [&_th:last-child]:border-r-0">
         <thead>
-          <tr className="border-b text-[10px] uppercase tracking-wide text-muted-foreground">
-            <th className="px-3 py-1 text-left font-semibold">#</th>
-            <th className="px-3 py-1 text-left font-semibold">Invoice no.</th>
-            <th className="px-3 py-1 text-right font-semibold">Qty</th>
-            <th className="px-3 py-1 text-right font-semibold">Rate</th>
-            <th className="px-3 py-1 text-right font-semibold">Value</th>
+          <tr className="border-b border-[#d9d2b8] bg-[#dce6f5] text-[10px] uppercase tracking-widest text-[#1a2c56]">
+            <th className="w-8 px-2 py-1 text-left font-bold">#</th>
+            <th className="px-2 py-1 text-left font-bold">Invoice no.</th>
+            <th className="px-2 py-1 text-right font-bold">Qty</th>
+            <th className="px-2 py-1 text-right font-bold">Rate</th>
+            <th className="px-2 py-1 text-right font-bold">Value</th>
           </tr>
         </thead>
         <tbody>
           {lines.length === 0 ? (
             <tr>
-              <td colSpan={5} className="px-3 py-3 text-center text-muted-foreground">No invoices.</td>
+              <td colSpan={5} className="px-2 py-3 text-center text-muted-foreground">No invoices.</td>
             </tr>
           ) : (
             lines.map((l, i) => (
-              <tr key={i} className="border-b border-dotted last:border-0">
-                <td className="px-3 py-1 tabular-nums text-muted-foreground">{i + 1}</td>
-                <td className="px-3 py-1 font-medium">{String(l.invoice_no || '—')}</td>
-                <td className="px-3 py-1 text-right tabular-nums">{formatNum(l.qty)}</td>
-                <td className="px-3 py-1 text-right tabular-nums">{formatINR(l.rate)}</td>
-                <td className="px-3 py-1 text-right tabular-nums">{formatINR(n(l.qty) * n(l.rate))}</td>
+              <tr key={i} className={cn('border-b border-[#efe9d5] last:border-0', i % 2 === 1 && 'bg-[#faf7ea]')}>
+                <td className="px-2 py-1 tabular-nums text-muted-foreground">{i + 1}</td>
+                <td className="px-2 py-1 font-medium">{String(l.invoice_no || '—')}</td>
+                <td className="px-2 py-1 text-right tabular-nums">{formatNum(l.qty)}</td>
+                <td className="px-2 py-1 text-right tabular-nums">{formatINR(l.rate)}</td>
+                <td className="px-2 py-1 text-right tabular-nums">{formatINR(n(l.qty) * n(l.rate))}</td>
               </tr>
             ))
           )}
         </tbody>
         {lines.length > 0 && (
           <tfoot>
-            <tr className="border-t bg-muted/40 font-semibold">
-              <td className="px-3 py-1" />
-              <td className="px-3 py-1">{lines.length} invoice{lines.length === 1 ? '' : 's'}</td>
-              <td className="px-3 py-1 text-right tabular-nums">{formatNum(totalQty)} {uom}</td>
-              <td className="px-3 py-1" />
-              <td className="px-3 py-1 text-right tabular-nums">{formatINR(totalValue)}</td>
+            <tr className="border-t-2 border-[#1a2c56] bg-[#f0ecd9] font-bold text-[#1a2c56]">
+              <td className="px-2 py-1" />
+              <td className="px-2 py-1">{lines.length} invoice{lines.length === 1 ? '' : 's'}</td>
+              <td className="px-2 py-1 text-right tabular-nums">{formatNum(totalQty)} {uom}</td>
+              <td className="px-2 py-1" />
+              <td className="px-2 py-1 text-right tabular-nums">{formatINR(totalValue)}</td>
             </tr>
           </tfoot>
         )}
@@ -273,6 +288,19 @@ export function Trading(): React.JSX.Element {
       return next
     })
   }
+
+  // A pass-through deal is trading business, so only parties marked Trading in
+  // the master belong here — the mirror of the Sales/Purchase forms, which
+  // list the manufacturing ones. The party a deal already names always stays
+  // listed, so an existing deal still opens and edits.
+  const dealSuppliers = useMemo(
+    () => suppliers.filter((s) => isTradingParty(s) || String(s.id) === String(form.supplier_id || '')),
+    [suppliers, form.supplier_id]
+  )
+  const dealCustomers = useMemo(
+    () => customers.filter((c) => isTradingParty(c) || String(c.id) === String(form.customer_id || '')),
+    [customers, form.customer_id]
+  )
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -601,7 +629,13 @@ export function Trading(): React.JSX.Element {
                     <Select value={String(form.supplier_id || '')} onValueChange={chooseSupplier}>
                       <SelectTrigger><SelectValue placeholder="Select supplier" /></SelectTrigger>
                       <SelectContent className="max-h-64">
-                        {suppliers.map((s) => <SelectItem key={String(s.id)} value={String(s.id)}>{s.name}</SelectItem>)}
+                        {dealSuppliers.length === 0 ? (
+                          <div className="px-2 py-3 text-center text-[12px] text-muted-foreground">
+                            No Trading suppliers yet — set a supplier to Trading under Masters → Suppliers.
+                          </div>
+                        ) : (
+                          dealSuppliers.map((s) => <SelectItem key={String(s.id)} value={String(s.id)}>{s.name}</SelectItem>)
+                        )}
                       </SelectContent>
                     </Select>
                   </div>
@@ -658,7 +692,13 @@ export function Trading(): React.JSX.Element {
                     <Select value={String(form.customer_id || '')} onValueChange={chooseCustomer}>
                       <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
                       <SelectContent className="max-h-64">
-                        {customers.map((c) => <SelectItem key={String(c.id)} value={String(c.id)}>{c.name}</SelectItem>)}
+                        {dealCustomers.length === 0 ? (
+                          <div className="px-2 py-3 text-center text-[12px] text-muted-foreground">
+                            No Trading customers yet — set a customer to Trading under Masters → Customers.
+                          </div>
+                        ) : (
+                          dealCustomers.map((c) => <SelectItem key={String(c.id)} value={String(c.id)}>{c.name}</SelectItem>)
+                        )}
                       </SelectContent>
                     </Select>
                   </div>
@@ -823,7 +863,9 @@ export function Trading(): React.JSX.Element {
         />
       </div>
 
-      <Card className="overflow-hidden rounded-xl p-0 shadow-sm">
+      {/* Tally-style register: ruled columns, tight rows, figures right-aligned
+          on a cream ledger, and a grand total pinned at the foot. */}
+      <div className="overflow-hidden rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
         {loading ? (
           <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">Loading…</div>
         ) : filteredDeals.length === 0 ? (
@@ -840,18 +882,30 @@ export function Trading(): React.JSX.Element {
           </div>
         ) : (
           <div className="overflow-x-auto">
-          <Table>
+          <Table className="[&_td]:border-r [&_td]:border-[#e8e2cc] [&_td:last-child]:border-r-0 [&_th]:border-r [&_th]:border-[#b9c9e4] [&_th:last-child]:border-r-0">
             <TableHeader>
-              <TableRow className="bg-muted/60 hover:bg-muted/60">
-                <TableHead className="h-10 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Date</TableHead>
-                <TableHead className="h-10 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Product</TableHead>
-                <TableHead className="h-10 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Qty</TableHead>
-                <TableHead className="h-10 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Supplier</TableHead>
-                <TableHead className="h-10 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Purchase (net)</TableHead>
-                <TableHead className="h-10 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Customer</TableHead>
-                <TableHead className="h-10 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Sale (total)</TableHead>
-                <TableHead className="h-10 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Margin</TableHead>
-                <TableHead className="h-10 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Actions</TableHead>
+              <TableRow className="bg-[#dce6f5] hover:bg-[#dce6f5]">
+                {[
+                  { label: 'Date' },
+                  { label: 'Product' },
+                  { label: 'Qty', right: true },
+                  { label: 'Supplier' },
+                  { label: 'Purchase (net)', right: true },
+                  { label: 'Customer' },
+                  { label: 'Sale (total)', right: true },
+                  { label: 'Margin', right: true },
+                  { label: 'Actions', right: true }
+                ].map((h) => (
+                  <TableHead
+                    key={h.label}
+                    className={cn(
+                      'h-9 py-0 text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]',
+                      h.right && 'text-right'
+                    )}
+                  >
+                    {h.label}
+                  </TableHead>
+                ))}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -863,47 +917,36 @@ export function Trading(): React.JSX.Element {
                 <React.Fragment key={String(d.id)}>
                 <TableRow
                   className={cn(
-                    'group cursor-pointer border-b border-border/60 transition-colors hover:bg-sky-50/60',
-                    i % 2 === 1 && 'bg-muted/20',
-                    open && 'bg-sky-50/80 hover:bg-sky-50/80'
+                    'group cursor-pointer border-b border-[#e8e2cc] transition-colors hover:bg-[#eef4ff]',
+                    i % 2 === 1 && 'bg-[#faf7ea]',
+                    open && 'bg-[#e8f0ff] hover:bg-[#e8f0ff]'
                   )}
                   onClick={() => toggleExpanded(Number(d.id))}
                 >
-                  <TableCell className="py-2.5 tabular-nums text-muted-foreground">
+                  <TableCell className="py-1.5 text-[13px] tabular-nums text-[#1a2c56]">
                     <span className="inline-flex items-center gap-1.5">
-                      {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                      {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
                       {formatDate(d.deal_date)}
                     </span>
                   </TableCell>
-                  <TableCell className="py-2.5 font-semibold">{d.product_code || d.product_name}</TableCell>
-                  <TableCell className="py-2.5 text-right tabular-nums">{formatNum(d.purchase_qty)} <span className="text-muted-foreground">{d.purchase_uom}</span></TableCell>
-                  <TableCell className="py-2.5">
-                    <div className="font-medium">{d.supplier_name || '—'}</div>
-                    {d.purchase_invoice_no && (
-                      <div className="text-[11px] text-muted-foreground">
-                        {d.purchase_invoice_no}
-                        {n(d.purchase_count) > 1 && ` +${n(d.purchase_count) - 1} more`}
-                      </div>
+                  <TableCell className="py-1.5 text-[13px] font-semibold">{d.product_code || d.product_name}</TableCell>
+                  <TableCell className="py-1.5 text-right text-[13px] tabular-nums">
+                    {formatNum(d.purchase_qty)} <span className="text-[11px] text-muted-foreground">{d.purchase_uom}</span>
+                  </TableCell>
+                  {/* Invoice numbers live in the expanded view, not here. */}
+                  <TableCell className="py-1.5 text-[13px] font-medium">{d.supplier_name || '—'}</TableCell>
+                  <TableCell className="py-1.5 text-right text-[13px] tabular-nums">{formatINR(d.purchase_net)}</TableCell>
+                  <TableCell className="py-1.5 text-[13px] font-medium">{d.customer_name || '—'}</TableCell>
+                  <TableCell className="py-1.5 text-right text-[13px] tabular-nums">{formatINR(d.sale_net)}</TableCell>
+                  <TableCell
+                    className={cn(
+                      'py-1.5 text-right text-[13px] font-semibold tabular-nums',
+                      n(d.margin) < 0 ? 'text-red-700' : 'text-emerald-700'
                     )}
+                  >
+                    {formatINR(d.margin)}
                   </TableCell>
-                  <TableCell className="py-2.5 text-right tabular-nums">{formatINR(d.purchase_net)}</TableCell>
-                  <TableCell className="py-2.5">
-                    <div className="font-medium">{d.customer_name || '—'}</div>
-                    {d.sale_invoice_no && (
-                      <div className="text-[11px] text-muted-foreground">
-                        {d.sale_invoice_no}
-                        {n(d.sale_count) > 1 && ` +${n(d.sale_count) - 1} more`}
-                      </div>
-                    )}
-                  </TableCell>
-                  <TableCell className="py-2.5 text-right tabular-nums">{formatINR(d.sale_net)}</TableCell>
-                  <TableCell className="py-2.5 text-right">
-                    <Badge variant={n(d.margin) < 0 ? 'destructive' : 'success'} className="gap-1 whitespace-nowrap tabular-nums">
-                      {n(d.margin) < 0 ? <TrendingDown className="h-3 w-3" /> : <TrendingUp className="h-3 w-3" />}
-                      {formatINR(d.margin)}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+                  <TableCell className="py-1.5 text-right" onClick={(e) => e.stopPropagation()}>
                     <div className="flex justify-end gap-1 opacity-60 group-hover:opacity-100">
                       <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit this deal" onClick={() => openEdit(d)}>
                         <Pencil className="h-3.5 w-3.5" />
@@ -915,9 +958,9 @@ export function Trading(): React.JSX.Element {
                   </TableCell>
                 </TableRow>
                 {open && (
-                  <TableRow className="border-b border-border/60 bg-sky-50/30 hover:bg-sky-50/30">
+                  <TableRow className="border-b-2 border-[#d9d2b8] bg-[#f4f7fd] hover:bg-[#f4f7fd] [&>td]:border-r-0">
                     <TableCell colSpan={9} className="p-0">
-                      <div className="grid gap-4 px-4 py-3 md:grid-cols-2">
+                      <div className="grid gap-3 border-l-[3px] border-[#1a2c56] px-4 py-3 lg:grid-cols-2">
                         <DealLineTable
                           heading="Purchase invoices"
                           party={String(d.supplier_name || '—')}
@@ -932,25 +975,26 @@ export function Trading(): React.JSX.Element {
                           uom={String(d.purchase_uom || 'MT')}
                           tone="emerald"
                         />
-                        <div className="md:col-span-2 flex flex-wrap items-center gap-x-6 gap-y-1 border-t border-dashed border-border pt-2 text-[11px]">
-                          <span className="text-muted-foreground">
-                            GST — purchase <b className="text-foreground">{formatNum(d.purchase_gst_pct)}%</b>, sale{' '}
-                            <b className="text-foreground">{formatNum(d.sale_gst_pct)}%</b>
-                          </span>
-                          <span className="text-muted-foreground">
-                            TDS — purchase <b className="text-foreground">{formatNum(d.purchase_tds_pct)}%</b> ({formatINR(d.purchase_tds_amount)}), sale{' '}
-                            <b className="text-foreground">{formatNum(d.sale_tds_pct)}%</b> ({formatINR(d.sale_tds_amount)})
-                          </span>
-                          <span className="text-muted-foreground">
-                            Net payable <b className="text-foreground">{formatINR(d.purchase_net)}</b> · Net receivable{' '}
-                            <b className="text-foreground">{formatINR(d.sale_net_receivable)}</b>
-                          </span>
-                          {!d.qty_matched && (
-                            <span className="rounded bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-900">
-                              {formatNum(Math.abs(n(d.purchase_qty) - n(d.sale_qty)))} {d.purchase_uom} {n(d.purchase_qty) > n(d.sale_qty) ? 'unsold' : 'oversold'}
-                            </span>
+                        <div className="grid gap-x-6 gap-y-1 rounded border border-[#d9d2b8] bg-[#fffdf4] px-3 py-2 text-[12px] sm:grid-cols-2 lg:col-span-2 lg:grid-cols-4">
+                          <Fact label="GST (purchase / sale)" value={`${formatNum(d.purchase_gst_pct)}% / ${formatNum(d.sale_gst_pct)}%`} />
+                          <Fact
+                            label="TDS (purchase / sale)"
+                            value={`${formatINR(d.purchase_tds_amount)} / ${formatINR(d.sale_tds_amount)}`}
+                            hint={`${formatNum(d.purchase_tds_pct)}% / ${formatNum(d.sale_tds_pct)}%`}
+                          />
+                          <Fact label="Net payable to supplier" value={formatINR(d.purchase_net)} />
+                          <Fact label="Net receivable from customer" value={formatINR(d.sale_net_receivable)} />
+                          {(!d.qty_matched || d.note) && (
+                            <div className="flex flex-wrap items-center gap-2 pt-1 sm:col-span-2 lg:col-span-4">
+                              {!d.qty_matched && (
+                                <span className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold text-amber-900">
+                                  {formatNum(Math.abs(n(d.purchase_qty) - n(d.sale_qty)))} {d.purchase_uom}{' '}
+                                  {n(d.purchase_qty) > n(d.sale_qty) ? 'still unsold' : 'oversold'}
+                                </span>
+                              )}
+                              {d.note && <span className="text-[11px] text-muted-foreground">Note: {String(d.note)}</span>}
+                            </div>
                           )}
-                          {d.note && <span className="text-muted-foreground">Note: {String(d.note)}</span>}
                         </div>
                       </div>
                     </TableCell>
@@ -959,11 +1003,41 @@ export function Trading(): React.JSX.Element {
                 </React.Fragment>
                 )
               })}
+              {/* Grand total across what is actually on screen, the way a
+                  Tally register closes off its columns. */}
+              {(() => {
+                const t = filteredDeals.reduce(
+                  (a, d) => ({
+                    qty: a.qty + n(d.purchase_qty),
+                    purchase: a.purchase + n(d.purchase_net),
+                    sale: a.sale + n(d.sale_net),
+                    margin: a.margin + n(d.margin)
+                  }),
+                  { qty: 0, purchase: 0, sale: 0, margin: 0 }
+                )
+                return (
+                  <TableRow className="border-t-2 border-[#1a2c56] bg-[#f0ecd9] font-bold text-[#1a2c56] hover:bg-[#f0ecd9]">
+                    <TableCell className="py-2 text-[12px] uppercase tracking-widest">Grand total</TableCell>
+                    <TableCell className="py-2 text-[12px] text-muted-foreground">
+                      {filteredDeals.length} deal{filteredDeals.length === 1 ? '' : 's'}
+                    </TableCell>
+                    <TableCell className="py-2 text-right text-[13px] tabular-nums">{formatNum(t.qty)}</TableCell>
+                    <TableCell className="py-2" />
+                    <TableCell className="py-2 text-right text-[13px] tabular-nums">{formatINR(t.purchase)}</TableCell>
+                    <TableCell className="py-2" />
+                    <TableCell className="py-2 text-right text-[13px] tabular-nums">{formatINR(t.sale)}</TableCell>
+                    <TableCell className={cn('py-2 text-right text-[13px] tabular-nums', t.margin < 0 ? 'text-red-700' : 'text-emerald-700')}>
+                      {formatINR(t.margin)}
+                    </TableCell>
+                    <TableCell className="py-2" />
+                  </TableRow>
+                )
+              })()}
             </TableBody>
           </Table>
           </div>
         )}
-      </Card>
+      </div>
     </div>
   )
 }

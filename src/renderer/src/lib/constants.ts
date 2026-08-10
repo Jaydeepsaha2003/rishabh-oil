@@ -33,3 +33,10 @@ export const BUSINESS_TYPES: { value: string; label: string }[] = [
 export function isManufacturingParty(party: Record<string, any> | undefined | null): boolean {
   return String(party?.business_type ?? '').trim().toLowerCase() !== 'trading'
 }
+
+// The other side of the same line: only parties explicitly marked Trading
+// belong on a pass-through deal.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isTradingParty(party: Record<string, any> | undefined | null): boolean {
+  return String(party?.business_type ?? '').trim().toLowerCase() === 'trading'
+}

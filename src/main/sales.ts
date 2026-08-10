@@ -127,6 +127,67 @@ function n(v: unknown): number {
 // Maintain the receivable entry in the customer ledger for a sale.
 // Convention (shared with supplier/transporter ledger): amount positive = credit
 // (we owe the party), negative = debit. A sale debits the customer (they owe us).
+// TDS the customer withholds, on the customer master's terms — mirrors the
+// supplier side exactly. Below the FY threshold the base rate applies (0 when
+// the master says "no TDS below the slab"); everything above it is charged at
+// the invoice's rate.
+function tierTds(
+  taxable: number,
+  prior: number,
+  threshold: number,
+  basePct: number,
+  abovePct: number
+): number {
+  if (!threshold || threshold <= 0) return (taxable * basePct) / 100
+  const below = Math.max(0, Math.min(threshold - prior, taxable))
+  const above = taxable - below
+  return (below * basePct) / 100 + (above * abovePct) / 100
+}
+
+// Indian FY (Apr–Mar) range for a date.
+function fyRange(dateStr: string): { start: string; end: string } {
+  const d = new Date(dateStr)
+  const y = d.getFullYear()
+  const startY = d.getMonth() + 1 >= 4 ? y : y - 1
+  return { start: `${startY}-04-01`, end: `${startY + 1}-03-31` }
+}
+
+// What has already been billed to this customer this financial year, which is
+// where the slab picks up from.
+async function customerFyTaxable(
+  customerId: number,
+  dateStr: string,
+  excludeId: number
+): Promise<number> {
+  const { start } = fyRange(dateStr)
+  const res = await getClient().execute({
+    sql: `SELECT COALESCE(SUM(amount), 0) AS t FROM sales
+          WHERE customer_id = ? AND sale_date BETWEEN ? AND ? AND id != ? AND company_id = ?`,
+    args: [customerId, start, String(dateStr).slice(0, 10), excludeId || 0, getActiveCompanyId()]
+  })
+  return Number(res.rows[0].t) || 0
+}
+
+// The TDS on one sale invoice, given its total and who it is billed to.
+async function saleTds(
+  customerId: number | null,
+  tdsPct: number,
+  base: number,
+  dateStr: string,
+  excludeId: number
+): Promise<number> {
+  if (!customerId || tdsPct <= 0 || base <= 0) return 0
+  const cu = await getClient().execute({
+    sql: 'SELECT tds_threshold, tds_above_only FROM customers WHERE id = ?',
+    args: [customerId]
+  })
+  const master = cu.rows[0]
+  const threshold = Number(master?.tds_threshold) || 0
+  const basePct = master?.tds_above_only ? 0 : tdsPct
+  const prior = threshold > 0 ? await customerFyTaxable(customerId, dateStr, excludeId) : 0
+  return Math.round(tierTds(base, prior, threshold, basePct, tdsPct) * 100) / 100
+}
+
 async function postCustomerReceivable(
   saleId: number,
   customerId: number | null,
@@ -608,13 +669,13 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   const gstAmount = Math.round(amount * (gstPct / 100) * 100) / 100
   // Invoice-level round off (carried on the first line of the group only).
   const roundOff = Math.round((n(v.round_off) || 0) * 100) / 100
-  // TDS the customer withholds, charged on the invoice total like the
-  // purchase side. Nothing sets a rate unless it is asked for, so this is 0
-  // and the receivable is unchanged for every other kind of sale.
-  const tdsPct = n(v.tds_pct)
-  const tdsAmount = Math.round((amount + gstAmount + roundOff) * (tdsPct / 100) * 100) / 100
-  const net = amount + gstAmount + roundOff - tdsAmount
   const customerId = v.customer_id ? n(v.customer_id) : null
+  // TDS the customer withholds, charged on the invoice total like the purchase
+  // side and applied on the customer master's slab terms. With no rate set it
+  // is 0, so the receivable is unchanged for a sale that carries no TDS.
+  const tdsPct = n(v.tds_pct)
+  const tdsAmount = await saleTds(customerId, tdsPct, amount + gstAmount + roundOff, String(v.sale_date), 0)
+  const net = amount + gstAmount + roundOff - tdsAmount
   // Can't dispatch more than the chosen sales bargain still has open.
   if (v.sales_bargain_id) {
     const bal = await salesBargainBalanceFor(n(v.sales_bargain_id), 0)
@@ -720,11 +781,12 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   const gstAmount = Math.round(amount * (gstPct / 100) * 100) / 100
   // Invoice-level round off (carried on the first line of the group only).
   const roundOff = Math.round((n(v.round_off) || 0) * 100) / 100
-  // TDS the customer withholds — see createSale.
-  const tdsPct = n(v.tds_pct)
-  const tdsAmount = Math.round((amount + gstAmount + roundOff) * (tdsPct / 100) * 100) / 100
-  const net = amount + gstAmount + roundOff - tdsAmount
   const customerId = v.customer_id ? n(v.customer_id) : null
+  // TDS the customer withholds — see createSale. This sale is left out of its
+  // own prior-billed figure so re-saving cannot inflate the slab.
+  const tdsPct = n(v.tds_pct)
+  const tdsAmount = await saleTds(customerId, tdsPct, amount + gstAmount + roundOff, String(v.sale_date), id)
+  const net = amount + gstAmount + roundOff - tdsAmount
   if (v.sales_bargain_id) {
     const bal = await salesBargainBalanceFor(n(v.sales_bargain_id), id)
     if (qty > bal + 1e-6) {

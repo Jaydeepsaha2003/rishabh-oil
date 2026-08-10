@@ -328,10 +328,11 @@ function StockTable({ rows, breakdown, label = 'stock', range, onRange, companyP
 }
 
 function StatCard({ label, value, tone }: { label: string; value: string; tone?: string }): React.JSX.Element {
+  // Same parchment-and-navy ledger palette as the count sheet below it.
   return (
-    <div className="rounded-lg border bg-card px-3 py-2 shadow-sm">
-      <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className={cn('mt-0.5 text-[15px] font-semibold tabular-nums', tone)}>{value}</div>
+    <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] px-3 py-2 shadow-sm">
+      <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{label}</div>
+      <div className={cn('mt-0.5 text-[16px] font-bold tabular-nums text-[#1a2c56]', tone)}>{value}</div>
     </div>
   )
 }
@@ -427,20 +428,23 @@ function DayClose(): React.JSX.Element {
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="grid gap-1.5">
-          <Label className="text-xs text-muted-foreground">Closing date</Label>
-          <DatePicker max={todayISO()} value={date} onChange={(v) => setDate(v || todayISO())} className="w-44" />
-        </div>
-        <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save day close'}</Button>
-      </div>
-
+      {/* Date and section sit on one line — both pick what the sheet below
+          shows, so they belong together rather than stacked apart. */}
       <Tabs value={section} onValueChange={setSection}>
-        <TabsList>
-          {DAY_SECTIONS.map((s) => (
-            <TabsTrigger key={s.key} value={s.key}>{s.title}</TabsTrigger>
-          ))}
-        </TabsList>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="grid gap-1.5">
+              <Label className="text-xs text-muted-foreground">Closing date</Label>
+              <DatePicker max={todayISO()} value={date} onChange={(v) => setDate(v || todayISO())} className="w-44" />
+            </div>
+            <TabsList>
+              {DAY_SECTIONS.map((s) => (
+                <TabsTrigger key={s.key} value={s.key}>{s.title}</TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
+          <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save day close'}</Button>
+        </div>
         {DAY_SECTIONS.map((s) => (
           <TabsContent key={s.key} value={s.key} className="mt-4">
             <DayCloseSection
@@ -574,15 +578,17 @@ function DayCloseSection({
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
-        <Table>
+      {/* Tally-style count sheet: ruled columns on a cream ledger, the two
+          typed columns tinted so it is obvious what the counter fills in. */}
+      <div className="overflow-hidden rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
+        <Table className="[&_td]:border-r [&_td]:border-[#e8e2cc] [&_td:last-child]:border-r-0 [&_th]:border-r [&_th]:border-[#b9c9e4] [&_th:last-child]:border-r-0">
           <TableHeader>
-            <TableRow>
+            <TableRow className="bg-[#dce6f5] hover:bg-[#dce6f5] [&_th]:h-9 [&_th]:py-0 [&_th]:text-[10px] [&_th]:font-bold [&_th]:uppercase [&_th]:tracking-widest [&_th]:text-[#1a2c56]">
               <TableHead>Product</TableHead>
               <TableHead>Category</TableHead>
               <TableHead className="text-right">Book qty</TableHead>
-              <TableHead className="w-[130px] text-right">Raw qty</TableHead>
-              <TableHead className="w-[120px] text-right">PP</TableHead>
+              <TableHead className="w-[130px] bg-[#cfe0f7] text-right">Raw qty</TableHead>
+              <TableHead className="w-[120px] bg-[#cfe0f7] text-right">PP</TableHead>
               <TableHead className="text-right">Total</TableHead>
               <TableHead className="text-right">Difference</TableHead>
               <TableHead className="text-right">Rate (₹)</TableHead>
@@ -596,44 +602,58 @@ function DayCloseSection({
             ) : rows.length === 0 ? (
               <TableRow><TableCell colSpan={10} className="py-10 text-center text-muted-foreground">No products in this section.</TableCell></TableRow>
             ) : (
-              rows.map((r) => {
+              rows.map((r, i) => {
                 const has = (r.actual_qty !== null && r.actual_qty !== '') || (r.pp_qty !== null && r.pp_qty !== '')
                 const diff = diffOf(r)
                 const off = has && Math.abs(diff) > 0.0005
                 return (
-                  <TableRow key={r.product_id as number}>
-                    <TableCell className="font-medium">{r.name}</TableCell>
-                    <TableCell><Badge variant="secondary">{CAT_LABEL[r.category] || r.category}</Badge></TableCell>
-                    <TableCell className="text-right tabular-nums text-muted-foreground">{formatNum(r.book_qty)}</TableCell>
-                    <TableCell className="text-right">
+                  <TableRow
+                    key={r.product_id as number}
+                    className={cn(
+                      'border-b border-[#e8e2cc] transition-colors hover:bg-[#eef4ff]',
+                      i % 2 === 1 && 'bg-[#faf7ea]',
+                      // A counted row that disagrees with the books is what the
+                      // whole sheet exists to surface — tint the line, not just
+                      // the one figure.
+                      off && 'bg-amber-50/70 hover:bg-amber-50'
+                    )}
+                  >
+                    <TableCell className="py-1.5 text-[13px] font-semibold">{r.name}</TableCell>
+                    <TableCell className="py-1.5">
+                      <span className="rounded border border-[#d9d2b8] bg-[#f4f1e2] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#1a2c56]">
+                        {CAT_LABEL[r.category] || r.category}
+                      </span>
+                    </TableCell>
+                    <TableCell className="py-1.5 text-right text-[13px] tabular-nums text-muted-foreground">{formatNum(r.book_qty)}</TableCell>
+                    <TableCell className="bg-[#f2f7ff]/70 py-1.5 text-right">
                       <Input
                         type="number"
-                        className="h-8 w-28 text-right"
+                        className="h-7 w-28 bg-white text-right text-[13px]"
                         placeholder="—"
                         value={r.actual_qty ?? ''}
                         onChange={(e) => setField(r.product_id, 'actual_qty', e.target.value)}
                       />
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="bg-[#f2f7ff]/70 py-1.5 text-right">
                       <Input
                         type="number"
-                        className="h-8 w-24 text-right"
+                        className="h-7 w-24 bg-white text-right text-[13px]"
                         placeholder="—"
                         value={r.pp_qty ?? ''}
                         onChange={(e) => setField(r.product_id, 'pp_qty', e.target.value)}
                       />
                     </TableCell>
-                    <TableCell className="text-right tabular-nums font-semibold">
+                    <TableCell className="py-1.5 text-right text-[13px] font-bold tabular-nums">
                       {has ? formatNum(totalOf(r)) : '—'}
                     </TableCell>
-                    <TableCell className={cn('text-right tabular-nums', off ? (diff > 0 ? 'text-amber-700' : 'text-red-600') : 'text-muted-foreground')}>
+                    <TableCell className={cn('py-1.5 text-right text-[13px] font-semibold tabular-nums', off ? (diff > 0 ? 'text-amber-700' : 'text-red-600') : 'text-muted-foreground')}>
                       {has ? formatNum(diff) : '—'}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums text-muted-foreground">{rateOf(r) ? formatNum(rateOf(r)) : '—'}</TableCell>
-                    <TableCell className="text-right tabular-nums font-medium">{has ? formatINR(actualValueOf(r)) : '—'}</TableCell>
-                    <TableCell>
+                    <TableCell className="py-1.5 text-right text-[13px] tabular-nums text-muted-foreground">{rateOf(r) ? formatNum(rateOf(r)) : '—'}</TableCell>
+                    <TableCell className="py-1.5 text-right text-[13px] font-medium tabular-nums">{has ? formatINR(actualValueOf(r)) : '—'}</TableCell>
+                    <TableCell className="py-1.5">
                       <Input
-                        className="h-8"
+                        className="h-7 bg-white text-[13px]"
                         placeholder="optional"
                         value={r.note ?? ''}
                         onChange={(e) => setField(r.product_id, 'note', e.target.value)}
@@ -644,21 +664,21 @@ function DayCloseSection({
               })
             )}
             {!loading && rows.length > 0 && (
-              <TableRow className="border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
-                <TableCell colSpan={2} className="font-bold uppercase tracking-wide text-amber-900">Total</TableCell>
-                <TableCell className="text-right font-bold tabular-nums text-amber-900">
+              <TableRow className="border-t-2 border-[#1a2c56] bg-[#f0ecd9] text-[#1a2c56] hover:bg-[#f0ecd9]">
+                <TableCell colSpan={2} className="py-2 text-[12px] font-bold uppercase tracking-widest">Grand total</TableCell>
+                <TableCell className="py-2 text-right text-[13px] font-bold tabular-nums">
                   {formatNum(rows.reduce((a, r) => a + (Number(r.book_qty) || 0), 0))}
                 </TableCell>
-                <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                <TableCell className="py-2 text-right text-[13px] font-bold tabular-nums">
                   {formatNum(rows.reduce((a, r) => a + (Number(r.actual_qty) || 0), 0))}
                 </TableCell>
-                <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                <TableCell className="py-2 text-right text-[13px] font-bold tabular-nums">
                   {formatNum(rows.reduce((a, r) => a + (Number(r.pp_qty) || 0), 0))}
                 </TableCell>
-                <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                <TableCell className="py-2 text-right text-[13px] font-bold tabular-nums">
                   {formatNum(rows.reduce((a, r) => a + totalOf(r), 0))}
                 </TableCell>
-                <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                <TableCell className="py-2 text-right text-[13px] font-bold tabular-nums">
                   {formatNum(
                     rows.reduce(
                       (a, r) =>
@@ -667,11 +687,11 @@ function DayCloseSection({
                     )
                   )}
                 </TableCell>
-                <TableCell />
-                <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                <TableCell className="py-2" />
+                <TableCell className="py-2 text-right text-[13px] font-bold tabular-nums">
                   {formatINR(rows.reduce((a, r) => a + actualValueOf(r), 0))}
                 </TableCell>
-                <TableCell />
+                <TableCell className="py-2" />
               </TableRow>
             )}
           </TableBody>
@@ -1281,6 +1301,7 @@ function SkuStock(): React.JSX.Element {
 function MncStock(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [lots, setLots] = useState<Row[]>([])
+  const [invoices, setInvoices] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState<Set<string>>(new Set())
   // Opening stock: what the MNC already held with us when the books started.
@@ -1305,14 +1326,18 @@ function MncStock(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [sm, ls, sup, prd] = await Promise.all([
+    const [sm, ls, inv, sup, prd] = await Promise.all([
       window.api.consignment.summary(mncRanged ? { from: mncFrom, to: mncTo } : undefined),
       window.api.consignment.list(),
+      // The purchases that drew this stock down — the detail behind the
+      // Invoiced column, on the same period as the summary.
+      window.api.consignment.invoices(mncRanged ? { from: mncFrom, to: mncTo } : undefined),
       window.api.data.list('suppliers'),
       window.api.data.list('products')
     ])
     setRows(sm)
     setLots(ls)
+    setInvoices(inv)
     setSuppliers(sup.filter((x) => x.active))
     setProducts(prd.filter((x) => x.active))
     setLoading(false)
@@ -1582,6 +1607,9 @@ function MncStock(): React.JSX.Element {
                       const k = key(r)
                       const isOpen = open.has(k)
                       const myLots = lots.filter((l) => String(l.supplier_id) === String(r.supplier_id) && String(l.product_id) === String(r.product_id))
+                      const myInvoices = invoices.filter(
+                        (v) => String(v.supplier_id) === String(r.supplier_id) && String(v.product_id) === String(r.product_id)
+                      )
                       return (
                         <Fragment key={k}>
                           <TableRow className={cn('cursor-pointer border-b', isOpen && 'bg-slate-100')} onClick={() => toggle(k)}>
@@ -1622,7 +1650,13 @@ function MncStock(): React.JSX.Element {
                           {isOpen && (
                             <TableRow className="bg-slate-100 hover:bg-slate-100">
                               <TableCell colSpan={6} className="p-0">
-                                <div className="px-6 py-3">
+                                <div className="space-y-3 px-6 py-3">
+                                  <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-emerald-800">
+                                    Deposited — lots received
+                                    <span className="rounded bg-emerald-100 px-1.5 py-0.5 tabular-nums text-emerald-900">
+                                      {myLots.length}
+                                    </span>
+                                  </div>
                                   {myLots.length === 0 ? (
                                     <p className="text-xs text-muted-foreground">No deposit lots recorded.</p>
                                   ) : (
@@ -1698,6 +1732,65 @@ function MncStock(): React.JSX.Element {
                                           </tr>
                                         ))}
                                       </tbody>
+                                    </table>
+                                  )}
+
+                                  {/* The other half of the movement: the
+                                      purchases that took this stock into our
+                                      books and reduced the party's balance. */}
+                                  <div className="flex items-center gap-2 pt-1 text-[10px] font-bold uppercase tracking-widest text-rose-800">
+                                    Invoiced — purchases booked
+                                    <span className="rounded bg-rose-100 px-1.5 py-0.5 tabular-nums text-rose-900">
+                                      {myInvoices.length}
+                                    </span>
+                                  </div>
+                                  {myInvoices.length === 0 ? (
+                                    <p className="text-xs text-muted-foreground">
+                                      Nothing invoiced{mncRanged ? ' in this period' : ''} — the whole deposit is still the party&apos;s.
+                                    </p>
+                                  ) : (
+                                    <table className="overflow-hidden rounded-lg border border-slate-300 bg-card text-xs shadow-sm [&_td]:pl-3 [&_th]:pl-3">
+                                      <thead>
+                                        <tr className="border-b bg-slate-200/70 text-left text-slate-700">
+                                          <th className="w-8 py-1.5 pr-3 font-semibold">#</th>
+                                          <th className="py-1.5 pr-3 font-semibold">Invoice date</th>
+                                          <th className="py-1.5 pr-3 font-semibold">Invoice no</th>
+                                          <th className="py-1.5 pr-3 font-semibold">Bargain</th>
+                                          <th className="py-1.5 pr-3 text-right font-semibold">Rate</th>
+                                          <th className="py-1.5 pr-3 text-right font-semibold">Qty invoiced</th>
+                                          <th className="py-1.5 pr-3 text-right font-semibold">Net amount</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {myInvoices.map((v, vi) => (
+                                          <tr key={v.id as number} className={cn('border-b', vi % 2 === 1 ? 'bg-muted/40' : 'bg-card')}>
+                                            <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{vi + 1}</td>
+                                            <td className="py-1.5 pr-3 whitespace-nowrap">{formatDate(v.order_date)}</td>
+                                            <td className="py-1.5 pr-3 font-medium">{String(v.invoice_no || '—')}</td>
+                                            <td className="py-1.5 pr-3 text-muted-foreground">{String(v.bargain_no || '—')}</td>
+                                            <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">
+                                              {Number(v.invoice_rate) > 0 ? formatNum(v.invoice_rate) : '—'}
+                                            </td>
+                                            <td className="py-1.5 pr-3 text-right font-medium tabular-nums text-rose-700">
+                                              {formatNum(v.ordered_qty)} {v.uom}
+                                            </td>
+                                            <td className="py-1.5 pr-3 text-right tabular-nums">{formatINR(v.net_amount)}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                      <tfoot>
+                                        <tr className="border-t bg-muted/60 font-semibold">
+                                          <td className="py-1.5 pr-3" colSpan={5}>
+                                            {myInvoices.length} invoice{myInvoices.length === 1 ? '' : 's'}
+                                          </td>
+                                          <td className="py-1.5 pr-3 text-right tabular-nums text-rose-700">
+                                            {formatNum(myInvoices.reduce((a, v) => a + (Number(v.ordered_qty) || 0), 0))}
+                                          </td>
+                                          <td className="py-1.5 pr-3 text-right tabular-nums">
+                                            {formatINR(myInvoices.reduce((a, v) => a + (Number(v.net_amount) || 0), 0))}
+                                          </td>
+                                        </tr>
+                                      </tfoot>
                                     </table>
                                   )}
                                 </div>

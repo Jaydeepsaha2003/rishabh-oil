@@ -425,6 +425,28 @@ export async function consignmentSummary(range?: { from?: string; to?: string })
   })
 }
 
+// The invoices behind the "Invoiced" column — the same consignment purchases
+// consignmentSummary sums, listed one row each so a product can be expanded to
+// show what drew its stock down, not just the deposits that built it up.
+export async function listConsignmentInvoices(range?: {
+  from?: string
+  to?: string
+}): Promise<Row[]> {
+  const from = String(range?.from || '')
+  const to = String(range?.to || '')
+  let sql = `SELECT o.id, o.invoice_no, o.order_date, o.supplier_id, o.oil_type_id AS product_id,
+                    o.ordered_qty, o.uom, o.invoice_rate, o.taxable_value, o.net_amount,
+                    b.bargain_no
+             FROM orders o
+             LEFT JOIN bargains b ON b.id = o.bargain_id
+             WHERE o.company_id = ? AND o.is_consignment = 1`
+  const args: (string | number)[] = [getActiveCompanyId()]
+  if (from) { sql += ' AND o.order_date >= ?'; args.push(from) }
+  if (to) { sql += ' AND o.order_date <= ?'; args.push(to) }
+  const res = await getClient().execute({ sql: `${sql} ORDER BY o.order_date, o.id`, args })
+  return toPlain(res)
+}
+
 // Gate-in entries booked as Direct MNC stock that haven't been validated into
 // consignment stock yet — the accountant's to-do list. Only entries the
 // gateman actually flagged Direct MNC belong here: a hand-typed vehicle for
