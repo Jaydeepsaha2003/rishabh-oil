@@ -154,7 +154,7 @@ function fyRange(dateStr: string): { start: string; end: string } {
 
 // What has already been billed to this customer this financial year, which is
 // where the slab picks up from.
-async function customerFyTaxable(
+export async function customerFyTaxable(
   customerId: number,
   dateStr: string,
   excludeId: number

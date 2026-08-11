@@ -163,6 +163,7 @@ export interface Api {
   }
   sales: {
     list: () => Promise<Row[]>
+    fyTaxable: (customerId: number, date: string, excludeId: number) => Promise<number>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     setStatus: (id: number, status: string) => Promise<{ id: number }>

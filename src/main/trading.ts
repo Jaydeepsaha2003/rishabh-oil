@@ -290,8 +290,18 @@ export async function createTradingDeal(v: Row): Promise<{ id: number }> {
     for (const oid of orderIds) await deleteOrder(oid).catch(() => {})
   }
   try {
-    for (const p of orderPayloads) orderIds.push((await createOrder(p)).id)
-    for (const p of salePayloads) saleIds.push((await createSale(p)).id)
+    // Within a side the invoices must post IN ORDER — each one moves the
+    // party's year-to-date total, which decides where the next sits on the TDS
+    // slab. The two sides are independent of each other though, so they run
+    // side by side and the wall-clock is the longer chain, not the sum.
+    await Promise.all([
+      (async () => {
+        for (const p of orderPayloads) orderIds.push((await createOrder(p)).id)
+      })(),
+      (async () => {
+        for (const p of salePayloads) saleIds.push((await createSale(p)).id)
+      })()
+    ])
   } catch (e) {
     await rollback()
     throw e

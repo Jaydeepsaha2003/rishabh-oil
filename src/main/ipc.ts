@@ -173,6 +173,7 @@ import {
 } from './facilities'
 import {
   listSales,
+  customerFyTaxable,
   createSale,
   updateSale,
   setSaleStatus,
@@ -404,6 +405,11 @@ export function registerIpc(): void {
     'orders:fyTaxable',
     (_e, { supplierId, date, excludeId }: { supplierId: number; date: string; excludeId: number }) =>
       supplierFyTaxable(supplierId, date, excludeId)
+  )
+  handle(
+    'sales:fyTaxable',
+    (_e, { customerId, date, excludeId }: { customerId: number; date: string; excludeId: number }) =>
+      customerFyTaxable(customerId, date, excludeId)
   )
   handle(
     'orders:advance',

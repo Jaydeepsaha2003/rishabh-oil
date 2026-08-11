@@ -219,6 +219,8 @@ const api = {
   },
   sales: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('sales:list'),
+    fyTaxable: (customerId: number, date: string, excludeId: number): Promise<number> =>
+      ipcRenderer.invoke('sales:fyTaxable', { customerId, date, excludeId }),
     create: (values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('sales:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>

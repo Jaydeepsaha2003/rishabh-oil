@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, ChevronDown, ChevronRight, Inbox, Pencil, Plus, Repeat, Search, TrendingDown, TrendingUp, Trash2 } from 'lucide-react'
+import { ArrowLeft, Check, ChevronDown, ChevronRight, Inbox, Loader2, Pencil, Plus, Repeat, Search, TrendingDown, TrendingUp, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -20,6 +20,44 @@ import { isTradingParty } from '@/lib/constants'
 type Row = Record<string, any>
 
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
+const round2 = (v: number): number => Math.round(v * 100) / 100
+
+// TDS on one invoice, on the party master's slab — the same tiering the main
+// process applies on save. Below the financial year's threshold the base rate
+// runs (0 when the master says "no TDS below the slab"); the rest is charged
+// at the invoice's own rate.
+function tierTds(base: number, prior: number, threshold: number, basePct: number, abovePct: number): number {
+  if (!threshold || threshold <= 0) return (base * basePct) / 100
+  const below = Math.max(0, Math.min(threshold - prior, base))
+  return (below * basePct) / 100 + ((base - below) * abovePct) / 100
+}
+
+// Each invoice on a side is posted in turn, so every one moves the party's
+// year-to-date total along and the next one sits further up the slab. Walking
+// the lines in the same order is the only way the preview can agree with what
+// gets saved. Round off rides on the first invoice, as it does on save.
+function slabTdsTotal(
+  lines: { qty: number; rate: number }[],
+  taxableOf: (l: { qty: number; rate: number }) => number,
+  gstPct: number,
+  roundOff: number,
+  pct: number,
+  master: { tds_threshold?: unknown; tds_above_only?: unknown } | undefined,
+  priorAtStart: number
+): number {
+  if (pct <= 0 || !lines.length) return 0
+  const threshold = n(master?.tds_threshold)
+  const basePct = master?.tds_above_only ? 0 : pct
+  let prior = priorAtStart
+  let total = 0
+  lines.forEach((l, i) => {
+    const taxable = taxableOf(l)
+    const base = taxable + (taxable * gstPct) / 100 + (i === 0 ? roundOff : 0)
+    total += round2(tierTds(base, prior, threshold, basePct, pct))
+    prior += taxable
+  })
+  return round2(total)
+}
 
 // Auto-loaded fields get a distinct highlight so it's visible at a glance
 // which values came off the party master vs. were typed by hand.
@@ -233,6 +271,7 @@ const blankLine = (): Row => ({ invoice_no: '', qty: '', rate: '' })
 
 const emptyForm = (): Row => ({
   deal_date: todayISO(),
+  product_category: 'ALL',
   uom: 'MT',
   purchase_lines: [blankLine()],
   sale_lines: [blankLine()],
@@ -343,6 +382,10 @@ export function Trading(): React.JSX.Element {
     setForm({
       deal_date: d.deal_date || todayISO(),
       product_id: String(d.product_id || ''),
+      // Open on the deal's own category so its product is visible in the list.
+      product_category: String(
+        products.find((p) => String(p.id) === String(d.product_id))?.material_type || 'ALL'
+      ),
       uom: d.purchase_uom || 'MT',
       note: d.note || '',
       supplier_id: String(d.supplier_id || ''),
@@ -441,6 +484,48 @@ export function Trading(): React.JSX.Element {
   const qtyDiff = purchaseQty - saleQty
   const qtyMismatch = purchaseQty > 0 && saleQty > 0 && Math.abs(qtyDiff) > 1e-6
 
+  // What each party has already been billed this financial year — the point
+  // the slab picks up from. Fetched from the same figures the main process
+  // uses, so the preview lands on the saved number.
+  const [purchasePrior, setPurchasePrior] = useState(0)
+  const [salePrior, setSalePrior] = useState(0)
+  useEffect(() => {
+    const id = Number(form.supplier_id)
+    if (!formPage || !id) { setPurchasePrior(0); return }
+    let alive = true
+    window.api.orders
+      .fyTaxable(id, String(form.deal_date || todayISO()), Number(editingDeal?.order_id || 0))
+      .then((v) => { if (alive) setPurchasePrior(n(v)) })
+      .catch(() => { if (alive) setPurchasePrior(0) })
+    return () => { alive = false }
+  }, [formPage, form.supplier_id, form.deal_date, editingDeal])
+  useEffect(() => {
+    const id = Number(form.customer_id)
+    if (!formPage || !id) { setSalePrior(0); return }
+    let alive = true
+    window.api.sales
+      .fyTaxable(id, String(form.deal_date || todayISO()), Number(editingDeal?.sale_id || 0))
+      .then((v) => { if (alive) setSalePrior(n(v)) })
+      .catch(() => { if (alive) setSalePrior(0) })
+    return () => { alive = false }
+  }, [formPage, form.customer_id, form.deal_date, editingDeal])
+
+  // The flat product list runs to every active product, so a category narrows
+  // it the way the purchase Bargain form does. ALL keeps everything visible.
+  const productCats = useMemo(() => {
+    const set = new Set(products.map((p) => String(p.material_type || 'OIL')))
+    return Array.from(set).sort()
+  }, [products])
+  const shownProducts = useMemo(() => {
+    const cat = String(form.product_category || '')
+    return cat && cat !== 'ALL'
+      ? products.filter((p) => String(p.material_type || 'OIL') === cat)
+      : products
+  }, [products, form.product_category])
+
+  const supplierMaster = suppliers.find((s) => String(s.id) === String(form.supplier_id || ''))
+  const customerMaster = customers.find((c) => String(c.id) === String(form.customer_id || ''))
+
   const purchaseCalc = useMemo(
     () =>
       computeMoney({
@@ -462,15 +547,40 @@ export function Trading(): React.JSX.Element {
     [JSON.stringify(purchaseLines), form.purchase_gst_pct, form.purchase_tds_pct, form.purchase_round_off]
   )
 
+  // Purchase TDS, per invoice on the supplier's slab. computeMoney's own
+  // figure is a flat rate over the whole deal, which is not what gets saved.
+  const purchaseTds = useMemo(
+    () =>
+      slabTdsTotal(
+        purchaseLines,
+        (l) => Math.ceil(l.rate) * l.qty,
+        n(form.purchase_gst_pct),
+        n(form.purchase_round_off),
+        n(form.purchase_tds_pct),
+        supplierMaster,
+        purchasePrior
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(purchaseLines), form.purchase_gst_pct, form.purchase_round_off, form.purchase_tds_pct, supplierMaster, purchasePrior]
+  )
+  const purchaseNet = round2(purchaseCalc.roundedTotal - purchaseTds)
+
   const saleCalc = useMemo(() => {
     const amount = saleLines.reduce((s, l) => s + l.qty * l.rate, 0)
     const gstAmount = (amount * n(form.sale_gst_pct)) / 100
     const roundOff = n(form.sale_round_off)
     const total = amount + gstAmount + roundOff
-    // TDS the customer withholds off the invoice total, mirroring the
-    // purchase side — the invoice still stands at `total`, but only
-    // `netReceivable` is actually collected.
-    const tdsAmount = (total * n(form.sale_tds_pct)) / 100
+    // TDS the customer withholds, on the customer's slab and per invoice —
+    // the invoice still stands at `total`, only `netReceivable` is collected.
+    const tdsAmount = slabTdsTotal(
+      saleLines,
+      (l) => l.qty * l.rate,
+      n(form.sale_gst_pct),
+      roundOff,
+      n(form.sale_tds_pct),
+      customerMaster,
+      salePrior
+    )
     return {
       amount,
       gstAmount,
@@ -478,10 +588,10 @@ export function Trading(): React.JSX.Element {
       preRoundTotal: amount + gstAmount,
       total,
       tdsAmount,
-      netReceivable: total - tdsAmount
+      netReceivable: round2(total - tdsAmount)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(saleLines), form.sale_gst_pct, form.sale_round_off, form.sale_tds_pct])
+  }, [JSON.stringify(saleLines), form.sale_gst_pct, form.sale_round_off, form.sale_tds_pct, customerMaster, salePrior])
 
   const margin = saleCalc.total - purchaseCalc.roundedTotal
 
@@ -581,12 +691,46 @@ export function Trading(): React.JSX.Element {
                   Deal details
                 </h3>
                 <div className="grid gap-4 md:grid-cols-4">
-                  <div className="grid gap-1.5 md:col-span-2">
-                    <Label>Raw product *</Label>
+                  <div className="grid gap-1.5">
+                    <Label>Stock category</Label>
+                    <Select
+                      value={String(form.product_category || 'ALL')}
+                      onValueChange={(v) =>
+                        // Changing the category drops a product that no longer
+                        // belongs to it, rather than leaving a hidden pick.
+                        setForm((p) => {
+                          const stillValid = products.some(
+                            (x) =>
+                              String(x.id) === String(p.product_id) &&
+                              (v === 'ALL' || String(x.material_type || 'OIL') === v)
+                          )
+                          return { ...p, product_category: v, product_id: stillValid ? p.product_id : '' }
+                        })
+                      }
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent className="max-h-64">
+                        <SelectItem value="ALL">All categories</SelectItem>
+                        {productCats.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label>Product *</Label>
                     <Select value={String(form.product_id || '')} onValueChange={(v) => setForm((p) => ({ ...p, product_id: v }))}>
                       <SelectTrigger><SelectValue placeholder="Select product" /></SelectTrigger>
-                      <SelectContent>
-                        {products.map((p) => <SelectItem key={String(p.id)} value={String(p.id)}>{p.code || p.name}</SelectItem>)}
+                      <SelectContent className="max-h-64">
+                        {shownProducts.length === 0 ? (
+                          <div className="px-2 py-3 text-center text-[12px] text-muted-foreground">
+                            No products in this category.
+                          </div>
+                        ) : (
+                          shownProducts.map((p) => (
+                            <SelectItem key={String(p.id)} value={String(p.id)}>
+                              {p.code || p.name}
+                            </SelectItem>
+                          ))
+                        )}
                       </SelectContent>
                     </Select>
                   </div>
@@ -753,10 +897,36 @@ export function Trading(): React.JSX.Element {
               </section>
 
               {error && <p className="text-sm text-destructive">{error}</p>}
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => { setFormPage(false); setEditingDeal(null) }}>Cancel</Button>
-                <Button disabled={saving} onClick={() => void saveDeal()}>
-                  {saving ? 'Saving…' : editingDeal ? 'Save changes' : 'Book deal'}
+              {/* Every row becomes a real invoice, posted one after another so
+                  each lands on the right rung of the TDS slab — with a dozen
+                  rows that genuinely takes a moment, so say so rather than
+                  looking frozen. */}
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {saving && (
+                  <span className="text-[12px] text-muted-foreground">
+                    Posting {purchaseLines.length + saleLines.length} invoice
+                    {purchaseLines.length + saleLines.length === 1 ? '' : 's'} — please wait, do not close this window.
+                  </span>
+                )}
+                <Button variant="outline" disabled={saving} onClick={() => { setFormPage(false); setEditingDeal(null) }}>
+                  Cancel
+                </Button>
+                <Button
+                  disabled={saving}
+                  onClick={() => void saveDeal()}
+                  className="h-11 min-w-[13rem] gap-2 bg-emerald-600 px-6 text-[15px] font-bold shadow-md hover:bg-emerald-700 disabled:opacity-90"
+                >
+                  {saving ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      {editingDeal ? 'Saving changes…' : 'Booking deal…'}
+                    </>
+                  ) : (
+                    <>
+                      <Check className="h-4 w-4" />
+                      {editingDeal ? 'Save changes' : `Book deal (${purchaseLines.length + saleLines.length} invoices)`}
+                    </>
+                  )}
                 </Button>
               </div>
             </div>
@@ -778,9 +948,15 @@ export function Trading(): React.JSX.Element {
                 />
                 <div className="my-2 border-t" />
                 <MoneyRow label="Total after round off" value={formatINR(purchaseCalc.roundedTotal)} />
-                <MoneyRow label="TDS" value={formatINR(purchaseCalc.tdsAmount)} muted />
+                <MoneyRow label="TDS" value={formatINR(purchaseTds)} muted />
+                {!!supplierMaster?.tds_above_only && n(supplierMaster?.tds_threshold) > 0 && (
+                  <p className="pb-1 text-[11px] text-muted-foreground">
+                    No TDS below ₹{formatNum(supplierMaster.tds_threshold)} a year — {formatINR(purchasePrior)} already
+                    billed to this supplier, so the slab applies from there.
+                  </p>
+                )}
                 <div className="my-2 border-t-2 border-[#1a2c56]" />
-                <MoneyRow label="Net payable to supplier" value={formatINR(purchaseCalc.netAmount)} strong />
+                <MoneyRow label="Net payable to supplier" value={formatINR(purchaseNet)} strong />
               </div>
 
               <div className="rounded border border-[#d9d2b8] bg-[#f7f2e2] p-4">
