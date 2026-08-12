@@ -68,7 +68,7 @@ export function Formulation(): React.JSX.Element {
   function openAdd(): void {
     setEditing(null)
     setForm({ product_id: '', name: '', uom: 'ton' })
-    setItems([{ product_id: '', qty: '' }])
+    setItems([{ product_id: '', qty: '', kind: 'input' }])
     setBuilding(true)
   }
 
@@ -78,8 +78,8 @@ export function Formulation(): React.JSX.Element {
     const its = await window.api.formulations.items(row.id as number)
     setItems(
       its.length
-        ? its.map((i) => ({ product_id: String(i.product_id), qty: i.qty }))
-        : [{ product_id: '', qty: '' }]
+        ? its.map((i) => ({ product_id: String(i.product_id), qty: i.qty, kind: String(i.kind || 'input') }))
+        : [{ product_id: '', qty: '', kind: 'input' }]
     )
     setBuilding(true)
   }
@@ -87,14 +87,27 @@ export function Formulation(): React.JSX.Element {
   function setItem(idx: number, key: string, value: unknown): void {
     setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, [key]: value } : it)))
   }
-  function addItem(): void {
-    setItems((prev) => [...prev, { product_id: '', qty: '' }])
+  function addItem(kind: string): void {
+    setItems((prev) => [...prev, { product_id: '', qty: '', kind }])
   }
   function removeItem(idx: number): void {
     setItems((prev) => prev.filter((_, i) => i !== idx))
   }
 
-  const total = items.reduce((s, it) => s + (Number(it.qty) || 0), 0)
+  // Inputs describe the BLEND that goes in — its shares total 100% (100% CPO
+  // base, or 70/30 of two oils). How much of that blend is actually needed
+  // follows from what the batch gives back: 100% of the output, plus the
+  // by-products, plus the loss. That total is the TOR.
+  const pctOf = (kind: string): number =>
+    items.filter((it) => String(it.kind || 'input') === kind).reduce((s, it) => s + (Number(it.qty) || 0), 0)
+  const blendPct = pctOf('input')
+  const byProductPct = pctOf('output')
+  const lossPct = pctOf('loss')
+  const tor = 100 + byProductPct + lossPct
+  const balanced = Math.abs(blendPct - 100) < 0.01
+  // What the recipe means in real quantities, for a batch the user names.
+  const [torQty, setTorQty] = useState('100')
+  const total = tor
 
   async function save(): Promise<void> {
     if (!form.product_id) {
@@ -102,15 +115,18 @@ export function Formulation(): React.JSX.Element {
       return
     }
     const clean = items
-      .map((it) => ({ product_id: Number(it.product_id), qty: Number(it.qty) || 0 }))
+      .map((it) => ({
+        product_id: Number(it.product_id),
+        qty: Number(it.qty) || 0,
+        kind: String(it.kind || 'input')
+      }))
       .filter((it) => it.product_id && it.qty > 0)
-    if (clean.length === 0) {
-      toast.error('Add at least one component with a quantity')
+    if (!clean.some((it) => it.kind === 'input')) {
+      toast.error('Add at least one input with a percentage')
       return
     }
-    const cleanTotal = clean.reduce((s, it) => s + it.qty, 0)
-    if (Math.abs(cleanTotal - 100) > 0.01) {
-      toast.error(`Components must total 100% (currently ${formatNum(cleanTotal)}%)`)
+    if (!balanced) {
+      toast.error(`The input blend must total 100% (currently ${formatNum(blendPct)}%)`)
       return
     }
     setSaving(true)
@@ -188,73 +204,132 @@ export function Formulation(): React.JSX.Element {
               </div>
             </div>
 
-            <div className="mt-6">
-              <div className="mb-2 flex items-center justify-between">
-                <Label>Components</Label>
-                <Button variant="outline" size="sm" onClick={addItem}>
-                  <Plus className="h-4 w-4" /> Add component
-                </Button>
-              </div>
-              <div className="rounded-lg border">
-                <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  <span className="flex-1">Product</span>
-                  <span className="w-32">Percent (%)</span>
-                  <span className="w-8" />
+            {/* Three kinds of line, each a % of the output quantity: what is
+                drawn from stock, what the batch throws off besides the main
+                product, and what is simply lost. */}
+            {([
+              { kind: 'input', title: 'Inputs — consumed from stock', add: 'Add input', tone: 'text-rose-800' },
+              { kind: 'output', title: 'By-products — added to stock', add: 'Add by-product', tone: 'text-emerald-800' },
+              { kind: 'loss', title: 'Loss — written off', add: 'Add loss', tone: 'text-amber-800' }
+            ] as const).map((sec) => (
+              <div className="mt-6" key={sec.kind}>
+                <div className="mb-2 flex items-center justify-between">
+                  <Label className={sec.tone}>{sec.title}</Label>
+                  <Button variant="outline" size="sm" onClick={() => addItem(sec.kind)}>
+                    <Plus className="h-4 w-4" /> {sec.add}
+                  </Button>
                 </div>
-                <div className="divide-y">
-                  {items.map((it, idx) => (
-                    <div key={idx} className="flex items-center gap-2 px-3 py-2">
-                      <div className="flex-1">
-                        <Select
-                          value={String(it.product_id)}
-                          onValueChange={(v) => setItem(idx, 'product_id', v)}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select product" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {products.map((p) => (
-                              <SelectItem key={p.id} value={String(p.id)}>
-                                {p.name} · {CAT_LABEL[p.category] ?? p.category}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <Input
-                        type="number"
-                        className="w-32"
-                        placeholder="0"
-                        value={it.qty ?? ''}
-                        onChange={(e) => setItem(idx, 'qty', e.target.value)}
-                      />
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-9 w-8 text-destructive"
-                        onClick={() => removeItem(idx)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-                <div className="flex items-center justify-between border-t px-3 py-2 text-sm">
-                  <span className="text-muted-foreground">Total</span>
-                  <span
-                    className={cn(
-                      'pr-10 text-right font-semibold tabular-nums',
-                      Math.abs(total - 100) < 0.01 ? 'text-emerald-600' : 'text-red-600'
+                <div className="rounded-lg border">
+                  <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    <span className="flex-1">Product</span>
+                    <span className="w-32">% of output</span>
+                    <span className="w-8" />
+                  </div>
+                  <div className="divide-y">
+                    {items.filter((it) => String(it.kind || 'input') === sec.kind).length === 0 ? (
+                      <p className="px-3 py-2.5 text-xs text-muted-foreground">None.</p>
+                    ) : (
+                      items.map((it, idx) =>
+                        String(it.kind || 'input') !== sec.kind ? null : (
+                          <div key={idx} className="flex items-center gap-2 px-3 py-2">
+                            <div className="flex-1">
+                              <Select
+                                value={String(it.product_id)}
+                                onValueChange={(v) => setItem(idx, 'product_id', v)}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select product" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {products.map((p) => (
+                                    <SelectItem key={p.id} value={String(p.id)}>
+                                      {p.name} · {CAT_LABEL[p.category] ?? p.category}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <Input
+                              type="number"
+                              className="w-32 text-right"
+                              placeholder="0"
+                              value={it.qty ?? ''}
+                              onChange={(e) => setItem(idx, 'qty', e.target.value)}
+                            />
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-9 w-8 text-destructive"
+                              onClick={() => removeItem(idx)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        )
+                      )
                     )}
-                  >
-                    {formatNum(total)}% {Math.abs(total - 100) < 0.01 ? '✓' : '· must be 100%'}
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {/* The mass balance, and what it means for a real batch. */}
+            <div className="mt-6 rounded-lg border border-[#d9d2b8] bg-[#fffdf4] p-4">
+              <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
+                <span className="font-semibold text-[#1a2c56]">Input blend</span>
+                <span className={cn('font-semibold tabular-nums', balanced ? 'text-emerald-700' : 'text-red-600')}>
+                  {formatNum(blendPct)}% {balanced ? '✓' : '· must be 100%'}
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                100% {products.find((p) => String(p.id) === String(form.product_id))?.name || 'output'}
+                {byProductPct > 0 && ` + ${formatNum(byProductPct)}% by-products`}
+                {lossPct > 0 && ` + ${formatNum(lossPct)}% loss`} means{' '}
+                <b className="text-foreground">{formatNum(tor)}%</b> of the blend has to go in.
+              </p>
+
+              <div className="mt-3 border-t border-dotted border-[#d9d2b8] pt-3">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="font-semibold text-[#1a2c56]">TOR</span>
+                  <span className="text-muted-foreground">— to produce</span>
+                  <Input
+                    type="number"
+                    className="h-8 w-24 bg-white text-right"
+                    value={torQty}
+                    onChange={(e) => setTorQty(e.target.value)}
+                  />
+                  <span className="text-muted-foreground">{form.uom || 'MT'}, total oil required is</span>
+                  <span className="rounded bg-[#1a2c56] px-2 py-0.5 font-bold tabular-nums text-white">
+                    {formatNum(((Number(torQty) || 0) * tor) / 100)} {form.uom || 'MT'}
                   </span>
                 </div>
+                <div className="mt-2 space-y-0.5 text-xs text-muted-foreground">
+                  {items
+                    .filter((it) => it.product_id && Number(it.qty) > 0)
+                    .map((it, i) => {
+                      const p = products.find((x) => String(x.id) === String(it.product_id))
+                      const kind = String(it.kind || 'input')
+                      const share = Number(it.qty) || 0
+                      // An input's share is of the blend, so it scales with the
+                      // TOR; a by-product or loss is already a % of the output.
+                      const effPct = kind === 'input' ? (tor * share) / 100 : share
+                      const q = ((Number(torQty) || 0) * effPct) / 100
+                      return (
+                        <div key={i} className="flex justify-between">
+                          <span>
+                            {kind === 'input' ? 'Needs' : kind === 'output' ? 'Yields' : 'Loses'} {p?.name || '—'}
+                            {kind === 'input' && share !== 100 && (
+                              <span className="ml-1 opacity-70">({formatNum(share)}% of blend)</span>
+                            )}
+                          </span>
+                          <span className="tabular-nums">
+                            {formatNum(q)} {form.uom || 'MT'} ({formatNum(effPct)}%)
+                          </span>
+                        </div>
+                      )
+                    })}
+                </div>
               </div>
-              <p className="mt-2 text-xs text-muted-foreground">
-                Each component is a percentage of the output. The recipe must total exactly 100% to
-                save.
-              </p>
             </div>
 
             <div className="mt-5 flex justify-end gap-2">
@@ -277,7 +352,7 @@ export function Formulation(): React.JSX.Element {
       <PageHeader
         title="Formulation"
         subtitle="Recipes for finished goods and intermediates"
-        hint="A recipe lists the input products and their percentages for one output. Every formulation must add up to exactly 100% before it can be saved."
+        hint="Inputs are the blend that goes in and total 100% (100% CPO base, or 70/30 of two oils). By-products and loss are percentages of the output — 5.7% fatty acid and 1% dead loss on RPO. TOR (Total Oil Required) is worked out from those: 100 + 5.7 + 1 = 106.7%, so 100 MT of RPO draws 106.7 MT of CPO. Inputs are consumed from stock, by-products land in stock, loss is written off."
         actions={
           <Button size="sm" onClick={openAdd} disabled={outputs.length === 0}>
             <Plus className="h-4 w-4" />
@@ -298,21 +373,23 @@ export function Formulation(): React.JSX.Element {
                 <TableHead>Output product</TableHead>
                 <TableHead>Category</TableHead>
                 <TableHead>Recipe</TableHead>
-                <TableHead className="text-right">Components</TableHead>
-                <TableHead className="text-right">Total</TableHead>
+                <TableHead className="text-right">Lines</TableHead>
+                <TableHead className="text-right">By-products</TableHead>
+                <TableHead className="text-right">Loss</TableHead>
+                <TableHead className="text-right">TOR (per 100)</TableHead>
                 <TableHead className="w-[90px] text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                     Loading…
                   </TableCell>
                 </TableRow>
               ) : rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                     No formulations yet.
                   </TableCell>
                 </TableRow>
@@ -327,14 +404,28 @@ export function Formulation(): React.JSX.Element {
                     </TableCell>
                     <TableCell className="text-muted-foreground">{row.name || '—'}</TableCell>
                     <TableCell className="text-right tabular-nums">{row.item_count}</TableCell>
-                    <TableCell
-                      className={cn(
-                        'text-right tabular-nums',
-                        Math.abs(Number(row.total_qty) - 100) < 0.01 ? '' : 'text-red-600'
-                      )}
-                    >
-                      {formatNum(row.total_qty)}%
+                    <TableCell className="text-right tabular-nums text-emerald-700">
+                      {Number(row.byproduct_pct) ? `${formatNum(row.byproduct_pct)}%` : '—'}
                     </TableCell>
+                    <TableCell className="text-right tabular-nums text-amber-700">
+                      {Number(row.loss_pct) ? `${formatNum(row.loss_pct)}%` : '—'}
+                    </TableCell>
+                    {(() => {
+                      // The blend must total 100%; TOR is derived from it.
+                      const ok = Math.abs(Number(row.blend_pct || 0) - 100) < 0.01
+                      return (
+                        <TableCell
+                          className={cn('text-right font-semibold tabular-nums', ok ? 'text-[#1a2c56]' : 'text-red-600')}
+                          title={
+                            ok
+                              ? 'Total oil required to produce 100 of the output'
+                              : `The input blend totals ${formatNum(row.blend_pct)}% — it must be 100%`
+                          }
+                        >
+                          {formatNum(row.tor)}%
+                        </TableCell>
+                      )
+                    })()}
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
                         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(row)}>

@@ -41,13 +41,16 @@ async function assertRawForFinished(
   qty: number,
   existingSaleId?: number
 ): Promise<void> {
-  const consumption = await formulationConsumption(productId, qty)
+  // Only the inputs are drawn from stock — a by-product line is made by the
+  // batch, so it can never be the thing that's short.
+  const consumption = (await formulationConsumption(productId, qty)).filter((l) => l.kind === 'input')
   if (!consumption.length) return
   const levels = await stockMap()
   if (existingSaleId) {
     const ex = await getClient().execute({
       sql: `SELECT i.product_id AS pid, i.qty AS q FROM production_items i
-            JOIN production p ON p.id = i.production_id WHERE p.sale_id = ?`,
+            JOIN production p ON p.id = i.production_id
+            WHERE i.kind = 'input' AND p.sale_id = ?`,
       args: [existingSaleId]
     })
     for (const r of ex.rows) {

@@ -48,9 +48,20 @@ export async function stockLevels(
       date: 'prod_date',
       group: 'GROUP BY product_id'
     },
+    // A by-product line ('output', e.g. fatty acid off a refining batch) is
+    // made by the batch just as the main product is, so it adds to stock.
+    // Dead loss ('loss') is neither consumed nor produced — it just goes.
+    byProduct: {
+      base: `SELECT i.product_id AS pid, SUM(i.qty) AS q FROM production_items i
+             JOIN production p ON p.id = i.production_id
+             WHERE i.kind = 'output' AND p.company_id IN (${ph})`,
+      date: 'p.prod_date',
+      group: 'GROUP BY i.product_id'
+    },
     consumed: {
       base: `SELECT i.product_id AS pid, SUM(i.qty) AS q FROM production_items i
-             JOIN production p ON p.id = i.production_id WHERE p.company_id IN (${ph})`,
+             JOIN production p ON p.id = i.production_id
+             WHERE i.kind = 'input' AND p.company_id IN (${ph})`,
       date: 'p.prod_date',
       group: 'GROUP BY i.product_id'
     },
@@ -110,10 +121,12 @@ export async function stockLevels(
     const id = Number(p.id)
     const g = (m: Record<string, Map<number, number>>, k: string): number => m[k].get(id) || 0
     const open =
-      g(opening, 'received') + g(opening, 'produced') + g(opening, 'transferredIn') -
+      g(opening, 'received') + g(opening, 'produced') + g(opening, 'byProduct') + g(opening, 'transferredIn') -
       g(opening, 'consumed') - g(opening, 'sold') - g(opening, 'transferredOut')
     const rec = g(period, 'received')
-    const prod = g(period, 'produced')
+    // A by-product of someone else's batch is produced stock all the same, so
+    // it lands in the same column rather than needing one of its own.
+    const prod = g(period, 'produced') + g(period, 'byProduct')
     const cons = g(period, 'consumed')
     const sld = g(period, 'sold')
     const tIn = g(period, 'transferredIn')
@@ -164,10 +177,12 @@ export async function productValuationRates(): Promise<Map<number, number>> {
     sql: 'SELECT id, product_id, qty FROM production WHERE company_id = ?',
     args: [cid]
   })
+  // Only what the batch actually consumed carries cost into the output — a
+  // by-product line is something the batch made, not something it used up.
   const items = await c.execute({
     sql: `SELECT i.production_id AS bid, i.product_id AS pid, i.qty AS qty
           FROM production_items i JOIN production p ON p.id = i.production_id
-          WHERE p.company_id = ?`,
+          WHERE i.kind = 'input' AND p.company_id = ?`,
     args: [cid]
   })
   const itemsByBatch = new Map<number, Array<{ pid: number; qty: number }>>()
@@ -208,11 +223,13 @@ async function productStockForCompany(companyId: number, productId: number): Pro
   }
   const rec = await one("SELECT COALESCE(SUM(received_qty), 0) AS q FROM orders WHERE status = 'received' AND COALESCE(affects_stock, 1) = 1 AND company_id = ? AND oil_type_id = ?")
   const prod = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM production WHERE company_id = ? AND product_id = ?')
-  const cons = await one('SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE p.company_id = ? AND i.product_id = ?')
+  // By-products of other batches count as produced; only 'input' is consumed.
+  const byProd = await one("SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE i.kind = 'output' AND p.company_id = ? AND i.product_id = ?")
+  const cons = await one("SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE i.kind = 'input' AND p.company_id = ? AND i.product_id = ?")
   const sld = await one("SELECT COALESCE(SUM(qty), 0) AS q FROM sales WHERE status = 'done' AND COALESCE(affects_stock, 1) = 1 AND company_id = ? AND product_id = ?")
   const tIn = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE to_company_id = ? AND product_id = ?')
   const tOut = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE from_company_id = ? AND product_id = ?')
-  return rec + prod + tIn - cons - sld - tOut
+  return rec + prod + byProd + tIn - cons - sld - tOut
 }
 
 // Party-wise breakdown per product for the active company: who we RECEIVED
@@ -312,8 +329,12 @@ export async function productStockAvailable(
     `SELECT COALESCE(SUM(qty), 0) AS q FROM production WHERE company_id = ? AND product_id = ?${exP ? ' AND id <> ?' : ''}`,
     exP ? [cid, productId, exP] : [cid, productId]
   )
+  const byProd = await one(
+    `SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE i.kind = 'output' AND p.company_id = ? AND i.product_id = ?${exP ? ' AND p.id <> ?' : ''}`,
+    exP ? [cid, productId, exP] : [cid, productId]
+  )
   const cons = await one(
-    `SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE p.company_id = ? AND i.product_id = ?${exP ? ' AND p.id <> ?' : ''}`,
+    `SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE i.kind = 'input' AND p.company_id = ? AND i.product_id = ?${exP ? ' AND p.id <> ?' : ''}`,
     exP ? [cid, productId, exP] : [cid, productId]
   )
   const sld = await one(
@@ -322,7 +343,7 @@ export async function productStockAvailable(
   )
   const tIn = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE to_company_id = ? AND product_id = ?', [cid, productId])
   const tOut = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE from_company_id = ? AND product_id = ?', [cid, productId])
-  return rec + prod + tIn - cons - sld - tOut
+  return rec + prod + byProd + tIn - cons - sld - tOut
 }
 
 // Transfers involving the active company (either direction), newest first.

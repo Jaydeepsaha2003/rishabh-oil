@@ -18,9 +18,19 @@ function n(v: unknown): number {
 }
 
 export async function listFormulations(): Promise<Row[]> {
+  // blend_pct is the input mix, which must total 100%. TOR (Total Oil
+  // Required) is what actually has to go in for 100 of output — 100% plus
+  // whatever the batch gives back as by-products and loses. A recipe with
+  // neither has a TOR of 100%.
   const res = await getClient().execute(`
     SELECT f.*, p.name AS product_name, p.category AS product_category,
       (SELECT COUNT(*) FROM formulation_items WHERE formulation_id = f.id) AS item_count,
+      (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'input') AS blend_pct,
+      (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'output') AS byproduct_pct,
+      (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'loss') AS loss_pct,
+      100
+        + (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'output')
+        + (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'loss') AS tor,
       (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id) AS total_qty
     FROM formulations f
     LEFT JOIN products p ON p.id = f.product_id
@@ -47,9 +57,10 @@ async function writeItems(formulationId: number, items: Row[]): Promise<void> {
   for (const it of items || []) {
     const pid = n(it.product_id)
     if (!pid) continue
+    const kind = it.kind === 'output' || it.kind === 'loss' ? String(it.kind) : 'input'
     await c.execute({
-      sql: 'INSERT INTO formulation_items (formulation_id, product_id, qty) VALUES (?, ?, ?)',
-      args: [formulationId, pid, n(it.qty)]
+      sql: 'INSERT INTO formulation_items (formulation_id, product_id, qty, kind) VALUES (?, ?, ?, ?)',
+      args: [formulationId, pid, n(it.qty), kind]
     })
   }
 }

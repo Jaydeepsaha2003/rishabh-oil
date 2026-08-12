@@ -19,6 +19,35 @@ function n(v: unknown): number {
   return Number.isFinite(x) ? x : 0
 }
 
+// Turn a recipe into the real quantities for one batch.
+//
+// Input lines are SHARES OF THE BLEND and total 100% (100% CPO, or 70/30 of
+// two oils). How much blend is actually needed follows from what the batch
+// gives back — 100% of the output, plus the by-products, plus the loss. That
+// total is the TOR: 100 + 5.7 + 1 = 106.7% for the RPO recipe, so 100 MT of
+// RPO draws 106.7 MT of CPO.
+//
+// By-product and loss lines are already percentages of the output and are
+// taken as they stand. A recipe with no by-products and no loss has a TOR of
+// 100%, which is exactly how every recipe behaved before any of this existed.
+export function expandRecipe(
+  items: Row[],
+  outputQty: number
+): { product_id: number; qty: number; kind: string }[] {
+  const kindOf = (it: Row): string => String(it.kind || 'input')
+  const sum = (kind: string): number =>
+    items.filter((it) => kindOf(it) === kind).reduce((s, it) => s + n(it.qty), 0)
+  const blend = sum('input')
+  const tor = 100 + sum('output') + sum('loss')
+  return items.map((it) => {
+    const kind = kindOf(it)
+    // Guard a malformed recipe whose blend doesn't total 100 — scale by the
+    // share it actually has rather than dividing by zero.
+    const pct = kind === 'input' ? (blend > 0 ? (tor * n(it.qty)) / 100 : 0) : n(it.qty)
+    return { product_id: Number(it.product_id), qty: (outputQty * pct) / 100, kind }
+  })
+}
+
 export async function listProduction(): Promise<Row[]> {
   const res = await getClient().execute({
     args: [getActiveCompanyId()],
@@ -60,17 +89,16 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
     sql: 'SELECT id FROM formulations WHERE product_id = ? ORDER BY id DESC LIMIT 1',
     args: [productId]
   })
-  const consumption: { product_id: number; qty: number }[] = []
+  const lines: { product_id: number; qty: number; kind: string }[] = []
   if (fRes.rows.length) {
     const fid = Number(fRes.rows[0].id)
     const items = await c.execute({
-      sql: 'SELECT product_id, qty FROM formulation_items WHERE formulation_id = ?',
+      sql: 'SELECT product_id, qty, kind FROM formulation_items WHERE formulation_id = ?',
       args: [fid]
     })
-    for (const it of items.rows) {
-      consumption.push({ product_id: Number(it.product_id), qty: (qty * n(it.qty)) / 100 })
-    }
+    lines.push(...expandRecipe(toPlain(items), qty))
   }
+  const consumption = lines.filter((l) => l.kind === 'input')
 
   // Block production that would drive any component's stock negative.
   if (consumption.length) {
@@ -97,10 +125,10 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
   })
   const id = Number(ins.lastInsertRowid)
 
-  for (const cn of consumption) {
+  for (const l of lines) {
     await c.execute({
-      sql: 'INSERT INTO production_items (production_id, product_id, qty) VALUES (?, ?, ?)',
-      args: [id, cn.product_id, cn.qty]
+      sql: 'INSERT INTO production_items (production_id, product_id, qty, kind) VALUES (?, ?, ?, ?)',
+      args: [id, l.product_id, l.qty, l.kind]
     })
   }
   return { id }
@@ -122,7 +150,7 @@ export async function productHasFormulation(productId: number): Promise<boolean>
 export async function formulationConsumption(
   productId: number,
   qty: number
-): Promise<{ product_id: number; qty: number }[]> {
+): Promise<{ product_id: number; qty: number; kind: string }[]> {
   const c = getClient()
   const fRes = await c.execute({
     sql: 'SELECT id FROM formulations WHERE product_id = ? AND active = 1 ORDER BY id DESC LIMIT 1',
@@ -130,10 +158,12 @@ export async function formulationConsumption(
   })
   if (!fRes.rows.length) return []
   const items = await c.execute({
-    sql: 'SELECT product_id, qty FROM formulation_items WHERE formulation_id = ?',
+    sql: 'SELECT product_id, qty, kind FROM formulation_items WHERE formulation_id = ?',
     args: [Number(fRes.rows[0].id)]
   })
-  return items.rows.map((it) => ({ product_id: Number(it.product_id), qty: (qty * n(it.qty)) / 100 }))
+  // Every line comes back with what it is, so callers can draw the inputs and
+  // still post the by-products the batch throws off.
+  return expandRecipe(toPlain(items), qty)
 }
 
 // Remove the auto-production(s) linked to a sale (used when a dispatch is
@@ -169,8 +199,8 @@ export async function createSaleProduction(
   const id = Number(ins.lastInsertRowid)
   for (const cn of consumption) {
     await c.execute({
-      sql: 'INSERT INTO production_items (production_id, product_id, qty) VALUES (?, ?, ?)',
-      args: [id, cn.product_id, cn.qty]
+      sql: 'INSERT INTO production_items (production_id, product_id, qty, kind) VALUES (?, ?, ?, ?)',
+      args: [id, cn.product_id, cn.qty, cn.kind]
     })
   }
 }

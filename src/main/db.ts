@@ -827,7 +827,14 @@ const MIGRATIONS = [
   // Defaults to 0, so every sale booked before this — and every sale that
   // never sets a rate — keeps exactly the receivable it already had.
   'ALTER TABLE sales ADD COLUMN tds_pct REAL NOT NULL DEFAULT 0',
-  'ALTER TABLE sales ADD COLUMN tds_amount REAL NOT NULL DEFAULT 0'
+  'ALTER TABLE sales ADD COLUMN tds_amount REAL NOT NULL DEFAULT 0',
+  // A refining recipe is not only what goes in: 100 MT of RPO takes 106.7 MT
+  // of CPO and throws off 5.7 MT of fatty acid and 1 MT of dead loss. Each
+  // line now says which it is — 'input' is consumed, 'output' is a by-product
+  // that lands in stock, 'loss' is written off. Everything already recorded is
+  // an input, which is exactly what the default leaves it as.
+  "ALTER TABLE formulation_items ADD COLUMN kind TEXT NOT NULL DEFAULT 'input'",
+  "ALTER TABLE production_items ADD COLUMN kind TEXT NOT NULL DEFAULT 'input'"
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to
