@@ -28,9 +28,16 @@ export async function listFormulations(): Promise<Row[]> {
       (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'input') AS blend_pct,
       (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'output') AS byproduct_pct,
       (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'loss') AS loss_pct,
-      100
-        + (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'output')
-        + (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'loss') AS tor,
+      -- TOR: by-products and loss come off the oil going in, so the yield is
+      -- (100 − their total)% and the requirement is 100 ÷ that yield.
+      -- 5.7% fatty + 1% loss -> 100/0.933 = 107.18%.
+      CASE
+        WHEN (SELECT COALESCE(SUM(qty), 0) FROM formulation_items
+              WHERE formulation_id = f.id AND kind IN ('output', 'loss')) BETWEEN 0.000001 AND 99.999999
+        THEN 10000.0 / (100 - (SELECT COALESCE(SUM(qty), 0) FROM formulation_items
+                               WHERE formulation_id = f.id AND kind IN ('output', 'loss')))
+        ELSE 100
+      END AS tor,
       (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id) AS total_qty
     FROM formulations f
     LEFT JOIN products p ON p.id = f.product_id

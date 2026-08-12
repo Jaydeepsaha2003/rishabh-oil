@@ -103,7 +103,11 @@ export function Formulation(): React.JSX.Element {
   const blendPct = pctOf('input')
   const byProductPct = pctOf('output')
   const lossPct = pctOf('loss')
-  const tor = 100 + byProductPct + lossPct
+  // By-products and loss come off the oil going IN, so the yield is what is
+  // left of it and the requirement is 100 ÷ that yield:
+  //   5.7% fatty + 1% dead loss -> 93.3% yield -> 100/0.933 = 107.18%
+  const offInput = byProductPct + lossPct
+  const tor = offInput > 0 && offInput < 100 ? (100 * 100) / (100 - offInput) : 100
   const balanced = Math.abs(blendPct - 100) < 0.01
   // What the recipe means in real quantities, for a batch the user names.
   const [torQty, setTorQty] = useState('100')
@@ -282,10 +286,17 @@ export function Formulation(): React.JSX.Element {
                 </span>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                100% {products.find((p) => String(p.id) === String(form.product_id))?.name || 'output'}
-                {byProductPct > 0 && ` + ${formatNum(byProductPct)}% by-products`}
-                {lossPct > 0 && ` + ${formatNum(lossPct)}% loss`} means{' '}
-                <b className="text-foreground">{formatNum(tor)}%</b> of the blend has to go in.
+                {offInput > 0 ? (
+                  <>
+                    {formatNum(byProductPct)}% by-products + {formatNum(lossPct)}% loss comes off the oil going in, so{' '}
+                    {formatNum(100 - offInput)}% of it becomes{' '}
+                    {products.find((p) => String(p.id) === String(form.product_id))?.name || 'the output'} — meaning{' '}
+                    100 ÷ {((100 - offInput) / 100).toFixed(4)} = <b className="text-foreground">{formatNum(tor)}%</b> has
+                    to be put in.
+                  </>
+                ) : (
+                  <>Nothing is lost, so the blend goes in one for one with the output.</>
+                )}
               </p>
 
               <div className="mt-3 border-t border-dotted border-[#d9d2b8] pt-3">
@@ -310,9 +321,9 @@ export function Formulation(): React.JSX.Element {
                       const p = products.find((x) => String(x.id) === String(it.product_id))
                       const kind = String(it.kind || 'input')
                       const share = Number(it.qty) || 0
-                      // An input's share is of the blend, so it scales with the
-                      // TOR; a by-product or loss is already a % of the output.
-                      const effPct = kind === 'input' ? (tor * share) / 100 : share
+                      // Everything is measured against the oil going in, and
+                      // that quantity is the TOR — so every line scales by it.
+                      const effPct = (tor * share) / 100
                       const q = ((Number(torQty) || 0) * effPct) / 100
                       return (
                         <div key={i} className="flex justify-between">
@@ -352,7 +363,7 @@ export function Formulation(): React.JSX.Element {
       <PageHeader
         title="Formulation"
         subtitle="Recipes for finished goods and intermediates"
-        hint="Inputs are the blend that goes in and total 100% (100% CPO base, or 70/30 of two oils). By-products and loss are percentages of the output — 5.7% fatty acid and 1% dead loss on RPO. TOR (Total Oil Required) is worked out from those: 100 + 5.7 + 1 = 106.7%, so 100 MT of RPO draws 106.7 MT of CPO. Inputs are consumed from stock, by-products land in stock, loss is written off."
+        hint="Inputs are the blend that goes in and total 100% (100% CPO base, or 70/30 of two oils). By-products and loss are percentages of that oil — 5.7% fatty acid and 1% dead loss leave 93.3% becoming RPO. TOR (Total Oil Required) follows: 100 ÷ 0.933 = 107.18%, so 100 MT of RPO draws 107.18 MT of CPO and throws off 6.11 MT of fatty acid. Inputs are consumed from stock, by-products land in stock, loss is written off."
         actions={
           <Button size="sm" onClick={openAdd} disabled={outputs.length === 0}>
             <Plus className="h-4 w-4" />

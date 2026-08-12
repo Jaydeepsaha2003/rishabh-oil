@@ -19,31 +19,49 @@ function n(v: unknown): number {
   return Number.isFinite(x) ? x : 0
 }
 
-// Turn a recipe into the real quantities for one batch.
+// How much of the blend one batch needs, as a % of the output — the TOR.
 //
-// Input lines are SHARES OF THE BLEND and total 100% (100% CPO, or 70/30 of
-// two oils). How much blend is actually needed follows from what the batch
-// gives back — 100% of the output, plus the by-products, plus the loss. That
-// total is the TOR: 100 + 5.7 + 1 = 106.7% for the RPO recipe, so 100 MT of
-// RPO draws 106.7 MT of CPO.
+// By-product and loss percentages are taken OFF THE OIL THAT GOES IN, the way
+// a refinery quotes them: 5% FFA gives 5.7% fatty acid, plus 1% dead loss, so
+// 6.7% of the input never becomes product and the yield is 93.3%. Producing
+// 100 MT therefore takes 100 / 0.933 = 107.18 MT, not 106.7.
 //
-// By-product and loss lines are already percentages of the output and are
-// taken as they stand. A recipe with no by-products and no loss has a TOR of
-// 100%, which is exactly how every recipe behaved before any of this existed.
+// A recipe with no by-products and no loss comes out at exactly 100%, which is
+// how every recipe behaved before any of this existed.
+export function recipeTor(items: Row[]): number {
+  const kindOf = (it: Row): string => String(it.kind || 'input')
+  const sum = (kind: string): number =>
+    items.filter((it) => kindOf(it) === kind).reduce((s, it) => s + n(it.qty), 0)
+  const lossPct = sum('output') + sum('loss')
+  // A recipe claiming to lose everything (or more) has no sane answer; leave
+  // it at 100% rather than dividing by zero or going negative.
+  if (lossPct <= 0 || lossPct >= 100) return 100
+  return (100 * 100) / (100 - lossPct)
+}
+
+// Turn a recipe into the real quantities for one batch. Input lines are shares
+// of the blend and total 100% (100% CPO, or 70/30 of two oils); each takes its
+// share of the TOR. By-products and loss are percentages of that input.
 export function expandRecipe(
   items: Row[],
   outputQty: number
 ): { product_id: number; qty: number; kind: string }[] {
   const kindOf = (it: Row): string => String(it.kind || 'input')
-  const sum = (kind: string): number =>
-    items.filter((it) => kindOf(it) === kind).reduce((s, it) => s + n(it.qty), 0)
-  const blend = sum('input')
-  const tor = 100 + sum('output') + sum('loss')
+  const blend = items
+    .filter((it) => kindOf(it) === 'input')
+    .reduce((s, it) => s + n(it.qty), 0)
+  const tor = recipeTor(items)
   return items.map((it) => {
     const kind = kindOf(it)
     // Guard a malformed recipe whose blend doesn't total 100 — scale by the
     // share it actually has rather than dividing by zero.
-    const pct = kind === 'input' ? (blend > 0 ? (tor * n(it.qty)) / 100 : 0) : n(it.qty)
+    const pct =
+      kind === 'input'
+        ? blend > 0
+          ? (tor * n(it.qty)) / 100
+          : 0
+        : // Off the input, so it rides on the TOR too.
+          (tor * n(it.qty)) / 100
     return { product_id: Number(it.product_id), qty: (outputQty * pct) / 100, kind }
   })
 }

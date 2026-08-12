@@ -377,6 +377,17 @@ export function GateEntry(): React.JSX.Element {
       toast.error('Choose the MNC / direct-purchase party sending this stock')
       return
     }
+    // Whose vehicle this is has to be on the record. A picked tanker already
+    // carries its supplier, an MNC arrival is checked above, and miscellaneous
+    // has no trading party behind it by definition — everything else must say.
+    if (!arrival.is_direct_mnc && !arrival.tanker_id && !isMisc(arrival.rec_type) && !arrival.party) {
+      toast.error('Select the party this vehicle has come from or gone to')
+      return
+    }
+    // Miscellaneous is spare parts, empty drums, workshop material — nobody
+    // puts that on the weighbridge, so the gateman just states the quantity
+    // and the entry is complete on the spot.
+    const noWeigh = isMisc(arrival.rec_type) || !!arrival.no_weighment
     setSavingArrival(true)
     try {
       await window.api.gate.create({
@@ -397,12 +408,12 @@ export function GateEntry(): React.JSX.Element {
         is_direct_mnc: !!arrival.is_direct_mnc,
         dispatch_qty: Number(arrival.dispatch_qty) || 0,
         // Without weighment the declared quantity stands as the entry's figure.
-        received_qty: arrival.no_weighment ? Number(arrival.dispatch_qty) || 0 : 0,
-        no_weighment: !!arrival.no_weighment,
-        status: arrival.no_weighment ? 'completed' : 'pending'
+        received_qty: noWeigh ? Number(arrival.dispatch_qty) || 0 : 0,
+        no_weighment: noWeigh,
+        status: noWeigh ? 'completed' : 'pending'
       })
       toast.success(
-        arrival.no_weighment
+        noWeigh
           ? `Tanker ${arrival.tanker_no} recorded — no weighment, entry complete`
           : `Tanker ${arrival.tanker_no} received — waiting for weight`
       )
@@ -988,7 +999,7 @@ export function GateEntry(): React.JSX.Element {
             {!arrival.is_direct_mnc && !arrival.tanker_id && !isMisc(arrival.rec_type) && (
               <div className="grid min-w-0 gap-1">
                 <Label>
-                  Party <span className="text-[10px] font-normal text-muted-foreground">(supplier or customer)</span>
+                  Party * <span className="text-[10px] font-normal text-muted-foreground">(supplier or customer)</span>
                 </Label>
                 <Select
                   searchable
@@ -1050,19 +1061,33 @@ export function GateEntry(): React.JSX.Element {
                 })()}
               </div>
             )}
-            {/* Miscellaneous has no product behind it, so let the gateman say
-                what actually came in. */}
-            {String(arrival.rec_type || '').toUpperCase() === 'MISCELLANEOUS' && (
-              <div className="grid min-w-0 gap-1 sm:col-span-2">
-                <Label>
-                  Details <span className="text-[10px] font-normal text-muted-foreground">(optional — what is it?)</span>
-                </Label>
-                <Input
-                  value={arrival.note || ''}
-                  placeholder="e.g. spare parts, empty drums, workshop material"
-                  onChange={(e) => setArrival((p) => ({ ...p, note: e.target.value }))}
-                />
-              </div>
+            {/* Miscellaneous has no product behind it and never sees the
+                weighbridge — the gateman says what it is and how much, and
+                the entry is done. No Gross/Tare is asked for. */}
+            {isMisc(arrival.rec_type) && (
+              <>
+                <div className="grid min-w-0 gap-1">
+                  <Label>
+                    Dis. qty <span className="text-[10px] font-normal text-muted-foreground">(no weighment)</span>
+                  </Label>
+                  <Input
+                    type="number"
+                    value={arrival.dispatch_qty ?? ''}
+                    placeholder="0"
+                    onChange={(e) => setArrival((p) => ({ ...p, dispatch_qty: e.target.value }))}
+                  />
+                </div>
+                <div className="grid min-w-0 gap-1 sm:col-span-2 lg:col-span-2">
+                  <Label>
+                    Details <span className="text-[10px] font-normal text-muted-foreground">(optional — what is it?)</span>
+                  </Label>
+                  <Input
+                    value={arrival.note || ''}
+                    placeholder="e.g. spare parts, empty drums, workshop material"
+                    onChange={(e) => setArrival((p) => ({ ...p, note: e.target.value }))}
+                  />
+                </div>
+              </>
             )}
             <div className="grid min-w-0 gap-1">
               <Label className="flex items-center gap-1">Gate entry no <span className="text-[10px] font-normal text-muted-foreground">(auto)</span></Label>
@@ -1080,7 +1105,7 @@ export function GateEntry(): React.JSX.Element {
           <div className="mt-4 flex justify-end">
             <Button className="h-8 bg-emerald-600 px-4 text-[13px] font-semibold hover:bg-emerald-700" onClick={recordArrival} disabled={savingArrival}>
               <Truck className="h-4 w-4" />
-              {savingArrival ? 'Saving…' : 'Tanker received'}
+              {savingArrival ? 'Saving…' : isMisc(arrival.rec_type) ? 'Record entry' : 'Tanker received'}
             </Button>
           </div>
         </section>
