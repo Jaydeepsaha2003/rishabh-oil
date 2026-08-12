@@ -71,7 +71,10 @@ export async function listDispatchableSales(): Promise<Row[]> {
            (SELECT COUNT(*) FROM gate_entries g WHERE g.invoice_group = s.invoice_group AND g.direction = 'out') AS gate_outs
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id
+    -- A trading sale is a pass-through on paper: the goods never come to our
+    -- yard, so no vehicle is ever weighed out against it.
     WHERE s.status = 'done' AND s.invoice_group IS NOT NULL
+      AND COALESCE(s.is_trading, 0) = 0
     GROUP BY s.invoice_group
     ORDER BY MAX(s.sale_date) DESC, MAX(s.id) DESC
     LIMIT 300

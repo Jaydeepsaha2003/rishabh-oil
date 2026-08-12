@@ -40,7 +40,12 @@ const COVERED = `
   COALESCE((SELECT SUM(pt.loaded_qty) FROM purchase_tankers pt
             JOIN bargains b2 ON b2.id = pt.bargain_id
             WHERE pt.order_id = o.id), 0)`
+// A trading purchase is bought and sold straight through and never draws on a
+// bargain, so it is not an invoice anyone can map — it is simply not in scope
+// here. (It rides the consignment booking path, which is why it would
+// otherwise look like a consignment invoice with no bargain.)
 const UNMAPPED_WHERE = `
+  COALESCE(o.is_trading, 0) = 0 AND
   CASE WHEN o.is_consignment = 1 THEN
     (o.bargain_id IS NULL OR NOT EXISTS (SELECT 1 FROM bargains b WHERE b.id = o.bargain_id))
     AND NOT EXISTS (SELECT 1 FROM consignment_stock cs JOIN bargains b3 ON b3.id = cs.bargain_id

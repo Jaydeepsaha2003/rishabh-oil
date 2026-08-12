@@ -36,11 +36,12 @@ export async function stockLevels(
   const SOURCES = {
     received: {
       base: `SELECT oil_type_id AS pid, SUM(received_qty) AS q FROM orders WHERE status = 'received' AND COALESCE(affects_stock, 1) = 1 AND company_id IN (${ph})`,
-      // By invoice date, not when the tanker physically arrived — matches the
-      // Purchases register (which lists by order_date), so a purchase invoiced
-      // last month never shows as this month's receipt just because it
-      // happened to get marked received a few days late.
-      date: 'order_date',
+      // Dated when the oil actually landed — the day the tanker was emptied,
+      // which is what received_date records. Stock is a physical register, so
+      // a tanker invoiced at the end of one month and emptied in the next is
+      // that next month's receipt. (Falls back to the invoice date for an
+      // older row that never got an emptied date written to it.)
+      date: 'COALESCE(received_date, order_date)',
       group: 'GROUP BY oil_type_id'
     },
     produced: {
