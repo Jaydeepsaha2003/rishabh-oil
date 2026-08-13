@@ -120,6 +120,18 @@ export async function partyCategories(): Promise<Row[]> {
   return toPlain(res).filter((r) => String(r.cat || '').trim() !== '' && Number(r.id) > 0)
 }
 
+// The dispatch quantity as the challan gives it: a number, or NA when the
+// challan carries none. NA is the only word accepted — anything else is a
+// typo, not an answer, and is treated as nothing having been entered.
+export function parseDispatch(v: unknown): { qty: number; na: boolean } | null {
+  if (v == null || v === '') return null
+  if (typeof v === 'string' && v.trim().toUpperCase() === 'NA') return { qty: 0, na: true }
+  const x = Number(v)
+  if (!Number.isFinite(x)) return null
+  if (x < 0) throw new Error('Dispatch quantity cannot be negative')
+  return { qty: x, na: false }
+}
+
 export async function createGateEntry(v: Row): Promise<{ id: number }> {
   const c = getClient()
   const direction = v.direction === 'out' ? 'out' : 'in'
@@ -148,12 +160,13 @@ export async function createGateEntry(v: Row): Promise<{ id: number }> {
   // the weighbridge figure is entered, which completes the transaction.
   // Without weighment: the entry is done the moment it is recorded — it never
   // joins the weighbridge queue and keeps whatever quantity was declared.
+  const dIn = parseDispatch(v.dispatch_na ? 'NA' : v.dispatch_qty)
   const noWeighment = !!v.no_weighment || kind === 'simple'
   const status = noWeighment ? 'completed' : v.status || (n(v.received_qty) > 0 ? 'completed' : 'pending')
   const res = await c.execute({
     sql: `INSERT INTO gate_entries
-      (gate_entry_no, ref_no, entry_date, tanker_id, tanker_no, oil_type_id, dispatch_qty, received_qty, uom, status, note, direction, sale_id, invoice_group, rec_type, gross_weight, tare_weight, supplier_id, is_direct_mnc, no_weighment, customer_id, person, entry_kind)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (gate_entry_no, ref_no, entry_date, tanker_id, tanker_no, oil_type_id, dispatch_qty, dispatch_na, received_qty, uom, status, note, direction, sale_id, invoice_group, rec_type, gross_weight, tare_weight, supplier_id, is_direct_mnc, no_weighment, customer_id, person, entry_kind)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       gateNo,
       v.ref_no ? String(v.ref_no).trim() : null,
@@ -161,7 +174,8 @@ export async function createGateEntry(v: Row): Promise<{ id: number }> {
       v.tanker_id ? n(v.tanker_id) : null,
       v.tanker_no || null,
       v.oil_type_id ? n(v.oil_type_id) : null,
-      n(v.dispatch_qty),
+      dIn ? dIn.qty : 0,
+      dIn?.na ? 1 : 0,
       n(v.received_qty),
       v.uom || 'MT',
       status,
@@ -211,7 +225,16 @@ export async function saveGateWeights(
   id: number,
   gross: number | null,
   tare: number | null,
-  awaitingGrossOut?: boolean | null
+  awaitingGrossOut?: boolean | null,
+  // The challan quantity is often only to hand at the weighbridge, not when
+  // the guard first waved the vehicle in, so it can be set or corrected here.
+  // 'NA' records that the challan gives none. Left alone entirely when the
+  // caller doesn't pass anything.
+  dispatchQty?: number | string | null,
+  // A vehicle weighed Tare-only at Gate In and flagged for sale gets its sale
+  // invoice named here, at Gate Out, when its Gross is taken — that is the
+  // first point the invoice actually exists.
+  invoiceGroup?: string | null
 ): Promise<{ id: number; status: string; net: number | null; missing: string | null }> {
   const c = getClient()
   const cur = await c.execute({ sql: 'SELECT * FROM gate_entries WHERE id = ?', args: [id] })
@@ -237,11 +260,34 @@ export async function saveGateWeights(
   // other — leave it as whatever it already was otherwise (e.g. a later
   // gross-only save from the new Gate Out picker shouldn't reset it).
   const flag = typeof awaitingGrossOut === 'boolean' ? (awaitingGrossOut ? 1 : 0) : n(row.awaiting_gross_out)
+  const d = parseDispatch(dispatchQty)
+  const dispQty = d ? d.qty : n(row.dispatch_qty)
+  const dispNa = d ? d.na : !!n(row.dispatch_na)
+  // Naming the invoice also pulls across who it is for, so the entry reads as
+  // a proper dispatch rather than an unexplained vehicle. Left as it was when
+  // the caller names nothing.
+  let group = row.invoice_group as string | null
+  let saleId = row.sale_id as number | null
+  let customerId = row.customer_id as number | null
+  if (invoiceGroup != null && String(invoiceGroup).trim() !== '') {
+    group = String(invoiceGroup).trim()
+    const sale = await c.execute({
+      sql: 'SELECT id, customer_id FROM sales WHERE invoice_group = ? ORDER BY id LIMIT 1',
+      args: [group]
+    })
+    if (!sale.rows.length) throw new Error('That sale invoice no longer exists')
+    saleId = Number(sale.rows[0].id)
+    customerId = sale.rows[0].customer_id == null ? customerId : Number(sale.rows[0].customer_id)
+  }
   await c.execute({
     sql: `UPDATE gate_entries
-          SET gross_weight = ?, tare_weight = ?, received_qty = ?, status = ?, awaiting_gross_out = ?
+          SET gross_weight = ?, tare_weight = ?, received_qty = ?, status = ?, awaiting_gross_out = ?,
+              dispatch_qty = ?, dispatch_na = ?, invoice_group = ?, sale_id = ?, customer_id = ?
           WHERE id = ?`,
-    args: [g, t, both ? net : 0, both ? 'completed' : 'pending', flag, id]
+    args: [
+      g, t, both ? net : 0, both ? 'completed' : 'pending', flag,
+      dispQty, dispNa ? 1 : 0, group, saleId, customerId, id
+    ]
   })
   return {
     id,
@@ -274,9 +320,10 @@ export async function updateGateEntry(id: number, v: Row): Promise<{ id: number 
   const tare = v.tare_weight != null && v.tare_weight !== '' ? n(v.tare_weight) : null
   const received = gross != null ? Math.round((gross - (tare || 0)) * 1000) / 1000 : n(v.received_qty)
   const status = received > 0 ? 'completed' : 'pending'
+  const dUp = parseDispatch(v.dispatch_na ? 'NA' : v.dispatch_qty)
   await getClient().execute({
     sql: `UPDATE gate_entries SET gate_entry_no = ?, ref_no = ?, entry_date = ?, tanker_id = ?, tanker_no = ?,
-          oil_type_id = ?, dispatch_qty = ?, received_qty = ?, uom = ?, status = ?, note = ?, sale_id = ?,
+          oil_type_id = ?, dispatch_qty = ?, dispatch_na = ?, received_qty = ?, uom = ?, status = ?, note = ?, sale_id = ?,
           rec_type = ?, gross_weight = ?, tare_weight = ?, supplier_id = ?, is_direct_mnc = ? WHERE id = ?`,
     args: [
       String(v.gate_entry_no || '').trim(),
@@ -285,7 +332,8 @@ export async function updateGateEntry(id: number, v: Row): Promise<{ id: number 
       v.tanker_id ? n(v.tanker_id) : null,
       v.tanker_no || null,
       v.oil_type_id ? n(v.oil_type_id) : null,
-      n(v.dispatch_qty),
+      dUp ? dUp.qty : 0,
+      dUp?.na ? 1 : 0,
       received,
       v.uom || 'MT',
       status,

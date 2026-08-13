@@ -34,6 +34,34 @@ const isMisc = (v: unknown): boolean => {
   return c === 'MISCELLANEOUS' || c === 'MISC'
 }
 
+// Oil arrives on a tanker picked from the purchase, which already carries the
+// quantity that was loaded. Everything else — fatty, scrap, spent earth,
+// packaging — comes on a hand-typed vehicle with nothing behind it, so the
+// quantity on the challan has to be typed in or the entry has no figure to
+// weigh against.
+const isOil = (v: unknown): boolean => String(v || '').trim().toUpperCase() === 'OIL'
+
+// The dispatch quantity is a number, or the word NA when the challan gives
+// none. NA is the ONLY text allowed — anything else is a typo, so it is simply
+// not accepted as it is typed.
+const DISPATCH_HINT = 'a quantity, or NA'
+const isNa = (v: unknown): boolean => String(v ?? '').trim().toUpperCase() === 'NA'
+function cleanDispatch(raw: string): string {
+  const t = raw.trim()
+  if (t === '') return ''
+  // Let NA be reached one letter at a time without the field fighting back.
+  if (/^n$/i.test(t)) return t.toUpperCase()
+  if (isNa(t)) return 'NA'
+  return /^\d*\.?\d*$/.test(t) ? t : ''
+}
+// What a saved entry shows for its dispatch figure.
+const dispatchLabel = (row: Row, uom?: unknown): string =>
+  Number(row.dispatch_na) === 1
+    ? 'NA'
+    : Number(row.dispatch_qty) > 0
+      ? `${formatNum(row.dispatch_qty)}${uom ? ` ${uom}` : ''}`
+      : '—'
+
 const blankArrival = (): Row => ({
   gate_entry_no: '',
   ref_no: '',
@@ -163,13 +191,16 @@ export function GateEntry(): React.JSX.Element {
   const [gateOut, setGateOut] = useState<Row>(blankGateOut())
   const [savingOut, setSavingOut] = useState(false)
   // per-pending-entry weighbridge inputs (gross / tare → net)
-  const [weights, setWeights] = useState<Record<number, { gross: string; tare: string }>>({})
+  const [weights, setWeights] = useState<Record<number, { gross: string; tare: string; dispatch: string }>>({})
   const [editRow, setEditRow] = useState<Row | null>(null)
   const [editForm, setEditForm] = useState<Row>({})
   // A Gate In vehicle flagged "Gross comes later at Gate Out" — picked here,
   // then weighed on the spot.
   const [grossPickId, setGrossPickId] = useState('')
   const [grossPickValue, setGrossPickValue] = useState('')
+  // The sale this vehicle turned out to be for. It was flagged at Gate In
+  // before any invoice existed, so it is named here, as the Gross is taken.
+  const [grossPickInvoice, setGrossPickInvoice] = useState('')
   const [grossPickSaving, setGrossPickSaving] = useState(false)
   // Custom prompt (replaces the browser's plain confirm()) asked when a Gate
   // In vehicle is saved Tare-only for the first time — a gate operator reads
@@ -223,12 +254,18 @@ export function GateEntry(): React.JSX.Element {
     if (!row) return
     const gross = Number(grossPickValue)
     if (!grossPickValue || !Number.isFinite(gross) || gross <= 0) return void toast.error('Enter the gross weight')
+    if (!grossPickInvoice) return void toast.error('Link the sale invoice this vehicle is carrying')
     setGrossPickSaving(true)
     try {
-      const r = await window.api.gate.weights(row.id, gross, null)
-      toast.success(`${row.tanker_no} completed — net ${formatNum(r.net || 0)} ${row.uom}`)
+      const r = await window.api.gate.weights(row.id, gross, null, null, null, grossPickInvoice)
+      const inv = outgoable.find((x) => String(x.invoice_group) === grossPickInvoice)
+      toast.success(
+        `${row.tanker_no} completed — net ${formatNum(r.net || 0)} ${row.uom}` +
+          (inv?.invoice_no ? ` · ${inv.invoice_no}` : '')
+      )
       setGrossPickId('')
       setGrossPickValue('')
+      setGrossPickInvoice('')
       await load()
     } catch (e) {
       toast.error(errText(e))
@@ -406,9 +443,10 @@ export function GateEntry(): React.JSX.Element {
           : null,
         note: arrival.note ? String(arrival.note).trim() : null,
         is_direct_mnc: !!arrival.is_direct_mnc,
-        dispatch_qty: Number(arrival.dispatch_qty) || 0,
+        dispatch_qty: isNa(arrival.dispatch_qty) ? 0 : Number(arrival.dispatch_qty) || 0,
+        dispatch_na: isNa(arrival.dispatch_qty),
         // Without weighment the declared quantity stands as the entry's figure.
-        received_qty: noWeigh ? Number(arrival.dispatch_qty) || 0 : 0,
+        received_qty: noWeigh && !isNa(arrival.dispatch_qty) ? Number(arrival.dispatch_qty) || 0 : 0,
         no_weighment: noWeigh,
         status: noWeigh ? 'completed' : 'pending'
       })
@@ -431,7 +469,14 @@ export function GateEntry(): React.JSX.Element {
   // vehicle in the queue; both complete it.
   async function doSaveWeight(row: Row, gross: number | null, tare: number | null, awaitingGrossOut?: boolean): Promise<void> {
     try {
-      const r = await window.api.gate.weights(row.id, gross, tare, awaitingGrossOut)
+      const d = storedWeights(row).dispatch
+      const r = await window.api.gate.weights(
+        row.id,
+        gross,
+        tare,
+        awaitingGrossOut,
+        d === '' ? null : isNa(d) ? 'NA' : Number(d)
+      )
       if (r.status === 'completed') {
         toast.success(`${row.tanker_no} completed — net ${formatNum(r.net || 0)} ${row.uom}`)
       } else {
@@ -491,12 +536,15 @@ export function GateEntry(): React.JSX.Element {
 
   // What the card shows: the operator's unsaved typing, else whatever weight
   // was already recorded against the entry.
-  function storedWeights(row: Row): { gross: string; tare: string } {
+  function storedWeights(row: Row): { gross: string; tare: string; dispatch: string } {
     const typed = weights[row.id]
     if (typed) return typed
     return {
       gross: row.gross_weight == null ? '' : String(row.gross_weight),
-      tare: row.tare_weight == null ? '' : String(row.tare_weight)
+      tare: row.tare_weight == null ? '' : String(row.tare_weight),
+      // The challan figure, which the weighbridge can still set or correct.
+      dispatch:
+        Number(row.dispatch_na) === 1 ? 'NA' : Number(row.dispatch_qty) > 0 ? String(row.dispatch_qty) : ''
     }
   }
 
@@ -510,7 +558,7 @@ export function GateEntry(): React.JSX.Element {
       tanker_id: row.tanker_id ? String(row.tanker_id) : '',
       tanker_no: row.tanker_no || '',
       oil_type_id: row.oil_type_id ? String(row.oil_type_id) : '',
-      dispatch_qty: row.dispatch_qty ?? '',
+      dispatch_qty: Number(row.dispatch_na) === 1 ? 'NA' : row.dispatch_qty ?? '',
       received_qty: row.received_qty ?? '',
       gross_weight: row.gross_weight ?? '',
       tare_weight: row.tare_weight ?? '',
@@ -528,7 +576,8 @@ export function GateEntry(): React.JSX.Element {
         ...editForm,
         tanker_id: editForm.tanker_id ? Number(editForm.tanker_id) : null,
         oil_type_id: editForm.oil_type_id ? Number(editForm.oil_type_id) : null,
-        dispatch_qty: Number(editForm.dispatch_qty) || 0,
+        dispatch_qty: isNa(editForm.dispatch_qty) ? 0 : Number(editForm.dispatch_qty) || 0,
+        dispatch_na: isNa(editForm.dispatch_qty),
         received_qty: Number(editForm.received_qty) || 0,
         is_direct_mnc: !!editForm.is_direct_mnc,
         supplier_id: editForm.is_direct_mnc && editForm.supplier_id ? Number(editForm.supplier_id) : null
@@ -673,7 +722,7 @@ export function GateEntry(): React.JSX.Element {
                       {[
                         { l: 'Gate no', v: String(row.gate_entry_no || '—') },
                         { l: String(row.rec_type || 'OIL'), v: formatDate(row.entry_date) },
-                        { l: 'Dispatch', v: Number(row.dispatch_qty) > 0 ? `${formatNum(row.dispatch_qty)} ${row.uom}` : '—' }
+                        { l: 'Dispatch', v: dispatchLabel(row, row.uom) }
                       ].map((x) => (
                         <div key={x.l} className="rounded bg-muted/50 px-1 py-0.5">
                           <div className="truncate text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">{x.l}</div>
@@ -691,37 +740,81 @@ export function GateEntry(): React.JSX.Element {
                       // Oil must be weighed both ways; other categories may be
                       // finished at the gate with no weighment at all.
                       const isOil = String(row.rec_type || 'OIL').toUpperCase() === 'OIL'
-                      const setW = (k: 'gross' | 'tare', val: string): void =>
+                      const setW = (k: 'gross' | 'tare' | 'dispatch', val: string): void =>
                         setWeights((p) => ({ ...p, [row.id]: { ...storedWeights(row), [k]: val } }))
                       return (
-                        <div className="mt-auto">
-                          <div className="mt-2.5 grid grid-cols-2 gap-1.5">
-                            <div className="grid gap-0.5">
-                              <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                Gross ({row.uom}) <span className="font-normal">· {row.direction === 'out' ? 'loaded, at exit' : 'loaded, at arrival'}</span>
-                              </span>
-                              <Input type="number" className="h-8 text-right tabular-nums" placeholder="0.000" value={w.gross}
-                                onChange={(e) => setW('gross', e.target.value)}
-                                onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
-                            </div>
-                            <div className="grid gap-0.5">
-                              <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                Tare ({row.uom}) <span className="font-normal">· {row.direction === 'out' ? 'empty, at arrival' : 'empty, at exit'}</span>
-                              </span>
-                              <Input type="number" className="h-8 text-right tabular-nums" placeholder="0.000" value={w.tare}
-                                onChange={(e) => setW('tare', e.target.value)}
-                                onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
-                            </div>
+                        <div className="flex flex-1 flex-col">
+                          {/* One line per label, never wrapping — two cards
+                              side by side have to line up, and a wrapped
+                              caption in one of them throws the whole row out. */}
+                          <div className="mt-2.5 grid grid-cols-2 gap-x-2 gap-y-0.5">
+                            <label
+                              className="truncate text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
+                              title={row.direction === 'out' ? 'Gross — loaded, at exit' : 'Gross — loaded, at arrival'}
+                            >
+                              Gross <span className="font-normal normal-case">({row.uom}, loaded)</span>
+                            </label>
+                            <label
+                              className="truncate text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
+                              title={row.direction === 'out' ? 'Tare — empty, at arrival' : 'Tare — empty, at exit'}
+                            >
+                              Tare <span className="font-normal normal-case">({row.uom}, empty)</span>
+                            </label>
+                            <Input type="number" className="h-8 text-right tabular-nums" placeholder="0.000" value={w.gross}
+                              onChange={(e) => setW('gross', e.target.value)}
+                              onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
+                            <Input type="number" className="h-8 text-right tabular-nums" placeholder="0.000" value={w.tare}
+                              onChange={(e) => setW('tare', e.target.value)}
+                              onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
                           </div>
+                          {/* Oil's quantity comes off the purchase tanker.
+                              Everything else has only the challan to go on,
+                              and that is often to hand here rather than back
+                              at the barrier — so it is set or corrected at
+                              the weighbridge, and saves with the weight. */}
+                          {!isOil && (
+                            <div className="mt-1.5 grid gap-0.5">
+                              <label
+                                className="truncate text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
+                                title="The quantity the challan declares — or NA when it gives none"
+                              >
+                                Dis. qty <span className="font-normal normal-case">({row.uom}, per challan)</span>
+                              </label>
+                              <Input
+                                className="h-8 text-right tabular-nums"
+                                placeholder="0.000 or NA"
+                                value={w.dispatch}
+                                onChange={(e) => setW('dispatch', cleanDispatch(e.target.value))}
+                                onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)}
+                              />
+                            </div>
+                          )}
                           {/* One figure saves and waits; both complete. */}
                           {(hasG || hasT) && !both && (
                             <div className="mt-1.5 rounded bg-amber-100/70 px-2 py-1 text-[10.5px] font-medium text-amber-900">
                               {hasG ? 'Gross recorded — waiting for the tare weight' : 'Tare recorded — waiting for the gross weight'}
                             </div>
                           )}
-                          <div className="mt-2 flex items-center justify-between gap-2">
-                            <span className={cn('text-[12px]', ready ? 'font-semibold text-emerald-700' : 'text-muted-foreground')}>
-                              Net <span className="tabular-nums">{ready ? formatNum(net) : '—'}</span> {row.uom}
+                          <div className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-dotted border-amber-200 pt-2.5">
+                            <span
+                              className={cn(
+                                'inline-flex items-baseline gap-1 rounded px-1.5 py-0.5 text-[12px]',
+                                ready ? 'bg-emerald-50 font-semibold text-emerald-700' : 'text-muted-foreground'
+                              )}
+                            >
+                              <span className="text-[9px] font-semibold uppercase tracking-wide opacity-70">Net</span>
+                              <span className="tabular-nums">{ready ? formatNum(net) : '—'}</span> {row.uom}
+                              {/* What the weighbridge found against what the
+                                  challan claimed, the moment both are known. */}
+                              {ready && !isNa(w.dispatch) && Number(w.dispatch) > 0 && (() => {
+                                const short = Math.round((Number(w.dispatch) - net) * 1000) / 1000
+                                if (Math.abs(short) < 0.0005) return <span className="ml-1 text-[11px] font-normal text-muted-foreground">· matches</span>
+                                return (
+                                  <span className={cn('ml-1 text-[11px] font-semibold', short > 0 ? 'text-red-600' : 'text-amber-700')}>
+                                    · {formatNum(Math.abs(short))} {short > 0 ? 'short' : 'excess'}
+                                  </span>
+                                )
+                              })()}
                             </span>
                             <span className="flex items-center gap-1">
                               {!isOil && !hasG && !hasT && (
@@ -1061,33 +1154,37 @@ export function GateEntry(): React.JSX.Element {
                 })()}
               </div>
             )}
-            {/* Miscellaneous has no product behind it and never sees the
-                weighbridge — the gateman says what it is and how much, and
-                the entry is done. No Gross/Tare is asked for. */}
+            {/* Miscellaneous never reaches the weighbridge, so its quantity
+                has to be stated here — there is no later step to state it in.
+                Everything else is asked at the weighbridge instead, where the
+                challan is actually to hand. */}
             {isMisc(arrival.rec_type) && (
-              <>
-                <div className="grid min-w-0 gap-1">
-                  <Label>
-                    Dis. qty <span className="text-[10px] font-normal text-muted-foreground">(no weighment)</span>
-                  </Label>
-                  <Input
-                    type="number"
-                    value={arrival.dispatch_qty ?? ''}
-                    placeholder="0"
-                    onChange={(e) => setArrival((p) => ({ ...p, dispatch_qty: e.target.value }))}
-                  />
-                </div>
-                <div className="grid min-w-0 gap-1 sm:col-span-2 lg:col-span-2">
-                  <Label>
-                    Details <span className="text-[10px] font-normal text-muted-foreground">(optional — what is it?)</span>
-                  </Label>
-                  <Input
-                    value={arrival.note || ''}
-                    placeholder="e.g. spare parts, empty drums, workshop material"
-                    onChange={(e) => setArrival((p) => ({ ...p, note: e.target.value }))}
-                  />
-                </div>
-              </>
+              <div className="grid min-w-0 gap-1">
+                <Label>
+                  Dis. qty <span className="text-[10px] font-normal text-muted-foreground">(no weighment)</span>
+                </Label>
+                <Input
+                  value={arrival.dispatch_qty ?? ''}
+                  placeholder={DISPATCH_HINT}
+                  onChange={(e) =>
+                    setArrival((p) => ({ ...p, dispatch_qty: cleanDispatch(e.target.value) }))
+                  }
+                />
+              </div>
+            )}
+            {/* Miscellaneous has no product behind it, so let the gateman say
+                what actually came in. */}
+            {isMisc(arrival.rec_type) && (
+              <div className="grid min-w-0 gap-1 sm:col-span-2">
+                <Label>
+                  Details <span className="text-[10px] font-normal text-muted-foreground">(optional — what is it?)</span>
+                </Label>
+                <Input
+                  value={arrival.note || ''}
+                  placeholder="e.g. spare parts, empty drums, workshop material"
+                  onChange={(e) => setArrival((p) => ({ ...p, note: e.target.value }))}
+                />
+              </div>
             )}
             <div className="grid min-w-0 gap-1">
               <Label className="flex items-center gap-1">Gate entry no <span className="text-[10px] font-normal text-muted-foreground">(auto)</span></Label>
@@ -1277,11 +1374,11 @@ export function GateEntry(): React.JSX.Element {
                 <Scale className="h-4 w-4" />
               </div>
               <h3 className="text-[11px] font-bold uppercase tracking-widest text-amber-900">Awaiting Gross (from Gate In)</h3>
-              <InfoTip text="Vehicles that were weighed Tare-only at Gate In and flagged to have their Gross weight taken here instead. Pick one, enter its Gross weight, and it completes on the spot." />
+              <InfoTip text="Vehicles weighed Tare-only at Gate In and flagged as being for sale. Pick one, link the sale invoice it is carrying and enter its Gross weight — it completes on the spot. No dispatch quantity is asked for: the invoice already says what is on board." />
               <Badge variant="warning" className="ml-1">{awaitingGross.length}</Badge>
             </div>
             <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-3">
-              <div className="grid min-w-0 gap-1 sm:col-span-2">
+              <div className="grid min-w-0 gap-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Vehicle</Label>
                 <Select value={grossPickId} onValueChange={setGrossPickId}>
                   <SelectTrigger className="h-8 bg-white text-[13px]"><SelectValue placeholder="Select a vehicle" /></SelectTrigger>
@@ -1291,6 +1388,27 @@ export function GateEntry(): React.JSX.Element {
                         {r.tanker_no} · Tare {formatNum(r.tare_weight)} {r.uom} · {formatDate(r.entry_date)}
                       </SelectItem>
                     ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid min-w-0 gap-1">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Sale invoice *</Label>
+                <Select searchable value={grossPickInvoice} onValueChange={setGrossPickInvoice}>
+                  <SelectTrigger className="h-8 bg-white text-[13px]">
+                    <SelectValue placeholder="Link the invoice" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {outgoable.length === 0 ? (
+                      <div className="px-2 py-3 text-center text-[12px] text-muted-foreground">
+                        No dispatched sale invoices to link.
+                      </div>
+                    ) : (
+                      outgoable.map((x) => (
+                        <SelectItem key={x.invoice_group} value={String(x.invoice_group)}>
+                          {x.invoice_no || 'No invoice no'} · {x.customer || '—'} · {formatNum(x.qty)} {x.uom}
+                        </SelectItem>
+                      ))
+                    )}
                   </SelectContent>
                 </Select>
               </div>
@@ -1307,7 +1425,7 @@ export function GateEntry(): React.JSX.Element {
                   />
                   <Button
                     className="h-8 shrink-0 bg-amber-600 px-3 text-[12px] hover:bg-amber-700"
-                    disabled={!grossPickId || grossPickSaving}
+                    disabled={!grossPickId || !grossPickInvoice || grossPickSaving}
                     onClick={() => void saveAwaitingGross()}
                   >
                     {grossPickSaving ? 'Saving…' : 'Complete'}
@@ -1348,7 +1466,8 @@ export function GateEntry(): React.JSX.Element {
                 paged.pageRows.map((row) => {
                   const done = row.status !== 'pending'
                   const isOut = row.direction === 'out'
-                  const diff = Number(row.dispatch_qty || 0) - Number(row.received_qty || 0)
+                  // Nothing to compare against when the challan gave no figure.
+                  const diff = Number(row.dispatch_na) === 1 ? 0 : Number(row.dispatch_qty || 0) - Number(row.received_qty || 0)
                   return (
                     <TableRow key={row.id}>
                       <TableCell className="font-medium">
@@ -1377,7 +1496,7 @@ export function GateEntry(): React.JSX.Element {
                           row.supplier_name && <div className="text-xs text-muted-foreground">{row.supplier_name}{row.bargain_no ? ` · ${row.bargain_no}` : ''}</div>
                         )}
                       </TableCell>
-                      <TableCell className="text-right tabular-nums">{formatNum(row.dispatch_qty)} {row.uom}</TableCell>
+                      <TableCell className="text-right tabular-nums">{dispatchLabel(row, row.uom)}</TableCell>
                       <TableCell className="text-right tabular-nums">
                         {done ? (
                           <>
@@ -1518,7 +1637,7 @@ export function GateEntry(): React.JSX.Element {
               <div className="grid gap-1.5"><Label>UOM</Label><Input value={editForm.uom || ''} onChange={(e) => setEditForm((p) => ({ ...p, uom: e.target.value }))} /></div>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5"><Label>Dispatch qty</Label><Input type="number" value={editForm.dispatch_qty ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, dispatch_qty: e.target.value }))} /></div>
+              <div className="grid gap-1.5"><Label>Dispatch qty</Label><Input placeholder={DISPATCH_HINT} value={editForm.dispatch_qty ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, dispatch_qty: cleanDispatch(e.target.value) }))} /></div>
               <div className="grid gap-1.5"><Label>Received (net)</Label><Input type="number" value={editForm.received_qty ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, received_qty: e.target.value }))} /></div>
             </div>
             <div className="grid gap-1.5"><Label>Note</Label><Input value={editForm.note || ''} onChange={(e) => setEditForm((p) => ({ ...p, note: e.target.value }))} /></div>

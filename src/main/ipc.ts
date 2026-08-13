@@ -585,8 +585,22 @@ export function registerIpc(): void {
     'gate:weights',
     (
       _e,
-      { id, gross, tare, awaitingGrossOut }: { id: number; gross: number | null; tare: number | null; awaitingGrossOut?: boolean | null }
-    ) => saveGateWeights(id, gross, tare, awaitingGrossOut)
+      {
+        id,
+        gross,
+        tare,
+        awaitingGrossOut,
+        dispatchQty,
+        invoiceGroup
+      }: {
+        id: number
+        gross: number | null
+        tare: number | null
+        awaitingGrossOut?: boolean | null
+        dispatchQty?: number | string | null
+        invoiceGroup?: string | null
+      }
+    ) => saveGateWeights(id, gross, tare, awaitingGrossOut, dispatchQty, invoiceGroup)
   )
   handle('gate:skipWeighment', (_e, { id }: { id: number }) => skipGateWeighment(id))
   handle('gate:delete', (_e, { id }: { id: number }) => deleteGateEntry(id))

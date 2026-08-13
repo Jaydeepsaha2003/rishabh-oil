@@ -199,7 +199,9 @@ export interface Api {
       id: number,
       gross: number | null,
       tare: number | null,
-      awaitingGrossOut?: boolean | null
+      awaitingGrossOut?: boolean | null,
+      dispatchQty?: number | string | null,
+      invoiceGroup?: string | null
     ) => Promise<{ id: number; status: string; net: number | null; missing: string | null }>
     skipWeighment: (id: number) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
