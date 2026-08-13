@@ -548,6 +548,19 @@ export function GateEntry(): React.JSX.Element {
     }
   }
 
+  // Net = gross − tare, to three decimals, when both are present.
+  function derivedNet(f: Row): number | null {
+    const g = f.gross_weight === '' || f.gross_weight == null ? null : Number(f.gross_weight)
+    if (g == null || !Number.isFinite(g)) return null
+    const t = f.tare_weight === '' || f.tare_weight == null ? 0 : Number(f.tare_weight) || 0
+    return Math.round((g - t) * 1000) / 1000
+  }
+  // Typing a weight moves the net with it; typing the net directly overrides.
+  function syncNet(f: Row): Row {
+    const d = derivedNet(f)
+    return d == null ? f : { ...f, received_qty: String(d) }
+  }
+
   function openEdit(row: Row): void {
     setEditRow(row)
     setEditForm({
@@ -1632,16 +1645,35 @@ export function GateEntry(): React.JSX.Element {
               </div>
             </div>
             <div className="grid grid-cols-3 gap-3">
-              <div className="grid gap-1.5"><Label>Gross wt</Label><Input type="number" value={editForm.gross_weight ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, gross_weight: e.target.value }))} /></div>
-              <div className="grid gap-1.5"><Label>Tare wt</Label><Input type="number" value={editForm.tare_weight ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, tare_weight: e.target.value }))} /></div>
+              <div className="grid gap-1.5"><Label>Gross wt</Label><Input type="number" value={editForm.gross_weight ?? ''} onChange={(e) => setEditForm((p) => syncNet({ ...p, gross_weight: e.target.value }))} /></div>
+              <div className="grid gap-1.5"><Label>Tare wt</Label><Input type="number" value={editForm.tare_weight ?? ''} onChange={(e) => setEditForm((p) => syncNet({ ...p, tare_weight: e.target.value }))} /></div>
               <div className="grid gap-1.5"><Label>UOM</Label><Input value={editForm.uom || ''} onChange={(e) => setEditForm((p) => ({ ...p, uom: e.target.value }))} /></div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1.5"><Label>Dispatch qty</Label><Input placeholder={DISPATCH_HINT} value={editForm.dispatch_qty ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, dispatch_qty: cleanDispatch(e.target.value) }))} /></div>
-              <div className="grid gap-1.5"><Label>Received (net)</Label><Input type="number" value={editForm.received_qty ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, received_qty: e.target.value }))} /></div>
+              <div className="grid gap-1.5">
+                <Label>Received (net)</Label>
+                <Input
+                  type="number"
+                  value={editForm.received_qty ?? ''}
+                  onChange={(e) => setEditForm((p) => ({ ...p, received_qty: e.target.value }))}
+                />
+                {(() => {
+                  // A net that no longer matches the two weights is allowed —
+                  // it is just never allowed to happen quietly.
+                  const d = derivedNet(editForm)
+                  if (d == null || editForm.received_qty === '' || editForm.received_qty == null) return null
+                  if (Math.abs(Number(editForm.received_qty) - d) < 0.0005) return null
+                  return (
+                    <span className="text-[11px] text-amber-700">
+                      Gross − Tare is {formatNum(d)} — this net is kept as typed.
+                    </span>
+                  )
+                })()}
+              </div>
             </div>
             <div className="grid gap-1.5"><Label>Note</Label><Input value={editForm.note || ''} onChange={(e) => setEditForm((p) => ({ ...p, note: e.target.value }))} /></div>
-            <p className="text-xs text-muted-foreground">Enter Gross &amp; Tare and the net is computed automatically; otherwise the Received (net) figure is used. Leaving both empty keeps the entry pending.</p>
+            <p className="text-xs text-muted-foreground">The net follows Gross − Tare as you type them. Type over it to record a different net — the weighbridge slip's own figure, say — and that is what is saved. Leaving everything empty keeps the entry pending.</p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditRow(null)}>Cancel</Button>

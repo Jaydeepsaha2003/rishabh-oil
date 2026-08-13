@@ -315,10 +315,19 @@ export async function skipGateWeighment(id: number): Promise<{ id: number }> {
 }
 
 export async function updateGateEntry(id: number, v: Row): Promise<{ id: number }> {
-  // If gross is provided, derive net from gross − tare; else use received_qty.
   const gross = v.gross_weight != null && v.gross_weight !== '' ? n(v.gross_weight) : null
   const tare = v.tare_weight != null && v.tare_weight !== '' ? n(v.tare_weight) : null
-  const received = gross != null ? Math.round((gross - (tare || 0)) * 1000) / 1000 : n(v.received_qty)
+  // The net normally IS gross − tare, and the form keeps it in step as those
+  // two are typed. But it used to be recomputed here as well, which threw away
+  // a net the user had deliberately corrected — a weighbridge slip that states
+  // its own net to one more decimal, say. Whatever the form sends is kept; the
+  // derived figure only fills in when it sends nothing.
+  const received =
+    v.received_qty != null && v.received_qty !== ''
+      ? n(v.received_qty)
+      : gross != null
+        ? Math.round((gross - (tare || 0)) * 1000) / 1000
+        : 0
   const status = received > 0 ? 'completed' : 'pending'
   const dUp = parseDispatch(v.dispatch_na ? 'NA' : v.dispatch_qty)
   await getClient().execute({
