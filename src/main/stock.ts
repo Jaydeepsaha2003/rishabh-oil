@@ -41,7 +41,15 @@ export async function stockLevels(
       // a tanker invoiced at the end of one month and emptied in the next is
       // that next month's receipt. (Falls back to the invoice date for an
       // older row that never got an emptied date written to it.)
-      date: 'COALESCE(received_date, order_date)',
+      //
+      // A consignment or direct purchase has no tanker journey at all — the
+      // goods are already standing at our site and the invoice is what draws
+      // them into our books, so that is the day they land. Its received_date
+      // is only ever a stamp of when the invoice happened to be booked, which
+      // would otherwise drag a July draw into August.
+      date: `CASE WHEN COALESCE(is_consignment, 0) = 1
+                  THEN order_date
+                  ELSE COALESCE(received_date, order_date) END`,
       group: 'GROUP BY oil_type_id'
     },
     produced: {
