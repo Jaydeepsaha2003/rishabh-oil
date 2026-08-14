@@ -591,7 +591,8 @@ export function registerIpc(): void {
         tare,
         awaitingGrossOut,
         dispatchQty,
-        invoiceGroup
+        invoiceGroup,
+        outDate
       }: {
         id: number
         gross: number | null
@@ -599,8 +600,9 @@ export function registerIpc(): void {
         awaitingGrossOut?: boolean | null
         dispatchQty?: number | string | null
         invoiceGroup?: string | null
+        outDate?: string | null
       }
-    ) => saveGateWeights(id, gross, tare, awaitingGrossOut, dispatchQty, invoiceGroup)
+    ) => saveGateWeights(id, gross, tare, awaitingGrossOut, dispatchQty, invoiceGroup, outDate)
   )
   handle('gate:skipWeighment', (_e, { id }: { id: number }) => skipGateWeighment(id))
   handle('gate:delete', (_e, { id }: { id: number }) => deleteGateEntry(id))

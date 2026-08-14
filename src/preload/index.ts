@@ -274,9 +274,10 @@ const api = {
       tare: number | null,
       awaitingGrossOut?: boolean | null,
       dispatchQty?: number | string | null,
-      invoiceGroup?: string | null
+      invoiceGroup?: string | null,
+      outDate?: string | null
     ): Promise<{ id: number; status: string; net: number | null; missing: string | null }> =>
-      ipcRenderer.invoke('gate:weights', { id, gross, tare, awaitingGrossOut, dispatchQty, invoiceGroup }),
+      ipcRenderer.invoke('gate:weights', { id, gross, tare, awaitingGrossOut, dispatchQty, invoiceGroup, outDate }),
     skipWeighment: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('gate:skipWeighment', { id }),
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('gate:delete', { id })
   },

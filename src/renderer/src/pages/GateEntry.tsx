@@ -257,7 +257,7 @@ export function GateEntry(): React.JSX.Element {
     if (!grossPickInvoice) return void toast.error('Link the sale invoice this vehicle is carrying')
     setGrossPickSaving(true)
     try {
-      const r = await window.api.gate.weights(row.id, gross, null, null, null, grossPickInvoice)
+      const r = await window.api.gate.weights(row.id, gross, null, null, null, grossPickInvoice, todayISO())
       const inv = outgoable.find((x) => String(x.invoice_group) === grossPickInvoice)
       toast.success(
         `${row.tanker_no} completed — net ${formatNum(r.net || 0)} ${row.uom}` +
@@ -893,7 +893,8 @@ export function GateEntry(): React.JSX.Element {
             columns={[
               { header: 'Gate no', key: 'gate_entry_no', value: (r) => r.gate_entry_no || '' },
               { header: 'Manual no', key: 'ref_no', value: (r) => r.ref_no || '' },
-              { header: 'Date', key: 'entry_date', value: (r) => formatDate(r.entry_date) },
+              { header: 'In date', key: 'entry_date', value: (r) => formatDate(r.entry_date) },
+              { header: 'Out date', key: 'out_date', value: (r) => (r.out_date ? formatDate(r.out_date) : '') },
               { header: 'In / Out', key: 'direction', value: (r) => (r.direction === 'out' ? 'OUT' : 'IN') },
               { header: 'Rec type', key: 'rec_type', value: (r) => r.rec_type || 'OIL' },
               { header: 'Product', key: 'product', value: (r) => r.oil_name || r.oil_code || '' },
@@ -1538,7 +1539,20 @@ export function GateEntry(): React.JSX.Element {
                         <Badge variant={isOut ? 'default' : 'muted'}>{isOut ? 'OUT' : 'IN'}</Badge>
                       </TableCell>
                       <TableCell><span className="text-xs font-medium text-muted-foreground">{row.rec_type || 'OIL'}</span></TableCell>
-                      <TableCell>{formatDate(row.entry_date)}</TableCell>
+                      <TableCell>
+                        {/* A vehicle that came in empty and went out loaded is
+                            one record with two movements — show both ends. */}
+                        <div className="whitespace-nowrap">
+                          <span className="text-[10px] font-semibold uppercase text-muted-foreground">In </span>
+                          {formatDate(row.entry_date)}
+                        </div>
+                        {row.out_date && (
+                          <div className="whitespace-nowrap">
+                            <span className="text-[10px] font-semibold uppercase text-muted-foreground">Out </span>
+                            {formatDate(row.out_date)}
+                          </div>
+                        )}
+                      </TableCell>
                       <TableCell>
                         <div>{row.tanker_no}</div>
                         {String(row.entry_kind) === 'simple' ? (

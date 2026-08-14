@@ -234,7 +234,10 @@ export async function saveGateWeights(
   // A vehicle weighed Tare-only at Gate In and flagged for sale gets its sale
   // invoice named here, at Gate Out, when its Gross is taken — that is the
   // first point the invoice actually exists.
-  invoiceGroup?: string | null
+  invoiceGroup?: string | null,
+  // The day the vehicle actually left, for an entry that came in and is now
+  // going back out. Defaults to today when the caller doesn't say.
+  outDate?: string | null
 ): Promise<{ id: number; status: string; net: number | null; missing: string | null }> {
   const c = getClient()
   const cur = await c.execute({ sql: 'SELECT * FROM gate_entries WHERE id = ?', args: [id] })
@@ -279,14 +282,29 @@ export async function saveGateWeights(
     saleId = Number(sale.rows[0].id)
     customerId = sale.rows[0].customer_id == null ? customerId : Number(sale.rows[0].customer_id)
   }
+  // A vehicle taken in empty, flagged for sale and now weighed out against an
+  // invoice has made a DISPATCH — file it as one. It arrived through Gate In,
+  // but what the register is recording is the load leaving, so leaving it as
+  // an inbound entry hides it from Gate Out and, worse, leaves its invoice
+  // looking as though it never went out (which would let a second vehicle be
+  // linked to the same invoice). The flag comes off at the same time: it has
+  // stopped awaiting anything.
+  const nowOut = both && n(row.awaiting_gross_out) === 1 && !!group
+  const direction = nowOut ? 'out' : String(row.direction || 'in')
+  // entry_date stays as the day it arrived; the departure gets its own date so
+  // the register can show the visit from both ends.
+  const leftOn = nowOut
+    ? String(outDate || '').slice(0, 10) || new Date().toISOString().slice(0, 10)
+    : (row.out_date as string | null)
   await c.execute({
     sql: `UPDATE gate_entries
           SET gross_weight = ?, tare_weight = ?, received_qty = ?, status = ?, awaiting_gross_out = ?,
-              dispatch_qty = ?, dispatch_na = ?, invoice_group = ?, sale_id = ?, customer_id = ?
+              dispatch_qty = ?, dispatch_na = ?, invoice_group = ?, sale_id = ?, customer_id = ?,
+              direction = ?, out_date = ?
           WHERE id = ?`,
     args: [
-      g, t, both ? net : 0, both ? 'completed' : 'pending', flag,
-      dispQty, dispNa ? 1 : 0, group, saleId, customerId, id
+      g, t, both ? net : 0, both ? 'completed' : 'pending', nowOut ? 0 : flag,
+      dispQty, dispNa ? 1 : 0, group, saleId, customerId, direction, leftOn, id
     ]
   })
   return {

@@ -838,7 +838,11 @@ const MIGRATIONS = [
   // A challan that gives no quantity is a real answer, and a different one
   // from "nobody has filled this in yet" — the gate records it as NA so the
   // shortage column knows there is nothing to compare the weighed net against.
-  'ALTER TABLE gate_entries ADD COLUMN dispatch_na INTEGER NOT NULL DEFAULT 0'
+  'ALTER TABLE gate_entries ADD COLUMN dispatch_na INTEGER NOT NULL DEFAULT 0',
+  // A vehicle taken in empty and weighed out loaded made two movements on
+  // one record. entry_date is when it arrived; this is the day it left, so
+  // the register can show both rather than only the one it started as.
+  'ALTER TABLE gate_entries ADD COLUMN out_date TEXT'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to
