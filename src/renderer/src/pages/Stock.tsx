@@ -211,9 +211,9 @@ function StockTable({ rows, breakdown, label = 'stock', range, onRange, companyP
       <FyPicker from={range.from} to={range.to} onRange={(f, t) => onRange({ from: f, to: t })} className="h-9 w-28 text-xs" />
       {/* Period for the register: opening balance before it, flows within it. */}
       <span className="text-[11px] font-semibold text-muted-foreground">From</span>
-      <div className="w-40"><DatePicker value={range.from} onChange={(v) => onRange({ ...range, from: v })} /></div>
+      <div className="w-40"><DatePicker value={range.from} onChange={(v) => onRange({ ...range, from: v })} max={range.to || undefined} /></div>
       <span className="text-[11px] font-semibold text-muted-foreground">To</span>
-      <div className="w-40"><DatePicker value={range.to} onChange={(v) => onRange({ ...range, to: v })} /></div>
+      <div className="w-40"><DatePicker value={range.to} onChange={(v) => onRange({ ...range, to: v })} min={range.from || undefined} /></div>
       {ranged && (
         <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={() => onRange({ from: '', to: '' })}>
           Clear
@@ -1529,9 +1529,9 @@ function MncStock(): React.JSX.Element {
         <div className="flex flex-wrap items-center gap-2">
           <FyPicker from={mncFrom} to={mncTo} onRange={(f, t) => { setMncFrom(f); setMncTo(t) }} className="h-9 w-28 text-xs" />
           <span className="text-[11px] font-semibold text-muted-foreground">From</span>
-          <div className="w-40"><DatePicker value={mncFrom} onChange={(v) => setMncFrom(v || '')} /></div>
+          <div className="w-40"><DatePicker value={mncFrom} onChange={(v) => setMncFrom(v || '')} max={mncTo || undefined} /></div>
           <span className="text-[11px] font-semibold text-muted-foreground">To</span>
-          <div className="w-40"><DatePicker value={mncTo} onChange={(v) => setMncTo(v || '')} /></div>
+          <div className="w-40"><DatePicker value={mncTo} onChange={(v) => setMncTo(v || '')} min={mncFrom || undefined} /></div>
           {mncRanged && (
             <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={() => { setMncFrom(''); setMncTo('') }}>
               Clear

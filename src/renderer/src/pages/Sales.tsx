@@ -877,9 +877,9 @@ function SalesTab({
             Date
           </span>
           <FyPicker from={dateFrom} to={dateTo} onRange={(f, t) => { setDateFrom(f); setDateTo(t) }} className="h-8 w-28 shrink-0 text-[11px]" />
-          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
+          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
           <span className="shrink-0 text-[10px] text-muted-foreground">to</span>
-          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
+          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} min={dateFrom || undefined} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
           <Button
             variant="ghost"
             size="sm"
@@ -2240,9 +2240,9 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
         <div className="flex items-center gap-1.5 text-[12px]">
           <span className="shrink-0 text-muted-foreground">Date</span>
           <FyPicker from={dateFrom} to={dateTo} onRange={(f, t) => { setDateFrom(f); setDateTo(t) }} className="h-8 w-36 shrink-0 text-[11px]" />
-          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="h-8 w-40 shrink-0 text-[11px]" />
+          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className="h-8 w-40 shrink-0 text-[11px]" />
           <span className="shrink-0 text-muted-foreground">to</span>
-          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="h-8 w-40 shrink-0 text-[11px]" />
+          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} min={dateFrom || undefined} className="h-8 w-40 shrink-0 text-[11px]" />
           {(dateFrom || dateTo) && (
             <Button variant="ghost" size="sm" className="h-8 text-muted-foreground" onClick={() => { setDateFrom(''); setDateTo('') }}>Clear</Button>
           )}

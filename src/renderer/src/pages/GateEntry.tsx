@@ -962,9 +962,9 @@ export function GateEntry(): React.JSX.Element {
                   <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
                     Date
                   </span>
-                  <DatePicker value={gFrom} onChange={(v) => setGFrom(v || '')} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
+                  <DatePicker value={gFrom} onChange={(v) => setGFrom(v || '')} max={gTo || undefined} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
                   <span className="shrink-0 text-[10px] text-muted-foreground">to</span>
-                  <DatePicker value={gTo} onChange={(v) => setGTo(v || '')} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
+                  <DatePicker value={gTo} onChange={(v) => setGTo(v || '')} min={gFrom || undefined} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
                 </div>
                 <div className="h-5 shrink-0 border-l" />
                 <div className="flex shrink-0 items-center gap-1.5">

@@ -873,9 +873,9 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
               <div className="flex shrink-0 flex-wrap items-center gap-1.5 text-[13px]">
                 <span className="text-muted-foreground">Date</span>
                 <FyPicker from={dateFrom} to={dateTo} onRange={(f, t) => { setDateFrom(f); setDateTo(t) }} className="h-9 w-28 text-xs" />
-                <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} className="w-[8.5rem]" />
+                <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className="w-[8.5rem]" />
                 <span className="text-muted-foreground">to</span>
-                <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} className="w-[8.5rem]" />
+                <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} min={dateFrom || undefined} className="w-[8.5rem]" />
                 {(dateFrom || dateTo) && (
                   <Button variant="ghost" size="sm" className="h-8 text-muted-foreground" onClick={() => { setDateFrom(''); setDateTo('') }}>Clear</Button>
                 )}

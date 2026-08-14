@@ -1757,9 +1757,9 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
           onChange={(e) => setRegSearch(e.target.value)}
         />
         <FyPicker from={regFrom} to={regTo} onRange={(f, t) => { setRegFrom(f); setRegTo(t) }} className="h-8 w-28 bg-white text-xs" />
-        <DatePicker value={regFrom} onChange={(v) => setRegFrom(v || '')} className="h-8 w-[8.5rem] bg-white text-[11px]" />
+        <DatePicker value={regFrom} onChange={(v) => setRegFrom(v || '')} max={regTo || undefined} className="h-8 w-[8.5rem] bg-white text-[11px]" />
         <span className="text-[11px] text-muted-foreground">to</span>
-        <DatePicker value={regTo} onChange={(v) => setRegTo(v || '')} className="h-8 w-[8.5rem] bg-white text-[11px]" />
+        <DatePicker value={regTo} onChange={(v) => setRegTo(v || '')} min={regFrom || undefined} className="h-8 w-[8.5rem] bg-white text-[11px]" />
         <Select value={regFunding} onValueChange={setRegFunding}>
           <SelectTrigger className="h-8 w-40 bg-white text-[11px]"><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -2126,9 +2126,9 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
           <span className="text-[13px] font-bold uppercase tracking-widest">Day Book</span>
           <div className="ml-auto flex items-center gap-2">
             <FyPicker from={dbFrom} to={dbTo} onRange={(f, t) => { setDbFrom(f); setDbTo(t) }} className="h-9 w-28 bg-white text-xs" />
-            <div className="w-40"><DatePicker value={dbFrom} onChange={setDbFrom} /></div>
+            <div className="w-40"><DatePicker value={dbFrom} onChange={setDbFrom} max={dbTo || undefined} /></div>
             <span className="text-[11px]">to</span>
-            <div className="w-40"><DatePicker value={dbTo} onChange={setDbTo} /></div>
+            <div className="w-40"><DatePicker value={dbTo} onChange={setDbTo} min={dbFrom || undefined} /></div>
             <Select value={dbType} onValueChange={setDbType}>
               <SelectTrigger className="h-9 w-36 bg-white text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -2234,9 +2234,9 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
               <span className="text-[11px]">{ledgerAccount.acc_group}</span>
               <div className="ml-auto flex flex-wrap items-center gap-1.5">
                 <FyPicker from={lgFrom} to={lgTo} onRange={(f, t) => { setLgFrom(f); setLgTo(t) }} className="h-8 w-28 bg-white text-xs" />
-                <div className="w-40"><DatePicker value={lgFrom} onChange={setLgFrom} /></div>
+                <div className="w-40"><DatePicker value={lgFrom} onChange={setLgFrom} max={lgTo || undefined} /></div>
                 <span className="text-[11px]">to</span>
-                <div className="w-40"><DatePicker value={lgTo} onChange={setLgTo} /></div>
+                <div className="w-40"><DatePicker value={lgTo} onChange={setLgTo} min={lgFrom || undefined} /></div>
                 {(lgFrom || lgTo) && (
                   <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={() => { setLgFrom(''); setLgTo('') }}>
                     All
@@ -2410,9 +2410,9 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
           <span className="text-[13px] font-bold uppercase tracking-widest">Trial Balance</span>
           <div className="ml-auto flex items-center gap-2">
             <FyPicker from={tbFrom} to={tbTo} onRange={(f, t) => { setTbFrom(f); setTbTo(t) }} className="h-9 w-28 bg-white text-xs" />
-            <div className="w-40"><DatePicker value={tbFrom} onChange={setTbFrom} /></div>
+            <div className="w-40"><DatePicker value={tbFrom} onChange={setTbFrom} max={tbTo || undefined} /></div>
             <span className="text-[11px]">to</span>
-            <div className="w-40"><DatePicker value={tbTo} onChange={setTbTo} /></div>
+            <div className="w-40"><DatePicker value={tbTo} onChange={setTbTo} min={tbFrom || undefined} /></div>
           </div>
         </div>
         <div className="max-h-[calc(100vh-225px)] overflow-auto">
@@ -2478,9 +2478,9 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
           <span className="text-[13px] font-bold uppercase tracking-widest">Trading Account</span>
           <div className="ml-auto flex items-center gap-2">
             <FyPicker from={tradingFrom} to={tradingTo} onRange={(f, t) => { setTradingFrom(f); setTradingTo(t) }} className="h-9 w-28 bg-white text-xs" />
-            <div className="w-40"><DatePicker value={tradingFrom} onChange={setTradingFrom} /></div>
+            <div className="w-40"><DatePicker value={tradingFrom} onChange={setTradingFrom} max={tradingTo || undefined} /></div>
             <span className="text-[11px]">to</span>
-            <div className="w-40"><DatePicker value={tradingTo} onChange={setTradingTo} /></div>
+            <div className="w-40"><DatePicker value={tradingTo} onChange={setTradingTo} min={tradingFrom || undefined} /></div>
           </div>
         </div>
         <div className="max-h-[calc(100vh-225px)] overflow-auto">

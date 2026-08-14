@@ -2318,9 +2318,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       Date
                     </span>
                     <FyPicker from={poFrom} to={poTo} onRange={(f, t) => { setPoFrom(f); setPoTo(t) }} className="h-8 w-28 shrink-0 text-[11px]" />
-                    <DatePicker value={poFrom} onChange={(v) => setPoFrom(v || '')} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
+                    <DatePicker value={poFrom} onChange={(v) => setPoFrom(v || '')} max={poTo || undefined} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
                     <span className="shrink-0 text-[10px] text-muted-foreground">to</span>
-                    <DatePicker value={poTo} onChange={(v) => setPoTo(v || '')} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
+                    <DatePicker value={poTo} onChange={(v) => setPoTo(v || '')} min={poFrom || undefined} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
                   </div>
                   <div className="h-5 border-l" />
                   <div className="flex shrink-0 items-center gap-1.5">
@@ -3470,11 +3470,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           <div className="mb-3 flex flex-wrap items-end gap-3">
             <div className="grid gap-1.5">
               <Label className="text-xs text-muted-foreground">Loaded from</Label>
-              <DatePicker value={repFrom} onChange={setRepFrom} className="w-40" />
+              <DatePicker value={repFrom} onChange={setRepFrom} max={repTo || undefined} className="w-40" />
             </div>
             <div className="grid gap-1.5">
               <Label className="text-xs text-muted-foreground">To</Label>
-              <DatePicker value={repTo} onChange={setRepTo} className="w-40" />
+              <DatePicker value={repTo} onChange={setRepTo} min={repFrom || undefined} className="w-40" />
             </div>
             {(repFrom || repTo) && (
               <Button variant="ghost" size="sm" onClick={() => { setRepFrom(''); setRepTo('') }}>Clear</Button>
