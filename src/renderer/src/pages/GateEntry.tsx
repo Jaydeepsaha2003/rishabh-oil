@@ -879,25 +879,72 @@ export function GateEntry(): React.JSX.Element {
         hint="Record a tanker the moment it comes IN (green) or a sale vehicle when it goes OUT (blue) — no weight needed yet. Entries wait under 'Waiting for weighment' until the weighbridge Gross & Tare are entered (net = gross − tare), which completes them. The Empty step in Purchases checks against the inbound weight; gate-outs link to the sale being dispatched."
         actions={
           <ExcelButton
-            filename={`gate-entries-${todayISO()}`}
+            // The file names the period it holds, so two downloads taken on
+            // the same day for different ranges don't collide.
+            filename={
+              gFrom || gTo
+                ? `gate-entries-${gFrom || 'start'}-to-${gTo || todayISO()}`
+                : `gate-entries-${todayISO()}`
+            }
             sheetName="Gate entries"
-            title="Gate entries"
+            title={`Gate entries${gFrom || gTo ? ` (${gFrom || 'start'} → ${gTo || 'today'})` : ''}`}
+            // Everything the register holds about an entry, so the sheet can
+            // be worked on without coming back to the screen for a figure.
             columns={[
               { header: 'Gate no', key: 'gate_entry_no', value: (r) => r.gate_entry_no || '' },
+              { header: 'Manual no', key: 'ref_no', value: (r) => r.ref_no || '' },
               { header: 'Date', key: 'entry_date', value: (r) => formatDate(r.entry_date) },
               { header: 'In / Out', key: 'direction', value: (r) => (r.direction === 'out' ? 'OUT' : 'IN') },
               { header: 'Rec type', key: 'rec_type', value: (r) => r.rec_type || 'OIL' },
+              { header: 'Product', key: 'product', value: (r) => r.oil_name || r.oil_code || '' },
               { header: 'Vehicle', key: 'tanker_no', value: (r) => r.tanker_no || '' },
-              { header: 'Party', key: 'party', value: (r) => r.party || r.supplier_name || r.customer || '' },
+              {
+                header: 'Party',
+                key: 'party',
+                value: (r) =>
+                  r.direction === 'out'
+                    ? r.sale_customer || r.gate_customer_name || r.supplier_name || ''
+                    : r.supplier_name || r.gate_customer_name || ''
+              },
+              { header: 'Bargain', key: 'bargain_no', value: (r) => r.bargain_no || '' },
+              { header: 'Sale invoice', key: 'sale_invoice', value: (r) => r.sale_invoice || '' },
+              { header: 'UOM', key: 'uom', value: (r) => r.uom || 'MT' },
+              {
+                header: 'Dispatch qty',
+                key: 'dispatch_qty',
+                align: 'right',
+                numFmt: '#,##0.000',
+                // NA is a real answer on a challan that gives no figure, and
+                // it has to survive into the sheet as the word, not as a zero.
+                value: (r) => (Number(r.dispatch_na) === 1 ? 'NA' : Number(r.dispatch_qty) || 0)
+              },
               { header: 'Gross', key: 'gross_weight', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.gross_weight) || 0 },
               { header: 'Tare', key: 'tare_weight', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.tare_weight) || 0 },
-              { header: 'Net qty', key: 'qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.qty) || 0 },
+              // The net is received_qty. This used to read r.qty, which gate
+              // entries do not carry, so every row exported a zero.
+              { header: 'Net qty', key: 'received_qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.received_qty) || 0 },
+              {
+                header: 'Short / excess',
+                key: 'shortage',
+                align: 'right',
+                numFmt: '#,##0.000',
+                // Nothing to compare against when the challan gave no figure.
+                value: (r) =>
+                  Number(r.dispatch_na) === 1 || !(Number(r.dispatch_qty) > 0)
+                    ? ''
+                    : Math.round((Number(r.dispatch_qty) - Number(r.received_qty || 0)) * 1000) / 1000
+              },
               { header: 'Status', key: 'status', value: (r) => (r.status === 'completed' ? 'Done' : 'Pending') },
               { header: 'Weighed', key: 'no_weighment', value: (r) => (String(r.entry_kind) === 'simple' ? 'Quick entry' : Number(r.no_weighment) === 1 ? 'No weighment' : 'Yes') },
+              { header: 'Direct MNC', key: 'is_direct_mnc', value: (r) => (Number(r.is_direct_mnc) === 1 ? 'Yes' : '') },
               { header: 'Person', key: 'person', value: (r) => r.person || '' },
               { header: 'Note / material', key: 'note', value: (r) => r.note || '' }
             ]}
-            rows={rows}
+            // What the register is showing is what comes out — the date range,
+            // category, direction and search all apply. Downloading the whole
+            // register when the screen shows a filtered slice of it is not
+            // what anyone means by "export".
+            rows={filteredRows}
           />
         }
       />
