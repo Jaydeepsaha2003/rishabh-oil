@@ -892,47 +892,76 @@ export function Treasury(): React.JSX.Element {
                   lcsFiltered.map((l) => {
                     const isOpen = openLc.has(Number(l.id))
                     const pct = n(l.amount) > 0 ? Math.min(100, (n(l.utilized) / n(l.amount)) * 100) : 0
+                    const barTone = pct >= 95 ? 'bg-rose-500' : pct >= 75 ? 'bg-amber-500' : 'bg-sky-600'
+                    const tone = STAGE_ROW_TONE[String(l.stage || 'application')] || STAGE_ROW_TONE.application
                     return (
-                      <Card key={String(l.id)} className="flex flex-col gap-2 p-4">
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <div className="flex items-center gap-1.5">
-                              <span className={cn('font-semibold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
-                              <StageBadge stage={String(l.stage || 'application')} />
-                              {l.preclosed_date && <Badge variant="muted">Preclosed {formatDate(l.preclosed_date)}</Badge>}
+                      <Card
+                        key={String(l.id)}
+                        className={cn('flex flex-col gap-3 overflow-hidden border-l-4 p-0 [border-left-style:solid]', tone.row)}
+                      >
+                        <div className="flex flex-col gap-3 p-4 pb-0">
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className={cn('text-[15px] font-bold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
+                                <StageBadge stage={String(l.stage || 'application')} />
+                                {l.preclosed_date && <Badge variant="muted">Preclosed {formatDate(l.preclosed_date)}</Badge>}
+                              </div>
+                              <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                                <Landmark className="h-3 w-3 shrink-0" /> {l.bank}
+                                <span className="text-[#e5dfc8]">·</span>
+                                <Users className="h-3 w-3 shrink-0" /> {l.supplier_name || '—'}
+                              </div>
+                              {l.fd_no && <div className="mt-0.5 text-[10px] text-muted-foreground">FD {l.fd_no}</div>}
                             </div>
-                            <div className="text-[11px] text-muted-foreground">{l.bank} · {l.supplier_name || '—'}</div>
-                            {l.fd_no && <div className="text-[10px] text-muted-foreground">FD {l.fd_no}</div>}
+                            <div className="flex flex-col items-end gap-1">
+                              {l.purpose && <Badge variant="muted" className="capitalize">{l.purpose}</Badge>}
+                              {l.display_status === 'non_compliant' ? (
+                                <Badge variant="destructive">Non-compliant</Badge>
+                              ) : (
+                                <Badge variant={l.display_status === 'on_hold' ? 'warning' : 'success'} className="capitalize">
+                                  {String(l.display_status || 'in_progress').replace('_', ' ')}
+                                </Badge>
+                              )}
+                            </div>
                           </div>
-                          <div className="flex flex-col items-end gap-1">
-                            {l.purpose && <Badge variant="muted" className="capitalize">{l.purpose}</Badge>}
-                            {l.display_status === 'non_compliant' ? (
-                              <Badge variant="destructive">Non-compliant</Badge>
-                            ) : (
-                              <Badge variant={l.display_status === 'on_hold' ? 'warning' : 'success'} className="capitalize">
-                                {String(l.display_status || 'in_progress').replace('_', ' ')}
-                              </Badge>
-                            )}
+                          <div className="rounded-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-3 text-center shadow-sm">
+                            <div className="text-[10px] font-semibold uppercase tracking-widest text-white/60">LC amount</div>
+                            <div className="text-2xl font-bold tabular-nums text-white">{formatINR(l.amount)}</div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-[11px]">
+                            <div className="rounded-md border border-[#e5dfc8] bg-white px-2.5 py-1.5">
+                              <div className="text-muted-foreground">Utilised</div>
+                              <div className="font-semibold tabular-nums text-[#1a2c56]">{formatINR(l.utilized)}</div>
+                            </div>
+                            <div className={cn('rounded-md border px-2.5 py-1.5', n(l.available) <= 0 ? 'border-rose-200 bg-rose-50' : 'border-emerald-200 bg-emerald-50')}>
+                              <div className="text-muted-foreground">Available</div>
+                              <div className={cn('font-semibold tabular-nums', n(l.available) <= 0 ? 'text-rose-600' : 'text-emerald-700')}>{formatINR(l.available)}</div>
+                            </div>
+                            <div className={cn('rounded-md border px-2.5 py-1.5', n(l.repaid) > 0 ? 'border-emerald-200 bg-emerald-50' : 'border-[#e5dfc8] bg-white')}>
+                              <div className="text-muted-foreground">Repaid</div>
+                              <div className={cn('font-semibold tabular-nums', n(l.repaid) > 0 ? 'text-emerald-700' : 'text-[#1a2c56]')}>{formatINR(l.repaid)}</div>
+                            </div>
+                            <div className={cn('rounded-md border px-2.5 py-1.5', n(l.outstanding) > 0 ? 'border-amber-200 bg-amber-50' : 'border-[#e5dfc8] bg-white')}>
+                              <div className="text-muted-foreground">Outstanding</div>
+                              <div className={cn('font-semibold tabular-nums', n(l.outstanding) > 0 ? 'text-amber-800' : 'text-[#1a2c56]')}>{formatINR(l.outstanding)}</div>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="mb-1 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              <span>Utilisation</span>
+                              <span className="tabular-nums">{pct.toFixed(0)}%</span>
+                            </div>
+                            <div className="h-2.5 overflow-hidden rounded-full bg-muted">
+                              <div className={cn('h-2.5 rounded-full transition-all', barTone)} style={{ width: `${pct}%` }} />
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                            <span className="flex items-center gap-1.5"><CalendarRange className="h-3 w-3 shrink-0" /> {formatDate(l.open_date)} → {formatDate(l.expiry_date)}</span>
+                            <DueBadge date={l.due_date_effective} />
                           </div>
                         </div>
-                        <div className="rounded-md bg-[#f1ecd9] px-3 py-2 text-center">
-                          <div className="text-[10px] uppercase tracking-widest text-[#1a2c56]/70">LC amount</div>
-                          <div className="text-xl font-bold tabular-nums text-[#1a2c56]">{formatINR(l.amount)}</div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 text-[11px]">
-                          <div><div className="text-muted-foreground">Utilised</div><div className="font-medium tabular-nums">{formatINR(l.utilized)}</div></div>
-                          <div><div className="text-muted-foreground">Available</div><div className={cn('font-medium tabular-nums', n(l.available) <= 0 ? 'text-rose-600' : 'text-emerald-700')}>{formatINR(l.available)}</div></div>
-                          <div><div className="text-muted-foreground">Repaid</div><div className="font-medium tabular-nums">{formatINR(l.repaid)}</div></div>
-                          <div><div className="text-muted-foreground">Outstanding</div><div className="font-medium tabular-nums">{formatINR(l.outstanding)}</div></div>
-                        </div>
-                        <div className="h-2 rounded-full bg-muted">
-                          <div className={cn('h-2 rounded-full', pct >= 95 ? 'bg-rose-500' : 'bg-sky-600')} style={{ width: `${pct}%` }} />
-                        </div>
-                        <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                          <span>{formatDate(l.open_date)} → {formatDate(l.expiry_date)}</span>
-                          <DueBadge date={l.due_date_effective} />
-                        </div>
-                        <div className="mt-1 flex flex-wrap gap-1.5">
+                        <div className="flex flex-wrap gap-1.5 border-t border-dashed border-[#e5dfc8] px-4 py-3">
                           {(() => {
                             const next = nextLcStage(String(l.stage || 'application'))
                             if (!next) return null
@@ -957,7 +986,7 @@ export function Treasury(): React.JSX.Element {
                             <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         </div>
-                        {isOpen && <div className="-mx-4 -mb-4 mt-1 border-t bg-[#f7f2e2]">{lcExpanded(l)}</div>}
+                        {isOpen && <div className="border-t bg-[#f7f2e2]">{lcExpanded(l)}</div>}
                       </Card>
                     )
                   })
@@ -1930,7 +1959,7 @@ export function Treasury(): React.JSX.Element {
                 </div>
               )}
               <div className="flex flex-col gap-1.5 sm:col-span-2">
-                <Label>Bank document / payment letter</Label>
+                <Label>Bank document / payment letter <span className="text-[10px] font-normal text-muted-foreground">(optional)</span></Label>
                 <div className="flex items-center gap-2">
                   <Button type="button" variant="outline" size="sm" onClick={() => void pickRepaymentDocument()}>
                     <Paperclip className="h-3.5 w-3.5" /> Attach file
@@ -1940,7 +1969,7 @@ export function Treasury(): React.JSX.Element {
                       {String(repayForm.document_path).split(/[\\/]/).pop()}
                     </span>
                   ) : (
-                    <span className="text-[11px] text-muted-foreground">No file attached</span>
+                    <span className="text-[11px] text-muted-foreground">No file attached — you can save without one</span>
                   )}
                 </div>
               </div>
