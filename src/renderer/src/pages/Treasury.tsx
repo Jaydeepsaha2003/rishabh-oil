@@ -408,7 +408,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     const charges = n(stageForm.charges)
     const interest = days != null ? round2((amount * interestPct * days) / (100 * 365)) : 0
     const upfront = !!stageForm.interest_upfront
-    const netAvailable = round2(amount - (upfront ? 0 : interest) - charges)
+    const netAvailable = upfront ? amount : round2(amount - interest - charges)
     // Margin is the security deposit the bank asks for on the LC's own open
     // amount — a straight percentage of the credit limit itself, not of
     // whichever invoices happen to be linked to it.
@@ -1523,9 +1523,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
           className={cn(
             'overflow-hidden p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100',
             // The Payment Received step carries the 4-column back-calculated
-            // panel, which needs real width — figures into the crores wrap
-            // badly at a narrow dialog.
-            nextLcStage(String(stageRow?.stage || 'application')) === 'payment_received' ? 'max-w-3xl' : 'max-w-lg'
+            // panel plus the upfront-interest toggle's explanatory paragraph —
+            // both need real width, or the figures/text wrap badly.
+            nextLcStage(String(stageRow?.stage || 'application')) === 'payment_received' ? 'max-w-5xl' : 'max-w-lg'
           )}
         >
           <div className="flex items-center gap-3 bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-6 py-4 text-white">
@@ -1612,12 +1612,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       <div className="mt-3 flex items-start gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
                         <Switch checked={!!stageForm.interest_upfront} onCheckedChange={(v) => setStageForm({ ...stageForm, interest_upfront: v })} />
                         <div>
-                          <div className="text-[12px] font-semibold">Interest paid upfront</div>
+                          <div className="text-[12px] font-semibold">Interest & charges paid upfront</div>
                           <div className="text-[11px] text-muted-foreground">
-                            Some parties (e.g. Bunge-style deals) pay interest straight from the bank account instead of it
-                            coming out of the open amount. Turn this on and the Open Amount stays the full Receipt Amount —
-                            interest is still calculated here for reference, but only posted to the books once you link its
-                            own line from the Bank Reconciliation screen.
+                            Some parties (e.g. Bunge-style deals) pay interest and LC charges straight from the bank account
+                            instead of either coming out of the open amount. Turn this on and the Open Amount stays the full
+                            Receipt Amount — both are still calculated here for reference, but only posted to the books once
+                            you link their line from the Bank Reconciliation screen.
                           </div>
                         </div>
                       </div>
@@ -1640,8 +1640,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <div className={cn('text-[16px] font-semibold tabular-nums', stagePreview.upfront ? 'text-sky-950' : 'text-rose-700')}>{formatINR(stagePreview.interest)}</div>
                           </div>
                           <div>
-                            <div className="text-[10px] uppercase tracking-wide text-sky-700">− Charges</div>
-                            <div className="text-[16px] font-semibold tabular-nums text-rose-700">{formatINR(stagePreview.charges)}</div>
+                            <div className="text-[10px] uppercase tracking-wide text-sky-700">{stagePreview.upfront ? 'Charges (upfront)' : '− Charges'}</div>
+                            <div className={cn('text-[16px] font-semibold tabular-nums', stagePreview.upfront ? 'text-sky-950' : 'text-rose-700')}>{formatINR(stagePreview.charges)}</div>
                           </div>
                           <div>
                             <div className="text-[10px] uppercase tracking-wide text-sky-700">Margin</div>
@@ -1650,7 +1650,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         </div>
                         <div className="mt-3 flex items-center justify-between rounded-lg bg-white/70 px-4 py-2.5">
                           <span className="text-[11px] font-medium uppercase tracking-wide text-sky-800">
-                            {stagePreview.upfront ? 'Net available = open amount − charges (interest paid upfront)' : 'Net available = open amount − interest − charges'}
+                            {stagePreview.upfront ? 'Net available = open amount (interest & charges paid upfront)' : 'Net available = open amount − interest − charges'}
                           </span>
                           <span className="text-xl font-bold tabular-nums text-[#1a2c56]">{formatINR(stagePreview.netAvailable)}</span>
                         </div>
@@ -2051,12 +2051,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 <div className="mt-3 flex items-start gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
                   <Switch checked={!!lcForm.interest_upfront} onCheckedChange={(v) => setLcForm({ ...lcForm, interest_upfront: v })} />
                   <div>
-                    <div className="text-[12px] font-semibold">Interest paid upfront</div>
+                    <div className="text-[12px] font-semibold">Interest & charges paid upfront</div>
                     <div className="text-[11px] text-muted-foreground">
-                      Some parties (e.g. Bunge-style deals) pay interest straight from the bank account instead of it coming
-                      out of the open amount. Turn this on and the Open Amount stays the full Receipt Amount — interest is
-                      still calculated here for reference, but only posted to the books once you link its own line from the
-                      Bank Reconciliation screen.
+                      Some parties (e.g. Bunge-style deals) pay interest and LC charges straight from the bank account instead
+                      of either coming out of the open amount. Turn this on and the Open Amount stays the full Receipt Amount —
+                      both are still calculated here for reference, but only posted to the books once you link their line from
+                      the Bank Reconciliation screen.
                     </div>
                   </div>
                 </div>
@@ -2073,8 +2073,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 const upfront = !!lcForm.interest_upfront
                 // Back-calculation: the open amount is the limit as struck with
                 // the bank — interest and charges come OUT of it, not on top —
-                // unless interest is being paid upfront from the bank instead.
-                const netAvailable = round2(openAmount - (upfront ? 0 : interest) - charges)
+                // unless both are being paid upfront from the bank instead.
+                const netAvailable = upfront ? openAmount : round2(openAmount - interest - charges)
                 return (
                   <div className="rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm lg:col-span-2">
                     <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-sky-900">
@@ -2089,12 +2089,15 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         <div className="text-[10px] uppercase tracking-wide text-sky-700">{upfront ? 'Interest (upfront)' : '− Interest'}</div>
                         <div className={cn('text-[15px] font-semibold tabular-nums', upfront ? 'text-sky-950' : 'text-rose-700')}>{formatINR(interest)}</div>
                       </div>
-                      <div><div className="text-[10px] uppercase tracking-wide text-sky-700">− Charges</div><div className="text-[15px] font-semibold tabular-nums text-rose-700">{formatINR(charges)}</div></div>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wide text-sky-700">{upfront ? 'Charges (upfront)' : '− Charges'}</div>
+                        <div className={cn('text-[15px] font-semibold tabular-nums', upfront ? 'text-sky-950' : 'text-rose-700')}>{formatINR(charges)}</div>
+                      </div>
                       <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Margin</div><div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(margin)}</div></div>
                     </div>
                     <div className="mt-3 flex items-center justify-between rounded-lg bg-white/70 px-4 py-2.5">
                       <span className="text-[11px] font-medium uppercase tracking-wide text-sky-800">
-                        {upfront ? 'Net available = open amount − charges (interest paid upfront)' : 'Net available = open amount − interest − charges'}
+                        {upfront ? 'Net available = open amount (interest & charges paid upfront)' : 'Net available = open amount − interest − charges'}
                       </span>
                       <span className="text-xl font-bold tabular-nums text-[#1a2c56]">{formatINR(netAvailable)}</span>
                     </div>

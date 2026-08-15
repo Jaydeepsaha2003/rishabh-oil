@@ -27,12 +27,12 @@ function round2(v: number): number {
 // What's actually left to issue bills against: interest and charges come out
 // of the LC's own open amount before anything else, the same as the money
 // that lands with the bank — issuing bills doesn't get to ignore what the LC
-// itself already owes in fees. Unless interest is paid upfront (some parties,
-// e.g. Bunge-style deals, settle it straight from the bank account) — then
-// the open amount isn't touched by interest at all, only by charges.
+// itself already owes in fees. Unless both are paid upfront (some parties,
+// e.g. Bunge-style deals, settle interest and charges straight from the bank
+// account) — then the open amount isn't touched by either.
 function netAvailable(lc: Row, issued: number): number {
   const interest = lc.interest_upfront ? 0 : round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
-  const charges = round2(n(lc.charges))
+  const charges = lc.interest_upfront ? 0 : round2(n(lc.charges))
   return round2(n(lc.amount) - interest - charges - issued)
 }
 
@@ -72,8 +72,9 @@ export async function listLCs(): Promise<Row[]> {
     // whichever invoices happen to be linked to it.
     const margin = Math.round((n(l.amount) * n(l.margin_pct)) / 100 * 100) / 100
     const interest = Math.round(((n(l.amount) * n(l.interest_pct) * n(l.usance_days)) / (100 * 365)) * 100) / 100
+    const rawCharges = Math.round(n(l.charges) * 100) / 100
     const chargedInterest = l.interest_upfront ? 0 : interest
-    const charges = Math.round(n(l.charges) * 100) / 100
+    const charges = l.interest_upfront ? 0 : rawCharges
     // Trading LCs are only "compliant" once they carry at least one open
     // invoice and the party repayment will come from — without either, the
     // register can't be trusted to reconcile on its own.
@@ -85,8 +86,8 @@ export async function listLCs(): Promise<Row[]> {
         .map((x) => Number(x))
         .filter((x) => x > 0),
       // Back-calculated: the open amount is the limit struck with the bank —
-      // interest and charges come OUT of it, not added on top (unless
-      // interest is paid upfront from the bank instead — see interest_upfront).
+      // interest and charges come OUT of it, not added on top (unless both
+      // are paid upfront from the bank instead — see interest_upfront).
       lc_net_available: Math.round((n(l.amount) - chargedInterest - charges) * 100) / 100,
       // What's actually left to issue bills against — interest and charges
       // come out of the open amount before issued bills reduce it further.

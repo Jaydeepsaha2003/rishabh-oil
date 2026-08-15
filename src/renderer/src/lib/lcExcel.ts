@@ -47,6 +47,10 @@ export async function exportLcRegister(lcs: Row[], filename: string): Promise<vo
     const [bills, reps] = details[i]
     const marginAmount = round2((n(l.amount) * n(l.margin_pct)) / 100)
     const interestAmount = round2((n(l.amount) * n(l.interest_pct) * n(l.usance_days)) / (100 * 365))
+    // A single invoice needs no +/- grouping to read — its own row folds
+    // straight into the LC's row instead of sitting as a separate child.
+    // Grouping is only worth it once there's more than one to collapse.
+    const soleBill = bills.length === 1 ? bills[0] : null
     rows.push({
       _group: true,
       lc_no: l.lc_no || 'Pending LC no',
@@ -75,13 +79,17 @@ export async function exportLcRegister(lcs: Row[], filename: string): Promise<vo
       outstanding: n(l.outstanding),
       available: n(l.available),
       linked_invoices: l.linked_invoice_nos || '',
-      detail_date: '',
-      detail_due: '',
-      detail_amount: '',
-      status: l.preclosed_date ? `Preclosed ${formatDate(l.preclosed_date)}` : ''
+      detail_date: soleBill ? formatDate(soleBill.issue_date) : '',
+      detail_due: soleBill ? formatDate(soleBill.due_date) : '',
+      detail_amount: soleBill ? n(soleBill.amount) : '',
+      status: l.preclosed_date
+        ? `Preclosed ${formatDate(l.preclosed_date)}`
+        : soleBill
+          ? (String(soleBill.status || 'outstanding') === 'settled' ? 'Settled' : 'Outstanding')
+          : ''
     })
 
-    for (const b of bills) {
+    for (const b of soleBill ? [] : bills) {
       rows.push({
         _group: false,
         lc_no: l.lc_no || 'Pending LC no',

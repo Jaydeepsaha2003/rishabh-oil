@@ -244,7 +244,10 @@ export async function suggestBankLineMatch(lineId: number): Promise<Row | null> 
     const lcNo = String(lc.lc_no || '').toUpperCase()
     if (!lcNo || !narration.includes(lcNo)) continue
 
-    if (n(lc.charges) > 0 && Math.abs(n(lc.charges) - amount) <= AMOUNT_TOLERANCE) {
+    // Charges only post via the opening voucher when they're NOT paid
+    // upfront — an upfront LC's charges are bundled into the lc_interest
+    // match below instead, since that's the one voucher this line matches.
+    if (!n(lc.interest_upfront) && n(lc.charges) > 0 && Math.abs(n(lc.charges) - amount) <= AMOUNT_TOLERANCE) {
       return {
         category: 'lc',
         link_type: 'lc_opening',
@@ -255,12 +258,14 @@ export async function suggestBankLineMatch(lineId: number): Promise<Row | null> 
 
     if (n(lc.interest_upfront)) {
       const interest = round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
-      if (interest > 0 && Math.abs(interest - amount) <= AMOUNT_TOLERANCE) {
+      const charges = round2(n(lc.charges))
+      const total = round2(interest + charges)
+      if (total > 0 && Math.abs(total - amount) <= AMOUNT_TOLERANCE) {
         return {
           category: 'lc',
           link_type: 'lc_interest',
           link_ref_id: n(lc.id),
-          label: `LC ${lc.lc_no} — interest paid upfront ${interest.toFixed(2)}`
+          label: `LC ${lc.lc_no} — interest ${interest.toFixed(2)} + charges ${charges.toFixed(2)} paid upfront (${total.toFixed(2)})`
         }
       }
     }
