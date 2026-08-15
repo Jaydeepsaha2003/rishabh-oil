@@ -630,6 +630,12 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
             { header: 'Invoice', key: 'invoice_no' },
             { header: 'Dis qty', key: 'dis_qty', align: 'right', numFmt: '#,##0.000' },
             { header: 'Received', key: 'received_qty', align: 'right', numFmt: '#,##0.000' },
+            { header: 'Shortage', key: 'shortage', align: 'right', numFmt: '#,##0.000' },
+            { header: 'Allowed MT', key: 'allowed_mt', align: 'right', numFmt: '#,##0.000' },
+            // Only ever populated on an EX bargain's tanker rows, and only when
+            // the shortage exceeds the allowed tolerance — see tankerDetailRows.
+            { header: 'Deductible', key: 'deductible', align: 'right', numFmt: '#,##0.000' },
+            { header: 'Status', key: 'status' },
             { header: 'Balance', key: 'balance', align: 'right', numFmt: '#,##0.000' },
             { header: 'Split', key: 'split' }
           ],
@@ -647,6 +653,10 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
     const out: Row[] = []
     for (const b of sortedRows) {
       const id = Number(b.id)
+      // Same rule the on-screen breakdown uses: EX puts the shortage risk
+      // beyond the allowed tolerance on the supplier as a deductible; DLD
+      // doesn't, since the transporter/company already absorbs it.
+      const isEx = b.bargain_type === 'EX'
       const list = tankers.filter(
         (t) => Number(t.bargain_id) === id || (Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) === id)
       )
@@ -669,6 +679,14 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
         const extra = t.extra_bargain_id ? Number(t.extra_qty) || 0 : 0
         const isPrimary = Number(t.bargain_id) === id
         const share = isPrimary ? loaded - extra : extra
+        // Receipts/shortage belong to the whole tanker — pro-rate by this
+        // bargain's share of it, same as the on-screen breakdown.
+        const shareRatio = loaded > 0 ? share / loaded : 1
+        const rec = t.status === 'empty' && t.received_qty != null ? Number(t.received_qty) * shareRatio : null
+        const shortage = rec != null ? Math.max(0, loaded - Number(t.received_qty)) * shareRatio : null
+        const pct = Number(t.order_allowed_shortage_pct ?? b.allowed_shortage_pct ?? defaultShortagePct) || 0
+        const allowedAmt = loaded > 0 ? (share * pct) / 100 : 0
+        const deductible = isEx && shortage != null && shortage > allowedAmt ? shortage - allowedAmt : null
         out.push({
           bargain_no: b.bargain_no || '',
           bargain_date: '',
@@ -680,7 +698,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
           stage: String(t.status || ''),
           invoice_no: t.invoice_no || '',
           dis_qty: share,
-          received_qty: Number(t.received_qty) || 0,
+          received_qty: rec != null ? rec : '',
+          shortage: shortage != null ? shortage : '',
+          allowed_mt: loaded > 0 ? allowedAmt : '',
+          deductible: deductible != null ? deductible : '',
+          status: deductible != null ? 'Deductible' : '',
           split: extra > 0 ? (isPrimary ? `split — ${extra} moved out` : 'split — excess share') : ''
         })
       }
@@ -1139,6 +1161,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                   }
                                   const pctOf = (t: Row): number =>
                                     Number(t.order_allowed_shortage_pct ?? row.allowed_shortage_pct ?? defaultShortagePct) || 0
+                                  // EX bargains put the shortage risk beyond the allowed
+                                  // tolerance on the supplier — the excess becomes a
+                                  // deductible, unlike DLD where the transporter/company
+                                  // already absorbs it through freight/shortage handling.
+                                  const isEx = row.bargain_type === 'EX'
                                   const tot = list.reduce(
                                     (s, t) => {
                                       const loaded = Number(t.loaded_qty) || 0
@@ -1166,7 +1193,13 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                             <th className="py-1.5 pr-3 text-right font-semibold">Dis Qty</th>
                                             <th className="py-1.5 pr-3 text-right font-semibold">Rec Qty</th>
                                             <th className="py-1.5 pr-3 text-right font-semibold">Shortage</th>
-                                            <th className="py-1.5 text-right font-semibold">Allowed MT</th>
+                                            <th className={cn('py-1.5 text-right font-semibold', isEx && 'pr-3')}>Allowed MT</th>
+                                            {isEx && (
+                                              <>
+                                                <th className="py-1.5 pr-3 text-right font-semibold">Deductible</th>
+                                                <th className="py-1.5 text-right font-semibold">Status</th>
+                                              </>
+                                            )}
                                           </tr>
                                         </thead>
                                         <tbody>
@@ -1177,6 +1210,8 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                             const split = Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) > 0
                                             const rec = t.status === 'empty' && t.received_qty != null ? Number(t.received_qty) * share : null
                                             const shortage = rec != null ? Math.max(0, loaded - Number(t.received_qty)) * share : null
+                                            const allowedAmt = loaded > 0 ? (dis * pctOf(t)) / 100 : 0
+                                            const deductible = isEx && shortage != null && shortage > allowedAmt ? shortage - allowedAmt : null
                                             return (
                                               <tr
                                                 key={t.id as number}
@@ -1202,7 +1237,13 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                                     <span className={shortage > 0 ? 'text-amber-700' : ''}>{formatNum(shortage)}</span>
                                                   ) : '—'}
                                                 </td>
-                                                <td className="py-1.5 text-right tabular-nums">{loaded > 0 ? formatNum((dis * pctOf(t)) / 100) : '—'}</td>
+                                                <td className={cn('py-1.5 text-right tabular-nums', isEx && 'pr-3')}>{loaded > 0 ? formatNum(allowedAmt) : '—'}</td>
+                                                {isEx && (
+                                                  <>
+                                                    <td className="py-1.5 pr-3 text-right tabular-nums text-red-600">{deductible != null ? formatNum(deductible) : ''}</td>
+                                                    <td className="py-1.5 text-right">{deductible != null ? <Badge variant="destructive" className="text-[10px]">Deductible</Badge> : ''}</td>
+                                                  </>
+                                                )}
                                               </tr>
                                             )
                                           })}
@@ -1211,7 +1252,16 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                             <td className="py-1.5 pr-3 text-right tabular-nums text-red-600">{formatNum(tot.dis)}</td>
                                             <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(tot.rec)}</td>
                                             <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(tot.shortage)}</td>
-                                            <td className="py-1.5 text-right tabular-nums">{formatNum(tot.allowed)}</td>
+                                            <td className={cn('py-1.5 text-right tabular-nums', isEx && 'pr-3')}>{formatNum(tot.allowed)}</td>
+                                            {isEx && (() => {
+                                              const totDeductible = tot.shortage > tot.allowed ? tot.shortage - tot.allowed : null
+                                              return (
+                                                <>
+                                                  <td className="py-1.5 pr-3 text-right tabular-nums text-red-600">{totDeductible != null ? formatNum(totDeductible) : ''}</td>
+                                                  <td className="py-1.5 text-right">{totDeductible != null ? <Badge variant="destructive" className="text-[10px]">Deductible</Badge> : ''}</td>
+                                                </>
+                                              )
+                                            })()}
                                           </tr>
                                         </tbody>
                                       </table>

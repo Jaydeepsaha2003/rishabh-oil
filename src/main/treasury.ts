@@ -174,6 +174,47 @@ export async function dropLcUpfrontInterest(lcId: number): Promise<void> {
   }
 }
 
+// Posts the Dr Interest/Cr Bank entry for a preclose's premature interest —
+// the days between preclose and the LC's original maturity that never
+// happen — when that cost is routed to the bank rather than netted against
+// the party at preclose time. Deferred until you reconcile the matching bank
+// statement line, same mechanism as the upfront-interest pair above.
+export async function postLcPrecloseInterest(lcId: number, dateIn?: string): Promise<{ id: number } | null> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [lcId] })
+  if (!res.rows.length) throw new Error('LC not found')
+  const lc = toPlain(res)[0]
+  await dropEntry(n(lc.preclose_interest_journal_entry_id) || null)
+  const interest = round2(n(lc.preclose_premature_interest))
+  if (interest < 0.005) {
+    await c.execute({ sql: 'UPDATE letters_of_credit SET preclose_interest_journal_entry_id = NULL WHERE id = ?', args: [lcId] })
+    return null
+  }
+  const je = await postJournal({
+    date: String(dateIn || todayISO()).slice(0, 10),
+    vchType: 'JOURNAL',
+    vchNo: String(lc.lc_no || ''),
+    narration: `LC ${lc.lc_no} — premature interest ${interest.toFixed(2)} for preclosing before maturity, paid from the bank per its statement`,
+    companyId: n(lc.company_id) || undefined,
+    lines: [
+      { account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest },
+      { account: 'BANK A/C', group: 'Bank Accounts', cr: interest }
+    ]
+  })
+  await c.execute({ sql: 'UPDATE letters_of_credit SET preclose_interest_journal_entry_id = ? WHERE id = ?', args: [je.id, lcId] })
+  return { id: je.id }
+}
+
+// Reverses the preclose premature-interest posting above.
+export async function dropLcPrecloseInterest(lcId: number): Promise<void> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT preclose_interest_journal_entry_id FROM letters_of_credit WHERE id = ?', args: [lcId] })
+  if (res.rows.length && res.rows[0].preclose_interest_journal_entry_id) {
+    await dropEntry(n(res.rows[0].preclose_interest_journal_entry_id))
+    await c.execute({ sql: 'UPDATE letters_of_credit SET preclose_interest_journal_entry_id = NULL WHERE id = ?', args: [lcId] })
+  }
+}
+
 // Closing the LC out before its natural maturity settles whatever's left of
 // the open amount one of two ways: the bank releases it back as cash (its
 // margin deposit is no longer needed), or it covers a balance still owed to

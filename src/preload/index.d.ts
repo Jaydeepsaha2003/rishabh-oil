@@ -230,7 +230,13 @@ export interface Api {
     removeRepayment: (id: number) => Promise<{ id: number }>
     preclose: (
       id: number,
-      values: { preclose_date: string; direction: 'credit_to_us' | 'pay_to_party'; amount: number }
+      values: {
+        preclose_date: string
+        direction: 'credit_to_us' | 'pay_to_party'
+        amount: number
+        premature_interest?: number
+        interest_route?: 'party' | 'bank'
+      }
     ) => Promise<{ id: number }>
     getLimit: () => Promise<Row>
     saveLimit: (values: Row) => Promise<{ id: number }>

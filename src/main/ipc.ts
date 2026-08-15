@@ -627,8 +627,22 @@ export function registerIpc(): void {
   handle('lc:deleteIssuance', (_e, { id }: { id: number }) => deleteLCIssuance(id))
   handle(
     'lc:preclose',
-    (_e, { id, values }: { id: number; values: { preclose_date: string; direction: 'credit_to_us' | 'pay_to_party'; amount: number } }) =>
-      precloseLC(id, values)
+    (
+      _e,
+      {
+        id,
+        values
+      }: {
+        id: number
+        values: {
+          preclose_date: string
+          direction: 'credit_to_us' | 'pay_to_party'
+          amount: number
+          premature_interest?: number
+          interest_route?: 'party' | 'bank'
+        }
+      }
+    ) => precloseLC(id, values)
   )
   handle('lc:repayments', (_e, { lcId }: { lcId: number }) => listLcRepayments(lcId))
   handle('lc:saveRepayment', (_e, { values }: { values: Row }) => saveLcRepayment(values))

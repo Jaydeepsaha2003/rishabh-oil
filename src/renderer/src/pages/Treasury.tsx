@@ -124,7 +124,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   const [issuances, setIssuances] = useState<Record<number, Row[]>>({})
   const [repayments, setRepayments] = useState<Record<number, Row[]>>({})
   const [openLc, setOpenLc] = useState<Set<number>>(new Set())
-  const [lcView, setLcView] = useState<'cards' | 'table'>('cards')
+  const [lcView, setLcView] = useState<'cards' | 'table'>('table')
+  const [expandedAlert, setExpandedAlert] = useState<string | null>(null)
   // T+1 / this week / fortnight / monthly / quarterly, by whichever is nearer:
   // an outstanding bill's due date, or (no outstanding bill) the LC's expiry.
   const [lcDuePeriod, setLcDuePeriod] = useState('all')
@@ -345,7 +346,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
 
   function openPreclose(l: Row): void {
     setPrecloseRow(l)
-    setPrecloseForm({ preclose_date: todayISO(), direction: 'credit_to_us', amount: '' })
+    setPrecloseForm({ preclose_date: todayISO(), direction: 'credit_to_us', amount: '', interest_route: 'party', premature_interest: '' })
     setPrecloseError(null)
   }
 
@@ -354,19 +355,27 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     const openAmount = n(precloseRow.amount)
     const unused = round2(Math.max(0, openAmount - n(precloseRow.utilized)))
     const openDate = String(precloseRow.open_date || '').slice(0, 10)
+    const precloseDate = String(precloseForm.preclose_date)
     const days = openDate
-      ? Math.max(
-          0,
-          Math.round(
-            (new Date(`${String(precloseForm.preclose_date)}T00:00:00`).getTime() - new Date(`${openDate}T00:00:00`).getTime()) / 86400000
-          )
-        )
+      ? Math.max(0, Math.round((new Date(`${precloseDate}T00:00:00`).getTime() - new Date(`${openDate}T00:00:00`).getTime()) / 86400000))
       : 0
     const interest = round2((openAmount * n(precloseRow.interest_pct) * days) / (100 * 365))
     const charges = round2(n(precloseRow.charges))
-    const suggested = round2(Math.max(0, unused - interest - charges))
-    return { unused, days, interest, charges, suggested }
-  }, [precloseRow, precloseForm.preclose_date])
+    // Pending days: what's left of the ORIGINAL term (preclose date ->
+    // maturity) that will never actually happen — an extra cost on top of
+    // (not instead of) the interest above, which only covers days actually
+    // elapsed.
+    const expiryDate = String(precloseRow.expiry_date || '').slice(0, 10)
+    const pendingDays = expiryDate
+      ? Math.max(0, Math.round((new Date(`${expiryDate}T00:00:00`).getTime() - new Date(`${precloseDate}T00:00:00`).getTime()) / 86400000))
+      : 0
+    const prematureInterest = round2((openAmount * n(precloseRow.interest_pct) * pendingDays) / (100 * 365))
+    const interestRoute = precloseForm.interest_route === 'bank' ? 'bank' : 'party'
+    // Routed to the party, the premature interest is folded straight into the
+    // one settlement figure — no separate voucher line for it.
+    const suggested = round2(Math.max(0, unused - interest - charges - (interestRoute === 'party' ? prematureInterest : 0)))
+    return { unused, days, interest, charges, suggested, pendingDays, prematureInterest, interestRoute }
+  }, [precloseRow, precloseForm.preclose_date, precloseForm.interest_route])
 
   async function savePreclose(): Promise<void> {
     if (!precloseRow) return
@@ -381,7 +390,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       await window.api.lc.preclose(Number(precloseRow.id), {
         preclose_date: String(precloseForm.preclose_date),
         direction: precloseForm.direction === 'pay_to_party' ? 'pay_to_party' : 'credit_to_us',
-        amount: n(precloseForm.amount)
+        amount: n(precloseForm.amount),
+        premature_interest: n(precloseForm.premature_interest),
+        interest_route: precloseForm.interest_route === 'bank' ? 'bank' : 'party'
       })
       toast.success('LC preclosed')
       setPrecloseRow(null)
@@ -809,17 +820,32 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       <div className="space-y-4 px-4 py-4">
         <Tabs value={tab} onValueChange={setTab}>
           {alertItems.length > 0 && (
-            <div className="grid gap-3 lg:grid-cols-3">
-              {alertItems.map((a) => (
-                <Card key={a.label} className={cn('border p-3', a.tone)}>
-                  <div className="mb-1 flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-wide">
-                    <a.icon className="h-4 w-4" /> {a.label}
-                  </div>
-                  {a.items.map((x) => (
-                    <div key={x} className="truncate text-[12px]" title={x}>{x}</div>
-                  ))}
-                </Card>
-              ))}
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-wrap gap-2">
+                {alertItems.map((a) => (
+                  <button
+                    key={a.label}
+                    type="button"
+                    onClick={() => setExpandedAlert(expandedAlert === a.label ? null : a.label)}
+                    className={cn(
+                      'flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-bold uppercase tracking-wide transition-colors',
+                      a.tone,
+                      expandedAlert === a.label && 'ring-2 ring-offset-1'
+                    )}
+                  >
+                    <a.icon className="h-3.5 w-3.5" /> {a.label}
+                  </button>
+                ))}
+              </div>
+              {alertItems
+                .filter((a) => a.label === expandedAlert)
+                .map((a) => (
+                  <Card key={a.label} className={cn('border p-3', a.tone)}>
+                    {a.items.map((x) => (
+                      <div key={x} className="truncate text-[12px]" title={x}>{x}</div>
+                    ))}
+                  </Card>
+                ))}
             </div>
           )}
 
@@ -1152,7 +1178,15 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       return (
                         <Fragment key={String(l.id)}>
                           <TableRow
-                            className={cn('cursor-pointer border-b border-dotted border-[#e5dfc8] transition-colors', tone.row, tone.hover)}
+                            className={cn(
+                              'cursor-pointer border-b border-dotted border-[#e5dfc8] transition-colors',
+                              tone.row,
+                              tone.hover,
+                              // White row background — the stage-colored left
+                              // border alone carries the coding, so text stays
+                              // at full contrast instead of sitting on a tint.
+                              'bg-white'
+                            )}
                             onClick={() => void toggleLc(Number(l.id))}
                           >
                             <TableCell className="whitespace-nowrap">
@@ -1169,7 +1203,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               </div>
                             </TableCell>
                             <TableCell className="whitespace-nowrap">{l.supplier_name || '—'}</TableCell>
-                            <TableCell className="whitespace-nowrap text-[12px] tabular-nums">
+                            <TableCell className="whitespace-nowrap tabular-nums">
                               <div>O - {formatDate(l.open_date)}</div>
                               <div>M - {formatDate(l.expiry_date)}</div>
                             </TableCell>
@@ -1395,7 +1429,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
 
       {/* Preclose an LC — wind it up before its natural maturity */}
       <Dialog open={!!precloseRow} onOpenChange={(o) => !o && setPrecloseRow(null)}>
-        <DialogContent className="max-w-2xl overflow-hidden p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100">
+        <DialogContent className="max-w-3xl max-h-[88vh] overflow-y-auto p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100">
           <div className="flex items-center gap-3 bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-6 py-4 text-white">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/15">
               <Landmark className="h-5 w-5" />
@@ -1447,6 +1481,75 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(preclosePreview.suggested)}</div>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {preclosePreview && preclosePreview.pendingDays > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 shadow-sm">
+                <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-amber-900">
+                  <AlertTriangle className="h-3.5 w-3.5" /> Premature closure — interest on the days that won't happen
+                  <span className="ml-auto flex items-center gap-1 rounded-full bg-amber-700 px-2.5 py-1 text-[11px] font-bold normal-case tracking-normal text-white">
+                    <CalendarClock className="h-3 w-3" /> {preclosePreview.pendingDays} pending days
+                  </span>
+                </h3>
+                <p className="mb-3 text-[11px] text-amber-900/80">
+                  {preclosePreview.pendingDays} days remain between this preclosure and the LC's original maturity — the bank
+                  still counts interest for the term it committed to. This is on top of, not instead of, the interest already
+                  recalculated above.
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="flex flex-col gap-1.5">
+                    <Label className="flex flex-wrap items-center gap-1.5">
+                      Premature interest (₹)
+                      <button
+                        type="button"
+                        className="text-[10px] font-medium text-teal-700 underline-offset-2 hover:underline"
+                        onClick={() => setPrecloseForm({ ...precloseForm, premature_interest: String(preclosePreview.prematureInterest) })}
+                      >
+                        Use calculated ({formatINR(preclosePreview.prematureInterest)})
+                      </button>
+                    </Label>
+                    <Input
+                      type="number"
+                      value={precloseForm.premature_interest ?? ''}
+                      onChange={(e) => setPrecloseForm({ ...precloseForm, premature_interest: e.target.value })}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Route this interest</Label>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setPrecloseForm({ ...precloseForm, interest_route: 'party' })}
+                        className={cn(
+                          'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
+                          precloseForm.interest_route !== 'bank'
+                            ? 'border-amber-500 bg-amber-100 text-amber-900'
+                            : 'border-[#e5dfc8] text-muted-foreground hover:bg-muted/40'
+                        )}
+                      >
+                        Adjust to party A/C
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPrecloseForm({ ...precloseForm, interest_route: 'bank' })}
+                        className={cn(
+                          'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
+                          precloseForm.interest_route === 'bank'
+                            ? 'border-sky-500 bg-sky-50 text-sky-800'
+                            : 'border-[#e5dfc8] text-muted-foreground hover:bg-muted/40'
+                        )}
+                      >
+                        Link a Bank Entry
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <p className="mt-2 text-[10px] text-amber-900/70">
+                  {precloseForm.interest_route === 'bank'
+                    ? "Deferred — posted only once you link and reconcile its own line from the Bank Reconciliation screen."
+                    : "Netted straight into the settlement amount below — one voucher, no separate entry for it."}
+                </p>
               </div>
             )}
 
@@ -1609,17 +1712,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           <Input type="number" value={stageForm.charges ?? ''} onChange={(e) => setStageForm({ ...stageForm, charges: e.target.value })} />
                         </div>
                       </div>
-                      <div className="mt-3 flex items-start gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
+                      <div className="mt-3 flex items-center gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
                         <Switch checked={!!stageForm.interest_upfront} onCheckedChange={(v) => setStageForm({ ...stageForm, interest_upfront: v })} />
-                        <div>
-                          <div className="text-[12px] font-semibold">Interest & charges paid upfront</div>
-                          <div className="text-[11px] text-muted-foreground">
-                            Some parties (e.g. Bunge-style deals) pay interest and LC charges straight from the bank account
-                            instead of either coming out of the open amount. Turn this on and the Open Amount stays the full
-                            Receipt Amount — both are still calculated here for reference, but only posted to the books once
-                            you link their line from the Bank Reconciliation screen.
-                          </div>
-                        </div>
+                        <div className="text-[12px] font-semibold">Interest & charges paid upfront</div>
                       </div>
                     </section>
                     {stagePreview && (
@@ -2048,17 +2143,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   </div>
                 </div>
                 <span className="mt-1 block text-[10px] text-muted-foreground">ROI and LC charges are obtained once payment is received; interest is charged over the interest days (maturity date − payment received date).</span>
-                <div className="mt-3 flex items-start gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
+                <div className="mt-3 flex items-center gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
                   <Switch checked={!!lcForm.interest_upfront} onCheckedChange={(v) => setLcForm({ ...lcForm, interest_upfront: v })} />
-                  <div>
-                    <div className="text-[12px] font-semibold">Interest & charges paid upfront</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      Some parties (e.g. Bunge-style deals) pay interest and LC charges straight from the bank account instead
-                      of either coming out of the open amount. Turn this on and the Open Amount stays the full Receipt Amount —
-                      both are still calculated here for reference, but only posted to the books once you link their line from
-                      the Bank Reconciliation screen.
-                    </div>
-                  </div>
+                  <div className="text-[12px] font-semibold">Interest & charges paid upfront</div>
                 </div>
               </section>
 

@@ -309,7 +309,13 @@ const api = {
       ipcRenderer.invoke('lc:deleteRepayment', { id }),
     preclose: (
       id: number,
-      values: { preclose_date: string; direction: 'credit_to_us' | 'pay_to_party'; amount: number }
+      values: {
+        preclose_date: string
+        direction: 'credit_to_us' | 'pay_to_party'
+        amount: number
+        premature_interest?: number
+        interest_route?: 'party' | 'bank'
+      }
     ): Promise<{ id: number }> => ipcRenderer.invoke('lc:preclose', { id, values }),
     getLimit: (): Promise<Row> => ipcRenderer.invoke('lc:getLimit'),
     saveLimit: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('lc:saveLimit', { values })

@@ -875,7 +875,15 @@ const MIGRATIONS = [
   // is calculated for reference only, posted later when its own bank
   // statement line is reconciled (see bankRecon.ts's 'lc_interest' link).
   'ALTER TABLE letters_of_credit ADD COLUMN interest_upfront INTEGER NOT NULL DEFAULT 0',
-  'ALTER TABLE letters_of_credit ADD COLUMN interest_journal_entry_id INTEGER'
+  'ALTER TABLE letters_of_credit ADD COLUMN interest_journal_entry_id INTEGER',
+  // Premature-closure interest: the days between preclose and the LC's
+  // original maturity that never happen still carry an interest cost. Stored
+  // for record regardless of route; only routed to the bank does it get its
+  // own deferred posting (see bankRecon.ts's 'lc_preclose_interest' link) —
+  // routed to the party, it's already netted into preclose_settlement_amount.
+  'ALTER TABLE letters_of_credit ADD COLUMN preclose_premature_interest REAL',
+  'ALTER TABLE letters_of_credit ADD COLUMN preclose_interest_route TEXT',
+  'ALTER TABLE letters_of_credit ADD COLUMN preclose_interest_journal_entry_id INTEGER'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

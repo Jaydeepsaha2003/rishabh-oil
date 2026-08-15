@@ -401,7 +401,13 @@ function daysBetween(a: string, b: string): number {
 // settles as its own entry, one way or the other, per the user's own choice.
 export async function precloseLC(
   id: number,
-  v: { preclose_date: string; direction: 'credit_to_us' | 'pay_to_party'; amount: number }
+  v: {
+    preclose_date: string
+    direction: 'credit_to_us' | 'pay_to_party'
+    amount: number
+    premature_interest?: number
+    interest_route?: 'party' | 'bank'
+  }
 ): Promise<{ id: number }> {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [id] })
@@ -412,9 +418,15 @@ export async function precloseLC(
   if (!precloseDate) throw new Error('Pick the preclosure date')
   if (!lc.open_date) throw new Error('The LC has no application date to count interest days from')
   const actualDays = Math.max(0, daysBetween(String(lc.open_date), precloseDate))
+  const interestRoute = v.interest_route === 'bank' ? 'bank' : 'party'
+  // Routed to the party, the premature interest is already netted into the
+  // settlement amount the caller sends — one voucher, no separate line for
+  // it. Routed to the bank, it's deferred and posted only once its own
+  // statement line is reconciled (see postLcPrecloseInterest / bankRecon.ts).
   await c.execute({
-    sql: 'UPDATE letters_of_credit SET usance_days = ?, preclosed_date = ?, preclose_settlement_direction = ?, preclose_settlement_amount = ? WHERE id = ?',
-    args: [actualDays, precloseDate, v.direction, round2(n(v.amount)), id]
+    sql: `UPDATE letters_of_credit SET usance_days = ?, preclosed_date = ?, preclose_settlement_direction = ?,
+          preclose_settlement_amount = ?, preclose_premature_interest = ?, preclose_interest_route = ? WHERE id = ?`,
+    args: [actualDays, precloseDate, v.direction, round2(n(v.amount)), round2(n(v.premature_interest)), interestRoute, id]
   })
   // Re-strikes the margin/interest/charges voucher with the corrected
   // (shorter) interest period now stored on the record.
@@ -435,12 +447,14 @@ export async function deleteLC(id: number): Promise<{ id: number }> {
   const repayments = await c.execute({ sql: 'SELECT journal_entry_id FROM lc_repayments WHERE lc_id = ?', args: [id] })
   for (const r of repayments.rows) if (r.journal_entry_id) await dropTreasuryEntry(Number(r.journal_entry_id))
   const lc = await c.execute({
-    sql: 'SELECT journal_entry_id, preclose_journal_entry_id, interest_journal_entry_id FROM letters_of_credit WHERE id = ?',
+    sql: `SELECT journal_entry_id, preclose_journal_entry_id, interest_journal_entry_id, preclose_interest_journal_entry_id
+          FROM letters_of_credit WHERE id = ?`,
     args: [id]
   })
   if (lc.rows.length && lc.rows[0].journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].journal_entry_id))
   if (lc.rows.length && lc.rows[0].preclose_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].preclose_journal_entry_id))
   if (lc.rows.length && lc.rows[0].interest_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].interest_journal_entry_id))
+  if (lc.rows.length && lc.rows[0].preclose_interest_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].preclose_interest_journal_entry_id))
   await c.execute({ sql: 'DELETE FROM lc_issuances WHERE lc_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM lc_repayments WHERE lc_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM lc_linked_orders WHERE lc_id = ?', args: [id] })

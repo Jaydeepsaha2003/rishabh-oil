@@ -3,7 +3,7 @@ import ExcelJS from 'exceljs'
 import { readFileSync } from 'fs'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
-import { postLcUpfrontInterest, dropLcUpfrontInterest } from './treasury'
+import { postLcUpfrontInterest, dropLcUpfrontInterest, postLcPrecloseInterest, dropLcPrecloseInterest } from './treasury'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -238,7 +238,9 @@ export async function suggestBankLineMatch(lineId: number): Promise<Row | null> 
   //    open amount), and repayments (incl. maturity charges) for an amount
   //    match near the line's date.
   const lcRes = await c.execute(
-    "SELECT id, lc_no, charges, opened_date, open_date, amount, interest_pct, usance_days, interest_upfront FROM letters_of_credit WHERE lc_no IS NOT NULL AND lc_no != ''"
+    `SELECT id, lc_no, charges, opened_date, open_date, amount, interest_pct, usance_days, interest_upfront,
+            preclosed_date, preclose_premature_interest, preclose_interest_route, preclose_interest_journal_entry_id
+     FROM letters_of_credit WHERE lc_no IS NOT NULL AND lc_no != ''`
   )
   for (const lc of toPlain(lcRes)) {
     const lcNo = String(lc.lc_no || '').toUpperCase()
@@ -266,6 +268,21 @@ export async function suggestBankLineMatch(lineId: number): Promise<Row | null> 
           link_type: 'lc_interest',
           link_ref_id: n(lc.id),
           label: `LC ${lc.lc_no} — interest ${interest.toFixed(2)} + charges ${charges.toFixed(2)} paid upfront (${total.toFixed(2)})`
+        }
+      }
+    }
+
+    // Preclose's premature interest — the pending days between preclose and
+    // the LC's original maturity — only when routed to the bank rather than
+    // netted against the party, and only while it hasn't been posted yet.
+    if (lc.preclosed_date && String(lc.preclose_interest_route) === 'bank' && !lc.preclose_interest_journal_entry_id) {
+      const premature = round2(n(lc.preclose_premature_interest))
+      if (premature > 0 && Math.abs(premature - amount) <= AMOUNT_TOLERANCE) {
+        return {
+          category: 'lc',
+          link_type: 'lc_preclose_interest',
+          link_ref_id: n(lc.id),
+          label: `LC ${lc.lc_no} — premature interest ${premature.toFixed(2)} (preclose)`
         }
       }
     }
@@ -316,18 +333,19 @@ export async function suggestBankLineMatch(lineId: number): Promise<Row | null> 
   return best
 }
 
-// Interest paid upfront (see interest_upfront on the LC) isn't posted anywhere
-// else, so — unlike every other link type here, which only points at an
-// ALREADY-posted record — reconciling this one is what actually posts it.
-// Reclassifying a line away from that link (misc, or back to pending) has to
-// reverse the same posting, so both paths share this.
+// Interest paid upfront (see interest_upfront on the LC) and a preclose's
+// bank-routed premature interest aren't posted anywhere else, so — unlike
+// every other link type here, which only points at an ALREADY-posted record
+// — reconciling one of these is what actually posts it. Reclassifying a line
+// away from that link (misc, or back to pending) has to reverse the same
+// posting, so both paths share this.
 async function reverseLcInterestLink(lineId: number): Promise<void> {
   const c = getClient()
   const cur = await c.execute({ sql: 'SELECT link_type, link_ref_id FROM bank_statement_lines WHERE id = ?', args: [lineId] })
   const row = cur.rows[0]
-  if (row && String(row.link_type) === 'lc_interest' && row.link_ref_id) {
-    await dropLcUpfrontInterest(n(row.link_ref_id))
-  }
+  if (!row || !row.link_ref_id) return
+  if (String(row.link_type) === 'lc_interest') await dropLcUpfrontInterest(n(row.link_ref_id))
+  else if (String(row.link_type) === 'lc_preclose_interest') await dropLcPrecloseInterest(n(row.link_ref_id))
 }
 
 export async function reconcileBankLine(lineId: number, v: Row): Promise<{ id: number }> {
@@ -339,6 +357,9 @@ export async function reconcileBankLine(lineId: number, v: Row): Promise<{ id: n
   if (linkType === 'lc_interest' && linkRefId) {
     const line = await c.execute({ sql: 'SELECT txn_date FROM bank_statement_lines WHERE id = ?', args: [lineId] })
     await postLcUpfrontInterest(linkRefId, String(line.rows[0]?.txn_date || ''))
+  } else if (linkType === 'lc_preclose_interest' && linkRefId) {
+    const line = await c.execute({ sql: 'SELECT txn_date FROM bank_statement_lines WHERE id = ?', args: [lineId] })
+    await postLcPrecloseInterest(linkRefId, String(line.rows[0]?.txn_date || ''))
   }
   await c.execute({
     sql: `UPDATE bank_statement_lines SET category = ?, link_type = ?, link_ref_id = ?, status = 'reconciled', reviewed_at = datetime('now')
