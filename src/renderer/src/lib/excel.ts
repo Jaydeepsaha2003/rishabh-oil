@@ -11,6 +11,10 @@ export type ExcelColumn = {
   numFmt?: string
   // Optional accessor — defaults to row[key].
   value?: (row: Row) => unknown
+  // Solid fill (ARGB hex, e.g. 'FFC6EFCE' for light green) applied to every
+  // cell in this column — wins over the group-row tint so a column can stay
+  // highlighted even on the bold LC summary row.
+  fill?: string
 }
 
 // One tab of a workbook.
@@ -74,6 +78,7 @@ function writeSheet(wb: ExcelJS.Workbook, spec: ExcelSheet, index: number): void
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } }
         cell.border = { top: { style: 'thin', color: { argb: 'FF94A3B8' } } }
       }
+      if (c.fill) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: c.fill } }
     })
   })
 }

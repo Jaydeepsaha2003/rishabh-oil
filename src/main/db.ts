@@ -868,7 +868,14 @@ const MIGRATIONS = [
     convertible_limit REAL NOT NULL DEFAULT 0,
     convertible_enabled INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`
+  )`,
+  // Some parties (e.g. Bunge-style deals) pay LC interest upfront straight
+  // from the bank account instead of it coming out of the open amount — the
+  // Open Amount then equals what the supplier actually receives, and interest
+  // is calculated for reference only, posted later when its own bank
+  // statement line is reconciled (see bankRecon.ts's 'lc_interest' link).
+  'ALTER TABLE letters_of_credit ADD COLUMN interest_upfront INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE letters_of_credit ADD COLUMN interest_journal_entry_id INTEGER'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

@@ -326,7 +326,7 @@ function App(): React.JSX.Element {
         {view === 'gateEntry' && <GateEntry />}
         {view === 'trading' && <Trading />}
         {view === 'accounts' && <Accounts onExit={() => setPage('dashboard')} />}
-        {view === 'treasury' && <Treasury />}
+        {view === 'treasury' && <Treasury onCompanyChange={switchCompany} />}
         {view === 'bankRecon' && <BankReconciliation />}
         {view === 'products' && <Products />}
         {view === 'categories' && <Categories />}

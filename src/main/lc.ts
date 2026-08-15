@@ -27,9 +27,11 @@ function round2(v: number): number {
 // What's actually left to issue bills against: interest and charges come out
 // of the LC's own open amount before anything else, the same as the money
 // that lands with the bank — issuing bills doesn't get to ignore what the LC
-// itself already owes in fees.
+// itself already owes in fees. Unless interest is paid upfront (some parties,
+// e.g. Bunge-style deals, settle it straight from the bank account) — then
+// the open amount isn't touched by interest at all, only by charges.
 function netAvailable(lc: Row, issued: number): number {
-  const interest = round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
+  const interest = lc.interest_upfront ? 0 : round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
   const charges = round2(n(lc.charges))
   return round2(n(lc.amount) - interest - charges - issued)
 }
@@ -70,6 +72,7 @@ export async function listLCs(): Promise<Row[]> {
     // whichever invoices happen to be linked to it.
     const margin = Math.round((n(l.amount) * n(l.margin_pct)) / 100 * 100) / 100
     const interest = Math.round(((n(l.amount) * n(l.interest_pct) * n(l.usance_days)) / (100 * 365)) * 100) / 100
+    const chargedInterest = l.interest_upfront ? 0 : interest
     const charges = Math.round(n(l.charges) * 100) / 100
     // Trading LCs are only "compliant" once they carry at least one open
     // invoice and the party repayment will come from — without either, the
@@ -82,8 +85,9 @@ export async function listLCs(): Promise<Row[]> {
         .map((x) => Number(x))
         .filter((x) => x > 0),
       // Back-calculated: the open amount is the limit struck with the bank —
-      // interest and charges come OUT of it, not added on top.
-      lc_net_available: Math.round((n(l.amount) - interest - charges) * 100) / 100,
+      // interest and charges come OUT of it, not added on top (unless
+      // interest is paid upfront from the bank instead — see interest_upfront).
+      lc_net_available: Math.round((n(l.amount) - chargedInterest - charges) * 100) / 100,
       // What's actually left to issue bills against — interest and charges
       // come out of the open amount before issued bills reduce it further.
       available: netAvailable(l, n(l.utilized)),
@@ -249,7 +253,8 @@ const LC_COLS = [
   'stage',
   'fd_no',
   'payment_received_date',
-  'opened_date'
+  'opened_date',
+  'interest_upfront'
 ]
 
 function lcArgs(v: Row): (string | number | null)[] {
@@ -261,7 +266,7 @@ function lcArgs(v: Row): (string | number | null)[] {
       // NOT NULL columns — Interest days in particular is blank until both
       // maturity and payment-received dates are set, so a fresh LC must still
       // insert cleanly with 0 rather than null.
-      if (k === 'amount' || k === 'usance_days' || k === 'margin_pct') return 0
+      if (k === 'amount' || k === 'usance_days' || k === 'margin_pct' || k === 'interest_upfront') return 0
       // lc_no is NOT NULL but genuinely unknown until Open — an empty string
       // satisfies the column without pretending to have a real number.
       if (k === 'lc_no') return ''
@@ -275,7 +280,8 @@ function lcArgs(v: Row): (string | number | null)[] {
       k === 'usance_days' ||
       k === 'margin_pct' ||
       k === 'facility_id' ||
-      k === 'receivable_party_id'
+      k === 'receivable_party_id' ||
+      k === 'interest_upfront'
     ) {
       return n(val)
     }
@@ -427,9 +433,13 @@ export async function deleteLC(id: number): Promise<{ id: number }> {
   for (const b of bills.rows) if (b.journal_entry_id) await dropTreasuryEntry(Number(b.journal_entry_id))
   const repayments = await c.execute({ sql: 'SELECT journal_entry_id FROM lc_repayments WHERE lc_id = ?', args: [id] })
   for (const r of repayments.rows) if (r.journal_entry_id) await dropTreasuryEntry(Number(r.journal_entry_id))
-  const lc = await c.execute({ sql: 'SELECT journal_entry_id, preclose_journal_entry_id FROM letters_of_credit WHERE id = ?', args: [id] })
+  const lc = await c.execute({
+    sql: 'SELECT journal_entry_id, preclose_journal_entry_id, interest_journal_entry_id FROM letters_of_credit WHERE id = ?',
+    args: [id]
+  })
   if (lc.rows.length && lc.rows[0].journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].journal_entry_id))
   if (lc.rows.length && lc.rows[0].preclose_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].preclose_journal_entry_id))
+  if (lc.rows.length && lc.rows[0].interest_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].interest_journal_entry_id))
   await c.execute({ sql: 'DELETE FROM lc_issuances WHERE lc_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM lc_repayments WHERE lc_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM lc_linked_orders WHERE lc_id = ?', args: [id] })

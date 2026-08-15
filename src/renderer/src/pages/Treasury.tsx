@@ -14,6 +14,7 @@ import {
   Landmark,
   List,
   Paperclip,
+  Pencil,
   Percent,
   Plus,
   RotateCcw,
@@ -30,7 +31,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Tabs, TabsContent } from '@/components/ui/tabs'
 import { PageHeader } from '@/components/PageHeader'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -107,7 +108,11 @@ const STAGE_ROW_TONE: Record<string, { row: string; hover: string }> = {
   payment_received: { row: "border-l-4 border-l-emerald-400 bg-emerald-50/50 [border-left-style:solid]", hover: 'hover:bg-emerald-100/60' }
 }
 
-export function Treasury(): React.JSX.Element {
+interface Props {
+  onCompanyChange: (id: string) => void
+}
+
+export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   const [tab, setTab] = useState('lc')
   const [lcs, setLcs] = useState<Row[]>([])
   const [bills, setBills] = useState<Row[]>([])
@@ -244,7 +249,8 @@ export function Treasury(): React.JSX.Element {
             expiry_date: l.expiry_date || '',
             margin_pct: l.margin_pct || '',
             interest_pct: l.interest_pct || '',
-            charges: l.charges || ''
+            charges: l.charges || '',
+            interest_upfront: !!l.interest_upfront
           }
     )
     setStageError(null)
@@ -401,18 +407,21 @@ export function Treasury(): React.JSX.Element {
     const interestPct = n(stageForm.interest_pct)
     const charges = n(stageForm.charges)
     const interest = days != null ? round2((amount * interestPct * days) / (100 * 365)) : 0
-    const netAvailable = round2(amount - interest - charges)
+    const upfront = !!stageForm.interest_upfront
+    const netAvailable = round2(amount - (upfront ? 0 : interest) - charges)
     // Margin is the security deposit the bank asks for on the LC's own open
     // amount — a straight percentage of the credit limit itself, not of
     // whichever invoices happen to be linked to it.
     const margin = round2((amount * n(stageForm.margin_pct)) / 100)
-    return { amount, days, interest, charges, margin, netAvailable }
-  }, [stageRow, stageForm.payment_received_date, stageForm.expiry_date, stageForm.margin_pct, stageForm.interest_pct, stageForm.charges])
+    return { amount, days, interest, charges, margin, netAvailable, upfront }
+  }, [stageRow, stageForm.payment_received_date, stageForm.expiry_date, stageForm.margin_pct, stageForm.interest_pct, stageForm.charges, stageForm.interest_upfront])
 
   async function saveLc(): Promise<void> {
     if (!lcForm) return
     if (!String(lcForm.open_date || '').trim()) return void toast.error('Application date is required')
     if (!String(lcForm.fd_no || '').trim()) return void toast.error('FD No is required')
+    if (!String(lcForm.purpose || '').trim()) return void toast.error('Purpose is required')
+    if (!lcForm.party_id) return void toast.error('Supplier is required')
     if (String(lcForm.stage || 'application') !== 'application' && !String(lcForm.lc_no || '').trim()) {
       return void toast.error('LC number is required once the LC is Open')
     }
@@ -734,7 +743,7 @@ export function Treasury(): React.JSX.Element {
                     <td className="text-right">
                       <div className="flex justify-end gap-1">
                         <Button size="icon" variant="ghost" className="h-6 w-6" title="Edit" onClick={() => setRepayForm({ ...r, open_amount: n(l.amount) })}>
-                          <CalendarClock className="h-3 w-3" />
+                          <Pencil className="h-3 w-3" />
                         </Button>
                         <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive" title="Delete" onClick={() => void removeRepayment(r)}>
                           <Trash2 className="h-3 w-3" />
@@ -784,47 +793,35 @@ export function Treasury(): React.JSX.Element {
       <PageHeader
         title="Treasury"
         hint="LCs carry interest days: every bill issued under one gets a maturity date, and settling it pays the supplier through the books against the original invoice. Discounting a sale bill brings the bank money in now (interest and charges to expenses) and clears the customer when the bill is realized. Everything shows in the Day Book, ledgers and Trial Balance."
+        actions={
+          <Select value={tab} onValueChange={setTab}>
+            <SelectTrigger className="h-8 w-56 text-xs font-semibold uppercase tracking-wide">
+              <SelectValue placeholder="Select a view" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="lc">Letters of Credit ({lcs.length})</SelectItem>
+              <SelectItem value="bd">Bill Discounting ({bills.length})</SelectItem>
+              <SelectItem value="tracker">Payment Tracker ({tracker.filter((x) => !x.settled).length})</SelectItem>
+            </SelectContent>
+          </Select>
+        }
       />
       <div className="space-y-4 px-4 py-4">
-        {alertItems.length > 0 && (
-          <div className="grid gap-3 lg:grid-cols-3">
-            {alertItems.map((a) => (
-              <Card key={a.label} className={cn('border p-3', a.tone)}>
-                <div className="mb-1 flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-wide">
-                  <a.icon className="h-4 w-4" /> {a.label}
-                </div>
-                {a.items.map((x) => (
-                  <div key={x} className="truncate text-[12px]" title={x}>{x}</div>
-                ))}
-              </Card>
-            ))}
-          </div>
-        )}
-
         <Tabs value={tab} onValueChange={setTab}>
-          {/* Same tan-and-navy pill language as the due-period filter chips
-              directly below, so the two rows of controls read as one family
-              instead of the tab bar looking like a leftover default. */}
-          <TabsList className="h-auto gap-1.5 rounded-lg border border-[#d9d2b8] bg-white p-1 text-[#1a2c56]">
-            <TabsTrigger
-              value="lc"
-              className="rounded-md px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide data-[state=active]:bg-[#1a2c56] data-[state=active]:text-white data-[state=active]:shadow-none"
-            >
-              Letters of Credit ({lcs.length})
-            </TabsTrigger>
-            <TabsTrigger
-              value="bd"
-              className="rounded-md px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide data-[state=active]:bg-[#1a2c56] data-[state=active]:text-white data-[state=active]:shadow-none"
-            >
-              Bill Discounting ({bills.length})
-            </TabsTrigger>
-            <TabsTrigger
-              value="tracker"
-              className="rounded-md px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide data-[state=active]:bg-[#1a2c56] data-[state=active]:text-white data-[state=active]:shadow-none"
-            >
-              Payment Tracker ({tracker.filter((x) => !x.settled).length})
-            </TabsTrigger>
-          </TabsList>
+          {alertItems.length > 0 && (
+            <div className="grid gap-3 lg:grid-cols-3">
+              {alertItems.map((a) => (
+                <Card key={a.label} className={cn('border p-3', a.tone)}>
+                  <div className="mb-1 flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-wide">
+                    <a.icon className="h-4 w-4" /> {a.label}
+                  </div>
+                  {a.items.map((x) => (
+                    <div key={x} className="truncate text-[12px]" title={x}>{x}</div>
+                  ))}
+                </Card>
+              ))}
+            </div>
+          )}
 
           <TabsContent value="tracker" className="mt-4">
             <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
@@ -1100,7 +1097,7 @@ export function Treasury(): React.JSX.Element {
                             </Button>
                           )}
                           <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit LC" onClick={() => setLcForm({ ...l })}>
-                            <CalendarClock className="h-3.5 w-3.5" />
+                            <Pencil className="h-3.5 w-3.5" />
                           </Button>
                           <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" title="Delete LC (reverses its vouchers)" onClick={() => requestDeleteLc(l)}>
                             <Trash2 className="h-3.5 w-3.5" />
@@ -1208,7 +1205,7 @@ export function Treasury(): React.JSX.Element {
                                   </Button>
                                 )}
                                 <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit LC" onClick={() => setLcForm({ ...l })}>
-                                  <CalendarClock className="h-3.5 w-3.5" />
+                                  <Pencil className="h-3.5 w-3.5" />
                                 </Button>
                                 <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" title="Delete LC (reverses its vouchers)" onClick={() => requestDeleteLc(l)}>
                                   <Trash2 className="h-3.5 w-3.5" />
@@ -1612,6 +1609,18 @@ export function Treasury(): React.JSX.Element {
                           <Input type="number" value={stageForm.charges ?? ''} onChange={(e) => setStageForm({ ...stageForm, charges: e.target.value })} />
                         </div>
                       </div>
+                      <div className="mt-3 flex items-start gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
+                        <Switch checked={!!stageForm.interest_upfront} onCheckedChange={(v) => setStageForm({ ...stageForm, interest_upfront: v })} />
+                        <div>
+                          <div className="text-[12px] font-semibold">Interest paid upfront</div>
+                          <div className="text-[11px] text-muted-foreground">
+                            Some parties (e.g. Bunge-style deals) pay interest straight from the bank account instead of it
+                            coming out of the open amount. Turn this on and the Open Amount stays the full Receipt Amount —
+                            interest is still calculated here for reference, but only posted to the books once you link its
+                            own line from the Bank Reconciliation screen.
+                          </div>
+                        </div>
+                      </div>
                     </section>
                     {stagePreview && (
                       <div className="rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm">
@@ -1627,8 +1636,8 @@ export function Treasury(): React.JSX.Element {
                             <div className="text-[16px] font-semibold tabular-nums text-sky-950">{formatINR(stagePreview.amount)}</div>
                           </div>
                           <div>
-                            <div className="text-[10px] uppercase tracking-wide text-sky-700">− Interest</div>
-                            <div className="text-[16px] font-semibold tabular-nums text-rose-700">{formatINR(stagePreview.interest)}</div>
+                            <div className="text-[10px] uppercase tracking-wide text-sky-700">{stagePreview.upfront ? 'Interest (upfront)' : '− Interest'}</div>
+                            <div className={cn('text-[16px] font-semibold tabular-nums', stagePreview.upfront ? 'text-sky-950' : 'text-rose-700')}>{formatINR(stagePreview.interest)}</div>
                           </div>
                           <div>
                             <div className="text-[10px] uppercase tracking-wide text-sky-700">− Charges</div>
@@ -1640,7 +1649,9 @@ export function Treasury(): React.JSX.Element {
                           </div>
                         </div>
                         <div className="mt-3 flex items-center justify-between rounded-lg bg-white/70 px-4 py-2.5">
-                          <span className="text-[11px] font-medium uppercase tracking-wide text-sky-800">Net available = open amount − interest − charges</span>
+                          <span className="text-[11px] font-medium uppercase tracking-wide text-sky-800">
+                            {stagePreview.upfront ? 'Net available = open amount − charges (interest paid upfront)' : 'Net available = open amount − interest − charges'}
+                          </span>
                           <span className="text-xl font-bold tabular-nums text-[#1a2c56]">{formatINR(stagePreview.netAvailable)}</span>
                         </div>
                       </div>
@@ -1676,9 +1687,21 @@ export function Treasury(): React.JSX.Element {
               <p className="text-[12px] text-white/70">Track the LC from application through to payment received.</p>
             </div>
             {!!activeCompany && (
-              <span className="ml-auto mr-8 shrink-0 rounded-full bg-white/15 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-white/90">
-                {companies.find((c) => Number(c.id) === activeCompany)?.name || ''}
-              </span>
+              <Select value={String(activeCompany)} onValueChange={onCompanyChange}>
+                <SelectTrigger
+                  title="Switch company"
+                  className="ml-auto mr-8 h-auto w-auto shrink-0 gap-1.5 rounded-full border-0 bg-white/15 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-white/90 shadow-none hover:bg-white/25 [&>svg]:h-3 [&>svg]:w-3 [&>svg]:opacity-80"
+                >
+                  <SelectValue placeholder="Select company" />
+                </SelectTrigger>
+                <SelectContent className="min-w-[14rem]">
+                  {companies
+                    .filter((c) => c.active)
+                    .map((c) => (
+                      <SelectItem key={String(c.id)} value={String(c.id)}>{c.name}</SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
             )}
           </div>
           {lcForm && (
@@ -1779,7 +1802,7 @@ export function Treasury(): React.JSX.Element {
                 </h3>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="flex flex-col gap-1.5">
-                    <Label>Purpose</Label>
+                    <Label>Purpose <span className="text-red-600">*</span></Label>
                     <Select
                       value={String(lcForm.purpose || '')}
                       onValueChange={(v) =>
@@ -1794,7 +1817,7 @@ export function Treasury(): React.JSX.Element {
                     </Select>
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label>Supplier (beneficiary)</Label>
+                    <Label>Supplier (beneficiary) <span className="text-red-600">*</span></Label>
                     <Select
                       disabled={!lcForm.purpose}
                       value={lcForm.party_id ? String(lcForm.party_id) : ''}
@@ -2025,6 +2048,18 @@ export function Treasury(): React.JSX.Element {
                   </div>
                 </div>
                 <span className="mt-1 block text-[10px] text-muted-foreground">ROI and LC charges are obtained once payment is received; interest is charged over the interest days (maturity date − payment received date).</span>
+                <div className="mt-3 flex items-start gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
+                  <Switch checked={!!lcForm.interest_upfront} onCheckedChange={(v) => setLcForm({ ...lcForm, interest_upfront: v })} />
+                  <div>
+                    <div className="text-[12px] font-semibold">Interest paid upfront</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      Some parties (e.g. Bunge-style deals) pay interest straight from the bank account instead of it coming
+                      out of the open amount. Turn this on and the Open Amount stays the full Receipt Amount — interest is
+                      still calculated here for reference, but only posted to the books once you link its own line from the
+                      Bank Reconciliation screen.
+                    </div>
+                  </div>
+                </div>
               </section>
 
               {n(lcForm.amount) > 0 && (n(lcForm.margin_pct) > 0 || n(lcForm.interest_pct) > 0 || n(lcForm.charges) > 0) && (() => {
@@ -2035,9 +2070,11 @@ export function Treasury(): React.JSX.Element {
                 const margin = round2((openAmount * n(lcForm.margin_pct)) / 100)
                 const interest = round2((openAmount * n(lcForm.interest_pct) * n(lcForm.usance_days)) / (100 * 365))
                 const charges = round2(n(lcForm.charges))
+                const upfront = !!lcForm.interest_upfront
                 // Back-calculation: the open amount is the limit as struck with
-                // the bank — interest and charges come OUT of it, not on top.
-                const netAvailable = round2(openAmount - interest - charges)
+                // the bank — interest and charges come OUT of it, not on top —
+                // unless interest is being paid upfront from the bank instead.
+                const netAvailable = round2(openAmount - (upfront ? 0 : interest) - charges)
                 return (
                   <div className="rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm lg:col-span-2">
                     <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-sky-900">
@@ -2049,14 +2086,16 @@ export function Treasury(): React.JSX.Element {
                     <div className="grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
                       <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Open amount</div><div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(openAmount)}</div></div>
                       <div>
-                        <div className="text-[10px] uppercase tracking-wide text-sky-700">− Interest</div>
-                        <div className="text-[15px] font-semibold tabular-nums text-rose-700">{formatINR(interest)}</div>
+                        <div className="text-[10px] uppercase tracking-wide text-sky-700">{upfront ? 'Interest (upfront)' : '− Interest'}</div>
+                        <div className={cn('text-[15px] font-semibold tabular-nums', upfront ? 'text-sky-950' : 'text-rose-700')}>{formatINR(interest)}</div>
                       </div>
                       <div><div className="text-[10px] uppercase tracking-wide text-sky-700">− Charges</div><div className="text-[15px] font-semibold tabular-nums text-rose-700">{formatINR(charges)}</div></div>
                       <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Margin</div><div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(margin)}</div></div>
                     </div>
                     <div className="mt-3 flex items-center justify-between rounded-lg bg-white/70 px-4 py-2.5">
-                      <span className="text-[11px] font-medium uppercase tracking-wide text-sky-800">Net available = open amount − interest − charges</span>
+                      <span className="text-[11px] font-medium uppercase tracking-wide text-sky-800">
+                        {upfront ? 'Net available = open amount − charges (interest paid upfront)' : 'Net available = open amount − interest − charges'}
+                      </span>
                       <span className="text-xl font-bold tabular-nums text-[#1a2c56]">{formatINR(netAvailable)}</span>
                     </div>
                   </div>

@@ -78,9 +78,13 @@ function dayDiff(fromISO: string, toISO: string): number {
 }
 
 // Delay status for a tanker that hasn't reached Empty yet, based on the
-// expected delivery date computed from the port's transit days. Shown through
-// every in-progress stage (transit, outside factory, inside factory) so a
-// late tanker keeps flagging until it's actually done — not just en route.
+// expected delivery date computed from the port's transit days. Once the
+// tanker has actually reached Outside factory, the delay is FIXED to how long
+// that outward trip really took (outside factory date − loaded date, against
+// the source's transit-day benchmark) — it stops growing with today's date,
+// so a tanker sitting Inside factory doesn't keep racking up "delayed" days
+// for time that was never spent in transit. Only a tanker still en route
+// (no outside factory date yet) falls back to comparing against today.
 function tankerDelay(row: Row): { label: string; tone: string } | null {
   if (!['transit', 'outside_factory', 'inside_factory'].includes(String(row.status))) return null
   const exp = String(row.expected_delivery_date || '').slice(0, 10)
@@ -91,10 +95,13 @@ function tankerDelay(row: Row): { label: string; tone: string } | null {
       ? null
       : { label: 'No ETA — set a source (Edit)', tone: 'text-muted-foreground italic' }
   }
-  const days = dayDiff(exp, todayISO())
+  const outsideDate = String(row.outside_factory_date || '').slice(0, 10)
+  const days = dayDiff(exp, outsideDate || todayISO())
   if (days > 0) return { label: `Delayed ${days} day${days === 1 ? '' : 's'}`, tone: 'text-red-600' }
-  if (days === 0) return { label: 'Due today', tone: 'text-amber-600' }
-  return { label: `ETA ${formatDate(exp)} · ${-days}d`, tone: 'text-muted-foreground' }
+  if (days === 0) return outsideDate ? { label: 'On time', tone: 'text-emerald-600' } : { label: 'Due today', tone: 'text-amber-600' }
+  return outsideDate
+    ? { label: `Arrived ${-days}d early`, tone: 'text-emerald-600' }
+    : { label: `ETA ${formatDate(exp)} · ${-days}d`, tone: 'text-muted-foreground' }
 }
 
 function StatusBadge({ status }: { status: string }): React.JSX.Element {

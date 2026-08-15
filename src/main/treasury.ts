@@ -94,7 +94,12 @@ export async function postLcOpening(lcId: number): Promise<void> {
   // amount — a straight percentage of the credit limit itself, not of
   // whichever invoices happen to be linked to it.
   const margin = round2((n(lc.amount) * n(lc.margin_pct)) / 100)
-  const interest = round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
+  const rawInterest = round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
+  // Some parties (e.g. Bunge-style deals) pay interest upfront straight from
+  // the bank account instead of it coming out of the LC's own open amount —
+  // this voucher then posts none of it; it's deferred until the matching
+  // bank statement line is reconciled (see postLcUpfrontInterest below).
+  const interest = lc.interest_upfront ? 0 : rawInterest
   const charges = round2(n(lc.charges))
   if (margin < 0.005 && interest < 0.005 && charges < 0.005) {
     await c.execute({ sql: 'UPDATE letters_of_credit SET journal_entry_id = NULL WHERE id = ?', args: [lcId] })
@@ -104,7 +109,9 @@ export async function postLcOpening(lcId: number): Promise<void> {
     date: String(lc.open_date || todayISO()),
     vchType: 'JOURNAL',
     vchNo: String(lc.lc_no || ''),
-    narration: `LC ${lc.lc_no} opened at ${lc.bank} — margin ${margin.toFixed(2)}, interest ${interest.toFixed(2)}, charges ${charges.toFixed(2)}`,
+    narration: `LC ${lc.lc_no} opened at ${lc.bank} — margin ${margin.toFixed(2)}, interest ${interest.toFixed(2)}${
+      lc.interest_upfront ? ` (₹${rawInterest.toFixed(2)} paid upfront from the bank — linked separately via bank reconciliation)` : ''
+    }, charges ${charges.toFixed(2)}`,
     companyId: n(lc.company_id) || undefined,
     lines: [
       { account: 'LC MARGIN A/C', group: 'Deposits (Asset)', dr: margin },
@@ -114,6 +121,49 @@ export async function postLcOpening(lcId: number): Promise<void> {
     ]
   })
   await c.execute({ sql: 'UPDATE letters_of_credit SET journal_entry_id = ? WHERE id = ?', args: [je.id, lcId] })
+}
+
+// Posts the Dr Interest/Cr Bank entry for interest that was paid upfront (see
+// interest_upfront / postLcOpening above) — deferred until you actually
+// reconcile the matching bank statement line, rather than posted blind at
+// Payment Received. Re-postable: dropping any prior entry first means
+// re-reconciling (or a corrected usance_days) never leaves a stale duplicate.
+export async function postLcUpfrontInterest(lcId: number, dateIn?: string): Promise<{ id: number } | null> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [lcId] })
+  if (!res.rows.length) throw new Error('LC not found')
+  const lc = toPlain(res)[0]
+  await dropEntry(n(lc.interest_journal_entry_id) || null)
+  const interest = round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
+  if (interest < 0.005) {
+    await c.execute({ sql: 'UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?', args: [lcId] })
+    return null
+  }
+  const je = await postJournal({
+    date: String(dateIn || todayISO()).slice(0, 10),
+    vchType: 'JOURNAL',
+    vchNo: String(lc.lc_no || ''),
+    narration: `LC ${lc.lc_no} — interest ${interest.toFixed(2)} paid upfront from the bank, per its statement`,
+    companyId: n(lc.company_id) || undefined,
+    lines: [
+      { account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest },
+      { account: 'BANK A/C', group: 'Bank Accounts', cr: interest }
+    ]
+  })
+  await c.execute({ sql: 'UPDATE letters_of_credit SET interest_journal_entry_id = ? WHERE id = ?', args: [je.id, lcId] })
+  return { id: je.id }
+}
+
+// Reverses the upfront-interest posting above — used when its bank statement
+// line is un-reconciled (or reclassified to misc), so the books don't keep an
+// entry no longer backed by a confirmed statement line.
+export async function dropLcUpfrontInterest(lcId: number): Promise<void> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT interest_journal_entry_id FROM letters_of_credit WHERE id = ?', args: [lcId] })
+  if (res.rows.length && res.rows[0].interest_journal_entry_id) {
+    await dropEntry(n(res.rows[0].interest_journal_entry_id))
+    await c.execute({ sql: 'UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?', args: [lcId] })
+  }
 }
 
 // Closing the LC out before its natural maturity settles whatever's left of

@@ -24,10 +24,10 @@ const STAGE_LABEL: Record<string, string> = {
   payment_received: 'Payment received'
 }
 
-// One bold "LC" row per letter of credit, followed by every bill issued
-// under it and every repayment logged against it — collapsible in Excel via
-// the +/- outline handles (group down to just the LC summary, ungroup to see
-// every bill and repayment).
+// One flat row per LC — every stage date and both amounts in their own
+// column, nothing tucked behind a generic "Date"/"Amount" pair. Only the
+// bills and repayments underneath an LC are collapsible, via the +/- outline
+// handles (group down to just the LC row, ungroup to see each invoice).
 export async function exportLcRegister(lcs: Row[], filename: string): Promise<void> {
   const details = await Promise.all(
     lcs.map((l) =>
@@ -44,14 +44,20 @@ export async function exportLcRegister(lcs: Row[], filename: string): Promise<vo
       bank: l.bank || '',
       supplier: l.supplier_name || '—',
       type: 'LC',
-      reference: STAGE_LABEL[String(l.stage || 'application')] || l.stage || '',
-      date: formatDate(l.open_date),
-      due: formatDate(l.expiry_date),
+      stage: STAGE_LABEL[String(l.stage || 'application')] || l.stage || '',
+      application_date: formatDate(l.open_date),
+      open_date: formatDate(l.opened_date),
+      payment_received_date: formatDate(l.payment_received_date),
+      maturity_date: formatDate(l.expiry_date),
       days_left: daysLeftLabel(l.expiry_date),
       interest_days: n(l.usance_days) || '',
       margin_pct: n(l.margin_pct) ? `${n(l.margin_pct)}%` : '',
-      amount: n(l.amount),
+      open_amount: n(l.amount),
+      receipt_amount: n(l.lc_net_available),
       available: n(l.available),
+      detail_date: '',
+      detail_due: '',
+      detail_amount: '',
       status: ''
     })
 
@@ -62,14 +68,20 @@ export async function exportLcRegister(lcs: Row[], filename: string): Promise<vo
         bank: l.bank || '',
         supplier: l.supplier_name || '—',
         type: 'Bill',
-        reference: b.bill_no || '',
-        date: formatDate(b.issue_date),
-        due: formatDate(b.due_date),
+        stage: b.bill_no || '',
+        application_date: '',
+        open_date: '',
+        payment_received_date: '',
+        maturity_date: '',
         days_left: '',
         interest_days: '',
         margin_pct: '',
-        amount: n(b.amount),
+        open_amount: '',
+        receipt_amount: '',
         available: '',
+        detail_date: formatDate(b.issue_date),
+        detail_due: formatDate(b.due_date),
+        detail_amount: n(b.amount),
         status: String(b.status || 'outstanding') === 'settled' ? 'Settled' : 'Outstanding'
       })
     }
@@ -81,14 +93,20 @@ export async function exportLcRegister(lcs: Row[], filename: string): Promise<vo
         bank: l.bank || '',
         supplier: l.supplier_name || '—',
         type: 'Repayment',
-        reference: r.party_name || '',
-        date: formatDate(r.repay_date),
-        due: '',
+        stage: r.party_name || '',
+        application_date: '',
+        open_date: '',
+        payment_received_date: '',
+        maturity_date: '',
         days_left: '',
         interest_days: '',
         margin_pct: '',
-        amount: n(r.amount) + n(r.maturity_charges),
+        open_amount: '',
+        receipt_amount: '',
         available: '',
+        detail_date: formatDate(r.repay_date),
+        detail_due: '',
+        detail_amount: n(r.amount) + n(r.maturity_charges),
         status: r.posted ? 'Posted' : 'Draft'
       })
     }
@@ -103,14 +121,20 @@ export async function exportLcRegister(lcs: Row[], filename: string): Promise<vo
       { header: 'Bank', key: 'bank' },
       { header: 'Supplier', key: 'supplier', width: 24 },
       { header: 'Type', key: 'type' },
-      { header: 'Reference', key: 'reference', width: 20 },
-      { header: 'Date', key: 'date' },
-      { header: 'Due / maturity', key: 'due' },
+      { header: 'Stage / Ref.', key: 'stage', width: 20 },
+      { header: 'Application date', key: 'application_date' },
+      { header: 'Open date', key: 'open_date' },
+      { header: 'Payment received date', key: 'payment_received_date', width: 18 },
+      { header: 'Maturity date', key: 'maturity_date', fill: 'FFC6EFCE' },
       { header: 'Days left', key: 'days_left' },
       { header: 'Int. days', key: 'interest_days', align: 'right' },
       { header: 'Margin %', key: 'margin_pct', align: 'right' },
-      { header: 'Amount (₹)', key: 'amount', align: 'right', numFmt: '#,##0.00' },
+      { header: 'LC Open Amount (₹)', key: 'open_amount', align: 'right', numFmt: '#,##0.00', width: 18 },
+      { header: 'LC Receipt Amount (₹)', key: 'receipt_amount', align: 'right', numFmt: '#,##0.00', width: 18 },
       { header: 'Available (₹)', key: 'available', align: 'right', numFmt: '#,##0.00' },
+      { header: 'Invoice date', key: 'detail_date' },
+      { header: 'Invoice due', key: 'detail_due' },
+      { header: 'Invoice amount (₹)', key: 'detail_amount', align: 'right', numFmt: '#,##0.00', width: 18 },
       { header: 'Status', key: 'status' }
     ],
     rows,

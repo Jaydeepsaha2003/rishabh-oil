@@ -3,6 +3,7 @@ import ExcelJS from 'exceljs'
 import { readFileSync } from 'fs'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
+import { postLcUpfrontInterest, dropLcUpfrontInterest } from './treasury'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -232,9 +233,13 @@ export async function suggestBankLineMatch(lineId: number): Promise<Row | null> 
   const amount = n(line.debit) > 0 ? n(line.debit) : n(line.credit)
   const narration = String(line.narration || '').toUpperCase()
 
-  // 1. LC number appearing in the narration — check charges (opening) and
-  //    repayments (incl. maturity charges) for an amount match near the line's date.
-  const lcRes = await c.execute("SELECT id, lc_no, charges, opened_date, open_date FROM letters_of_credit WHERE lc_no IS NOT NULL AND lc_no != ''")
+  // 1. LC number appearing in the narration — check charges (opening),
+  //    upfront interest (paid straight from the bank, not netted off the
+  //    open amount), and repayments (incl. maturity charges) for an amount
+  //    match near the line's date.
+  const lcRes = await c.execute(
+    "SELECT id, lc_no, charges, opened_date, open_date, amount, interest_pct, usance_days, interest_upfront FROM letters_of_credit WHERE lc_no IS NOT NULL AND lc_no != ''"
+  )
   for (const lc of toPlain(lcRes)) {
     const lcNo = String(lc.lc_no || '').toUpperCase()
     if (!lcNo || !narration.includes(lcNo)) continue
@@ -245,6 +250,18 @@ export async function suggestBankLineMatch(lineId: number): Promise<Row | null> 
         link_type: 'lc_opening',
         link_ref_id: n(lc.id),
         label: `LC ${lc.lc_no} — opening commission/charges ${n(lc.charges).toFixed(2)}`
+      }
+    }
+
+    if (n(lc.interest_upfront)) {
+      const interest = round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
+      if (interest > 0 && Math.abs(interest - amount) <= AMOUNT_TOLERANCE) {
+        return {
+          category: 'lc',
+          link_type: 'lc_interest',
+          link_ref_id: n(lc.id),
+          label: `LC ${lc.lc_no} — interest paid upfront ${interest.toFixed(2)}`
+        }
       }
     }
 
@@ -294,20 +311,41 @@ export async function suggestBankLineMatch(lineId: number): Promise<Row | null> 
   return best
 }
 
+// Interest paid upfront (see interest_upfront on the LC) isn't posted anywhere
+// else, so — unlike every other link type here, which only points at an
+// ALREADY-posted record — reconciling this one is what actually posts it.
+// Reclassifying a line away from that link (misc, or back to pending) has to
+// reverse the same posting, so both paths share this.
+async function reverseLcInterestLink(lineId: number): Promise<void> {
+  const c = getClient()
+  const cur = await c.execute({ sql: 'SELECT link_type, link_ref_id FROM bank_statement_lines WHERE id = ?', args: [lineId] })
+  const row = cur.rows[0]
+  if (row && String(row.link_type) === 'lc_interest' && row.link_ref_id) {
+    await dropLcUpfrontInterest(n(row.link_ref_id))
+  }
+}
+
 export async function reconcileBankLine(lineId: number, v: Row): Promise<{ id: number }> {
   const category = String(v.category || '').trim()
   if (!category) throw new Error('Pick what this line is')
   const c = getClient()
+  const linkType = v.link_type ? String(v.link_type) : null
+  const linkRefId = v.link_ref_id ? n(v.link_ref_id) : null
+  if (linkType === 'lc_interest' && linkRefId) {
+    const line = await c.execute({ sql: 'SELECT txn_date FROM bank_statement_lines WHERE id = ?', args: [lineId] })
+    await postLcUpfrontInterest(linkRefId, String(line.rows[0]?.txn_date || ''))
+  }
   await c.execute({
     sql: `UPDATE bank_statement_lines SET category = ?, link_type = ?, link_ref_id = ?, status = 'reconciled', reviewed_at = datetime('now')
           WHERE id = ?`,
-    args: [category, v.link_type ? String(v.link_type) : null, v.link_ref_id ? n(v.link_ref_id) : null, lineId]
+    args: [category, linkType, linkRefId, lineId]
   })
   return { id: lineId }
 }
 
 export async function markBankLineMisc(lineId: number): Promise<{ id: number }> {
   const c = getClient()
+  await reverseLcInterestLink(lineId)
   await c.execute({
     sql: `UPDATE bank_statement_lines SET category = 'misc', link_type = NULL, link_ref_id = NULL, status = 'misc', reviewed_at = datetime('now')
           WHERE id = ?`,
@@ -318,6 +356,7 @@ export async function markBankLineMisc(lineId: number): Promise<{ id: number }> 
 
 export async function unreconcileBankLine(lineId: number): Promise<{ id: number }> {
   const c = getClient()
+  await reverseLcInterestLink(lineId)
   await c.execute({
     sql: `UPDATE bank_statement_lines SET category = NULL, link_type = NULL, link_ref_id = NULL, status = 'pending', reviewed_at = NULL
           WHERE id = ?`,
