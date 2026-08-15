@@ -271,7 +271,16 @@ export async function stockPartyBreakdown(
     }
     return { sql: parts.join(' '), args }
   }
-  const recB = bounds('o.order_date')
+  // Same date rule stockLevels uses for its own Receipt column — a tanker
+  // purchase counts on the day it was actually emptied, a consignment/direct
+  // one on its invoice date. Without this, a receipt that the register places
+  // in this period (by received_date) could still be filtered out of the
+  // party breakdown here (still going by order_date alone), leaving the cell
+  // with a total but no names to show for it on hover.
+  const recDateExpr = `CASE WHEN COALESCE(o.is_consignment, 0) = 1
+                             THEN o.order_date
+                             ELSE COALESCE(o.received_date, o.order_date) END`
+  const recB = bounds(recDateExpr)
   const dispB = bounds('COALESCE(s.unloaded_date, s.sale_date)')
   const out: Record<number, { receipt: Row[]; dispatch: Row[] }> = {}
   const ensure = (pid: number): { receipt: Row[]; dispatch: Row[] } => (out[pid] ??= { receipt: [], dispatch: [] })

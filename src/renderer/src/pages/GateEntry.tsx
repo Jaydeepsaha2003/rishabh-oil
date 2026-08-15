@@ -201,6 +201,11 @@ export function GateEntry(): React.JSX.Element {
   // The sale this vehicle turned out to be for. It was flagged at Gate In
   // before any invoice existed, so it is named here, as the Gross is taken.
   const [grossPickInvoice, setGrossPickInvoice] = useState('')
+  // The day the vehicle actually left — asked here because this is the only
+  // point this flow ever gets a date typed into it; without it every such
+  // dispatch would silently default to whatever day the Gross happened to be
+  // entered, which is often not the day the vehicle drove out.
+  const [grossPickOutDate, setGrossPickOutDate] = useState(todayISO())
   const [grossPickSaving, setGrossPickSaving] = useState(false)
   // Custom prompt (replaces the browser's plain confirm()) asked when a Gate
   // In vehicle is saved Tare-only for the first time — a gate operator reads
@@ -255,9 +260,13 @@ export function GateEntry(): React.JSX.Element {
     const gross = Number(grossPickValue)
     if (!grossPickValue || !Number.isFinite(gross) || gross <= 0) return void toast.error('Enter the gross weight')
     if (!grossPickInvoice) return void toast.error('Link the sale invoice this vehicle is carrying')
+    if (!grossPickOutDate) return void toast.error('Enter the date the vehicle left')
+    if (grossPickOutDate < String(row.entry_date || '').slice(0, 10)) {
+      return void toast.error('The vehicle cannot leave before the day it came in')
+    }
     setGrossPickSaving(true)
     try {
-      const r = await window.api.gate.weights(row.id, gross, null, null, null, grossPickInvoice, todayISO())
+      const r = await window.api.gate.weights(row.id, gross, null, null, null, grossPickInvoice, grossPickOutDate)
       const inv = outgoable.find((x) => String(x.invoice_group) === grossPickInvoice)
       toast.success(
         `${row.tanker_no} completed — net ${formatNum(r.net || 0)} ${row.uom}` +
@@ -266,6 +275,7 @@ export function GateEntry(): React.JSX.Element {
       setGrossPickId('')
       setGrossPickValue('')
       setGrossPickInvoice('')
+      setGrossPickOutDate(todayISO())
       await load()
     } catch (e) {
       toast.error(errText(e))
@@ -701,25 +711,30 @@ export function GateEntry(): React.JSX.Element {
             </div>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              {list.map((row) => (
-                <div key={row.id} className="flex flex-col rounded-xl border border-amber-200 bg-card shadow-sm transition-shadow hover:shadow-md">
+              {list.map((row) => {
+                // One accent per direction, carried through the whole card —
+                // not just the little icon badge — so a grid of these reads
+                // by colour before anyone reads the IN/OUT text.
+                const dirColor = row.direction === 'out'
+                  ? { border: 'border-l-sky-500', headerBg: 'bg-sky-50', headerBorder: 'border-sky-100', icon: 'bg-sky-100 text-sky-700', badge: 'bg-sky-600 text-white' }
+                  : { border: 'border-l-emerald-500', headerBg: 'bg-emerald-50', headerBorder: 'border-emerald-100', icon: 'bg-emerald-100 text-emerald-700', badge: 'bg-emerald-600 text-white' }
+                return (
+                <div
+                  key={row.id}
+                  className={cn(
+                    'flex flex-col rounded-xl border border-l-4 border-slate-200 bg-card shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md',
+                    dirColor.border
+                  )}
+                >
                   {/* Identity strip: vehicle + direction, never wrapping. */}
-                  <div className="flex items-center gap-2 rounded-t-xl border-b border-amber-100 bg-amber-50/60 px-3 py-2">
-                    <span
-                      className={cn(
-                        'inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md',
-                        row.direction === 'out' ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'
-                      )}
-                    >
+                  <div className={cn('flex items-center gap-2 rounded-tr-xl border-b px-3 py-2', dirColor.headerBg, dirColor.headerBorder)}>
+                    <span className={cn('inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md', dirColor.icon)}>
                       {row.direction === 'out' ? <LogOut className="h-3.5 w-3.5" /> : <LogIn className="h-3.5 w-3.5" />}
                     </span>
                     <span className="truncate text-[13.5px] font-bold tracking-wide">{row.tanker_no}</span>
-                    <Badge
-                      variant={row.direction === 'out' ? 'default' : 'warning'}
-                      className="ml-auto shrink-0 whitespace-nowrap"
-                    >
+                    <span className={cn('ml-auto shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wide', dirColor.badge)}>
                       {row.direction === 'out' ? 'OUT' : 'IN'}
-                    </Badge>
+                    </span>
                   </div>
 
                   <div className="flex flex-1 flex-col px-3 pb-3 pt-2">
@@ -730,16 +745,19 @@ export function GateEntry(): React.JSX.Element {
                             : <span className="font-medium text-amber-700">No bill{row.note ? ` — ${row.note}` : ''}</span>)
                         : <>{row.supplier_name || '—'}{row.bargain_no ? <span className="text-muted-foreground"> · {row.bargain_no}</span> : ''}</>}
                     </div>
-                    {/* Meta as aligned label/value pairs instead of a wrapping sentence. */}
+                    {/* Meta as aligned label/value pairs instead of a wrapping
+                        sentence — each its own colour so the three read as
+                        distinct facts (identity, kind, claim) rather than one
+                        flat grey row. */}
                     <div className="mt-1.5 grid grid-cols-3 gap-1 text-center">
                       {[
-                        { l: 'Gate no', v: String(row.gate_entry_no || '—') },
-                        { l: String(row.rec_type || 'OIL'), v: formatDate(row.entry_date) },
-                        { l: 'Dispatch', v: dispatchLabel(row, row.uom) }
+                        { l: 'Gate no', v: String(row.gate_entry_no || '—'), cls: 'bg-slate-100 text-slate-700' },
+                        { l: String(row.rec_type || 'OIL'), v: formatDate(row.entry_date), cls: 'bg-violet-50 text-violet-700' },
+                        { l: 'Dispatch', v: dispatchLabel(row, row.uom), cls: 'bg-rose-50 text-rose-700' }
                       ].map((x) => (
-                        <div key={x.l} className="rounded bg-muted/50 px-1 py-0.5">
-                          <div className="truncate text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">{x.l}</div>
-                          <div className="truncate text-[11px] font-medium tabular-nums">{x.v}</div>
+                        <div key={x.l} className={cn('rounded px-1 py-0.5', x.cls)}>
+                          <div className="truncate text-[9px] font-semibold uppercase tracking-wide opacity-70">{x.l}</div>
+                          <div className="truncate text-[11px] font-bold tabular-nums">{x.v}</div>
                         </div>
                       ))}
                     </div>
@@ -759,26 +777,40 @@ export function GateEntry(): React.JSX.Element {
                         <div className="flex flex-1 flex-col">
                           {/* One line per label, never wrapping — two cards
                               side by side have to line up, and a wrapped
-                              caption in one of them throws the whole row out. */}
+                              caption in one of them throws the whole row out.
+                              Gross and Tare each keep their own colour from
+                              label through to a filled box, so which is which
+                              — and which is already entered — reads at a
+                              glance instead of two identical white inputs. */}
                           <div className="mt-2.5 grid grid-cols-2 gap-x-2 gap-y-0.5">
                             <label
-                              className="truncate text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
+                              className="truncate text-[9px] font-semibold uppercase tracking-wide text-sky-700"
                               title={row.direction === 'out' ? 'Gross — loaded, at exit' : 'Gross — loaded, at arrival'}
                             >
-                              Gross <span className="font-normal normal-case">({row.uom}, loaded)</span>
+                              Gross <span className="font-normal normal-case text-muted-foreground">({row.uom}, loaded)</span>
                             </label>
                             <label
-                              className="truncate text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
+                              className="truncate text-[9px] font-semibold uppercase tracking-wide text-amber-700"
                               title={row.direction === 'out' ? 'Tare — empty, at arrival' : 'Tare — empty, at exit'}
                             >
-                              Tare <span className="font-normal normal-case">({row.uom}, empty)</span>
+                              Tare <span className="font-normal normal-case text-muted-foreground">({row.uom}, empty)</span>
                             </label>
-                            <Input type="number" className="h-8 text-right tabular-nums" placeholder="0.000" value={w.gross}
+                            <Input
+                              type="number"
+                              className={cn('h-8 text-right tabular-nums', hasG ? 'border-emerald-300 bg-emerald-50/60 font-semibold text-emerald-900' : 'border-sky-200 focus-visible:ring-sky-400')}
+                              placeholder="0.000"
+                              value={w.gross}
                               onChange={(e) => setW('gross', e.target.value)}
-                              onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
-                            <Input type="number" className="h-8 text-right tabular-nums" placeholder="0.000" value={w.tare}
+                              onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)}
+                            />
+                            <Input
+                              type="number"
+                              className={cn('h-8 text-right tabular-nums', hasT ? 'border-emerald-300 bg-emerald-50/60 font-semibold text-emerald-900' : 'border-amber-200 focus-visible:ring-amber-400')}
+                              placeholder="0.000"
+                              value={w.tare}
                               onChange={(e) => setW('tare', e.target.value)}
-                              onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)} />
+                              onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)}
+                            />
                           </div>
                           {/* Oil's quantity comes off the purchase tanker.
                               Everything else has only the challan to go on,
@@ -788,13 +820,13 @@ export function GateEntry(): React.JSX.Element {
                           {!isOil && (
                             <div className="mt-1.5 grid gap-0.5">
                               <label
-                                className="truncate text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
+                                className="truncate text-[9px] font-semibold uppercase tracking-wide text-rose-700"
                                 title="The quantity the challan declares — or NA when it gives none"
                               >
-                                Dis. qty <span className="font-normal normal-case">({row.uom}, per challan)</span>
+                                Dis. qty <span className="font-normal normal-case text-muted-foreground">({row.uom}, per challan)</span>
                               </label>
                               <Input
-                                className="h-8 text-right tabular-nums"
+                                className="h-8 border-rose-200 text-right tabular-nums focus-visible:ring-rose-400"
                                 placeholder="0.000 or NA"
                                 value={w.dispatch}
                                 onChange={(e) => setW('dispatch', cleanDispatch(e.target.value))}
@@ -804,15 +836,16 @@ export function GateEntry(): React.JSX.Element {
                           )}
                           {/* One figure saves and waits; both complete. */}
                           {(hasG || hasT) && !both && (
-                            <div className="mt-1.5 rounded bg-amber-100/70 px-2 py-1 text-[10.5px] font-medium text-amber-900">
+                            <div className="mt-1.5 flex items-center gap-1.5 rounded-lg bg-amber-100 px-2 py-1.5 text-[10.5px] font-semibold text-amber-900">
+                              <Scale className="h-3 w-3 shrink-0" />
                               {hasG ? 'Gross recorded — waiting for the tare weight' : 'Tare recorded — waiting for the gross weight'}
                             </div>
                           )}
                           <div className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-dotted border-amber-200 pt-2.5">
                             <span
                               className={cn(
-                                'inline-flex items-baseline gap-1 rounded px-1.5 py-0.5 text-[12px]',
-                                ready ? 'bg-emerald-50 font-semibold text-emerald-700' : 'text-muted-foreground'
+                                'inline-flex items-baseline gap-1 rounded-md px-2 py-1 text-[12px]',
+                                ready ? 'bg-emerald-100 font-bold text-emerald-800' : 'bg-slate-100 text-muted-foreground'
                               )}
                             >
                               <span className="text-[9px] font-semibold uppercase tracking-wide opacity-70">Net</span>
@@ -823,7 +856,7 @@ export function GateEntry(): React.JSX.Element {
                                 const short = Math.round((Number(w.dispatch) - net) * 1000) / 1000
                                 if (Math.abs(short) < 0.0005) return <span className="ml-1 text-[11px] font-normal text-muted-foreground">· matches</span>
                                 return (
-                                  <span className={cn('ml-1 text-[11px] font-semibold', short > 0 ? 'text-red-600' : 'text-amber-700')}>
+                                  <span className={cn('ml-1 rounded px-1 text-[11px] font-bold', short > 0 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800')}>
                                     · {formatNum(Math.abs(short))} {short > 0 ? 'short' : 'excess'}
                                   </span>
                                 )
@@ -834,7 +867,7 @@ export function GateEntry(): React.JSX.Element {
                                 <Button
                                   size="sm"
                                   variant="outline"
-                                  className="h-8 px-2 text-[11px]"
+                                  className="h-8 border-slate-300 px-2 text-[11px] text-slate-700"
                                   title="Finish this entry with no weighment (not allowed for oil)"
                                   onClick={() => void skipWeighment(row)}
                                 >
@@ -843,7 +876,10 @@ export function GateEntry(): React.JSX.Element {
                               )}
                               <Button
                                 size="sm"
-                                className="h-8"
+                                className={cn(
+                                  'h-8 font-semibold',
+                                  ready ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-sky-600 hover:bg-sky-700'
+                                )}
                                 disabled={!hasG && !hasT}
                                 title={
                                   ready
@@ -865,7 +901,8 @@ export function GateEntry(): React.JSX.Element {
                     })()}
                   </div>
                 </div>
-              ))}
+              )
+              })}
             </div>
           )}
         </section>
@@ -1435,10 +1472,10 @@ export function GateEntry(): React.JSX.Element {
                 <Scale className="h-4 w-4" />
               </div>
               <h3 className="text-[11px] font-bold uppercase tracking-widest text-amber-900">Awaiting Gross (from Gate In)</h3>
-              <InfoTip text="Vehicles weighed Tare-only at Gate In and flagged as being for sale. Pick one, link the sale invoice it is carrying and enter its Gross weight — it completes on the spot. No dispatch quantity is asked for: the invoice already says what is on board." />
+              <InfoTip text="Vehicles weighed Tare-only at Gate In and flagged as being for sale. Pick one, link the sale invoice it is carrying, say when it left and enter its Gross weight — it completes on the spot. No dispatch quantity is asked for: the invoice already says what is on board." />
               <Badge variant="warning" className="ml-1">{awaitingGross.length}</Badge>
             </div>
-            <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-3">
+            <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4">
               <div className="grid min-w-0 gap-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Vehicle</Label>
                 <Select value={grossPickId} onValueChange={setGrossPickId}>
@@ -1474,6 +1511,17 @@ export function GateEntry(): React.JSX.Element {
                 </Select>
               </div>
               <div className="grid min-w-0 gap-1">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Vehicle out date *</Label>
+                <DatePicker
+                  value={grossPickOutDate}
+                  onChange={(v) => setGrossPickOutDate(v || todayISO())}
+                  // Can't leave before the day it arrived — the arrival is
+                  // fixed on the entry already picked above.
+                  min={awaitingGross.find((r) => String(r.id) === grossPickId)?.entry_date || undefined}
+                  className="h-8 bg-white text-[13px]"
+                />
+              </div>
+              <div className="grid min-w-0 gap-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Gross weight *</Label>
                 <div className="flex gap-2">
                   <Input
@@ -1486,7 +1534,7 @@ export function GateEntry(): React.JSX.Element {
                   />
                   <Button
                     className="h-8 shrink-0 bg-amber-600 px-3 text-[12px] hover:bg-amber-700"
-                    disabled={!grossPickId || !grossPickInvoice || grossPickSaving}
+                    disabled={!grossPickId || !grossPickInvoice || !grossPickOutDate || grossPickSaving}
                     onClick={() => void saveAwaitingGross()}
                   >
                     {grossPickSaving ? 'Saving…' : 'Complete'}

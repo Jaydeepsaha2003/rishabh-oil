@@ -235,7 +235,12 @@ export function Treasury(): React.JSX.Element {
         facility_id: stageRow.facility_id ? Number(stageRow.facility_id) : null,
         status: stageRow.status || 'open',
         stage: next,
-        ...stageForm
+        ...stageForm,
+        // Refresh usance_days from the two dates just entered here — without
+        // this the record keeps whatever (often blank) value it had before
+        // this step, so the interest actually saved would silently disagree
+        // with the days shown in the preview below.
+        ...(next === 'payment_received' ? { usance_days: stagePreview?.days ?? 0 } : {})
       })
       toast.success(next === 'open' ? 'LC marked Open' : 'Payment received — bill(s) settled through the books')
       setStageRow(null)
@@ -247,9 +252,11 @@ export function Treasury(): React.JSX.Element {
     }
   }
 
-  // Live preview for the Payment Received step — same interest/charges math
-  // lc.ts uses server-side to derive lc_net_available, so what's shown here
-  // matches what actually gets stored.
+  // Live preview for the Payment Received step — same interest/charges/margin
+  // math lc.ts uses server-side to derive lc_net_available, so what's shown
+  // here matches what actually gets stored (saveStageAdvance sends this same
+  // `days` figure as usance_days, rather than leaving the field's old value
+  // in place unrefreshed).
   const stagePreview = useMemo(() => {
     if (!stageRow || nextLcStage(String(stageRow.stage || 'application')) !== 'payment_received') return null
     const amount = n(stageRow.amount)
@@ -260,8 +267,16 @@ export function Treasury(): React.JSX.Element {
     const charges = n(stageForm.charges)
     const interest = days != null ? round2((amount * interestPct * days) / (100 * 365)) : 0
     const netAvailable = round2(amount - interest - charges)
-    return { amount, days, interest, charges, netAvailable }
-  }, [stageRow, stageForm.payment_received_date, stageForm.expiry_date, stageForm.interest_pct, stageForm.charges])
+    // Margin is quoted upfront against the invoice(s) the LC covers, not
+    // against the open amount — same as the main form and the register.
+    const linkedIds: number[] = Array.isArray(stageRow.linked_order_ids) ? stageRow.linked_order_ids : []
+    const linkedTotal = orders
+      .filter((o) => linkedIds.map(String).includes(String(o.id)))
+      .reduce((s, o) => s + n(o.net_amount), 0)
+    const invoiceAmount = linkedTotal > 0 ? linkedTotal : amount
+    const margin = round2((invoiceAmount * n(stageRow.margin_pct)) / 100)
+    return { amount, days, interest, charges, margin, netAvailable }
+  }, [stageRow, stageForm.payment_received_date, stageForm.expiry_date, stageForm.interest_pct, stageForm.charges, orders])
 
   // ---------------- Facilities and exposures ----------------
   const [facForm, setFacForm] = useState<Row | null>(null)
@@ -708,16 +723,40 @@ export function Treasury(): React.JSX.Element {
         )}
 
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList>
-            <TabsTrigger value="lc">Letters of Credit ({lcs.length})</TabsTrigger>
-            <TabsTrigger value="bd">Bill Discounting ({bills.length})</TabsTrigger>
-            <TabsTrigger value="limits">Sanctioned Limits ({facilities.length})</TabsTrigger>
-            <TabsTrigger value="tracker">Payment Tracker ({tracker.filter((x) => !x.settled).length})</TabsTrigger>
+          {/* Same tan-and-navy pill language as the due-period filter chips
+              directly below, so the two rows of controls read as one family
+              instead of the tab bar looking like a leftover default. */}
+          <TabsList className="h-auto gap-1.5 rounded-lg border border-[#d9d2b8] bg-white p-1 text-[#1a2c56]">
+            <TabsTrigger
+              value="lc"
+              className="rounded-md px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide data-[state=active]:bg-[#1a2c56] data-[state=active]:text-white data-[state=active]:shadow-none"
+            >
+              Letters of Credit ({lcs.length})
+            </TabsTrigger>
+            <TabsTrigger
+              value="bd"
+              className="rounded-md px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide data-[state=active]:bg-[#1a2c56] data-[state=active]:text-white data-[state=active]:shadow-none"
+            >
+              Bill Discounting ({bills.length})
+            </TabsTrigger>
+            <TabsTrigger
+              value="limits"
+              className="rounded-md px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide data-[state=active]:bg-[#1a2c56] data-[state=active]:text-white data-[state=active]:shadow-none"
+            >
+              Sanctioned Limits ({facilities.length})
+            </TabsTrigger>
+            <TabsTrigger
+              value="tracker"
+              className="rounded-md px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide data-[state=active]:bg-[#1a2c56] data-[state=active]:text-white data-[state=active]:shadow-none"
+            >
+              Payment Tracker ({tracker.filter((x) => !x.settled).length})
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="tracker" className="mt-4">
             <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
               <div className="flex flex-wrap items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/50"><CalendarClock className="h-3.5 w-3.5" /></span>
                 <span className="text-[13px] font-bold uppercase tracking-widest">Payment Tracker</span>
                 <span className="text-[11px] text-[#1a2c56]/70">every LC bill and discounted bill, one due-date list</span>
                 <label className="ml-auto flex cursor-pointer items-center gap-1.5 text-[11px]">
@@ -887,6 +926,7 @@ export function Treasury(): React.JSX.Element {
             ) : (
             <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
               <div className="flex items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/50"><Banknote className="h-3.5 w-3.5" /></span>
                 <span className="text-[13px] font-bold uppercase tracking-widest">Letters of Credit</span>
                 <Button size="sm" className="ml-auto bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application' })}>
                   <Plus className="h-4 w-4" /> Open new LC
@@ -908,12 +948,18 @@ export function Treasury(): React.JSX.Element {
                   {lcsFiltered.length === 0 ? (
                     <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No letters of credit in this bucket.</TableCell></TableRow>
                   ) : (
-                    lcsFiltered.map((l) => {
+                    lcsFiltered.map((l, i) => {
                       const isOpen = openLc.has(Number(l.id))
                       const pct = n(l.amount) > 0 ? Math.min(100, (n(l.utilized) / n(l.amount)) * 100) : 0
                       return (
                         <Fragment key={String(l.id)}>
-                          <TableRow className="cursor-pointer border-b border-dotted border-[#e5dfc8] transition-colors hover:bg-amber-100/70" onClick={() => void toggleLc(Number(l.id))}>
+                          <TableRow
+                            className={cn(
+                              'cursor-pointer border-b border-dotted border-[#e5dfc8] transition-colors hover:bg-amber-100/70',
+                              i % 2 === 1 && 'bg-[#faf7ea]'
+                            )}
+                            onClick={() => void toggleLc(Number(l.id))}
+                          >
                             <TableCell>
                               <div className="flex items-center gap-1.5">
                                 {isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
@@ -982,6 +1028,7 @@ export function Treasury(): React.JSX.Element {
           <TabsContent value="bd" className="mt-4">
             <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
               <div className="flex items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/50"><FileText className="h-3.5 w-3.5" /></span>
                 <span className="text-[13px] font-bold uppercase tracking-widest">Bill Discounting</span>
                 <Button size="sm" className="ml-auto bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setBdForm({ open_date: todayISO(), rate_pct: '9', tenor_days: '60', charges: '' })}>
                   <Plus className="h-4 w-4" /> Discount a bill
@@ -1060,6 +1107,7 @@ export function Treasury(): React.JSX.Element {
           <TabsContent value="limits" className="mt-4 space-y-4">
             <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
               <div className="flex items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/50"><Building2 className="h-3.5 w-3.5" /></span>
                 <span className="text-[13px] font-bold uppercase tracking-widest">Sanctioned limits</span>
                 <Button size="sm" className="ml-auto bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setFacForm({ facility_type: 'lc', active: 1 })}>
                   <Plus className="h-4 w-4" /> New facility
@@ -1085,7 +1133,7 @@ export function Treasury(): React.JSX.Element {
                       </TableCell>
                     </TableRow>
                   ) : (
-                    facilities.map((f) => {
+                    facilities.map((f, i) => {
                       const isOpen = openFac.has(Number(f.id))
                       const lines = exposures[Number(f.id)] || []
                       const pct = n(f.sanctioned_limit) > 0 ? Math.min(100, (n(f.total_outstanding) / n(f.sanctioned_limit)) * 100) : 0
@@ -1094,6 +1142,7 @@ export function Treasury(): React.JSX.Element {
                           <TableRow
                             className={cn(
                               'cursor-pointer border-b border-dotted border-[#e5dfc8] transition-colors hover:bg-amber-100/70',
+                              i % 2 === 1 && 'bg-[#faf7ea]',
                               Number(f.active) === 0 && 'opacity-55'
                             )}
                             onClick={() => void toggleFacility(Number(f.id))}
@@ -1118,8 +1167,11 @@ export function Treasury(): React.JSX.Element {
                             <TableCell className="text-right tabular-nums text-muted-foreground">{formatINR(f.other_outstanding)}</TableCell>
                             <TableCell className={cn('text-right font-semibold tabular-nums', n(f.available) < 0 ? 'text-rose-600' : 'text-emerald-700')}>
                               {formatINR(f.available)}
-                              <div className="mt-0.5 h-1.5 w-full rounded-full bg-muted">
-                                <div className={cn('h-1.5 rounded-full', pct >= 95 ? 'bg-rose-500' : 'bg-sky-600')} style={{ width: `${pct}%` }} />
+                              <div className="mt-1 h-2 w-full rounded-full bg-muted">
+                                <div className={cn('h-2 rounded-full', pct >= 95 ? 'bg-rose-500' : 'bg-sky-600')} style={{ width: `${pct}%` }} />
+                              </div>
+                              <div className="mt-0.5 text-[10px] font-normal tabular-nums text-muted-foreground">
+                                {formatINR(f.total_outstanding)} committed · {pct.toFixed(0)}%
                               </div>
                             </TableCell>
                             <TableCell className="text-right tabular-nums">
@@ -1312,7 +1364,14 @@ export function Treasury(): React.JSX.Element {
 
       {/* Guided stage advance — asks only for that stage's own date(s) */}
       <Dialog open={!!stageRow} onOpenChange={(o) => !o && setStageRow(null)}>
-        <DialogContent className="max-w-md">
+        <DialogContent
+          className={cn(
+            // The Payment Received step carries the 4-column back-calculated
+            // panel, which needs real width — figures into the crores wrap
+            // badly at the plain form's max-w-md.
+            nextLcStage(String(stageRow?.stage || 'application')) === 'payment_received' ? 'max-w-xl' : 'max-w-md'
+          )}
+        >
           <DialogHeader>
             <DialogTitle>
               Mark {stageRow?.lc_no || 'this application'} {STAGE_LABEL[nextLcStage(String(stageRow?.stage || 'application')) || '']}
@@ -1356,28 +1415,31 @@ export function Treasury(): React.JSX.Element {
                       </div>
                     </div>
                     {stagePreview && (
-                      <div className="rounded-md border border-[#d9d2b8] bg-[#f7f2e2] p-3 text-[12px]">
-                        <div className="mb-1.5 text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Back-calculated from the open amount</div>
-                        <div className="flex items-center justify-between py-0.5">
-                          <span className="text-muted-foreground">Open amount</span>
-                          <span className="tabular-nums">{formatINR(stagePreview.amount)}</span>
+                      <div className="rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm">
+                        <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-sky-900">
+                          <Banknote className="h-3.5 w-3.5" /> Back-calculated from the open amount
+                        </h3>
+                        <div className="grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wide text-sky-700">Open amount</div>
+                            <div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(stagePreview.amount)}</div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wide text-sky-700">− Interest ({stagePreview.days ?? 0} interest days)</div>
+                            <div className="text-[15px] font-semibold tabular-nums text-rose-700">{formatINR(stagePreview.interest)}</div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wide text-sky-700">− Charges</div>
+                            <div className="text-[15px] font-semibold tabular-nums text-rose-700">{formatINR(stagePreview.charges)}</div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wide text-sky-700">Margin (upfront, info only)</div>
+                            <div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(stagePreview.margin)}</div>
+                          </div>
                         </div>
-                        <div className="flex items-center justify-between py-0.5">
-                          <span className="text-muted-foreground">Interest days (maturity − payment received)</span>
-                          <span className="tabular-nums">{stagePreview.days ?? '—'}</span>
-                        </div>
-                        <div className="flex items-center justify-between py-0.5">
-                          <span className="text-muted-foreground">Interest</span>
-                          <span className="tabular-nums">− {formatINR(stagePreview.interest)}</span>
-                        </div>
-                        <div className="flex items-center justify-between py-0.5">
-                          <span className="text-muted-foreground">LC charges</span>
-                          <span className="tabular-nums">− {formatINR(stagePreview.charges)}</span>
-                        </div>
-                        <div className="my-1.5 border-t-2 border-[#1a2c56]" />
-                        <div className="flex items-center justify-between py-0.5 font-semibold text-[#1a2c56]">
-                          <span>Net available</span>
-                          <span className="tabular-nums">{formatINR(stagePreview.netAvailable)}</span>
+                        <div className="mt-3 flex items-center justify-between rounded-lg bg-white/70 px-4 py-2.5">
+                          <span className="text-[11px] font-medium uppercase tracking-wide text-sky-800">Net available = open amount − interest − charges</span>
+                          <span className="text-xl font-bold tabular-nums text-[#1a2c56]">{formatINR(stagePreview.netAvailable)}</span>
                         </div>
                       </div>
                     )}
@@ -1551,11 +1613,11 @@ export function Treasury(): React.JSX.Element {
                                   const total = orders
                                     .filter((x) => next.map(String).includes(String(x.id)))
                                     .reduce((s, x) => s + n(x.net_amount), 0)
-                                  // Suggest the total, but never overwrite an amount
-                                  // the user has already set below it by hand — only
-                                  // pull it down if the shrinking selection would
-                                  // otherwise put it over the new ceiling.
-                                  setLcForm({ ...lcForm, linked_order_ids: next, amount: !n(lcForm.amount) || total < n(lcForm.amount) ? String(total) : lcForm.amount })
+                                  // Keep the amount tracking the selection — ticking a
+                                  // second invoice should sum with the first, not just
+                                  // shrink toward it. Only stop once the user has typed
+                                  // their own figure into the field below.
+                                  setLcForm({ ...lcForm, linked_order_ids: next, amount: lcForm.amount_manual ? lcForm.amount : String(total) })
                                 }}
                               />
                               <span className="flex-1">{o.invoice_no} · {formatDate(o.order_date)}</span>
@@ -1617,13 +1679,32 @@ export function Treasury(): React.JSX.Element {
                   {(() => {
                     const linkedIds: number[] = Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []
                     const hasInvoices = linkedIds.length > 0
+                    const total = orders
+                      .filter((o) => linkedIds.map(String).includes(String(o.id)))
+                      .reduce((s, o) => s + n(o.net_amount), 0)
                     return (
                       <div className="grid gap-1.5 sm:col-span-2">
-                        <Label>Open amount (₹) *</Label>
+                        <Label className="flex items-center gap-1.5">
+                          Open amount (₹) *
+                          {hasInvoices && (
+                            <span className="text-[10px] font-normal text-muted-foreground">
+                              {lcForm.amount_manual ? '(manual)' : '(auto — sum of selected invoices)'}
+                            </span>
+                          )}
+                          {hasInvoices && lcForm.amount_manual && (
+                            <button
+                              type="button"
+                              className="text-[10px] font-medium text-teal-700 underline-offset-2 hover:underline"
+                              onClick={() => setLcForm({ ...lcForm, amount: String(total), amount_manual: false })}
+                            >
+                              Reset to sum
+                            </button>
+                          )}
+                        </Label>
                         <Input
                           type="number"
                           value={lcForm.amount ?? ''}
-                          onChange={(e) => setLcForm({ ...lcForm, amount: e.target.value })}
+                          onChange={(e) => setLcForm({ ...lcForm, amount: e.target.value, amount_manual: e.target.value !== '' })}
                         />
                         {hasInvoices && (
                           <span className="text-[10px] text-muted-foreground">Suggested from the selected invoices — edit freely, but it can't exceed their total.</span>

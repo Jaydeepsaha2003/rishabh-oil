@@ -77,6 +77,14 @@ function Select({ value, onValueChange, disabled, children, searchable }: Select
   // the packaged app) but escapes the dialog's scrollable body, which clipped
   // inline panels. It flips upward when there's more room above the trigger.
   const [portal, setPortal] = React.useState<{ target: HTMLElement; style: React.CSSProperties; listMaxH: number } | null>(null)
+  // A field on a plain page (not a dialog) has no focus trap to protect, so
+  // the panel stays inline — but it still needs to know whether it fits below
+  // the trigger. A grid of fields near the bottom of the screen (the last row
+  // of a Gate In / Gate Out form, say) would otherwise always drop the list
+  // downward regardless of room, running it off the window or straight over
+  // the button underneath it — the exact "one field covering another" this
+  // guards against.
+  const [inlineFlip, setInlineFlip] = React.useState<{ openUp: boolean; maxH: number } | null>(null)
 
   let trigger: React.ReactNode = null
   let contentChildren: React.ReactNode = null
@@ -102,36 +110,64 @@ function Select({ value, onValueChange, disabled, children, searchable }: Select
     if (!disabled) setOpen((o) => !o)
   }, [disabled])
 
-  // Compute the portal position when opening inside a dialog.
+  // Compute where the panel fits — against the dialog when inside one,
+  // against the viewport otherwise — and keep it current for as long as the
+  // field stays open, not just at the instant it opened. A grid reflows on
+  // resize and the page scrolls under an open dropdown; without recomputing,
+  // a panel that fit when opened could end up hanging off the window or
+  // sitting on top of the next field the moment either changes.
   React.useLayoutEffect(() => {
     if (!open) {
       setPortal(null)
+      setInlineFlip(null)
       return
     }
-    const wrap = wrapRef.current
-    const dialog = wrap?.closest('[role="dialog"]') as HTMLElement | null
-    if (!wrap || !dialog) {
-      setPortal(null) // not in a dialog → keep the inline panel
-      return
-    }
-    const t = wrap.getBoundingClientRect()
-    const c = dialog.getBoundingClientRect()
-    const spaceBelow = c.bottom - t.bottom
-    const spaceAbove = t.top - c.top
-    const openUp = spaceBelow < 240 && spaceAbove > spaceBelow
-    const listMaxH = Math.max(120, Math.min(320, (openUp ? spaceAbove : spaceBelow) - 12))
-    setPortal({
-      target: dialog,
-      listMaxH,
-      style: {
-        position: 'absolute',
-        left: t.left - c.left + dialog.scrollLeft,
-        width: t.width,
-        ...(openUp
-          ? { top: t.top - c.top + dialog.scrollTop - 4, transform: 'translateY(-100%)' }
-          : { top: t.bottom - c.top + dialog.scrollTop + 4 })
+    const recompute = (): void => {
+      const wrap = wrapRef.current
+      if (!wrap) return
+      const dialog = wrap.closest('[role="dialog"]') as HTMLElement | null
+      const t = wrap.getBoundingClientRect()
+      if (dialog) {
+        const c = dialog.getBoundingClientRect()
+        const spaceBelow = c.bottom - t.bottom
+        const spaceAbove = t.top - c.top
+        const openUp = spaceBelow < 240 && spaceAbove > spaceBelow
+        const listMaxH = Math.max(120, Math.min(320, (openUp ? spaceAbove : spaceBelow) - 12))
+        setInlineFlip(null)
+        setPortal({
+          target: dialog,
+          listMaxH,
+          style: {
+            position: 'absolute',
+            left: t.left - c.left + dialog.scrollLeft,
+            width: t.width,
+            ...(openUp
+              ? { top: t.top - c.top + dialog.scrollTop - 4, transform: 'translateY(-100%)' }
+              : { top: t.bottom - c.top + dialog.scrollTop + 4 })
+          }
+        })
+        return
       }
-    })
+      // A plain page has no dialog boundary to portal against, so the panel
+      // stays inline (positioned relative to its own trigger via CSS) — it
+      // only needs to know whether to drop down or flip up, and how tall it
+      // can be either way, measured against the actual window.
+      setPortal(null)
+      const spaceBelow = window.innerHeight - t.bottom
+      const spaceAbove = t.top
+      const openUp = spaceBelow < 240 && spaceAbove > spaceBelow
+      const maxH = Math.max(120, Math.min(320, (openUp ? spaceAbove : spaceBelow) - 12))
+      setInlineFlip({ openUp, maxH })
+    }
+    recompute()
+    // Capture-phase so a scroll on any inner container (not just the window)
+    // still triggers a recompute.
+    window.addEventListener('resize', recompute)
+    window.addEventListener('scroll', recompute, true)
+    return () => {
+      window.removeEventListener('resize', recompute)
+      window.removeEventListener('scroll', recompute, true)
+    }
   }, [open])
 
   // Close when clicking anywhere outside this dropdown (trigger OR panel —
@@ -191,7 +227,11 @@ function Select({ value, onValueChange, disabled, children, searchable }: Select
       style={portal?.style}
       className={cn(
         'overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md uppercase',
-        portal ? 'z-[70]' : 'absolute left-0 top-full z-50 mt-1 w-full min-w-[10rem]'
+        portal
+          ? 'z-[70]'
+          : inlineFlip?.openUp
+            ? 'absolute left-0 bottom-full z-50 mb-1 w-full min-w-[10rem]'
+            : 'absolute left-0 top-full z-50 mt-1 w-full min-w-[10rem]'
       )}
     >
       {showSearch && (
@@ -217,7 +257,13 @@ function Select({ value, onValueChange, disabled, children, searchable }: Select
           out past the box instead of scrolling inside it. */}
       <div
         className={cn('max-h-[min(16rem,50vh)] overflow-y-auto p-1', contentClassName)}
-        style={portal ? { maxHeight: Math.max(96, portal.listMaxH - (showSearch ? 45 : 0)) } : undefined}
+        style={
+          portal
+            ? { maxHeight: Math.max(96, portal.listMaxH - (showSearch ? 45 : 0)) }
+            : inlineFlip
+              ? { maxHeight: Math.max(96, inlineFlip.maxH - (showSearch ? 45 : 0)) }
+              : undefined
+        }
       >
         {filtered.length === 0 ? (
           <div className="py-6 text-center text-sm text-muted-foreground">No results.</div>
