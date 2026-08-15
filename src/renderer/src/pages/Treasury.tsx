@@ -549,17 +549,23 @@ export function Treasury(): React.JSX.Element {
         <div>
           <div className="mb-1 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
             Repayments
-            <Button
-              size="sm"
-              variant="outline"
-              className="ml-auto h-6 px-2 text-[11px] normal-case tracking-normal"
-              onClick={() => setRepayForm({ lc_id: l.id, party_id: l.receivable_party_id ? String(l.receivable_party_id) : '', repay_date: todayISO(), posted: false })}
-            >
-              <Plus className="h-3 w-3" /> Log repayment
-            </Button>
+            {String(l.stage || 'application') === 'payment_received' && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="ml-auto h-6 px-2 text-[11px] normal-case tracking-normal"
+                onClick={() => setRepayForm({ lc_id: l.id, party_id: l.receivable_party_id ? String(l.receivable_party_id) : '', repay_date: todayISO(), posted: false })}
+              >
+                <Plus className="h-3 w-3" /> Log repayment
+              </Button>
+            )}
           </div>
           {reps.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No repayments logged against this LC yet.</p>
+            <p className="text-xs text-muted-foreground">
+              {String(l.stage || 'application') === 'payment_received'
+                ? 'No repayments logged against this LC yet.'
+                : 'Available once payment is received.'}
+            </p>
           ) : (
             <table className="w-full rounded-lg border bg-card text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:px-3 [&_th]:py-1.5">
               <thead className="border-b bg-muted/50 text-left text-[10px] uppercase tracking-wide text-muted-foreground">
