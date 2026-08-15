@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, Check, ChevronDown, ChevronRight, Inbox, Loader2, Pencil, Plus, Repeat, Search, TrendingDown, TrendingUp, Trash2 } from 'lucide-react'
+import { ArrowLeft, CalendarClock, Check, ChevronDown, ChevronRight, Inbox, Loader2, Pencil, Plus, Repeat, Search, TrendingDown, TrendingUp, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -648,10 +648,6 @@ export function Trading(): React.JSX.Element {
     await load()
   }
 
-  const totalMargin = deals.reduce((s, d) => s + n(d.margin), 0)
-  const totalPurchase = deals.reduce((s, d) => s + n(d.purchase_total), 0)
-  const totalSale = deals.reduce((s, d) => s + n(d.sale_net), 0)
-
   const filteredDeals = useMemo(() => {
     const q = search.trim().toLowerCase()
     const inRange = globalRange.version > 0
@@ -670,6 +666,13 @@ export function Trading(): React.JSX.Element {
         .some((f) => String(f || '').toLowerCase().includes(q))
     })
   }, [deals, search, globalRange])
+
+  // Summary cards mirror the filtered list, not the full unfiltered set — so
+  // "Total deals" never shows a count higher than what's actually listed
+  // below it once a date range or search is narrowing the view.
+  const totalMargin = filteredDeals.reduce((s, d) => s + n(d.margin), 0)
+  const totalPurchase = filteredDeals.reduce((s, d) => s + n(d.purchase_total), 0)
+  const totalSale = filteredDeals.reduce((s, d) => s + n(d.sale_net), 0)
 
   if (formPage) {
     return (
@@ -992,9 +995,20 @@ export function Trading(): React.JSX.Element {
         subtitle="Raw-product pass-through deals — buy from a supplier, sell the same quantity straight to a customer"
         hint="No bargain, no tanker movement, no stock entries, no interest — the purchase and sale book straight through in one step, same as ticking 'Trading' inside Purchases/Sales, just from one dedicated screen with full GST/TDS/round-off control. GST/TDS auto-load from the supplier/customer master (highlighted amber) and can be overridden. Deleting a deal removes both its purchase and sale invoices."
         actions={
-          <Button className="gap-1.5" onClick={openNew}>
-            <Plus className="h-4 w-4" /> New trading deal
-          </Button>
+          <>
+            {globalRange.version > 0 && (
+              <span
+                className="flex items-center gap-1.5 rounded-full border border-[#d9d2b8] bg-[#fffdf4] px-3 py-1.5 text-[11px] font-medium text-[#1a2c56]"
+                title="Set with Alt+F2 — applies across every page"
+              >
+                <CalendarClock className="h-3.5 w-3.5" />
+                {formatDate(globalRange.from)} → {formatDate(globalRange.to)}
+              </span>
+            )}
+            <Button className="gap-1.5" onClick={openNew}>
+              <Plus className="h-4 w-4" /> New trading deal
+            </Button>
+          </>
         }
       />
 
@@ -1005,7 +1019,7 @@ export function Trading(): React.JSX.Element {
           </div>
           <div>
             <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Total deals</div>
-            <div className="mt-0.5 text-lg font-semibold tabular-nums">{deals.length}</div>
+            <div className="mt-0.5 text-lg font-semibold tabular-nums">{filteredDeals.length}</div>
           </div>
         </Card>
         <Card className="p-3">

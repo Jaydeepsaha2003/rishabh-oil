@@ -241,6 +241,13 @@ export function Treasury(): React.JSX.Element {
     if (next === 'payment_received' && (!stageForm.payment_received_date || !stageForm.expiry_date)) {
       return setStageError('Both the payment received date and the maturity date are needed')
     }
+    if (
+      next === 'payment_received' &&
+      stageRow.opened_date &&
+      String(stageForm.payment_received_date) < String(stageRow.opened_date)
+    ) {
+      return setStageError('Payment received date cannot be before the date the LC was opened')
+    }
     setStageSaving(true)
     setStageError(null)
     try {
@@ -284,14 +291,15 @@ export function Treasury(): React.JSX.Element {
     const charges = n(stageForm.charges)
     const interest = days != null ? round2((amount * interestPct * days) / (100 * 365)) : 0
     const netAvailable = round2(amount - interest - charges)
-    // Margin is quoted upfront against the invoice(s) the LC covers, not
-    // against the open amount — same as the main form and the register.
+    // Margin is a deposit against the goods' basic value — struck on the
+    // taxable value of the invoice(s) the LC covers, not their tax-inclusive
+    // total and not the open amount — same as the main form and the register.
     const linkedIds: number[] = Array.isArray(stageRow.linked_order_ids) ? stageRow.linked_order_ids : []
-    const linkedTotal = orders
+    const linkedTaxableTotal = orders
       .filter((o) => linkedIds.map(String).includes(String(o.id)))
-      .reduce((s, o) => s + n(o.net_amount), 0)
-    const invoiceAmount = linkedTotal > 0 ? linkedTotal : amount
-    const margin = round2((invoiceAmount * n(stageForm.margin_pct)) / 100)
+      .reduce((s, o) => s + n(o.taxable_value), 0)
+    const taxableAmount = linkedTaxableTotal > 0 ? linkedTaxableTotal : amount
+    const margin = round2((taxableAmount * n(stageForm.margin_pct)) / 100)
     return { amount, days, interest, charges, margin, netAvailable }
   }, [stageRow, stageForm.payment_received_date, stageForm.expiry_date, stageForm.margin_pct, stageForm.interest_pct, stageForm.charges, orders])
 
@@ -1570,12 +1578,14 @@ export function Treasury(): React.JSX.Element {
 
               {n(lcForm.amount) > 0 && (n(lcForm.margin_pct) > 0 || n(lcForm.interest_pct) > 0 || n(lcForm.charges) > 0) && (() => {
                 const linkedIds: number[] = Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []
-                const linkedTotal = orders
+                // Margin is a deposit against the goods' basic value — struck
+                // on taxable value, not the tax-inclusive invoice total.
+                const linkedTaxableTotal = orders
                   .filter((o) => linkedIds.map(String).includes(String(o.id)))
-                  .reduce((s, o) => s + n(o.net_amount), 0)
-                const invoiceAmount = linkedTotal > 0 ? linkedTotal : n(lcForm.amount)
+                  .reduce((s, o) => s + n(o.taxable_value), 0)
+                const taxableAmount = linkedTaxableTotal > 0 ? linkedTaxableTotal : n(lcForm.amount)
                 const openAmount = n(lcForm.amount)
-                const margin = round2((invoiceAmount * n(lcForm.margin_pct)) / 100)
+                const margin = round2((taxableAmount * n(lcForm.margin_pct)) / 100)
                 const interest = round2((openAmount * n(lcForm.interest_pct) * n(lcForm.usance_days)) / (100 * 365))
                 const charges = round2(n(lcForm.charges))
                 // Back-calculation: the open amount is the limit as struck with

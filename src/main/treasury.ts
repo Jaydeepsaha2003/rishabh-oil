@@ -90,7 +90,16 @@ export async function postLcOpening(lcId: number): Promise<void> {
   if (!res.rows.length) return
   const lc = toPlain(res)[0]
   await dropEntry(n(lc.journal_entry_id) || null)
-  const margin = round2((n(lc.amount) * n(lc.margin_pct)) / 100)
+  // Margin is a deposit against the goods' basic value, not the tax-inclusive
+  // invoice total — struck on the linked invoice(s)' taxable value, falling
+  // back to the open amount when nothing is linked yet.
+  const linked = await c.execute({
+    sql: `SELECT COALESCE(SUM(o.taxable_value), 0) AS t, COUNT(*) AS n
+          FROM lc_linked_orders lo JOIN orders o ON o.id = lo.order_id WHERE lo.lc_id = ?`,
+    args: [lcId]
+  })
+  const taxableAmount = n(linked.rows[0]?.n) > 0 ? n(linked.rows[0]?.t) : n(lc.amount)
+  const margin = round2((taxableAmount * n(lc.margin_pct)) / 100)
   const interest = round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
   const charges = round2(n(lc.charges))
   if (margin < 0.005 && interest < 0.005 && charges < 0.005) {

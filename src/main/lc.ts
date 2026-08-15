@@ -50,6 +50,8 @@ export async function listLCs(): Promise<Row[]> {
          JOIN orders o ON o.id = lo.order_id WHERE lo.lc_id = l.id) AS linked_invoice_nos,
       (SELECT COALESCE(SUM(o.net_amount), 0) FROM lc_linked_orders lo
          JOIN orders o ON o.id = lo.order_id WHERE lo.lc_id = l.id) AS linked_invoice_amount_total,
+      (SELECT COALESCE(SUM(o.taxable_value), 0) FROM lc_linked_orders lo
+         JOIN orders o ON o.id = lo.order_id WHERE lo.lc_id = l.id) AS linked_taxable_total,
       (SELECT COUNT(*) FROM lc_linked_orders lo WHERE lo.lc_id = l.id) AS linked_invoice_count,
       COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS utilized,
       l.amount - COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS available,
@@ -65,8 +67,10 @@ export async function listLCs(): Promise<Row[]> {
   })
   return toPlain(res).map((l) => {
     const linkedCount = n(l.linked_invoice_count)
-    const invoiceAmount = linkedCount > 0 ? n(l.linked_invoice_amount_total) : n(l.amount)
-    const margin = Math.round((invoiceAmount * n(l.margin_pct)) / 100 * 100) / 100
+    // Margin is a deposit against the goods' basic value, not the tax-inclusive
+    // invoice total — struck on taxable value, same as the rest of the LC panels.
+    const taxableAmount = linkedCount > 0 ? n(l.linked_taxable_total) : n(l.amount)
+    const margin = Math.round((taxableAmount * n(l.margin_pct)) / 100 * 100) / 100
     const interest = Math.round(((n(l.amount) * n(l.interest_pct) * n(l.usance_days)) / (100 * 365)) * 100) / 100
     const charges = Math.round(n(l.charges) * 100) / 100
     // Trading LCs are only "compliant" once they carry at least one open
@@ -271,10 +275,23 @@ function assertLcNoIfPastApplication(v: Row): void {
   }
 }
 
+// The bank can't have paid the beneficiary before it even opened the LC.
+function assertPaymentReceivedNotBeforeOpen(v: Row): void {
+  if (
+    String(v.stage || 'application') === 'payment_received' &&
+    v.opened_date &&
+    v.payment_received_date &&
+    String(v.payment_received_date) < String(v.opened_date)
+  ) {
+    throw new Error('Payment received date cannot be before the date the LC was opened')
+  }
+}
+
 export async function createLC(v: Row): Promise<{ id: number }> {
   if (!v.bank) throw new Error('Bank is required')
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
+  assertPaymentReceivedNotBeforeOpen(v)
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v)
   await assertWithinInvoiceCover(v)
@@ -295,6 +312,7 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number }> {
   if (!v.bank) throw new Error('Bank is required')
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
+  assertPaymentReceivedNotBeforeOpen(v)
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v, id)
   await assertWithinInvoiceCover(v)

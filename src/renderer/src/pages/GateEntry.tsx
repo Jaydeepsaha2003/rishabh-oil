@@ -641,7 +641,7 @@ export function GateEntry(): React.JSX.Element {
             </span>
           </div>
           <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="grid min-w-0 gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <Label>Vehicle number *</Label>
               <Input
                 value={quick.tanker_no || ''}
@@ -650,7 +650,7 @@ export function GateEntry(): React.JSX.Element {
                 onKeyDown={(e) => e.key === 'Enter' && recordQuick(dir)}
               />
             </div>
-            <div className="grid min-w-0 gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <Label>
                 Person <span className="text-[10px] font-normal text-muted-foreground">(optional)</span>
               </Label>
@@ -661,7 +661,7 @@ export function GateEntry(): React.JSX.Element {
                 onKeyDown={(e) => e.key === 'Enter' && recordQuick(dir)}
               />
             </div>
-            <div className="grid min-w-0 gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <Label>Material *</Label>
               <Input
                 value={quick.note || ''}
@@ -670,7 +670,7 @@ export function GateEntry(): React.JSX.Element {
                 onKeyDown={(e) => e.key === 'Enter' && recordQuick(dir)}
               />
             </div>
-            <div className="grid min-w-0 gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <Label>Date</Label>
               <DatePicker value={quick.entry_date || ''} onChange={(v) => setQuick((p) => ({ ...p, entry_date: v }))} />
             </div>
@@ -1128,7 +1128,7 @@ export function GateEntry(): React.JSX.Element {
           </div>
           <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {arrival.is_direct_mnc ? (
-              <div className="grid min-w-0 gap-1">
+              <div className="flex min-w-0 flex-col gap-1">
                 <Label>MNC / party *</Label>
                 <Select
                   searchable
@@ -1146,7 +1146,7 @@ export function GateEntry(): React.JSX.Element {
                 </Select>
               </div>
             ) : (
-              <div className="grid min-w-0 gap-1">
+              <div className="flex min-w-0 flex-col gap-1">
                 <Label>Tanker *</Label>
                 <Select searchable value={String(arrival.tanker_id || '')} onValueChange={chooseTanker}>
                   <SelectTrigger><SelectValue placeholder="Select arriving tanker" /></SelectTrigger>
@@ -1158,7 +1158,7 @@ export function GateEntry(): React.JSX.Element {
                 </Select>
               </div>
             )}
-            <div className="grid min-w-0 gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <Label>{arrival.is_direct_mnc ? 'Vehicle number *' : 'Tanker number *'}</Label>
               <Input
                 value={arrival.tanker_no || ''}
@@ -1166,7 +1166,7 @@ export function GateEntry(): React.JSX.Element {
                 onChange={(e) => setArrival((p) => ({ ...p, tanker_no: e.target.value }))}
               />
             </div>
-            <div className="grid min-w-0 gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <Label>Rec type</Label>
               <Select
                 searchable
@@ -1188,7 +1188,7 @@ export function GateEntry(): React.JSX.Element {
                 Miscellaneous is workshop material, empty drums and the like:
                 there is no trading party behind it, so it is not asked for. */}
             {!arrival.is_direct_mnc && !arrival.tanker_id && !isMisc(arrival.rec_type) && (
-              <div className="grid min-w-0 gap-1">
+              <div className="flex min-w-0 flex-col gap-1">
                 <Label>
                   Party * <span className="text-[10px] font-normal text-muted-foreground">(supplier or customer)</span>
                 </Label>
@@ -1257,7 +1257,7 @@ export function GateEntry(): React.JSX.Element {
                 Everything else is asked at the weighbridge instead, where the
                 challan is actually to hand. */}
             {isMisc(arrival.rec_type) && (
-              <div className="grid min-w-0 gap-1">
+              <div className="flex min-w-0 flex-col gap-1">
                 <Label>
                   Dis. qty <span className="text-[10px] font-normal text-muted-foreground">(no weighment)</span>
                 </Label>
@@ -1273,7 +1273,7 @@ export function GateEntry(): React.JSX.Element {
             {/* Miscellaneous has no product behind it, so let the gateman say
                 what actually came in. */}
             {isMisc(arrival.rec_type) && (
-              <div className="grid min-w-0 gap-1 sm:col-span-2">
+              <div className="flex min-w-0 flex-col gap-1 sm:col-span-2">
                 <Label>
                   Details <span className="text-[10px] font-normal text-muted-foreground">(optional — what is it?)</span>
                 </Label>
@@ -1284,15 +1284,15 @@ export function GateEntry(): React.JSX.Element {
                 />
               </div>
             )}
-            <div className="grid min-w-0 gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <Label className="flex items-center gap-1">Gate entry no <span className="text-[10px] font-normal text-muted-foreground">(auto)</span></Label>
               <Input value={arrival.gate_entry_no || ''} disabled className="bg-muted/50 text-muted-foreground" />
             </div>
-            <div className="grid min-w-0 gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <Label className="flex items-center gap-1">Manual gate no <span className="text-[10px] font-normal text-muted-foreground">(optional)</span></Label>
               <Input value={arrival.ref_no || ''} placeholder="Gate-register no…" onChange={(e) => setArrival((p) => ({ ...p, ref_no: e.target.value }))} />
             </div>
-            <div className="grid min-w-0 gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <Label>Date</Label>
               <DatePicker value={arrival.entry_date || ''} onChange={(v) => setArrival((p) => ({ ...p, entry_date: v }))} />
             </div>
@@ -1323,7 +1323,7 @@ export function GateEntry(): React.JSX.Element {
             <InfoTip text="Record a sale tanker here — even the moment it arrives EMPTY for loading, before the invoice is ready (pick the party + a reason). It stays in the weighing queue below: enter its Tare (empty) weight now, then come back and enter the Gross (loaded) weight once it leaves — either order, either first. Net = Gross − Tare completes it." />
           </div>
           <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            <div className="grid min-w-0 gap-1 sm:col-span-2 lg:col-span-1">
+            <div className="flex min-w-0 flex-col gap-1 sm:col-span-2 lg:col-span-1">
               <Label>
                 Sale invoice (dispatched){' '}
                 <span className="text-[10px] font-normal text-muted-foreground">(optional — else give the reason)</span>
@@ -1349,7 +1349,7 @@ export function GateEntry(): React.JSX.Element {
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid min-w-0 gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <Label>
                 Reason / note{' '}
                 {!gateOut.invoice_group && <span className="text-[10px] font-normal text-amber-700">required without an invoice</span>}
@@ -1360,7 +1360,7 @@ export function GateEntry(): React.JSX.Element {
                 onChange={(e) => setGateOut((p) => ({ ...p, note: e.target.value }))}
               />
             </div>
-            <div className="grid min-w-0 gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <Label>Vehicle number *</Label>
               <Input value={gateOut.tanker_no || ''} onChange={(e) => setGateOut((p) => ({ ...p, tanker_no: e.target.value }))} />
             </div>
@@ -1368,7 +1368,7 @@ export function GateEntry(): React.JSX.Element {
                 party is named here — the same combined list as Gate in.
                 Miscellaneous has no trading party, so it is not asked for. */}
             {!gateOut.invoice_group && !isMisc(gateOut.rec_type) && (
-              <div className="grid min-w-0 gap-1">
+              <div className="flex min-w-0 flex-col gap-1">
                 <Label>
                   Party <span className="text-[10px] font-normal text-muted-foreground">(supplier or customer)</span>
                 </Label>
@@ -1431,7 +1431,7 @@ export function GateEntry(): React.JSX.Element {
                 })()}
               </div>
             )}
-            <div className="grid min-w-0 gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <Label>Category <span className="text-[10px] font-normal text-muted-foreground">(from the invoice)</span></Label>
               <Select
                 searchable
@@ -1444,15 +1444,15 @@ export function GateEntry(): React.JSX.Element {
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid min-w-0 gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <Label className="flex items-center gap-1">Gate out no <span className="text-[10px] font-normal text-muted-foreground">(auto)</span></Label>
               <Input value={gateOut.gate_entry_no || ''} disabled className="bg-muted/50 text-muted-foreground" />
             </div>
-            <div className="grid min-w-0 gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <Label className="flex items-center gap-1">Manual gate no <span className="text-[10px] font-normal text-muted-foreground">(optional)</span></Label>
               <Input value={gateOut.ref_no || ''} placeholder="Gate-register no…" onChange={(e) => setGateOut((p) => ({ ...p, ref_no: e.target.value }))} />
             </div>
-            <div className="grid min-w-0 gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <Label>Date</Label>
               <DatePicker value={gateOut.entry_date || ''} onChange={(v) => setGateOut((p) => ({ ...p, entry_date: v }))} />
             </div>
@@ -1476,7 +1476,7 @@ export function GateEntry(): React.JSX.Element {
               <Badge variant="warning" className="ml-1">{awaitingGross.length}</Badge>
             </div>
             <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4">
-              <div className="grid min-w-0 gap-1">
+              <div className="flex min-w-0 flex-col gap-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Vehicle</Label>
                 <Select value={grossPickId} onValueChange={setGrossPickId}>
                   <SelectTrigger className="h-8 bg-white text-[13px]"><SelectValue placeholder="Select a vehicle" /></SelectTrigger>
@@ -1489,7 +1489,7 @@ export function GateEntry(): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid min-w-0 gap-1">
+              <div className="flex min-w-0 flex-col gap-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Sale invoice *</Label>
                 <Select searchable value={grossPickInvoice} onValueChange={setGrossPickInvoice}>
                   <SelectTrigger className="h-8 bg-white text-[13px]">
@@ -1510,7 +1510,7 @@ export function GateEntry(): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid min-w-0 gap-1">
+              <div className="flex min-w-0 flex-col gap-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Vehicle out date *</Label>
                 <DatePicker
                   value={grossPickOutDate}
@@ -1521,7 +1521,7 @@ export function GateEntry(): React.JSX.Element {
                   className="h-8 bg-white text-[13px]"
                 />
               </div>
-              <div className="grid min-w-0 gap-1">
+              <div className="flex min-w-0 flex-col gap-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Gross weight *</Label>
                 <div className="flex gap-2">
                   <Input
@@ -1694,11 +1694,11 @@ export function GateEntry(): React.JSX.Element {
           <DialogHeader><DialogTitle>Edit {editRow?.gate_entry_no}</DialogTitle></DialogHeader>
           <div className="grid gap-3">
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5"><Label>Gate entry no *</Label><Input value={editForm.gate_entry_no || ''} onChange={(e) => setEditForm((p) => ({ ...p, gate_entry_no: e.target.value }))} /></div>
-              <div className="grid gap-1.5"><Label>Manual gate no <span className="text-[10px] font-normal text-muted-foreground">(optional)</span></Label><Input value={editForm.ref_no || ''} onChange={(e) => setEditForm((p) => ({ ...p, ref_no: e.target.value }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Gate entry no *</Label><Input value={editForm.gate_entry_no || ''} onChange={(e) => setEditForm((p) => ({ ...p, gate_entry_no: e.target.value }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Manual gate no <span className="text-[10px] font-normal text-muted-foreground">(optional)</span></Label><Input value={editForm.ref_no || ''} onChange={(e) => setEditForm((p) => ({ ...p, ref_no: e.target.value }))} /></div>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5"><Label>Date *</Label><DatePicker value={editForm.entry_date || ''} onChange={(v) => setEditForm((p) => ({ ...p, entry_date: v }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Date *</Label><DatePicker value={editForm.entry_date || ''} onChange={(v) => setEditForm((p) => ({ ...p, entry_date: v }))} /></div>
               <div />
             </div>
             <label
@@ -1727,7 +1727,7 @@ export function GateEntry(): React.JSX.Element {
               <span className="font-medium">Direct MNC stock</span>
             </label>
             {editForm.is_direct_mnc && (
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>MNC / party *</Label>
                 <Select
                   searchable
@@ -1744,8 +1744,8 @@ export function GateEntry(): React.JSX.Element {
               </div>
             )}
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5"><Label>{editForm.is_direct_mnc ? 'Vehicle number *' : 'Tanker no *'}</Label><Input value={editForm.tanker_no || ''} onChange={(e) => setEditForm((p) => ({ ...p, tanker_no: e.target.value }))} /></div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5"><Label>{editForm.is_direct_mnc ? 'Vehicle number *' : 'Tanker no *'}</Label><Input value={editForm.tanker_no || ''} onChange={(e) => setEditForm((p) => ({ ...p, tanker_no: e.target.value }))} /></div>
+              <div className="flex flex-col gap-1.5">
                 <Label>Rec type</Label>
                 <Select searchable value={editForm.rec_type || 'OIL'} onValueChange={(v) => setEditForm((p) => ({ ...p, rec_type: v }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -1754,12 +1754,12 @@ export function GateEntry(): React.JSX.Element {
               </div>
             </div>
             <div className="grid grid-cols-3 gap-3">
-              <div className="grid gap-1.5"><Label>Gross wt</Label><Input type="number" value={editForm.gross_weight ?? ''} onChange={(e) => setEditForm((p) => syncNet({ ...p, gross_weight: e.target.value }))} /></div>
-              <div className="grid gap-1.5"><Label>Tare wt</Label><Input type="number" value={editForm.tare_weight ?? ''} onChange={(e) => setEditForm((p) => syncNet({ ...p, tare_weight: e.target.value }))} /></div>
-              <div className="grid gap-1.5"><Label>UOM</Label><Input value={editForm.uom || ''} onChange={(e) => setEditForm((p) => ({ ...p, uom: e.target.value }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Gross wt</Label><Input type="number" value={editForm.gross_weight ?? ''} onChange={(e) => setEditForm((p) => syncNet({ ...p, gross_weight: e.target.value }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Tare wt</Label><Input type="number" value={editForm.tare_weight ?? ''} onChange={(e) => setEditForm((p) => syncNet({ ...p, tare_weight: e.target.value }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>UOM</Label><Input value={editForm.uom || ''} onChange={(e) => setEditForm((p) => ({ ...p, uom: e.target.value }))} /></div>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5"><Label>Dispatch qty</Label><Input placeholder={DISPATCH_HINT} value={editForm.dispatch_qty ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, dispatch_qty: cleanDispatch(e.target.value) }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Dispatch qty</Label><Input placeholder={DISPATCH_HINT} value={editForm.dispatch_qty ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, dispatch_qty: cleanDispatch(e.target.value) }))} /></div>
               {(() => {
                 // The weighbridge decides the net, so on a weighed entry it is
                 // shown, not typed — change Gross or Tare and it follows. An
@@ -1767,7 +1767,7 @@ export function GateEntry(): React.JSX.Element {
                 // from, so there it stays typeable.
                 const d = derivedNet(editForm)
                 return (
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>
                       Received (net){' '}
                       {d != null && (
@@ -1787,7 +1787,7 @@ export function GateEntry(): React.JSX.Element {
                 )
               })()}
             </div>
-            <div className="grid gap-1.5"><Label>Note</Label><Input value={editForm.note || ''} onChange={(e) => setEditForm((p) => ({ ...p, note: e.target.value }))} /></div>
+            <div className="flex flex-col gap-1.5"><Label>Note</Label><Input value={editForm.note || ''} onChange={(e) => setEditForm((p) => ({ ...p, note: e.target.value }))} /></div>
             <p className="text-xs text-muted-foreground">The net is Gross − Tare and cannot be typed — correct the two weights and it follows. An entry with no Gross was finished without weighment, so there the net is entered directly. Leaving everything empty keeps the entry pending.</p>
           </div>
           <DialogFooter>
