@@ -15,6 +15,9 @@ export type ExcelColumn = {
   // cell in this column — wins over the group-row tint so a column can stay
   // highlighted even on the bold LC summary row.
   fill?: string
+  // Per-row conditional fill (e.g. green only where Status = "Settled") —
+  // wins over both the static `fill` above and the group-row tint.
+  fillFor?: (row: Row) => string | undefined
 }
 
 // One tab of a workbook.
@@ -79,6 +82,8 @@ function writeSheet(wb: ExcelJS.Workbook, spec: ExcelSheet, index: number): void
         cell.border = { top: { style: 'thin', color: { argb: 'FF94A3B8' } } }
       }
       if (c.fill) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: c.fill } }
+      const condFill = c.fillFor ? c.fillFor(r) : undefined
+      if (condFill) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: condFill } }
     })
   })
 }
