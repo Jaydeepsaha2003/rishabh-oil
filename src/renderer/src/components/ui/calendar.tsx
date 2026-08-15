@@ -8,11 +8,16 @@ function Calendar({
   className,
   classNames,
   showOutsideDays = true,
+  fixedWeeks = true,
   ...props
 }: CalendarProps): React.JSX.Element {
   return (
     <DayPicker
       showOutsideDays={showOutsideDays}
+      // Always renders 6 week-rows, so the popover is the same height on
+      // every month — flicking through months with the arrows doesn't shift
+      // the "next month" button out from under the pointer.
+      fixedWeeks={fixedWeeks}
       className={cn('p-3', className)}
       classNames={{
         months: 'flex flex-col sm:flex-row gap-2',

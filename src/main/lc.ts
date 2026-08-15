@@ -96,6 +96,58 @@ export async function listLCs(): Promise<Row[]> {
   })
 }
 
+// The overall LC book's own limit — Fixed always counts, Convertible only
+// when switched on — tracked against every LC's own open amount by stage.
+// A preclosed LC has been wound up early, so it no longer holds any of the
+// limit; only what's genuinely still open counts against it.
+export async function getLcLimit(): Promise<Row> {
+  const c = getClient()
+  const cid = getActiveCompanyId()
+  const limitRes = await c.execute({ sql: 'SELECT * FROM lc_limits WHERE company_id = ?', args: [cid] })
+  const limit = limitRes.rows.length ? toPlain(limitRes)[0] : { fixed_limit: 0, convertible_limit: 0, convertible_enabled: 0 }
+
+  const sumsRes = await c.execute({
+    sql: `SELECT stage, COALESCE(SUM(amount), 0) AS total FROM letters_of_credit
+          WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
+          GROUP BY stage`,
+    args: [cid]
+  })
+  const byStage: Record<string, number> = { application: 0, open: 0, payment_received: 0 }
+  for (const r of toPlain(sumsRes)) {
+    const stage = String(r.stage || 'application')
+    if (stage in byStage) byStage[stage] = n(r.total)
+  }
+
+  const totalLimit = round2(n(limit.fixed_limit) + (limit.convertible_enabled ? n(limit.convertible_limit) : 0))
+  const utilized = round2(byStage.application + byStage.open + byStage.payment_received)
+  return {
+    fixed_limit: n(limit.fixed_limit),
+    convertible_limit: n(limit.convertible_limit),
+    convertible_enabled: !!n(limit.convertible_enabled),
+    total_limit: totalLimit,
+    application: round2(byStage.application),
+    open: round2(byStage.open),
+    payment_received: round2(byStage.payment_received),
+    utilized,
+    available: round2(totalLimit - utilized)
+  }
+}
+
+export async function saveLcLimit(v: Row): Promise<{ id: number }> {
+  const cid = getActiveCompanyId()
+  await getClient().execute({
+    sql: `INSERT INTO lc_limits (company_id, fixed_limit, convertible_limit, convertible_enabled, updated_at)
+          VALUES (?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(company_id) DO UPDATE SET
+            fixed_limit = excluded.fixed_limit,
+            convertible_limit = excluded.convertible_limit,
+            convertible_enabled = excluded.convertible_enabled,
+            updated_at = excluded.updated_at`,
+    args: [cid, n(v.fixed_limit), n(v.convertible_limit), v.convertible_enabled ? 1 : 0]
+  })
+  return { id: cid }
+}
+
 async function syncLinkedOrders(lcId: number, orderIds: unknown): Promise<void> {
   const c = getClient()
   await c.execute({ sql: 'DELETE FROM lc_linked_orders WHERE lc_id = ?', args: [lcId] })

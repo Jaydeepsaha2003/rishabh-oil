@@ -857,7 +857,18 @@ const MIGRATIONS = [
   "ALTER TABLE letters_of_credit ADD COLUMN preclosed_date TEXT",
   "ALTER TABLE letters_of_credit ADD COLUMN preclose_settlement_direction TEXT",
   'ALTER TABLE letters_of_credit ADD COLUMN preclose_settlement_amount REAL',
-  'ALTER TABLE letters_of_credit ADD COLUMN preclose_journal_entry_id INTEGER'
+  'ALTER TABLE letters_of_credit ADD COLUMN preclose_journal_entry_id INTEGER',
+  // Overall LC facility limit per company — Fixed (always on) plus an
+  // optional Convertible top-up — separate from any one LC's own open
+  // amount, so the book as a whole can be tracked against what the bank has
+  // actually sanctioned across every LC together.
+  `CREATE TABLE IF NOT EXISTS lc_limits (
+    company_id INTEGER PRIMARY KEY,
+    fixed_limit REAL NOT NULL DEFAULT 0,
+    convertible_limit REAL NOT NULL DEFAULT 0,
+    convertible_enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

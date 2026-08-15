@@ -28,6 +28,7 @@ import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { PageHeader } from '@/components/PageHeader'
@@ -122,15 +123,17 @@ export function Treasury(): React.JSX.Element {
   // T+1 / this week / fortnight / monthly / quarterly, by whichever is nearer:
   // an outstanding bill's due date, or (no outstanding bill) the LC's expiry.
   const [lcDuePeriod, setLcDuePeriod] = useState('all')
+  const [lcStageFilter, setLcStageFilter] = useState<string | null>(null)
   // Every LC bill and discounted bill in one due-date-sorted list, regardless
   // of urgency — the alerts above only surface what's already close.
   const [tracker, setTracker] = useState<Row[]>([])
   const [trackerShowSettled, setTrackerShowSettled] = useState(false)
   const [activeCompany, setActiveCompany] = useState(0)
   const [companies, setCompanies] = useState<Row[]>([])
+  const [lcLimit, setLcLimit] = useState<Row | null>(null)
 
   const load = useCallback(async () => {
-    const [l, b, a, sup, cust, sl, od, tr, act, comps] = await Promise.all([
+    const [l, b, a, sup, cust, sl, od, tr, act, comps, lim] = await Promise.all([
       window.api.lc.list(),
       window.api.billDiscounts.list(),
       window.api.treasury.alerts(),
@@ -140,7 +143,8 @@ export function Treasury(): React.JSX.Element {
       window.api.orders.list(),
       window.api.treasury.paymentTracker(),
       window.api.company.getActive(),
-      window.api.company.list()
+      window.api.company.list(),
+      window.api.lc.getLimit()
     ])
     setLcs(l.filter((x) => String(x.facility_type || 'lc') === 'lc'))
     setBills(b.filter((x) => String(x.medium || '') === 'bill_discounting' || x.rate_pct != null))
@@ -152,6 +156,7 @@ export function Treasury(): React.JSX.Element {
     setTracker(tr)
     setActiveCompany(Number(act?.id) || 0)
     setCompanies(comps)
+    setLcLimit(lim)
   }, [])
 
   useEffect(() => {
@@ -287,6 +292,38 @@ export function Treasury(): React.JSX.Element {
       setStageError((e as Error).message)
     } finally {
       setStageSaving(false)
+    }
+  }
+
+  // ---------------- LC facility limit (Fixed + Convertible) ----------------
+  const [lcLimitOpen, setLcLimitOpen] = useState(false)
+  const [lcLimitForm, setLcLimitForm] = useState<Row>({})
+  const [lcLimitSaving, setLcLimitSaving] = useState(false)
+
+  function openLcLimit(): void {
+    setLcLimitForm({
+      fixed_limit: lcLimit ? String(lcLimit.fixed_limit ?? 0) : '0',
+      convertible_limit: lcLimit ? String(lcLimit.convertible_limit ?? 0) : '0',
+      convertible_enabled: !!lcLimit?.convertible_enabled
+    })
+    setLcLimitOpen(true)
+  }
+
+  async function saveLcLimitForm(): Promise<void> {
+    setLcLimitSaving(true)
+    try {
+      await window.api.lc.saveLimit({
+        fixed_limit: n(lcLimitForm.fixed_limit),
+        convertible_limit: n(lcLimitForm.convertible_limit),
+        convertible_enabled: !!lcLimitForm.convertible_enabled
+      })
+      toast.success('LC limit updated')
+      setLcLimitOpen(false)
+      load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setLcLimitSaving(false)
     }
   }
 
@@ -577,13 +614,15 @@ export function Treasury(): React.JSX.Element {
     [lcs]
   )
   const lcsFiltered = useMemo(() => {
-    if (lcDuePeriod === 'all') return lcsWithDue
+    let rows = lcsWithDue
+    if (lcStageFilter) rows = rows.filter((l) => String(l.stage || 'application') === lcStageFilter)
+    if (lcDuePeriod === 'all') return rows
     const maxDays = DUE_PERIODS.find((p) => p.key === lcDuePeriod)?.maxDays
-    if (maxDays == null) return lcsWithDue
+    if (maxDays == null) return rows
     // Cumulative: overdue and everything due sooner counts too, not just the
     // slice of days that falls exactly in this bucket.
-    return lcsWithDue.filter((l) => l.days_left_effective != null && l.days_left_effective <= maxDays)
-  }, [lcsWithDue, lcDuePeriod])
+    return rows.filter((l) => l.days_left_effective != null && l.days_left_effective <= maxDays)
+  }, [lcsWithDue, lcDuePeriod, lcStageFilter])
 
   const [lcExporting, setLcExporting] = useState(false)
   async function downloadLcRegister(): Promise<void> {
@@ -744,7 +783,6 @@ export function Treasury(): React.JSX.Element {
     <>
       <PageHeader
         title="Treasury"
-        subtitle="Letters of credit and bill discounting — tracked to the day, posted to the books"
         hint="LCs carry interest days: every bill issued under one gets a maturity date, and settling it pays the supplier through the books against the original invoice. Discounting a sale bill brings the bank money in now (interest and charges to expenses) and clears the customer when the bill is realized. Everything shows in the Day Book, ledgers and Trial Balance."
       />
       <div className="space-y-4 px-4 py-4">
@@ -855,6 +893,88 @@ export function Treasury(): React.JSX.Element {
           </TabsContent>
 
           <TabsContent value="lc" className="mt-4 space-y-3">
+            {lcLimit && (
+              <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
+                <div className="flex items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/50"><Landmark className="h-3.5 w-3.5" /></span>
+                  <span className="text-[13px] font-bold uppercase tracking-widest">LC Facility Limit</span>
+                  <Button size="sm" variant="outline" className="ml-auto h-7 bg-white px-2 text-xs" onClick={openLcLimit}>
+                    Edit limit
+                  </Button>
+                </div>
+                <div className="grid grid-cols-2 gap-px bg-[#e5dfc8] p-px sm:grid-cols-3 lg:grid-cols-6">
+                  <div className="bg-[#fffdf4] px-3 py-2.5 text-center">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Fixed</div>
+                    <div className="text-[15px] font-bold tabular-nums text-[#1a2c56]">{formatINR(lcLimit.fixed_limit)}</div>
+                  </div>
+                  <div className="bg-[#fffdf4] px-3 py-2.5 text-center">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Convertible {!lcLimit.convertible_enabled && <span className="text-muted-foreground/60">(off)</span>}
+                    </div>
+                    <div className={cn('text-[15px] font-bold tabular-nums', lcLimit.convertible_enabled ? 'text-[#1a2c56]' : 'text-muted-foreground/50 line-through')}>
+                      {formatINR(lcLimit.convertible_limit)}
+                    </div>
+                  </div>
+                  <div className="bg-[#1a2c56] px-3 py-2.5 text-center">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-white/70">Total LC Limit</div>
+                    <div className="text-[15px] font-bold tabular-nums text-white">{formatINR(lcLimit.total_limit)}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setLcStageFilter(lcStageFilter === 'application' ? null : 'application')}
+                    title="Click to filter the list below to Application-stage LCs"
+                    className={cn(
+                      'bg-amber-50 px-3 py-2.5 text-center transition-colors hover:bg-amber-100',
+                      lcStageFilter === 'application' && 'ring-2 ring-inset ring-amber-600'
+                    )}
+                  >
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-800">Application</div>
+                    <div className="text-[15px] font-bold tabular-nums text-amber-900">{formatINR(lcLimit.application)}</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLcStageFilter(lcStageFilter === 'open' ? null : 'open')}
+                    title="Click to filter the list below to Open-stage LCs"
+                    className={cn(
+                      'bg-sky-50 px-3 py-2.5 text-center transition-colors hover:bg-sky-100',
+                      lcStageFilter === 'open' && 'ring-2 ring-inset ring-sky-600'
+                    )}
+                  >
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-sky-800">Open</div>
+                    <div className="text-[15px] font-bold tabular-nums text-sky-900">{formatINR(lcLimit.open)}</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLcStageFilter(lcStageFilter === 'payment_received' ? null : 'payment_received')}
+                    title="Click to filter the list below to Payment received-stage LCs"
+                    className={cn(
+                      'bg-emerald-50 px-3 py-2.5 text-center transition-colors hover:bg-emerald-100',
+                      lcStageFilter === 'payment_received' && 'ring-2 ring-inset ring-emerald-600'
+                    )}
+                  >
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800">Payment received</div>
+                    <div className="text-[15px] font-bold tabular-nums text-emerald-900">{formatINR(lcLimit.payment_received)}</div>
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-3 border-t border-dashed border-[#e5dfc8] px-4 py-2.5">
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Utilised {formatINR(lcLimit.utilized)} of {formatINR(lcLimit.total_limit)}
+                  </span>
+                  {lcStageFilter && (
+                    <button
+                      type="button"
+                      onClick={() => setLcStageFilter(null)}
+                      className="rounded-full border border-[#d9d2b8] bg-white px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-[#1a2c56] hover:bg-amber-50"
+                    >
+                      Clear stage filter
+                    </button>
+                  )}
+                  <span className={cn('text-[15px] font-bold tabular-nums', n(lcLimit.available) < 0 ? 'text-rose-600' : 'text-emerald-700')}>
+                    Available {formatINR(lcLimit.available)}
+                  </span>
+                </div>
+              </div>
+            )}
             <div className="flex flex-wrap items-center gap-2">
               {DUE_PERIODS.map((p) => (
                 <button
@@ -1052,7 +1172,10 @@ export function Treasury(): React.JSX.Element {
                               </div>
                             </TableCell>
                             <TableCell className="whitespace-nowrap">{l.supplier_name || '—'}</TableCell>
-                            <TableCell className="whitespace-nowrap text-[12px] tabular-nums">{formatDate(l.open_date)} → {formatDate(l.expiry_date)}</TableCell>
+                            <TableCell className="whitespace-nowrap text-[12px] tabular-nums">
+                              <div>O - {formatDate(l.open_date)}</div>
+                              <div>M - {formatDate(l.expiry_date)}</div>
+                            </TableCell>
                             <TableCell className="whitespace-nowrap">
                               {l.expiry_date ? <DueBadge date={l.expiry_date} /> : <span className="text-muted-foreground">—</span>}
                             </TableCell>
@@ -1231,6 +1354,48 @@ export function Treasury(): React.JSX.Element {
         </DialogContent>
       </Dialog>
 
+      {/* Edit the overall LC facility limit — Fixed + optional Convertible */}
+      <Dialog open={lcLimitOpen} onOpenChange={(o) => !o && setLcLimitOpen(false)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>LC facility limit</DialogTitle></DialogHeader>
+          <div className="grid gap-3">
+            <div className="grid gap-1.5">
+              <Label>Fixed limit (₹) *</Label>
+              <Input type="number" value={lcLimitForm.fixed_limit ?? ''} onChange={(e) => setLcLimitForm({ ...lcLimitForm, fixed_limit: e.target.value })} />
+            </div>
+            <div className="flex items-center justify-between rounded-md border px-3 py-2">
+              <div>
+                <Label>Convertible limit</Label>
+                <p className="text-[10px] text-muted-foreground">When on, this adds to the Fixed limit to make the total.</p>
+              </div>
+              <Switch
+                checked={!!lcLimitForm.convertible_enabled}
+                onCheckedChange={(v) => setLcLimitForm({ ...lcLimitForm, convertible_enabled: v })}
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label>Convertible limit (₹)</Label>
+              <Input
+                type="number"
+                disabled={!lcLimitForm.convertible_enabled}
+                value={lcLimitForm.convertible_limit ?? ''}
+                onChange={(e) => setLcLimitForm({ ...lcLimitForm, convertible_limit: e.target.value })}
+              />
+            </div>
+            <div className="flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Total LC limit</span>
+              <span className="text-[15px] font-bold tabular-nums">
+                {formatINR(n(lcLimitForm.fixed_limit) + (lcLimitForm.convertible_enabled ? n(lcLimitForm.convertible_limit) : 0))}
+              </span>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLcLimitOpen(false)} disabled={lcLimitSaving}>Cancel</Button>
+            <Button onClick={() => void saveLcLimitForm()} disabled={lcLimitSaving}>{lcLimitSaving ? 'Saving…' : 'Save'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Preclose an LC — wind it up before its natural maturity */}
       <Dialog open={!!precloseRow} onOpenChange={(o) => !o && setPrecloseRow(null)}>
         <DialogContent className="max-w-2xl overflow-hidden p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100">
@@ -1394,7 +1559,11 @@ export function Treasury(): React.JSX.Element {
                     </div>
                     <div className="flex flex-col gap-1.5">
                       <Label>Open date <span className="text-red-600">*</span></Label>
-                      <DatePicker value={String(stageForm.opened_date || '')} onChange={(v) => setStageForm({ ...stageForm, opened_date: v })} />
+                      <DatePicker
+                        value={String(stageForm.opened_date || '')}
+                        onChange={(v) => setStageForm({ ...stageForm, opened_date: v })}
+                        min={String(stageRow?.open_date || '') || undefined}
+                      />
                     </div>
                   </section>
                 )}
@@ -1408,11 +1577,19 @@ export function Treasury(): React.JSX.Element {
                       <div className="grid gap-3 sm:grid-cols-2">
                         <div className="flex flex-col gap-1.5">
                           <Label>Payment received date <span className="text-red-600">*</span></Label>
-                          <DatePicker value={String(stageForm.payment_received_date || '')} onChange={(v) => setStageForm({ ...stageForm, payment_received_date: v })} />
+                          <DatePicker
+                            value={String(stageForm.payment_received_date || '')}
+                            onChange={(v) => setStageForm({ ...stageForm, payment_received_date: v })}
+                            min={String(stageRow?.opened_date || '') || undefined}
+                          />
                         </div>
                         <div className="flex flex-col gap-1.5">
                           <Label>Maturity date <span className="text-red-600">*</span></Label>
-                          <DatePicker value={String(stageForm.expiry_date || '')} onChange={(v) => setStageForm({ ...stageForm, expiry_date: v })} />
+                          <DatePicker
+                            value={String(stageForm.expiry_date || '')}
+                            onChange={(v) => setStageForm({ ...stageForm, expiry_date: v })}
+                            min={String(stageForm.payment_received_date || '') || undefined}
+                          />
                         </div>
                       </div>
                     </section>
@@ -1782,6 +1959,7 @@ export function Treasury(): React.JSX.Element {
                             value={String(lcForm.opened_date || '')}
                             onChange={(v) => setLcForm({ ...lcForm, opened_date: v })}
                             disabled={stage === 'application'}
+                            min={String(lcForm.open_date || '') || undefined}
                           />
                           {stage === 'application' && <span className="text-[10px] text-muted-foreground">Set once the stage moves to Open</span>}
                         </div>
@@ -1794,6 +1972,7 @@ export function Treasury(): React.JSX.Element {
                               setLcForm({ ...lcForm, payment_received_date: v, usance_days: usanceDays })
                             }}
                             disabled={stage !== 'payment_received'}
+                            min={String(lcForm.opened_date || '') || undefined}
                           />
                           {stage !== 'payment_received' && <span className="text-[10px] text-muted-foreground">Set once payment is received</span>}
                         </div>
@@ -1806,6 +1985,7 @@ export function Treasury(): React.JSX.Element {
                               setLcForm({ ...lcForm, expiry_date: v, usance_days: usanceDays })
                             }}
                             disabled={stage !== 'payment_received'}
+                            min={String(lcForm.payment_received_date || '') || undefined}
                           />
                           {stage !== 'payment_received' && <span className="text-[10px] text-muted-foreground">Set together with payment received</span>}
                         </div>

@@ -232,6 +232,8 @@ export interface Api {
       id: number,
       values: { preclose_date: string; direction: 'credit_to_us' | 'pay_to_party'; amount: number }
     ) => Promise<{ id: number }>
+    getLimit: () => Promise<Row>
+    saveLimit: (values: Row) => Promise<{ id: number }>
   }
   files: {
     pickDocument: () => Promise<{ path: string | null }>

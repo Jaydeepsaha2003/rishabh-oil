@@ -310,7 +310,9 @@ const api = {
     preclose: (
       id: number,
       values: { preclose_date: string; direction: 'credit_to_us' | 'pay_to_party'; amount: number }
-    ): Promise<{ id: number }> => ipcRenderer.invoke('lc:preclose', { id, values })
+    ): Promise<{ id: number }> => ipcRenderer.invoke('lc:preclose', { id, values }),
+    getLimit: (): Promise<Row> => ipcRenderer.invoke('lc:getLimit'),
+    saveLimit: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('lc:saveLimit', { values })
   },
   files: {
     pickDocument: (): Promise<{ path: string | null }> => ipcRenderer.invoke('files:pickDocument'),
