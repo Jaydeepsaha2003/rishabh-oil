@@ -20,6 +20,20 @@ function n(v: unknown): number {
   return Number.isFinite(x) ? x : 0
 }
 
+function round2(v: number): number {
+  return Math.round(v * 100) / 100
+}
+
+// What's actually left to issue bills against: interest and charges come out
+// of the LC's own open amount before anything else, the same as the money
+// that lands with the bank — issuing bills doesn't get to ignore what the LC
+// itself already owes in fees.
+function netAvailable(lc: Row, issued: number): number {
+  const interest = round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
+  const charges = round2(n(lc.charges))
+  return round2(n(lc.amount) - interest - charges - issued)
+}
+
 // LCs / discounting facilities with their utilisation (sum of issuances),
 // the invoice they're linked to, the party repayment is expected from, the
 // opening-amount breakdown, and how much of the exposure has been repaid.
@@ -68,6 +82,9 @@ export async function listLCs(): Promise<Row[]> {
       // Back-calculated: the open amount is the limit struck with the bank —
       // interest and charges come OUT of it, not added on top.
       lc_net_available: Math.round((n(l.amount) - interest - charges) * 100) / 100,
+      // What's actually left to issue bills against — interest and charges
+      // come out of the open amount before issued bills reduce it further.
+      available: netAvailable(l, n(l.utilized)),
       outstanding: Math.round((n(l.amount) - n(l.repaid)) * 100) / 100,
       compliant,
       display_status: !compliant ? 'non_compliant' : String(l.workflow_status || 'in_progress')
@@ -103,20 +120,29 @@ async function syncPaymentReceivedIssuance(lcId: number, v: Row): Promise<void> 
     const dueDate = String(v.expiry_date || paymentDate).slice(0, 10)
     const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x: unknown) => n(x)).filter((x: number) => x > 0) : []
     if (ids.length) {
+      // The LC can cover less than the linked invoices' full total (partly
+      // financed another way) but never more — so each auto-issued bill is
+      // capped to what's still left of the LC's own net available (open
+      // amount less interest and charges), same rule issueLC() applies to a
+      // manual issuance.
+      let remaining = netAvailable(v, 0)
       for (const oid of ids) {
         const o = await c.execute({ sql: 'SELECT invoice_no, net_amount FROM orders WHERE id = ?', args: [oid] })
         if (!o.rows.length) continue
+        const issueAmount = Math.min(remaining, n(o.rows[0].net_amount))
+        if (issueAmount <= 0.005) continue
         await c.execute({
           sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, order_id, bill_no, due_date, status)
                 VALUES (?, ?, ?, ?, ?, ?, 'outstanding')`,
-          args: [lcId, issueDate, n(o.rows[0].net_amount), oid, String(o.rows[0].invoice_no || ''), dueDate]
+          args: [lcId, issueDate, Math.round(issueAmount * 100) / 100, oid, String(o.rows[0].invoice_no || ''), dueDate]
         })
+        remaining -= issueAmount
       }
-    } else if (n(v.amount) > 0) {
+    } else if (netAvailable(v, 0) > 0) {
       await c.execute({
         sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, bill_no, due_date, status)
               VALUES (?, ?, ?, ?, ?, 'outstanding')`,
-        args: [lcId, issueDate, n(v.amount), String(v.lc_no || ''), dueDate]
+        args: [lcId, issueDate, netAvailable(v, 0), String(v.lc_no || ''), dueDate]
       })
     }
   }
@@ -247,6 +273,7 @@ function assertLcNoIfPastApplication(v: Row): void {
 
 export async function createLC(v: Row): Promise<{ id: number }> {
   if (!v.bank) throw new Error('Bank is required')
+  if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v)
@@ -266,6 +293,7 @@ export async function createLC(v: Row): Promise<{ id: number }> {
 
 export async function updateLC(id: number, v: Row): Promise<{ id: number }> {
   if (!v.bank) throw new Error('Bank is required')
+  if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v, id)
@@ -285,9 +313,12 @@ export async function deleteLC(id: number): Promise<{ id: number }> {
   // Reverse everything the LC put into the books before it goes.
   const bills = await c.execute({ sql: 'SELECT journal_entry_id FROM lc_issuances WHERE lc_id = ?', args: [id] })
   for (const b of bills.rows) if (b.journal_entry_id) await dropTreasuryEntry(Number(b.journal_entry_id))
+  const repayments = await c.execute({ sql: 'SELECT journal_entry_id FROM lc_repayments WHERE lc_id = ?', args: [id] })
+  for (const r of repayments.rows) if (r.journal_entry_id) await dropTreasuryEntry(Number(r.journal_entry_id))
   const lc = await c.execute({ sql: 'SELECT journal_entry_id FROM letters_of_credit WHERE id = ?', args: [id] })
   if (lc.rows.length && lc.rows[0].journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].journal_entry_id))
   await c.execute({ sql: 'DELETE FROM lc_issuances WHERE lc_id = ?', args: [id] })
+  await c.execute({ sql: 'DELETE FROM lc_repayments WHERE lc_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM lc_linked_orders WHERE lc_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM letters_of_credit WHERE id = ?', args: [id] })
   return { id }
@@ -315,7 +346,7 @@ export async function issueLC(v: Row): Promise<{ id: number }> {
     sql: 'SELECT COALESCE(SUM(amount), 0) AS u FROM lc_issuances WHERE lc_id = ?',
     args: [lcId]
   })
-  const available = n(lcRes.rows[0].amount) - n(used.rows[0].u)
+  const available = netAvailable(lcRes.rows[0], n(used.rows[0].u))
   if (amount > available + 0.005) {
     throw new Error(`Issuance exceeds available LC balance (${available.toFixed(2)})`)
   }
