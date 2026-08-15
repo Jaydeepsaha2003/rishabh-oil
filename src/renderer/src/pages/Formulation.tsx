@@ -180,7 +180,7 @@ export function Formulation(): React.JSX.Element {
         <div className="px-4 py-6">
           <Card className="max-w-3xl p-6">
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Output product *</Label>
                 <Select
                   value={String(form.product_id)}
@@ -198,7 +198,7 @@ export function Formulation(): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Name (optional)</Label>
                 <Input
                   value={form.name ?? ''}

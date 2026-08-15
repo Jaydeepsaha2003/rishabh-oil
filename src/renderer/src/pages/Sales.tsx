@@ -1057,15 +1057,15 @@ function SalesTab({
         {/* Invoice header */}
         <div className="border-b border-dashed border-[#d9d2b8] px-4 py-3 [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white">
           <div className="grid gap-x-3 gap-y-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 [&>div]:min-w-0 [&>div]:gap-1 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Date</Label>
               <DatePicker value={header.sale_date} onChange={(v) => setHeaderField('sale_date', v)} />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Invoice no</Label>
               <Input value={header.invoice_no ?? ''} onChange={(e) => setHeaderField('invoice_no', e.target.value)} />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Customer</Label>
               <Select value={header.customer_id ? String(header.customer_id) : ''} onValueChange={chooseCustomer}>
                 <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
@@ -1074,7 +1074,7 @@ function SalesTab({
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <label className={cn('flex items-center gap-2 text-[13px]', !!editingGroup && 'opacity-50')}>
                 <input
                   type="checkbox"
@@ -1086,7 +1086,7 @@ function SalesTab({
                 Trading sale — resold from a trading purchase, does not affect stock
               </label>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Freight term</Label>
               <Select value={header.freight_term || 'FREIGHT_ON_GOODS'} onValueChange={(v) => setHeaderField('freight_term', v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -1096,7 +1096,7 @@ function SalesTab({
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Dispatch stage</Label>
               {isDld ? (
                 <Select value={header.dispatch_stage || 'pending'} onValueChange={(v) => setHeaderField('dispatch_stage', v)}>
@@ -1119,14 +1119,14 @@ function SalesTab({
 
           {isDld && (
             <div className="mt-4 grid grid-cols-2 gap-3 rounded-md border border-sky-200 bg-sky-50 p-3 sm:grid-cols-3">
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Transporter *</Label>
                 <Select value={header.transporter_id ? String(header.transporter_id) : ''} onValueChange={(v) => setHeaderField('transporter_id', v)}>
                   <SelectTrigger className="bg-white"><SelectValue placeholder="Select" /></SelectTrigger>
                   <SelectContent>{transporters.map((t) => <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>&nbsp;</Label>
                 <label className="flex h-9 items-center gap-2 rounded-md border border-sky-200 bg-white px-2.5 text-[12px] font-medium text-sky-900">
                   <input
@@ -1138,7 +1138,7 @@ function SalesTab({
                   Deduct freight from invoice total
                 </label>
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Freight rate / unit</Label>
                 <Input type="number" className="bg-white" value={header.transport_rate ?? ''} onChange={(e) => setHeaderField('transport_rate', e.target.value)} />
                 <span className="text-[10px] text-muted-foreground">per case for a packed item, per MT for a loose one</span>
@@ -1153,15 +1153,15 @@ function SalesTab({
 
           {isDld && header.dispatch_stage && header.dispatch_stage !== 'pending' && (
             <div className="mt-4 grid grid-cols-1 gap-3 rounded-md border bg-muted/30 p-3 sm:grid-cols-3">
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Loaded date</Label>
                 <DatePicker value={header.loaded_date ?? ''} onChange={(v) => setHeaderField('loaded_date', v)} />
               </div>
               {(header.dispatch_stage === 'transit' || header.dispatch_stage === 'unloaded') && (
-                <div className="grid gap-1.5"><Label>In-transit date</Label><DatePicker value={header.transit_date ?? ''} onChange={(v) => setHeaderField('transit_date', v)} /></div>
+                <div className="flex flex-col gap-1.5"><Label>In-transit date</Label><DatePicker value={header.transit_date ?? ''} onChange={(v) => setHeaderField('transit_date', v)} /></div>
               )}
               {header.dispatch_stage === 'unloaded' && (
-                <div className="grid gap-1.5"><Label>Unloaded date</Label><DatePicker value={header.unloaded_date ?? ''} onChange={(v) => setHeaderField('unloaded_date', v)} /></div>
+                <div className="flex flex-col gap-1.5"><Label>Unloaded date</Label><DatePicker value={header.unloaded_date ?? ''} onChange={(v) => setHeaderField('unloaded_date', v)} /></div>
               )}
               <p className="text-[11px] text-muted-foreground sm:col-span-3">Blank stages are stamped with today&apos;s date. Dispatching draws finished stock (checked against availability).</p>
             </div>
@@ -1194,7 +1194,7 @@ function SalesTab({
                   </span>
                 </div>
                 <div className="grid gap-x-3 gap-y-2 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)] [&>div]:min-w-0 [&>div]:gap-1">
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Product *</Label>
                     <Select value={String(item.product_id)} onValueChange={(v) => setItem(i, { product_id: v, sales_bargain_id: '' })}>
                       <SelectTrigger><SelectValue placeholder="Finished product" /></SelectTrigger>
@@ -1205,7 +1205,7 @@ function SalesTab({
                         text, so without this the row would tilt toward it. */}
                     <span className="block h-[15px]" />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Sales bargain (optional)</Label>
                     <Select value={item.sales_bargain_id ? String(item.sales_bargain_id) : 'none'} onValueChange={(v) => selectItemBargain(i, v)} disabled={!item.product_id}>
                       <SelectTrigger>
@@ -1257,7 +1257,7 @@ function SalesTab({
                       })()}
                     </span>
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Sale type</Label>
                     <Select value={item.sale_type || 'LOOSE'} onValueChange={(v) => setItem(i, { sale_type: v })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
@@ -1272,7 +1272,7 @@ function SalesTab({
 
                 {c.isPacked && (
                   <div className="mt-2 grid grid-cols-2 items-start gap-x-3 gap-y-2 rounded-md border border-violet-200 bg-violet-50/60 p-2.5 sm:grid-cols-3 [&>div]:min-w-0 [&>div]:gap-1">
-                    <div className="grid gap-1 sm:col-span-2">
+                    <div className="flex flex-col gap-1 sm:col-span-2">
                       <Label>Packed SKU *</Label>
                       <Select value={item.packaging_id ? String(item.packaging_id) : ''} onValueChange={(v) => {
                         setItem(i, { packaging_id: v })
@@ -1300,7 +1300,7 @@ function SalesTab({
                           `1 ${c.selPack.box_label} = ${formatNum(c.selPack.pouches_per_box)} ${c.selPack.pouch_label} = ${formatNum(Number(c.selPack.pouches_per_box) * Number(c.selPack.base_per_pouch))} ${c.selPack.base_uom}`}
                       </span>
                     </div>
-                    <div className="grid gap-1">
+                    <div className="flex flex-col gap-1">
                       <Label>{c.selPack?.box_label || 'Cases'}</Label>
                       <Input type="number" className="bg-white" value={item.boxes ?? ''} onChange={(e) => setItem(i, { boxes: e.target.value })} />
                       <span className="block h-[15px]" />
@@ -1309,7 +1309,7 @@ function SalesTab({
                 )}
 
                 <div className="mt-2 grid grid-cols-2 items-start gap-x-3 gap-y-2 sm:grid-cols-4 [&>div]:min-w-0 [&>div]:gap-1">
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Qty ({c.saleUom})</Label>
                     {c.isPacked ? (
                       <div className="flex h-9 items-center rounded-md bg-muted px-3 text-sm font-medium tabular-nums">{formatNum(c.effQty)}</div>
@@ -1332,7 +1332,7 @@ function SalesTab({
                       offer but clutter. Loose sales have no case to price by,
                       so they get the per-unit rate box instead. */}
                   {c.isPacked ? (
-                    <div className="grid gap-1.5">
+                    <div className="flex flex-col gap-1.5">
                       <Label>Rate / {c.selPack?.box_label || 'case'}</Label>
                       <Input
                         type="number"
@@ -1387,7 +1387,7 @@ function SalesTab({
                       </span>
                     </div>
                   ) : (
-                    <div className="grid gap-1.5">
+                    <div className="flex flex-col gap-1.5">
                       <Label>Rate /{c.saleUom}</Label>
                       <Input
                         type="number"
@@ -1397,12 +1397,12 @@ function SalesTab({
                       <span className="block h-[15px]" />
                     </div>
                   )}
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>GST %</Label>
                     <Input type="number" value={item.gst_pct ?? ''} onChange={(e) => setItem(i, { gst_pct: e.target.value })} />
                     <span className="block h-[15px]" />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>GST type</Label>
                     <Select value={item.gst_type || 'CGST_SGST'} onValueChange={(v) => setItem(i, { gst_type: v })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
@@ -1621,7 +1621,7 @@ function SalesTab({
                         <span>A different rate applies to the extra quantity</span>
                       </div>
                       {excess.diffRate && (
-                        <div className="grid gap-1.5">
+                        <div className="flex flex-col gap-1.5">
                           <Label className="text-amber-900">Rate for the extra qty (per {excess.uom})</Label>
                           <Input
                             type="number"
@@ -1634,7 +1634,7 @@ function SalesTab({
                       )}
                     </>
                   ) : (
-                    <div className="grid gap-1.5">
+                    <div className="flex flex-col gap-1.5">
                       <Label className="text-amber-900">Next bargain for the extra qty</Label>
                       {nextBargains.length === 0 ? (
                         <p className="text-[11px]">
@@ -2545,11 +2545,11 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
             </div>
           )}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Date</Label>
               <DatePicker value={form.bargain_date} onChange={(v) => setField('bargain_date', v)} />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Customer *</Label>
               <Select
                 value={form.customer_id ? String(form.customer_id) : (form.customer ? 'legacy' : '')}
@@ -2574,7 +2574,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Type</Label>
               <Select value={form.sale_category || 'FINISHED_OIL'} onValueChange={(v) => setField('sale_category', v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -2583,7 +2583,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Product *</Label>
               <Select value={String(form.product_id)} onValueChange={(v) => setField('product_id', v)} disabled={editLocked}>
                 <SelectTrigger><SelectValue placeholder="Product" /></SelectTrigger>
@@ -2592,26 +2592,26 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Qty *</Label>
               <Input type="number" min={editLocked ? editSold : 0} value={form.qty ?? ''} onChange={(e) => setField('qty', e.target.value)} />
               {editLocked && Number(form.qty) < editSold - 1e-4 && (
                 <span className="text-[11px] text-red-600">Cannot be below {formatNum(editSold)} already sold.</span>
               )}
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>UOM</Label>
               <UomSelect value={form.uom || 'MT'} onChange={(v) => setField('uom', v)} />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Rate *</Label>
               <Input type="number" value={form.rate ?? ''} onChange={(e) => setField('rate', e.target.value)} />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>GST %</Label>
               <Input type="number" value={form.gst_pct ?? ''} onChange={(e) => setField('gst_pct', e.target.value)} />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>GST type</Label>
               <Select value={form.gst_type || 'CGST_SGST'} onValueChange={(v) => setField('gst_type', v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -2621,11 +2621,11 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Rate expiry</Label>
               <DatePicker value={form.rate_expiry_date ?? ''} onChange={(v) => setField('rate_expiry_date', v)} />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Manual bargain no <span className="text-[10px] font-normal text-muted-foreground">(optional)</span></Label>
               <Input
                 value={form.manual_bargain_no ?? ''}
@@ -2633,7 +2633,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                 placeholder="e.g. the party's own reference"
               />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Sale type</Label>
               <Select value={form.sale_type || 'LOOSE'} onValueChange={(v) => setField('sale_type', v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -2643,7 +2643,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Freight term</Label>
               <Select value={form.freight_term || 'FREIGHT_ON_GOODS'} onValueChange={(v) => setField('freight_term', v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -2654,7 +2654,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
               </Select>
             </div>
             {form.sale_type === 'PACKED' && (
-              <div className="grid gap-1.5 sm:col-span-2">
+              <div className="flex flex-col gap-1.5 sm:col-span-2">
                 <Label>Default packaging</Label>
                 <Select value={form.packaging_id ? String(form.packaging_id) : ''} onValueChange={(v) => setField('packaging_id', v)}>
                   <SelectTrigger><SelectValue placeholder="Select packaging" /></SelectTrigger>
@@ -2664,7 +2664,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                 </Select>
               </div>
             )}
-            <div className="grid gap-1.5 sm:col-span-2">
+            <div className="flex flex-col gap-1.5 sm:col-span-2">
               <Label>Note</Label>
               <Input value={form.note ?? ''} onChange={(e) => setField('note', e.target.value)} />
             </div>
@@ -2706,16 +2706,16 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                   <button type="button" onClick={() => setAdjustForm((p) => ({ ...p, mode: 'add' }))} className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'add' ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'hover:bg-muted/40')}>+ Add to balance</button>
                   <button type="button" onClick={() => setAdjustForm((p) => ({ ...p, mode: 'remove' }))} className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'remove' ? 'border-red-500 bg-red-50 text-red-700' : 'hover:bg-muted/40')}>− Remove from balance</button>
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Quantity to {adjustForm.mode === 'add' ? 'add' : 'remove'} ({uom})</Label>
                   <Input type="number" autoFocus value={adjustForm.amount} onChange={(e) => setAdjustForm((p) => ({ ...p, amount: e.target.value }))} />
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Date</Label>
                   <DatePicker value={adjustForm.date} onChange={(v) => setAdjustForm((p) => ({ ...p, date: v || '' }))} />
                   <p className="text-xs text-muted-foreground">Shown under "Addition" for this date's month in the register.</p>
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Note (optional)</Label>
                   <Input value={adjustForm.note} onChange={(e) => setAdjustForm((p) => ({ ...p, note: e.target.value }))} placeholder="Reason for the adjustment" />
                 </div>

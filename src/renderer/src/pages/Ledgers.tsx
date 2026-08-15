@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, BookOpen, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, BookOpen, ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -63,6 +63,9 @@ export function Ledgers({ onOpenRecord }: Props): React.JSX.Element {
   const [form, setForm] = useState<Row>({})
   const [saving, setSaving] = useState(false)
   const [newAcc, setNewAcc] = useState('')
+  // Which journal lines have their bill-wise allocation breakdown open —
+  // a lump payment/receipt can square off several invoices at once.
+  const [expandedLines, setExpandedLines] = useState<Set<number>>(new Set())
 
   const load = useCallback(async () => {
     setAccounts(await window.api.journal.accounts())
@@ -274,37 +277,89 @@ export function Ledgers({ onOpenRecord }: Props): React.JSX.Element {
                     const target = lineTarget(l)
                     const recordId = Number(l.order_id ?? l.sale_id ?? l.payment_id) || 0
                     const clickable = !!target && !!onOpenRecord && recordId > 0
+                    const allocs: Row[] = Array.isArray(l.allocs) ? l.allocs : []
+                    const lineId = Number(l.id)
+                    const isExpanded = expandedLines.has(lineId)
                     return (
-                      <TableRow
-                        key={l.id as number}
-                        className={cn(clickable && 'cursor-pointer hover:bg-muted/50')}
-                        onClick={clickable ? () => onOpenRecord?.(target!, recordId) : undefined}
-                        title={clickable ? 'Open the source document' : undefined}
-                      >
-                        <TableCell className="py-1.5 tabular-nums text-muted-foreground">{i + 1}</TableCell>
-                        <TableCell className="whitespace-nowrap py-1.5">{formatDate(l.entry_date)}</TableCell>
-                        <TableCell className="py-1.5">
-                          <span className="mr-1.5 font-semibold text-muted-foreground">{isDr ? 'Dr' : 'Cr'}</span>
-                          {l.particulars || l.narration || '—'}
-                        </TableCell>
-                        <TableCell className="py-1.5">{l.vch_type}</TableCell>
-                        <TableCell className="whitespace-nowrap py-1.5 font-medium tabular-nums">{l.voucher_code || '—'}</TableCell>
-                        <TableCell className="py-1.5 text-muted-foreground">{l.vch_no || '—'}</TableCell>
-                        <TableCell className="py-1.5 text-right tabular-nums">{isDr ? formatINR(l.dr) : ''}</TableCell>
-                        <TableCell className="py-1.5 text-right tabular-nums">{!isDr ? formatINR(l.cr) : ''}</TableCell>
-                        <TableCell className="py-1.5 text-right">
-                          {manual && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6 text-destructive"
-                              onClick={(e) => { e.stopPropagation(); delEntry(l) }}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          )}
-                        </TableCell>
-                      </TableRow>
+                      <Fragment key={lineId}>
+                        <TableRow
+                          className={cn(clickable && 'cursor-pointer hover:bg-muted/50')}
+                          onClick={clickable ? () => onOpenRecord?.(target!, recordId) : undefined}
+                          title={clickable ? 'Open the source document' : undefined}
+                        >
+                          <TableCell className="py-1.5 tabular-nums text-muted-foreground">{i + 1}</TableCell>
+                          <TableCell className="whitespace-nowrap py-1.5">{formatDate(l.entry_date)}</TableCell>
+                          <TableCell className="py-1.5">
+                            <span className="inline-flex items-center gap-1">
+                              {allocs.length > 0 && (
+                                <button
+                                  type="button"
+                                  className="shrink-0 text-muted-foreground hover:text-foreground"
+                                  title={isExpanded ? 'Hide invoice-wise breakdown' : 'Show invoice-wise breakdown'}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setExpandedLines((p) => {
+                                      const next = new Set(p)
+                                      if (next.has(lineId)) next.delete(lineId)
+                                      else next.add(lineId)
+                                      return next
+                                    })
+                                  }}
+                                >
+                                  {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                                </button>
+                              )}
+                              <span className="mr-1.5 font-semibold text-muted-foreground">{isDr ? 'Dr' : 'Cr'}</span>
+                              {l.particulars || l.narration || '—'}
+                            </span>
+                          </TableCell>
+                          <TableCell className="py-1.5">{l.vch_type}</TableCell>
+                          <TableCell className="whitespace-nowrap py-1.5 font-medium tabular-nums">{l.voucher_code || '—'}</TableCell>
+                          <TableCell className="py-1.5 text-muted-foreground">{l.vch_no || '—'}</TableCell>
+                          <TableCell className="py-1.5 text-right tabular-nums">{isDr ? formatINR(l.dr) : ''}</TableCell>
+                          <TableCell className="py-1.5 text-right tabular-nums">{!isDr ? formatINR(l.cr) : ''}</TableCell>
+                          <TableCell className="py-1.5 text-right">
+                            {manual && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 text-destructive"
+                                onClick={(e) => { e.stopPropagation(); delEntry(l) }}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                        {isExpanded && allocs.length > 0 && (
+                          <TableRow className="bg-muted/30 hover:bg-muted/30">
+                            <TableCell />
+                            <TableCell colSpan={8} className="py-2">
+                              <div className="ml-1 rounded-md border bg-background">
+                                <div className="border-b bg-muted/40 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                  Squared off invoice-wise
+                                </div>
+                                <table className="w-full text-[11px] [&_td]:px-3 [&_td]:py-1">
+                                  <tbody>
+                                    {allocs.map((a, ai) => (
+                                      <tr key={ai} className="border-b last:border-0">
+                                        <td>{a.ref_name || (a.method === 'on_account' ? 'On account (no specific invoice)' : '—')}</td>
+                                        <td className="text-right tabular-nums">{formatINR(a.amount)}</td>
+                                      </tr>
+                                    ))}
+                                    <tr className="font-semibold">
+                                      <td>Total</td>
+                                      <td className="text-right tabular-nums">
+                                        {formatINR(allocs.reduce((s, a) => s + (Number(a.amount) || 0), 0))}
+                                      </td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </Fragment>
                     )
                   })
                 )}
@@ -332,11 +387,11 @@ export function Ledgers({ onOpenRecord }: Props): React.JSX.Element {
           </DialogHeader>
           <div className="grid gap-3">
             <div className="grid grid-cols-3 gap-3">
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Date</Label>
                 <DatePicker value={form.entry_date} onChange={(v) => setForm((p) => ({ ...p, entry_date: v }))} />
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Vch type</Label>
                 <Select value={form.vch_type} onValueChange={(v) => setForm((p) => ({ ...p, vch_type: v }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -345,13 +400,13 @@ export function Ledgers({ onOpenRecord }: Props): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Vch no</Label>
                 <Input value={form.vch_no ?? ''} onChange={(e) => setForm((p) => ({ ...p, vch_no: e.target.value }))} />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Dr account *</Label>
                 <Select value={form.dr_account ?? ''} onValueChange={(v) => setForm((p) => ({ ...p, dr_account: v }))}>
                   <SelectTrigger><SelectValue placeholder="Debit account" /></SelectTrigger>
@@ -360,7 +415,7 @@ export function Ledgers({ onOpenRecord }: Props): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Cr account *</Label>
                 <Select value={form.cr_account ?? ''} onValueChange={(v) => setForm((p) => ({ ...p, cr_account: v }))}>
                   <SelectTrigger><SelectValue placeholder="Credit account" /></SelectTrigger>
@@ -371,11 +426,11 @@ export function Ledgers({ onOpenRecord }: Props): React.JSX.Element {
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Amount *</Label>
                 <Input type="number" value={form.amount ?? ''} onChange={(e) => setForm((p) => ({ ...p, amount: e.target.value }))} />
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Narration</Label>
                 <Input value={form.narration ?? ''} onChange={(e) => setForm((p) => ({ ...p, narration: e.target.value }))} />
               </div>

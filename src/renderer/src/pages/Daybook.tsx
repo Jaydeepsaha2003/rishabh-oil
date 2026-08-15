@@ -104,11 +104,11 @@ export function Daybook(): React.JSX.Element {
       <div className="w-full space-y-4 p-4 sm:p-5">
         {/* Filters */}
         <div className="flex flex-wrap items-end gap-3 rounded-xl border bg-card p-3 shadow-sm">
-          <div className="grid gap-1.5">
+          <div className="flex flex-col gap-1.5">
             <Label className="text-xs text-muted-foreground">From</Label>
             <DatePicker value={from} max={to || todayISO()} onChange={(v) => setFrom(v || todayISO())} className="w-full sm:w-40" />
           </div>
-          <div className="grid gap-1.5">
+          <div className="flex flex-col gap-1.5">
             <Label className="text-xs text-muted-foreground">To</Label>
             <DatePicker value={to} max={todayISO()} min={from || undefined} onChange={(v) => setTo(v || todayISO())} className="w-full sm:w-40" />
           </div>

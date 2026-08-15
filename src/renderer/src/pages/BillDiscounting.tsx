@@ -293,19 +293,19 @@ export function BillDiscounting(): React.JSX.Element {
           <DialogHeader><DialogTitle>{partyForm?.id ? 'Alter party' : 'Add a discounting party'}</DialogTitle></DialogHeader>
           {partyForm && (
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="grid gap-1.5 sm:col-span-2">
+              <div className="flex flex-col gap-1.5 sm:col-span-2">
                 <Label>Party *</Label>
                 <Input value={partyForm.party_name ?? ''} onChange={(e) => setPartyForm({ ...partyForm, party_name: e.target.value })} />
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Discounter (bank/NBFC)</Label>
                 <Input value={partyForm.discounter ?? ''} onChange={(e) => setPartyForm({ ...partyForm, discounter: e.target.value })} />
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Rate % *</Label>
                 <Input type="number" value={partyForm.rate_pct ?? ''} onChange={(e) => setPartyForm({ ...partyForm, rate_pct: e.target.value })} />
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Finance type</Label>
                 <Select value={partyForm.finance_type || 'PID'} onValueChange={(v) => setPartyForm({ ...partyForm, finance_type: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -315,7 +315,7 @@ export function BillDiscounting(): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Purpose</Label>
                 <Select value={partyForm.purpose || 'either'} onValueChange={(v) => setPartyForm({ ...partyForm, purpose: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -326,7 +326,7 @@ export function BillDiscounting(): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Sanctioned limit (₹)</Label>
                 <Input type="number" value={partyForm.sanctioned_limit ?? ''} onChange={(e) => setPartyForm({ ...partyForm, sanctioned_limit: e.target.value })} />
               </div>
@@ -339,12 +339,12 @@ export function BillDiscounting(): React.JSX.Element {
                 Interest-bearing
               </label>
               {partyForm.interest_bearing && (
-                <div className="grid gap-1.5 sm:col-span-2">
+                <div className="flex flex-col gap-1.5 sm:col-span-2">
                   <Label>Interest payment schedule</Label>
                   <Input value={partyForm.interest_payment_schedule ?? ''} onChange={(e) => setPartyForm({ ...partyForm, interest_payment_schedule: e.target.value })} placeholder="e.g. monthly, on maturity" />
                 </div>
               )}
-              <div className="grid gap-1.5 sm:col-span-2">
+              <div className="flex flex-col gap-1.5 sm:col-span-2">
                 <Label>Note</Label>
                 <Input value={partyForm.note ?? ''} onChange={(e) => setPartyForm({ ...partyForm, note: e.target.value })} />
               </div>
@@ -362,8 +362,8 @@ export function BillDiscounting(): React.JSX.Element {
         <DialogContent>
           <DialogHeader><DialogTitle>Submit a bill for discounting</DialogTitle></DialogHeader>
           {entryForm && (
-            <div className="grid gap-3">
-              <div className="grid gap-1.5">
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-1.5">
                 <Label>Party *</Label>
                 <Select value={entryForm.bd_party_id ? String(entryForm.bd_party_id) : ''} onValueChange={(v) => setEntryForm({ ...entryForm, bd_party_id: v })}>
                   <SelectTrigger><SelectValue placeholder="Select party" /></SelectTrigger>
@@ -372,10 +372,10 @@ export function BillDiscounting(): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-1.5"><Label>Invoice no.</Label><Input value={entryForm.invoice_no ?? ''} onChange={(e) => setEntryForm({ ...entryForm, invoice_no: e.target.value })} /></div>
-              <div className="grid gap-1.5"><Label>Amount (₹) *</Label><Input type="number" value={entryForm.amount ?? ''} onChange={(e) => setEntryForm({ ...entryForm, amount: e.target.value })} /></div>
-              <div className="grid gap-1.5"><Label>Submitted date</Label><DatePicker value={String(entryForm.submitted_date || '')} onChange={(v) => setEntryForm({ ...entryForm, submitted_date: v })} /></div>
-              <div className="grid gap-1.5 sm:col-span-2"><Label>Note</Label><Input value={entryForm.note ?? ''} onChange={(e) => setEntryForm({ ...entryForm, note: e.target.value })} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Invoice no.</Label><Input value={entryForm.invoice_no ?? ''} onChange={(e) => setEntryForm({ ...entryForm, invoice_no: e.target.value })} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Amount (₹) *</Label><Input type="number" value={entryForm.amount ?? ''} onChange={(e) => setEntryForm({ ...entryForm, amount: e.target.value })} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Submitted date</Label><DatePicker value={String(entryForm.submitted_date || '')} onChange={(v) => setEntryForm({ ...entryForm, submitted_date: v })} /></div>
+              <div className="flex flex-col gap-1.5 sm:col-span-2"><Label>Note</Label><Input value={entryForm.note ?? ''} onChange={(e) => setEntryForm({ ...entryForm, note: e.target.value })} /></div>
             </div>
           )}
           <DialogFooter>
@@ -389,9 +389,9 @@ export function BillDiscounting(): React.JSX.Element {
       <Dialog open={!!interestEntry} onOpenChange={(o) => !o && setInterestEntry(null)}>
         <DialogContent>
           <DialogHeader><DialogTitle>Interest on this bill</DialogTitle></DialogHeader>
-          <div className="grid gap-3">
-            <div className="grid gap-1.5"><Label>Interest amount (₹)</Label><Input type="number" value={interestForm.interest_amount ?? ''} onChange={(e) => setInterestForm({ ...interestForm, interest_amount: e.target.value })} /></div>
-            <div className="grid gap-1.5">
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1.5"><Label>Interest amount (₹)</Label><Input type="number" value={interestForm.interest_amount ?? ''} onChange={(e) => setInterestForm({ ...interestForm, interest_amount: e.target.value })} /></div>
+            <div className="flex flex-col gap-1.5">
               <Label>Received date</Label>
               <DatePicker value={String(interestForm.interest_received_date || '')} onChange={(v) => setInterestForm({ ...interestForm, interest_received_date: v })} />
             </div>

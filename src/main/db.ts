@@ -842,7 +842,22 @@ const MIGRATIONS = [
   // A vehicle taken in empty and weighed out loaded made two movements on
   // one record. entry_date is when it arrived; this is the day it left, so
   // the register can show both rather than only the one it started as.
-  'ALTER TABLE gate_entries ADD COLUMN out_date TEXT'
+  'ALTER TABLE gate_entries ADD COLUMN out_date TEXT',
+  // A repayment covering more than the LC's own open amount is covering bank
+  // charges too — split so the two kinds of charge post to their own ledger
+  // accounts instead of one generic bucket. maturity_charges (their sum)
+  // stays in sync for bank-reconciliation matching, which already reads it.
+  'ALTER TABLE lc_repayments ADD COLUMN comm_charges REAL NOT NULL DEFAULT 0',
+  'ALTER TABLE lc_repayments ADD COLUMN bank_charges REAL NOT NULL DEFAULT 0',
+  // Pre-closure: the LC is wound up before its bills/maturity would naturally
+  // settle it. Interest is recalculated over the days actually elapsed
+  // (open date -> preclose date) rather than the full planned usance, and
+  // whatever's left of the open amount either comes back to us or covers a
+  // remaining balance still owed to the party — the user picks which.
+  "ALTER TABLE letters_of_credit ADD COLUMN preclosed_date TEXT",
+  "ALTER TABLE letters_of_credit ADD COLUMN preclose_settlement_direction TEXT",
+  'ALTER TABLE letters_of_credit ADD COLUMN preclose_settlement_amount REAL',
+  'ALTER TABLE letters_of_credit ADD COLUMN preclose_journal_entry_id INTEGER'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

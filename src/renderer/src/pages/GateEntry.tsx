@@ -818,7 +818,7 @@ export function GateEntry(): React.JSX.Element {
                               at the barrier — so it is set or corrected at
                               the weighbridge, and saves with the weight. */}
                           {!isOil && (
-                            <div className="mt-1.5 grid gap-0.5">
+                            <div className="mt-1.5 flex flex-col gap-0.5">
                               <label
                                 className="truncate text-[9px] font-semibold uppercase tracking-wide text-rose-700"
                                 title="The quantity the challan declares — or NA when it gives none"

@@ -148,14 +148,14 @@ export function Production(): React.JSX.Element {
         <div className="px-4 py-6">
           <Card className="max-w-3xl p-6">
             <div className="grid grid-cols-3 gap-3">
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Date</Label>
                 <DatePicker
                   value={form.prod_date}
                   onChange={(v) => setForm((p) => ({ ...p, prod_date: v }))}
                 />
               </div>
-              <div className="col-span-2 grid gap-1.5">
+              <div className="col-span-2 flex flex-col gap-1.5">
                 <Label>Product *</Label>
                 <Select value={String(form.product_id)} onValueChange={selectProduct}>
                   <SelectTrigger>
@@ -171,7 +171,7 @@ export function Production(): React.JSX.Element {
                 </Select>
               </div>
             </div>
-            <div className="mt-3 grid max-w-[12rem] gap-1.5">
+            <div className="mt-3 flex max-w-[12rem] flex-col gap-1.5">
               <Label>Quantity produced *</Label>
               <Input type="number" value={form.qty} onChange={(e) => setForm((p) => ({ ...p, qty: e.target.value }))} />
             </div>

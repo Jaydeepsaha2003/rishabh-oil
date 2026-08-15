@@ -265,7 +265,7 @@ export function Approvals(): React.JSX.Element {
           <DialogHeader>
             <DialogTitle>Reject {rejectRow ? labelFor(rejectRow.table_name) : ''} “{rejectRow?.label || ''}”</DialogTitle>
           </DialogHeader>
-          <div className="grid gap-1.5">
+          <div className="flex flex-col gap-1.5">
             <Label>Reason *</Label>
             <textarea
               className="min-h-[90px] rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"

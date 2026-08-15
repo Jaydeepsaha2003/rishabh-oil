@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, CalendarClock, Check, ChevronDown, ChevronRight, Inbox, Loader2, Pencil, Plus, Repeat, Search, TrendingDown, TrendingUp, Trash2 } from 'lucide-react'
+import { ArrowLeft, CalendarClock, Check, ChevronDown, ChevronRight, FileSpreadsheet, Inbox, Loader2, Pencil, Plus, Repeat, Search, TrendingDown, TrendingUp, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -15,6 +15,7 @@ import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange } from '@/lib/globalDateRange'
 import { computeMoney } from '@/lib/orderCalc'
 import { isTradingParty } from '@/lib/constants'
+import { exportTradingDeals } from '@/lib/tradingExcel'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -593,7 +594,11 @@ export function Trading(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(saleLines), form.sale_gst_pct, form.sale_round_off, form.sale_tds_pct, customerMaster, salePrior])
 
-  const margin = saleCalc.total - purchaseCalc.roundedTotal
+  // Margin is the profit on the trade itself — struck on taxable value on
+  // both sides, not the tax-inclusive totals (GST is a pass-through, round-off
+  // a rupee-rounding artifact — neither is part of what was actually earned).
+  const margin = round2(saleCalc.amount - purchaseCalc.taxableValue)
+  const marginPct = purchaseCalc.taxableValue > 0 ? round2((margin / purchaseCalc.taxableValue) * 100) : 0
 
   // Auto round-off to the nearest rupee on both invoices — same as the real
   // Purchase/Sale forms. A manual edit overrides it; clearing the field
@@ -694,7 +699,7 @@ export function Trading(): React.JSX.Element {
                   Deal details
                 </h3>
                 <div className="grid gap-4 md:grid-cols-4">
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Stock category</Label>
                     <Select
                       value={String(form.product_category || 'ALL')}
@@ -718,7 +723,7 @@ export function Trading(): React.JSX.Element {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Product *</Label>
                     <Select value={String(form.product_id || '')} onValueChange={(v) => setForm((p) => ({ ...p, product_id: v }))}>
                       <SelectTrigger><SelectValue placeholder="Select product" /></SelectTrigger>
@@ -737,7 +742,7 @@ export function Trading(): React.JSX.Element {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Quantity <span className="text-[10px] font-normal normal-case text-muted-foreground">(from the invoices below)</span></Label>
                     <Input
                       disabled
@@ -745,7 +750,7 @@ export function Trading(): React.JSX.Element {
                       value={purchaseQty > 0 ? `${formatNum(purchaseQty)} ${form.uom || 'MT'}` : ''}
                     />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>UOM</Label>
                     <Select value={form.uom || 'MT'} onValueChange={(v) => setForm((p) => ({ ...p, uom: v }))}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
@@ -755,11 +760,11 @@ export function Trading(): React.JSX.Element {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Deal date</Label>
                     <DatePicker value={String(form.deal_date || '')} onChange={(v) => setForm((p) => ({ ...p, deal_date: v }))} />
                   </div>
-                  <div className="grid gap-1.5 md:col-span-3">
+                  <div className="flex flex-col gap-1.5 md:col-span-3">
                     <Label>Note</Label>
                     <Input value={form.note ?? ''} onChange={(e) => setForm((p) => ({ ...p, note: e.target.value }))} />
                   </div>
@@ -771,7 +776,7 @@ export function Trading(): React.JSX.Element {
                   Purchase (in)
                 </h3>
                 <div className="grid gap-4 md:grid-cols-3">
-                  <div className="grid gap-1.5 md:col-span-2">
+                  <div className="flex flex-col gap-1.5 md:col-span-2">
                     <Label>Supplier *</Label>
                     <Select value={String(form.supplier_id || '')} onValueChange={chooseSupplier}>
                       <SelectTrigger><SelectValue placeholder="Select supplier" /></SelectTrigger>
@@ -786,7 +791,7 @@ export function Trading(): React.JSX.Element {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="grid gap-1.5 md:col-span-3">
+                  <div className="flex flex-col gap-1.5 md:col-span-3">
                     <Label>Purchase invoices *</Label>
                     <InvoiceLines
                       title="Purchase"
@@ -798,7 +803,7 @@ export function Trading(): React.JSX.Element {
                       onRemove={(i) => removeLine('purchase_lines', i)}
                     />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>GST % {autoFields.has('purchase_gst_pct') && <span className="text-amber-700">(auto)</span>}</Label>
                     <Input
                       type="number"
@@ -807,7 +812,7 @@ export function Trading(): React.JSX.Element {
                       onChange={(e) => setField('purchase_gst_pct', e.target.value)}
                     />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>GST type</Label>
                     <Select value={form.purchase_gst_type || 'CGST_SGST'} onValueChange={(v) => setForm((p) => ({ ...p, purchase_gst_type: v }))}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
@@ -817,7 +822,7 @@ export function Trading(): React.JSX.Element {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>TDS % {autoFields.has('purchase_tds_pct') && <span className="text-amber-700">(auto)</span>}</Label>
                     <Input
                       type="number"
@@ -834,7 +839,7 @@ export function Trading(): React.JSX.Element {
                   Sale (out)
                 </h3>
                 <div className="grid gap-4 md:grid-cols-3">
-                  <div className="grid gap-1.5 md:col-span-2">
+                  <div className="flex flex-col gap-1.5 md:col-span-2">
                     <Label>Customer *</Label>
                     <Select value={String(form.customer_id || '')} onValueChange={chooseCustomer}>
                       <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
@@ -849,7 +854,7 @@ export function Trading(): React.JSX.Element {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="grid gap-1.5 md:col-span-3">
+                  <div className="flex flex-col gap-1.5 md:col-span-3">
                     <Label>Sale invoices *</Label>
                     <InvoiceLines
                       title="Sale"
@@ -868,7 +873,7 @@ export function Trading(): React.JSX.Element {
                       </p>
                     )}
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>GST % {autoFields.has('sale_gst_pct') && <span className="text-amber-700">(auto)</span>}</Label>
                     <Input
                       type="number"
@@ -877,7 +882,7 @@ export function Trading(): React.JSX.Element {
                       onChange={(e) => setField('sale_gst_pct', e.target.value)}
                     />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>GST type</Label>
                     <Select value={form.sale_gst_type || 'CGST_SGST'} onValueChange={(v) => setForm((p) => ({ ...p, sale_gst_type: v }))}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
@@ -887,7 +892,7 @@ export function Trading(): React.JSX.Element {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>TDS % {autoFields.has('sale_tds_pct') && <span className="text-amber-700">(auto)</span>}</Label>
                     <Input
                       type="number"
@@ -979,7 +984,8 @@ export function Trading(): React.JSX.Element {
               </div>
 
               <div className="rounded border border-[#1a2c56]/30 bg-white p-4">
-                <MoneyRow label="Deal margin (sale − purchase, incl. GST)" value={formatINR(margin)} strong />
+                <MoneyRow label="Deal margin (sale − purchase, on taxable value)" value={formatINR(margin)} strong />
+                <MoneyRow label="Margin %" value={`${marginPct.toFixed(2)}%`} muted />
               </div>
             </aside>
           </div>
@@ -992,7 +998,6 @@ export function Trading(): React.JSX.Element {
     <div className="flex h-full flex-col gap-4 overflow-auto p-6">
       <PageHeader
         title="Purchase & Sales Trading"
-        subtitle="Raw-product pass-through deals — buy from a supplier, sell the same quantity straight to a customer"
         hint="No bargain, no tanker movement, no stock entries, no interest — the purchase and sale book straight through in one step, same as ticking 'Trading' inside Purchases/Sales, just from one dedicated screen with full GST/TDS/round-off control. GST/TDS auto-load from the supplier/customer master (highlighted amber) and can be overridden. Deleting a deal removes both its purchase and sale invoices."
         actions={
           <>
@@ -1005,6 +1010,19 @@ export function Trading(): React.JSX.Element {
                 {formatDate(globalRange.from)} → {formatDate(globalRange.to)}
               </span>
             )}
+            <Button
+              variant="outline"
+              className="gap-1.5"
+              disabled={filteredDeals.length === 0}
+              onClick={() =>
+                void exportTradingDeals(
+                  filteredDeals,
+                  `trading-deals-${globalRange.version > 0 ? `${globalRange.from}-to-${globalRange.to}` : todayISO()}`
+                )
+              }
+            >
+              <FileSpreadsheet className="h-4 w-4" /> Download Excel
+            </Button>
             <Button className="gap-1.5" onClick={openNew}>
               <Plus className="h-4 w-4" /> New trading deal
             </Button>
@@ -1084,6 +1102,7 @@ export function Trading(): React.JSX.Element {
                   { label: 'Customer' },
                   { label: 'Sale (total)', right: true },
                   { label: 'Margin', right: true },
+                  { label: 'Margin %', right: true },
                   { label: 'Actions', right: true }
                 ].map((h) => (
                   <TableHead
@@ -1136,6 +1155,14 @@ export function Trading(): React.JSX.Element {
                   >
                     {formatINR(d.margin)}
                   </TableCell>
+                  <TableCell
+                    className={cn(
+                      'py-1.5 text-right text-[13px] tabular-nums',
+                      n(d.margin_pct) < 0 ? 'text-red-700' : 'text-emerald-700'
+                    )}
+                  >
+                    {n(d.margin_pct).toFixed(2)}%
+                  </TableCell>
                   <TableCell className="py-1.5 text-right" onClick={(e) => e.stopPropagation()}>
                     <div className="flex justify-end gap-1 opacity-60 group-hover:opacity-100">
                       <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit this deal" onClick={() => openEdit(d)}>
@@ -1149,7 +1176,7 @@ export function Trading(): React.JSX.Element {
                 </TableRow>
                 {open && (
                   <TableRow className="border-b-2 border-[#d9d2b8] bg-[#f4f7fd] hover:bg-[#f4f7fd] [&>td]:border-r-0">
-                    <TableCell colSpan={9} className="p-0">
+                    <TableCell colSpan={10} className="p-0">
                       <div className="grid gap-3 border-l-[3px] border-[#1a2c56] px-4 py-3 lg:grid-cols-2">
                         <DealLineTable
                           heading="Purchase invoices"
@@ -1201,10 +1228,15 @@ export function Trading(): React.JSX.Element {
                     qty: a.qty + n(d.purchase_qty),
                     purchase: a.purchase + n(d.purchase_net),
                     sale: a.sale + n(d.sale_net),
-                    margin: a.margin + n(d.margin)
+                    margin: a.margin + n(d.margin),
+                    purchaseTaxable: a.purchaseTaxable + n(d.purchase_taxable)
                   }),
-                  { qty: 0, purchase: 0, sale: 0, margin: 0 }
+                  { qty: 0, purchase: 0, sale: 0, margin: 0, purchaseTaxable: 0 }
                 )
+                // The blended rate across every deal on screen — not an
+                // average of each deal's own %, which would misweight a small
+                // deal's percentage as heavily as a large one's.
+                const marginPct = t.purchaseTaxable > 0 ? (t.margin / t.purchaseTaxable) * 100 : 0
                 return (
                   <TableRow className="border-t-2 border-[#1a2c56] bg-[#f0ecd9] font-bold text-[#1a2c56] hover:bg-[#f0ecd9]">
                     <TableCell className="py-2 text-[12px] uppercase tracking-widest">Grand total</TableCell>
@@ -1218,6 +1250,9 @@ export function Trading(): React.JSX.Element {
                     <TableCell className="py-2 text-right text-[13px] tabular-nums">{formatINR(t.sale)}</TableCell>
                     <TableCell className={cn('py-2 text-right text-[13px] tabular-nums', t.margin < 0 ? 'text-red-700' : 'text-emerald-700')}>
                       {formatINR(t.margin)}
+                    </TableCell>
+                    <TableCell className={cn('py-2 text-right text-[13px] tabular-nums', marginPct < 0 ? 'text-red-700' : 'text-emerald-700')}>
+                      {marginPct.toFixed(2)}%
                     </TableCell>
                     <TableCell className="py-2" />
                   </TableRow>

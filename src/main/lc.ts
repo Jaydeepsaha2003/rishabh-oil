@@ -1,7 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
-import { postLcOpening, settleLcBill } from './treasury'
+import { postLcOpening, settleLcBillsCombined, postLcPrecloseSettlement } from './treasury'
 import { facilityHeadroom } from './facilities'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -50,8 +50,6 @@ export async function listLCs(): Promise<Row[]> {
          JOIN orders o ON o.id = lo.order_id WHERE lo.lc_id = l.id) AS linked_invoice_nos,
       (SELECT COALESCE(SUM(o.net_amount), 0) FROM lc_linked_orders lo
          JOIN orders o ON o.id = lo.order_id WHERE lo.lc_id = l.id) AS linked_invoice_amount_total,
-      (SELECT COALESCE(SUM(o.taxable_value), 0) FROM lc_linked_orders lo
-         JOIN orders o ON o.id = lo.order_id WHERE lo.lc_id = l.id) AS linked_taxable_total,
       (SELECT COUNT(*) FROM lc_linked_orders lo WHERE lo.lc_id = l.id) AS linked_invoice_count,
       COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS utilized,
       l.amount - COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS available,
@@ -67,10 +65,10 @@ export async function listLCs(): Promise<Row[]> {
   })
   return toPlain(res).map((l) => {
     const linkedCount = n(l.linked_invoice_count)
-    // Margin is a deposit against the goods' basic value, not the tax-inclusive
-    // invoice total — struck on taxable value, same as the rest of the LC panels.
-    const taxableAmount = linkedCount > 0 ? n(l.linked_taxable_total) : n(l.amount)
-    const margin = Math.round((taxableAmount * n(l.margin_pct)) / 100 * 100) / 100
+    // Margin is the security deposit the bank asks for on the LC's own open
+    // amount — a straight percentage of the credit limit itself, not of
+    // whichever invoices happen to be linked to it.
+    const margin = Math.round((n(l.amount) * n(l.margin_pct)) / 100 * 100) / 100
     const interest = Math.round(((n(l.amount) * n(l.interest_pct) * n(l.usance_days)) / (100 * 365)) * 100) / 100
     const charges = Math.round(n(l.charges) * 100) / 100
     // Trading LCs are only "compliant" once they carry at least one open
@@ -89,7 +87,9 @@ export async function listLCs(): Promise<Row[]> {
       // What's actually left to issue bills against — interest and charges
       // come out of the open amount before issued bills reduce it further.
       available: netAvailable(l, n(l.utilized)),
-      outstanding: Math.round((n(l.amount) - n(l.repaid)) * 100) / 100,
+      // What's still owed to the bank on what was actually drawn down — not
+      // the full sanctioned limit, which the LC may never fully utilise.
+      outstanding: Math.round((n(l.utilized) - n(l.repaid)) * 100) / 100,
       compliant,
       display_status: !compliant ? 'non_compliant' : String(l.workflow_status || 'in_progress')
     }
@@ -152,16 +152,16 @@ async function syncPaymentReceivedIssuance(lcId: number, v: Row): Promise<void> 
   }
   // Pay the beneficiary through the books for every bill still outstanding —
   // receiving payment closes the loop, so settling is automatic here rather
-  // than a separate manual step.
+  // than a separate manual step. Every bill on this LC settles as ONE
+  // combined payment (one bank withdrawal), each keeping its own bill-wise
+  // allocation so the ledger shows what squared off against which invoice.
   const outstanding = await c.execute({
     sql: "SELECT id FROM lc_issuances WHERE lc_id = ? AND COALESCE(status, 'outstanding') != 'settled'",
     args: [lcId]
   })
-  for (const row of outstanding.rows) {
-    await settleLcBill(Number(row.id), paymentDate).catch((e) =>
-      console.error('[lc] auto-settle on payment received failed:', (e as Error).message)
-    )
-  }
+  await settleLcBillsCombined(outstanding.rows.map((r) => Number(r.id)), paymentDate).catch((e) =>
+    console.error('[lc] auto-settle on payment received failed:', (e as Error).message)
+  )
 }
 
 export async function listLCIssuances(lcId: number): Promise<Row[]> {
@@ -326,6 +326,48 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number }> {
   return { id }
 }
 
+function todayISO(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function daysBetween(a: string, b: string): number {
+  return Math.round((new Date(`${b}T00:00:00`).getTime() - new Date(`${a}T00:00:00`).getTime()) / 86400000)
+}
+
+// Winds the LC up before its natural maturity. Interest is recalculated over
+// the days actually elapsed (open date -> preclose date) by refreshing
+// usance_days and reposting the opening voucher — the same entry every save
+// already keeps in sync — rather than a bespoke correction. Whatever's left
+// settles as its own entry, one way or the other, per the user's own choice.
+export async function precloseLC(
+  id: number,
+  v: { preclose_date: string; direction: 'credit_to_us' | 'pay_to_party'; amount: number }
+): Promise<{ id: number }> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [id] })
+  if (!res.rows.length) throw new Error('LC not found')
+  const lc = toPlain(res)[0]
+  if (lc.preclosed_date) throw new Error('This LC is already preclosed')
+  const precloseDate = String(v.preclose_date || '').slice(0, 10)
+  if (!precloseDate) throw new Error('Pick the preclosure date')
+  if (!lc.open_date) throw new Error('The LC has no application date to count interest days from')
+  const actualDays = Math.max(0, daysBetween(String(lc.open_date), precloseDate))
+  await c.execute({
+    sql: 'UPDATE letters_of_credit SET usance_days = ?, preclosed_date = ?, preclose_settlement_direction = ?, preclose_settlement_amount = ? WHERE id = ?',
+    args: [actualDays, precloseDate, v.direction, round2(n(v.amount)), id]
+  })
+  // Re-strikes the margin/interest/charges voucher with the corrected
+  // (shorter) interest period now stored on the record.
+  await postLcOpening(id)
+  const settlement = await postLcPrecloseSettlement(id, v.direction, n(v.amount), precloseDate)
+  if (settlement) {
+    await c.execute({ sql: 'UPDATE letters_of_credit SET preclose_journal_entry_id = ? WHERE id = ?', args: [settlement.id, id] })
+  }
+  await c.execute({ sql: "UPDATE letters_of_credit SET workflow_status = 'preclosed' WHERE id = ?", args: [id] })
+  return { id }
+}
+
 export async function deleteLC(id: number): Promise<{ id: number }> {
   const c = getClient()
   // Reverse everything the LC put into the books before it goes.
@@ -333,8 +375,9 @@ export async function deleteLC(id: number): Promise<{ id: number }> {
   for (const b of bills.rows) if (b.journal_entry_id) await dropTreasuryEntry(Number(b.journal_entry_id))
   const repayments = await c.execute({ sql: 'SELECT journal_entry_id FROM lc_repayments WHERE lc_id = ?', args: [id] })
   for (const r of repayments.rows) if (r.journal_entry_id) await dropTreasuryEntry(Number(r.journal_entry_id))
-  const lc = await c.execute({ sql: 'SELECT journal_entry_id FROM letters_of_credit WHERE id = ?', args: [id] })
+  const lc = await c.execute({ sql: 'SELECT journal_entry_id, preclose_journal_entry_id FROM letters_of_credit WHERE id = ?', args: [id] })
   if (lc.rows.length && lc.rows[0].journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].journal_entry_id))
+  if (lc.rows.length && lc.rows[0].preclose_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].preclose_journal_entry_id))
   await c.execute({ sql: 'DELETE FROM lc_issuances WHERE lc_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM lc_repayments WHERE lc_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM lc_linked_orders WHERE lc_id = ?', args: [id] })

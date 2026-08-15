@@ -226,6 +226,22 @@ export async function accountStatement(accountId: number, companyId?: number): P
   }
 
   const codes = await voucherCodeMap(cid)
+
+  // Bill-wise allocations on this account's own line — a lump payment/receipt
+  // can settle several invoices at once, so the ledger can expand a row to
+  // show exactly how it squares off invoice by invoice.
+  const allocRes = await c.execute({
+    sql: `SELECT line_id, method, ref_name, order_id, sale_invoice_group, amount
+          FROM journal_bill_allocs WHERE line_id IN (${lines.map(() => '?').join(',')})`,
+    args: lines.map((l) => Number(l.id))
+  })
+  const allocsByLine = new Map<number, Row[]>()
+  for (const a of toPlain(allocRes)) {
+    const k = Number(a.line_id)
+    if (!allocsByLine.has(k)) allocsByLine.set(k, [])
+    allocsByLine.get(k)!.push(a)
+  }
+
   for (const l of lines) {
     const rest = byEntry.get(Number(l.entry_id)) || []
     const opposite = Number(l.dr) > 0
@@ -235,6 +251,7 @@ export async function accountStatement(accountId: number, companyId?: number): P
     l.voucher_code = codes.get(Number(l.entry_id)) || ''
     // Every other leg of the voucher, for the ledger's DETAILED (Alt+F1) mode.
     l.legs = rest.map((r) => ({ name: String(r.name), dr: n(r.dr), cr: n(r.cr) }))
+    l.allocs = allocsByLine.get(Number(l.id)) || []
   }
   return lines
 }

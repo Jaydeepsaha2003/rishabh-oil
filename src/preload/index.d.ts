@@ -228,6 +228,10 @@ export interface Api {
     repayments: (lcId: number) => Promise<Row[]>
     saveRepayment: (values: Row) => Promise<{ id: number }>
     removeRepayment: (id: number) => Promise<{ id: number }>
+    preclose: (
+      id: number,
+      values: { preclose_date: string; direction: 'credit_to_us' | 'pay_to_party'; amount: number }
+    ) => Promise<{ id: number }>
   }
   files: {
     pickDocument: () => Promise<{ path: string | null }>

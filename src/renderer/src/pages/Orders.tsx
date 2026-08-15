@@ -1642,7 +1642,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   Invoice details
                 </h3>
                 <div className="grid gap-4 md:grid-cols-3">
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Book into company *</Label>
                     <Select
                       value={String(form.company_id || '')}
@@ -1662,7 +1662,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       </span>
                     )}
                   </div>
-                  <div className="grid gap-1.5 md:col-span-2">
+                  <div className="flex flex-col gap-1.5 md:col-span-2">
                     <Label>Supplier *</Label>
                     <Select
                       value={String(form.supplier_id || '')}
@@ -1689,7 +1689,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                             : 'The bargain is picked up automatically from the tankers you select.'}
                     </span>
                   </div>
-                  <div className="grid gap-1.5 md:col-span-3">
+                  <div className="flex flex-col gap-1.5 md:col-span-3">
                     <label className={cn('flex items-center gap-2 text-[13px]', !!editing && 'opacity-50')}>
                       <input
                         type="checkbox"
@@ -1701,23 +1701,23 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       Trading purchase — bought to resell straight through, no bargain, does not affect stock
                     </label>
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Invoice number *</Label>
                     <Input value={form.invoice_no || ''} onChange={(e) => setForm((p) => ({ ...p, invoice_no: e.target.value }))} />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Purchase date *</Label>
                     <DatePicker value={form.order_date || ''} onChange={(v) => setForm((p) => ({ ...p, order_date: v }))} />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Invoice rate *</Label>
                     <Input type="number" value={form.invoice_rate ?? ''} onChange={(e) => setForm((p) => ({ ...p, invoice_rate: e.target.value, invoice_rate_touched: true }))} />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>GST %</Label>
                     <Input type="number" value={form.gst_pct ?? ''} onChange={(e) => setForm((p) => ({ ...p, gst_pct: e.target.value }))} />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>GST type</Label>
                     <Select value={form.gst_type || 'CGST_SGST'} onValueChange={(v) => setForm((p) => ({ ...p, gst_type: v }))}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
@@ -1727,11 +1727,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>TDS %</Label>
                     <Input type="number" value={form.tds_pct ?? ''} onChange={(e) => setForm((p) => ({ ...p, tds_pct: e.target.value }))} />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Transporter</Label>
                     <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm">
                       {tankerTransporterName || (
@@ -1748,7 +1748,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       {directMode || isTrading ? 'No tanker movement, so no transporter.' : 'Taken from the selected tankers.'}
                     </span>
                   </div>
-                  <div className={cn('grid gap-1.5', !tankerTransporterId && 'opacity-50')}>
+                  <div className={cn('flex flex-col gap-1.5', !tankerTransporterId && 'opacity-50')}>
                     <Label>Allowed shortage %</Label>
                     <Input
                       type="number"
@@ -1821,7 +1821,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     </div>
                   )}
 
-                  <div className="grid gap-1.5 md:col-span-3">
+                  <div className="flex flex-col gap-1.5 md:col-span-3">
                     <Label>Remarks</Label>
                     <textarea
                       rows={2}
@@ -1849,7 +1849,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     </div>
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2">
-                      <div className="grid gap-1.5">
+                      <div className="flex flex-col gap-1.5">
                         <Label>Product *</Label>
                         <Select
                           value={String(form.oil_type_id || '')}
@@ -1864,7 +1864,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           </SelectContent>
                         </Select>
                       </div>
-                      <div className="grid gap-1.5">
+                      <div className="flex flex-col gap-1.5">
                         <Label>Quantity to invoice * ({form.uom || 'MT'})</Label>
                         <Input
                           type="number"
@@ -1925,7 +1925,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     )}
 
                     <div className="mb-3 grid gap-4 md:grid-cols-2">
-                      <div className="grid gap-1.5">
+                      <div className="flex flex-col gap-1.5">
                         <Label>Product *</Label>
                         <Select
                           value={String(form.oil_type_id || '')}
@@ -1947,7 +1947,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           </SelectContent>
                         </Select>
                       </div>
-                      <div className="grid gap-1.5">
+                      <div className="flex flex-col gap-1.5">
                         <Label>Quantity to invoice * ({form.uom || 'MT'})</Label>
                         <Input
                           type="number"
@@ -2003,7 +2003,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                               key={index}
                               className="grid gap-2 rounded-lg border bg-white p-2.5 md:grid-cols-[minmax(0,1fr)_7rem_auto]"
                             >
-                              <div className="grid min-w-0 gap-1">
+                              <div className="flex min-w-0 flex-col gap-1">
                                 <Label className="text-[11px] text-muted-foreground">Bargain</Label>
                                 <Select
                                   value={String(line.bargain_id || '')}
@@ -2027,7 +2027,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                   </SelectContent>
                                 </Select>
                               </div>
-                              <div className="grid gap-1">
+                              <div className="flex flex-col gap-1">
                                 <Label className="text-[11px] text-muted-foreground">Qty</Label>
                                 <Input
                                   type="number"
@@ -2721,7 +2721,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             Pick the oil and supplier once — the oldest open bargain is auto-selected for every tanker (changeable per tanker). Loaded quantity and payment are entered after loading.
           </p>
           <div className="grid gap-3 md:grid-cols-4">
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Oil *</Label>
               <Select value={String(loadingForm.oil_pick || '')} onValueChange={pickOil}>
                 <SelectTrigger><SelectValue placeholder="Select oil" /></SelectTrigger>
@@ -2732,7 +2732,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Supplier *</Label>
               <Select value={String(loadingForm.supplier_pick || '')} onValueChange={pickSupplier} disabled={!loadingForm.oil_pick}>
                 <SelectTrigger><SelectValue placeholder={loadingForm.oil_pick ? 'Select supplier' : 'Pick oil first'} /></SelectTrigger>
@@ -2743,11 +2743,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Number of tankers</Label>
               <Input type="number" min="1" max="20" value={loadingForm.tanker_count} onChange={(e) => setTankerCount(e.target.value)} />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Tanker placement date</Label>
               <DatePicker value={loadingForm.factory_entry_date || ''} onChange={(v) => setLoadingForm((p) => ({ ...p, factory_entry_date: v }))} />
             </div>
@@ -2761,11 +2761,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 <div className="flex h-9 items-center justify-center rounded-md bg-muted text-sm font-semibold md:mt-[26px]">
                   {index + 1}
                 </div>
-                <div className="grid min-w-0 gap-1.5">
+                <div className="flex min-w-0 flex-col gap-1.5">
                   <Label>Tanker number</Label>
                   <Input placeholder="optional — set at loading" value={row.tanker_no || ''} onChange={(e) => setLoadingRows((current) => current.map((item, i) => i === index ? { ...item, tanker_no: e.target.value } : item))} />
                 </div>
-                <div className="grid min-w-0 gap-1.5">
+                <div className="flex min-w-0 flex-col gap-1.5">
                   <Label>Bargain (oldest auto) *</Label>
                   <Select
                     value={String(row.bargain_id || '')}
@@ -2784,7 +2784,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Condition</Label>
                   <div className="flex h-9 rounded-md border p-0.5">
                     {['EX', 'DLD'].map((c) => (
@@ -2802,7 +2802,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     ))}
                   </div>
                 </div>
-                <div className="grid min-w-0 gap-1.5">
+                <div className="flex min-w-0 flex-col gap-1.5">
                   <Label>Transporter</Label>
                   <Select value={String(row.transporter_id || '')} onValueChange={(value) => setLoadingRows((current) => current.map((item, i) => i === index ? { ...item, transporter_id: value } : item))}>
                     <SelectTrigger><SelectValue placeholder="Optional" /></SelectTrigger>
@@ -2824,7 +2824,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{target ? `Move ${String(actionRow?.tanker_no || '').trim() || 'tanker'} to ${TANKER_LABEL[target]}` : 'Update tanker'}</DialogTitle></DialogHeader>
           {target === 'loaded' && actionRow && <div className="grid gap-4">
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Tanker number *{String(actionRow.tanker_no || '').trim() ? '' : ' (set it now)'}</Label>
               <Input
                 placeholder="e.g. RJ04GD0469"
@@ -2832,7 +2832,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 onChange={(e) => setActionForm((p) => ({ ...p, tanker_no: e.target.value }))}
               />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Bargain (auto-selected — change if needed)</Label>
               <Select
                 value={String(actionForm.bargain_id || '')}
@@ -2857,8 +2857,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               <span className="text-[11px] text-muted-foreground">{actionRow.supplier_name}</span>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5"><Label>Loaded date</Label><DatePicker value={actionForm.loaded_date || ''} onChange={(v) => setActionForm((p) => ({ ...p, loaded_date: v }))} /></div>
-              <div className="grid gap-1.5"><Label>Actual loaded quantity *</Label><Input type="number" value={actionForm.loaded_qty || ''} onChange={(e) => { setExcess(null); setActionForm((p) => ({ ...p, loaded_qty: e.target.value })) }} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Loaded date</Label><DatePicker value={actionForm.loaded_date || ''} onChange={(v) => setActionForm((p) => ({ ...p, loaded_date: v }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Actual loaded quantity *</Label><Input type="number" value={actionForm.loaded_qty || ''} onChange={(e) => { setExcess(null); setActionForm((p) => ({ ...p, loaded_qty: e.target.value })) }} /></div>
             </div>
             {excess && (() => {
               // Other open bargains (same supplier + oil) that can absorb the excess.
@@ -2923,7 +2923,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         <span>A different rate applies to the extra quantity</span>
                       </div>
                       {excess.diffRate && (
-                        <div className="grid gap-1.5">
+                        <div className="flex flex-col gap-1.5">
                           <Label className="text-amber-900">Rate for the extra qty (per {actionRow.uom})</Label>
                           <Input
                             type="number"
@@ -2935,7 +2935,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       )}
                     </>
                   ) : (
-                    <div className="grid gap-1.5">
+                    <div className="flex flex-col gap-1.5">
                       <Label className="text-amber-900">Next bargain for the excess</Label>
                       {nextBargains.length === 0 ? (
                         <p className="text-[11px]">
@@ -2963,14 +2963,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 </div>
               )
             })()}
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Source / port</Label>
               <Select value={String(actionForm.source_id || '')} onValueChange={(value) => setActionForm((p) => ({ ...p, source_id: value }))}>
                 <SelectTrigger><SelectValue placeholder="Select source for expected delivery" /></SelectTrigger>
                 <SelectContent>{sources.map((source) => <SelectItem key={source.id} value={String(source.id)}>{source.name} · {source.transit_days}d</SelectItem>)}</SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5"><Label>Payment arrangement</Label>
+            <div className="flex flex-col gap-1.5"><Label>Payment arrangement</Label>
               <Select value={actionForm.payment_mode || 'paid_by_us'} onValueChange={(value) => setActionForm((p) => ({ ...p, payment_mode: value }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -2982,11 +2982,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             <p className="text-xs text-muted-foreground">After confirming loading, this tanker will automatically move to In transit. A purchase invoice is not required first.</p>
           </div>}
           {target === 'transit' && <div className="grid grid-cols-2 gap-3">
-            <div className="grid gap-1.5"><Label>Transit date</Label><DatePicker value={actionForm.transit_date || ''} min={actionRow?.loaded_date || undefined} onChange={(v) => setActionForm((p) => ({ ...p, transit_date: v }))} /></div>
-            <div className="grid gap-1.5"><Label>Source / port</Label><Select value={String(actionForm.source_id || '')} onValueChange={(v) => setActionForm((p) => ({ ...p, source_id: v }))}><SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger><SelectContent>{sources.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name} · {s.transit_days}d</SelectItem>)}</SelectContent></Select></div>
+            <div className="flex flex-col gap-1.5"><Label>Transit date</Label><DatePicker value={actionForm.transit_date || ''} min={actionRow?.loaded_date || undefined} onChange={(v) => setActionForm((p) => ({ ...p, transit_date: v }))} /></div>
+            <div className="flex flex-col gap-1.5"><Label>Source / port</Label><Select value={String(actionForm.source_id || '')} onValueChange={(v) => setActionForm((p) => ({ ...p, source_id: v }))}><SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger><SelectContent>{sources.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name} · {s.transit_days}d</SelectItem>)}</SelectContent></Select></div>
           </div>}
-          {target === 'outside_factory' && <div className="grid gap-1.5"><Label>Outside factory date</Label><DatePicker value={actionForm.outside_factory_date || ''} min={actionRow?.transit_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm({ outside_factory_date: v })} /></div>}
-          {target === 'inside_factory' && <div className="grid gap-1.5"><Label>Inside factory date</Label><DatePicker value={actionForm.inside_factory_date || ''} min={actionRow?.outside_factory_date || actionRow?.transit_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm({ inside_factory_date: v })} /></div>}
+          {target === 'outside_factory' && <div className="flex flex-col gap-1.5"><Label>Outside factory date</Label><DatePicker value={actionForm.outside_factory_date || ''} min={actionRow?.transit_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm({ outside_factory_date: v })} /></div>}
+          {target === 'inside_factory' && <div className="flex flex-col gap-1.5"><Label>Inside factory date</Label><DatePicker value={actionForm.inside_factory_date || ''} min={actionRow?.outside_factory_date || actionRow?.transit_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm({ inside_factory_date: v })} /></div>}
           {target === 'empty' && actionRow && shortage && <div className="grid gap-4">
             {(() => {
               const gq = gateQtyFor(actionRow.id)
@@ -3007,21 +3007,21 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               )
             })()}
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5"><Label>Empty date</Label><DatePicker value={actionForm.empty_date || ''} min={actionRow?.inside_factory_date || actionRow?.outside_factory_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm((p) => ({ ...p, empty_date: v }))} /></div>
-              <div className="grid gap-1.5"><Label>Received quantity</Label><Input type="number" value={actionForm.received_qty || ''} onChange={(e) => setActionForm((p) => ({ ...p, received_qty: e.target.value }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Empty date</Label><DatePicker value={actionForm.empty_date || ''} min={actionRow?.inside_factory_date || actionRow?.outside_factory_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm((p) => ({ ...p, empty_date: v }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Received quantity</Label><Input type="number" value={actionForm.received_qty || ''} onChange={(e) => setActionForm((p) => ({ ...p, received_qty: e.target.value }))} /></div>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5"><Label>Transporter</Label><Select value={String(actionForm.transporter_id || '')} onValueChange={(v) => {
+              <div className="flex flex-col gap-1.5"><Label>Transporter</Label><Select value={String(actionForm.transporter_id || '')} onValueChange={(v) => {
                 const tr = transporters.find((x) => String(x.id) === v)
                 setActionForm((p) => ({ ...p, transporter_id: v, transport_rate_per_ton: p.transport_rate_per_ton || tr?.default_rate_per_ton || '' }))
               }}><SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger><SelectContent>{transporters.map((tr) => <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>)}</SelectContent></Select></div>
-              <div className="grid gap-1.5"><Label>Transport rate / {actionRow.uom}</Label><Input type="number" value={actionForm.transport_rate_per_ton || ''} onChange={(e) => setActionForm((p) => ({ ...p, transport_rate_per_ton: e.target.value }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Transport rate / {actionRow.uom}</Label><Input type="number" value={actionForm.transport_rate_per_ton || ''} onChange={(e) => setActionForm((p) => ({ ...p, transport_rate_per_ton: e.target.value }))} /></div>
             </div>
             <div className="grid gap-3 rounded-lg border p-3">
               <div className="text-sm font-medium">KRFL weighment slip</div>
               <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1.5"><Label>Doc number</Label><Input value={actionForm.krfl_weighment_doc_no || ''} onChange={(e) => setActionForm((p) => ({ ...p, krfl_weighment_doc_no: e.target.value }))} /></div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5"><Label>Doc number</Label><Input value={actionForm.krfl_weighment_doc_no || ''} onChange={(e) => setActionForm((p) => ({ ...p, krfl_weighment_doc_no: e.target.value }))} /></div>
+                <div className="flex flex-col gap-1.5">
                   <Label>Photo upload</Label>
                   <input type="file" accept="image/*" className="text-xs file:mr-2 file:rounded-md file:border-0 file:bg-muted file:px-2 file:py-1.5 file:text-xs file:font-medium" onChange={(e) => onWeighmentPhoto('krfl_weighment_photo', e.target.files?.[0])} />
                 </div>
@@ -3031,8 +3031,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             <div className="grid gap-3 rounded-lg border p-3">
               <div className="text-sm font-medium">Outside factory weighment slip</div>
               <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1.5"><Label>Doc number</Label><Input value={actionForm.outside_weighment_doc_no || ''} onChange={(e) => setActionForm((p) => ({ ...p, outside_weighment_doc_no: e.target.value }))} /></div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5"><Label>Doc number</Label><Input value={actionForm.outside_weighment_doc_no || ''} onChange={(e) => setActionForm((p) => ({ ...p, outside_weighment_doc_no: e.target.value }))} /></div>
+                <div className="flex flex-col gap-1.5">
                   <Label>Photo upload</Label>
                   <input type="file" accept="image/*" className="text-xs file:mr-2 file:rounded-md file:border-0 file:bg-muted file:px-2 file:py-1.5 file:text-xs file:font-medium" onChange={(e) => onWeighmentPhoto('outside_weighment_photo', e.target.files?.[0])} />
                 </div>
@@ -3084,7 +3084,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   const short = qty - balance
                   return (
                     <div key={index} className="grid gap-2 rounded-lg border p-2.5 md:grid-cols-[minmax(0,1fr)_7rem_auto]">
-                      <div className="grid min-w-0 gap-1">
+                      <div className="flex min-w-0 flex-col gap-1">
                         <Label className="text-[11px] text-muted-foreground">Bargain</Label>
                         <Select
                           value={String(line.bargain_id || '')}
@@ -3105,7 +3105,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           </SelectContent>
                         </Select>
                       </div>
-                      <div className="grid gap-1">
+                      <div className="flex flex-col gap-1">
                         <Label className="text-[11px] text-muted-foreground">Qty ({mapRow.uom})</Label>
                         <Input
                           type="number"
@@ -3233,21 +3233,21 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 Bargain, financials and the invoice link stay on this record — only the vehicle number changes, and
                 any quantity lost comes off what it's now expected to deliver ({formatNum(replaceRow.loaded_qty)} {replaceRow.uom} loaded so far).
               </p>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Replacement tanker number *</Label>
                 <Input value={replaceForm.new_tanker_no ?? ''} onChange={(e) => setReplaceForm({ ...replaceForm, new_tanker_no: e.target.value })} />
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Quantity lost ({replaceRow.uom})</Label>
                   <Input type="number" value={replaceForm.loss_qty ?? ''} onChange={(e) => setReplaceForm({ ...replaceForm, loss_qty: e.target.value })} placeholder="0" />
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Date</Label>
                   <DatePicker value={replaceForm.date || ''} onChange={(v) => setReplaceForm({ ...replaceForm, date: v })} />
                 </div>
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Reason</Label>
                 <Input value={replaceForm.reason ?? ''} onChange={(e) => setReplaceForm({ ...replaceForm, reason: e.target.value })} placeholder="e.g. accident en route" />
               </div>
@@ -3278,11 +3278,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             return (
               <div className="grid gap-4">
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Tanker number</Label>
                     <Input value={editTankerForm.tanker_no || ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, tanker_no: e.target.value }))} />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>{editTanker.extra_bargain_id ? 'Bargain (primary)' : 'Bargain'}</Label>
                     <Select value={String(editTankerForm.bargain_id || '')} onValueChange={(v) => setEditTankerForm((p) => ({ ...p, bargain_id: v }))}>
                       <SelectTrigger><SelectValue placeholder="Select bargain" /></SelectTrigger>
@@ -3336,12 +3336,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 })()}
 
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>{eIdx <= 0 ? 'Tanker placement date' : 'Loaded date'}</Label>
                     <DatePicker value={editTankerForm.loaded_date || ''} onChange={(v) => setEditTankerForm((p) => ({ ...p, loaded_date: v }))} />
                   </div>
                   {eIdx >= 2 && (
-                    <div className="grid gap-1.5">
+                    <div className="flex flex-col gap-1.5">
                       <Label>Loaded qty ({editTanker.uom})</Label>
                       <Input type="number" value={editTankerForm.loaded_qty ?? ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, loaded_qty: e.target.value }))} />
                     </div>
@@ -3350,7 +3350,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
 
                 {eIdx >= 2 && (
                   <div className="grid grid-cols-3 gap-3">
-                    <div className="grid gap-1.5">
+                    <div className="flex flex-col gap-1.5">
                       <Label>Payment</Label>
                       <Select value={editTankerForm.payment_mode || 'paid_by_us'} onValueChange={(v) => setEditTankerForm((p) => ({ ...p, payment_mode: v }))}>
                         <SelectTrigger><SelectValue /></SelectTrigger>
@@ -3360,11 +3360,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         </SelectContent>
                       </Select>
                     </div>
-                    <div className="grid gap-1.5">
+                    <div className="flex flex-col gap-1.5">
                       <Label>Transit date</Label>
                       <DatePicker value={editTankerForm.transit_date || ''} onChange={(v) => setEditTankerForm((p) => ({ ...p, transit_date: v }))} />
                     </div>
-                    <div className="grid gap-1.5">
+                    <div className="flex flex-col gap-1.5">
                       <Label>Source / port</Label>
                       <Select value={String(editTankerForm.source_id || '')} onValueChange={(v) => setEditTankerForm((p) => ({ ...p, source_id: v }))}>
                         <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
@@ -3378,12 +3378,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
 
                 {eIdx >= 3 && (
                   <div className="grid grid-cols-2 gap-3">
-                    <div className="grid gap-1.5">
+                    <div className="flex flex-col gap-1.5">
                       <Label>Outside factory date</Label>
                       <DatePicker value={editTankerForm.outside_factory_date || ''} onChange={(v) => setEditTankerForm((p) => ({ ...p, outside_factory_date: v }))} />
                     </div>
                     {eIdx >= 4 && (
-                      <div className="grid gap-1.5">
+                      <div className="flex flex-col gap-1.5">
                         <Label>Inside factory date</Label>
                         <DatePicker value={editTankerForm.inside_factory_date || ''} onChange={(v) => setEditTankerForm((p) => ({ ...p, inside_factory_date: v }))} />
                       </div>
@@ -3394,17 +3394,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 {eIdx >= 5 && (
                   <>
                     <div className="grid grid-cols-2 gap-3">
-                      <div className="grid gap-1.5">
+                      <div className="flex flex-col gap-1.5">
                         <Label>Empty date</Label>
                         <DatePicker value={editTankerForm.empty_date || ''} onChange={(v) => setEditTankerForm((p) => ({ ...p, empty_date: v }))} />
                       </div>
-                      <div className="grid gap-1.5">
+                      <div className="flex flex-col gap-1.5">
                         <Label>Received qty {eGate != null ? `(gate: ${formatNum(eGate)})` : ''}</Label>
                         <Input type="number" value={editTankerForm.received_qty ?? ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, received_qty: e.target.value }))} />
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-3">
-                      <div className="grid gap-1.5">
+                      <div className="flex flex-col gap-1.5">
                         <Label>Transporter</Label>
                         <Select value={String(editTankerForm.transporter_id || '')} onValueChange={(v) => setEditTankerForm((p) => ({ ...p, transporter_id: v }))}>
                           <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
@@ -3413,17 +3413,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           </SelectContent>
                         </Select>
                       </div>
-                      <div className="grid gap-1.5">
+                      <div className="flex flex-col gap-1.5">
                         <Label>Transport rate / {editTanker.uom}</Label>
                         <Input type="number" value={editTankerForm.transport_rate_per_ton ?? ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, transport_rate_per_ton: e.target.value }))} />
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-3">
-                      <div className="grid gap-1.5">
+                      <div className="flex flex-col gap-1.5">
                         <Label>KRFL weighment doc no</Label>
                         <Input value={editTankerForm.krfl_weighment_doc_no || ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, krfl_weighment_doc_no: e.target.value }))} />
                       </div>
-                      <div className="grid gap-1.5">
+                      <div className="flex flex-col gap-1.5">
                         <Label>Outside factory weighment doc no</Label>
                         <Input value={editTankerForm.outside_weighment_doc_no || ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, outside_weighment_doc_no: e.target.value }))} />
                       </div>
@@ -3468,11 +3468,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             <DialogTitle className="flex items-center gap-2"><BarChart3 className="h-5 w-5 text-muted-foreground" /> Tankers by product</DialogTitle>
           </DialogHeader>
           <div className="mb-3 flex flex-wrap items-end gap-3">
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label className="text-xs text-muted-foreground">Loaded from</Label>
               <DatePicker value={repFrom} onChange={setRepFrom} max={repTo || undefined} className="w-40" />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label className="text-xs text-muted-foreground">To</Label>
               <DatePicker value={repTo} onChange={setRepTo} min={repFrom || undefined} className="w-40" />
             </div>

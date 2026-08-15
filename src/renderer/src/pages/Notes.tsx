@@ -326,11 +326,11 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
             <section className="rounded-xl border bg-card p-5">
               <h3 className="mb-4 font-medium">Note details</h3>
               <div className="grid gap-4 md:grid-cols-3">
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Date</Label>
                   <DatePicker value={form.note_date} onChange={(v) => setForm((p) => ({ ...p, note_date: v || '' }))} />
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>{type === 'debit' ? 'Supplier *' : 'Customer *'}</Label>
                   <Select value={String(form.party_id || '')} onValueChange={(v) => setForm((p) => ({ ...p, party_id: v }))}>
                     <SelectTrigger><SelectValue placeholder={`Select ${type === 'debit' ? 'supplier' : 'customer'}`} /></SelectTrigger>
@@ -339,11 +339,11 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>GST %</Label>
                   <Input type="number" value={form.gst_pct ?? ''} placeholder="0" onChange={(e) => setForm((p) => ({ ...p, gst_pct: e.target.value }))} />
                 </div>
-                <div className="grid gap-1.5 md:col-span-2">
+                <div className="flex flex-col gap-1.5 md:col-span-2">
                   <Label>Against account</Label>
                   <Input
                     value={form.against_account ?? ''}
@@ -351,7 +351,7 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
                     placeholder={type === 'debit' ? 'PURCHASE RETURN A/C' : 'SALES RETURN A/C'}
                   />
                 </div>
-                <div className="grid gap-1.5 md:col-span-3">
+                <div className="flex flex-col gap-1.5 md:col-span-3">
                   <Label>Narration</Label>
                   <Input value={form.narration ?? ''} onChange={(e) => setForm((p) => ({ ...p, narration: e.target.value }))} placeholder="Reason for the note" />
                 </div>
@@ -402,7 +402,7 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
           <div className="space-y-4">
             <section className="rounded-xl border bg-card p-5">
               <h3 className="mb-4 font-medium">Amount</h3>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Base amount {hasItems ? '(from items)' : '*'}</Label>
                 <Input
                   type="number"

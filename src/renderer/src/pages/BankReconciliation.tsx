@@ -309,11 +309,11 @@ export function BankReconciliation(): React.JSX.Element {
         <DialogContent>
           <DialogHeader><DialogTitle>Import a bank statement</DialogTitle></DialogHeader>
           <div className="grid gap-3">
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Bank *</Label>
               <Input value={uploadBank} onChange={(e) => setUploadBank(e.target.value)} placeholder="e.g. HDFC Bank" />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Statement file (.xlsx / .csv) *</Label>
               <div className="flex items-center gap-2">
                 <Button type="button" variant="outline" size="sm" onClick={() => void pickFile()}>
@@ -366,7 +366,7 @@ export function BankReconciliation(): React.JSX.Element {
                 </div>
               )}
 
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Or set the category manually</Label>
                 <Select value={reviewCategory} onValueChange={setReviewCategory}>
                   <SelectTrigger><SelectValue placeholder="Select category" /></SelectTrigger>
@@ -405,7 +405,7 @@ export function BankReconciliation(): React.JSX.Element {
                 : 'This just records a manual party/purpose note against this line — it does not change its reconciliation.'}
             </p>
             {!subEntryLine?.sub_entry_enabled && (
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Note</Label>
                 <Input value={subEntryNote} onChange={(e) => setSubEntryNote(e.target.value)} placeholder="Who it was really for / what it was really for" />
               </div>

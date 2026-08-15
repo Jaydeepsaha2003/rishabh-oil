@@ -1205,13 +1205,13 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
           <span className="text-[11px] font-medium">No: {vchNo || 'Auto'}</span>
         </div>
         <div className="flex flex-wrap items-end gap-3 border-b border-dashed px-4 py-2.5" style={{ borderColor: '#d9d2b8' }}>
-          <div className="grid gap-1">
+          <div className="flex flex-col gap-1">
             <Label className="text-[10px] uppercase tracking-wide">Date (F2)</Label>
             <div ref={dateRef} className="w-36">
               <DatePicker value={vchDate} onChange={setVchDate} />
             </div>
           </div>
-          <div className="grid gap-1">
+          <div className="flex flex-col gap-1">
             <Label className="text-[10px] uppercase tracking-wide">Voucher no (optional)</Label>
             <Input className="h-9 w-36 bg-white" value={vchNo} onChange={(e) => setVchNo(e.target.value)} />
           </div>
@@ -1375,7 +1375,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         {noteInvoiceMode && (
           <div className="px-4 py-3">
             <div className="mb-3 grid gap-3 sm:grid-cols-2">
-              <div className="grid gap-1">
+              <div className="flex flex-col gap-1">
                 <Label className="text-[10px] uppercase tracking-wide">
                   {vchType === 'DEBIT NOTE' ? 'Supplier (goods going back)' : 'Customer (goods coming back)'}
                 </Label>
@@ -1396,7 +1396,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-1">
+              <div className="flex flex-col gap-1">
                 <Label className="text-[10px] uppercase tracking-wide">Original invoice (Agst Ref)</Label>
                 <Select value={noteInvoice || 'ON_ACCOUNT'} onValueChange={(v) => setNoteInvoice(v === 'ON_ACCOUNT' ? '' : v)}>
                   <SelectTrigger className="bg-white">
@@ -1515,7 +1515,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         {!structured && !noteInvoiceMode && (vchType === 'DEBIT NOTE' || vchType === 'CREDIT NOTE') && (
           <div className="mx-4 mt-3 flex flex-wrap items-end gap-3 rounded border border-dashed border-sky-300 bg-sky-50/60 px-3 py-2">
             <span className="pb-1.5 text-[10px] font-bold uppercase tracking-widest text-sky-800">GST helper</span>
-            <div className="grid gap-1">
+            <div className="flex flex-col gap-1">
               <Label className="text-[10px] uppercase tracking-wide">Taxable value</Label>
               <Input
                 type="number"
@@ -1524,7 +1524,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                 onChange={(e) => setGstCalc((g) => ({ ...g, taxable: e.target.value }))}
               />
             </div>
-            <div className="grid gap-1">
+            <div className="flex flex-col gap-1">
               <Label className="text-[10px] uppercase tracking-wide">GST %</Label>
               <Input
                 type="number"
@@ -1553,7 +1553,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         {!structured && !noteInvoiceMode && vchType === 'JOURNAL' && (
           <div className="mx-4 mt-3 flex flex-wrap items-end gap-3 rounded border border-dashed border-sky-300 bg-sky-50/60 px-3 py-2">
             <span className="pb-1.5 text-[10px] font-bold uppercase tracking-widest text-sky-800">Rate difference helper</span>
-            <div className="grid w-56 gap-1">
+            <div className="flex w-56 flex-col gap-1">
               <Label className="text-[10px] uppercase tracking-wide">Party</Label>
               <AccountPicker
                 value={rateDiff.party}
@@ -1565,7 +1565,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                 onCreate={(q) => setNewLedger({ name: q, group: '', forLine: null })}
               />
             </div>
-            <div className="grid gap-1">
+            <div className="flex flex-col gap-1">
               <Label className="text-[10px] uppercase tracking-wide">Direction</Label>
               <Select value={rateDiff.direction} onValueChange={(v) => setRateDiff((p) => ({ ...p, direction: v as 'owes_more' | 'owes_less' }))}>
                 <SelectTrigger className="h-8 w-40 bg-white text-xs"><SelectValue /></SelectTrigger>
@@ -1575,7 +1575,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1">
+            <div className="flex flex-col gap-1">
               <Label className="text-[10px] uppercase tracking-wide">Amount (₹)</Label>
               <Input
                 type="number"
@@ -1729,7 +1729,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         )}
 
         <div className="flex items-end gap-3 px-4 pb-4 pt-1">
-          <div className="grid flex-1 gap-1">
+          <div className="flex flex-1 flex-col gap-1">
             <Label className="text-[10px] uppercase tracking-wide">Narration</Label>
             <Input className="h-9 bg-white" value={narration} onChange={(e) => setNarration(e.target.value)} placeholder="Being…" />
           </div>
@@ -2607,7 +2607,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
               <p className="text-xs text-muted-foreground">
                 {tagForm.supplier_name} · this draws a bill under the chosen LC against this purchase, eating into its limit.
               </p>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>LC *</Label>
                 <Select value={tagForm.lc_id ? String(tagForm.lc_id) : ''} onValueChange={(v) => setTagForm({ ...tagForm, lc_id: v })}>
                   <SelectTrigger><SelectValue placeholder="Select the LC funding this purchase" /></SelectTrigger>
@@ -2621,10 +2621,10 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                 </Select>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1.5"><Label>Amount (₹) *</Label><Input type="number" value={tagForm.amount ?? ''} onChange={(e) => setTagForm({ ...tagForm, amount: e.target.value })} /></div>
-                <div className="grid gap-1.5"><Label>Bill no</Label><Input value={tagForm.bill_no ?? ''} onChange={(e) => setTagForm({ ...tagForm, bill_no: e.target.value })} /></div>
-                <div className="grid gap-1.5"><Label>Issue date</Label><DatePicker value={String(tagForm.issue_date || '')} onChange={(v) => setTagForm({ ...tagForm, issue_date: v })} /></div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5"><Label>Amount (₹) *</Label><Input type="number" value={tagForm.amount ?? ''} onChange={(e) => setTagForm({ ...tagForm, amount: e.target.value })} /></div>
+                <div className="flex flex-col gap-1.5"><Label>Bill no</Label><Input value={tagForm.bill_no ?? ''} onChange={(e) => setTagForm({ ...tagForm, bill_no: e.target.value })} /></div>
+                <div className="flex flex-col gap-1.5"><Label>Issue date</Label><DatePicker value={String(tagForm.issue_date || '')} onChange={(v) => setTagForm({ ...tagForm, issue_date: v })} /></div>
+                <div className="flex flex-col gap-1.5">
                   <Label>Due date</Label>
                   <DatePicker value={String(tagForm.due_date || '')} onChange={(v) => setTagForm({ ...tagForm, due_date: v })} />
                   <span className="text-[10px] text-muted-foreground">blank = issue date + the LC's usance</span>
@@ -2649,17 +2649,17 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                 {tagBdForm.customer} · this discounts the bill with the chosen bank — interest and charges post to the books now, and the customer clears when the bank realizes it.
               </p>
               <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1.5"><Label>Discounting bank *</Label><Input value={tagBdForm.disc_bank ?? ''} onChange={(e) => setTagBdForm({ ...tagBdForm, disc_bank: e.target.value })} /></div>
-                <div className="grid gap-1.5"><Label>Bill amount (₹) *</Label><Input type="number" value={tagBdForm.amount ?? ''} onChange={(e) => setTagBdForm({ ...tagBdForm, amount: e.target.value })} /></div>
-                <div className="grid gap-1.5"><Label>Discount date</Label><DatePicker value={String(tagBdForm.open_date || '')} onChange={(v) => setTagBdForm({ ...tagBdForm, open_date: v })} /></div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5"><Label>Discounting bank *</Label><Input value={tagBdForm.disc_bank ?? ''} onChange={(e) => setTagBdForm({ ...tagBdForm, disc_bank: e.target.value })} /></div>
+                <div className="flex flex-col gap-1.5"><Label>Bill amount (₹) *</Label><Input type="number" value={tagBdForm.amount ?? ''} onChange={(e) => setTagBdForm({ ...tagBdForm, amount: e.target.value })} /></div>
+                <div className="flex flex-col gap-1.5"><Label>Discount date</Label><DatePicker value={String(tagBdForm.open_date || '')} onChange={(v) => setTagBdForm({ ...tagBdForm, open_date: v })} /></div>
+                <div className="flex flex-col gap-1.5">
                   <Label>Maturity date</Label>
                   <DatePicker value={String(tagBdForm.maturity_date || '')} onChange={(v) => setTagBdForm({ ...tagBdForm, maturity_date: v })} />
                   <span className="text-[10px] text-muted-foreground">or leave blank and give tenor days</span>
                 </div>
-                <div className="grid gap-1.5"><Label>Tenor (days)</Label><Input type="number" value={tagBdForm.tenor_days ?? ''} onChange={(e) => setTagBdForm({ ...tagBdForm, tenor_days: e.target.value })} /></div>
-                <div className="grid gap-1.5"><Label>Rate % p.a. *</Label><Input type="number" value={tagBdForm.rate_pct ?? ''} onChange={(e) => setTagBdForm({ ...tagBdForm, rate_pct: e.target.value })} /></div>
-                <div className="grid gap-1.5"><Label>Bank charges (₹)</Label><Input type="number" value={tagBdForm.charges ?? ''} onChange={(e) => setTagBdForm({ ...tagBdForm, charges: e.target.value })} /></div>
+                <div className="flex flex-col gap-1.5"><Label>Tenor (days)</Label><Input type="number" value={tagBdForm.tenor_days ?? ''} onChange={(e) => setTagBdForm({ ...tagBdForm, tenor_days: e.target.value })} /></div>
+                <div className="flex flex-col gap-1.5"><Label>Rate % p.a. *</Label><Input type="number" value={tagBdForm.rate_pct ?? ''} onChange={(e) => setTagBdForm({ ...tagBdForm, rate_pct: e.target.value })} /></div>
+                <div className="flex flex-col gap-1.5"><Label>Bank charges (₹)</Label><Input type="number" value={tagBdForm.charges ?? ''} onChange={(e) => setTagBdForm({ ...tagBdForm, charges: e.target.value })} /></div>
               </div>
             </div>
           )}
@@ -2707,7 +2707,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         <DialogContent className="max-w-sm">
           <DialogHeader><DialogTitle>Create ledger</DialogTitle></DialogHeader>
           <div className="space-y-3">
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Name</Label>
               <Input
                 value={newLedger?.name || ''}
@@ -2715,7 +2715,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                 className="uppercase"
               />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Under group</Label>
               <Select
                 value={newLedger?.group || ''}

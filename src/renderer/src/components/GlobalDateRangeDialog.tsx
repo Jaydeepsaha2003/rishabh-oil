@@ -55,16 +55,16 @@ export function GlobalDateRangeDialog({
             This period applies across every screen that filters by date — registers, ledgers, trial balance, stock
             reports and more.
           </p>
-          <div className="grid gap-1.5">
+          <div className="flex flex-col gap-1.5">
             <Label>Financial year</Label>
             <FyPicker from={from} to={to} onRange={(f, t) => { setFrom(f); setTo(t) }} className="h-9 w-full text-xs" />
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>From</Label>
               <DatePicker value={from} onChange={(v) => setFrom(v || '')} max={to || undefined} />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>To</Label>
               <DatePicker value={to} onChange={(v) => setTo(v || '')} min={from || undefined} />
             </div>

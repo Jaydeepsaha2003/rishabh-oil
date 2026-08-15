@@ -8,6 +8,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  FileSpreadsheet,
   FileText,
   LayoutGrid,
   Landmark,
@@ -33,6 +34,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { exportLcRegister } from '@/lib/lcExcel'
 import { BillDiscounting } from './BillDiscounting'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -90,6 +92,18 @@ function StageBadge({ stage }: { stage: string }): React.JSX.Element {
       {STAGE_LABEL[stage] || stage}
     </span>
   )
+}
+
+// A row's stage reads at a glance from its own left border + tint, the same
+// amber/sky/emerald the badge already uses — no need to read the text to know
+// where an LC sits in Application → Open → Payment received. The row also
+// carries a dotted BOTTOM divider, and `border-style` isn't a per-side
+// Tailwind utility — `border-dotted` there would flatten this left border's
+// style too, so it's pinned back to solid with an explicit arbitrary property.
+const STAGE_ROW_TONE: Record<string, { row: string; hover: string }> = {
+  application: { row: "border-l-4 border-l-amber-400 bg-amber-50/50 [border-left-style:solid]", hover: 'hover:bg-amber-100/60' },
+  open: { row: "border-l-4 border-l-sky-400 bg-sky-50/50 [border-left-style:solid]", hover: 'hover:bg-sky-100/60' },
+  payment_received: { row: "border-l-4 border-l-emerald-400 bg-emerald-50/50 [border-left-style:solid]", hover: 'hover:bg-emerald-100/60' }
 }
 
 export function Treasury(): React.JSX.Element {
@@ -276,6 +290,66 @@ export function Treasury(): React.JSX.Element {
     }
   }
 
+  // ---------------- LC pre-closure ----------------
+  // Winding the LC up before its natural maturity — interest is recalculated
+  // over the days actually elapsed rather than the full planned usance, and
+  // whatever's left of the open amount is settled the way the user says:
+  // refunded back to us, or paid out to cover a balance still owed the party.
+  const [precloseRow, setPrecloseRow] = useState<Row | null>(null)
+  const [precloseForm, setPrecloseForm] = useState<Row>({})
+  const [precloseSaving, setPrecloseSaving] = useState(false)
+  const [precloseError, setPrecloseError] = useState<string | null>(null)
+
+  function openPreclose(l: Row): void {
+    setPrecloseRow(l)
+    setPrecloseForm({ preclose_date: todayISO(), direction: 'credit_to_us', amount: '' })
+    setPrecloseError(null)
+  }
+
+  const preclosePreview = useMemo(() => {
+    if (!precloseRow || !precloseForm.preclose_date) return null
+    const openAmount = n(precloseRow.amount)
+    const unused = round2(Math.max(0, openAmount - n(precloseRow.utilized)))
+    const openDate = String(precloseRow.open_date || '').slice(0, 10)
+    const days = openDate
+      ? Math.max(
+          0,
+          Math.round(
+            (new Date(`${String(precloseForm.preclose_date)}T00:00:00`).getTime() - new Date(`${openDate}T00:00:00`).getTime()) / 86400000
+          )
+        )
+      : 0
+    const interest = round2((openAmount * n(precloseRow.interest_pct) * days) / (100 * 365))
+    const charges = round2(n(precloseRow.charges))
+    const suggested = round2(Math.max(0, unused - interest - charges))
+    return { unused, days, interest, charges, suggested }
+  }, [precloseRow, precloseForm.preclose_date])
+
+  async function savePreclose(): Promise<void> {
+    if (!precloseRow) return
+    if (!precloseForm.preclose_date) return setPrecloseError('Pick the pre-closure date')
+    if (precloseRow.open_date && String(precloseForm.preclose_date) < String(precloseRow.open_date)) {
+      return setPrecloseError('Pre-closure date cannot be before the application date')
+    }
+    if (!(n(precloseForm.amount) >= 0)) return setPrecloseError('Enter the settlement amount')
+    setPrecloseSaving(true)
+    setPrecloseError(null)
+    try {
+      await window.api.lc.preclose(Number(precloseRow.id), {
+        preclose_date: String(precloseForm.preclose_date),
+        direction: precloseForm.direction === 'pay_to_party' ? 'pay_to_party' : 'credit_to_us',
+        amount: n(precloseForm.amount)
+      })
+      toast.success('LC preclosed')
+      setPrecloseRow(null)
+      load()
+    } catch (e) {
+      setPrecloseError((e as Error).message)
+    } finally {
+      setPrecloseSaving(false)
+    }
+  }
+
   // Live preview for the Payment Received step — same interest/charges/margin
   // math lc.ts uses server-side to derive lc_net_available, so what's shown
   // here matches what actually gets stored (saveStageAdvance sends this same
@@ -291,17 +365,12 @@ export function Treasury(): React.JSX.Element {
     const charges = n(stageForm.charges)
     const interest = days != null ? round2((amount * interestPct * days) / (100 * 365)) : 0
     const netAvailable = round2(amount - interest - charges)
-    // Margin is a deposit against the goods' basic value — struck on the
-    // taxable value of the invoice(s) the LC covers, not their tax-inclusive
-    // total and not the open amount — same as the main form and the register.
-    const linkedIds: number[] = Array.isArray(stageRow.linked_order_ids) ? stageRow.linked_order_ids : []
-    const linkedTaxableTotal = orders
-      .filter((o) => linkedIds.map(String).includes(String(o.id)))
-      .reduce((s, o) => s + n(o.taxable_value), 0)
-    const taxableAmount = linkedTaxableTotal > 0 ? linkedTaxableTotal : amount
-    const margin = round2((taxableAmount * n(stageForm.margin_pct)) / 100)
+    // Margin is the security deposit the bank asks for on the LC's own open
+    // amount — a straight percentage of the credit limit itself, not of
+    // whichever invoices happen to be linked to it.
+    const margin = round2((amount * n(stageForm.margin_pct)) / 100)
     return { amount, days, interest, charges, margin, netAvailable }
-  }, [stageRow, stageForm.payment_received_date, stageForm.expiry_date, stageForm.margin_pct, stageForm.interest_pct, stageForm.charges, orders])
+  }, [stageRow, stageForm.payment_received_date, stageForm.expiry_date, stageForm.margin_pct, stageForm.interest_pct, stageForm.charges])
 
   async function saveLc(): Promise<void> {
     if (!lcForm) return
@@ -390,14 +459,26 @@ export function Treasury(): React.JSX.Element {
 
   async function saveRepayment(): Promise<void> {
     if (!repayForm) return
+    const amount = n(repayForm.amount)
+    const openAmount = n(repayForm.open_amount)
+    if (amount < openAmount - 0.005) {
+      return void toast.error(`The repayment cannot be less than the LC's open amount (${formatINR(openAmount)})`)
+    }
+    const commCharges = round2(n(repayForm.comm_charges))
+    const bankCharges = round2(n(repayForm.bank_charges))
+    const excess = round2(amount - openAmount)
+    if (excess > 0.005 && Math.abs(commCharges + bankCharges - excess) > 0.005) {
+      return void toast.error(`Comm. + Bank charges must add up to ${formatINR(excess)}, the amount over the open amount`)
+    }
     setBusy(true)
     try {
       await window.api.lc.saveRepayment({
         ...repayForm,
         lc_id: Number(repayForm.lc_id),
         party_id: repayForm.party_id ? Number(repayForm.party_id) : null,
-        amount: Number(repayForm.amount),
-        maturity_charges: Number(repayForm.maturity_charges) || 0,
+        amount,
+        comm_charges: commCharges,
+        bank_charges: bankCharges,
         posted: !!repayForm.posted
       })
       toast.success(repayForm.posted ? 'Repayment posted to the books' : 'Repayment logged')
@@ -504,6 +585,18 @@ export function Treasury(): React.JSX.Element {
     return lcsWithDue.filter((l) => l.days_left_effective != null && l.days_left_effective <= maxDays)
   }, [lcsWithDue, lcDuePeriod])
 
+  const [lcExporting, setLcExporting] = useState(false)
+  async function downloadLcRegister(): Promise<void> {
+    setLcExporting(true)
+    try {
+      await exportLcRegister(lcsFiltered, `lc-register-${lcDuePeriod === 'all' ? todayISO() : `${lcDuePeriod}-${todayISO()}`}`)
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setLcExporting(false)
+    }
+  }
+
   // Bills issued under an LC, and repayments logged against it — shared by
   // both the card and table views so expanding an LC looks the same either way.
   function lcExpanded(l: Row): React.JSX.Element {
@@ -562,7 +655,7 @@ export function Treasury(): React.JSX.Element {
                 size="sm"
                 variant="outline"
                 className="ml-auto h-6 px-2 text-[11px] normal-case tracking-normal"
-                onClick={() => setRepayForm({ lc_id: l.id, party_id: l.receivable_party_id ? String(l.receivable_party_id) : '', repay_date: todayISO(), posted: false })}
+                onClick={() => setRepayForm({ lc_id: l.id, open_amount: n(l.amount), party_id: l.receivable_party_id ? String(l.receivable_party_id) : '', repay_date: todayISO(), posted: false })}
               >
                 <Plus className="h-3 w-3" /> Log repayment
               </Button>
@@ -578,7 +671,7 @@ export function Treasury(): React.JSX.Element {
             <table className="w-full rounded-lg border bg-card text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:px-3 [&_th]:py-1.5">
               <thead className="border-b bg-muted/50 text-left text-[10px] uppercase tracking-wide text-muted-foreground">
                 <tr>
-                  <th>Date</th><th className="text-right">Repayment</th><th className="text-right">Maturity chgs</th><th className="text-right">Total debited</th><th>Posted</th><th>Document</th><th className="text-right">Actions</th>
+                  <th>Date</th><th className="text-right">Repayment</th><th className="text-right">Comm. chgs</th><th className="text-right">Bank chgs</th><th className="text-right">Total debited</th><th>Posted</th><th>Document</th><th className="text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -586,8 +679,9 @@ export function Treasury(): React.JSX.Element {
                   <tr key={String(r.id)} className="border-b last:border-0">
                     <td className="tabular-nums">{formatDate(r.repay_date)}</td>
                     <td className="text-right font-medium tabular-nums">{formatINR(r.amount)}</td>
-                    <td className="text-right tabular-nums text-muted-foreground">{n(r.maturity_charges) > 0 ? formatINR(r.maturity_charges) : '—'}</td>
-                    <td className="text-right font-medium tabular-nums">{formatINR(n(r.amount) + n(r.maturity_charges))}</td>
+                    <td className="text-right tabular-nums text-muted-foreground">{n(r.comm_charges) > 0 ? formatINR(r.comm_charges) : '—'}</td>
+                    <td className="text-right tabular-nums text-muted-foreground">{n(r.bank_charges) > 0 ? formatINR(r.bank_charges) : '—'}</td>
+                    <td className="text-right font-medium tabular-nums">{formatINR(n(r.amount) + n(r.comm_charges) + n(r.bank_charges))}</td>
                     <td>{n(r.posted) ? <Badge variant="success">Posted</Badge> : <Badge variant="muted">Draft</Badge>}</td>
                     <td>
                       {r.document_path ? (
@@ -600,7 +694,7 @@ export function Treasury(): React.JSX.Element {
                     </td>
                     <td className="text-right">
                       <div className="flex justify-end gap-1">
-                        <Button size="icon" variant="ghost" className="h-6 w-6" title="Edit" onClick={() => setRepayForm({ ...r })}>
+                        <Button size="icon" variant="ghost" className="h-6 w-6" title="Edit" onClick={() => setRepayForm({ ...r, open_amount: n(l.amount) })}>
                           <CalendarClock className="h-3 w-3" />
                         </Button>
                         <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive" title="Delete" onClick={() => void removeRepayment(r)}>
@@ -805,6 +899,7 @@ export function Treasury(): React.JSX.Element {
                             <div className="flex items-center gap-1.5">
                               <span className={cn('font-semibold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
                               <StageBadge stage={String(l.stage || 'application')} />
+                              {l.preclosed_date && <Badge variant="muted">Preclosed {formatDate(l.preclosed_date)}</Badge>}
                             </div>
                             <div className="text-[11px] text-muted-foreground">{l.bank} · {l.supplier_name || '—'}</div>
                             {l.fd_no && <div className="text-[10px] text-muted-foreground">FD {l.fd_no}</div>}
@@ -850,6 +945,11 @@ export function Treasury(): React.JSX.Element {
                           <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => void toggleLc(Number(l.id))}>
                             {isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />} Details
                           </Button>
+                          {!l.preclosed_date && (
+                            <Button size="sm" variant="outline" className="h-7 px-2 text-xs" title="Wind this LC up before its natural maturity" onClick={() => openPreclose(l)}>
+                              Preclose
+                            </Button>
+                          )}
                           <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit LC" onClick={() => setLcForm({ ...l })}>
                             <CalendarClock className="h-3.5 w-3.5" />
                           </Button>
@@ -868,66 +968,78 @@ export function Treasury(): React.JSX.Element {
               <div className="flex items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
                 <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/50"><Banknote className="h-3.5 w-3.5" /></span>
                 <span className="text-[13px] font-bold uppercase tracking-widest">Letters of Credit</span>
-                <Button size="sm" className="ml-auto bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application' })}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="ml-auto gap-1.5 bg-white"
+                  disabled={lcExporting || lcsFiltered.length === 0}
+                  onClick={() => void downloadLcRegister()}
+                >
+                  <FileSpreadsheet className="h-4 w-4" /> {lcExporting ? 'Preparing…' : 'Download Excel'}
+                </Button>
+                <Button size="sm" className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application' })}>
                   <Plus className="h-4 w-4" /> Open new LC
                 </Button>
               </div>
+              <div className="overflow-x-auto">
               <Table className="text-[13px]">
                 <TableHeader>
-                  <TableRow className="bg-[#f1ecd9] hover:bg-[#f1ecd9]">
-                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">LC no · bank</TableHead>
-                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Supplier</TableHead>
-                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Validity</TableHead>
-                    <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Limit</TableHead>
-                    <TableHead className="h-8 w-44 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Utilisation</TableHead>
-                    <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Available</TableHead>
-                    <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Actions</TableHead>
+                  <TableRow className="border-b-2 border-[#1a2c56]/20 bg-[#dce6f5] hover:bg-[#dce6f5]">
+                    <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">LC no · bank</TableHead>
+                    <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Supplier</TableHead>
+                    <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Validity</TableHead>
+                    <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Days left</TableHead>
+                    <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Int. days</TableHead>
+                    <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Limit</TableHead>
+                    <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Available</TableHead>
+                    <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {lcsFiltered.length === 0 ? (
-                    <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No letters of credit in this bucket.</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No letters of credit in this bucket.</TableCell></TableRow>
                   ) : (
-                    lcsFiltered.map((l, i) => {
+                    lcsFiltered.map((l) => {
                       const isOpen = openLc.has(Number(l.id))
                       const pct = n(l.amount) > 0 ? Math.min(100, (n(l.utilized) / n(l.amount)) * 100) : 0
+                      const tone = STAGE_ROW_TONE[String(l.stage || 'application')] || STAGE_ROW_TONE.application
                       return (
                         <Fragment key={String(l.id)}>
                           <TableRow
-                            className={cn(
-                              'cursor-pointer border-b border-dotted border-[#e5dfc8] transition-colors hover:bg-amber-100/70',
-                              i % 2 === 1 && 'bg-[#faf7ea]'
-                            )}
+                            className={cn('cursor-pointer border-b border-dotted border-[#e5dfc8] transition-colors', tone.row, tone.hover)}
                             onClick={() => void toggleLc(Number(l.id))}
                           >
-                            <TableCell>
+                            <TableCell className="whitespace-nowrap">
                               <div className="flex items-center gap-1.5">
-                                {isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                                {isOpen ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
                                 <div>
                                   <div className="flex items-center gap-1.5">
                                     <span className={cn('font-semibold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
                                     <StageBadge stage={String(l.stage || 'application')} />
+                                    {l.preclosed_date && <Badge variant="muted">Preclosed</Badge>}
                                   </div>
-                                  <div className="text-[11px] text-muted-foreground">{l.bank} · {n(l.usance_days)} interest days{n(l.margin_pct) ? ` · margin ${l.margin_pct}%` : ''}</div>
+                                  <div className="text-[11px] text-muted-foreground">{l.bank}{n(l.margin_pct) ? ` · margin ${l.margin_pct}%` : ''}</div>
                                 </div>
                               </div>
                             </TableCell>
-                            <TableCell>{l.supplier_name || '—'}</TableCell>
-                            <TableCell>
-                              <div className="text-[12px] tabular-nums">{formatDate(l.open_date)} → {formatDate(l.expiry_date)}</div>
-                              <DueBadge date={l.expiry_date} />
+                            <TableCell className="whitespace-nowrap">{l.supplier_name || '—'}</TableCell>
+                            <TableCell className="whitespace-nowrap text-[12px] tabular-nums">{formatDate(l.open_date)} → {formatDate(l.expiry_date)}</TableCell>
+                            <TableCell className="whitespace-nowrap">
+                              {l.expiry_date ? <DueBadge date={l.expiry_date} /> : <span className="text-muted-foreground">—</span>}
                             </TableCell>
-                            <TableCell className="text-right font-medium tabular-nums">{formatINR(l.amount)}</TableCell>
-                            <TableCell>
-                              <div className="h-2 rounded-full bg-muted">
-                                <div className={cn('h-2 rounded-full', pct >= 95 ? 'bg-rose-500' : 'bg-sky-600')} style={{ width: `${pct}%` }} />
+                            <TableCell className="whitespace-nowrap text-right tabular-nums text-muted-foreground">
+                              {n(l.usance_days) > 0 ? n(l.usance_days) : '—'}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap text-right font-medium tabular-nums">{formatINR(l.amount)}</TableCell>
+                            <TableCell className="whitespace-nowrap text-right">
+                              <div className={cn('font-semibold tabular-nums', n(l.available) <= 0 ? 'text-rose-600' : 'text-emerald-700')}>
+                                {formatINR(l.available)}
                               </div>
-                              <div className="mt-0.5 text-[10px] tabular-nums text-muted-foreground">{formatINR(l.utilized)} used · {pct.toFixed(0)}%</div>
+                              <div className={cn('text-[10px] tabular-nums', pct >= 95 ? 'text-rose-600' : 'text-muted-foreground')}>
+                                {pct.toFixed(0)}% used
+                              </div>
                             </TableCell>
-                            <TableCell className={cn('text-right font-semibold tabular-nums', n(l.available) <= 0 ? 'text-rose-600' : 'text-emerald-700')}>
-                              {formatINR(l.available)}
-                            </TableCell>
-                            <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                            <TableCell className="whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex justify-end gap-1">
                                 {(() => {
                                   const next = nextLcStage(String(l.stage || 'application'))
@@ -938,6 +1050,11 @@ export function Treasury(): React.JSX.Element {
                                     </Button>
                                   )
                                 })()}
+                                {!l.preclosed_date && (
+                                  <Button size="sm" variant="outline" className="h-7 px-2 text-xs" title="Wind this LC up before its natural maturity" onClick={() => openPreclose(l)}>
+                                    Preclose
+                                  </Button>
+                                )}
                                 <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit LC" onClick={() => setLcForm({ ...l })}>
                                   <CalendarClock className="h-3.5 w-3.5" />
                                 </Button>
@@ -949,7 +1066,7 @@ export function Treasury(): React.JSX.Element {
                           </TableRow>
                           {isOpen && (
                             <TableRow className="bg-[#f7f2e2] hover:bg-[#f7f2e2]">
-                              <TableCell colSpan={7} className="p-0">{lcExpanded(l)}</TableCell>
+                              <TableCell colSpan={8} className="p-0">{lcExpanded(l)}</TableCell>
                             </TableRow>
                           )}
                         </Fragment>
@@ -958,6 +1075,7 @@ export function Treasury(): React.JSX.Element {
                   )}
                 </TableBody>
               </Table>
+              </div>
             </div>
             )}
           </TabsContent>
@@ -1052,13 +1170,13 @@ export function Treasury(): React.JSX.Element {
             <div className="rounded-md border border-rose-300 bg-rose-50 px-3 py-2.5 text-[12px] text-rose-900">
               This reverses everything this LC has posted to the ledgers — its opening voucher and every bill's settlement — and cannot be undone.
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>To confirm, type the code shown below</Label>
               <div className="flex items-center justify-center rounded-md border border-dashed border-muted-foreground/40 bg-muted/40 py-3 text-2xl font-bold tracking-[0.5em] tabular-nums">
                 {lcDeleteCode}
               </div>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Code</Label>
               <Input
                 value={lcDeleteInput}
@@ -1080,6 +1198,130 @@ export function Treasury(): React.JSX.Element {
             >
               {lcDeleting ? 'Deleting…' : 'Delete LC'}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Preclose an LC — wind it up before its natural maturity */}
+      <Dialog open={!!precloseRow} onOpenChange={(o) => !o && setPrecloseRow(null)}>
+        <DialogContent className="max-w-2xl overflow-hidden p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100">
+          <div className="flex items-center gap-3 bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-6 py-4 text-white">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/15">
+              <Landmark className="h-5 w-5" />
+            </div>
+            <div>
+              <DialogTitle className="text-[16px] font-bold text-white">Preclose LC {precloseRow?.lc_no || '(pending no.)'}</DialogTitle>
+              <p className="text-[12px] text-white/70">Wind this LC up before its natural maturity.</p>
+            </div>
+          </div>
+          <div className="grid gap-4 p-6">
+            <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
+              <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><CalendarClock className="h-3 w-3 text-[#1a2c56]" /></span>
+                Pre-closure date
+              </h3>
+              <div className="grid gap-1.5 sm:max-w-xs">
+                <Label>Date <span className="text-red-600">*</span></Label>
+                <DatePicker
+                  value={String(precloseForm.preclose_date || '')}
+                  onChange={(v) => setPrecloseForm({ ...precloseForm, preclose_date: v })}
+                  min={precloseRow?.open_date || undefined}
+                />
+              </div>
+            </section>
+
+            {preclosePreview && (
+              <div className="rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm">
+                <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-sky-900">
+                  <Banknote className="h-3.5 w-3.5" /> Recalculated over the actual period
+                  <span className="ml-auto flex items-center gap-1 rounded-full bg-sky-700 px-2.5 py-1 text-[11px] font-bold normal-case tracking-normal text-white">
+                    <CalendarClock className="h-3 w-3" /> {preclosePreview.days} interest days
+                  </span>
+                </h3>
+                <div className="grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wide text-sky-700">Unused open amount</div>
+                    <div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(preclosePreview.unused)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wide text-sky-700">− Interest</div>
+                    <div className="text-[15px] font-semibold tabular-nums text-rose-700">{formatINR(preclosePreview.interest)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wide text-sky-700">− Charges</div>
+                    <div className="text-[15px] font-semibold tabular-nums text-rose-700">{formatINR(preclosePreview.charges)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wide text-sky-700">Suggested settlement</div>
+                    <div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(preclosePreview.suggested)}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
+              <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><Percent className="h-3 w-3 text-[#1a2c56]" /></span>
+                Settlement
+              </h3>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-1.5">
+                  <Label>Direction <span className="text-red-600">*</span></Label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setPrecloseForm({ ...precloseForm, direction: 'credit_to_us' })}
+                      className={cn(
+                        'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
+                        precloseForm.direction !== 'pay_to_party'
+                          ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
+                          : 'border-[#e5dfc8] text-muted-foreground hover:bg-muted/40'
+                      )}
+                    >
+                      Credit to us
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPrecloseForm({ ...precloseForm, direction: 'pay_to_party' })}
+                      className={cn(
+                        'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
+                        precloseForm.direction === 'pay_to_party'
+                          ? 'border-amber-500 bg-amber-50 text-amber-800'
+                          : 'border-[#e5dfc8] text-muted-foreground hover:bg-muted/40'
+                      )}
+                    >
+                      Pay to party
+                    </button>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label className="flex flex-wrap items-center gap-1.5">
+                    Settlement amount (₹) <span className="text-red-600">*</span>
+                    {preclosePreview && (
+                      <button
+                        type="button"
+                        className="text-[10px] font-medium text-teal-700 underline-offset-2 hover:underline"
+                        onClick={() => setPrecloseForm({ ...precloseForm, amount: String(preclosePreview.suggested) })}
+                      >
+                        Use suggested ({formatINR(preclosePreview.suggested)})
+                      </button>
+                    )}
+                  </Label>
+                  <Input type="number" value={precloseForm.amount ?? ''} onChange={(e) => setPrecloseForm({ ...precloseForm, amount: e.target.value })} />
+                </div>
+              </div>
+              <p className="mt-2 text-[10px] text-muted-foreground">
+                {precloseForm.direction === 'pay_to_party'
+                  ? "Paid to the party — settles a balance still owed on an invoice this LC didn't fully cover."
+                  : 'Refunded by the bank — the unused margin/security deposit released back as cash.'}
+              </p>
+            </section>
+
+            {precloseError && <p className="text-sm text-destructive">{precloseError}</p>}
+          </div>
+          <DialogFooter className="px-6 pb-6">
+            <Button variant="outline" onClick={() => setPrecloseRow(null)} disabled={precloseSaving}>Cancel</Button>
+            <Button onClick={() => void savePreclose()} disabled={precloseSaving}>{precloseSaving ? 'Saving…' : 'Preclose LC'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1116,12 +1358,12 @@ export function Treasury(): React.JSX.Element {
               <div className="grid gap-4 p-6">
                 {next === 'open' && (
                   <section className="grid gap-3 rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm sm:grid-cols-2">
-                    <div className="grid gap-1.5">
+                    <div className="flex flex-col gap-1.5">
                       <Label>LC no <span className="text-red-600">*</span></Label>
                       <Input value={stageForm.lc_no ?? ''} onChange={(e) => setStageForm({ ...stageForm, lc_no: e.target.value })} />
                       <span className="text-[10px] text-muted-foreground">Issued by the bank now that the LC is actually open.</span>
                     </div>
-                    <div className="grid gap-1.5">
+                    <div className="flex flex-col gap-1.5">
                       <Label>Open date <span className="text-red-600">*</span></Label>
                       <DatePicker value={String(stageForm.opened_date || '')} onChange={(v) => setStageForm({ ...stageForm, opened_date: v })} />
                     </div>
@@ -1135,11 +1377,11 @@ export function Treasury(): React.JSX.Element {
                         Dates
                       </h3>
                       <div className="grid gap-3 sm:grid-cols-2">
-                        <div className="grid gap-1.5">
+                        <div className="flex flex-col gap-1.5">
                           <Label>Payment received date <span className="text-red-600">*</span></Label>
                           <DatePicker value={String(stageForm.payment_received_date || '')} onChange={(v) => setStageForm({ ...stageForm, payment_received_date: v })} />
                         </div>
-                        <div className="grid gap-1.5">
+                        <div className="flex flex-col gap-1.5">
                           <Label>Maturity date <span className="text-red-600">*</span></Label>
                           <DatePicker value={String(stageForm.expiry_date || '')} onChange={(v) => setStageForm({ ...stageForm, expiry_date: v })} />
                         </div>
@@ -1151,15 +1393,15 @@ export function Treasury(): React.JSX.Element {
                         Margin, interest & charges
                       </h3>
                       <div className="grid grid-cols-3 gap-3">
-                        <div className="grid gap-1.5">
+                        <div className="flex flex-col gap-1.5">
                           <Label>Margin %</Label>
                           <Input type="number" value={stageForm.margin_pct ?? ''} onChange={(e) => setStageForm({ ...stageForm, margin_pct: e.target.value })} />
                         </div>
-                        <div className="grid gap-1.5">
+                        <div className="flex flex-col gap-1.5">
                           <Label>Interest % p.a. (ROI)</Label>
                           <Input type="number" value={stageForm.interest_pct ?? ''} onChange={(e) => setStageForm({ ...stageForm, interest_pct: e.target.value })} />
                         </div>
-                        <div className="grid gap-1.5">
+                        <div className="flex flex-col gap-1.5">
                           <Label>LC charges (₹)</Label>
                           <Input type="number" value={stageForm.charges ?? ''} onChange={(e) => setStageForm({ ...stageForm, charges: e.target.value })} />
                         </div>
@@ -1241,11 +1483,11 @@ export function Treasury(): React.JSX.Element {
                   LC & stage
                 </h3>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>LC no {String(lcForm.stage || 'application') !== 'application' && <span className="text-red-600">*</span>}</Label>
                     <Input value={lcForm.lc_no ?? ''} onChange={(e) => setLcForm({ ...lcForm, lc_no: e.target.value })} placeholder={String(lcForm.stage || 'application') === 'application' ? 'Obtained once the LC is Open' : ''} />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Bank / discounting bank <span className="text-red-600">*</span></Label>
                     {(() => {
                       const bank = String(lcForm.bank || '')
@@ -1296,12 +1538,12 @@ export function Treasury(): React.JSX.Element {
                       )
                     })()}
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>FD No <span className="text-red-600">*</span></Label>
                     <Input value={lcForm.fd_no ?? ''} onChange={(e) => setLcForm({ ...lcForm, fd_no: e.target.value })} placeholder="e.g. FD/2026/045" />
                     <span className="text-[10px] text-muted-foreground">Fixed deposit lodged as security</span>
                   </div>
-                  <div className="grid gap-1.5 sm:col-span-2">
+                  <div className="flex flex-col gap-1.5 sm:col-span-2">
                     <Label>Stage</Label>
                     <div className="grid grid-cols-3 gap-1.5">
                       {(['application', 'open', 'payment_received'] as const).map((s) => (
@@ -1330,7 +1572,7 @@ export function Treasury(): React.JSX.Element {
                   Party & purpose
                 </h3>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Purpose</Label>
                     <Select
                       value={String(lcForm.purpose || '')}
@@ -1345,7 +1587,7 @@ export function Treasury(): React.JSX.Element {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>Supplier (beneficiary)</Label>
                     <Select
                       disabled={!lcForm.purpose}
@@ -1426,7 +1668,7 @@ export function Treasury(): React.JSX.Element {
                 )}
                 {String(lcForm.purpose) === 'trading' && (
                   <div className="mt-3 grid gap-3 rounded-lg border border-teal-200 bg-teal-50/50 p-3">
-                    <div className="grid gap-1.5">
+                    <div className="flex flex-col gap-1.5">
                       <Label>Party payment will be received from</Label>
                       <Select
                         value={lcForm.receivable_party_id ? String(lcForm.receivable_party_id) : ''}
@@ -1463,7 +1705,7 @@ export function Treasury(): React.JSX.Element {
                         .reduce((s, o) => s + n(o.net_amount), 0)
                     )
                     return (
-                      <div className="grid gap-1.5 sm:col-span-2">
+                      <div className="flex flex-col gap-1.5 sm:col-span-2">
                         <Label className="flex items-center gap-1.5">
                           Open amount (₹) <span className="text-red-600">*</span>
                           {hasInvoices && (
@@ -1501,11 +1743,11 @@ export function Treasury(): React.JSX.Element {
                       : null
                     return (
                       <>
-                        <div className="grid gap-1.5">
+                        <div className="flex flex-col gap-1.5">
                           <Label>Application date <span className="text-red-600">*</span></Label>
                           <DatePicker value={String(lcForm.open_date || '')} onChange={(v) => setLcForm({ ...lcForm, open_date: v })} />
                         </div>
-                        <div className="grid gap-1.5">
+                        <div className="flex flex-col gap-1.5">
                           <Label>Open date</Label>
                           <DatePicker
                             value={String(lcForm.opened_date || '')}
@@ -1514,7 +1756,7 @@ export function Treasury(): React.JSX.Element {
                           />
                           {stage === 'application' && <span className="text-[10px] text-muted-foreground">Set once the stage moves to Open</span>}
                         </div>
-                        <div className="grid gap-1.5">
+                        <div className="flex flex-col gap-1.5">
                           <Label>Payment received date</Label>
                           <DatePicker
                             value={String(lcForm.payment_received_date || '')}
@@ -1526,7 +1768,7 @@ export function Treasury(): React.JSX.Element {
                           />
                           {stage !== 'payment_received' && <span className="text-[10px] text-muted-foreground">Set once payment is received</span>}
                         </div>
-                        <div className="grid gap-1.5">
+                        <div className="flex flex-col gap-1.5">
                           <Label>Maturity date</Label>
                           <DatePicker
                             value={String(lcForm.expiry_date || '')}
@@ -1538,7 +1780,7 @@ export function Treasury(): React.JSX.Element {
                           />
                           {stage !== 'payment_received' && <span className="text-[10px] text-muted-foreground">Set together with payment received</span>}
                         </div>
-                        <div className="grid gap-1.5 sm:col-span-2">
+                        <div className="flex flex-col gap-1.5 sm:col-span-2">
                           <Label>Interest days</Label>
                           {days != null ? (
                             <div className="flex h-11 items-center justify-between rounded-md border border-sky-300 bg-sky-50 px-3">
@@ -1563,12 +1805,12 @@ export function Treasury(): React.JSX.Element {
                   Margin, interest & charges
                 </h3>
                 <div className="grid gap-3 sm:grid-cols-3">
-                  <div className="grid gap-1.5"><Label>Margin %</Label><Input type="number" value={lcForm.margin_pct ?? ''} onChange={(e) => setLcForm({ ...lcForm, margin_pct: e.target.value })} /></div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5"><Label>Margin %</Label><Input type="number" value={lcForm.margin_pct ?? ''} onChange={(e) => setLcForm({ ...lcForm, margin_pct: e.target.value })} /></div>
+                  <div className="flex flex-col gap-1.5">
                     <Label>Interest % p.a. (ROI) {String(lcForm.stage) !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set with payment received)</span>}</Label>
                     <Input type="number" value={lcForm.interest_pct ?? ''} onChange={(e) => setLcForm({ ...lcForm, interest_pct: e.target.value })} disabled={String(lcForm.stage) !== 'payment_received'} />
                   </div>
-                  <div className="grid gap-1.5">
+                  <div className="flex flex-col gap-1.5">
                     <Label>LC charges (₹) {String(lcForm.stage) !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set with payment received)</span>}</Label>
                     <Input type="number" value={lcForm.charges ?? ''} onChange={(e) => setLcForm({ ...lcForm, charges: e.target.value })} disabled={String(lcForm.stage) !== 'payment_received'} />
                   </div>
@@ -1577,15 +1819,11 @@ export function Treasury(): React.JSX.Element {
               </section>
 
               {n(lcForm.amount) > 0 && (n(lcForm.margin_pct) > 0 || n(lcForm.interest_pct) > 0 || n(lcForm.charges) > 0) && (() => {
-                const linkedIds: number[] = Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []
-                // Margin is a deposit against the goods' basic value — struck
-                // on taxable value, not the tax-inclusive invoice total.
-                const linkedTaxableTotal = orders
-                  .filter((o) => linkedIds.map(String).includes(String(o.id)))
-                  .reduce((s, o) => s + n(o.taxable_value), 0)
-                const taxableAmount = linkedTaxableTotal > 0 ? linkedTaxableTotal : n(lcForm.amount)
                 const openAmount = n(lcForm.amount)
-                const margin = round2((taxableAmount * n(lcForm.margin_pct)) / 100)
+                // Margin is the security deposit the bank asks for on the LC's
+                // own open amount — a straight percentage of the credit limit
+                // itself, not of whichever invoices happen to be linked to it.
+                const margin = round2((openAmount * n(lcForm.margin_pct)) / 100)
                 const interest = round2((openAmount * n(lcForm.interest_pct) * n(lcForm.usance_days)) / (100 * 365))
                 const charges = round2(n(lcForm.charges))
                 // Back-calculation: the open amount is the limit as struck with
@@ -1616,7 +1854,7 @@ export function Treasury(): React.JSX.Element {
                 )
               })()}
 
-              <div className="grid gap-1.5 lg:col-span-2"><Label>Note</Label><Input value={lcForm.note ?? ''} onChange={(e) => setLcForm({ ...lcForm, note: e.target.value })} /></div>
+              <div className="flex flex-col gap-1.5 lg:col-span-2"><Label>Note</Label><Input value={lcForm.note ?? ''} onChange={(e) => setLcForm({ ...lcForm, note: e.target.value })} /></div>
             </div>
           )}
           <DialogFooter className="border-t border-[#e5dfc8] bg-muted/20 px-6 py-4">
@@ -1632,7 +1870,7 @@ export function Treasury(): React.JSX.Element {
           <DialogHeader><DialogTitle>{repayForm?.id ? 'Alter repayment' : 'Log an LC repayment'}</DialogTitle></DialogHeader>
           {repayForm && (
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="grid gap-1.5 sm:col-span-2">
+              <div className="flex flex-col gap-1.5 sm:col-span-2">
                 <Label>Related party <span className="text-[10px] font-normal text-muted-foreground">(optional — for reference only, not posted)</span></Label>
                 <Select value={repayForm.party_id ? String(repayForm.party_id) : ''} onValueChange={(v) => setRepayForm({ ...repayForm, party_id: v })}>
                   <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
@@ -1641,18 +1879,57 @@ export function Treasury(): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-1.5"><Label>Repayment amount (₹) *</Label><Input type="number" value={repayForm.amount ?? ''} onChange={(e) => setRepayForm({ ...repayForm, amount: e.target.value })} /></div>
-              <div className="grid gap-1.5"><Label>Maturity charges (₹)</Label><Input type="number" value={repayForm.maturity_charges ?? ''} onChange={(e) => setRepayForm({ ...repayForm, maturity_charges: e.target.value })} /></div>
-              <div className="grid gap-1.5"><Label>Date</Label><DatePicker value={String(repayForm.repay_date || '')} onChange={(v) => setRepayForm({ ...repayForm, repay_date: v })} /></div>
-              {(n(repayForm.amount) > 0 || n(repayForm.maturity_charges) > 0) && (
-                <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
+                <Label>Open amount (LC)</Label>
+                <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm text-muted-foreground">
+                  {formatINR(n(repayForm.open_amount))}
+                </div>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Repayment amount (₹) *</Label>
+                <Input type="number" value={repayForm.amount ?? ''} onChange={(e) => setRepayForm({ ...repayForm, amount: e.target.value })} />
+                {n(repayForm.amount) > 0 && n(repayForm.amount) < n(repayForm.open_amount) - 0.005 && (
+                  <span className="text-[10px] font-medium text-rose-600">Cannot be less than the open amount</span>
+                )}
+              </div>
+              <div className="flex flex-col gap-1.5"><Label>Date</Label><DatePicker value={String(repayForm.repay_date || '')} onChange={(v) => setRepayForm({ ...repayForm, repay_date: v })} /></div>
+              {(() => {
+                const excess = round2(n(repayForm.amount) - n(repayForm.open_amount))
+                if (excess <= 0.005) return null
+                const splitTotal = round2(n(repayForm.comm_charges) + n(repayForm.bank_charges))
+                const splitOff = Math.abs(splitTotal - excess) > 0.005
+                return (
+                  <div className="rounded-md border border-amber-300 bg-amber-50 p-3 sm:col-span-2">
+                    <p className="mb-2 text-[11px] font-medium text-amber-900">
+                      This repayment is {formatINR(excess)} over the open amount — split that excess between commission and bank charges below.
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="flex flex-col gap-1.5">
+                        <Label>Comm. charges (₹)</Label>
+                        <Input type="number" value={repayForm.comm_charges ?? ''} onChange={(e) => setRepayForm({ ...repayForm, comm_charges: e.target.value })} />
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        <Label>Bank charges (₹)</Label>
+                        <Input type="number" value={repayForm.bank_charges ?? ''} onChange={(e) => setRepayForm({ ...repayForm, bank_charges: e.target.value })} />
+                      </div>
+                    </div>
+                    {splitOff && (
+                      <span className="mt-1.5 block text-[10px] font-medium text-rose-600">
+                        Comm. + Bank charges must add up to {formatINR(excess)} (currently {formatINR(splitTotal)})
+                      </span>
+                    )}
+                  </div>
+                )
+              })()}
+              {(n(repayForm.amount) > 0 || n(repayForm.comm_charges) > 0 || n(repayForm.bank_charges) > 0) && (
+                <div className="flex flex-col gap-1.5">
                   <Label>Total debited from bank</Label>
                   <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm font-medium">
-                    {formatINR(n(repayForm.amount) + n(repayForm.maturity_charges))}
+                    {formatINR(n(repayForm.amount) + n(repayForm.comm_charges) + n(repayForm.bank_charges))}
                   </div>
                 </div>
               )}
-              <div className="grid gap-1.5 sm:col-span-2">
+              <div className="flex flex-col gap-1.5 sm:col-span-2">
                 <Label>Bank document / payment letter</Label>
                 <div className="flex items-center gap-2">
                   <Button type="button" variant="outline" size="sm" onClick={() => void pickRepaymentDocument()}>
@@ -1667,7 +1944,7 @@ export function Treasury(): React.JSX.Element {
                   )}
                 </div>
               </div>
-              <div className="grid gap-1.5 sm:col-span-2"><Label>Note</Label><Input value={repayForm.note ?? ''} onChange={(e) => setRepayForm({ ...repayForm, note: e.target.value })} /></div>
+              <div className="flex flex-col gap-1.5 sm:col-span-2"><Label>Note</Label><Input value={repayForm.note ?? ''} onChange={(e) => setRepayForm({ ...repayForm, note: e.target.value })} /></div>
               <label className="flex cursor-pointer items-center gap-2 text-[13px] sm:col-span-2">
                 <input
                   type="checkbox"
@@ -1692,7 +1969,7 @@ export function Treasury(): React.JSX.Element {
           <DialogHeader><DialogTitle>Discount a sale bill</DialogTitle></DialogHeader>
           {bdForm && (
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="grid gap-1.5 sm:col-span-2">
+              <div className="flex flex-col gap-1.5 sm:col-span-2">
                 <Label>Sale invoice</Label>
                 <Select
                   value={bdForm.invoice_group ? String(bdForm.invoice_group) : ''}
@@ -1711,17 +1988,17 @@ export function Treasury(): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-1.5"><Label>Discounting bank *</Label><Input value={bdForm.disc_bank ?? ''} onChange={(e) => setBdForm({ ...bdForm, disc_bank: e.target.value })} /></div>
-              <div className="grid gap-1.5"><Label>Bill amount (₹) *</Label><Input type="number" value={bdForm.amount ?? ''} onChange={(e) => setBdForm({ ...bdForm, amount: e.target.value })} /></div>
-              <div className="grid gap-1.5"><Label>Discount date</Label><DatePicker value={String(bdForm.open_date || '')} onChange={(v) => setBdForm({ ...bdForm, open_date: v })} /></div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5"><Label>Discounting bank *</Label><Input value={bdForm.disc_bank ?? ''} onChange={(e) => setBdForm({ ...bdForm, disc_bank: e.target.value })} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Bill amount (₹) *</Label><Input type="number" value={bdForm.amount ?? ''} onChange={(e) => setBdForm({ ...bdForm, amount: e.target.value })} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Discount date</Label><DatePicker value={String(bdForm.open_date || '')} onChange={(v) => setBdForm({ ...bdForm, open_date: v })} /></div>
+              <div className="flex flex-col gap-1.5">
                 <Label>Maturity date</Label>
                 <DatePicker value={String(bdForm.maturity_date || '')} onChange={(v) => setBdForm({ ...bdForm, maturity_date: v })} />
                 <span className="text-[10px] text-muted-foreground">or leave blank and give tenor days</span>
               </div>
-              <div className="grid gap-1.5"><Label>Tenor (days)</Label><Input type="number" value={bdForm.tenor_days ?? ''} onChange={(e) => setBdForm({ ...bdForm, tenor_days: e.target.value })} /></div>
-              <div className="grid gap-1.5"><Label>Rate % p.a. *</Label><Input type="number" value={bdForm.rate_pct ?? ''} onChange={(e) => setBdForm({ ...bdForm, rate_pct: e.target.value })} /></div>
-              <div className="grid gap-1.5"><Label>Bank charges (₹)</Label><Input type="number" value={bdForm.charges ?? ''} onChange={(e) => setBdForm({ ...bdForm, charges: e.target.value })} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Tenor (days)</Label><Input type="number" value={bdForm.tenor_days ?? ''} onChange={(e) => setBdForm({ ...bdForm, tenor_days: e.target.value })} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Rate % p.a. *</Label><Input type="number" value={bdForm.rate_pct ?? ''} onChange={(e) => setBdForm({ ...bdForm, rate_pct: e.target.value })} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Bank charges (₹)</Label><Input type="number" value={bdForm.charges ?? ''} onChange={(e) => setBdForm({ ...bdForm, charges: e.target.value })} /></div>
               {bdPreview && n(bdForm.amount) > 0 && (
                 <div className="sm:col-span-2 grid grid-cols-3 gap-2 rounded-lg border bg-muted/30 p-2.5 text-center">
                   <div><div className="text-[10px] uppercase tracking-wide text-muted-foreground">{bdPreview.days} days interest</div><div className="text-[13px] font-semibold tabular-nums text-rose-700">{formatINR(bdPreview.interest)}</div></div>

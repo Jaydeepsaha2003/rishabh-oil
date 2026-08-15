@@ -691,7 +691,7 @@ export function Consignment(): React.JSX.Element {
                 </div>
               </div>
             )}
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label className="flex items-center gap-1.5">
                 Supplier *
                 {depForm.supplier_prefilled && (
@@ -705,7 +705,7 @@ export function Consignment(): React.JSX.Element {
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Product *</Label>
               <Select value={String(depForm.product_id || '')} onValueChange={(v) => setDepForm((p) => ({ ...p, product_id: v }))}>
                 <SelectTrigger><SelectValue placeholder="Select product" /></SelectTrigger>
@@ -715,7 +715,7 @@ export function Consignment(): React.JSX.Element {
               </Select>
             </div>
             <div className="grid grid-cols-3 gap-3">
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label className="flex items-center gap-1">
                   Weighed qty
                   <InfoTip text="The gate weighment, before the allowed shortage is deducted." />
@@ -732,7 +732,7 @@ export function Consignment(): React.JSX.Element {
                   }
                 />
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Shortage %</Label>
                 <Input
                   type="number"
@@ -748,7 +748,7 @@ export function Consignment(): React.JSX.Element {
                   }
                 />
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Net qty taken in *</Label>
                 <Input
                   type="number"
@@ -765,11 +765,11 @@ export function Consignment(): React.JSX.Element {
                 <b>{formatNum(depForm.qty)} {depForm.uom}</b> taken into stock.
               </p>
             )}
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Deposit date</Label>
               <DatePicker value={depForm.deposit_date || ''} onChange={(v) => setDepForm((p) => ({ ...p, deposit_date: v }))} />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Note</Label>
               <Input value={depForm.note ?? ''} onChange={(e) => setDepForm((p) => ({ ...p, note: e.target.value }))} />
             </div>
@@ -797,7 +797,7 @@ export function Consignment(): React.JSX.Element {
                 {book.supplier_name} · {book.product_code || book.product_name} · available{' '}
                 <b>{formatNum(book.balance)} {book.uom}</b>
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Bargain *</Label>
                 <Select value={String(bookForm.bargain_id || '')} onValueChange={chooseBookBargain}>
                   <SelectTrigger><SelectValue placeholder="Select the bargain" /></SelectTrigger>
@@ -812,27 +812,27 @@ export function Consignment(): React.JSX.Element {
                 )}
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Invoice number *</Label>
                   <Input value={bookForm.invoice_no || ''} onChange={(e) => setBookForm((p) => ({ ...p, invoice_no: e.target.value }))} />
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Invoice date *</Label>
                   <DatePicker value={bookForm.order_date || ''} onChange={(v) => setBookForm((p) => ({ ...p, order_date: v }))} />
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Quantity * (max {formatNum(maxBookQty)})</Label>
                   <Input type="number" value={bookForm.ordered_qty || ''} onChange={(e) => setBookForm((p) => ({ ...p, ordered_qty: e.target.value }))} />
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Invoice rate *</Label>
                   <Input type="number" value={bookForm.invoice_rate ?? ''} onChange={(e) => setBookForm((p) => ({ ...p, invoice_rate: e.target.value }))} />
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>GST %</Label>
                   <Input type="number" value={bookForm.gst_pct ?? ''} onChange={(e) => setBookForm((p) => ({ ...p, gst_pct: e.target.value }))} />
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>GST type</Label>
                   <Select value={bookForm.gst_type || 'CGST_SGST'} onValueChange={(v) => setBookForm((p) => ({ ...p, gst_type: v }))}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
@@ -842,7 +842,7 @@ export function Consignment(): React.JSX.Element {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>TDS %</Label>
                   <Input type="number" value={bookForm.tds_pct ?? ''} onChange={(e) => setBookForm((p) => ({ ...p, tds_pct: e.target.value }))} />
                 </div>
@@ -864,7 +864,7 @@ export function Consignment(): React.JSX.Element {
                 </div>
               </div>
 
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Remarks</Label>
                 <textarea
                   rows={2}

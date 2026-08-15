@@ -19,6 +19,7 @@ function n(v: unknown): number {
   const x = Number(v)
   return Number.isFinite(x) ? x : 0
 }
+const round2 = (v: number): number => Math.round(v * 100) / 100
 
 function todayISO(): string {
   const d = new Date()
@@ -117,14 +118,19 @@ export async function listTradingDeals(): Promise<Row[]> {
 
     const purchaseQty = pLines.reduce((s, l) => s + n(l.ordered_qty), 0)
     const saleQty = sLines.reduce((s, l) => s + n(l.qty), 0)
-    // Margin compares like-for-like invoice totals (taxable + GST + round
-    // off) on both sides — TDS is a withholding on what's paid to the
-    // supplier, not a reduction in the deal's actual cost.
     const purchaseTotal = pLines.reduce(
       (s, l) => s + n(l.taxable_value) + n(l.gst_amount) + n(l.round_off),
       0
     )
     const saleNet = sLines.reduce((s, l) => s + n(l.amount) + n(l.gst_amount) + n(l.round_off), 0)
+    // Margin is the profit on the trade itself — struck on taxable value on
+    // both sides, not the tax-inclusive totals. GST is a pass-through (input
+    // credit vs. output liability) and round-off is a rupee-rounding artifact;
+    // neither is part of what was actually earned buying and reselling the goods.
+    const purchaseTaxable = pLines.reduce((s, l) => s + n(l.taxable_value), 0)
+    const saleTaxable = sLines.reduce((s, l) => s + n(l.amount), 0)
+    const marginOnTaxable = round2(saleTaxable - purchaseTaxable)
+    const marginPct = purchaseTaxable > 0 ? round2((marginOnTaxable / purchaseTaxable) * 100) : 0
     const first = pLines[0] ?? {}
     const firstSale = sLines[0] ?? {}
     // Several invoices at different rates have no single rate, so the list
@@ -178,7 +184,8 @@ export async function listTradingDeals(): Promise<Row[]> {
       sale_gst_amount: sLines.reduce((s, l) => s + n(l.gst_amount), 0),
       purchase_total: purchaseTotal,
       sale_net: saleNet,
-      margin: saleNet - purchaseTotal,
+      margin: marginOnTaxable,
+      margin_pct: marginPct,
       // Both sides should move the same quantity; the form warns rather than
       // refuses, so a deal can sit part-sold until the rest is invoiced.
       qty_matched: Math.abs(purchaseQty - saleQty) < 1e-6

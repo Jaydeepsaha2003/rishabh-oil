@@ -1249,14 +1249,14 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
           )}
 
           <div className="grid grid-cols-1 gap-3 py-1 sm:grid-cols-2">
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Bargain date *</Label>
               <DatePicker
                 value={form.bargain_date}
                 onChange={(v) => setField('bargain_date', v)}
               />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Bargain no</Label>
               <Input
                 value={(() => {
@@ -1277,7 +1277,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
               />
             </div>
 
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Supplier *</Label>
               <Select value={String(form.supplier_id)} onValueChange={(v) => setField('supplier_id', v)} disabled={editLocked}>
                 <SelectTrigger>
@@ -1292,7 +1292,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Product category *</Label>
               <Select value={String(form.product_category || '')} onValueChange={(v) => setField('product_category', v)} disabled={editLocked}>
                 <SelectTrigger>
@@ -1307,7 +1307,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Product *</Label>
               <Select
                 value={String(form.oil_type_id)}
@@ -1330,7 +1330,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
               )}
             </div>
 
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Broker</Label>
               <Select value={String(form.broker_id || '')} onValueChange={(v) => setField('broker_id', v)}>
                 <SelectTrigger>
@@ -1346,7 +1346,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
               </Select>
             </div>
 
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Bargain condition</Label>
               <Select value={form.bargain_type} onValueChange={(v) => setField('bargain_type', v)}>
                 <SelectTrigger>
@@ -1358,12 +1358,12 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>UOM</Label>
               <UomSelect value={form.uom} onChange={(v) => setField('uom', v)} />
             </div>
 
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Bargain qty *</Label>
               <Input type="number" min={editLocked ? editConsumed : 0} value={form.qty} onChange={(e) => setField('qty', e.target.value)} />
               {editLocked && Number(form.qty) < editConsumed - 1e-4 && (
@@ -1371,7 +1371,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
               )}
             </div>
 
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Base rate (ex duty) *</Label>
               <Input
                 type="number"
@@ -1379,12 +1379,12 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                 onChange={(e) => setField('base_rate', e.target.value)}
               />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Duty per {form.uom || 'MT'}</Label>
               <Input type="number" value={form.duty} onChange={(e) => setField('duty', e.target.value)} />
             </div>
 
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Contract expiry</Label>
               <DatePicker
                 value={form.rate_expiry_date ?? ''}
@@ -1392,13 +1392,13 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
               />
             </div>
 
-            <div className="grid content-end gap-1.5">
+            <div className="flex content-end flex-col gap-1.5">
               <Label>Bargain rate (base + duty)</Label>
               <div className="flex h-9 items-center rounded-md bg-muted px-3 text-sm font-medium tabular-nums">
                 {formatINR(bgRate)}
               </div>
             </div>
-            <div className="grid content-end gap-1.5">
+            <div className="flex content-end flex-col gap-1.5">
               <Label>Total bargain amount</Label>
               <div className="flex h-9 items-center rounded-md bg-muted px-3 text-sm font-semibold tabular-nums">
                 {formatINR(total)}
@@ -1406,7 +1406,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
             </div>
           </div>
 
-          <div className="grid gap-1.5">
+          <div className="flex flex-col gap-1.5">
             <Label>Remarks</Label>
             <textarea
               rows={2}
@@ -1448,7 +1448,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
             const newBal = bal + delta
             const uom = adjustRow.uom || 'MT'
             return (
-              <div className="grid gap-4">
+              <div className="flex flex-col gap-4">
                 <div className="grid grid-cols-3 gap-2 rounded-lg border bg-muted/30 p-3 text-center text-sm">
                   <div><div className="text-[11px] text-muted-foreground">Bargain qty</div><div className="font-semibold tabular-nums">{formatNum(qty)}</div></div>
                   <div><div className="text-[11px] text-muted-foreground">Loaded</div><div className="font-semibold tabular-nums">{formatNum(consumed)}</div></div>
@@ -1472,7 +1472,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   </button>
                 </div>
 
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Quantity to {adjustForm.mode === 'add' ? 'add' : 'remove'} ({uom})</Label>
                   <Input
                     type="number"
@@ -1482,13 +1482,13 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   />
                 </div>
 
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Date</Label>
                   <DatePicker value={adjustForm.date} onChange={(v) => setAdjustForm((p) => ({ ...p, date: v || '' }))} />
                   <p className="text-xs text-muted-foreground">Shown under "Addition" for this date's month in the register.</p>
                 </div>
 
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Note (optional)</Label>
                   <Input value={adjustForm.note} onChange={(e) => setAdjustForm((p) => ({ ...p, note: e.target.value }))} placeholder="Reason for the adjustment" />
                 </div>

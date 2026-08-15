@@ -269,15 +269,15 @@ function UsersManager(): React.JSX.Element {
           {/* Account details */}
           <div className="space-y-4 rounded-xl border bg-card p-5">
             <h3 className="text-sm font-semibold">Account</h3>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Full name</Label>
               <Input value={form.full_name ?? ''} onChange={(e) => setField('full_name', e.target.value)} />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Username *</Label>
               <Input value={form.username ?? ''} onChange={(e) => setField('username', e.target.value)} disabled={!!editing} />
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>Role</Label>
               <Select value={form.role} onValueChange={(v) => setField('role', v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -286,7 +286,7 @@ function UsersManager(): React.JSX.Element {
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label>{editing ? 'New password (leave blank to keep)' : 'Password *'}</Label>
               <Input type="password" value={form.password ?? ''} onChange={(e) => setField('password', e.target.value)} />
             </div>
@@ -514,7 +514,7 @@ function GeneralSettings(): React.JSX.Element {
     <Card className="max-w-md p-6">
       <h3 className="mb-4 text-base font-medium">General</h3>
       <div className="grid gap-4">
-        <div className="grid gap-1.5">
+        <div className="flex flex-col gap-1.5">
           <Label>Allowed shortage % (edible oil tankers)</Label>
           <Input
             type="number"
@@ -526,7 +526,7 @@ function GeneralSettings(): React.JSX.Element {
             Shortage beyond this tolerance is charged to the transporter at the bargain rate.
           </p>
         </div>
-        <div className="grid gap-1.5">
+        <div className="flex flex-col gap-1.5">
           <Label>Default unit of measure</Label>
           <Input value={uom} onChange={(e) => setUom(e.target.value)} placeholder="ton" />
         </div>

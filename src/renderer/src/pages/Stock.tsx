@@ -433,7 +433,7 @@ function DayClose(): React.JSX.Element {
       <Tabs value={section} onValueChange={setSection}>
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div className="flex flex-wrap items-end gap-3">
-            <div className="grid gap-1.5">
+            <div className="flex flex-col gap-1.5">
               <Label className="text-xs text-muted-foreground">Closing date</Label>
               <DatePicker max={todayISO()} value={date} onChange={(v) => setDate(v || todayISO())} className="w-44" />
             </div>
@@ -1266,15 +1266,15 @@ function SkuStock(): React.JSX.Element {
                   <button type="button" onClick={() => setAdjustForm((p) => ({ ...p, mode: 'add' }))} className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'add' ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'hover:bg-muted/40')}>+ Add packs</button>
                   <button type="button" onClick={() => setAdjustForm((p) => ({ ...p, mode: 'remove' }))} className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'remove' ? 'border-red-500 bg-red-50 text-red-700' : 'hover:bg-muted/40')}>− Remove packs</button>
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Packs to {adjustForm.mode === 'add' ? 'add' : 'remove'}</Label>
                   <Input type="number" autoFocus value={adjustForm.amount} onChange={(e) => setAdjustForm((p) => ({ ...p, amount: e.target.value }))} />
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Date</Label>
                   <DatePicker value={adjustForm.date} onChange={(v) => setAdjustForm((p) => ({ ...p, date: v || '' }))} />
                 </div>
-                <div className="grid gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <Label>Note (optional)</Label>
                   <Input value={adjustForm.note} onChange={(e) => setAdjustForm((p) => ({ ...p, note: e.target.value }))} placeholder="e.g. packed today / stock correction" />
                 </div>
@@ -1827,7 +1827,7 @@ function MncStock(): React.JSX.Element {
           </DialogHeader>
           <div className="space-y-3">
             <div className="grid gap-x-5 gap-y-3 sm:grid-cols-2">
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>MNC / party *</Label>
                 <Select
                   value={String(opening.supplier_id || '')}
@@ -1844,7 +1844,7 @@ function MncStock(): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Product *</Label>
                 <Select
                   value={String(opening.product_id || '')}
@@ -1892,7 +1892,7 @@ function MncStock(): React.JSX.Element {
                   )}
                 </div>
               )}
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Opening quantity *</Label>
                 <Input
                   type="number"
@@ -1901,7 +1901,7 @@ function MncStock(): React.JSX.Element {
                   onChange={(e) => setOpening((p) => ({ ...p, qty: e.target.value }))}
                 />
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>UOM</Label>
                 <Select value={String(opening.uom || 'MT')} onValueChange={(v) => setOpening((p) => ({ ...p, uom: v }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -1912,14 +1912,14 @@ function MncStock(): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>As on date</Label>
                 <DatePicker
                   value={String(opening.deposit_date || '')}
                   onChange={(v) => setOpening((p) => ({ ...p, deposit_date: v }))}
                 />
               </div>
-              <div className="grid gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 <Label>Note</Label>
                 <Input
                   value={opening.note ?? ''}
@@ -2070,7 +2070,7 @@ function Transfers(): React.JSX.Element {
           Moves stock out of <b>{activeName}</b> and into the destination company. This is a physical stock move only — it does not create a sale or any ledger entry.
         </p>
         <div className="grid gap-4 md:grid-cols-4">
-          <div className="grid gap-1.5">
+          <div className="flex flex-col gap-1.5">
             <Label>Product *</Label>
             <Select value={String(form.product_id || '')} onValueChange={(v) => setForm((p) => ({ ...p, product_id: v }))}>
               <SelectTrigger><SelectValue placeholder="Select product" /></SelectTrigger>
@@ -2081,7 +2081,7 @@ function Transfers(): React.JSX.Element {
               </SelectContent>
             </Select>
           </div>
-          <div className="grid gap-1.5">
+          <div className="flex flex-col gap-1.5">
             <Label>To company *</Label>
             <Select value={String(form.to_company_id || '')} onValueChange={(v) => setForm((p) => ({ ...p, to_company_id: v }))}>
               <SelectTrigger><SelectValue placeholder="Select company" /></SelectTrigger>
@@ -2090,15 +2090,15 @@ function Transfers(): React.JSX.Element {
               </SelectContent>
             </Select>
           </div>
-          <div className="grid gap-1.5">
+          <div className="flex flex-col gap-1.5">
             <Label>Quantity * {chosen ? `(max ${formatNum(available)})` : ''}</Label>
             <Input type="number" value={form.qty} onChange={(e) => setForm((p) => ({ ...p, qty: e.target.value }))} />
           </div>
-          <div className="grid gap-1.5">
+          <div className="flex flex-col gap-1.5">
             <Label>Date</Label>
             <DatePicker value={form.transfer_date || ''} onChange={(v) => setForm((p) => ({ ...p, transfer_date: v }))} />
           </div>
-          <div className="grid gap-1.5 md:col-span-3">
+          <div className="flex flex-col gap-1.5 md:col-span-3">
             <Label>Note</Label>
             <Input value={form.note ?? ''} onChange={(e) => setForm((p) => ({ ...p, note: e.target.value }))} />
           </div>

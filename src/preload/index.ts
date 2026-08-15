@@ -306,7 +306,11 @@ const api = {
     saveRepayment: (values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('lc:saveRepayment', { values }),
     removeRepayment: (id: number): Promise<{ id: number }> =>
-      ipcRenderer.invoke('lc:deleteRepayment', { id })
+      ipcRenderer.invoke('lc:deleteRepayment', { id }),
+    preclose: (
+      id: number,
+      values: { preclose_date: string; direction: 'credit_to_us' | 'pay_to_party'; amount: number }
+    ): Promise<{ id: number }> => ipcRenderer.invoke('lc:preclose', { id, values })
   },
   files: {
     pickDocument: (): Promise<{ path: string | null }> => ipcRenderer.invoke('files:pickDocument'),

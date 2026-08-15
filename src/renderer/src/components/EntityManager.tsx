@@ -443,7 +443,7 @@ export function EntityManager({
             {fields.map((fd) => {
               const fieldDisabled = fd.enabledWhen ? !fd.enabledWhen(form) : false
               return (
-                <div key={fd.key} className={cn('grid gap-1.5', fieldDisabled && 'opacity-50')}>
+                <div key={fd.key} className={cn('flex flex-col gap-1.5', fieldDisabled && 'opacity-50')}>
                   {fd.type === 'switch' ? (
                     <div className="flex items-center justify-between rounded-md border px-3 py-2">
                       <Label>{fd.label}</Label>

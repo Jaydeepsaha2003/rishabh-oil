@@ -135,7 +135,8 @@ import {
   updateLC,
   deleteLC,
   issueLC,
-  deleteLCIssuance
+  deleteLCIssuance,
+  precloseLC
 } from './lc'
 import {
   importBankStatement,
@@ -622,6 +623,11 @@ export function registerIpc(): void {
   handle('lc:delete', (_e, { id }: { id: number }) => deleteLC(id))
   handle('lc:issue', (_e, { values }: { values: Row }) => issueLC(values))
   handle('lc:deleteIssuance', (_e, { id }: { id: number }) => deleteLCIssuance(id))
+  handle(
+    'lc:preclose',
+    (_e, { id, values }: { id: number; values: { preclose_date: string; direction: 'credit_to_us' | 'pay_to_party'; amount: number } }) =>
+      precloseLC(id, values)
+  )
   handle('lc:repayments', (_e, { lcId }: { lcId: number }) => listLcRepayments(lcId))
   handle('lc:saveRepayment', (_e, { values }: { values: Row }) => saveLcRepayment(values))
   handle('lc:deleteRepayment', (_e, { id }: { id: number }) => deleteLcRepayment(id))
