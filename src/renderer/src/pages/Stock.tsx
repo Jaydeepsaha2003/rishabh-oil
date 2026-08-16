@@ -46,6 +46,10 @@ const CAT_LABEL: Record<string, string> = {
   finished: 'Finished'
 }
 
+// Products' material Category (OIL / HUSK / SPENT EARTH / ...) is stored
+// upper-case; shown title-case here purely for readability.
+const titleCase = (s: string): string => s.replace(/\w\S*/g, (w) => w[0] + w.slice(1).toLowerCase())
+
 // Pack size → MT per piece. Litres are treated 1 L ≈ 1 KG (the mill's despatch
 // reports total 15 Ltr and 15 Kg SKUs into one MT figure the same way).
 function packSizeMT(size: number, uom: string): number {
@@ -172,6 +176,23 @@ function StockTable({ rows, breakdown, label = 'stock', range, onRange, companyP
   const negatives = rows.filter((r) => Number(r.stock) < -1e-9).length
   const inFlow = totals.received + totals.produced + totals.transferred_in
   const outFlow = totals.consumed + totals.sold + totals.transferred_out
+  // Cluster products by their material Category (OIL / HUSK / PACKAGING /
+  // CHEMICAL / ...) so a long product list reads as sections instead of one
+  // flat wall of rows. Order follows first appearance, which is already
+  // category, name from the backend query.
+  const groups = useMemo(() => {
+    const order: string[] = []
+    const byGroup = new Map<string, Row[]>()
+    for (const r of rows) {
+      const g = String(r.material_type || '').trim().toUpperCase() || 'UNCATEGORIZED'
+      if (!byGroup.has(g)) {
+        byGroup.set(g, [])
+        order.push(g)
+      }
+      byGroup.get(g)!.push(r)
+    }
+    return order.map((g) => ({ label: g, rows: byGroup.get(g)! }))
+  }, [rows])
   // Excel rows: a line per product, then a line per party underneath it —
   // exactly what the hover shows — with the parties on outline level 1 so each
   // product collapses in Excel.
@@ -243,88 +264,119 @@ function StockTable({ rows, breakdown, label = 'stock', range, onRange, companyP
         outlineDetail
       />
     </div>
-    <div className="rounded-xl border bg-card shadow-sm">
-      <Table
-        wrapperClassName="max-h-[calc(100vh-330px)] rounded-xl"
-        className="min-w-[820px] text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3"
-      >
-        <TableHeader>
-          <TableRow>
-            {([
-              { l: 'Product' },
-              ...(ranged ? [{ l: 'Opening', r: true, tone: 'text-slate-700' }] : []),
-              { l: 'Receipt', r: true, tone: 'text-emerald-700' },
-              { l: 'Produced', r: true, tone: 'text-emerald-700' },
-              { l: 'Transfer in', r: true, tone: 'text-emerald-700' },
-              { l: 'Transfer out', r: true, tone: 'text-rose-700' },
-              { l: 'Consumed', r: true, tone: 'text-rose-700' },
-              { l: 'Dispatch', r: true, tone: 'text-rose-700' },
-              { l: ranged ? 'Closing' : 'In stock', r: true, tone: 'text-sky-800' }
-            ] as { l: string; r?: boolean; tone?: string }[]).map((h) => (
-              <TableHead
-                key={h.l}
-                className={cn(
-                  'sticky top-0 z-20 bg-slate-100 text-[10px] font-semibold uppercase tracking-wide',
-                  h.tone || 'text-slate-700',
-                  h.r && 'text-right'
-                )}
-              >
-                {h.l}
-              </TableHead>
-            ))}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.length === 0 ? (
-            <TableRow>
-              <TableCell colSpan={ranged ? 9 : 8} className="py-10 text-center text-muted-foreground">
-                Nothing here yet.
-              </TableCell>
-            </TableRow>
-          ) : (
-            <>
-              {rows.map((r, i) => (
-                <TableRow key={r.id as number} className={cn('border-b', i % 2 === 1 && 'bg-muted/30')}>
-                  <TableCell className="font-medium">{r.name}</TableCell>
-                  {ranged && (
-                    <TableCell className="text-right tabular-nums text-slate-700">
-                      {Number(r.opening) ? formatNum(r.opening) : '—'}
+    {rows.length === 0 ? (
+      <div className="rounded-xl border bg-card py-10 text-center text-muted-foreground shadow-sm">Nothing here yet.</div>
+    ) : (
+      <div className="space-y-3">
+        {groups.map((grp) => {
+          const gSum = (k: string): number => grp.rows.reduce((s, r) => s + (Number(r[k]) || 0), 0)
+          const gStock = gSum('stock')
+          return (
+            <div key={grp.label} className="overflow-hidden rounded-xl border bg-card shadow-sm">
+              <div className="flex items-center justify-between bg-[#1a2c56] px-3.5 py-2">
+                <span className="text-[12px] font-bold uppercase tracking-wide text-white">{titleCase(grp.label)}</span>
+                <span className="text-[11px] font-medium text-white/70">{grp.rows.length} product{grp.rows.length === 1 ? '' : 's'}</span>
+              </div>
+              <Table className="min-w-[820px] text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3">
+                <TableHeader>
+                  <TableRow>
+                    {STOCK_TABLE_COLS(ranged).map((h) => (
+                      <TableHead
+                        key={h.l}
+                        className={cn(
+                          'bg-slate-100 text-[10px] font-semibold uppercase tracking-wide',
+                          h.tone || 'text-slate-700',
+                          h.r && 'text-right'
+                        )}
+                      >
+                        {h.l}
+                      </TableHead>
+                    ))}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {grp.rows.map((r, i) => (
+                    <TableRow key={r.id as number} className={cn('border-b', i % 2 === 1 && 'bg-muted/30')}>
+                      <TableCell className="font-medium">{r.name}</TableCell>
+                      {ranged && (
+                        <TableCell className="text-right tabular-nums text-slate-700">
+                          {Number(r.opening) ? formatNum(r.opening) : '—'}
+                        </TableCell>
+                      )}
+                      <PartyCell value={Number(r.received)} parties={breakdown[r.id as number]?.receipt || []} />
+                      <TableCell className="text-right tabular-nums text-emerald-700">{Number(r.produced) ? formatNum(r.produced) : '—'}</TableCell>
+                      <TableCell className="text-right tabular-nums text-emerald-700">{Number(r.transferred_in) > 0 ? formatNum(r.transferred_in) : '—'}</TableCell>
+                      <TableCell className="text-right tabular-nums text-rose-700">{Number(r.transferred_out) > 0 ? formatNum(r.transferred_out) : '—'}</TableCell>
+                      <TableCell className="text-right tabular-nums text-rose-700">{Number(r.consumed) ? formatNum(r.consumed) : '—'}</TableCell>
+                      <PartyCell value={Number(r.sold)} parties={breakdown[r.id as number]?.dispatch || []} tone="text-rose-700" />
+                      <TableCell
+                        className={cn(
+                          'text-right font-bold tabular-nums',
+                          Number(r.stock) < -1e-9 ? 'text-red-600' : 'text-sky-900'
+                        )}
+                      >
+                        {formatNum(r.stock)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  <TableRow className="border-t-2 border-teal-500 bg-teal-50 hover:bg-teal-50">
+                    <TableCell className="text-[11px] font-bold uppercase tracking-wide text-teal-900">
+                      {titleCase(grp.label)} total
                     </TableCell>
-                  )}
-                  <PartyCell value={Number(r.received)} parties={breakdown[r.id as number]?.receipt || []} />
-                  <TableCell className="text-right tabular-nums text-emerald-700">{Number(r.produced) ? formatNum(r.produced) : '—'}</TableCell>
-                  <TableCell className="text-right tabular-nums text-emerald-700">{Number(r.transferred_in) > 0 ? formatNum(r.transferred_in) : '—'}</TableCell>
-                  <TableCell className="text-right tabular-nums text-rose-700">{Number(r.transferred_out) > 0 ? formatNum(r.transferred_out) : '—'}</TableCell>
-                  <TableCell className="text-right tabular-nums text-rose-700">{Number(r.consumed) ? formatNum(r.consumed) : '—'}</TableCell>
-                  <PartyCell value={Number(r.sold)} parties={breakdown[r.id as number]?.dispatch || []} tone="text-rose-700" />
-                  <TableCell
-                    className={cn(
-                      'text-right font-bold tabular-nums',
-                      Number(r.stock) < -1e-9 ? 'text-red-600' : 'text-sky-900'
-                    )}
-                  >
-                    {formatNum(r.stock)}
+                    {ranged && <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('opening'))}</TableCell>}
+                    <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('received'))}</TableCell>
+                    <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('produced'))}</TableCell>
+                    <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('transferred_in'))}</TableCell>
+                    <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('transferred_out'))}</TableCell>
+                    <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('consumed'))}</TableCell>
+                    <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('sold'))}</TableCell>
+                    <TableCell className={cn('text-right font-bold tabular-nums', gStock < -1e-9 ? 'text-red-600' : 'text-teal-900')}>{formatNum(gStock)}</TableCell>
+                  </TableRow>
+                </TableBody>
+              </Table>
+            </div>
+          )
+        })}
+        {groups.length > 1 && (
+          <div className="overflow-hidden rounded-xl border-2 border-amber-500 bg-amber-100 shadow-sm">
+            <Table className="min-w-[820px] text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:h-9 [&_th]:px-3">
+              <TableBody>
+                <TableRow className="bg-amber-100 hover:bg-amber-100">
+                  <TableCell className="text-[11px] font-bold uppercase tracking-wide text-amber-900">
+                    Grand total across every category
                   </TableCell>
+                  {ranged && <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.opening)}</TableCell>}
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.received)}</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.produced)}</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.transferred_in)}</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.transferred_out)}</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.consumed)}</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.sold)}</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.stock)}</TableCell>
                 </TableRow>
-              ))}
-              <TableRow className="border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
-                <TableCell className="text-[11px] font-bold uppercase tracking-wide text-amber-900">Grand total</TableCell>
-                {ranged && <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.opening)}</TableCell>}
-                <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.received)}</TableCell>
-                <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.produced)}</TableCell>
-                <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.transferred_in)}</TableCell>
-                <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.transferred_out)}</TableCell>
-                <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.consumed)}</TableCell>
-                <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.sold)}</TableCell>
-                <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.stock)}</TableCell>
-              </TableRow>
-            </>
-          )}
-        </TableBody>
-      </Table>
-    </div>
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </div>
+    )}
     </div>
   )
+}
+
+// Shared column header set for every per-category stock table.
+function STOCK_TABLE_COLS(ranged: boolean): { l: string; r?: boolean; tone?: string }[] {
+  return [
+    { l: 'Product' },
+    ...(ranged ? [{ l: 'Opening', r: true, tone: 'text-slate-700' }] : []),
+    { l: 'Receipt', r: true, tone: 'text-emerald-700' },
+    { l: 'Produced', r: true, tone: 'text-emerald-700' },
+    { l: 'Transfer in', r: true, tone: 'text-emerald-700' },
+    { l: 'Transfer out', r: true, tone: 'text-rose-700' },
+    { l: 'Consumed', r: true, tone: 'text-rose-700' },
+    { l: 'Dispatch', r: true, tone: 'text-rose-700' },
+    { l: ranged ? 'Closing' : 'In stock', r: true, tone: 'text-sky-800' }
+  ]
 }
 
 function StatCard({ label, value, tone }: { label: string; value: string; tone?: string }): React.JSX.Element {
@@ -1606,7 +1658,20 @@ function MncStock(): React.JSX.Element {
                     {g.rows.map((r) => {
                       const k = key(r)
                       const isOpen = open.has(k)
-                      const myLots = lots.filter((l) => String(l.supplier_id) === String(r.supplier_id) && String(l.product_id) === String(r.product_id))
+                      // `lots` itself stays unranged (openingLotsFor/openingFor
+                      // need every opening lot regardless of the picked range,
+                      // to keep the "modify opening stock" affordance correct)
+                      // — so the date filter is applied here instead, on the
+                      // list actually rendered, to match the ranged "Deposited"
+                      // total shown on the row above it.
+                      const myLots = lots.filter((l) => {
+                        if (String(l.supplier_id) !== String(r.supplier_id) || String(l.product_id) !== String(r.product_id)) return false
+                        if (!mncRanged) return true
+                        const d = String(l.deposit_date || '').slice(0, 10)
+                        if (mncFrom && d < mncFrom) return false
+                        if (mncTo && d > mncTo) return false
+                        return true
+                      })
                       const myInvoices = invoices.filter(
                         (v) => String(v.supplier_id) === String(r.supplier_id) && String(v.product_id) === String(r.product_id)
                       )

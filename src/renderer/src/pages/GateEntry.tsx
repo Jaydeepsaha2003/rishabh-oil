@@ -396,6 +396,11 @@ export function GateEntry(): React.JSX.Element {
           ? Number(String(gateOut.party).slice(2))
           : null,
         dispatch_qty: Number(gateOut.dispatch_qty) || 0,
+        // No invoice-derived (or hand-entered) figure yet is exactly the "the
+        // challan gives none" case, not a real zero — flag it NA now so a
+        // vehicle weighed later without anyone touching the weighbridge's own
+        // Dis. qty field doesn't silently compare its net against a hard 0.
+        dispatch_na: !(Number(gateOut.dispatch_qty) > 0),
         received_qty: gateOut.no_weighment ? Number(gateOut.dispatch_qty) || 0 : 0,
         no_weighment: !!gateOut.no_weighment,
         status: gateOut.no_weighment ? 'completed' : 'pending'
@@ -812,12 +817,13 @@ export function GateEntry(): React.JSX.Element {
                               onKeyDown={(e) => e.key === 'Enter' && saveWeight(row)}
                             />
                           </div>
-                          {/* Oil's quantity comes off the purchase tanker.
-                              Everything else has only the challan to go on,
-                              and that is often to hand here rather than back
-                              at the barrier — so it is set or corrected at
-                              the weighbridge, and saves with the weight. */}
-                          {!isOil && (
+                          {/* A purchase oil tanker's quantity comes off its own
+                              weighed load — always a hard number, never NA.
+                              A sales oil dispatch is OUR OWN figure declared at
+                              exit, often before the customer's receipt is
+                              known, so it needs the same NA option everything
+                              else already gets here. */}
+                          {(!isOil || row.direction === 'out') && (
                             <div className="mt-1.5 flex flex-col gap-0.5">
                               <label
                                 className="truncate text-[9px] font-semibold uppercase tracking-wide text-rose-700"
@@ -1630,7 +1636,13 @@ export function GateEntry(): React.JSX.Element {
                         ) : <span className="text-muted-foreground">—</span>}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
-                        {!done ? <span className="text-muted-foreground">—</span> : Math.abs(diff) < 0.0005 ? <Badge variant="muted">0</Badge> : <span className={diff > 0 ? 'text-amber-700' : 'text-emerald-700'}>{formatNum(diff)} {row.uom}</span>}
+                        {!done || Number(row.dispatch_na) === 1 ? (
+                          <span className="text-muted-foreground">—</span>
+                        ) : Math.abs(diff) < 0.0005 ? (
+                          <Badge variant="muted">0</Badge>
+                        ) : (
+                          <span className={diff > 0 ? 'text-amber-700' : 'text-emerald-700'}>{formatNum(diff)} {row.uom}</span>
+                        )}
                       </TableCell>
                       <TableCell>
                         {done ? <Badge variant="success">Completed</Badge> : <Badge variant="warning">Pending weight</Badge>}

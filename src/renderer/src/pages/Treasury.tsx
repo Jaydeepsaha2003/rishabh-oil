@@ -130,9 +130,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   const [customers, setCustomers] = useState<Row[]>([])
   const [sales, setSales] = useState<Row[]>([])
   const [orders, setOrders] = useState<Row[]>([])
+  const [tradingDeals, setTradingDeals] = useState<Row[]>([])
   const [issuances, setIssuances] = useState<Record<number, Row[]>>({})
   const [repayments, setRepayments] = useState<Record<number, Row[]>>({})
-  const [openLc, setOpenLc] = useState<Set<number>>(new Set())
+  const [paymentIns, setPaymentIns] = useState<Record<number, Row[]>>({})
+  const [lcDetailId, setLcDetailId] = useState<number | null>(null)
   const [lcView, setLcView] = useState<'cards' | 'table'>('table')
   const [expandedAlert, setExpandedAlert] = useState<string | null>(null)
   // T+1 / this week / fortnight / monthly / quarterly, by whichever is nearer:
@@ -148,7 +150,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   const [lcLimit, setLcLimit] = useState<Row | null>(null)
 
   const load = useCallback(async () => {
-    const [l, b, a, sup, cust, sl, od, tr, act, comps, lim] = await Promise.all([
+    const [l, b, a, sup, cust, sl, od, deals, tr, act, comps, lim] = await Promise.all([
       window.api.lc.list(),
       window.api.billDiscounts.list(),
       window.api.treasury.alerts(),
@@ -156,6 +158,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       window.api.data.list('customers'),
       window.api.sales.list(),
       window.api.orders.list(),
+      window.api.trading.list(),
       window.api.treasury.paymentTracker(),
       window.api.company.getActive(),
       window.api.company.list(),
@@ -168,6 +171,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     setCustomers(cust.filter((x) => x.active))
     setSales(sl)
     setOrders(od)
+    setTradingDeals(deals)
     setTracker(tr)
     setActiveCompany(Number(act?.id) || 0)
     setCompanies(comps)
@@ -179,23 +183,19 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   }, [load])
   useLiveRefresh(load)
 
-  async function toggleLc(id: number): Promise<void> {
-    setOpenLc((p) => {
-      const next = new Set(p)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-    if (!issuances[id]) setIssuances((p) => ({ ...p })) // placeholder until fetch lands
-    const [rows, reps] = await Promise.all([window.api.lc.issuances(id), window.api.lc.repayments(id)])
+  async function openLcDetail(id: number): Promise<void> {
+    setLcDetailId(id)
+    const [rows, reps, pins] = await Promise.all([window.api.lc.issuances(id), window.api.lc.repayments(id), window.api.lc.paymentIns(id)])
     setIssuances((p) => ({ ...p, [id]: rows }))
     setRepayments((p) => ({ ...p, [id]: reps }))
+    setPaymentIns((p) => ({ ...p, [id]: pins }))
   }
 
   async function reloadLcDetail(id: number): Promise<void> {
-    const [rows, reps] = await Promise.all([window.api.lc.issuances(id), window.api.lc.repayments(id)])
+    const [rows, reps, pins] = await Promise.all([window.api.lc.issuances(id), window.api.lc.repayments(id), window.api.lc.paymentIns(id)])
     setIssuances((p) => ({ ...p, [id]: rows }))
     setRepayments((p) => ({ ...p, [id]: reps }))
+    setPaymentIns((p) => ({ ...p, [id]: pins }))
   }
 
   // ---------------- LC create ----------------
@@ -224,6 +224,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       await window.api.lc.remove(Number(lcDeleteTarget.id))
       toast.success(`LC ${lcDeleteTarget.lc_no || ''} deleted`)
       setLcDeleteTarget(null)
+      if (Number(lcDeleteTarget.id) === lcDetailId) setLcDetailId(null)
       load()
     } catch (e) {
       toast.error((e as Error).message)
@@ -520,6 +521,19 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     )
   }, [lcForm, orders, activeCompany])
 
+  // A Trading LC finances one round trip — buy from the supplier, resell to
+  // the customer — so it's struck against the whole deal, one pick, not a
+  // bare purchase invoice. Only deals for this supplier that are still open
+  // (no LC of their own yet, or already this very LC's) are offered.
+  const lcFormDeals = useMemo(() => {
+    if (!lcForm || String(lcForm.purpose || '') !== 'trading') return []
+    return tradingDeals.filter(
+      (d) =>
+        (!lcForm.party_id || Number(d.supplier_id) === Number(lcForm.party_id)) &&
+        (!d.lc_id || (lcForm.id && Number(d.lc_id) === Number(lcForm.id)))
+    )
+  }, [lcForm, tradingDeals])
+
   // Suppliers who actually deal in the selected purpose — the Suppliers
   // master itself records this (Trading or Manufacturing), so a Trading LC
   // only offers the handful of parties actually set up as trading accounts.
@@ -580,7 +594,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       const lcId = Number(repayForm.lc_id)
       setRepayForm(null)
       await reloadLcDetail(lcId)
-      setOpenLc((p) => new Set(p).add(lcId))
+      setLcDetailId(lcId)
       load()
     } catch (e) {
       toast.error((e as Error).message)
@@ -593,6 +607,68 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     if (!window.confirm('Delete this repayment? Its journal entry (if posted) reverses too.')) return
     await window.api.lc.removeRepayment(Number(r.id))
     await reloadLcDetail(Number(r.lc_id))
+    load()
+  }
+
+  // ---------------- LC Payment IN (last leg — customer pays for the resale) ----------------
+  // Only a Trading LC's own round trip closes this way, and only once the
+  // bank side is already repaid — Application -> Open -> Payment received ->
+  // Preclose/Repayment -> Payment IN. A deal's sale side can come in across
+  // more than one receipt, so "fully paid" (and so "closed") is computed live
+  // from the linked deal(s) rather than a one-shot flag on the LC itself.
+  function tradingDealsFor(lcId: number): Row[] {
+    return tradingDeals.filter((d) => Number(d.lc_id) === Number(lcId))
+  }
+  function isLcPaymentInDone(l: Row): boolean {
+    const deals = tradingDealsFor(Number(l.id))
+    return deals.length > 0 && deals.every((d) => d.sale_fully_paid)
+  }
+  function canMarkPaymentIn(l: Row): boolean {
+    return String(l.purpose || '') === 'trading' && !!l.preclosed_date && !isLcPaymentInDone(l)
+  }
+  const [paymentInForm, setPaymentInForm] = useState<Row | null>(null)
+  const [paymentInInvoices, setPaymentInInvoices] = useState<Row[]>([])
+  async function openPaymentIn(l: Row): Promise<void> {
+    const invoices = await window.api.lc.openTradingInvoices(Number(l.id))
+    setPaymentInInvoices(invoices)
+    const allKeys = invoices.map((x) => String(x.key))
+    const total = round2(invoices.reduce((s, x) => s + n(x.due), 0))
+    setPaymentInForm({ lc_id: l.id, lc_no: l.lc_no, date: todayISO(), amount: String(total), selected_keys: allKeys })
+  }
+  function togglePaymentInInvoice(key: string): void {
+    if (!paymentInForm) return
+    const keys: string[] = Array.isArray(paymentInForm.selected_keys) ? paymentInForm.selected_keys : []
+    const next = keys.includes(key) ? keys.filter((k) => k !== key) : [...keys, key]
+    const total = round2(
+      paymentInInvoices.filter((x) => next.includes(String(x.key))).reduce((s, x) => s + n(x.due), 0)
+    )
+    setPaymentInForm({ ...paymentInForm, selected_keys: next, amount: String(total) })
+  }
+  async function savePaymentIn(): Promise<void> {
+    if (!paymentInForm) return
+    const amount = n(paymentInForm.amount)
+    if (amount <= 0.005) return void toast.error('Enter the amount received')
+    const keys: string[] = Array.isArray(paymentInForm.selected_keys) ? paymentInForm.selected_keys : []
+    if (!keys.length) return void toast.error('Pick at least one invoice this payment is for')
+    setBusy(true)
+    try {
+      await window.api.lc.paymentIn(Number(paymentInForm.lc_id), amount, String(paymentInForm.date || todayISO()), keys)
+      toast.success('Payment IN posted')
+      const lcId = Number(paymentInForm.lc_id)
+      setPaymentInForm(null)
+      await reloadLcDetail(lcId)
+      setLcDetailId(lcId)
+      load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  async function removePaymentIn(p: Row): Promise<void> {
+    if (!window.confirm('Delete this Payment IN? Its journal entry reverses too.')) return
+    await window.api.lc.removePaymentIn(Number(p.id))
+    await reloadLcDetail(Number(p.lc_id))
     load()
   }
 
@@ -795,6 +871,39 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
             </table>
           )}
         </div>
+        {String(l.purpose || '') === 'trading' && (
+          <div>
+            <div className="mb-1 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              Payment IN — customer paying for the resale
+            </div>
+            {(paymentIns[Number(l.id)] || []).length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {l.preclosed_date ? 'No payment received yet.' : 'Available once the LC is preclosed/repaid.'}
+              </p>
+            ) : (
+              <table className="w-full rounded-lg border bg-card text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:px-3 [&_th]:py-1.5">
+                <thead className="border-b bg-muted/50 text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th>Date</th><th className="text-right">Amount</th><th className="text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(paymentIns[Number(l.id)] || []).map((p) => (
+                    <tr key={String(p.id)} className="border-b last:border-0">
+                      <td className="tabular-nums">{formatDate(p.pay_date)}</td>
+                      <td className="text-right font-medium tabular-nums">{formatINR(p.amount)}</td>
+                      <td className="text-right">
+                        <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive" title="Delete" onClick={() => void removePaymentIn(p)}>
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
       </div>
     )
   }
@@ -1061,7 +1170,6 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   <Card className="p-6 text-center text-sm text-muted-foreground md:col-span-2 xl:col-span-2">Nothing in this due-period bucket.</Card>
                 ) : (
                   lcsFiltered.map((l) => {
-                    const isOpen = openLc.has(Number(l.id))
                     const pct = n(l.amount) > 0 ? Math.min(100, (n(l.utilized) / n(l.amount)) * 100) : 0
                     const barTone = pct >= 95 ? 'bg-rose-500' : pct >= 75 ? 'bg-amber-500' : 'bg-sky-600'
                     const tone = STAGE_ROW_TONE[String(l.stage || 'application')] || STAGE_ROW_TONE.application
@@ -1077,6 +1185,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 <span className={cn('text-[15px] font-bold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
                                 <StageBadge stage={String(l.stage || 'application')} />
                                 {l.preclosed_date && <Badge variant="muted">Preclosed {formatDate(l.preclosed_date)}</Badge>}
+                                {isLcPaymentInDone(l) && <Badge variant="success">Payment IN</Badge>}
                               </div>
                               <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
                                 <Landmark className="h-3 w-3 shrink-0" /> {l.bank}
@@ -1142,8 +1251,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               </Button>
                             )
                           })()}
-                          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => void toggleLc(Number(l.id))}>
-                            {isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />} Details
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => void openLcDetail(Number(l.id))}>
+                            <ChevronRight className="h-3.5 w-3.5" /> Details
                           </Button>
                           {!l.preclosed_date && (
                             <Button
@@ -1156,6 +1265,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               {isLcPastMaturity(l) ? 'Repay' : 'Preclose'}
                             </Button>
                           )}
+                          {canMarkPaymentIn(l) && (
+                            <Button
+                              size="sm"
+                              className="h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700"
+                              title="Record the customer's payment for the resale, closing this LC"
+                              onClick={() => void openPaymentIn(l)}
+                            >
+                              Mark Payment IN
+                            </Button>
+                          )}
                           <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit LC" onClick={() => setLcForm({ ...l })}>
                             <Pencil className="h-3.5 w-3.5" />
                           </Button>
@@ -1163,7 +1282,6 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         </div>
-                        {isOpen && <div className="border-t bg-[#f7f2e2]">{lcExpanded(l)}</div>}
                       </Card>
                     )
                   })
@@ -1206,7 +1324,6 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No letters of credit in this bucket.</TableCell></TableRow>
                   ) : (
                     lcsFiltered.map((l) => {
-                      const isOpen = openLc.has(Number(l.id))
                       const pct = n(l.amount) > 0 ? Math.min(100, (n(l.utilized) / n(l.amount)) * 100) : 0
                       const tone = STAGE_ROW_TONE[String(l.stage || 'application')] || STAGE_ROW_TONE.application
                       return (
@@ -1221,16 +1338,17 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               // at full contrast instead of sitting on a tint.
                               'bg-white'
                             )}
-                            onClick={() => void toggleLc(Number(l.id))}
+                            onClick={() => void openLcDetail(Number(l.id))}
                           >
                             <TableCell className="whitespace-nowrap">
                               <div className="flex items-center gap-1.5">
-                                {isOpen ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                                 <div>
                                   <div className="flex items-center gap-1.5">
                                     <span className={cn('font-semibold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
                                     <StageBadge stage={String(l.stage || 'application')} />
                                     {l.preclosed_date && <Badge variant="muted">Preclosed</Badge>}
+                                    {isLcPaymentInDone(l) && <Badge variant="success">Payment IN</Badge>}
                                   </div>
                                   <div className="text-[11px] text-muted-foreground">{l.bank}{n(l.margin_pct) ? ` · margin ${l.margin_pct}%` : ''}</div>
                                 </div>
@@ -1278,6 +1396,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                     {isLcPastMaturity(l) ? 'Repay' : 'Preclose'}
                                   </Button>
                                 )}
+                                {canMarkPaymentIn(l) && (
+                                  <Button
+                                    size="sm"
+                                    className="h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700"
+                                    title="Record the customer's payment for the resale, closing this LC"
+                                    onClick={() => void openPaymentIn(l)}
+                                  >
+                                    Mark Payment IN
+                                  </Button>
+                                )}
                                 <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit LC" onClick={() => setLcForm({ ...l })}>
                                   <Pencil className="h-3.5 w-3.5" />
                                 </Button>
@@ -1287,11 +1415,6 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               </div>
                             </TableCell>
                           </TableRow>
-                          {isOpen && (
-                            <TableRow className="bg-[#f7f2e2] hover:bg-[#f7f2e2]">
-                              <TableCell colSpan={8} className="p-0">{lcExpanded(l)}</TableCell>
-                            </TableRow>
-                          )}
                         </Fragment>
                       )
                     })
@@ -1966,7 +2089,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <Select
                       value={String(lcForm.purpose || '')}
                       onValueChange={(v) =>
-                        setLcForm({ ...lcForm, purpose: v, party_id: '', linked_order_ids: [], amount_manual: false })
+                        setLcForm({ ...lcForm, purpose: v, party_id: '', linked_order_ids: [], linked_deal_ids: [], amount_manual: false })
                       }
                     >
                       <SelectTrigger><SelectValue placeholder="Select purpose" /></SelectTrigger>
@@ -1990,7 +2113,78 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     </Select>
                   </div>
                 </div>
-                {!!lcForm.party_id && (
+                {!!lcForm.party_id && String(lcForm.purpose || '') === 'trading' && (
+                  <div className="mt-3 rounded-lg border border-teal-200 bg-teal-50/50 p-3">
+                    <Label>Trading deals with this supplier <span className="text-[10px] font-normal text-muted-foreground">(select the deal(s) this LC finances — purchase and resale travel together)</span></Label>
+                    {lcFormDeals.length === 0 ? (
+                      <p className="mt-1.5 text-[11px] text-muted-foreground">No open Trading deals with this supplier yet.</p>
+                    ) : (
+                      <div className="mt-1.5 max-h-40 space-y-1 overflow-y-auto rounded-md border bg-white p-1.5">
+                        {lcFormDeals.map((d) => {
+                          const dealIds: number[] = Array.isArray(lcForm.linked_deal_ids) ? lcForm.linked_deal_ids : []
+                          const checked = dealIds.map(String).includes(String(d.id))
+                          return (
+                            <label key={String(d.id)} className={cn('flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px]', checked ? 'bg-teal-100' : 'hover:bg-muted/40')}>
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5"
+                                checked={checked}
+                                onChange={(e) => {
+                                  const nextDealIds = e.target.checked
+                                    ? [...dealIds, Number(d.id)]
+                                    : dealIds.filter((x) => String(x) !== String(d.id))
+                                  const pickedDeals = lcFormDeals.filter((x) => nextDealIds.map(String).includes(String(x.id)))
+                                  // A deal's purchase side can span more than one invoice
+                                  // (multi-invoice deals) — every one of them counts
+                                  // toward what the LC covers, same as picking each
+                                  // invoice individually would.
+                                  const orderIds = pickedDeals.flatMap((x) =>
+                                    (Array.isArray(x.purchase_lines) ? x.purchase_lines : []).map((l: Row) => Number(l.order_id))
+                                  )
+                                  const total = round2(pickedDeals.reduce((s, x) => s + n(x.purchase_net), 0))
+                                  setLcForm({
+                                    ...lcForm,
+                                    linked_deal_ids: nextDealIds,
+                                    linked_order_ids: orderIds,
+                                    amount: lcForm.amount_manual ? lcForm.amount : String(total),
+                                    // The customer this deal will resell to is who the
+                                    // repayment is expected from — pre-filled, not forced.
+                                    receivable_party_id: lcForm.receivable_party_id || (e.target.checked ? d.customer_id : lcForm.receivable_party_id)
+                                  })
+                                }}
+                              />
+                              <span className="flex-1">
+                                {d.purchase_invoice_no || `Deal #${d.id}`} · {formatDate(d.deal_date)}
+                                <span className="ml-1.5 text-muted-foreground">→ {d.customer_name || 'no customer yet'}</span>
+                              </span>
+                              <span className="font-medium tabular-nums">{formatINR(d.purchase_net)}</span>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    )}
+                    {(() => {
+                      const dealIds: number[] = Array.isArray(lcForm.linked_deal_ids) ? lcForm.linked_deal_ids : []
+                      if (!dealIds.length) return null
+                      const total = round2(
+                        lcFormDeals
+                          .filter((d) => dealIds.map(String).includes(String(d.id)))
+                          .reduce((s, d) => s + n(d.purchase_net), 0)
+                      )
+                      const over = n(lcForm.amount) - total
+                      return (
+                        <div className={cn('mt-1.5 flex items-center justify-between text-[11px]', over > 0.005 ? 'font-medium text-rose-700' : 'text-teal-800')}>
+                          <span>Selected deals' purchase total</span>
+                          <span className="tabular-nums">
+                            {formatINR(total)}
+                            {over > 0.005 ? ` — open amount is ${formatINR(over)} over this` : ''}
+                          </span>
+                        </div>
+                      )
+                    })()}
+                  </div>
+                )}
+                {!!lcForm.party_id && String(lcForm.purpose || '') !== 'trading' && (
                   <div className="mt-3 rounded-lg border border-teal-200 bg-teal-50/50 p-3">
                     <Label>Open invoices for this party <span className="text-[10px] font-normal text-muted-foreground">(select one or more this LC covers)</span></Label>
                     {lcFormOrders.length === 0 ? (
@@ -2055,7 +2249,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     })()}
                   </div>
                 )}
-                {String(lcForm.purpose) === 'trading' && (
+                {!!lcForm.party_id && String(lcForm.purpose) === 'trading' && (
                   <div className="mt-3 grid gap-3 rounded-lg border border-teal-200 bg-teal-50/50 p-3">
                     <div className="flex flex-col gap-1.5">
                       <Label>Party payment will be received from</Label>
@@ -2267,6 +2461,125 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
         </DialogContent>
       </Dialog>
 
+      {/* LC detail — a proper modal instead of expanding the row in place */}
+      <Dialog open={lcDetailId != null} onOpenChange={(o) => !o && setLcDetailId(null)}>
+        <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+          {(() => {
+            const dRow = lcDetailId != null ? lcs.find((x) => Number(x.id) === lcDetailId) : null
+            if (!dRow) return null
+            const pct = n(dRow.amount) > 0 ? Math.min(100, (n(dRow.utilized) / n(dRow.amount)) * 100) : 0
+            const barTone = pct >= 95 ? 'bg-rose-500' : pct >= 75 ? 'bg-amber-500' : 'bg-sky-600'
+            return (
+              <>
+                <DialogHeader>
+                  <DialogTitle className="flex flex-wrap items-center gap-1.5 pr-6">
+                    <span className={cn(!dRow.lc_no && 'italic text-muted-foreground')}>{dRow.lc_no || 'Pending LC no'}</span>
+                    <StageBadge stage={String(dRow.stage || 'application')} />
+                    {dRow.preclosed_date && <Badge variant="muted">Preclosed {formatDate(dRow.preclosed_date)}</Badge>}
+                    {isLcPaymentInDone(dRow) && <Badge variant="success">Payment IN</Badge>}
+                    {dRow.purpose && <Badge variant="muted" className="capitalize">{dRow.purpose}</Badge>}
+                    {dRow.display_status === 'non_compliant' ? (
+                      <Badge variant="destructive">Non-compliant</Badge>
+                    ) : (
+                      <Badge variant={dRow.display_status === 'on_hold' ? 'warning' : 'success'} className="capitalize">
+                        {String(dRow.display_status || 'in_progress').replace('_', ' ')}
+                      </Badge>
+                    )}
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center gap-3 text-[12px] text-muted-foreground">
+                    <span className="flex items-center gap-1.5"><Landmark className="h-3.5 w-3.5 shrink-0" /> {dRow.bank}</span>
+                    <span className="flex items-center gap-1.5"><Users className="h-3.5 w-3.5 shrink-0" /> {dRow.supplier_name || '—'}</span>
+                    {dRow.fd_no && <span>FD {dRow.fd_no}</span>}
+                  </div>
+                  <div className="rounded-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-3 text-center shadow-sm">
+                    <div className="text-[10px] font-semibold uppercase tracking-widest text-white/60">LC amount</div>
+                    <div className="text-2xl font-bold tabular-nums text-white">{formatINR(dRow.amount)}</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
+                    <div className="rounded-md border border-[#e5dfc8] bg-white px-2.5 py-1.5">
+                      <div className="text-muted-foreground">Utilised</div>
+                      <div className="font-semibold tabular-nums text-[#1a2c56]">{formatINR(dRow.utilized)}</div>
+                    </div>
+                    <div className={cn('rounded-md border px-2.5 py-1.5', n(dRow.available) <= 0 ? 'border-rose-200 bg-rose-50' : 'border-emerald-200 bg-emerald-50')}>
+                      <div className="text-muted-foreground">Available</div>
+                      <div className={cn('font-semibold tabular-nums', n(dRow.available) <= 0 ? 'text-rose-600' : 'text-emerald-700')}>{formatINR(dRow.available)}</div>
+                    </div>
+                    <div className={cn('rounded-md border px-2.5 py-1.5', n(dRow.repaid) > 0 ? 'border-emerald-200 bg-emerald-50' : 'border-[#e5dfc8] bg-white')}>
+                      <div className="text-muted-foreground">Repaid</div>
+                      <div className={cn('font-semibold tabular-nums', n(dRow.repaid) > 0 ? 'text-emerald-700' : 'text-[#1a2c56]')}>{formatINR(dRow.repaid)}</div>
+                    </div>
+                    <div className={cn('rounded-md border px-2.5 py-1.5', n(dRow.outstanding) > 0 ? 'border-amber-200 bg-amber-50' : 'border-[#e5dfc8] bg-white')}>
+                      <div className="text-muted-foreground">Outstanding</div>
+                      <div className={cn('font-semibold tabular-nums', n(dRow.outstanding) > 0 ? 'text-amber-800' : 'text-[#1a2c56]')}>{formatINR(dRow.outstanding)}</div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mb-1 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      <span>Utilisation</span>
+                      <span className="tabular-nums">{pct.toFixed(0)}%</span>
+                    </div>
+                    <div className="h-2.5 overflow-hidden rounded-full bg-muted">
+                      <div className={cn('h-2.5 rounded-full transition-all', barTone)} style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg border border-[#e5dfc8] bg-white p-3 text-[11px] sm:grid-cols-4">
+                    <div><div className="text-muted-foreground">Application</div><div className="font-medium tabular-nums">{formatDate(dRow.open_date)}</div></div>
+                    <div><div className="text-muted-foreground">Open</div><div className="font-medium tabular-nums">{formatDate(dRow.opened_date)}</div></div>
+                    <div><div className="text-muted-foreground">Payment received</div><div className="font-medium tabular-nums">{formatDate(dRow.payment_received_date)}</div></div>
+                    <div><div className="text-muted-foreground">Maturity</div><div className="font-medium tabular-nums">{formatDate(dRow.expiry_date)}</div></div>
+                    <div><div className="text-muted-foreground">Margin</div><div className="font-medium tabular-nums">{n(dRow.margin_pct)}%</div></div>
+                    <div><div className="text-muted-foreground">Interest</div><div className="font-medium tabular-nums">{n(dRow.interest_pct)}%{dRow.interest_upfront ? ' upfront' : ''}</div></div>
+                    <div><div className="text-muted-foreground">Charges</div><div className="font-medium tabular-nums">{formatINR(dRow.charges)}</div></div>
+                    <div><div className="text-muted-foreground">Int. days</div><div className="font-medium tabular-nums">{n(dRow.usance_days) > 0 ? n(dRow.usance_days) : '—'}</div></div>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 border-t border-dashed border-[#e5dfc8] pt-3">
+                    {(() => {
+                      const next = nextLcStage(String(dRow.stage || 'application'))
+                      if (!next) return null
+                      return (
+                        <Button size="sm" className="h-7 bg-[#1a2c56] px-2 text-xs hover:bg-[#24407e]" onClick={() => { setLcDetailId(null); openStageAdvance(dRow) }}>
+                          Mark {STAGE_LABEL[next]}
+                        </Button>
+                      )
+                    })()}
+                    {!dRow.preclosed_date && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-xs"
+                        title={isLcPastMaturity(dRow) ? 'Repay this LC now that it has matured' : 'Wind this LC up before its natural maturity'}
+                        onClick={() => { setLcDetailId(null); openPreclose(dRow) }}
+                      >
+                        {isLcPastMaturity(dRow) ? 'Repay' : 'Preclose'}
+                      </Button>
+                    )}
+                    {canMarkPaymentIn(dRow) && (
+                      <Button
+                        size="sm"
+                        className="h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700"
+                        title="Record the customer's payment for the resale, closing this LC"
+                        onClick={() => { setLcDetailId(null); void openPaymentIn(dRow) }}
+                      >
+                        Mark Payment IN
+                      </Button>
+                    )}
+                    <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => { setLcDetailId(null); setLcForm({ ...dRow }) }}>
+                      <Pencil className="h-3.5 w-3.5" /> Edit
+                    </Button>
+                    <Button size="sm" variant="outline" className="h-7 px-2 text-xs text-destructive" onClick={() => { setLcDetailId(null); requestDeleteLc(dRow) }}>
+                      <Trash2 className="h-3.5 w-3.5" /> Delete
+                    </Button>
+                  </div>
+                  <div className="border-t border-[#e5dfc8] pt-1 [&>div]:px-0 [&>div]:sm:px-0">{lcExpanded(dRow)}</div>
+                </div>
+              </>
+            )
+          })()}
+        </DialogContent>
+      </Dialog>
+
       {/* Log / post an LC repayment */}
       <Dialog open={!!repayForm} onOpenChange={(o) => !o && setRepayForm(null)}>
         <DialogContent className="max-w-lg">
@@ -2362,6 +2675,63 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
           <DialogFooter>
             <Button variant="outline" onClick={() => setRepayForm(null)}>Cancel</Button>
             <Button disabled={busy} onClick={() => void saveRepayment()}>{busy ? 'Saving…' : repayForm?.posted ? 'Save & post' : 'Save as draft'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* LC Payment IN — the customer's payment for the resale, closing a Trading LC's round trip */}
+      <Dialog open={!!paymentInForm} onOpenChange={(o) => !o && setPaymentInForm(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Mark {paymentInForm?.lc_no || 'this LC'} Payment IN</DialogTitle>
+          </DialogHeader>
+          {paymentInForm && (
+            <div className="grid gap-3">
+              <p className="text-[12px] text-muted-foreground">
+                Posts Dr Bank / Cr the receivable party, allocated bill-wise against whichever open sale invoice(s) you pick
+                below — the same as a Receipt logged in Accounts. The amount doesn&apos;t need to match the LC&apos;s own
+                open amount — it&apos;s squared against what the sale side still owes, and can come in across more than one
+                payment.
+              </p>
+              <div className="flex flex-col gap-1.5">
+                <Label>Open trading sale invoices for this party <span className="text-[10px] font-normal text-muted-foreground">(pick which this payment is for)</span></Label>
+                {paymentInInvoices.length === 0 ? (
+                  <p className="text-[11px] text-muted-foreground">Nothing outstanding on this LC&apos;s linked deal(s).</p>
+                ) : (
+                  <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border bg-white p-1.5">
+                    {paymentInInvoices.map((inv) => {
+                      const keys: string[] = Array.isArray(paymentInForm.selected_keys) ? paymentInForm.selected_keys : []
+                      const checked = keys.includes(String(inv.key))
+                      return (
+                        <label key={String(inv.key)} className={cn('flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px]', checked ? 'bg-emerald-100' : 'hover:bg-muted/40')}>
+                          <input type="checkbox" className="h-3.5 w-3.5" checked={checked} onChange={() => togglePaymentInInvoice(String(inv.key))} />
+                          <span className="flex-1">{inv.invoice_no || inv.key} · {formatDate(inv.sale_date)}</span>
+                          <span className="font-medium tabular-nums">{formatINR(inv.due)}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Date</Label>
+                <DatePicker value={String(paymentInForm.date || '')} onChange={(v) => setPaymentInForm({ ...paymentInForm, date: v })} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Amount received (₹) *</Label>
+                <Input
+                  type="number"
+                  value={paymentInForm.amount ?? ''}
+                  onChange={(e) => setPaymentInForm({ ...paymentInForm, amount: e.target.value })}
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPaymentInForm(null)}>Cancel</Button>
+            <Button disabled={busy} className="bg-emerald-600 hover:bg-emerald-700" onClick={() => void savePaymentIn()}>
+              {busy ? 'Posting…' : 'Post Payment IN'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

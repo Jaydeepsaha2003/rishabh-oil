@@ -84,7 +84,7 @@ async function fetchSaleLines(ids: number[]): Promise<Map<number, Row>> {
   const m = new Map<number, Row>()
   if (!ids.length) return m
   const res = await getClient().execute(
-    `SELECT sl.id, sl.invoice_no, sl.sale_date, sl.rate, sl.qty, sl.uom, sl.amount,
+    `SELECT sl.id, sl.invoice_no, sl.invoice_group, sl.sale_date, sl.rate, sl.qty, sl.uom, sl.amount,
             sl.gst_pct, sl.gst_type, sl.gst_amount, sl.round_off, sl.tds_pct, sl.tds_amount,
             sl.customer_id, cu.name AS customer_name
      FROM sales sl LEFT JOIN customers cu ON cu.id = sl.customer_id
@@ -94,21 +94,52 @@ async function fetchSaleLines(ids: number[]): Promise<Map<number, Row>> {
   return m
 }
 
-export async function listTradingDeals(): Promise<Row[]> {
+// What a Trading sale invoice is actually keyed by for a bank Receipt's
+// "Agst Ref" allocation — same rule listPendingRefs() uses for every other
+// sale: the invoice_group when the invoice spans several `sales` rows, its
+// own invoice_no otherwise.
+function saleRefKey(l: Row): string {
+  return String(l.invoice_group || l.invoice_no || '').trim()
+}
+
+// Every rupee a Receipt voucher has actually allocated against a sale ref,
+// summed once for the whole company rather than per-deal — a deal's sale
+// side can then just look its own keys up in this map.
+async function saleReceiptsByKey(companyId: number): Promise<Map<string, number>> {
   const res = await getClient().execute({
-    sql: `SELECT td.*, p.code AS product_code, p.name AS product_name
+    sql: `SELECT COALESCE(ba.sale_invoice_group, ba.ref_name) AS key, SUM(ba.amount) AS amount
+          FROM journal_bill_allocs ba
+          JOIN journal_lines jl ON jl.id = ba.line_id
+          JOIN journal_entries je ON je.id = jl.entry_id
+          WHERE ba.method = 'agst_ref' AND je.company_id = ? AND COALESCE(ba.sale_invoice_group, ba.ref_name) IS NOT NULL
+          GROUP BY key`,
+    args: [companyId]
+  })
+  const m = new Map<string, number>()
+  for (const r of toPlain(res)) m.set(String(r.key), n(r.amount))
+  return m
+}
+
+export async function listTradingDeals(): Promise<Row[]> {
+  const cid = getActiveCompanyId()
+  const res = await getClient().execute({
+    sql: `SELECT td.*, p.code AS product_code, p.name AS product_name,
+                 l.lc_no AS lc_no, l.stage AS lc_stage, l.preclosed_date AS lc_preclosed_date,
+                 l.expiry_date AS lc_expiry_date, l.amount AS lc_amount
           FROM trading_deals td
           LEFT JOIN products p ON p.id = td.product_id
+          LEFT JOIN letters_of_credit l ON l.id = td.lc_id
           WHERE td.company_id = ?
           ORDER BY td.deal_date DESC, td.id DESC`,
-    args: [getActiveCompanyId()]
+    args: [cid]
   })
   const deals = toPlain(res)
   const dealIds = deals.map((d) => n(d.id)).filter(Boolean)
   const { orders, sales } = await dealLineIds(dealIds, deals)
-  const [orderRows, saleRows] = await Promise.all([
+  const [orderRows, saleRows, receiptsByKey] = await Promise.all([
     fetchOrderLines(Array.from(new Set(Array.from(orders.values()).flat()))),
-    fetchSaleLines(Array.from(new Set(Array.from(sales.values()).flat())))
+    fetchSaleLines(Array.from(new Set(Array.from(sales.values()).flat()))),
+    saleReceiptsByKey(cid)
   ])
 
   return deals.map((d) => {
@@ -136,6 +167,16 @@ export async function listTradingDeals(): Promise<Row[]> {
     // Several invoices at different rates have no single rate, so the list
     // shows what the deal actually averaged.
     const avg = (total: number, qty: number): number => (qty > 0 ? total / qty : 0)
+    // What the customer actually pays after withholding TDS, and how much of
+    // that has actually come back through the bank — a Receipt voucher
+    // allocated (Agst Ref) against this deal's own sale invoice(s).
+    const saleNetReceivable = round2(saleNet - sLines.reduce((s, l) => s + n(l.tds_amount), 0))
+    const saleKeys = Array.from(new Set(sLines.map((l) => saleRefKey(l)).filter(Boolean)))
+    const salePaid = round2(saleKeys.reduce((s, k) => s + (receiptsByKey.get(k) || 0), 0))
+    const saleFullyPaid = saleNetReceivable > 0.005 && salePaid >= saleNetReceivable - 0.005
+    // The bank side of a Trading LC closes the same way any LC does — repaid
+    // at maturity or preclosed early — both of which stamp preclosed_date.
+    const lcBankRepaid = !!d.lc_preclosed_date
 
     return {
       ...d,
@@ -172,8 +213,13 @@ export async function listTradingDeals(): Promise<Row[]> {
       sale_gst_type: firstSale.gst_type ?? 'CGST_SGST',
       sale_tds_pct: n(firstSale.tds_pct),
       sale_tds_amount: sLines.reduce((s, l) => s + n(l.tds_amount), 0),
-      // What the customer actually pays after withholding TDS.
-      sale_net_receivable: saleNet - sLines.reduce((s, l) => s + n(l.tds_amount), 0),
+      sale_net_receivable: saleNetReceivable,
+      sale_paid: salePaid,
+      sale_fully_paid: saleFullyPaid,
+      lc_bank_repaid: lcBankRepaid,
+      // Both sides of the round trip are done: the bank has been repaid on
+      // the LC, and the customer's money for the resale has actually come in.
+      trading_lc_closed: !!d.lc_id && lcBankRepaid && saleFullyPaid,
       sale_round_off: sLines.reduce((s, l) => s + n(l.round_off), 0),
       purchase_taxable: pLines.reduce((s, l) => s + n(l.taxable_value), 0),
       purchase_gst_amount: pLines.reduce((s, l) => s + n(l.gst_amount), 0),
@@ -404,6 +450,32 @@ export async function updateTradingDeal(id: number, v: Row): Promise<{ id: numbe
   for (const sid of existingSales.slice(salePayloads.length)) await deleteSale(sid)
   for (const oid of existingOrders.slice(orderPayloads.length)) await deleteOrder(oid)
   return { id }
+}
+
+// A Trading LC is struck against whole deals, not a bare purchase invoice —
+// called from lc.ts on create/update with whichever deal ids the user ticked.
+// Any deal this LC held before that's no longer ticked goes back to unlinked;
+// a deal already claimed by a DIFFERENT LC is refused rather than silently
+// stolen from it.
+export async function linkTradingDealsToLc(lcId: number, dealIds: unknown): Promise<void> {
+  const c = getClient()
+  const ids = Array.isArray(dealIds) ? dealIds.map((x) => n(x)).filter((x) => x > 0) : []
+  if (ids.length) {
+    const taken = await c.execute({
+      sql: `SELECT id, lc_id FROM trading_deals WHERE id IN (${ids.join(',')}) AND lc_id IS NOT NULL AND lc_id != ?`,
+      args: [lcId]
+    })
+    if (taken.rows.length) {
+      throw new Error(`Deal #${taken.rows[0].id} is already linked to another LC`)
+    }
+  }
+  await c.execute({
+    sql: `UPDATE trading_deals SET lc_id = NULL WHERE lc_id = ? AND id NOT IN (${ids.length ? ids.join(',') : '0'})`,
+    args: [lcId]
+  })
+  for (const id of ids) {
+    await c.execute({ sql: 'UPDATE trading_deals SET lc_id = ? WHERE id = ?', args: [lcId, id] })
+  }
 }
 
 export async function deleteTradingDeal(id: number): Promise<{ id: number }> {

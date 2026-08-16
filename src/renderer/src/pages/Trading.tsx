@@ -1201,6 +1201,34 @@ export function Trading(): React.JSX.Element {
                           />
                           <Fact label="Net payable to supplier" value={formatINR(d.purchase_net)} />
                           <Fact label="Net receivable from customer" value={formatINR(d.sale_net_receivable)} />
+                          {!!d.lc_id && (
+                            <div className="flex flex-wrap items-center gap-2 pt-1 sm:col-span-2 lg:col-span-4">
+                              <span className="text-[11px] font-semibold text-[#1a2c56]">LC {d.lc_no || `#${d.lc_id}`}</span>
+                              <span
+                                className={cn(
+                                  'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                                  d.lc_bank_repaid ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                                )}
+                              >
+                                {d.lc_bank_repaid ? 'Bank repaid' : 'Bank outstanding'}
+                              </span>
+                              <span
+                                className={cn(
+                                  'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                                  d.sale_fully_paid ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                                )}
+                              >
+                                {d.sale_fully_paid
+                                  ? 'Sale paid'
+                                  : `Sale outstanding ${formatINR(Math.max(0, n(d.sale_net_receivable) - n(d.sale_paid)))}`}
+                              </span>
+                              {d.trading_lc_closed && (
+                                <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-800">
+                                  LC closed
+                                </span>
+                              )}
+                            </div>
+                          )}
                           {(!d.qty_matched || d.note) && (
                             <div className="flex flex-wrap items-center gap-2 pt-1 sm:col-span-2 lg:col-span-4">
                               {!d.qty_matched && (

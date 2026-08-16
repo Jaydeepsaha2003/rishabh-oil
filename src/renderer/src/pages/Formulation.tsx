@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, Pencil, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, Calculator, Pencil, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -33,6 +33,16 @@ const CAT_LABEL: Record<string, string> = {
   raw: 'Raw',
   intermediate: 'Intermediate',
   finished: 'Finished'
+}
+
+const round2 = (v: number): number => Math.round(v * 100) / 100
+
+// FFA% x (1 + loss multiplier%) + moisture% — e.g. 5% FFA x 1.10 + 0.2% = 5.7%.
+function autoCalcPct(it: Row): number {
+  const ffa = Number(it.ffa_pct) || 0
+  const loss = Number(it.loss_multiplier_pct) || 0
+  const moist = Number(it.moisture_pct) || 0
+  return round2(ffa * (1 + loss / 100) + moist)
 }
 
 export function Formulation(): React.JSX.Element {
@@ -78,7 +88,15 @@ export function Formulation(): React.JSX.Element {
     const its = await window.api.formulations.items(row.id as number)
     setItems(
       its.length
-        ? its.map((i) => ({ product_id: String(i.product_id), qty: i.qty, kind: String(i.kind || 'input') }))
+        ? its.map((i) => ({
+            product_id: String(i.product_id),
+            qty: i.qty,
+            kind: String(i.kind || 'input'),
+            auto_calc: !!i.auto_calc,
+            ffa_pct: i.ffa_pct ?? '',
+            loss_multiplier_pct: i.loss_multiplier_pct ?? '',
+            moisture_pct: i.moisture_pct ?? ''
+          }))
         : [{ product_id: '', qty: '', kind: 'input' }]
     )
     setBuilding(true)
@@ -92,6 +110,29 @@ export function Formulation(): React.JSX.Element {
   }
   function removeItem(idx: number): void {
     setItems((prev) => prev.filter((_, i) => i !== idx))
+  }
+
+  // A by-product's % of input can be typed by hand, or auto-calculated from
+  // its own FFA/loss/moisture inputs (Fatty Acid being the standing example).
+  // Turning auto-calc on immediately writes the computed % into qty; turning
+  // it off just freezes qty at whatever it last was, editable again by hand.
+  function toggleItemAutoCalc(idx: number): void {
+    setItems((prev) =>
+      prev.map((it, i) => {
+        if (i !== idx) return it
+        if (it.auto_calc) return { ...it, auto_calc: false }
+        return { ...it, auto_calc: true, qty: String(autoCalcPct(it)) }
+      })
+    )
+  }
+  function setItemFormula(idx: number, key: 'ffa_pct' | 'loss_multiplier_pct' | 'moisture_pct', value: string): void {
+    setItems((prev) =>
+      prev.map((it, i) => {
+        if (i !== idx) return it
+        const next = { ...it, [key]: value }
+        return { ...next, qty: String(autoCalcPct(next)) }
+      })
+    )
   }
 
   // Inputs describe the BLEND that goes in — its shares total 100% (100% CPO
@@ -122,7 +163,12 @@ export function Formulation(): React.JSX.Element {
       .map((it) => ({
         product_id: Number(it.product_id),
         qty: Number(it.qty) || 0,
-        kind: String(it.kind || 'input')
+        kind: String(it.kind || 'input'),
+        auto_calc: !!it.auto_calc,
+        ffa_pct: it.auto_calc && it.ffa_pct !== '' && it.ffa_pct != null ? Number(it.ffa_pct) : null,
+        loss_multiplier_pct:
+          it.auto_calc && it.loss_multiplier_pct !== '' && it.loss_multiplier_pct != null ? Number(it.loss_multiplier_pct) : null,
+        moisture_pct: it.auto_calc && it.moisture_pct !== '' && it.moisture_pct != null ? Number(it.moisture_pct) : null
       }))
       .filter((it) => it.product_id && it.qty > 0)
     if (!clean.some((it) => it.kind === 'input')) {
@@ -208,9 +254,10 @@ export function Formulation(): React.JSX.Element {
               </div>
             </div>
 
-            {/* Three kinds of line, each a % of the output quantity: what is
+            {/* Three kinds of line, each a % of the input quantity: what is
                 drawn from stock, what the batch throws off besides the main
-                product, and what is simply lost. */}
+                product, and what is simply lost — by-products and loss are
+                struck on the input going in, not the output coming out. */}
             {([
               { kind: 'input', title: 'Inputs — consumed from stock', add: 'Add input', tone: 'text-rose-800' },
               { kind: 'output', title: 'By-products — added to stock', add: 'Add by-product', tone: 'text-emerald-800' },
@@ -226,7 +273,7 @@ export function Formulation(): React.JSX.Element {
                 <div className="rounded-lg border">
                   <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     <span className="flex-1">Product</span>
-                    <span className="w-32">% of output</span>
+                    <span className="w-32">% of input</span>
                     <span className="w-8" />
                   </div>
                   <div className="divide-y">
@@ -235,39 +282,89 @@ export function Formulation(): React.JSX.Element {
                     ) : (
                       items.map((it, idx) =>
                         String(it.kind || 'input') !== sec.kind ? null : (
-                          <div key={idx} className="flex items-center gap-2 px-3 py-2">
-                            <div className="flex-1">
-                              <Select
-                                value={String(it.product_id)}
-                                onValueChange={(v) => setItem(idx, 'product_id', v)}
+                          <div key={idx} className="px-3 py-2">
+                            <div className="flex items-center gap-2">
+                              <div className="flex-1">
+                                <Select
+                                  value={String(it.product_id)}
+                                  onValueChange={(v) => setItem(idx, 'product_id', v)}
+                                >
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Select product" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {products.map((p) => (
+                                      <SelectItem key={p.id} value={String(p.id)}>
+                                        {p.name} · {CAT_LABEL[p.category] ?? p.category}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <Input
+                                type="number"
+                                className={cn('w-32 text-right', sec.kind === 'output' && it.auto_calc && 'bg-muted/60 text-muted-foreground')}
+                                placeholder="0"
+                                readOnly={sec.kind === 'output' && !!it.auto_calc}
+                                value={it.qty ?? ''}
+                                onChange={(e) => setItem(idx, 'qty', e.target.value)}
+                              />
+                              {sec.kind === 'output' && (
+                                <Button
+                                  type="button"
+                                  variant={it.auto_calc ? 'default' : 'ghost'}
+                                  size="icon"
+                                  className="h-9 w-8"
+                                  title={it.auto_calc ? 'Auto-calculated — click to enter the % by hand instead' : 'Auto-calculate from FFA %, loss multiplier and moisture loss'}
+                                  onClick={() => toggleItemAutoCalc(idx)}
+                                >
+                                  <Calculator className="h-4 w-4" />
+                                </Button>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-9 w-8 text-destructive"
+                                onClick={() => removeItem(idx)}
                               >
-                                <SelectTrigger>
-                                  <SelectValue placeholder="Select product" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {products.map((p) => (
-                                    <SelectItem key={p.id} value={String(p.id)}>
-                                      {p.name} · {CAT_LABEL[p.category] ?? p.category}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
                             </div>
-                            <Input
-                              type="number"
-                              className="w-32 text-right"
-                              placeholder="0"
-                              value={it.qty ?? ''}
-                              onChange={(e) => setItem(idx, 'qty', e.target.value)}
-                            />
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-9 w-8 text-destructive"
-                              onClick={() => removeItem(idx)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
+                            {sec.kind === 'output' && it.auto_calc && (
+                              <div className="mt-2 grid grid-cols-3 gap-2 rounded-md border border-emerald-200 bg-emerald-50/50 p-2.5">
+                                <div className="flex flex-col gap-0.5">
+                                  <Label className="text-[10px] font-normal text-muted-foreground">Oil FFA %</Label>
+                                  <Input
+                                    type="number"
+                                    className="h-8 bg-white text-right"
+                                    value={it.ffa_pct ?? ''}
+                                    onChange={(e) => setItemFormula(idx, 'ffa_pct', e.target.value)}
+                                  />
+                                </div>
+                                <div className="flex flex-col gap-0.5">
+                                  <Label className="text-[10px] font-normal text-muted-foreground">Loss multiplier % (the "1 +")</Label>
+                                  <Input
+                                    type="number"
+                                    className="h-8 bg-white text-right"
+                                    value={it.loss_multiplier_pct ?? ''}
+                                    onChange={(e) => setItemFormula(idx, 'loss_multiplier_pct', e.target.value)}
+                                  />
+                                </div>
+                                <div className="flex flex-col gap-0.5">
+                                  <Label className="text-[10px] font-normal text-muted-foreground">Moisture loss %</Label>
+                                  <Input
+                                    type="number"
+                                    className="h-8 bg-white text-right"
+                                    value={it.moisture_pct ?? ''}
+                                    onChange={(e) => setItemFormula(idx, 'moisture_pct', e.target.value)}
+                                  />
+                                </div>
+                                <div className="col-span-3 flex items-center justify-between text-[11px] text-emerald-800">
+                                  <span>FFA % × (1 + loss %) + moisture % = % of input</span>
+                                  <span className="font-semibold tabular-nums">{formatNum(autoCalcPct(it))}%</span>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )
                       )

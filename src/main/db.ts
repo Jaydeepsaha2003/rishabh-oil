@@ -828,11 +828,14 @@ const MIGRATIONS = [
   // never sets a rate — keeps exactly the receivable it already had.
   'ALTER TABLE sales ADD COLUMN tds_pct REAL NOT NULL DEFAULT 0',
   'ALTER TABLE sales ADD COLUMN tds_amount REAL NOT NULL DEFAULT 0',
-  // A refining recipe is not only what goes in: 100 MT of RPO takes 106.7 MT
-  // of CPO and throws off 5.7 MT of fatty acid and 1 MT of dead loss. Each
-  // line now says which it is — 'input' is consumed, 'output' is a by-product
-  // that lands in stock, 'loss' is written off. Everything already recorded is
-  // an input, which is exactly what the default leaves it as.
+  // A refining recipe is not only what goes in: by-product and loss
+  // percentages are struck on the CPO going IN, not the RPO coming out — 5.7%
+  // fatty acid + 1% dead loss means 6.7% of the input never becomes product,
+  // so 100 MT of RPO actually takes 100/0.933 = 107.18 MT of CPO (see
+  // recipeTor() in production.ts), not 106.7. Each line now says which kind it
+  // is — 'input' is consumed, 'output' is a by-product that lands in stock,
+  // 'loss' is written off. Everything already recorded is an input, which is
+  // exactly what the default leaves it as.
   "ALTER TABLE formulation_items ADD COLUMN kind TEXT NOT NULL DEFAULT 'input'",
   "ALTER TABLE production_items ADD COLUMN kind TEXT NOT NULL DEFAULT 'input'",
   // A challan that gives no quantity is a real answer, and a different one
@@ -883,7 +886,37 @@ const MIGRATIONS = [
   // routed to the party, it's already netted into preclose_settlement_amount.
   'ALTER TABLE letters_of_credit ADD COLUMN preclose_premature_interest REAL',
   'ALTER TABLE letters_of_credit ADD COLUMN preclose_interest_route TEXT',
-  'ALTER TABLE letters_of_credit ADD COLUMN preclose_interest_journal_entry_id INTEGER'
+  'ALTER TABLE letters_of_credit ADD COLUMN preclose_interest_journal_entry_id INTEGER',
+  // A Trading LC finances one round trip — buy from the supplier, resell to
+  // the customer — so it's struck against the whole deal, not a bare purchase
+  // invoice. NULL until an LC picks this deal; a deal can only back one LC at
+  // a time.
+  'ALTER TABLE trading_deals ADD COLUMN lc_id INTEGER REFERENCES letters_of_credit(id)',
+  // A by-product line's own % of input can be auto-calculated instead of
+  // typed by hand — e.g. Fatty Acid = Oil FFA% x (1 + loss multiplier%) +
+  // moisture loss%. The three inputs are kept alongside the computed qty so
+  // the recipe stays auditable (why it's 5.7%, not just that it is).
+  'ALTER TABLE formulation_items ADD COLUMN auto_calc INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE formulation_items ADD COLUMN ffa_pct REAL',
+  'ALTER TABLE formulation_items ADD COLUMN loss_multiplier_pct REAL',
+  'ALTER TABLE formulation_items ADD COLUMN moisture_pct REAL',
+  // The round trip's last leg: the customer's payment for the resale actually
+  // lands, closing a Trading LC out — Application -> Open -> Payment received
+  // -> Preclose/Repayment -> Payment IN. Distinct from payment_received_date
+  // (that's the BANK paying the SUPPLIER; this is the CUSTOMER paying US). A
+  // deal's sale side can be paid across more than one receipt (a part-payment,
+  // or one per invoice on a multi-invoice deal), so — like lc_repayments —
+  // this is its own table rather than a single scalar on the LC; "closed"
+  // itself is computed live from what's still outstanding, not stored here.
+  `CREATE TABLE IF NOT EXISTS lc_payment_ins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lc_id INTEGER NOT NULL REFERENCES letters_of_credit(id),
+    pay_date TEXT NOT NULL,
+    amount REAL NOT NULL DEFAULT 0,
+    journal_entry_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_lc_payment_ins_lc ON lc_payment_ins(lc_id)'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

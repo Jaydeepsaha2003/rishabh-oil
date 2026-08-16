@@ -307,6 +307,11 @@ const api = {
       ipcRenderer.invoke('lc:saveRepayment', { values }),
     removeRepayment: (id: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('lc:deleteRepayment', { id }),
+    paymentIn: (id: number, amount: number, date?: string, selectedKeys?: string[]): Promise<{ id: number; date: string }> =>
+      ipcRenderer.invoke('lc:paymentIn', { id, amount, date, selectedKeys }),
+    paymentIns: (lcId: number): Promise<Row[]> => ipcRenderer.invoke('lc:paymentIns', { lcId }),
+    removePaymentIn: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('lc:deletePaymentIn', { id }),
+    openTradingInvoices: (lcId: number): Promise<Row[]> => ipcRenderer.invoke('lc:openTradingInvoices', { lcId }),
     preclose: (
       id: number,
       values: {

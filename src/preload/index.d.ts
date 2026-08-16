@@ -228,6 +228,10 @@ export interface Api {
     repayments: (lcId: number) => Promise<Row[]>
     saveRepayment: (values: Row) => Promise<{ id: number }>
     removeRepayment: (id: number) => Promise<{ id: number }>
+    paymentIn: (id: number, amount: number, date?: string, selectedKeys?: string[]) => Promise<{ id: number; date: string }>
+    paymentIns: (lcId: number) => Promise<Row[]>
+    removePaymentIn: (id: number) => Promise<{ id: number }>
+    openTradingInvoices: (lcId: number) => Promise<Row[]>
     preclose: (
       id: number,
       values: {

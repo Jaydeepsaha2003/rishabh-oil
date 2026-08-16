@@ -119,7 +119,7 @@ export async function stockLevels(
 
   const keys = Object.keys(SOURCES) as (keyof typeof SOURCES)[]
   const [products, ...maps] = await Promise.all([
-    c.execute('SELECT id, code, name, category, active FROM products ORDER BY category, name'),
+    c.execute('SELECT id, code, name, category, material_type, active FROM products ORDER BY category, name'),
     ...keys.map((k) => slice(SOURCES[k], 'period')),
     ...keys.map((k) => slice(SOURCES[k], 'opening'))
   ])
@@ -145,6 +145,7 @@ export async function stockLevels(
       code: p.code,
       name: p.name,
       category: p.category,
+      material_type: p.material_type,
       active: p.active,
       opening: open,
       received: rec,

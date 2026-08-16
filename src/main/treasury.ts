@@ -250,6 +250,159 @@ export async function postLcPrematureInterestRebate(
   return { id: je.id }
 }
 
+// Every sale invoice belonging to the LC's linked Trading deal(s), with
+// what's still outstanding on each — the same "bill" a manual Receipt +
+// Agst Ref would pick from in Accounts, keyed the identical way
+// (invoice_group, falling back to invoice_no) so this and a hand-entered
+// receipt always agree on what's still owed.
+async function outstandingSaleRefsForLc(
+  lcId: number
+): Promise<{ lc: Row; customerName: string; refs: { key: string; invoice_no: string; sale_date: string; due: number }[] }> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [lcId] })
+  if (!res.rows.length) throw new Error('LC not found')
+  const lc = toPlain(res)[0]
+  if (String(lc.purpose || '') !== 'trading') throw new Error('Payment IN only applies to a Trading LC')
+  if (!lc.receivable_party_id) throw new Error('Set the party payment will be received from on this LC first')
+  const custRes = await c.execute({ sql: 'SELECT name FROM customers WHERE id = ?', args: [Number(lc.receivable_party_id)] })
+  const customerName = String(custRes.rows[0]?.name || '').trim()
+  if (!customerName) throw new Error('The receivable party could not be found')
+
+  const dealsRes = await c.execute({ sql: 'SELECT id, sale_id FROM trading_deals WHERE lc_id = ?', args: [lcId] })
+  const dealRows = toPlain(dealsRes)
+  if (!dealRows.length) throw new Error("This LC has no linked Trading deal to receive payment against")
+  const dealIds = dealRows.map((d) => n(d.id))
+
+  const linksRes = await c.execute({
+    sql: `SELECT deal_id, sale_id FROM trading_deal_sales WHERE deal_id IN (${dealIds.join(',')})`,
+    args: []
+  })
+  const saleIdsByDeal = new Map<number, number[]>()
+  for (const r of toPlain(linksRes)) {
+    const k = n(r.deal_id)
+    saleIdsByDeal.set(k, [...(saleIdsByDeal.get(k) ?? []), n(r.sale_id)])
+  }
+  // A deal booked before multi-invoice sales existed has no link rows — its
+  // own sale_id is every bit as real, just not worth rewriting to fit.
+  const saleIds = Array.from(
+    new Set(dealRows.flatMap((d) => saleIdsByDeal.get(n(d.id)) ?? (n(d.sale_id) ? [n(d.sale_id)] : [])))
+  )
+  if (!saleIds.length) throw new Error("This LC's linked Trading deal has no sale invoice yet")
+
+  const salesRes = await c.execute({
+    sql: `SELECT COALESCE(invoice_group, invoice_no) AS key, MIN(invoice_no) AS invoice_no, MIN(sale_date) AS sale_date,
+                 SUM(amount + gst_amount + round_off - tds_amount) AS due
+          FROM sales WHERE id IN (${saleIds.join(',')}) GROUP BY key`,
+    args: []
+  })
+  const bills = toPlain(salesRes)
+    .map((s) => ({ key: String(s.key || '').trim(), invoice_no: String(s.invoice_no || ''), sale_date: String(s.sale_date || ''), due: round2(n(s.due)) }))
+    .filter((s) => s.key)
+  if (!bills.length) throw new Error("This LC's linked Trading deal has no sale invoice yet")
+
+  // What's already been received against each of these refs (e.g. a receipt
+  // logged separately in Accounts) comes off what's still due, so this never
+  // double-books a bill already partly settled.
+  const keys = bills.map((b) => b.key)
+  const settledRes = await c.execute({
+    sql: `SELECT COALESCE(ba.sale_invoice_group, ba.ref_name) AS key, SUM(ba.amount) AS amt
+          FROM journal_bill_allocs ba
+          JOIN journal_lines jl ON jl.id = ba.line_id
+          JOIN journal_entries je ON je.id = jl.entry_id
+          WHERE ba.method = 'agst_ref' AND je.company_id = ? AND COALESCE(ba.sale_invoice_group, ba.ref_name) IN (${keys.map(() => '?').join(',')})
+          GROUP BY key`,
+    args: [n(lc.company_id) || getActiveCompanyId(), ...keys]
+  })
+  const settledMap = new Map<string, number>()
+  for (const r of toPlain(settledRes)) settledMap.set(String(r.key), n(r.amt))
+
+  const refs = bills
+    .map((b) => ({ ...b, due: round2(b.due - (settledMap.get(b.key) || 0)) }))
+    .filter((b) => b.due > 0.005)
+  return { lc, customerName, refs }
+}
+
+// The open trading sale invoices for a Trading LC's linked deal(s) — the
+// Payment IN dialog shows these so the user picks which invoice(s) the
+// receipt is actually for, rather than money landing against the wrong bill.
+export async function listLcOpenTradingInvoices(lcId: number): Promise<Row[]> {
+  const { refs } = await outstandingSaleRefsForLc(lcId).catch(() => ({ refs: [] }))
+  return refs
+}
+
+// The last leg of a Trading LC's round trip: the customer actually pays for
+// the resale. Posted bill-wise against whichever of the LC's linked Trading
+// deal sale invoices the user picked (or every one still outstanding, if none
+// were picked), the same way a manual Receipt + Agst Ref would in Accounts —
+// so this shortcut and a hand-entered receipt reconcile identically. The
+// amount is free to differ from the LC's own open amount either way — it's
+// squared against what the SALE side still owes, not the LC's purchase-side
+// amount, and can come in across more than one call (a part-payment, or one
+// per invoice on a multi-invoice deal) — each posts its own fresh entry
+// rather than replacing the last, exactly like an LC repayment.
+export async function postLcPaymentIn(
+  lcId: number,
+  amount: number,
+  dateIn?: string,
+  selectedKeys?: string[]
+): Promise<{ id: number; date: string }> {
+  const { lc, customerName, refs } = await outstandingSaleRefsForLc(lcId)
+  const wanted = Array.isArray(selectedKeys) && selectedKeys.length ? new Set(selectedKeys.map(String)) : null
+  const outstanding = wanted ? refs.filter((r) => wanted.has(r.key)) : refs
+  if (!outstanding.length) throw new Error('Every sale invoice on this deal is already fully paid')
+  const totalDue = round2(outstanding.reduce((s, o) => s + o.due, 0))
+
+  const value = round2(n(amount))
+  if (value < 0.005) throw new Error('Enter the amount received')
+  if (value > totalDue + 0.005) {
+    throw new Error(`Only ${totalDue.toFixed(2)} is still receivable on the ${wanted ? 'selected invoice(s)' : "LC's deal(s)"}`)
+  }
+
+  const c = getClient()
+  const date = String(dateIn || todayISO()).slice(0, 10)
+  const je = await postJournal({
+    date,
+    vchType: 'RECEIPT',
+    vchNo: String(lc.lc_no || ''),
+    narration: `LC ${lc.lc_no} — payment IN of ${value.toFixed(2)} received from ${customerName}`,
+    companyId: n(lc.company_id) || undefined,
+    lines: [
+      { account: 'BANK A/C', group: 'Bank Accounts', dr: value },
+      { account: customerName, group: 'Sundry Debtors', cr: value }
+    ]
+  })
+  // Biggest outstanding bill first, the way one lump receipt naturally clears
+  // the largest dues before spilling onto the next.
+  let remaining = value
+  for (const o of [...outstanding].sort((a, b) => b.due - a.due)) {
+    if (remaining <= 0.005) break
+    const take = round2(Math.min(remaining, o.due))
+    await allocAgainst(je.id, customerName, o.key, take)
+    remaining -= take
+  }
+  await c.execute({
+    sql: 'INSERT INTO lc_payment_ins (lc_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, ?)',
+    args: [lcId, date, value, je.id]
+  })
+  return { id: je.id, date }
+}
+
+export async function listLcPaymentIns(lcId: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: 'SELECT * FROM lc_payment_ins WHERE lc_id = ? ORDER BY id DESC',
+    args: [lcId]
+  })
+  return toPlain(res)
+}
+
+export async function deleteLcPaymentIn(id: number): Promise<{ id: number }> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT journal_entry_id FROM lc_payment_ins WHERE id = ?', args: [id] })
+  if (res.rows.length && res.rows[0].journal_entry_id) await dropEntry(n(res.rows[0].journal_entry_id))
+  await c.execute({ sql: 'DELETE FROM lc_payment_ins WHERE id = ?', args: [id] })
+  return { id }
+}
+
 // A bill under the LC matures and the bank pays the supplier: the payable
 // clears against the original invoice, money leaves the bank.
 export async function settleLcBill(issuanceId: number, dateIn?: string): Promise<{ id: number }> {

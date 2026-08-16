@@ -3,6 +3,7 @@ import { getClient } from './db'
 import { getActiveCompanyId } from './company'
 import { postLcOpening, settleLcBillsCombined, postLcMarginRelease, postLcPrematureInterestRebate, saveLcRepayment } from './treasury'
 import { facilityHeadroom } from './facilities'
+import { linkTradingDealsToLc } from './trading'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -53,6 +54,7 @@ export async function listLCs(): Promise<Row[]> {
       (SELECT COALESCE(SUM(o.net_amount), 0) FROM lc_linked_orders lo
          JOIN orders o ON o.id = lo.order_id WHERE lo.lc_id = l.id) AS linked_invoice_amount_total,
       (SELECT COUNT(*) FROM lc_linked_orders lo WHERE lo.lc_id = l.id) AS linked_invoice_count,
+      (SELECT GROUP_CONCAT(td.id) FROM trading_deals td WHERE td.lc_id = l.id) AS linked_deal_ids_csv,
       COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS utilized,
       l.amount - COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS available,
       COALESCE((SELECT SUM(amount) FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid,
@@ -82,6 +84,10 @@ export async function listLCs(): Promise<Row[]> {
     return {
       ...l,
       linked_order_ids: String(l.linked_order_ids_csv || '')
+        .split(',')
+        .map((x) => Number(x))
+        .filter((x) => x > 0),
+      linked_deal_ids: String(l.linked_deal_ids_csv || '')
         .split(',')
         .map((x) => Number(x))
         .filter((x) => x > 0),
@@ -362,6 +368,7 @@ export async function createLC(v: Row): Promise<{ id: number }> {
   })
   const id = Number(res.lastInsertRowid)
   await syncLinkedOrders(id, v.linked_order_ids)
+  await linkTradingDealsToLc(id, v.linked_deal_ids)
   await syncPaymentReceivedIssuance(id, v)
   // Margin + charges voucher into the books (skipped when both are zero).
   await postLcOpening(id).catch((e) => console.error('[lc] opening voucher failed:', (e as Error).message))
@@ -381,6 +388,7 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number }> {
     args: [...lcArgs(v), id]
   })
   await syncLinkedOrders(id, v.linked_order_ids)
+  await linkTradingDealsToLc(id, v.linked_deal_ids)
   await syncPaymentReceivedIssuance(id, v)
   await postLcOpening(id).catch((e) => console.error('[lc] opening voucher failed:', (e as Error).message))
   return { id }
@@ -482,6 +490,8 @@ export async function deleteLC(id: number): Promise<{ id: number }> {
   for (const b of bills.rows) if (b.journal_entry_id) await dropTreasuryEntry(Number(b.journal_entry_id))
   const repayments = await c.execute({ sql: 'SELECT journal_entry_id FROM lc_repayments WHERE lc_id = ?', args: [id] })
   for (const r of repayments.rows) if (r.journal_entry_id) await dropTreasuryEntry(Number(r.journal_entry_id))
+  const paymentIns = await c.execute({ sql: 'SELECT journal_entry_id FROM lc_payment_ins WHERE lc_id = ?', args: [id] })
+  for (const p of paymentIns.rows) if (p.journal_entry_id) await dropTreasuryEntry(Number(p.journal_entry_id))
   const lc = await c.execute({
     sql: `SELECT journal_entry_id, preclose_journal_entry_id, interest_journal_entry_id, preclose_interest_journal_entry_id
           FROM letters_of_credit WHERE id = ?`,
@@ -493,7 +503,9 @@ export async function deleteLC(id: number): Promise<{ id: number }> {
   if (lc.rows.length && lc.rows[0].preclose_interest_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].preclose_interest_journal_entry_id))
   await c.execute({ sql: 'DELETE FROM lc_issuances WHERE lc_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM lc_repayments WHERE lc_id = ?', args: [id] })
+  await c.execute({ sql: 'DELETE FROM lc_payment_ins WHERE lc_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM lc_linked_orders WHERE lc_id = ?', args: [id] })
+  await linkTradingDealsToLc(id, [])
   await c.execute({ sql: 'DELETE FROM letters_of_credit WHERE id = ?', args: [id] })
   return { id }
 }

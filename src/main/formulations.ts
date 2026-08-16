@@ -65,9 +65,24 @@ async function writeItems(formulationId: number, items: Row[]): Promise<void> {
     const pid = n(it.product_id)
     if (!pid) continue
     const kind = it.kind === 'output' || it.kind === 'loss' ? String(it.kind) : 'input'
+    // The three inputs behind an auto-calculated % (e.g. Fatty Acid = FFA% x
+    // (1 + loss%) + moisture%) ride along with the computed qty, so the
+    // recipe still explains itself next time it's opened — only kept when
+    // auto_calc is actually on, never for a plain hand-typed %.
+    const autoCalc = it.auto_calc ? 1 : 0
     await c.execute({
-      sql: 'INSERT INTO formulation_items (formulation_id, product_id, qty, kind) VALUES (?, ?, ?, ?)',
-      args: [formulationId, pid, n(it.qty), kind]
+      sql: `INSERT INTO formulation_items (formulation_id, product_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        formulationId,
+        pid,
+        n(it.qty),
+        kind,
+        autoCalc,
+        autoCalc && it.ffa_pct != null && it.ffa_pct !== '' ? n(it.ffa_pct) : null,
+        autoCalc && it.loss_multiplier_pct != null && it.loss_multiplier_pct !== '' ? n(it.loss_multiplier_pct) : null,
+        autoCalc && it.moisture_pct != null && it.moisture_pct !== '' ? n(it.moisture_pct) : null
+      ]
     })
   }
 }
