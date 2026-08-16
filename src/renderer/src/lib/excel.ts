@@ -47,7 +47,10 @@ function writeSheet(wb: ExcelJS.Workbook, spec: ExcelSheet, index: number): void
     ws.getRow(1).height = 22
   }
 
-  ws.columns = columns.map((c) => ({ width: c.width ?? Math.max(12, Math.min(40, c.header.length + 4)) }))
+  // Placeholder widths — replaced by real autofit below once every cell is
+  // written, so the pass measures what actually landed in the column rather
+  // than guessing from the header alone.
+  ws.columns = columns.map((c) => ({ width: c.width ?? Math.max(10, Math.min(40, c.header.length + 4)) }))
 
   const hr = ws.getRow(headerRowIdx)
   columns.forEach((c, i) => {
@@ -85,6 +88,23 @@ function writeSheet(wb: ExcelJS.Workbook, spec: ExcelSheet, index: number): void
       const condFill = c.fillFor ? c.fillFor(r) : undefined
       if (condFill) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: condFill } }
     })
+  })
+
+  // Autofit: size each column to whatever actually landed in it — the header,
+  // or its widest cell, whichever is longer — so nothing reads cramped or
+  // truncated. An explicit `width` still acts as a floor, not a ceiling.
+  columns.forEach((c, ci) => {
+    let maxLen = c.header.length
+    rows.forEach((r) => {
+      const raw = c.value ? c.value(r) : r[c.key]
+      if (raw == null || raw === '') return
+      const display =
+        typeof raw === 'number' && c.numFmt
+          ? raw.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          : String(raw)
+      if (display.length > maxLen) maxLen = display.length
+    })
+    ws.getColumn(ci + 1).width = Math.max(c.width ?? 0, Math.min(48, maxLen + 3))
   })
 }
 

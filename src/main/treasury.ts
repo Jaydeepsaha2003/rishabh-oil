@@ -174,52 +174,37 @@ export async function dropLcUpfrontInterest(lcId: number): Promise<void> {
   }
 }
 
-// Posts the Dr Interest/Cr Bank entry for a preclose's premature interest —
-// the days between preclose and the LC's original maturity that never
-// happen — when that cost is routed to the bank rather than netted against
-// the party at preclose time. Deferred until you reconcile the matching bank
-// statement line, same mechanism as the upfront-interest pair above.
-export async function postLcPrecloseInterest(lcId: number, dateIn?: string): Promise<{ id: number } | null> {
+// An LC's margin/security-deposit FD, released back as cash once the LC is
+// preclosed and the bank no longer needs it held — a separate, optional
+// voucher from the preclosure's repayment (see saveLcRepayment below).
+export async function postLcMarginRelease(lcId: number, amount: number, dateIn?: string): Promise<{ id: number } | null> {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [lcId] })
   if (!res.rows.length) throw new Error('LC not found')
   const lc = toPlain(res)[0]
-  await dropEntry(n(lc.preclose_interest_journal_entry_id) || null)
-  const interest = round2(n(lc.preclose_premature_interest))
-  if (interest < 0.005) {
-    await c.execute({ sql: 'UPDATE letters_of_credit SET preclose_interest_journal_entry_id = NULL WHERE id = ?', args: [lcId] })
-    return null
-  }
+  const value = round2(amount)
+  if (value < 0.005) return null
   const je = await postJournal({
     date: String(dateIn || todayISO()).slice(0, 10),
-    vchType: 'JOURNAL',
+    vchType: 'RECEIPT',
     vchNo: String(lc.lc_no || ''),
-    narration: `LC ${lc.lc_no} — premature interest ${interest.toFixed(2)} for preclosing before maturity, paid from the bank per its statement`,
+    narration: `LC ${lc.lc_no} preclosed — margin of ${value.toFixed(2)} refunded by ${lc.bank}`,
     companyId: n(lc.company_id) || undefined,
     lines: [
-      { account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest },
-      { account: 'BANK A/C', group: 'Bank Accounts', cr: interest }
+      { account: 'BANK A/C', group: 'Bank Accounts', dr: value },
+      { account: 'LC MARGIN A/C', group: 'Deposits (Asset)', cr: value }
     ]
   })
-  await c.execute({ sql: 'UPDATE letters_of_credit SET preclose_interest_journal_entry_id = ? WHERE id = ?', args: [je.id, lcId] })
   return { id: je.id }
 }
 
-// Reverses the preclose premature-interest posting above.
-export async function dropLcPrecloseInterest(lcId: number): Promise<void> {
-  const c = getClient()
-  const res = await c.execute({ sql: 'SELECT preclose_interest_journal_entry_id FROM letters_of_credit WHERE id = ?', args: [lcId] })
-  if (res.rows.length && res.rows[0].preclose_interest_journal_entry_id) {
-    await dropEntry(n(res.rows[0].preclose_interest_journal_entry_id))
-    await c.execute({ sql: 'UPDATE letters_of_credit SET preclose_interest_journal_entry_id = NULL WHERE id = ?', args: [lcId] })
-  }
-}
-
-// Closing the LC out before its natural maturity settles whatever's left of
-// the open amount one of two ways: the bank releases it back as cash (its
-// margin deposit is no longer needed), or it covers a balance still owed to
-// the party (part of an invoice was never actually drawn down under the LC).
-export async function postLcPrecloseSettlement(
+// Preclosing means less interest actually accrues than the LC's netAvailable
+// deduction assumed (that deduction was struck over the FULL planned usance
+// period, when the supplier's bill was settled) — so the pending days
+// (preclose date -> original maturity) are a REBATE, not a charge. It either
+// goes back to the company directly, or is passed on to the supplier who was
+// effectively underpaid by that same amount when their bill was settled.
+export async function postLcPrematureInterestRebate(
   lcId: number,
   direction: 'credit_to_us' | 'pay_to_party',
   amount: number,
@@ -242,9 +227,9 @@ export async function postLcPrecloseSettlement(
   if (direction === 'credit_to_us') {
     lines = [
       { account: 'BANK A/C', group: 'Bank Accounts', dr: value },
-      { account: 'LC MARGIN A/C', group: 'Deposits (Asset)', cr: value }
+      { account: 'INTEREST A/C', group: 'Indirect Expenses', cr: value }
     ]
-    narration = `LC ${lc.lc_no} preclosed — unused margin of ${value.toFixed(2)} refunded by ${lc.bank}`
+    narration = `LC ${lc.lc_no} preclosed — interest rebate of ${value.toFixed(2)} for the days that won't happen, credited by ${lc.bank}`
   } else {
     const party = String(lc.supplier_name || '').trim()
     if (!party) throw new Error('The LC has no supplier party — set it on the LC first')
@@ -252,7 +237,7 @@ export async function postLcPrecloseSettlement(
       { account: party, group: 'Sundry Creditors', dr: value },
       { account: 'BANK A/C', group: 'Bank Accounts', cr: value }
     ]
-    narration = `LC ${lc.lc_no} preclosed — remaining balance of ${value.toFixed(2)} paid to ${party}`
+    narration = `LC ${lc.lc_no} preclosed — interest rebate of ${value.toFixed(2)} passed on to ${party}`
   }
   const je = await postJournal({
     date,
@@ -395,7 +380,7 @@ export async function listLcRepayments(lcId: number): Promise<Row[]> {
 async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   const c = getClient()
   const res = await c.execute({
-    sql: `SELECT r.*, l.lc_no, l.company_id, l.bank
+    sql: `SELECT r.*, l.lc_no, l.company_id, l.bank, l.amount AS lc_open_amount
           FROM lc_repayments r
           JOIN letters_of_credit l ON l.id = r.lc_id
           WHERE r.id = ?`,
@@ -404,17 +389,22 @@ async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   if (!res.rows.length) throw new Error('Repayment not found')
   const rep = toPlain(res)[0]
   await dropEntry(n(rep.journal_entry_id) || null)
-  const amount = round2(n(rep.amount))
+  // rep.amount is the TOTAL the bank debited (open amount + any excess) —
+  // comm_charges/bank_charges are that excess broken into expense categories,
+  // so only the LC's own open amount goes to LC REPAYMENT A/C. Posting the
+  // full rep.amount there too would double-count the excess against the
+  // charge lines below.
+  const openAmount = round2(n(rep.lc_open_amount))
   const commCharges = round2(n(rep.comm_charges))
   const bankCharges = round2(n(rep.bank_charges))
   const date = String(rep.repay_date || todayISO()).slice(0, 10)
   const lines: { account: string; group: string; dr?: number; cr?: number }[] = [
-    { account: 'LC REPAYMENT A/C', group: 'Loans (Liability)', dr: amount }
+    { account: 'LC REPAYMENT A/C', group: 'Loans (Liability)', dr: openAmount }
   ]
   if (commCharges > 0.005) lines.push({ account: 'COMM. CHARGES A/C', group: 'Indirect Expenses', dr: commCharges })
   if (bankCharges > 0.005) lines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: bankCharges })
   const totalCharges = round2(commCharges + bankCharges)
-  lines.push({ account: 'BANK A/C', group: 'Bank Accounts', cr: round2(amount + totalCharges) })
+  lines.push({ account: 'BANK A/C', group: 'Bank Accounts', cr: round2(openAmount + totalCharges) })
   const je = await postJournal({
     date,
     vchType: 'PAYMENT',

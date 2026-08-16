@@ -636,10 +636,12 @@ export function registerIpc(): void {
         id: number
         values: {
           preclose_date: string
-          direction: 'credit_to_us' | 'pay_to_party'
           amount: number
+          comm_charges?: number
+          bank_charges?: number
           premature_interest?: number
-          interest_route?: 'party' | 'bank'
+          premature_interest_direction?: 'credit_to_us' | 'pay_to_party'
+          release_margin?: boolean
         }
       }
     ) => precloseLC(id, values)

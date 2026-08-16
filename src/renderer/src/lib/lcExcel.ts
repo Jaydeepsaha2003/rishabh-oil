@@ -12,11 +12,14 @@ function todayISO(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-function daysLeftLabel(date: unknown): string {
+// Signed day count (positive = due in future, 0 = due today, negative =
+// overdue) as a real number — paired with the column's "D" custom format
+// below so Excel shows e.g. "45D" / "0D" / "-4D" while staying sortable and
+// filterable, unlike a hardcoded "45d left" string.
+function daysLeftValue(date: unknown): number | '' {
   const s = String(date || '').slice(0, 10)
   if (!s) return ''
-  const d = Math.round((new Date(`${s}T00:00:00`).getTime() - new Date(`${todayISO()}T00:00:00`).getTime()) / 86400000)
-  return d < 0 ? `${-d}d overdue` : d === 0 ? 'Due today' : `${d}d left`
+  return Math.round((new Date(`${s}T00:00:00`).getTime() - new Date(`${todayISO()}T00:00:00`).getTime()) / 86400000)
 }
 
 const STAGE_LABEL: Record<string, string> = {
@@ -30,176 +33,64 @@ const PURPOSE_LABEL: Record<string, string> = {
   manufacturing: 'Manufacturing'
 }
 
-// One flat row per LC — every stage date, the FD/margin/interest/charges
-// breakdown, and both amounts each in their own column, nothing tucked behind
-// a generic "Date"/"Amount" pair. Only the bills and repayments underneath an
-// LC are collapsible, via the +/- outline handles (group down to just the LC
-// row, ungroup to see each invoice).
+// One flat row per LC, per the client's suggested format — every stage date
+// and the FD/margin/interest/charges breakdown each in their own column.
 export async function exportLcRegister(lcs: Row[], filename: string): Promise<void> {
-  const details = await Promise.all(
-    lcs.map((l) =>
-      Promise.all([window.api.lc.issuances(Number(l.id)), window.api.lc.repayments(Number(l.id))])
-    )
-  )
-
-  const rows: Row[] = []
-  lcs.forEach((l, i) => {
-    const [bills, reps] = details[i]
+  const rows: Row[] = lcs.map((l) => {
     const marginAmount = round2((n(l.amount) * n(l.margin_pct)) / 100)
     const interestAmount = round2((n(l.amount) * n(l.interest_pct) * n(l.usance_days)) / (100 * 365))
-    // A single invoice needs no +/- grouping to read — its own row folds
-    // straight into the LC's row instead of sitting as a separate child.
-    // Grouping is only worth it once there's more than one to collapse.
-    const soleBill = bills.length === 1 ? bills[0] : null
-    rows.push({
-      _group: true,
+    return {
       lc_no: l.lc_no || 'Pending LC no',
       bank: l.bank || '',
       supplier: l.supplier_name || '—',
       fd_no: l.fd_no || '',
       purpose: PURPOSE_LABEL[String(l.purpose || '')] || l.purpose || '',
-      type: 'LC',
       stage: STAGE_LABEL[String(l.stage || 'application')] || l.stage || '',
       application_date: formatDate(l.open_date),
       open_date: formatDate(l.opened_date),
       payment_received_date: formatDate(l.payment_received_date),
       maturity_date: formatDate(l.expiry_date),
-      days_left: daysLeftLabel(l.expiry_date),
+      days_left: daysLeftValue(l.expiry_date),
       interest_days: n(l.usance_days) || '',
       margin_pct: n(l.margin_pct) || '',
       margin_amount: marginAmount,
       interest_pct: n(l.interest_pct) || '',
-      interest_amount: interestAmount,
       interest_upfront: l.interest_upfront ? 'Yes' : 'No',
+      interest_amount: interestAmount,
       charges: n(l.charges),
       open_amount: n(l.amount),
       receipt_amount: n(l.lc_net_available),
-      utilized: n(l.utilized),
-      repaid: n(l.repaid),
-      outstanding: n(l.outstanding),
-      available: n(l.available),
-      linked_invoices: l.linked_invoice_nos || '',
-      detail_date: soleBill ? formatDate(soleBill.issue_date) : '',
-      detail_due: soleBill ? formatDate(soleBill.due_date) : '',
-      detail_amount: soleBill ? n(soleBill.amount) : '',
-      status: l.preclosed_date
-        ? `Preclosed ${formatDate(l.preclosed_date)}`
-        : soleBill
-          ? (String(soleBill.status || 'outstanding') === 'settled' ? 'Settled' : 'Outstanding')
-          : ''
-    })
-
-    for (const b of soleBill ? [] : bills) {
-      rows.push({
-        _group: false,
-        lc_no: l.lc_no || 'Pending LC no',
-        bank: l.bank || '',
-        supplier: l.supplier_name || '—',
-        fd_no: '',
-        purpose: '',
-        type: 'Bill',
-        stage: b.bill_no || '',
-        application_date: '',
-        open_date: '',
-        payment_received_date: '',
-        maturity_date: '',
-        days_left: '',
-        interest_days: '',
-        margin_pct: '',
-        margin_amount: '',
-        interest_pct: '',
-        interest_amount: '',
-        interest_upfront: '',
-        charges: '',
-        open_amount: '',
-        receipt_amount: '',
-        utilized: '',
-        repaid: '',
-        outstanding: '',
-        available: '',
-        linked_invoices: '',
-        detail_date: formatDate(b.issue_date),
-        detail_due: formatDate(b.due_date),
-        detail_amount: n(b.amount),
-        status: String(b.status || 'outstanding') === 'settled' ? 'Settled' : 'Outstanding'
-      })
-    }
-
-    for (const r of reps) {
-      rows.push({
-        _group: false,
-        lc_no: l.lc_no || 'Pending LC no',
-        bank: l.bank || '',
-        supplier: l.supplier_name || '—',
-        fd_no: '',
-        purpose: '',
-        type: 'Repayment',
-        stage: r.party_name || '',
-        application_date: '',
-        open_date: '',
-        payment_received_date: '',
-        maturity_date: '',
-        days_left: '',
-        interest_days: '',
-        margin_pct: '',
-        margin_amount: '',
-        interest_pct: '',
-        interest_amount: '',
-        interest_upfront: '',
-        charges: '',
-        open_amount: '',
-        receipt_amount: '',
-        utilized: '',
-        repaid: '',
-        outstanding: '',
-        available: '',
-        linked_invoices: '',
-        detail_date: formatDate(r.repay_date),
-        detail_due: '',
-        detail_amount: n(r.amount) + n(r.maturity_charges),
-        status: r.posted ? 'Posted' : 'Draft'
-      })
+      linked_invoices: l.linked_invoice_nos || ''
     }
   })
 
   await exportRowsToExcel({
     filename,
     sheetName: 'LC register',
-    title: 'Letters of Credit — register with bills and repayments',
+    title: 'Letters of Credit register',
     columns: [
       { header: 'LC no', key: 'lc_no' },
-      { header: 'Bank', key: 'bank' },
+      { header: 'Discounting Bank', key: 'bank', width: 18 },
       { header: 'Supplier', key: 'supplier', width: 24 },
       { header: 'FD No', key: 'fd_no', width: 14 },
       { header: 'Purpose', key: 'purpose' },
-      { header: 'Type', key: 'type' },
       { header: 'Stage / Ref.', key: 'stage', width: 20 },
       { header: 'Application date', key: 'application_date' },
       { header: 'Open date', key: 'open_date' },
       { header: 'Payment received date', key: 'payment_received_date', width: 18 },
       { header: 'Maturity date', key: 'maturity_date', fill: 'FFC6EFCE' },
-      { header: 'Days left', key: 'days_left' },
+      { header: 'Days left', key: 'days_left', align: 'right', numFmt: '0"D"' },
       { header: 'Int. days', key: 'interest_days', align: 'right' },
       { header: 'Margin %', key: 'margin_pct', align: 'right' },
       { header: 'Margin amount (₹)', key: 'margin_amount', align: 'right', numFmt: '#,##0.00', width: 16 },
       { header: 'Interest % (ROI)', key: 'interest_pct', align: 'right', width: 14 },
-      { header: 'Interest amount (₹)', key: 'interest_amount', align: 'right', numFmt: '#,##0.00', width: 16 },
       { header: 'Interest upfront?', key: 'interest_upfront', width: 14 },
+      { header: 'Interest amount (₹)', key: 'interest_amount', align: 'right', numFmt: '#,##0.00', width: 16 },
       { header: 'LC charges (₹)', key: 'charges', align: 'right', numFmt: '#,##0.00', width: 14 },
       { header: 'LC Open Amount (₹)', key: 'open_amount', align: 'right', numFmt: '#,##0.00', width: 18 },
       { header: 'LC Receipt Amount (₹)', key: 'receipt_amount', align: 'right', numFmt: '#,##0.00', width: 18 },
-      { header: 'Utilised (₹)', key: 'utilized', align: 'right', numFmt: '#,##0.00', width: 14 },
-      { header: 'Repaid (₹)', key: 'repaid', align: 'right', numFmt: '#,##0.00', width: 14 },
-      { header: 'Outstanding (₹)', key: 'outstanding', align: 'right', numFmt: '#,##0.00', width: 14 },
-      { header: 'Available (₹)', key: 'available', align: 'right', numFmt: '#,##0.00' },
-      { header: 'Linked invoices', key: 'linked_invoices', width: 24 },
-      { header: 'Invoice date', key: 'detail_date' },
-      { header: 'Invoice due', key: 'detail_due' },
-      { header: 'Invoice amount (₹)', key: 'detail_amount', align: 'right', numFmt: '#,##0.00', width: 18 },
-      { header: 'Status', key: 'status', width: 16, fillFor: (r) => (r.status === 'Settled' ? 'FFC6EFCE' : undefined) }
+      { header: 'Linked invoices', key: 'linked_invoices', width: 24 }
     ],
-    rows,
-    isGroup: (r) => !!r._group,
-    outlineDetail: true
+    rows
   })
 }

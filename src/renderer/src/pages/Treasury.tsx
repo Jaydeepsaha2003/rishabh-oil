@@ -30,6 +30,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { InfoTip } from '@/components/ui/tooltip'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent } from '@/components/ui/tabs'
 import { PageHeader } from '@/components/PageHeader'
@@ -49,6 +50,14 @@ function daysTo(date: unknown): number | null {
   const s = String(date || '').slice(0, 10)
   if (!s) return null
   return Math.round((new Date(`${s}T00:00:00`).getTime() - new Date(`${todayISO()}T00:00:00`).getTime()) / 86400000)
+}
+
+// Same action either way — winding the LC up posts a repayment — just named
+// for what's actually happening: still early (Preclose) vs. simply repaying
+// an LC that's already run its natural course (Repay).
+function isLcPastMaturity(l: Row): boolean {
+  const expiry = String(l.expiry_date || '').slice(0, 10)
+  return !!expiry && todayISO() >= expiry
 }
 
 // Cumulative "due within" windows — matching how these filters actually read:
@@ -335,10 +344,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   }
 
   // ---------------- LC pre-closure ----------------
-  // Winding the LC up before its natural maturity — interest is recalculated
-  // over the days actually elapsed rather than the full planned usance, and
-  // whatever's left of the open amount is settled the way the user says:
-  // refunded back to us, or paid out to cover a balance still owed the party.
+  // Preclosing is the same event as logging a normal LC repayment — the bank
+  // still wants its full open amount back — just happening before maturity
+  // instead of at it. Interest is recalculated over the days actually
+  // elapsed, and on top of that, interest for the pending days (preclose ->
+  // original maturity, which will now never happen) gets folded into the
+  // same repayment as its excess-over-open-amount charge.
   const [precloseRow, setPrecloseRow] = useState<Row | null>(null)
   const [precloseForm, setPrecloseForm] = useState<Row>({})
   const [precloseSaving, setPrecloseSaving] = useState(false)
@@ -346,18 +357,36 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
 
   function openPreclose(l: Row): void {
     setPrecloseRow(l)
-    setPrecloseForm({ preclose_date: todayISO(), direction: 'credit_to_us', amount: '', interest_route: 'party', premature_interest: '' })
+    const precloseDate = todayISO()
+    const openAmount = n(l.amount)
+    const expiryDate = String(l.expiry_date || '').slice(0, 10)
+    const pendingDays = expiryDate
+      ? Math.max(0, Math.round((new Date(`${expiryDate}T00:00:00`).getTime() - new Date(`${precloseDate}T00:00:00`).getTime()) / 86400000))
+      : 0
+    const prematureInterest = round2((openAmount * n(l.interest_pct) * pendingDays) / (100 * 365))
+    setPrecloseForm({
+      preclose_date: precloseDate,
+      premature_interest: String(prematureInterest),
+      premature_interest_direction: 'credit_to_us',
+      amount: String(openAmount),
+      comm_charges: '',
+      bank_charges: '',
+      release_margin: false
+    })
     setPrecloseError(null)
   }
 
   const preclosePreview = useMemo(() => {
     if (!precloseRow || !precloseForm.preclose_date) return null
     const openAmount = n(precloseRow.amount)
-    const unused = round2(Math.max(0, openAmount - n(precloseRow.utilized)))
-    const openDate = String(precloseRow.open_date || '').slice(0, 10)
+    // Same start point usance_days was originally struck from at Payment
+    // Received (expiry_date − payment_received_date) — not the Application
+    // date, which can predate that by days or weeks and would otherwise
+    // inflate this recalculation.
+    const interestStart = String(precloseRow.payment_received_date || precloseRow.opened_date || precloseRow.open_date || '').slice(0, 10)
     const precloseDate = String(precloseForm.preclose_date)
-    const days = openDate
-      ? Math.max(0, Math.round((new Date(`${precloseDate}T00:00:00`).getTime() - new Date(`${openDate}T00:00:00`).getTime()) / 86400000))
+    const days = interestStart
+      ? Math.max(0, Math.round((new Date(`${precloseDate}T00:00:00`).getTime() - new Date(`${interestStart}T00:00:00`).getTime()) / 86400000))
       : 0
     const interest = round2((openAmount * n(precloseRow.interest_pct) * days) / (100 * 365))
     const charges = round2(n(precloseRow.charges))
@@ -370,12 +399,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       ? Math.max(0, Math.round((new Date(`${expiryDate}T00:00:00`).getTime() - new Date(`${precloseDate}T00:00:00`).getTime()) / 86400000))
       : 0
     const prematureInterest = round2((openAmount * n(precloseRow.interest_pct) * pendingDays) / (100 * 365))
-    const interestRoute = precloseForm.interest_route === 'bank' ? 'bank' : 'party'
-    // Routed to the party, the premature interest is folded straight into the
-    // one settlement figure — no separate voucher line for it.
-    const suggested = round2(Math.max(0, unused - interest - charges - (interestRoute === 'party' ? prematureInterest : 0)))
-    return { unused, days, interest, charges, suggested, pendingDays, prematureInterest, interestRoute }
-  }, [precloseRow, precloseForm.preclose_date, precloseForm.interest_route])
+    const margin = round2((openAmount * n(precloseRow.margin_pct)) / 100)
+    return { openAmount, days, interest, charges, pendingDays, prematureInterest, margin }
+  }, [precloseRow, precloseForm.preclose_date])
 
   async function savePreclose(): Promise<void> {
     if (!precloseRow) return
@@ -383,18 +409,30 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     if (precloseRow.open_date && String(precloseForm.preclose_date) < String(precloseRow.open_date)) {
       return setPrecloseError('Pre-closure date cannot be before the application date')
     }
-    if (!(n(precloseForm.amount) >= 0)) return setPrecloseError('Enter the settlement amount')
+    const openAmount = n(precloseRow.amount)
+    if (!(n(precloseForm.amount) >= openAmount - 0.005)) {
+      return setPrecloseError(`The total debited (${formatINR(n(precloseForm.amount))}) cannot be less than the open amount (${formatINR(openAmount)})`)
+    }
+    const excess = round2(n(precloseForm.amount) - openAmount)
+    const splitTotal = round2(n(precloseForm.comm_charges) + n(precloseForm.bank_charges))
+    if (excess > 0.005 && Math.abs(splitTotal - excess) > 0.005) {
+      return setPrecloseError(`Comm. charges + Bank charges must add up to the ${formatINR(excess)} over the open amount`)
+    }
     setPrecloseSaving(true)
     setPrecloseError(null)
     try {
       await window.api.lc.preclose(Number(precloseRow.id), {
         preclose_date: String(precloseForm.preclose_date),
-        direction: precloseForm.direction === 'pay_to_party' ? 'pay_to_party' : 'credit_to_us',
         amount: n(precloseForm.amount),
+        comm_charges: n(precloseForm.comm_charges),
+        bank_charges: n(precloseForm.bank_charges),
         premature_interest: n(precloseForm.premature_interest),
-        interest_route: precloseForm.interest_route === 'bank' ? 'bank' : 'party'
+        premature_interest_direction: precloseForm.premature_interest_direction === 'pay_to_party' ? 'pay_to_party' : 'credit_to_us',
+        release_margin: !!precloseForm.release_margin
       })
-      toast.success('LC preclosed')
+      toast.success(
+        isLcPastMaturity(precloseRow) ? 'LC repaid — posted to the books' : 'LC preclosed — repayment logged and rebate posted to the books'
+      )
       setPrecloseRow(null)
       load()
     } catch (e) {
@@ -709,16 +747,6 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
         <div>
           <div className="mb-1 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
             Repayments
-            {String(l.stage || 'application') === 'payment_received' && (
-              <Button
-                size="sm"
-                variant="outline"
-                className="ml-auto h-6 px-2 text-[11px] normal-case tracking-normal"
-                onClick={() => setRepayForm({ lc_id: l.id, open_amount: n(l.amount), party_id: l.receivable_party_id ? String(l.receivable_party_id) : '', repay_date: todayISO(), posted: false })}
-              >
-                <Plus className="h-3 w-3" /> Log repayment
-              </Button>
-            )}
           </div>
           {reps.length === 0 ? (
             <p className="text-xs text-muted-foreground">
@@ -740,7 +768,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <td className="text-right font-medium tabular-nums">{formatINR(r.amount)}</td>
                     <td className="text-right tabular-nums text-muted-foreground">{n(r.comm_charges) > 0 ? formatINR(r.comm_charges) : '—'}</td>
                     <td className="text-right tabular-nums text-muted-foreground">{n(r.bank_charges) > 0 ? formatINR(r.bank_charges) : '—'}</td>
-                    <td className="text-right font-medium tabular-nums">{formatINR(n(r.amount) + n(r.comm_charges) + n(r.bank_charges))}</td>
+                    <td className="text-right font-medium tabular-nums">{formatINR(n(r.amount))}</td>
                     <td>{n(r.posted) ? <Badge variant="success">Posted</Badge> : <Badge variant="muted">Draft</Badge>}</td>
                     <td>
                       {r.document_path ? (
@@ -1118,8 +1146,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             {isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />} Details
                           </Button>
                           {!l.preclosed_date && (
-                            <Button size="sm" variant="outline" className="h-7 px-2 text-xs" title="Wind this LC up before its natural maturity" onClick={() => openPreclose(l)}>
-                              Preclose
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2 text-xs"
+                              title={isLcPastMaturity(l) ? 'Repay this LC now that it has matured' : 'Wind this LC up before its natural maturity'}
+                              onClick={() => openPreclose(l)}
+                            >
+                              {isLcPastMaturity(l) ? 'Repay' : 'Preclose'}
                             </Button>
                           )}
                           <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit LC" onClick={() => setLcForm({ ...l })}>
@@ -1234,8 +1268,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                   )
                                 })()}
                                 {!l.preclosed_date && (
-                                  <Button size="sm" variant="outline" className="h-7 px-2 text-xs" title="Wind this LC up before its natural maturity" onClick={() => openPreclose(l)}>
-                                    Preclose
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-2 text-xs"
+                                    title={isLcPastMaturity(l) ? 'Repay this LC now that it has matured' : 'Wind this LC up before its natural maturity'}
+                                    onClick={() => openPreclose(l)}
+                                  >
+                                    {isLcPastMaturity(l) ? 'Repay' : 'Preclose'}
                                   </Button>
                                 )}
                                 <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit LC" onClick={() => setLcForm({ ...l })}>
@@ -1435,8 +1475,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               <Landmark className="h-5 w-5" />
             </div>
             <div>
-              <DialogTitle className="text-[16px] font-bold text-white">Preclose LC {precloseRow?.lc_no || '(pending no.)'}</DialogTitle>
-              <p className="text-[12px] text-white/70">Wind this LC up before its natural maturity.</p>
+              <DialogTitle className="text-[16px] font-bold text-white">
+                {precloseRow && isLcPastMaturity(precloseRow) ? 'Repay' : 'Preclose'} LC {precloseRow?.lc_no || '(pending no.)'}
+              </DialogTitle>
+              <p className="text-[12px] text-white/70">
+                {precloseRow && isLcPastMaturity(precloseRow)
+                  ? 'Repay this LC now that it has matured.'
+                  : "Wind this LC up before its natural maturity."}
+              </p>
             </div>
           </div>
           <div className="grid gap-4 p-6">
@@ -1459,44 +1505,41 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               <div className="rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm">
                 <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-sky-900">
                   <Banknote className="h-3.5 w-3.5" /> Recalculated over the actual period
+                  <InfoTip text="This corrects the margin/interest/charges voucher already posted for this LC to the shorter period actually used — a separate entry from the repayment below." />
                   <span className="ml-auto flex items-center gap-1 rounded-full bg-sky-700 px-2.5 py-1 text-[11px] font-bold normal-case tracking-normal text-white">
                     <CalendarClock className="h-3 w-3" /> {preclosePreview.days} interest days
                   </span>
                 </h3>
                 <div className="grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
                   <div>
-                    <div className="text-[10px] uppercase tracking-wide text-sky-700">Unused open amount</div>
-                    <div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(preclosePreview.unused)}</div>
+                    <div className="text-[10px] uppercase tracking-wide text-sky-700">LC Open Amount</div>
+                    <div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(preclosePreview.openAmount)}</div>
                   </div>
                   <div>
-                    <div className="text-[10px] uppercase tracking-wide text-sky-700">− Interest</div>
+                    <div className="text-[10px] uppercase tracking-wide text-sky-700">Interest</div>
                     <div className="text-[15px] font-semibold tabular-nums text-rose-700">{formatINR(preclosePreview.interest)}</div>
                   </div>
                   <div>
-                    <div className="text-[10px] uppercase tracking-wide text-sky-700">− Charges</div>
+                    <div className="text-[10px] uppercase tracking-wide text-sky-700">Charges</div>
                     <div className="text-[15px] font-semibold tabular-nums text-rose-700">{formatINR(preclosePreview.charges)}</div>
                   </div>
                   <div>
-                    <div className="text-[10px] uppercase tracking-wide text-sky-700">Suggested settlement</div>
-                    <div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(preclosePreview.suggested)}</div>
+                    <div className="text-[10px] uppercase tracking-wide text-sky-700">Margin</div>
+                    <div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(preclosePreview.margin)}</div>
                   </div>
                 </div>
               </div>
             )}
 
             {preclosePreview && preclosePreview.pendingDays > 0 && (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 shadow-sm">
-                <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-amber-900">
-                  <AlertTriangle className="h-3.5 w-3.5" /> Premature closure — interest on the days that won't happen
-                  <span className="ml-auto flex items-center gap-1 rounded-full bg-amber-700 px-2.5 py-1 text-[11px] font-bold normal-case tracking-normal text-white">
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
+                <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-emerald-900">
+                  <AlertTriangle className="h-3.5 w-3.5" /> Premature closure — interest rebate
+                  <InfoTip text="Interest for the pending days was already deducted from what the supplier was paid, over the full planned term. Since those days won't actually happen, this comes back as a rebate — either to your own account, or passed on to the supplier." />
+                  <span className="ml-auto flex items-center gap-1 rounded-full bg-emerald-700 px-2.5 py-1 text-[11px] font-bold normal-case tracking-normal text-white">
                     <CalendarClock className="h-3 w-3" /> {preclosePreview.pendingDays} pending days
                   </span>
                 </h3>
-                <p className="mb-3 text-[11px] text-amber-900/80">
-                  {preclosePreview.pendingDays} days remain between this preclosure and the LC's original maturity — the bank
-                  still counts interest for the term it committed to. This is on top of, not instead of, the interest already
-                  recalculated above.
-                </p>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="flex flex-col gap-1.5">
                     <Label className="flex flex-wrap items-center gap-1.5">
@@ -1516,39 +1559,39 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     />
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label>Route this interest</Label>
+                    <Label>Rebate goes to</Label>
                     <div className="grid grid-cols-2 gap-1.5">
                       <button
                         type="button"
-                        onClick={() => setPrecloseForm({ ...precloseForm, interest_route: 'party' })}
+                        onClick={() => setPrecloseForm({ ...precloseForm, premature_interest_direction: 'credit_to_us' })}
                         className={cn(
                           'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
-                          precloseForm.interest_route !== 'bank'
-                            ? 'border-amber-500 bg-amber-100 text-amber-900'
+                          precloseForm.premature_interest_direction !== 'pay_to_party'
+                            ? 'border-emerald-500 bg-emerald-100 text-emerald-900'
                             : 'border-[#e5dfc8] text-muted-foreground hover:bg-muted/40'
                         )}
                       >
-                        Adjust to party A/C
+                        Credit to us
                       </button>
                       <button
                         type="button"
-                        onClick={() => setPrecloseForm({ ...precloseForm, interest_route: 'bank' })}
+                        onClick={() => setPrecloseForm({ ...precloseForm, premature_interest_direction: 'pay_to_party' })}
                         className={cn(
                           'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
-                          precloseForm.interest_route === 'bank'
-                            ? 'border-sky-500 bg-sky-50 text-sky-800'
+                          precloseForm.premature_interest_direction === 'pay_to_party'
+                            ? 'border-amber-500 bg-amber-50 text-amber-800'
                             : 'border-[#e5dfc8] text-muted-foreground hover:bg-muted/40'
                         )}
                       >
-                        Link a Bank Entry
+                        Pay to party
                       </button>
                     </div>
                   </div>
                 </div>
-                <p className="mt-2 text-[10px] text-amber-900/70">
-                  {precloseForm.interest_route === 'bank'
-                    ? "Deferred — posted only once you link and reconcile its own line from the Bank Reconciliation screen."
-                    : "Netted straight into the settlement amount below — one voucher, no separate entry for it."}
+                <p className="mt-2 text-[10px] text-emerald-900/70">
+                  {precloseForm.premature_interest_direction === 'pay_to_party'
+                    ? 'Paid to the supplier — they were underpaid by this much when their bill was settled over the full term.'
+                    : 'Credited straight into your own current account — a separate entry from the repayment below.'}
                 </p>
               </div>
             )}
@@ -1556,58 +1599,78 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
             <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
               <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
                 <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><Percent className="h-3 w-3 text-[#1a2c56]" /></span>
-                Settlement
+                Repayment to bank
               </h3>
+              <p className="mb-3 text-[11px] text-muted-foreground">
+                Preclosing is a repayment, just like Log Repayment — the bank still wants its full open amount back.
+              </p>
               <div className="grid gap-3 sm:grid-cols-2">
-                <div className="grid gap-1.5">
-                  <Label>Direction <span className="text-red-600">*</span></Label>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setPrecloseForm({ ...precloseForm, direction: 'credit_to_us' })}
-                      className={cn(
-                        'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
-                        precloseForm.direction !== 'pay_to_party'
-                          ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
-                          : 'border-[#e5dfc8] text-muted-foreground hover:bg-muted/40'
-                      )}
-                    >
-                      Credit to us
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPrecloseForm({ ...precloseForm, direction: 'pay_to_party' })}
-                      className={cn(
-                        'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
-                        precloseForm.direction === 'pay_to_party'
-                          ? 'border-amber-500 bg-amber-50 text-amber-800'
-                          : 'border-[#e5dfc8] text-muted-foreground hover:bg-muted/40'
-                      )}
-                    >
-                      Pay to party
-                    </button>
+                <div className="flex flex-col gap-1.5">
+                  <Label>Open amount (LC)</Label>
+                  <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm text-muted-foreground">
+                    {formatINR(n(preclosePreview?.openAmount))}
                   </div>
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <Label className="flex flex-wrap items-center gap-1.5">
-                    Settlement amount (₹) <span className="text-red-600">*</span>
-                    {preclosePreview && (
-                      <button
-                        type="button"
-                        className="text-[10px] font-medium text-teal-700 underline-offset-2 hover:underline"
-                        onClick={() => setPrecloseForm({ ...precloseForm, amount: String(preclosePreview.suggested) })}
-                      >
-                        Use suggested ({formatINR(preclosePreview.suggested)})
-                      </button>
-                    )}
+                  <Label>
+                    Total debited from bank (₹) <span className="text-red-600">*</span>
                   </Label>
                   <Input type="number" value={precloseForm.amount ?? ''} onChange={(e) => setPrecloseForm({ ...precloseForm, amount: e.target.value })} />
+                  {preclosePreview && n(precloseForm.amount) > 0 && n(precloseForm.amount) < n(preclosePreview.openAmount) - 0.005 && (
+                    <span className="text-[10px] font-medium text-rose-600">Cannot be less than the open amount</span>
+                  )}
                 </div>
+                {preclosePreview &&
+                  (() => {
+                    const excess = round2(n(precloseForm.amount) - preclosePreview.openAmount)
+                    if (excess <= 0.005) return null
+                    const splitTotal = round2(n(precloseForm.comm_charges) + n(precloseForm.bank_charges))
+                    const splitOff = Math.abs(splitTotal - excess) > 0.005
+                    return (
+                      <div className="rounded-md border border-amber-300 bg-amber-50 p-3 sm:col-span-2">
+                        <p className="mb-2 text-[11px] font-medium text-amber-900">
+                          This is {formatINR(excess)} over the open amount — split that between commission and bank charges below.
+                        </p>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="flex flex-col gap-1.5">
+                            <Label>Comm. charges (₹)</Label>
+                            <Input
+                              type="number"
+                              value={precloseForm.comm_charges ?? ''}
+                              onChange={(e) => setPrecloseForm({ ...precloseForm, comm_charges: e.target.value })}
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <Label>Bank charges (₹)</Label>
+                            <Input
+                              type="number"
+                              value={precloseForm.bank_charges ?? ''}
+                              onChange={(e) => setPrecloseForm({ ...precloseForm, bank_charges: e.target.value })}
+                            />
+                          </div>
+                        </div>
+                        {splitOff && (
+                          <span className="mt-1.5 block text-[10px] font-medium text-rose-600">
+                            Comm. + Bank charges must add up to {formatINR(excess)} (currently {formatINR(splitTotal)})
+                          </span>
+                        )}
+                      </div>
+                    )
+                  })()}
               </div>
-              <p className="mt-2 text-[10px] text-muted-foreground">
-                {precloseForm.direction === 'pay_to_party'
-                  ? "Paid to the party — settles a balance still owed on an invoice this LC didn't fully cover."
-                  : 'Refunded by the bank — the unused margin/security deposit released back as cash.'}
+              {preclosePreview && n(preclosePreview.margin) > 0 && (
+                <label className="mt-3 flex cursor-pointer items-center gap-2 text-[13px]">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4"
+                    checked={!!precloseForm.release_margin}
+                    onChange={(e) => setPrecloseForm({ ...precloseForm, release_margin: e.target.checked })}
+                  />
+                  Also release the margin FD ({formatINR(preclosePreview.margin)}) — a separate Dr Bank / Cr LC Margin entry
+                </label>
+              )}
+              <p className="mt-3 text-[10px] text-muted-foreground">
+                Posts Dr LC Repayment (+ Comm./Bank charges) / Cr Bank the moment you confirm below.
               </p>
             </section>
 
@@ -1615,7 +1678,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
           </div>
           <DialogFooter className="px-6 pb-6">
             <Button variant="outline" onClick={() => setPrecloseRow(null)} disabled={precloseSaving}>Cancel</Button>
-            <Button onClick={() => void savePreclose()} disabled={precloseSaving}>{precloseSaving ? 'Saving…' : 'Preclose LC'}</Button>
+            <Button onClick={() => void savePreclose()} disabled={precloseSaving}>
+              {precloseSaving ? 'Saving…' : precloseRow && isLcPastMaturity(precloseRow) ? 'Repay LC' : 'Preclose LC'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2205,7 +2270,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       {/* Log / post an LC repayment */}
       <Dialog open={!!repayForm} onOpenChange={(o) => !o && setRepayForm(null)}>
         <DialogContent className="max-w-lg">
-          <DialogHeader><DialogTitle>{repayForm?.id ? 'Alter repayment' : 'Log an LC repayment'}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Alter repayment</DialogTitle></DialogHeader>
           {repayForm && (
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="flex flex-col gap-1.5 sm:col-span-2">
@@ -2259,11 +2324,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   </div>
                 )
               })()}
-              {(n(repayForm.amount) > 0 || n(repayForm.comm_charges) > 0 || n(repayForm.bank_charges) > 0) && (
+              {n(repayForm.amount) > 0 && (
                 <div className="flex flex-col gap-1.5">
                   <Label>Total debited from bank</Label>
                   <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm font-medium">
-                    {formatINR(n(repayForm.amount) + n(repayForm.comm_charges) + n(repayForm.bank_charges))}
+                    {formatINR(n(repayForm.amount))}
                   </div>
                 </div>
               )}

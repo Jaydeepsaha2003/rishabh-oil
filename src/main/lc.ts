@@ -1,7 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
-import { postLcOpening, settleLcBillsCombined, postLcPrecloseSettlement } from './treasury'
+import { postLcOpening, settleLcBillsCombined, postLcMarginRelease, postLcPrematureInterestRebate, saveLcRepayment } from './treasury'
 import { facilityHeadroom } from './facilities'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -92,9 +92,10 @@ export async function listLCs(): Promise<Row[]> {
       // What's actually left to issue bills against — interest and charges
       // come out of the open amount before issued bills reduce it further.
       available: netAvailable(l, n(l.utilized)),
-      // What's still owed to the bank on what was actually drawn down — not
-      // the full sanctioned limit, which the LC may never fully utilise.
-      outstanding: Math.round((n(l.utilized) - n(l.repaid)) * 100) / 100,
+      // What's still owed against the LC's full sanctioned limit, net of
+      // repayments — explicitly requested this way even for an LC that's
+      // barely drawn down, so it reads as the limit's outstanding exposure.
+      outstanding: Math.round((n(l.amount) - n(l.repaid)) * 100) / 100,
       compliant,
       display_status: !compliant ? 'non_compliant' : String(l.workflow_status || 'in_progress')
     }
@@ -403,10 +404,12 @@ export async function precloseLC(
   id: number,
   v: {
     preclose_date: string
-    direction: 'credit_to_us' | 'pay_to_party'
     amount: number
+    comm_charges?: number
+    bank_charges?: number
     premature_interest?: number
-    interest_route?: 'party' | 'bank'
+    premature_interest_direction?: 'credit_to_us' | 'pay_to_party'
+    release_margin?: boolean
   }
 ): Promise<{ id: number }> {
   const c = getClient()
@@ -416,24 +419,57 @@ export async function precloseLC(
   if (lc.preclosed_date) throw new Error('This LC is already preclosed')
   const precloseDate = String(v.preclose_date || '').slice(0, 10)
   if (!precloseDate) throw new Error('Pick the preclosure date')
-  if (!lc.open_date) throw new Error('The LC has no application date to count interest days from')
-  const actualDays = Math.max(0, daysBetween(String(lc.open_date), precloseDate))
-  const interestRoute = v.interest_route === 'bank' ? 'bank' : 'party'
-  // Routed to the party, the premature interest is already netted into the
-  // settlement amount the caller sends — one voucher, no separate line for
-  // it. Routed to the bank, it's deferred and posted only once its own
-  // statement line is reconciled (see postLcPrecloseInterest / bankRecon.ts).
+  // Interest accrues from when the bank actually paid out (or, failing that,
+  // when the LC opened) — the same start point usance_days was originally
+  // struck from at Payment Received (expiry_date − payment_received_date) —
+  // not from the Application date, which can predate that by days or weeks
+  // and would otherwise inflate this recalculation.
+  const interestStart = lc.payment_received_date || lc.opened_date || lc.open_date
+  if (!interestStart) throw new Error('The LC has no date yet to count interest days from')
+  const actualDays = Math.max(0, daysBetween(String(interestStart), precloseDate))
+  const prematureInterest = round2(n(v.premature_interest))
+  const rebateDirection = v.premature_interest_direction === 'pay_to_party' ? 'pay_to_party' : 'credit_to_us'
   await c.execute({
-    sql: `UPDATE letters_of_credit SET usance_days = ?, preclosed_date = ?, preclose_settlement_direction = ?,
-          preclose_settlement_amount = ?, preclose_premature_interest = ?, preclose_interest_route = ? WHERE id = ?`,
-    args: [actualDays, precloseDate, v.direction, round2(n(v.amount)), round2(n(v.premature_interest)), interestRoute, id]
+    sql: `UPDATE letters_of_credit SET usance_days = ?, preclosed_date = ?, preclose_premature_interest = ?,
+          preclose_interest_route = ? WHERE id = ?`,
+    args: [actualDays, precloseDate, prematureInterest, rebateDirection, id]
   })
   // Re-strikes the margin/interest/charges voucher with the corrected
   // (shorter) interest period now stored on the record.
   await postLcOpening(id)
-  const settlement = await postLcPrecloseSettlement(id, v.direction, n(v.amount), precloseDate)
-  if (settlement) {
-    await c.execute({ sql: 'UPDATE letters_of_credit SET preclose_journal_entry_id = ? WHERE id = ?', args: [settlement.id, id] })
+  // The pending days (preclose -> original maturity) never happen, so the
+  // interest netAvailable() already deducted from the supplier's payment for
+  // that stretch is a rebate now, not a charge — either refunded straight to
+  // the company, or passed on to the supplier who was underpaid by exactly
+  // this much when their bill was settled.
+  const rebate = await postLcPrematureInterestRebate(id, rebateDirection, prematureInterest, precloseDate)
+  if (rebate) {
+    await c.execute({ sql: 'UPDATE letters_of_credit SET preclose_interest_journal_entry_id = ? WHERE id = ?', args: [rebate.id, id] })
+  }
+  // Preclosing is ALSO the same event as logging an LC repayment — the bank
+  // still wants its full open amount back, just before maturity instead of
+  // at it. Any additional Comm./Bank charges here are unrelated to the
+  // rebate above — they're only for when the bank statement shows the total
+  // debit running higher than the open amount for some other reason.
+  await saveLcRepayment({
+    lc_id: id,
+    amount: n(v.amount),
+    comm_charges: n(v.comm_charges),
+    bank_charges: n(v.bank_charges),
+    repay_date: precloseDate,
+    posted: true,
+    note: 'Preclosure repayment'
+  })
+  if (v.release_margin) {
+    const margin = round2((n(lc.amount) * n(lc.margin_pct)) / 100)
+    const settlement = await postLcMarginRelease(id, margin, precloseDate)
+    if (settlement) {
+      await c.execute({
+        sql: `UPDATE letters_of_credit SET preclose_settlement_direction = 'margin_released',
+              preclose_settlement_amount = ?, preclose_journal_entry_id = ? WHERE id = ?`,
+        args: [margin, settlement.id, id]
+      })
+    }
   }
   await c.execute({ sql: "UPDATE letters_of_credit SET workflow_status = 'preclosed' WHERE id = ?", args: [id] })
   return { id }
