@@ -115,6 +115,11 @@ export function GateEntry(): React.JSX.Element {
   }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
   const [gSearch, setGSearch] = useState('')
   const [gDir, setGDir] = useState<'ALL' | 'in' | 'out'>('ALL')
+  // Quick entries (entry_kind 'simple') have no document, no weighment, no
+  // stock behind them — just a vehicle number and a note. Normal entries go
+  // through the full weighbridge (Tare/Gross). Separate enough in what they
+  // record that the register benefits from filtering one out from the other.
+  const [gKind, setGKind] = useState<'ALL' | 'quick' | 'normal'>('ALL')
   const gCatOptions = useMemo(
     () => Array.from(new Set(rows.map((r) => String(r.rec_type || '')).filter(Boolean))).sort(),
     [rows]
@@ -130,6 +135,11 @@ export function GateEntry(): React.JSX.Element {
       if (gTo && d > gTo) return false
       if (gCats.length && !gCats.includes(String(r.rec_type || ''))) return false
       if (gDir !== 'ALL' && String(r.direction || 'in') !== gDir) return false
+      if (gKind !== 'ALL') {
+        const isQuick = String(r.entry_kind) === 'simple'
+        if (gKind === 'quick' && !isQuick) return false
+        if (gKind === 'normal' && isQuick) return false
+      }
       if (!q) return true
       return [r.gate_entry_no, r.ref_no, r.tanker_no, r.supplier_name, r.sale_customer, r.sale_invoice, r.person, r.note]
         .filter(Boolean)
@@ -137,7 +147,7 @@ export function GateEntry(): React.JSX.Element {
         .toLowerCase()
         .includes(q)
     })
-  }, [rows, gFrom, gTo, gCats, gDir, gSearch])
+  }, [rows, gFrom, gTo, gCats, gDir, gKind, gSearch])
   const paged = usePaged(filteredRows)
   const [tankers, setTankers] = useState<Row[]>([])
   const [suppliers, setSuppliers] = useState<Row[]>([])
@@ -1052,50 +1062,62 @@ export function GateEntry(): React.JSX.Element {
       <div className="w-full px-4 py-5">
         <Tabs value={tab} onValueChange={setTab}>
           <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-            <TabsList>
-              <TabsTrigger value="in">
+            <TabsList className="bg-gradient-to-r from-[#0b1530] to-[#152449] p-1 text-white/60">
+              <TabsTrigger
+                value="in"
+                className="data-[state=active]:bg-emerald-700 data-[state=active]:text-white data-[state=active]:shadow-md"
+              >
                 Gate in
                 {pendingIn > 0 && (
-                  <span className="ml-1.5 rounded-full bg-amber-200 px-1.5 text-[10px] font-semibold text-amber-900">
+                  <span className="ml-1.5 rounded-full bg-amber-500 px-1.5 text-[10px] font-semibold text-amber-950">
                     {pendingIn}
                   </span>
                 )}
               </TabsTrigger>
-              <TabsTrigger value="out">
+              <TabsTrigger
+                value="out"
+                className="data-[state=active]:bg-sky-700 data-[state=active]:text-white data-[state=active]:shadow-md"
+              >
                 Gate out
                 {pendingOut > 0 && (
-                  <span className="ml-1.5 rounded-full bg-amber-200 px-1.5 text-[10px] font-semibold text-amber-900">
+                  <span className="ml-1.5 rounded-full bg-amber-500 px-1.5 text-[10px] font-semibold text-amber-950">
                     {pendingOut}
                   </span>
                 )}
               </TabsTrigger>
-              <TabsTrigger value="view">
+              <TabsTrigger
+                value="view"
+                className="data-[state=active]:bg-amber-700 data-[state=active]:text-white data-[state=active]:shadow-md"
+              >
                 Entries
                 {filteredRows.length > 0 && (
-                  <span className="ml-1.5 rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground">
+                  <span className="ml-1.5 rounded-full bg-white/20 px-1.5 text-[10px] font-semibold text-white">
                     {filteredRows.length}
                   </span>
                 )}
               </TabsTrigger>
-              <TabsTrigger value="rejected">
+              <TabsTrigger
+                value="rejected"
+                className="data-[state=active]:bg-rose-700 data-[state=active]:text-white data-[state=active]:shadow-md"
+              >
                 Rejected
                 {rejectedRows.length > 0 && (
-                  <span className="ml-1.5 rounded-full bg-rose-200 px-1.5 text-[10px] font-semibold text-rose-900">
+                  <span className="ml-1.5 rounded-full bg-rose-400 px-1.5 text-[10px] font-semibold text-rose-950">
                     {rejectedRows.length}
                   </span>
                 )}
               </TabsTrigger>
             </TabsList>
             {tab === 'view' && (
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-card px-2.5 py-1">
-                <div className="flex shrink-0 items-center gap-0.5 rounded-md bg-muted p-0.5">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-[#d9d2b8] bg-[#fffdf4] px-2.5 py-1 shadow-sm">
+                <div className="flex shrink-0 items-center gap-0.5 rounded-md bg-[#e5dfc8]/60 p-0.5">
                   {(['ALL', 'in', 'out'] as const).map((d) => (
                     <button
                       key={d}
                       type="button"
                       className={cn(
                         'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide transition',
-                        gDir === d ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                        gDir === d ? 'bg-[#1a2c56] text-white shadow-sm' : 'text-[#1a2c56]/70 hover:text-[#1a2c56]'
                       )}
                       onClick={() => setGDir(d)}
                     >
@@ -1103,7 +1125,24 @@ export function GateEntry(): React.JSX.Element {
                     </button>
                   ))}
                 </div>
-                <div className="h-5 shrink-0 border-l" />
+                <div className="h-5 shrink-0 border-l border-[#d9d2b8]" />
+                <div className="flex shrink-0 items-center gap-0.5 rounded-md bg-[#e5dfc8]/60 p-0.5">
+                  {(['ALL', 'normal', 'quick'] as const).map((k) => (
+                    <button
+                      key={k}
+                      type="button"
+                      title={k === 'quick' ? 'No document, no weighment, no stock' : k === 'normal' ? 'Went through the full weighbridge' : undefined}
+                      className={cn(
+                        'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide transition',
+                        gKind === k ? 'bg-[#1a2c56] text-white shadow-sm' : 'text-[#1a2c56]/70 hover:text-[#1a2c56]'
+                      )}
+                      onClick={() => setGKind(k)}
+                    >
+                      {k === 'ALL' ? 'All' : k === 'quick' ? 'Quick entries' : 'Normal entries'}
+                    </button>
+                  ))}
+                </div>
+                <div className="h-5 shrink-0 border-l border-[#d9d2b8]" />
                 <div className="relative shrink-0">
                   <Input
                     type="search"
@@ -1113,18 +1152,18 @@ export function GateEntry(): React.JSX.Element {
                     onChange={(e) => setGSearch(e.target.value)}
                   />
                 </div>
-                <div className="h-5 shrink-0 border-l" />
+                <div className="h-5 shrink-0 border-l border-[#d9d2b8]" />
                 <div className="flex shrink-0 items-center gap-1.5">
-                  <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+                  <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-[#1a2c56]/70">
                     Date
                   </span>
                   <DatePicker value={gFrom} onChange={(v) => setGFrom(v || '')} max={gTo || undefined} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
                   <span className="shrink-0 text-[10px] text-muted-foreground">to</span>
                   <DatePicker value={gTo} onChange={(v) => setGTo(v || '')} min={gFrom || undefined} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
                 </div>
-                <div className="h-5 shrink-0 border-l" />
+                <div className="h-5 shrink-0 border-l border-[#d9d2b8]" />
                 <div className="flex shrink-0 items-center gap-1.5">
-                  <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+                  <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-[#1a2c56]/70">
                     Category
                   </span>
                   <MultiSelectFilter
@@ -1135,13 +1174,13 @@ export function GateEntry(): React.JSX.Element {
                     className="h-7 w-[10.5rem] shrink-0 text-[11px]"
                   />
                 </div>
-                {(gFrom || gTo || gCats.length > 0 || gDir !== 'ALL' || gSearch) && (
+                {(gFrom || gTo || gCats.length > 0 || gDir !== 'ALL' || gKind !== 'ALL' || gSearch) && (
                   <>
-                    <div className="h-5 shrink-0 border-l" />
+                    <div className="h-5 shrink-0 border-l border-[#d9d2b8]" />
                     <button
                       type="button"
-                      className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
-                      onClick={() => { setGFrom(''); setGTo(''); setGCats([]); setGDir('ALL'); setGSearch('') }}
+                      className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-rose-700 hover:text-rose-900"
+                      onClick={() => { setGFrom(''); setGTo(''); setGCats([]); setGDir('ALL'); setGKind('ALL'); setGSearch('') }}
                     >
                       Clear
                     </button>
@@ -1621,16 +1660,19 @@ export function GateEntry(): React.JSX.Element {
           <TabsContent value="view">
         {/* History */}
         <section className="overflow-hidden rounded-xl border bg-card shadow-sm">
-          <div className="border-b bg-muted/40 px-4 py-2.5 text-sm font-semibold">Gate register</div>
-          <Table className="text-[13px]">
+          <div className="flex items-center gap-2 bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2.5 text-white">
+            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/15"><ClipboardList className="h-3.5 w-3.5" /></span>
+            <span className="text-[13px] font-bold uppercase tracking-widest">Gate register</span>
+          </div>
+          <Table className="text-[13px] [&_td]:border-r [&_td]:border-slate-100 [&_td:last-child]:border-r-0 [&_th]:border-r [&_th]:border-slate-200 [&_th:last-child]:border-r-0">
             <TableHeader><TableRow>
-              <TableHead>Gate entry no</TableHead>
+              <TableHead>Gate entry</TableHead>
               <TableHead>In / Out</TableHead>
               <TableHead>Rec type</TableHead>
               <TableHead>Date</TableHead>
               <TableHead>Vehicle · party</TableHead>
-              <TableHead className="text-right">Dispatch qty</TableHead>
-              <TableHead className="text-right">Received (net)</TableHead>
+              <TableHead className="text-right">Dis Qty</TableHead>
+              <TableHead className="text-right">Rec (net)</TableHead>
               <TableHead className="text-right">Difference</TableHead>
               <TableHead>Status</TableHead>
               <TableHead className="text-right">Actions</TableHead>
@@ -1708,7 +1750,7 @@ export function GateEntry(): React.JSX.Element {
                         )}
                       </TableCell>
                       <TableCell>
-                        {done ? <Badge variant="success">Completed</Badge> : <Badge variant="warning">Pending weight</Badge>}
+                        {done ? <Badge variant="success">Completed</Badge> : <Badge variant="warning">Pending Wt.</Badge>}
                         {Number(row.no_weighment) === 1 && (
                           <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700">
                             {String(row.entry_kind) === 'simple' ? 'Quick entry' : 'No weighment'}
@@ -1717,7 +1759,9 @@ export function GateEntry(): React.JSX.Element {
                       </TableCell>
                       <TableCell><div className="flex justify-end gap-1">
                         <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEdit(row)}><Pencil className="h-4 w-4" /></Button>
-                        <Button size="icon" variant="ghost" className="h-8 w-8 text-rose-600" title="Reject — this tanker will never be completed" onClick={() => openReject(row)}><Ban className="h-4 w-4" /></Button>
+                        {!done && (
+                          <Button size="icon" variant="ghost" className="h-8 w-8 text-rose-600" title="Reject — this tanker will never be completed" onClick={() => openReject(row)}><Ban className="h-4 w-4" /></Button>
+                        )}
                         <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => remove(row)}><Trash2 className="h-4 w-4" /></Button>
                       </div></TableCell>
                     </TableRow>
@@ -1741,7 +1785,7 @@ export function GateEntry(): React.JSX.Element {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Gate entry no</TableHead>
+                    <TableHead>Gate entry</TableHead>
                     <TableHead>In / Out</TableHead>
                     <TableHead>Date</TableHead>
                     <TableHead>Vehicle · party</TableHead>

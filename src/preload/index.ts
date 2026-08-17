@@ -237,7 +237,11 @@ const api = {
     setInvoiceStage: (group: string, stage: string, force?: boolean, date?: string): Promise<{ group: string }> =>
       ipcRenderer.invoke('sales:setInvoiceStage', { group, stage, force, date }),
     removeInvoice: (group: string): Promise<{ group: string }> =>
-      ipcRenderer.invoke('sales:deleteInvoice', { group })
+      ipcRenderer.invoke('sales:deleteInvoice', { group }),
+    rejectInvoice: (group: string, reason: string): Promise<{ group: string }> =>
+      ipcRenderer.invoke('sales:rejectInvoice', { group, reason }),
+    unrejectInvoice: (group: string): Promise<{ group: string }> =>
+      ipcRenderer.invoke('sales:unrejectInvoice', { group })
   },
   skuRates: {
     parties: (packagingId: number): Promise<number[]> => ipcRenderer.invoke('skuRates:parties', { packagingId }),

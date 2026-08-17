@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, Download, Pencil, Plus, Search, SlidersHorizontal, Tags, Trash2, Upload } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Ban, Check, ChevronDown, ChevronLeft, ChevronRight, Download, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Tags, Trash2, Upload } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -249,6 +249,13 @@ function SalesTab({
       ).sort(),
     [invoices]
   )
+  // Rejected invoices (the customer refused the consignment) stay right in
+  // the main list — they're still sales, just flagged with a badge — and
+  // the Status filter's own "Cancelled" option narrows to just them, so
+  // there's no separate toggle for it.
+  // Dispatch status filter — Pending/Loaded/In transit/Unloaded/Cancelled,
+  // the same states the "Dispatch" column itself shows.
+  const [statusFilter, setStatusFilter] = useState<string[]>([])
   const filteredInvoices = useMemo(() => {
     const f = dateFrom || '0000-01-01'
     const t = dateTo || '9999-12-31'
@@ -259,6 +266,11 @@ function SalesTab({
       if (productType.length && !inv.lines.some((r) => productType.includes(String(r.product_category || '')))) {
         return false
       }
+      // Cancelled (rejected) sits outside the normal dispatch progression —
+      // an invoice can be rejected while still Pending, or after Loaded — so
+      // it's checked as its own status rather than one of DISPATCH_STAGES.
+      const effectiveStatus = inv.first.rejected_at ? 'cancelled' : stageInfo(inv.first).value
+      if (statusFilter.length && !statusFilter.includes(effectiveStatus)) return false
       if (!q) return true
       const hay = [
         inv.first.invoice_no,
@@ -270,7 +282,7 @@ function SalesTab({
         .toLowerCase()
       return hay.includes(q)
     })
-  }, [invoices, dateFrom, dateTo, search, productType])
+  }, [invoices, dateFrom, dateTo, search, productType, statusFilter])
 
   function blankHeader(): Row {
     return {
@@ -859,6 +871,38 @@ function SalesTab({
     }
   }
 
+  // Reject: the customer refused the consignment before it was ever fully
+  // delivered — the invoice stays on record (its Credit Note is a separate,
+  // manual step) but drops out of the Gate Out picker and the "Produce more"
+  // demand calc. Doesn't touch stock or the journal.
+  const [rejectInv, setRejectInv] = useState<{ group: string; first: Row; lines: Row[] } | null>(null)
+  const [rejectReason, setRejectReason] = useState('')
+  const [rejecting, setRejecting] = useState(false)
+  async function saveReject(): Promise<void> {
+    if (!rejectInv) return
+    if (!rejectReason.trim()) return void toast.error('Enter a reason')
+    setRejecting(true)
+    try {
+      await window.api.sales.rejectInvoice(rejectInv.group, rejectReason.trim())
+      toast.success('Invoice marked Rejected')
+      setRejectInv(null)
+      await load()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setRejecting(false)
+    }
+  }
+  async function restoreInvoice(inv: { group: string; first: Row }): Promise<void> {
+    try {
+      await window.api.sales.unrejectInvoice(inv.group)
+      toast.success('Invoice restored')
+      await load()
+    } catch (e) {
+      toast.error(errText(e))
+    }
+  }
+
   return (
     <div>
       {!formPage && (
@@ -901,6 +945,18 @@ function SalesTab({
             onApply={setProductType}
             allLabel="All product types"
             className="h-9 w-[11.5rem] text-[12px]"
+          />
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+            Status
+          </span>
+          <MultiSelectFilter
+            options={[...DISPATCH_STAGES.map((s) => ({ value: s.value, label: s.label })), { value: 'cancelled', label: 'Cancelled' }]}
+            value={statusFilter}
+            onApply={setStatusFilter}
+            allLabel="All statuses"
+            className="h-9 w-[10.5rem] text-[12px]"
           />
         </div>
         <ExcelButton
@@ -954,13 +1010,25 @@ function SalesTab({
                         <div className="flex items-center gap-1.5">
                           {isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                           <div>
-                            <div className="whitespace-nowrap">{formatDate(inv.first.sale_date)}</div>
+                            <div className="flex items-center gap-1.5 whitespace-nowrap">
+                              {formatDate(inv.first.sale_date)}
+                              {inv.first.rejected_at && (
+                                <Badge variant="destructive" className="gap-1 px-1.5 py-0 text-[10px]">
+                                  <Ban className="h-2.5 w-2.5" /> Rejected
+                                </Badge>
+                              )}
+                            </div>
                             <div className="truncate text-xs text-muted-foreground">{inv.first.invoice_no || '—'}</div>
                           </div>
                         </div>
                       </TableCell>
                       <TableCell className="align-top">
                         <div className="truncate font-medium" title={inv.first.customer || ''}>{inv.first.customer || '—'}</div>
+                        {inv.first.rejected_at && (
+                          <div className="mt-0.5 flex items-center gap-1 text-[11px] text-rose-700" title={inv.first.rejected_reason || ''}>
+                            <Ban className="h-3 w-3 shrink-0" /> <span className="truncate">{inv.first.rejected_reason}</span>
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell className="align-top">
                         <div className="text-sm">{inv.lines.length} item{inv.lines.length > 1 ? 's' : ''}</div>
@@ -1000,6 +1068,29 @@ function SalesTab({
                       </TableCell>
                       <TableCell className="align-top text-right" onClick={(e) => e.stopPropagation()}>
                         <div className="flex justify-end gap-0.5">
+                          {inv.first.rejected_at ? (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-emerald-600 hover:bg-emerald-50"
+                              title="Restore — puts it back in the active list"
+                              onClick={() => void restoreInvoice(inv)}
+                            >
+                              <RotateCcw className="h-4 w-4" />
+                            </Button>
+                          ) : (
+                            stg.value !== 'unloaded' && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-rose-600 hover:bg-rose-50"
+                                title="Reject — the customer refused this consignment"
+                                onClick={() => { setRejectInv(inv); setRejectReason('') }}
+                              >
+                                <Ban className="h-4 w-4" />
+                              </Button>
+                            )
+                          )}
                           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditInvoice(inv)}><Pencil className="h-4 w-4" /></Button>
                           <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => delInvoice(inv)}><Trash2 className="h-4 w-4" /></Button>
                         </div>
@@ -1696,6 +1787,36 @@ function SalesTab({
         </div>
       </div>
       )}
+
+      {/* Reject — the customer refused the consignment before it was fully delivered */}
+      <Dialog open={!!rejectInv} onOpenChange={(o) => !o && !rejecting && setRejectInv(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Reject {rejectInv?.first.invoice_no || 'this invoice'}</DialogTitle>
+          </DialogHeader>
+          <p className="text-[12px] text-muted-foreground">
+            Marks this invoice Rejected — it drops out of the Gate Out picker and the "Produce more" demand calc but
+            stays on record. This does not touch stock or the journal; if it needs correcting (e.g. a Credit Note),
+            do that separately.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            <Label>Reason <span className="text-red-600">*</span></Label>
+            <textarea
+              className="min-h-[5rem] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              placeholder="e.g. Customer refused the consignment — diverted to another party"
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRejectInv(null)} disabled={rejecting}>Cancel</Button>
+            <Button className="bg-rose-600 hover:bg-rose-700" onClick={() => void saveReject()} disabled={rejecting}>
+              {rejecting ? 'Saving…' : 'Reject invoice'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

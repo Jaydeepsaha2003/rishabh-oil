@@ -173,6 +173,8 @@ export interface Api {
     updateInvoice: (group: string, values: Row) => Promise<{ group: string; ids: number[] }>
     setInvoiceStage: (group: string, stage: string, force?: boolean, date?: string) => Promise<{ group: string }>
     removeInvoice: (group: string) => Promise<{ group: string }>
+    rejectInvoice: (group: string, reason: string) => Promise<{ group: string }>
+    unrejectInvoice: (group: string) => Promise<{ group: string }>
   }
   skuRates: {
     parties: (packagingId: number) => Promise<number[]>

@@ -74,7 +74,7 @@ export async function listDispatchableSales(): Promise<Row[]> {
     -- A trading sale is a pass-through on paper: the goods never come to our
     -- yard, so no vehicle is ever weighed out against it.
     WHERE s.status = 'done' AND s.invoice_group IS NOT NULL
-      AND COALESCE(s.is_trading, 0) = 0
+      AND COALESCE(s.is_trading, 0) = 0 AND s.rejected_at IS NULL
     GROUP BY s.invoice_group
     ORDER BY MAX(s.sale_date) DESC, MAX(s.id) DESC
     LIMIT 300

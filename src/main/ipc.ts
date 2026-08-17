@@ -191,6 +191,8 @@ import {
   updateSaleInvoice,
   setInvoiceStage,
   deleteSaleInvoice,
+  rejectSaleInvoice,
+  unrejectSaleInvoice,
   listSalesBargains,
   createSalesBargain,
   updateSalesBargain,
@@ -560,6 +562,8 @@ export function registerIpc(): void {
     setInvoiceStage(group, stage, force, date)
   )
   handle('sales:deleteInvoice', (_e, { group }: { group: string }) => deleteSaleInvoice(group))
+  handle('sales:rejectInvoice', (_e, { group, reason }: { group: string; reason: string }) => rejectSaleInvoice(group, reason))
+  handle('sales:unrejectInvoice', (_e, { group }: { group: string }) => unrejectSaleInvoice(group))
   handle('sales:setStatus', (_e, { id, status }: { id: number; status: string }) =>
     setSaleStatus(id, status)
   )

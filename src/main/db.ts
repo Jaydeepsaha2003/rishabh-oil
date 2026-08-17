@@ -935,7 +935,16 @@ const MIGRATIONS = [
     journal_entry_id INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
-  'CREATE INDEX IF NOT EXISTS idx_lc_payment_ins_lc ON lc_payment_ins(lc_id)'
+  'CREATE INDEX IF NOT EXISTS idx_lc_payment_ins_lc ON lc_payment_ins(lc_id)',
+  // A sale invoice the customer refused to accept before it ever left through
+  // the gate (or was turned back before unloading) — marked Rejected with a
+  // reason rather than deleted, same reasoning as gate_entries above: the
+  // invoice stays on record for GST/audit, and a Credit Note against it is
+  // the actual correction, done separately. Applies to every line row sharing
+  // the invoice_group, since that's the unit every other invoice-level action
+  // (setInvoiceStage, deleteSaleInvoice) already operates on.
+  'ALTER TABLE sales ADD COLUMN rejected_at TEXT',
+  'ALTER TABLE sales ADD COLUMN rejected_reason TEXT'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

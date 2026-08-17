@@ -1027,6 +1027,29 @@ export async function deleteSaleInvoice(group: string): Promise<{ group: string 
   return { group }
 }
 
+// An invoice the customer refused to accept — kept on record (a Credit Note
+// against it is the real correction, done separately) but pulled out of every
+// "still needs to happen" view: the Gate Out picker, and the "Produce more"
+// demand calc. Applies to every line row sharing the group, same as
+// setInvoiceStage/deleteSaleInvoice above.
+export async function rejectSaleInvoice(group: string, reason: string): Promise<{ group: string }> {
+  const trimmed = String(reason || '').trim()
+  if (!trimmed) throw new Error('Enter a reason for rejecting this invoice')
+  await getClient().execute({
+    sql: "UPDATE sales SET rejected_at = datetime('now'), rejected_reason = ? WHERE invoice_group = ?",
+    args: [trimmed, group]
+  })
+  return { group }
+}
+
+export async function unrejectSaleInvoice(group: string): Promise<{ group: string }> {
+  await getClient().execute({
+    sql: 'UPDATE sales SET rejected_at = NULL, rejected_reason = NULL WHERE invoice_group = ?',
+    args: [group]
+  })
+  return { group }
+}
+
 // One-time backfill: apply output GST to sales booked before GST existed. The
 // rate is taken from the sale's bargain, else the customer master; sales with
 // no derivable rate are left untouched. Each affected sale is re-posted

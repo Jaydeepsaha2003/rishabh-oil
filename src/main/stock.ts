@@ -445,8 +445,11 @@ export async function productionNeeds(): Promise<Row[]> {
     return m
   }
 
+  // A rejected invoice will never actually ship — it stays on record for the
+  // Credit Note against it, but shouldn't keep demanding production for
+  // something that's never going out.
   const pending = await num(
-    "SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status != 'done' AND COALESCE(affects_stock, 1) = 1 AND company_id = ? GROUP BY product_id",
+    "SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status != 'done' AND COALESCE(affects_stock, 1) = 1 AND rejected_at IS NULL AND company_id = ? GROUP BY product_id",
     'pid'
   )
 
