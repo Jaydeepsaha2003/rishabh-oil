@@ -375,3 +375,26 @@ export async function deleteGateEntry(id: number): Promise<{ id: number }> {
   await getClient().execute({ sql: 'DELETE FROM gate_entries WHERE id = ?', args: [id] })
   return { id }
 }
+
+// A tanker that will never be completed — the party refused it and it went
+// elsewhere instead — gets marked Rejected rather than deleted, so the gate
+// register still explains what happened to it. Deliberately doesn't touch
+// the linked sale/stock at all; a Credit Note (or whatever the actual
+// correction is) is a separate, manual step.
+export async function rejectGateEntry(id: number, reason: string): Promise<{ id: number }> {
+  const trimmed = String(reason || '').trim()
+  if (!trimmed) throw new Error('Enter a reason for rejecting this entry')
+  await getClient().execute({
+    sql: "UPDATE gate_entries SET rejected_at = datetime('now'), rejected_reason = ? WHERE id = ?",
+    args: [trimmed, id]
+  })
+  return { id }
+}
+
+export async function unrejectGateEntry(id: number): Promise<{ id: number }> {
+  await getClient().execute({
+    sql: 'UPDATE gate_entries SET rejected_at = NULL, rejected_reason = NULL WHERE id = ?',
+    args: [id]
+  })
+  return { id }
+}

@@ -63,9 +63,15 @@ interface SelectProps {
   // Show the search box. Defaults to auto: only when the list is long enough to
   // warrant it (short lists like a status/type picker don't need a search box).
   searchable?: boolean
+  // Off by default — almost every use of this component is a data-entry field
+  // (pick one supplier/product/customer/etc. to save into a record), where a
+  // persistent checkbox square wrongly implies multi-select. Only the handful
+  // of genuine list-narrowing FILTER dropdowns opt in — everything else falls
+  // back to a plain checkmark that only shows on the selected row.
+  showCheckbox?: boolean
 }
 
-function Select({ value, onValueChange, disabled, children, searchable }: SelectProps): React.JSX.Element {
+function Select({ value, onValueChange, disabled, children, searchable, showCheckbox = false }: SelectProps): React.JSX.Element {
   const [open, setOpen] = React.useState(false)
   const [query, setQuery] = React.useState('')
   const [highlight, setHighlight] = React.useState(0)
@@ -279,7 +285,18 @@ function Select({ value, onValueChange, disabled, children, searchable }: Select
                 i === highlight ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60'
               )}
             >
-              <Check className={cn('mr-2 h-4 w-4 shrink-0', current === it.value ? 'opacity-100' : 'opacity-0')} />
+              {showCheckbox ? (
+                <span
+                  className={cn(
+                    'mr-2 flex h-4 w-4 shrink-0 items-center justify-center rounded border',
+                    current === it.value ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40'
+                  )}
+                >
+                  {current === it.value && <Check className="h-3 w-3" />}
+                </span>
+              ) : (
+                <Check className={cn('mr-2 h-4 w-4 shrink-0', current === it.value ? 'opacity-100' : 'opacity-0')} />
+              )}
               <span className="flex-1">{it.label}</span>
             </button>
           ))

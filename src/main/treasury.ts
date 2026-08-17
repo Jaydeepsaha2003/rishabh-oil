@@ -268,7 +268,23 @@ async function outstandingSaleRefsForLc(
   const customerName = String(custRes.rows[0]?.name || '').trim()
   if (!customerName) throw new Error('The receivable party could not be found')
 
-  const dealsRes = await c.execute({ sql: 'SELECT id, sale_id FROM trading_deals WHERE lc_id = ?', args: [lcId] })
+  // A deal belongs to this LC once at least one of its own purchase invoices
+  // is actually linked to it (lc_linked_orders — the real per-invoice record,
+  // since a deal's several invoices can each go to a different LC) — not
+  // trading_deals.lc_id, which is only a soft, last-touched pointer now.
+  const dealsRes = await c.execute({
+    sql: `SELECT DISTINCT td.id, td.sale_id
+          FROM trading_deals td
+          WHERE EXISTS (
+            SELECT 1 FROM lc_linked_orders lo
+            WHERE lo.lc_id = ?
+              AND lo.order_id IN (
+                SELECT order_id FROM trading_deal_orders WHERE deal_id = td.id
+                UNION SELECT td.order_id
+              )
+          )`,
+    args: [lcId]
+  })
   const dealRows = toPlain(dealsRes)
   if (!dealRows.length) throw new Error("This LC has no linked Trading deal to receive payment against")
   const dealIds = dealRows.map((d) => n(d.id))

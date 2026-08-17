@@ -94,8 +94,8 @@ export async function logEvent(
 }
 
 export interface LogFilter {
-  username?: string
-  entity?: string
+  username?: string | string[]
+  entity?: string | string[]
   action?: string
   from?: string
   to?: string
@@ -111,8 +111,14 @@ export async function listLogs(
   const where: string[] = []
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const args: any[] = []
-  if (filter.username) { where.push('username = ?'); args.push(filter.username) }
-  if (filter.entity) { where.push('entity = ?'); args.push(filter.entity) }
+  if (filter.username) {
+    const usernames = (Array.isArray(filter.username) ? filter.username : [filter.username]).filter(Boolean)
+    if (usernames.length) { where.push(`username IN (${usernames.map(() => '?').join(',')})`); args.push(...usernames) }
+  }
+  if (filter.entity) {
+    const entities = (Array.isArray(filter.entity) ? filter.entity : [filter.entity]).filter(Boolean)
+    if (entities.length) { where.push(`entity IN (${entities.map(() => '?').join(',')})`); args.push(...entities) }
+  }
   if (filter.action) { where.push('action = ?'); args.push(filter.action) }
   if (filter.from) { where.push('created_at >= ?'); args.push(filter.from) }
   if (filter.to) { where.push('created_at <= ?'); args.push(`${filter.to} 23:59:59`) }

@@ -12,7 +12,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
-import { useGlobalDateRange } from '@/lib/globalDateRange'
+import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { computeMoney } from '@/lib/orderCalc'
 import { isTradingParty } from '@/lib/constants'
 import { exportTradingDeals } from '@/lib/tradingExcel'
@@ -655,7 +655,7 @@ export function Trading(): React.JSX.Element {
 
   const filteredDeals = useMemo(() => {
     const q = search.trim().toLowerCase()
-    const inRange = globalRange.version > 0
+    const inRange = globalRangeAppliesTo(globalRange, 'trading')
     return deals.filter((d) => {
       if (inRange) {
         const dd = String(d.deal_date || '').slice(0, 10)
@@ -1001,10 +1001,10 @@ export function Trading(): React.JSX.Element {
         hint="No bargain, no tanker movement, no stock entries, no interest — the purchase and sale book straight through in one step, same as ticking 'Trading' inside Purchases/Sales, just from one dedicated screen with full GST/TDS/round-off control. GST/TDS auto-load from the supplier/customer master (highlighted amber) and can be overridden. Deleting a deal removes both its purchase and sale invoices."
         actions={
           <>
-            {globalRange.version > 0 && (
+            {globalRangeAppliesTo(globalRange, 'trading') && (
               <span
                 className="flex items-center gap-1.5 rounded-full border border-[#d9d2b8] bg-[#fffdf4] px-3 py-1.5 text-[11px] font-medium text-[#1a2c56]"
-                title="Set with Alt+F2 — applies across every page"
+                title={globalRange.scope === 'page' ? 'Set with Alt+F2 — applied to this page only' : 'Set with Alt+F2 — applies across every page'}
               >
                 <CalendarClock className="h-3.5 w-3.5" />
                 {formatDate(globalRange.from)} → {formatDate(globalRange.to)}
@@ -1017,7 +1017,7 @@ export function Trading(): React.JSX.Element {
               onClick={() =>
                 void exportTradingDeals(
                   filteredDeals,
-                  `trading-deals-${globalRange.version > 0 ? `${globalRange.from}-to-${globalRange.to}` : todayISO()}`
+                  `trading-deals-${globalRangeAppliesTo(globalRange, 'trading') ? `${globalRange.from}-to-${globalRange.to}` : todayISO()}`
                 )
               }
             >

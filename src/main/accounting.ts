@@ -311,7 +311,12 @@ export async function getVoucher(id: number): Promise<Row | null> {
 
 // The Day Book: every voucher in the period, one row each, with the principal
 // debit and credit ledgers as Tally shows them.
-export async function listVouchers(from?: string, to?: string, vchType?: string, companyId?: number): Promise<Row[]> {
+export async function listVouchers(
+  from?: string,
+  to?: string,
+  vchType?: string | string[],
+  companyId?: number
+): Promise<Row[]> {
   const c = getClient()
   const cid = companyId || getActiveCompanyId()
   const conds = ['je.company_id = ?']
@@ -325,8 +330,11 @@ export async function listVouchers(from?: string, to?: string, vchType?: string,
     args.push(to)
   }
   if (vchType) {
-    conds.push('je.vch_type = ?')
-    args.push(vchType)
+    const types = (Array.isArray(vchType) ? vchType : [vchType]).filter(Boolean)
+    if (types.length) {
+      conds.push(`je.vch_type IN (${types.map(() => '?').join(',')})`)
+      args.push(...types)
+    }
   }
   const res = await c.execute({
     sql: `SELECT je.id, je.entry_date, je.vch_type, je.vch_no, je.narration,

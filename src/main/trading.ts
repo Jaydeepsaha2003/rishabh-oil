@@ -452,23 +452,15 @@ export async function updateTradingDeal(id: number, v: Row): Promise<{ id: numbe
   return { id }
 }
 
-// A Trading LC is struck against whole deals, not a bare purchase invoice —
-// called from lc.ts on create/update with whichever deal ids the user ticked.
-// Any deal this LC held before that's no longer ticked goes back to unlinked;
-// a deal already claimed by a DIFFERENT LC is refused rather than silently
-// stolen from it.
+// Called from lc.ts on create/update with whichever deal ids own at least one
+// invoice the user ticked on this LC. trading_deals.lc_id is now only a soft,
+// last-LC-to-touch-an-invoice pointer for legacy display (e.g. Trading.tsx's
+// "LC ..." badge) — it is NOT the exclusivity boundary any more, since a
+// deal's several invoices can each go to a different LC. The real boundary is
+// per-invoice, enforced in lc.ts's syncLinkedOrders against lc_linked_orders.
 export async function linkTradingDealsToLc(lcId: number, dealIds: unknown): Promise<void> {
   const c = getClient()
   const ids = Array.isArray(dealIds) ? dealIds.map((x) => n(x)).filter((x) => x > 0) : []
-  if (ids.length) {
-    const taken = await c.execute({
-      sql: `SELECT id, lc_id FROM trading_deals WHERE id IN (${ids.join(',')}) AND lc_id IS NOT NULL AND lc_id != ?`,
-      args: [lcId]
-    })
-    if (taken.rows.length) {
-      throw new Error(`Deal #${taken.rows[0].id} is already linked to another LC`)
-    }
-  }
   await c.execute({
     sql: `UPDATE trading_deals SET lc_id = NULL WHERE lc_id = ? AND id NOT IN (${ids.length ? ids.join(',') : '0'})`,
     args: [lcId]

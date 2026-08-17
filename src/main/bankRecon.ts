@@ -202,8 +202,11 @@ export async function listBankStatementLines(filter: Row): Promise<Row[]> {
     args.push(n(filter.import_id))
   }
   if (filter?.status) {
-    where.push('status = ?')
-    args.push(String(filter.status))
+    const statuses = (Array.isArray(filter.status) ? filter.status : [filter.status]).map(String).filter(Boolean)
+    if (statuses.length) {
+      where.push(`status IN (${statuses.map(() => '?').join(',')})`)
+      args.push(...statuses)
+    }
   }
   const sql = `SELECT * FROM bank_statement_lines ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY txn_date DESC, id DESC`
   const res = await getClient().execute({ sql, args })

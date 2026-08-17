@@ -141,6 +141,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   // an outstanding bill's due date, or (no outstanding bill) the LC's expiry.
   const [lcDuePeriod, setLcDuePeriod] = useState('all')
   const [lcStageFilter, setLcStageFilter] = useState<string | null>(null)
+  const [lcPurposeFilter, setLcPurposeFilter] = useState<string | null>(null)
   // Every LC bill and discounted bill in one due-date-sorted list, regardless
   // of urgency — the alerts above only surface what's already close.
   const [tracker, setTracker] = useState<Row[]>([])
@@ -522,17 +523,56 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   }, [lcForm, orders, activeCompany])
 
   // A Trading LC finances one round trip — buy from the supplier, resell to
-  // the customer — so it's struck against the whole deal, one pick, not a
-  // bare purchase invoice. Only deals for this supplier that are still open
-  // (no LC of their own yet, or already this very LC's) are offered.
+  // the customer. A deal's own purchase side can span more than one invoice,
+  // and different invoices on the SAME deal can now go to DIFFERENT LCs, so
+  // deals aren't excluded here just because another LC already touched one of
+  // their invoices — see lcInvoiceClaims below, which does the actual
+  // per-invoice exclusivity check.
   const lcFormDeals = useMemo(() => {
     if (!lcForm || String(lcForm.purpose || '') !== 'trading') return []
-    return tradingDeals.filter(
-      (d) =>
-        (!lcForm.party_id || Number(d.supplier_id) === Number(lcForm.party_id)) &&
-        (!d.lc_id || (lcForm.id && Number(d.lc_id) === Number(lcForm.id)))
-    )
+    return tradingDeals.filter((d) => !lcForm.party_id || Number(d.supplier_id) === Number(lcForm.party_id))
   }, [lcForm, tradingDeals])
+
+  // Which LC (if any, other than the one being edited) already holds each
+  // purchase invoice — the real exclusivity boundary now that a deal's
+  // invoices can be split across LCs; a whole deal is no longer the unit.
+  const lcInvoiceClaims = useMemo(() => {
+    const m = new Map<number, Row>()
+    for (const l of lcs) {
+      if (lcForm?.id && Number(l.id) === Number(lcForm.id)) continue
+      const ids: number[] = Array.isArray(l.linked_order_ids) ? l.linked_order_ids : []
+      for (const oid of ids) m.set(Number(oid), l)
+    }
+    return m
+  }, [lcs, lcForm?.id])
+
+  // One row per actual purchase invoice, flattened out of every open deal for
+  // this supplier — each invoice is its own pick now, not bundled behind a
+  // single per-deal checkbox.
+  const lcFormTradingInvoices = useMemo(() => {
+    const rows: Row[] = []
+    for (const d of lcFormDeals) {
+      const lines: Row[] =
+        Array.isArray(d.purchase_lines) && d.purchase_lines.length
+          ? d.purchase_lines
+          : [{ order_id: d.order_id, invoice_no: d.purchase_invoice_no }]
+      for (const pl of lines) {
+        const orderId = Number(pl.order_id)
+        if (!orderId) continue
+        const o = orders.find((x) => Number(x.id) === orderId)
+        rows.push({
+          deal_id: Number(d.id),
+          order_id: orderId,
+          invoice_no: pl.invoice_no || o?.invoice_no || '',
+          deal_date: d.deal_date,
+          customer_id: d.customer_id,
+          customer_name: d.customer_name,
+          net_amount: n(o?.net_amount)
+        })
+      }
+    }
+    return rows
+  }, [lcFormDeals, orders])
 
   // Suppliers who actually deal in the selected purpose — the Suppliers
   // master itself records this (Trading or Manufacturing), so a Trading LC
@@ -610,21 +650,38 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     load()
   }
 
-  // ---------------- LC Payment IN (last leg — customer pays for the resale) ----------------
-  // Only a Trading LC's own round trip closes this way, and only once the
-  // bank side is already repaid — Application -> Open -> Payment received ->
-  // Preclose/Repayment -> Payment IN. A deal's sale side can come in across
-  // more than one receipt, so "fully paid" (and so "closed") is computed live
-  // from the linked deal(s) rather than a one-shot flag on the LC itself.
+  // ---------------- LC Payment IN (customer pays for the resale) ----------------
+  // Only a Trading LC's own round trip closes this way. The customer's payment
+  // and the bank being repaid (Preclose/Repayment) are two independent legs —
+  // Payment IN opens up as soon as the LC reaches Payment received, not only
+  // after Preclose. A deal's sale side can come in across more than one
+  // receipt, so "fully paid" (and so "closed") is computed live from the
+  // linked deal(s) rather than a one-shot flag on the LC itself.
+  //
+  // A deal "belongs" to an LC when at least one of its own purchase invoices
+  // is actually linked to it (lc.linked_order_ids, the real per-invoice
+  // record) — not d.lc_id, which is only a soft, last-invoice-touched pointer
+  // now that a deal's invoices can be split across more than one LC.
+  function dealOrderIds(d: Row): number[] {
+    const lines: Row[] = Array.isArray(d.purchase_lines) ? d.purchase_lines : []
+    const ids = lines.map((l) => Number(l.order_id)).filter(Boolean)
+    return ids.length ? ids : [Number(d.order_id)].filter(Boolean)
+  }
   function tradingDealsFor(lcId: number): Row[] {
-    return tradingDeals.filter((d) => Number(d.lc_id) === Number(lcId))
+    const l = lcs.find((x) => Number(x.id) === Number(lcId))
+    const linked = new Set((Array.isArray(l?.linked_order_ids) ? l!.linked_order_ids : []).map(Number))
+    if (!linked.size) return []
+    return tradingDeals.filter((d) => dealOrderIds(d).some((oid) => linked.has(oid)))
   }
   function isLcPaymentInDone(l: Row): boolean {
     const deals = tradingDealsFor(Number(l.id))
     return deals.length > 0 && deals.every((d) => d.sale_fully_paid)
   }
+  // The customer paying for the resale and the bank being repaid are two
+  // independent legs of the round trip — Payment IN no longer waits on
+  // Preclose/Repayment, just on the LC having reached Payment received.
   function canMarkPaymentIn(l: Row): boolean {
-    return String(l.purpose || '') === 'trading' && !!l.preclosed_date && !isLcPaymentInDone(l)
+    return String(l.purpose || '') === 'trading' && String(l.stage || 'application') === 'payment_received' && !isLcPaymentInDone(l)
   }
   const [paymentInForm, setPaymentInForm] = useState<Row | null>(null)
   const [paymentInInvoices, setPaymentInInvoices] = useState<Row[]>([])
@@ -750,13 +807,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   const lcsFiltered = useMemo(() => {
     let rows = lcsWithDue
     if (lcStageFilter) rows = rows.filter((l) => String(l.stage || 'application') === lcStageFilter)
+    if (lcPurposeFilter) rows = rows.filter((l) => String(l.purpose || 'manufacturing') === lcPurposeFilter)
     if (lcDuePeriod === 'all') return rows
     const maxDays = DUE_PERIODS.find((p) => p.key === lcDuePeriod)?.maxDays
     if (maxDays == null) return rows
     // Cumulative: overdue and everything due sooner counts too, not just the
     // slice of days that falls exactly in this bucket.
     return rows.filter((l) => l.days_left_effective != null && l.days_left_effective <= maxDays)
-  }, [lcsWithDue, lcDuePeriod, lcStageFilter])
+  }, [lcsWithDue, lcDuePeriod, lcStageFilter, lcPurposeFilter])
 
   const [lcExporting, setLcExporting] = useState(false)
   async function downloadLcRegister(): Promise<void> {
@@ -1149,6 +1207,20 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   {p.label}
                 </button>
               ))}
+              <div className="h-4 w-px bg-[#e5dfc8]" />
+              {(['manufacturing', 'trading'] as const).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setLcPurposeFilter(lcPurposeFilter === p ? null : p)}
+                  className={cn(
+                    'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide capitalize transition-colors',
+                    lcPurposeFilter === p ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
+                  )}
+                >
+                  {p}
+                </button>
+              ))}
               <div className="ml-auto flex gap-1 rounded-md border border-[#d9d2b8] bg-white p-0.5">
                 <Button size="icon" variant={lcView === 'cards' ? 'default' : 'ghost'} className="h-7 w-7" title="Card view" onClick={() => setLcView('cards')}>
                   <LayoutGrid className="h-3.5 w-3.5" />
@@ -1186,6 +1258,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 <StageBadge stage={String(l.stage || 'application')} />
                                 {l.preclosed_date && <Badge variant="muted">Preclosed {formatDate(l.preclosed_date)}</Badge>}
                                 {isLcPaymentInDone(l) && <Badge variant="success">Payment IN</Badge>}
+                                {canMarkPaymentIn(l) && <Badge variant="warning">Awaiting Payment IN</Badge>}
                               </div>
                               <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
                                 <Landmark className="h-3 w-3 shrink-0" /> {l.bank}
@@ -1254,6 +1327,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => void openLcDetail(Number(l.id))}>
                             <ChevronRight className="h-3.5 w-3.5" /> Details
                           </Button>
+                          {canMarkPaymentIn(l) && (
+                            <Button
+                              size="sm"
+                              className="h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700"
+                              title="Record the customer's payment for the resale — independent of whether the bank side has been preclosed yet"
+                              onClick={() => void openPaymentIn(l)}
+                            >
+                              Mark Payment IN
+                            </Button>
+                          )}
                           {!l.preclosed_date && (
                             <Button
                               size="sm"
@@ -1263,16 +1346,6 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               onClick={() => openPreclose(l)}
                             >
                               {isLcPastMaturity(l) ? 'Repay' : 'Preclose'}
-                            </Button>
-                          )}
-                          {canMarkPaymentIn(l) && (
-                            <Button
-                              size="sm"
-                              className="h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700"
-                              title="Record the customer's payment for the resale, closing this LC"
-                              onClick={() => void openPaymentIn(l)}
-                            >
-                              Mark Payment IN
                             </Button>
                           )}
                           <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit LC" onClick={() => setLcForm({ ...l })}>
@@ -1349,6 +1422,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                     <StageBadge stage={String(l.stage || 'application')} />
                                     {l.preclosed_date && <Badge variant="muted">Preclosed</Badge>}
                                     {isLcPaymentInDone(l) && <Badge variant="success">Payment IN</Badge>}
+                                    {canMarkPaymentIn(l) && <Badge variant="warning">Awaiting Payment IN</Badge>}
                                   </div>
                                   <div className="text-[11px] text-muted-foreground">{l.bank}{n(l.margin_pct) ? ` · margin ${l.margin_pct}%` : ''}</div>
                                 </div>
@@ -1385,6 +1459,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                     </Button>
                                   )
                                 })()}
+                                {canMarkPaymentIn(l) && (
+                                  <Button
+                                    size="sm"
+                                    className="h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700"
+                                    title="Record the customer's payment for the resale — independent of whether the bank side has been preclosed yet"
+                                    onClick={() => void openPaymentIn(l)}
+                                  >
+                                    Mark Payment IN
+                                  </Button>
+                                )}
                                 {!l.preclosed_date && (
                                   <Button
                                     size="sm"
@@ -1394,16 +1478,6 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                     onClick={() => openPreclose(l)}
                                   >
                                     {isLcPastMaturity(l) ? 'Repay' : 'Preclose'}
-                                  </Button>
-                                )}
-                                {canMarkPaymentIn(l) && (
-                                  <Button
-                                    size="sm"
-                                    className="h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700"
-                                    title="Record the customer's payment for the resale, closing this LC"
-                                    onClick={() => void openPaymentIn(l)}
-                                  >
-                                    Mark Payment IN
                                   </Button>
                                 )}
                                 <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit LC" onClick={() => setLcForm({ ...l })}>
@@ -1812,10 +1886,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       <Dialog open={!!stageRow} onOpenChange={(o) => !o && setStageRow(null)}>
         <DialogContent
           className={cn(
-            'overflow-hidden p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100',
-            // The Payment Received step carries the 4-column back-calculated
-            // panel plus the upfront-interest toggle's explanatory paragraph —
-            // both need real width, or the figures/text wrap badly.
+            'max-h-[85vh] overflow-y-auto p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100',
             nextLcStage(String(stageRow?.stage || 'application')) === 'payment_received' ? 'max-w-5xl' : 'max-w-lg'
           )}
         >
@@ -1857,54 +1928,56 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 )}
                 {next === 'payment_received' && (
                   <>
-                    <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
-                      <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
-                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><CalendarClock className="h-3 w-3 text-[#1a2c56]" /></span>
-                        Dates
-                      </h3>
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <div className="flex flex-col gap-1.5">
-                          <Label>Payment received date <span className="text-red-600">*</span></Label>
-                          <DatePicker
-                            value={String(stageForm.payment_received_date || '')}
-                            onChange={(v) => setStageForm({ ...stageForm, payment_received_date: v })}
-                            min={String(stageRow?.opened_date || '') || undefined}
-                          />
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
+                        <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><CalendarClock className="h-3 w-3 text-[#1a2c56]" /></span>
+                          Dates
+                        </h3>
+                        <div className="grid gap-3 grid-cols-2">
+                          <div className="flex flex-col gap-1.5">
+                            <Label>Payment received date <span className="text-red-600">*</span></Label>
+                            <DatePicker
+                              value={String(stageForm.payment_received_date || '')}
+                              onChange={(v) => setStageForm({ ...stageForm, payment_received_date: v })}
+                              min={String(stageRow?.opened_date || '') || undefined}
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <Label>Maturity date <span className="text-red-600">*</span></Label>
+                            <DatePicker
+                              value={String(stageForm.expiry_date || '')}
+                              onChange={(v) => setStageForm({ ...stageForm, expiry_date: v })}
+                              min={String(stageForm.payment_received_date || '') || undefined}
+                            />
+                          </div>
                         </div>
-                        <div className="flex flex-col gap-1.5">
-                          <Label>Maturity date <span className="text-red-600">*</span></Label>
-                          <DatePicker
-                            value={String(stageForm.expiry_date || '')}
-                            onChange={(v) => setStageForm({ ...stageForm, expiry_date: v })}
-                            min={String(stageForm.payment_received_date || '') || undefined}
-                          />
+                      </section>
+                      <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
+                        <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><Percent className="h-3 w-3 text-[#1a2c56]" /></span>
+                          Margin, interest & charges
+                        </h3>
+                        <div className="grid grid-cols-3 gap-3">
+                          <div className="flex flex-col gap-1.5">
+                            <Label>Margin %</Label>
+                            <Input type="number" value={stageForm.margin_pct ?? ''} onChange={(e) => setStageForm({ ...stageForm, margin_pct: e.target.value })} />
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <Label>Interest % p.a. (ROI)</Label>
+                            <Input type="number" value={stageForm.interest_pct ?? ''} onChange={(e) => setStageForm({ ...stageForm, interest_pct: e.target.value })} />
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <Label>LC charges (₹)</Label>
+                            <Input type="number" value={stageForm.charges ?? ''} onChange={(e) => setStageForm({ ...stageForm, charges: e.target.value })} />
+                          </div>
                         </div>
-                      </div>
-                    </section>
-                    <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
-                      <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
-                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><Percent className="h-3 w-3 text-[#1a2c56]" /></span>
-                        Margin, interest & charges
-                      </h3>
-                      <div className="grid grid-cols-3 gap-3">
-                        <div className="flex flex-col gap-1.5">
-                          <Label>Margin %</Label>
-                          <Input type="number" value={stageForm.margin_pct ?? ''} onChange={(e) => setStageForm({ ...stageForm, margin_pct: e.target.value })} />
+                        <div className="mt-3 flex items-center gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
+                          <Switch checked={!!stageForm.interest_upfront} onCheckedChange={(v) => setStageForm({ ...stageForm, interest_upfront: v })} />
+                          <div className="text-[12px] font-semibold">Interest & charges paid upfront</div>
                         </div>
-                        <div className="flex flex-col gap-1.5">
-                          <Label>Interest % p.a. (ROI)</Label>
-                          <Input type="number" value={stageForm.interest_pct ?? ''} onChange={(e) => setStageForm({ ...stageForm, interest_pct: e.target.value })} />
-                        </div>
-                        <div className="flex flex-col gap-1.5">
-                          <Label>LC charges (₹)</Label>
-                          <Input type="number" value={stageForm.charges ?? ''} onChange={(e) => setStageForm({ ...stageForm, charges: e.target.value })} />
-                        </div>
-                      </div>
-                      <div className="mt-3 flex items-center gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
-                        <Switch checked={!!stageForm.interest_upfront} onCheckedChange={(v) => setStageForm({ ...stageForm, interest_upfront: v })} />
-                        <div className="text-[12px] font-semibold">Interest & charges paid upfront</div>
-                      </div>
-                    </section>
+                      </section>
+                    </div>
                     {stagePreview && (
                       <div className="rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm">
                         <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-sky-900">
@@ -1913,7 +1986,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <CalendarClock className="h-3 w-3" /> {stagePreview.days ?? 0} interest days
                           </span>
                         </h3>
-                        <div className="grid grid-cols-2 gap-4 text-center sm:grid-cols-4">
+                        <div className="grid grid-cols-4 gap-3 text-center">
                           <div>
                             <div className="text-[10px] uppercase tracking-wide text-sky-700">Open amount</div>
                             <div className="text-[16px] font-semibold tabular-nums text-sky-950">{formatINR(stagePreview.amount)}</div>
@@ -2115,66 +2188,75 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 </div>
                 {!!lcForm.party_id && String(lcForm.purpose || '') === 'trading' && (
                   <div className="mt-3 rounded-lg border border-teal-200 bg-teal-50/50 p-3">
-                    <Label>Trading deals with this supplier <span className="text-[10px] font-normal text-muted-foreground">(select the deal(s) this LC finances — purchase and resale travel together)</span></Label>
-                    {lcFormDeals.length === 0 ? (
-                      <p className="mt-1.5 text-[11px] text-muted-foreground">No open Trading deals with this supplier yet.</p>
+                    <Label>Trading invoices for this supplier <span className="text-[10px] font-normal text-muted-foreground">(each invoice is its own pick — select whichever this LC finances)</span></Label>
+                    {lcFormTradingInvoices.length === 0 ? (
+                      <p className="mt-1.5 text-[11px] text-muted-foreground">No open Trading invoices with this supplier yet.</p>
                     ) : (
                       <div className="mt-1.5 max-h-40 space-y-1 overflow-y-auto rounded-md border bg-white p-1.5">
-                        {lcFormDeals.map((d) => {
-                          const dealIds: number[] = Array.isArray(lcForm.linked_deal_ids) ? lcForm.linked_deal_ids : []
-                          const checked = dealIds.map(String).includes(String(d.id))
+                        {lcFormTradingInvoices.map((r) => {
+                          const ids: number[] = Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []
+                          const checked = ids.map(String).includes(String(r.order_id))
+                          const claim = lcInvoiceClaims.get(r.order_id)
                           return (
-                            <label key={String(d.id)} className={cn('flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px]', checked ? 'bg-teal-100' : 'hover:bg-muted/40')}>
+                            <label
+                              key={r.order_id}
+                              className={cn(
+                                'flex items-center gap-2 rounded px-2 py-1.5 text-[12px]',
+                                claim ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
+                                checked ? 'bg-teal-100' : !claim && 'hover:bg-muted/40'
+                              )}
+                            >
                               <input
                                 type="checkbox"
                                 className="h-3.5 w-3.5"
                                 checked={checked}
+                                disabled={!!claim}
                                 onChange={(e) => {
-                                  const nextDealIds = e.target.checked
-                                    ? [...dealIds, Number(d.id)]
-                                    : dealIds.filter((x) => String(x) !== String(d.id))
-                                  const pickedDeals = lcFormDeals.filter((x) => nextDealIds.map(String).includes(String(x.id)))
-                                  // A deal's purchase side can span more than one invoice
-                                  // (multi-invoice deals) — every one of them counts
-                                  // toward what the LC covers, same as picking each
-                                  // invoice individually would.
-                                  const orderIds = pickedDeals.flatMap((x) =>
-                                    (Array.isArray(x.purchase_lines) ? x.purchase_lines : []).map((l: Row) => Number(l.order_id))
+                                  const nextIds = e.target.checked
+                                    ? [...ids, r.order_id]
+                                    : ids.filter((x) => Number(x) !== r.order_id)
+                                  const total = round2(
+                                    orders.filter((o) => nextIds.map(Number).includes(Number(o.id))).reduce((s, o) => s + n(o.net_amount), 0)
                                   )
-                                  const total = round2(pickedDeals.reduce((s, x) => s + n(x.purchase_net), 0))
+                                  // A deal counts as linked once at least one of its own
+                                  // invoices is picked — used for the receivable-party
+                                  // default and the LC register's deal listing, not as
+                                  // an exclusivity boundary (that's per-invoice now).
+                                  const dealIdsNow = Array.from(
+                                    new Set(lcFormTradingInvoices.filter((x) => nextIds.includes(x.order_id)).map((x) => x.deal_id))
+                                  )
                                   setLcForm({
                                     ...lcForm,
-                                    linked_deal_ids: nextDealIds,
-                                    linked_order_ids: orderIds,
+                                    linked_order_ids: nextIds,
+                                    linked_deal_ids: dealIdsNow,
                                     amount: lcForm.amount_manual ? lcForm.amount : String(total),
                                     // The customer this deal will resell to is who the
                                     // repayment is expected from — pre-filled, not forced.
-                                    receivable_party_id: lcForm.receivable_party_id || (e.target.checked ? d.customer_id : lcForm.receivable_party_id)
+                                    receivable_party_id: lcForm.receivable_party_id || (e.target.checked ? r.customer_id : lcForm.receivable_party_id)
                                   })
                                 }}
                               />
                               <span className="flex-1">
-                                {d.purchase_invoice_no || `Deal #${d.id}`} · {formatDate(d.deal_date)}
-                                <span className="ml-1.5 text-muted-foreground">→ {d.customer_name || 'no customer yet'}</span>
+                                {r.invoice_no || `Order #${r.order_id}`} · {formatDate(r.deal_date)}
+                                <span className="ml-1.5 text-muted-foreground">→ {r.customer_name || 'no customer yet'}</span>
+                                {claim && <span className="ml-1.5 text-rose-700">· linked to LC {claim.lc_no || 'pending'}</span>}
                               </span>
-                              <span className="font-medium tabular-nums">{formatINR(d.purchase_net)}</span>
+                              <span className="font-medium tabular-nums">{formatINR(r.net_amount)}</span>
                             </label>
                           )
                         })}
                       </div>
                     )}
                     {(() => {
-                      const dealIds: number[] = Array.isArray(lcForm.linked_deal_ids) ? lcForm.linked_deal_ids : []
-                      if (!dealIds.length) return null
+                      const ids: number[] = Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []
+                      if (!ids.length) return null
                       const total = round2(
-                        lcFormDeals
-                          .filter((d) => dealIds.map(String).includes(String(d.id)))
-                          .reduce((s, d) => s + n(d.purchase_net), 0)
+                        orders.filter((o) => ids.map(Number).includes(Number(o.id))).reduce((s, o) => s + n(o.net_amount), 0)
                       )
                       const over = n(lcForm.amount) - total
                       return (
                         <div className={cn('mt-1.5 flex items-center justify-between text-[11px]', over > 0.005 ? 'font-medium text-rose-700' : 'text-teal-800')}>
-                          <span>Selected deals' purchase total</span>
+                          <span>Selected invoices' total</span>
                           <span className="tabular-nums">
                             {formatINR(total)}
                             {over > 0.005 ? ` — open amount is ${formatINR(over)} over this` : ''}
@@ -2477,6 +2559,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <StageBadge stage={String(dRow.stage || 'application')} />
                     {dRow.preclosed_date && <Badge variant="muted">Preclosed {formatDate(dRow.preclosed_date)}</Badge>}
                     {isLcPaymentInDone(dRow) && <Badge variant="success">Payment IN</Badge>}
+                    {canMarkPaymentIn(dRow) && <Badge variant="warning">Awaiting Payment IN</Badge>}
                     {dRow.purpose && <Badge variant="muted" className="capitalize">{dRow.purpose}</Badge>}
                     {dRow.display_status === 'non_compliant' ? (
                       <Badge variant="destructive">Non-compliant</Badge>
@@ -2544,6 +2627,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         </Button>
                       )
                     })()}
+                    {canMarkPaymentIn(dRow) && (
+                      <Button
+                        size="sm"
+                        className="h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700"
+                        title="Record the customer's payment for the resale — independent of whether the bank side has been preclosed yet"
+                        onClick={() => { setLcDetailId(null); void openPaymentIn(dRow) }}
+                      >
+                        Mark Payment IN
+                      </Button>
+                    )}
                     {!dRow.preclosed_date && (
                       <Button
                         size="sm"
@@ -2553,16 +2646,6 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         onClick={() => { setLcDetailId(null); openPreclose(dRow) }}
                       >
                         {isLcPastMaturity(dRow) ? 'Repay' : 'Preclose'}
-                      </Button>
-                    )}
-                    {canMarkPaymentIn(dRow) && (
-                      <Button
-                        size="sm"
-                        className="h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700"
-                        title="Record the customer's payment for the resale, closing this LC"
-                        onClick={() => { setLcDetailId(null); void openPaymentIn(dRow) }}
-                      >
-                        Mark Payment IN
                       </Button>
                     )}
                     <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => { setLcDetailId(null); setLcForm({ ...dRow }) }}>

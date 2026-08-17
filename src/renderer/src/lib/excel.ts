@@ -18,6 +18,11 @@ export type ExcelColumn = {
   // Per-row conditional fill (e.g. green only where Status = "Settled") —
   // wins over both the static `fill` above and the group-row tint.
   fillFor?: (row: Row) => string | undefined
+  // Override the header band's default navy/white for just this column —
+  // e.g. to colour-code a group of columns (all the date fields one tint,
+  // all the calculated amounts another) against the client's own template.
+  headerFill?: string
+  headerTextColor?: string
 }
 
 // One tab of a workbook.
@@ -56,8 +61,8 @@ function writeSheet(wb: ExcelJS.Workbook, spec: ExcelSheet, index: number): void
   columns.forEach((c, i) => {
     const cell = hr.getCell(i + 1)
     cell.value = c.header
-    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF334155' } }
+    cell.font = { bold: true, color: { argb: c.headerTextColor ?? 'FFFFFFFF' } }
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: c.headerFill ?? 'FF334155' } }
     cell.alignment = { vertical: 'middle', horizontal: c.align ?? 'left', wrapText: true }
     cell.border = { bottom: { style: 'thin', color: { argb: 'FF94A3B8' } } }
   })

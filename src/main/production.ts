@@ -19,7 +19,9 @@ function n(v: unknown): number {
   return Number.isFinite(x) ? x : 0
 }
 
-// How much of the blend one batch needs, as a % of the output — the TOR.
+// How much of the blend one batch needs, as a % of the output — the
+// recipe-wide (uniform) TOR, shared by every input line that doesn't carry
+// its own.
 //
 // By-product and loss percentages are taken OFF THE OIL THAT GOES IN, the way
 // a refinery quotes them: 5% FFA gives 5.7% fatty acid, plus 1% dead loss, so
@@ -28,7 +30,7 @@ function n(v: unknown): number {
 //
 // A recipe with no by-products and no loss comes out at exactly 100%, which is
 // how every recipe behaved before any of this existed.
-export function recipeTor(items: Row[]): number {
+function uniformRecipeTor(items: Row[]): number {
   const kindOf = (it: Row): string => String(it.kind || 'input')
   const sum = (kind: string): number =>
     items.filter((it) => kindOf(it) === kind).reduce((s, it) => s + n(it.qty), 0)
@@ -39,9 +41,60 @@ export function recipeTor(items: Row[]): number {
   return (100 * 100) / (100 - lossPct)
 }
 
+// A single input's own fatty-acid loss — FFA% x (1 + loss multiplier%) +
+// moisture% — as a % of THAT INPUT's own quantity, not of the output.
+function inputFattyAcidPct(it: Row): number {
+  const ffa = n(it.ffa_pct)
+  const lossMultiplier = n(it.loss_multiplier_pct)
+  const moisture = n(it.moisture_pct)
+  return ffa * (1 + lossMultiplier / 100) + moisture
+}
+
+// A single input's OWN TOR multiplier, when a blend mixes raw oils of
+// differing quality and each needs its own answer rather than one shared
+// across the whole blend — e.g. SHEA at 23% FFA needs far more raw material
+// per unit of output than RPS at 0.15% FFA does. Dead loss is NOT per-input —
+// it's the recipe's own shared 'loss' line total, the same standing
+// assumption for every ingredient (see sharedDeadLossPct below).
+// multiplier = 1 / (1 - (FFA% x (1 + loss multiplier%) + moisture%) - dead loss%)
+function inputTorMultiplier(it: Row, sharedDeadLossPct: number): number {
+  const yieldPct = 100 - inputFattyAcidPct(it) - sharedDeadLossPct
+  // No sane answer if this ingredient claims to lose everything (or more).
+  if (yieldPct <= 0) return 1
+  return 100 / yieldPct
+}
+
+// The recipe's total oil required, per 100 of output. When every input shares
+// one recipe-wide loss (the original model), this is exactly the uniform
+// TOR. When one or more inputs carry their own auto-calculated multiplier
+// (a blend of differing-quality raw oils), each of those takes its own share
+// x its own multiplier instead of the shared one, and the total is the sum —
+// a recipe with no such inputs collapses back to the plain uniform figure.
+export function recipeTor(items: Row[]): number {
+  const kindOf = (it: Row): string => String(it.kind || 'input')
+  const inputs = items.filter((it) => kindOf(it) === 'input')
+  const blend = inputs.reduce((s, it) => s + n(it.qty), 0)
+  const uniformTor = uniformRecipeTor(items)
+  if (blend <= 0) return uniformTor
+  const sharedDeadLossPct = items.filter((it) => kindOf(it) === 'loss').reduce((s, it) => s + n(it.qty), 0)
+  const total = inputs.reduce((s, it) => {
+    const mult = it.auto_calc ? inputTorMultiplier(it, sharedDeadLossPct) : uniformTor / 100
+    return s + n(it.qty) * mult
+  }, 0)
+  return total
+}
+
 // Turn a recipe into the real quantities for one batch. Input lines are shares
 // of the blend and total 100% (100% CPO, or 70/30 of two oils); each takes its
-// share of the TOR. By-products and loss are percentages of that input.
+// own share x its own TOR multiplier when it has one (see recipeTor above),
+// or the recipe's shared multiplier otherwise. By-products and loss are
+// percentages of the input, riding on the recipe's shared multiplier either way.
+//
+// The fatty acid an auto-calculated input throws off is a REAL by-product,
+// not just a yield reduction — whichever product that input names
+// (byproduct_product_id) gets a synthetic output line for it, merged by
+// product with anything else already landing there (a manual by-product line
+// pointing at the same product, or another input recovering into it too).
 export function expandRecipe(
   items: Row[],
   outputQty: number
@@ -50,20 +103,40 @@ export function expandRecipe(
   const blend = items
     .filter((it) => kindOf(it) === 'input')
     .reduce((s, it) => s + n(it.qty), 0)
-  const tor = recipeTor(items)
-  return items.map((it) => {
+  const uniformTor = uniformRecipeTor(items)
+  const sharedDeadLossPct = items.filter((it) => kindOf(it) === 'loss').reduce((s, it) => s + n(it.qty), 0)
+
+  const lines = items.map((it) => {
     const kind = kindOf(it)
-    // Guard a malformed recipe whose blend doesn't total 100 — scale by the
-    // share it actually has rather than dividing by zero.
-    const pct =
-      kind === 'input'
-        ? blend > 0
-          ? (tor * n(it.qty)) / 100
-          : 0
-        : // Off the input, so it rides on the TOR too.
-          (tor * n(it.qty)) / 100
+    let pct: number
+    if (kind === 'input') {
+      // Guard a malformed recipe whose blend doesn't total 100 — scale by the
+      // share it actually has rather than dividing by zero.
+      const mult = it.auto_calc ? inputTorMultiplier(it, sharedDeadLossPct) : uniformTor / 100
+      pct = blend > 0 ? n(it.qty) * mult : 0
+    } else {
+      // Off the input, so it rides on the recipe's shared multiplier too.
+      pct = (uniformTor * n(it.qty)) / 100
+    }
     return { product_id: Number(it.product_id), qty: (outputQty * pct) / 100, kind }
   })
+
+  const byproductAdds = new Map<number, number>()
+  for (const it of items) {
+    if (kindOf(it) !== 'input' || !it.auto_calc || !n(it.byproduct_product_id)) continue
+    const mult = inputTorMultiplier(it, sharedDeadLossPct)
+    const pct = blend > 0 ? n(it.qty) * mult : 0
+    const inputQty = (outputQty * pct) / 100
+    const fattyAcidQty = (inputQty * inputFattyAcidPct(it)) / 100
+    const pid = n(it.byproduct_product_id)
+    byproductAdds.set(pid, (byproductAdds.get(pid) || 0) + fattyAcidQty)
+  }
+  for (const [pid, qty] of byproductAdds) {
+    const existing = lines.find((l) => l.kind === 'output' && l.product_id === pid)
+    if (existing) existing.qty += qty
+    else lines.push({ product_id: pid, qty, kind: 'output' })
+  }
+  return lines
 }
 
 export async function listProduction(): Promise<Row[]> {
@@ -111,7 +184,7 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
   if (fRes.rows.length) {
     const fid = Number(fRes.rows[0].id)
     const items = await c.execute({
-      sql: 'SELECT product_id, qty, kind FROM formulation_items WHERE formulation_id = ?',
+      sql: 'SELECT product_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct, byproduct_product_id FROM formulation_items WHERE formulation_id = ?',
       args: [fid]
     })
     lines.push(...expandRecipe(toPlain(items), qty))
@@ -176,7 +249,7 @@ export async function formulationConsumption(
   })
   if (!fRes.rows.length) return []
   const items = await c.execute({
-    sql: 'SELECT product_id, qty, kind FROM formulation_items WHERE formulation_id = ?',
+    sql: 'SELECT product_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct, byproduct_product_id FROM formulation_items WHERE formulation_id = ?',
     args: [Number(fRes.rows[0].id)]
   })
   // Every line comes back with what it is, so callers can draw the inputs and

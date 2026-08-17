@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  ClipboardList,
+  Ban, ClipboardList, RotateCcw,
   LogIn, LogOut, Pencil, Scale, Trash2, Truck } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Badge } from '@/components/ui/badge'
@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { Switch } from '@/components/ui/switch'
 import { InfoTip } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
@@ -18,7 +19,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { errText, formatDate, formatNum, todayISO } from '@/lib/format'
 import { ExcelButton } from '@/components/ExcelButton'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
-import { useGlobalDateRange } from '@/lib/globalDateRange'
+import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { useCategories } from '@/lib/useCategories'
 import { Pagination, usePaged } from '@/components/Pagination'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -104,25 +105,30 @@ export function GateEntry(): React.JSX.Element {
   // Register filters: date range on the entry date, receipt category, free text.
   const [gFrom, setGFrom] = useState('')
   const [gTo, setGTo] = useState('')
-  const [gCat, setGCat] = useState('ALL')
+  // Empty = no filter (every category shows) — checked, not radio, so more
+  // than one category can be picked at once.
+  const [gCats, setGCats] = useState<string[]>([])
   // Alt+F2 broadcasts a period from anywhere.
   const globalRange = useGlobalDateRange()
   useEffect(() => {
-    if (globalRange.version > 0) { setGFrom(globalRange.from); setGTo(globalRange.to) }
+    if (globalRangeAppliesTo(globalRange, 'gateEntry')) { setGFrom(globalRange.from); setGTo(globalRange.to) }
   }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
   const [gSearch, setGSearch] = useState('')
   const [gDir, setGDir] = useState<'ALL' | 'in' | 'out'>('ALL')
-  const gCats = useMemo(
+  const gCatOptions = useMemo(
     () => Array.from(new Set(rows.map((r) => String(r.rec_type || '')).filter(Boolean))).sort(),
     [rows]
   )
   const filteredRows = useMemo(() => {
     const q = gSearch.trim().toLowerCase()
     return rows.filter((r) => {
+      // Rejected entries have their own tab — a stuck, never-completed tanker
+      // shouldn't keep cluttering the main register once it's marked as one.
+      if (r.rejected_at) return false
       const d = String(r.entry_date || '').slice(0, 10)
       if (gFrom && d < gFrom) return false
       if (gTo && d > gTo) return false
-      if (gCat !== 'ALL' && String(r.rec_type || '') !== gCat) return false
+      if (gCats.length && !gCats.includes(String(r.rec_type || ''))) return false
       if (gDir !== 'ALL' && String(r.direction || 'in') !== gDir) return false
       if (!q) return true
       return [r.gate_entry_no, r.ref_no, r.tanker_no, r.supplier_name, r.sale_customer, r.sale_invoice, r.person, r.note]
@@ -131,7 +137,7 @@ export function GateEntry(): React.JSX.Element {
         .toLowerCase()
         .includes(q)
     })
-  }, [rows, gFrom, gTo, gCat, gDir, gSearch])
+  }, [rows, gFrom, gTo, gCats, gDir, gSearch])
   const paged = usePaged(filteredRows)
   const [tankers, setTankers] = useState<Row[]>([])
   const [suppliers, setSuppliers] = useState<Row[]>([])
@@ -244,7 +250,11 @@ export function GateEntry(): React.JSX.Element {
   useEffect(() => { load() }, [load])
   useLiveRefresh(load)
 
-  const pending = rows.filter((r) => r.status === 'pending')
+  // A rejected entry (the tanker it was cut for will never be completed —
+  // refused, redirected elsewhere) drops out of every active queue; it only
+  // shows up under the Rejected tab from here on.
+  const rejectedRows = rows.filter((r) => !!r.rejected_at)
+  const pending = rows.filter((r) => r.status === 'pending' && !r.rejected_at)
   // Gate In vehicles weighed Tare-only and flagged to have their Gross taken
   // here at Gate Out instead of back at Gate In's own queue — they've fully
   // moved over, so both the queue and the tab counts should agree.
@@ -629,6 +639,44 @@ export function GateEntry(): React.JSX.Element {
     }
   }
 
+  // Reject: the tanker this entry was cut for will never be completed — the
+  // party refused it and it went elsewhere instead. Kept on record (not
+  // deleted) with a reason, and dropped out of every active queue. Doesn't
+  // touch the linked sale/stock — any Credit Note or other correction is a
+  // separate, manual step.
+  const [rejectRow, setRejectRow] = useState<Row | null>(null)
+  const [rejectReason, setRejectReason] = useState('')
+  const [rejecting, setRejecting] = useState(false)
+  function openReject(row: Row): void {
+    setRejectRow(row)
+    setRejectReason('')
+  }
+  async function saveReject(): Promise<void> {
+    if (!rejectRow) return
+    if (!rejectReason.trim()) return void toast.error('Enter a reason')
+    setRejecting(true)
+    try {
+      await window.api.gate.reject(Number(rejectRow.id), rejectReason.trim())
+      toast.success(`${rejectRow.gate_entry_no} marked Rejected`)
+      setRejectRow(null)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setRejecting(false)
+    }
+  }
+  async function restoreRejected(row: Row): Promise<void> {
+    if (!window.confirm(`Restore ${row.gate_entry_no} out of Rejected?`)) return
+    try {
+      await window.api.gate.unreject(Number(row.id))
+      toast.success('Restored')
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
   // The 'Without weighment' view of a tab: the plain register line — vehicle,
   // person, material — finished on the spot. Identical for both directions;
   // the tab supplies the direction.
@@ -869,6 +917,15 @@ export function GateEntry(): React.JSX.Element {
                               })()}
                             </span>
                             <span className="flex items-center gap-1">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-8 border-rose-300 px-2 text-[11px] text-rose-700 hover:bg-rose-50"
+                                title="This tanker will never be weighed — the party refused it and it went elsewhere"
+                                onClick={() => openReject(row)}
+                              >
+                                Reject
+                              </Button>
                               {!isOil && !hasG && !hasT && (
                                 <Button
                                   size="sm"
@@ -1014,9 +1071,17 @@ export function GateEntry(): React.JSX.Element {
               </TabsTrigger>
               <TabsTrigger value="view">
                 Entries
-                {rows.length > 0 && (
+                {filteredRows.length > 0 && (
                   <span className="ml-1.5 rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground">
-                    {rows.length}
+                    {filteredRows.length}
+                  </span>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="rejected">
+                Rejected
+                {rejectedRows.length > 0 && (
+                  <span className="ml-1.5 rounded-full bg-rose-200 px-1.5 text-[10px] font-semibold text-rose-900">
+                    {rejectedRows.length}
                   </span>
                 )}
               </TabsTrigger>
@@ -1062,23 +1127,21 @@ export function GateEntry(): React.JSX.Element {
                   <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
                     Category
                   </span>
-                  <Select value={gCat} onValueChange={setGCat}>
-                    <SelectTrigger className="h-7 w-[10.5rem] shrink-0 text-[11px]"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="ALL">All categories</SelectItem>
-                      {gCats.map((c) => (
-                        <SelectItem key={c} value={c}>{c}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <MultiSelectFilter
+                    options={gCatOptions.map((c) => ({ value: c, label: c }))}
+                    value={gCats}
+                    onApply={setGCats}
+                    allLabel="All categories"
+                    className="h-7 w-[10.5rem] shrink-0 text-[11px]"
+                  />
                 </div>
-                {(gFrom || gTo || gCat !== 'ALL' || gDir !== 'ALL' || gSearch) && (
+                {(gFrom || gTo || gCats.length > 0 || gDir !== 'ALL' || gSearch) && (
                   <>
                     <div className="h-5 shrink-0 border-l" />
                     <button
                       type="button"
                       className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
-                      onClick={() => { setGFrom(''); setGTo(''); setGCat('ALL'); setGDir('ALL'); setGSearch('') }}
+                      onClick={() => { setGFrom(''); setGTo(''); setGCats([]); setGDir('ALL'); setGSearch('') }}
                     >
                       Clear
                     </button>
@@ -1654,6 +1717,7 @@ export function GateEntry(): React.JSX.Element {
                       </TableCell>
                       <TableCell><div className="flex justify-end gap-1">
                         <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEdit(row)}><Pencil className="h-4 w-4" /></Button>
+                        <Button size="icon" variant="ghost" className="h-8 w-8 text-rose-600" title="Reject — this tanker will never be completed" onClick={() => openReject(row)}><Ban className="h-4 w-4" /></Button>
                         <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => remove(row)}><Trash2 className="h-4 w-4" /></Button>
                       </div></TableCell>
                     </TableRow>
@@ -1664,6 +1728,62 @@ export function GateEntry(): React.JSX.Element {
           </Table>
           <Pagination {...paged} label="gate entries" className="border-t px-3" />
         </section>
+          </TabsContent>
+          <TabsContent value="rejected">
+            <section className="rounded-xl border bg-card">
+              <div className="border-b bg-rose-50 px-4 py-3">
+                <h3 className="text-[13px] font-semibold text-rose-900">Rejected gate entries</h3>
+                <p className="text-[11px] text-rose-800/80">
+                  Tankers that were cut a gate entry but never completed — the party refused it and it went elsewhere
+                  instead. Kept here for the record; restoring one puts it back into its normal queue.
+                </p>
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Gate entry no</TableHead>
+                    <TableHead>In / Out</TableHead>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Vehicle · party</TableHead>
+                    <TableHead>Reason</TableHead>
+                    <TableHead>Rejected on</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {rejectedRows.length === 0 ? (
+                    <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Nothing rejected.</TableCell></TableRow>
+                  ) : (
+                    rejectedRows.map((row) => (
+                      <TableRow key={row.id}>
+                        <TableCell>{row.gate_entry_no}</TableCell>
+                        <TableCell>
+                          <Badge variant={row.direction === 'out' ? 'default' : 'success'}>
+                            {row.direction === 'out' ? 'OUT' : 'IN'}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap">{formatDate(row.entry_date)}</TableCell>
+                        <TableCell>
+                          <div>{row.tanker_no}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {row.direction === 'out'
+                              ? [row.sale_customer, row.sale_invoice].filter(Boolean).join(' · ') || '—'
+                              : row.supplier_name || '—'}
+                          </div>
+                        </TableCell>
+                        <TableCell className="max-w-[20rem] text-[13px]">{row.rejected_reason}</TableCell>
+                        <TableCell className="whitespace-nowrap text-[12px] text-muted-foreground">{formatDate(row.rejected_at)}</TableCell>
+                        <TableCell className="text-right">
+                          <Button size="sm" variant="outline" className="h-8 gap-1.5 px-2 text-[11px]" onClick={() => void restoreRejected(row)}>
+                            <RotateCcw className="h-3.5 w-3.5" /> Restore
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </section>
           </TabsContent>
         </Tabs>
       </div>
@@ -1697,6 +1817,35 @@ export function GateEntry(): React.JSX.Element {
               No
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reject — the tanker this entry was cut for will never be completed */}
+      <Dialog open={!!rejectRow} onOpenChange={(o) => !o && !rejecting && setRejectRow(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Reject {rejectRow?.gate_entry_no}</DialogTitle>
+          </DialogHeader>
+          <p className="text-[12px] text-muted-foreground">
+            Marks this entry Rejected — it drops out of every active queue but stays on record. This does not touch
+            the linked sale or stock; if one needs correcting (e.g. a Credit Note), do that separately.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            <Label>Reason <span className="text-red-600">*</span></Label>
+            <textarea
+              className="min-h-[5rem] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              placeholder="e.g. Party refused the consignment — tanker diverted to Bectors"
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRejectRow(null)} disabled={rejecting}>Cancel</Button>
+            <Button className="bg-rose-600 hover:bg-rose-700" onClick={() => void saveReject()} disabled={rejecting}>
+              {rejecting ? 'Saving…' : 'Reject entry'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

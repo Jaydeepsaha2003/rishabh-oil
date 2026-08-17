@@ -353,7 +353,7 @@ function App(): React.JSX.Element {
       </main>
       <NotificationBell user={user} onNavigate={(p) => navigate(p as Page)} />
       </div>
-      <GlobalDateRangeDialog open={periodOpen} onOpenChange={setPeriodOpen} />
+      <GlobalDateRangeDialog open={periodOpen} onOpenChange={setPeriodOpen} currentPage={page} />
       <Toaster richColors position="bottom-right" />
     </div>
     </GlobalDateRangeProvider>

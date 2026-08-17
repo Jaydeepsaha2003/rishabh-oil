@@ -124,8 +124,11 @@ export async function listBdEntries(filter?: Row): Promise<Row[]> {
     args.push(n(filter.bd_party_id))
   }
   if (filter?.status) {
-    where.push('e.status = ?')
-    args.push(String(filter.status))
+    const statuses = (Array.isArray(filter.status) ? filter.status : [filter.status]).map(String).filter(Boolean)
+    if (statuses.length) {
+      where.push(`e.status IN (${statuses.map(() => '?').join(',')})`)
+      args.push(...statuses)
+    }
   }
   const res = await getClient().execute({
     sql: `SELECT e.*, p.party_name, p.discounter, p.rate_pct, p.finance_type

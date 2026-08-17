@@ -15,13 +15,14 @@ import { Switch } from '@/components/ui/switch'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Tooltip, TooltipContent, TooltipTrigger, InfoTip } from '@/components/ui/tooltip'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { computeMoney, computeShortage } from '@/lib/orderCalc'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
-import { useGlobalDateRange } from '@/lib/globalDateRange'
+import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { isManufacturingParty } from '@/lib/constants'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -181,7 +182,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // Clicking a pivot count filters the tanker list below to that oil × stage.
   const [pivotSel, setPivotSel] = useState<{ oil: string; stage: string } | null>(null)
   // Category filter for the whole tab — the pivot and the tanker list below it.
-  const [tmCategory, setTmCategory] = useState('ALL')
+  // Empty = every category.
+  const [tmCategory, setTmCategory] = useState<string[]>([])
   const tmCategories = useMemo(
     () => Array.from(new Set(tankers.map((t) => String(t.product_category || '')).filter(Boolean))).sort(),
     [tankers]
@@ -205,7 +207,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   }, [moveCompany, tankers, allTankers])
 
   const inCategory = useCallback(
-    (t: Row): boolean => tmCategory === 'ALL' || String(t.product_category || '') === tmCategory,
+    (t: Row): boolean => !tmCategory.length || tmCategory.includes(String(t.product_category || '')),
     [tmCategory]
   )
 
@@ -479,11 +481,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // category. Both narrow the list the page shows and exports.
   const [poFrom, setPoFrom] = useState('')
   const [poTo, setPoTo] = useState('')
-  const [poCategory, setPoCategory] = useState('ALL')
+  // Empty = every category.
+  const [poCategory, setPoCategory] = useState<string[]>([])
   // Alt+F2 broadcasts a period from anywhere.
   const globalRange = useGlobalDateRange()
   useEffect(() => {
-    if (globalRange.version === 0) return
+    if (!globalRangeAppliesTo(globalRange, 'orders')) return
     setPoFrom(globalRange.from); setPoTo(globalRange.to)
     setRepFrom(globalRange.from); setRepTo(globalRange.to)
   }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -497,7 +500,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         const d = String(r.order_date || '').slice(0, 10)
         if (poFrom && d < poFrom) return false
         if (poTo && d > poTo) return false
-        if (poCategory !== 'ALL' && String(r.product_category || '') !== poCategory) return false
+        if (poCategory.length && !poCategory.includes(String(r.product_category || ''))) return false
         return true
       }),
     [rows, poFrom, poTo, poCategory]
@@ -2334,23 +2337,21 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
                       Category
                     </span>
-                    <Select value={poCategory} onValueChange={setPoCategory}>
-                      <SelectTrigger className="h-7 w-[11.5rem] shrink-0 text-[11px]"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="ALL">All categories</SelectItem>
-                        {poCategories.map((cat) => (
-                          <SelectItem key={cat} value={cat}>{cat.toUpperCase()}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <MultiSelectFilter
+                      options={poCategories.map((cat) => ({ value: cat, label: cat.toUpperCase() }))}
+                      value={poCategory}
+                      onApply={setPoCategory}
+                      allLabel="All categories"
+                      className="h-7 w-[11.5rem] shrink-0 text-[11px]"
+                    />
                   </div>
-                  {(poFrom || poTo || poCategory !== 'ALL') && (
+                  {(poFrom || poTo || poCategory.length > 0) && (
                     <>
                       <div className="h-5 shrink-0 border-l" />
                       <button
                         type="button"
                         className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
-                        onClick={() => { setPoFrom(''); setPoTo(''); setPoCategory('ALL') }}
+                        onClick={() => { setPoFrom(''); setPoTo(''); setPoCategory([]) }}
                       >
                         Clear
                       </button>
@@ -2373,7 +2374,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
                       Company
                     </span>
-                    <Select value={moveCompany} onValueChange={setMoveCompany}>
+                    <Select value={moveCompany} onValueChange={setMoveCompany} showCheckbox>
                       <SelectTrigger className="h-8 w-[11rem] text-[11px]"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="active">Active company</SelectItem>
@@ -2387,15 +2388,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
                       Category
                     </span>
-                    <Select value={tmCategory} onValueChange={setTmCategory}>
-                      <SelectTrigger className="h-8 w-[10.5rem] text-[11px]"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="ALL">All categories</SelectItem>
-                        {tmCategories.map((c) => (
-                          <SelectItem key={c} value={c}>{c.toUpperCase()}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <MultiSelectFilter
+                      options={tmCategories.map((c) => ({ value: c, label: c.toUpperCase() }))}
+                      value={tmCategory}
+                      onApply={setTmCategory}
+                      allLabel="All categories"
+                      className="h-8 w-[10.5rem] text-[11px]"
+                    />
                     <div className="h-5 shrink-0 border-l" />
                     <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">From</span>
                     <DatePicker max={pivotEnd} value={pivotStart} onChange={(v) => setPivotStart(v || todayISO())} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />

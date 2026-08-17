@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { PageHeader } from '@/components/PageHeader'
 import { formatDate, formatINR } from '@/lib/format'
@@ -40,7 +41,8 @@ export function BankReconciliation(): React.JSX.Element {
   const [imports, setImports] = useState<Row[]>([])
   const [activeImportId, setActiveImportId] = useState<number | null>(null)
   const [lines, setLines] = useState<Row[]>([])
-  const [statusFilter, setStatusFilter] = useState<string>('pending')
+  // Empty = every status. Defaults to just Pending, same starting point as before.
+  const [statusFilter, setStatusFilter] = useState<string[]>(['pending'])
   const [loading, setLoading] = useState(false)
 
   const [uploadOpen, setUploadOpen] = useState(false)
@@ -72,7 +74,7 @@ export function BankReconciliation(): React.JSX.Element {
     setLoading(true)
     try {
       const filter: Row = { import_id: activeImportId }
-      if (statusFilter !== 'all') filter.status = statusFilter
+      if (statusFilter.length) filter.status = statusFilter
       const rows = await window.api.bankRecon.list(filter)
       setLines(rows)
     } finally {
@@ -214,15 +216,17 @@ export function BankReconciliation(): React.JSX.Element {
             ))}
           </SelectContent>
         </Select>
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All lines</SelectItem>
-            <SelectItem value="pending">Pending</SelectItem>
-            <SelectItem value="reconciled">Reconciled</SelectItem>
-            <SelectItem value="misc">Misc</SelectItem>
-          </SelectContent>
-        </Select>
+        <MultiSelectFilter
+          options={[
+            { value: 'pending', label: 'Pending' },
+            { value: 'reconciled', label: 'Reconciled' },
+            { value: 'misc', label: 'Misc' }
+          ]}
+          value={statusFilter}
+          onApply={setStatusFilter}
+          allLabel="All lines"
+          className="w-40"
+        />
         <Button size="sm" className="ml-auto gap-1.5" onClick={() => setUploadOpen(true)}>
           <Upload className="h-3.5 w-3.5" /> Import statement
         </Button>

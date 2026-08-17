@@ -14,6 +14,7 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
+import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import {
   Table,
   TableBody,
@@ -37,7 +38,7 @@ import { convertQty, errText, formatDate, formatINR, formatNum, todayISO } from 
 import { ExcelButton } from '@/components/ExcelButton'
 import { downloadSkuRateExcel, parseSkuRateExcel, caseMT } from '@/lib/skuRateExcel'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
-import { useGlobalDateRange } from '@/lib/globalDateRange'
+import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { isManufacturingParty } from '@/lib/constants'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -171,11 +172,12 @@ function SalesTab({
   const [search, setSearch] = useState('')
   const [dateFrom, setDateFrom] = useState(monthStartISO())
   const [dateTo, setDateTo] = useState(todayISO())
-  const [productType, setProductType] = useState('ALL')
+  // Empty = every product type.
+  const [productType, setProductType] = useState<string[]>([])
   // Alt+F2 broadcasts a period from anywhere.
   const globalRange = useGlobalDateRange()
   useEffect(() => {
-    if (globalRange.version > 0) { setDateFrom(globalRange.from); setDateTo(globalRange.to) }
+    if (globalRangeAppliesTo(globalRange, 'sales')) { setDateFrom(globalRange.from); setDateTo(globalRange.to) }
   }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async () => {
@@ -254,7 +256,7 @@ function SalesTab({
     return invoices.filter((inv) => {
       const d = String(inv.first.sale_date || '').slice(0, 10)
       if (d < f || d > t) return false
-      if (productType !== 'ALL' && !inv.lines.some((r) => String(r.product_category || '') === productType)) {
+      if (productType.length && !inv.lines.some((r) => productType.includes(String(r.product_category || '')))) {
         return false
       }
       if (!q) return true
@@ -893,15 +895,13 @@ function SalesTab({
           <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
             Product type
           </span>
-          <Select value={productType} onValueChange={setProductType}>
-            <SelectTrigger className="h-9 w-[11.5rem] text-[12px]"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All product types</SelectItem>
-              {productTypes.map((t) => (
-                <SelectItem key={t} value={t}>{t.toUpperCase()}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <MultiSelectFilter
+            options={productTypes.map((t) => ({ value: t, label: t.toUpperCase() }))}
+            value={productType}
+            onApply={setProductType}
+            allLabel="All product types"
+            className="h-9 w-[11.5rem] text-[12px]"
+          />
         </div>
         <ExcelButton
           className="ml-auto"
@@ -1725,7 +1725,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
   // Alt+F2 broadcasts a period from anywhere.
   const globalRange = useGlobalDateRange()
   useEffect(() => {
-    if (globalRange.version > 0) { setDateFrom(globalRange.from); setDateTo(globalRange.to) }
+    if (globalRangeAppliesTo(globalRange, 'salesBargains')) { setDateFrom(globalRange.from); setDateTo(globalRange.to) }
   }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const [open, setOpen] = useState(false)

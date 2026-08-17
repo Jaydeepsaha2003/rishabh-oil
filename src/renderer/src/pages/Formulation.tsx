@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, Calculator, Pencil, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Beaker, Calculator, Flame, Package, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
-import { Card } from '@/components/ui/card'
 import {
   Select,
   SelectContent,
@@ -35,14 +34,121 @@ const CAT_LABEL: Record<string, string> = {
   finished: 'Finished'
 }
 
+// Three kinds of line, each a % of the input quantity: what is drawn from
+// stock, what the batch throws off besides the main product, and what is
+// simply lost — by-products and loss are struck on the input going in, not
+// the output coming out. Each gets its own colour so a recipe reads at a
+// glance instead of as one undifferentiated list.
+const SECTIONS = [
+  {
+    kind: 'input' as const,
+    title: 'Inputs',
+    subtitle: 'Consumed from stock',
+    add: 'Add input',
+    icon: Package,
+    grad: 'from-sky-600 to-sky-500',
+    accent: 'border-sky-400',
+    calcBox: 'border-sky-200 bg-sky-50/60',
+    formulaText: 'text-sky-800'
+  },
+  {
+    kind: 'output' as const,
+    title: 'By-products',
+    subtitle: 'Added to stock',
+    add: 'Add by-product',
+    icon: Sparkles,
+    grad: 'from-emerald-600 to-emerald-500',
+    accent: 'border-emerald-400',
+    calcBox: 'border-emerald-200 bg-emerald-50/60',
+    formulaText: 'text-emerald-800'
+  },
+  {
+    kind: 'loss' as const,
+    title: 'Loss',
+    subtitle: 'Written off',
+    add: 'Add loss',
+    icon: Flame,
+    grad: 'from-rose-600 to-rose-500',
+    accent: 'border-rose-400',
+    calcBox: 'border-rose-200 bg-rose-50/60',
+    formulaText: 'text-rose-800'
+  }
+]
+
+// Tile tone per line kind, for the calculator's per-product requirement grid.
+const KIND_TILE: Record<string, { box: string; label: string }> = {
+  input: { box: 'border-sky-400/30 bg-sky-400/10', label: 'Needs' },
+  output: { box: 'border-emerald-400/30 bg-emerald-400/10', label: 'Yields' },
+  loss: { box: 'border-rose-400/30 bg-rose-400/10', label: 'Loses' }
+}
+
 const round2 = (v: number): number => Math.round(v * 100) / 100
 
 // FFA% x (1 + loss multiplier%) + moisture% — e.g. 5% FFA x 1.10 + 0.2% = 5.7%.
-function autoCalcPct(it: Row): number {
+// Full precision — feeds the TOR multiplier math below, which the backend
+// (src/main/production.ts) also does at full precision. Rounding this to 2dp
+// before it's divided into a multiplier and then multiplied by a blend share
+// throws off the final TOR by more than a rounding error should (a 65% share
+// alone turns a 0.003 rounding slip into +0.2), so it's kept raw here and only
+// rounded at the edges: once for the by-product's own displayed/saved % (see
+// autoCalcPct), and via formatNum wherever a figure is actually shown.
+function rawFattyAcidPct(it: Row): number {
   const ffa = Number(it.ffa_pct) || 0
   const loss = Number(it.loss_multiplier_pct) || 0
   const moist = Number(it.moisture_pct) || 0
-  return round2(ffa * (1 + loss / 100) + moist)
+  return ffa * (1 + loss / 100) + moist
+}
+
+// The rounded, user-facing version — this is what a by-product line's own
+// qty field shows and saves as its % of input, so it deliberately IS rounded
+// (a clean percentage, not an internal ratio component).
+function autoCalcPct(it: Row): number {
+  return round2(rawFattyAcidPct(it))
+}
+
+// An input's own TOR multiplier — for a blend of differing-quality raw oils,
+// each ingredient needs its own answer rather than one shared across the
+// whole blend: 1 / (1 - (FFA% x (1 + loss%) + moisture%) - dead loss%). Dead
+// loss isn't per-input — it's the recipe's own shared 'Loss' line total,
+// always the same standing assumption for every ingredient.
+function inputTorMultiplier(it: Row, sharedDeadLossPct: number): number {
+  const yieldPct = 100 - rawFattyAcidPct(it) - sharedDeadLossPct
+  return yieldPct > 0 ? 100 / yieldPct : 1
+}
+
+// The recipe-wide multiplier shared by every input line that doesn't carry
+// its own — by-products and loss come off the oil going in, so the yield is
+// (100 − their total)% and the requirement is 100 ÷ that yield.
+function uniformTorOf(items: Row[]): number {
+  const sum = (kind: string): number =>
+    items.filter((it) => String(it.kind || 'input') === kind).reduce((s, it) => s + (Number(it.qty) || 0), 0)
+  const offInput = sum('output') + sum('loss')
+  return offInput > 0 && offInput < 100 ? (100 * 100) / (100 - offInput) : 100
+}
+
+// Dead loss is always the recipe's own 'Loss — written off' lines, total —
+// the same standing assumption whether a recipe uses one shared multiplier
+// or gives each input its own.
+function sharedDeadLossPctOf(items: Row[]): number {
+  return items.filter((it) => String(it.kind || 'input') === 'loss').reduce((s, it) => s + (Number(it.qty) || 0), 0)
+}
+
+// The recipe's total oil required, per 100 of output — the sum of each
+// input's own share x its own multiplier (auto-calculated, or the recipe's
+// shared one). A recipe with no per-input auto-calc collapses back to the
+// plain uniform figure, exactly as it always worked.
+function recipeTorOf(items: Row[]): number {
+  const inputs = items.filter((it) => String(it.kind || 'input') === 'input')
+  const blend = inputs.reduce((s, it) => s + (Number(it.qty) || 0), 0)
+  const uniformTor = uniformTorOf(items)
+  if (blend <= 0) return uniformTor
+  const sharedDeadLoss = sharedDeadLossPctOf(items)
+  return round2(
+    inputs.reduce((s, it) => {
+      const mult = it.auto_calc ? inputTorMultiplier(it, sharedDeadLoss) : uniformTor / 100
+      return s + (Number(it.qty) || 0) * mult
+    }, 0)
+  )
 }
 
 export function Formulation(): React.JSX.Element {
@@ -95,7 +201,8 @@ export function Formulation(): React.JSX.Element {
             auto_calc: !!i.auto_calc,
             ffa_pct: i.ffa_pct ?? '',
             loss_multiplier_pct: i.loss_multiplier_pct ?? '',
-            moisture_pct: i.moisture_pct ?? ''
+            moisture_pct: i.moisture_pct ?? '',
+            byproduct_product_id: i.byproduct_product_id ? String(i.byproduct_product_id) : ''
           }))
         : [{ product_id: '', qty: '', kind: 'input' }]
     )
@@ -116,11 +223,18 @@ export function Formulation(): React.JSX.Element {
   // its own FFA/loss/moisture inputs (Fatty Acid being the standing example).
   // Turning auto-calc on immediately writes the computed % into qty; turning
   // it off just freezes qty at whatever it last was, editable again by hand.
+  //
+  // An INPUT line's auto-calc is different: its qty is the blend SHARE (e.g.
+  // 65%), typed by hand either way — auto-calc instead gives that one
+  // ingredient its own TOR multiplier (see inputTorMultiplier above), for a
+  // blend of raw oils where each is its own quality rather than one shared
+  // loss across the whole blend.
   function toggleItemAutoCalc(idx: number): void {
     setItems((prev) =>
       prev.map((it, i) => {
         if (i !== idx) return it
         if (it.auto_calc) return { ...it, auto_calc: false }
+        if (String(it.kind || 'input') === 'input') return { ...it, auto_calc: true }
         return { ...it, auto_calc: true, qty: String(autoCalcPct(it)) }
       })
     )
@@ -130,6 +244,7 @@ export function Formulation(): React.JSX.Element {
       prev.map((it, i) => {
         if (i !== idx) return it
         const next = { ...it, [key]: value }
+        if (String(it.kind || 'input') === 'input') return next
         return { ...next, qty: String(autoCalcPct(next)) }
       })
     )
@@ -148,11 +263,16 @@ export function Formulation(): React.JSX.Element {
   // left of it and the requirement is 100 ÷ that yield:
   //   5.7% fatty + 1% dead loss -> 93.3% yield -> 100/0.933 = 107.18%
   const offInput = byProductPct + lossPct
-  const tor = offInput > 0 && offInput < 100 ? (100 * 100) / (100 - offInput) : 100
+  // Shared by every input that doesn't carry its own multiplier — a blend of
+  // differing-quality raw oils can give one (or more) input its own instead
+  // (see inputTorMultiplier), in which case the recipe's real TOR is the sum
+  // of each input's own share x its own multiplier, not this single figure.
+  const uniformTor = uniformTorOf(items)
+  const hasPerInputAutoCalc = items.some((it) => String(it.kind || 'input') === 'input' && it.auto_calc)
+  const tor = recipeTorOf(items)
   const balanced = Math.abs(blendPct - 100) < 0.01
   // What the recipe means in real quantities, for a batch the user names.
   const [torQty, setTorQty] = useState('100')
-  const total = tor
 
   async function save(): Promise<void> {
     if (!form.product_id) {
@@ -168,7 +288,11 @@ export function Formulation(): React.JSX.Element {
         ffa_pct: it.auto_calc && it.ffa_pct !== '' && it.ffa_pct != null ? Number(it.ffa_pct) : null,
         loss_multiplier_pct:
           it.auto_calc && it.loss_multiplier_pct !== '' && it.loss_multiplier_pct != null ? Number(it.loss_multiplier_pct) : null,
-        moisture_pct: it.auto_calc && it.moisture_pct !== '' && it.moisture_pct != null ? Number(it.moisture_pct) : null
+        moisture_pct: it.auto_calc && it.moisture_pct !== '' && it.moisture_pct != null ? Number(it.moisture_pct) : null,
+        byproduct_product_id:
+          it.auto_calc && String(it.kind || 'input') === 'input' && it.byproduct_product_id
+            ? Number(it.byproduct_product_id)
+            : null
       }))
       .filter((it) => it.product_id && it.qty > 0)
     if (!clean.some((it) => it.kind === 'input')) {
@@ -177,6 +301,14 @@ export function Formulation(): React.JSX.Element {
     }
     if (!balanced) {
       toast.error(`The input blend must total 100% (currently ${formatNum(blendPct)}%)`)
+      return
+    }
+    if (clean.some((it) => it.kind === 'input' && it.auto_calc && !it.byproduct_product_id)) {
+      toast.error('Pick which product the recovered fatty acid becomes for every auto-calculated input')
+      return
+    }
+    if (items.some((it) => String(it.kind || 'input') === 'input' && it.auto_calc) && !lossPct) {
+      toast.error('Add a dead loss line under "Loss — written off" — every auto-calculated input needs one')
       return
     }
     setSaving(true)
@@ -224,33 +356,48 @@ export function Formulation(): React.JSX.Element {
           }
         />
         <div className="px-4 py-6">
-          <Card className="max-w-3xl p-6">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1.5">
-                <Label>Output product *</Label>
-                <Select
-                  value={String(form.product_id)}
-                  onValueChange={(v) => setForm((p) => ({ ...p, product_id: v }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Finished good or intermediate" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {outputs.map((p) => (
-                      <SelectItem key={p.id} value={String(p.id)}>
-                        {p.name} · {CAT_LABEL[p.category] ?? p.category}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+          <div className="mx-auto max-w-6xl space-y-5">
+            {/* Output product header — no overflow-hidden here: the Output
+                product dropdown opens INSIDE this card, and clipping the
+                card would clip its panel along with it. */}
+            <div className="rounded-2xl border shadow-sm">
+              <div className="flex items-center gap-3 rounded-t-2xl bg-gradient-to-r from-[#1a2c56] to-[#2c4a8c] px-5 py-4 text-white">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15">
+                  <Beaker className="h-5 w-5" />
+                </span>
+                <div>
+                  <div className="text-[15px] font-bold">{editing ? 'Edit formulation' : 'New formulation'}</div>
+                  <div className="text-[11px] text-white/70">Compose a finished good or intermediate from other products</div>
+                </div>
               </div>
-              <div className="flex flex-col gap-1.5">
-                <Label>Name (optional)</Label>
-                <Input
-                  value={form.name ?? ''}
-                  onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
-                  placeholder="e.g. standard recipe"
-                />
+              <div className="grid gap-3 rounded-b-2xl bg-card p-5 sm:grid-cols-2">
+                <div className="flex flex-col gap-1.5">
+                  <Label>Output product *</Label>
+                  <Select
+                    value={String(form.product_id)}
+                    onValueChange={(v) => setForm((p) => ({ ...p, product_id: v }))}
+                  >
+                    <SelectTrigger className="h-10">
+                      <SelectValue placeholder="Finished good or intermediate" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {outputs.map((p) => (
+                        <SelectItem key={p.id} value={String(p.id)}>
+                          {p.name} · {CAT_LABEL[p.category] ?? p.category}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label>Name (optional)</Label>
+                  <Input
+                    className="h-10"
+                    value={form.name ?? ''}
+                    onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
+                    placeholder="e.g. standard recipe"
+                  />
+                </div>
               </div>
             </div>
 
@@ -258,197 +405,308 @@ export function Formulation(): React.JSX.Element {
                 drawn from stock, what the batch throws off besides the main
                 product, and what is simply lost — by-products and loss are
                 struck on the input going in, not the output coming out. */}
-            {([
-              { kind: 'input', title: 'Inputs — consumed from stock', add: 'Add input', tone: 'text-rose-800' },
-              { kind: 'output', title: 'By-products — added to stock', add: 'Add by-product', tone: 'text-emerald-800' },
-              { kind: 'loss', title: 'Loss — written off', add: 'Add loss', tone: 'text-amber-800' }
-            ] as const).map((sec) => (
-              <div className="mt-6" key={sec.kind}>
-                <div className="mb-2 flex items-center justify-between">
-                  <Label className={sec.tone}>{sec.title}</Label>
-                  <Button variant="outline" size="sm" onClick={() => addItem(sec.kind)}>
-                    <Plus className="h-4 w-4" /> {sec.add}
-                  </Button>
-                </div>
-                <div className="rounded-lg border">
-                  <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    <span className="flex-1">Product</span>
-                    <span className="w-32">% of input</span>
-                    <span className="w-8" />
+            {SECTIONS.map((sec) => {
+              const secItems = items.map((it, idx) => ({ it, idx })).filter(({ it }) => String(it.kind || 'input') === sec.kind)
+              return (
+                // No overflow-hidden here either — each item row's product
+                // dropdown opens inside this card and would get clipped along
+                // with it, same reason as the header card above.
+                <div key={sec.kind} className="rounded-2xl border shadow-sm">
+                  <div className={cn('flex items-center gap-2.5 rounded-t-2xl bg-gradient-to-r px-4 py-3 text-white', sec.grad)}>
+                    <sec.icon className="h-4 w-4 shrink-0" />
+                    <div className="flex-1">
+                      <div className="text-[13px] font-bold uppercase tracking-wide">{sec.title}</div>
+                      <div className="text-[10px] text-white/75">{sec.subtitle}</div>
+                    </div>
+                    <Badge variant="secondary" className="border-transparent bg-white/20 text-white">
+                      {secItems.length}
+                    </Badge>
+                    <Button size="sm" variant="secondary" className="h-7 bg-white/90 text-[#1a2c56] hover:bg-white" onClick={() => addItem(sec.kind)}>
+                      <Plus className="h-3.5 w-3.5" /> {sec.add}
+                    </Button>
                   </div>
-                  <div className="divide-y">
-                    {items.filter((it) => String(it.kind || 'input') === sec.kind).length === 0 ? (
-                      <p className="px-3 py-2.5 text-xs text-muted-foreground">None.</p>
+                  <div className="space-y-2 rounded-b-2xl bg-muted/20 p-3">
+                    {secItems.length === 0 ? (
+                      <p className="px-2 py-4 text-center text-xs text-muted-foreground">None yet.</p>
                     ) : (
-                      items.map((it, idx) =>
-                        String(it.kind || 'input') !== sec.kind ? null : (
-                          <div key={idx} className="px-3 py-2">
-                            <div className="flex items-center gap-2">
-                              <div className="flex-1">
-                                <Select
-                                  value={String(it.product_id)}
-                                  onValueChange={(v) => setItem(idx, 'product_id', v)}
-                                >
-                                  <SelectTrigger>
-                                    <SelectValue placeholder="Select product" />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    {products.map((p) => (
-                                      <SelectItem key={p.id} value={String(p.id)}>
-                                        {p.name} · {CAT_LABEL[p.category] ?? p.category}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-                              </div>
+                      secItems.map(({ it, idx }) => (
+                        <div key={idx} className={cn('rounded-xl border-l-4 bg-card p-3 shadow-sm transition-shadow hover:shadow-md', sec.accent)}>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1">
+                              <Select
+                                value={String(it.product_id)}
+                                onValueChange={(v) => setItem(idx, 'product_id', v)}
+                              >
+                                <SelectTrigger className="h-9">
+                                  <SelectValue placeholder="Select product" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {products.map((p) => (
+                                    <SelectItem key={p.id} value={String(p.id)}>
+                                      {p.name} · {CAT_LABEL[p.category] ?? p.category}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="relative w-32 shrink-0">
                               <Input
                                 type="number"
-                                className={cn('w-32 text-right', sec.kind === 'output' && it.auto_calc && 'bg-muted/60 text-muted-foreground')}
+                                className={cn('h-9 pr-6 text-right font-semibold tabular-nums', sec.kind === 'output' && it.auto_calc && 'bg-muted/60 text-muted-foreground')}
                                 placeholder="0"
                                 readOnly={sec.kind === 'output' && !!it.auto_calc}
                                 value={it.qty ?? ''}
                                 onChange={(e) => setItem(idx, 'qty', e.target.value)}
                               />
-                              {sec.kind === 'output' && (
-                                <Button
-                                  type="button"
-                                  variant={it.auto_calc ? 'default' : 'ghost'}
-                                  size="icon"
-                                  className="h-9 w-8"
-                                  title={it.auto_calc ? 'Auto-calculated — click to enter the % by hand instead' : 'Auto-calculate from FFA %, loss multiplier and moisture loss'}
-                                  onClick={() => toggleItemAutoCalc(idx)}
-                                >
-                                  <Calculator className="h-4 w-4" />
-                                </Button>
-                              )}
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-9 w-8 text-destructive"
-                                onClick={() => removeItem(idx)}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
+                              <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-[11px] text-muted-foreground">%</span>
                             </div>
-                            {sec.kind === 'output' && it.auto_calc && (
-                              <div className="mt-2 grid grid-cols-3 gap-2 rounded-md border border-emerald-200 bg-emerald-50/50 p-2.5">
+                            {(sec.kind === 'output' || sec.kind === 'input') && (
+                              <Button
+                                type="button"
+                                variant={it.auto_calc ? 'default' : 'outline'}
+                                size="icon"
+                                className="h-9 w-9 shrink-0"
+                                title={
+                                  it.auto_calc
+                                    ? sec.kind === 'input'
+                                      ? 'Auto-calculated TOR multiplier — click to turn off'
+                                      : 'Auto-calculated — click to enter the % by hand instead'
+                                    : sec.kind === 'input'
+                                      ? "Give this ingredient its own TOR multiplier from FFA %, loss multiplier and moisture — dead loss always comes from the recipe's own Loss line below"
+                                      : 'Auto-calculate from FFA %, loss multiplier and moisture loss'
+                                }
+                                onClick={() => toggleItemAutoCalc(idx)}
+                              >
+                                <Calculator className="h-4 w-4" />
+                              </Button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-9 w-9 shrink-0 text-destructive hover:bg-destructive/10"
+                              onClick={() => removeItem(idx)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                          {(sec.kind === 'output' || sec.kind === 'input') && it.auto_calc && (
+                            <div className={cn('mt-2.5 grid gap-2 rounded-lg border p-2.5', sec.kind === 'input' ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3', sec.calcBox)}>
+                              <div className="flex flex-col gap-0.5">
+                                <Label className="text-[10px] font-normal text-muted-foreground">Oil FFA %</Label>
+                                <Input
+                                  type="number"
+                                  className="h-8 bg-white text-right"
+                                  value={it.ffa_pct ?? ''}
+                                  onChange={(e) => setItemFormula(idx, 'ffa_pct', e.target.value)}
+                                />
+                              </div>
+                              <div className="flex flex-col gap-0.5">
+                                <Label className="text-[10px] font-normal text-muted-foreground">Loss multiplier % (the "1 +")</Label>
+                                <Input
+                                  type="number"
+                                  className="h-8 bg-white text-right"
+                                  value={it.loss_multiplier_pct ?? ''}
+                                  onChange={(e) => setItemFormula(idx, 'loss_multiplier_pct', e.target.value)}
+                                />
+                              </div>
+                              <div className="flex flex-col gap-0.5">
+                                <Label className="text-[10px] font-normal text-muted-foreground">Moisture loss %</Label>
+                                <Input
+                                  type="number"
+                                  className="h-8 bg-white text-right"
+                                  value={it.moisture_pct ?? ''}
+                                  onChange={(e) => setItemFormula(idx, 'moisture_pct', e.target.value)}
+                                />
+                              </div>
+                              {sec.kind === 'input' && (
                                 <div className="flex flex-col gap-0.5">
-                                  <Label className="text-[10px] font-normal text-muted-foreground">Oil FFA %</Label>
-                                  <Input
-                                    type="number"
-                                    className="h-8 bg-white text-right"
-                                    value={it.ffa_pct ?? ''}
-                                    onChange={(e) => setItemFormula(idx, 'ffa_pct', e.target.value)}
-                                  />
+                                  <Label className="text-[10px] font-normal text-muted-foreground">By-product goes to *</Label>
+                                  <Select
+                                    value={it.byproduct_product_id ? String(it.byproduct_product_id) : ''}
+                                    onValueChange={(v) => setItem(idx, 'byproduct_product_id', v)}
+                                  >
+                                    <SelectTrigger className="h-8 bg-white text-xs"><SelectValue placeholder="e.g. Fatty Acid" /></SelectTrigger>
+                                    <SelectContent>
+                                      {products.map((p) => (
+                                        <SelectItem key={p.id} value={String(p.id)}>
+                                          {p.name} · {CAT_LABEL[p.category] ?? p.category}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
                                 </div>
-                                <div className="flex flex-col gap-0.5">
-                                  <Label className="text-[10px] font-normal text-muted-foreground">Loss multiplier % (the "1 +")</Label>
-                                  <Input
-                                    type="number"
-                                    className="h-8 bg-white text-right"
-                                    value={it.loss_multiplier_pct ?? ''}
-                                    onChange={(e) => setItemFormula(idx, 'loss_multiplier_pct', e.target.value)}
-                                  />
+                              )}
+                              {sec.kind === 'input' ? (
+                                <div className={cn('col-span-2 flex items-center justify-between text-[11px] sm:col-span-4', sec.formulaText)}>
+                                  <span>1 ÷ (1 − (FFA % × (1 + loss %) + moisture %) − recipe's dead loss %) = this ingredient's own TOR multiplier</span>
+                                  <span className="font-semibold tabular-nums">×{inputTorMultiplier(it, lossPct).toFixed(4)}</span>
                                 </div>
-                                <div className="flex flex-col gap-0.5">
-                                  <Label className="text-[10px] font-normal text-muted-foreground">Moisture loss %</Label>
-                                  <Input
-                                    type="number"
-                                    className="h-8 bg-white text-right"
-                                    value={it.moisture_pct ?? ''}
-                                    onChange={(e) => setItemFormula(idx, 'moisture_pct', e.target.value)}
-                                  />
-                                </div>
+                              ) : (
                                 <div className="col-span-3 flex items-center justify-between text-[11px] text-emerald-800">
                                   <span>FFA % × (1 + loss %) + moisture % = % of input</span>
                                   <span className="font-semibold tabular-nums">{formatNum(autoCalcPct(it))}%</span>
                                 </div>
-                              </div>
-                            )}
-                          </div>
-                        )
-                      )
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))
                     )}
                   </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
 
-            {/* The mass balance, and what it means for a real batch. */}
-            <div className="mt-6 rounded-lg border border-[#d9d2b8] bg-[#fffdf4] p-4">
-              <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
-                <span className="font-semibold text-[#1a2c56]">Input blend</span>
-                <span className={cn('font-semibold tabular-nums', balanced ? 'text-emerald-700' : 'text-red-600')}>
-                  {formatNum(blendPct)}% {balanced ? '✓' : '· must be 100%'}
+            {/* TOR calculator — the mass balance, and what it means for a real batch. */}
+            <div className="overflow-hidden rounded-2xl border border-[#2c4a8c] shadow-lg">
+              <div className="flex flex-wrap items-center gap-2 bg-gradient-to-r from-[#0f1c3d] to-[#1a2c56] px-5 py-3 text-white">
+                <Calculator className="h-4 w-4 shrink-0 text-amber-400" />
+                <span className="text-[13px] font-bold uppercase tracking-widest">TOR Calculator</span>
+                <span
+                  className={cn(
+                    'ml-auto rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tabular-nums',
+                    balanced ? 'border-emerald-400 bg-emerald-400/10 text-emerald-300' : 'border-rose-400 bg-rose-400/10 text-rose-300'
+                  )}
+                >
+                  Input blend {formatNum(blendPct)}% {balanced ? '✓' : '· must be 100%'}
                 </span>
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {offInput > 0 ? (
-                  <>
-                    {formatNum(byProductPct)}% by-products + {formatNum(lossPct)}% loss comes off the oil going in, so{' '}
-                    {formatNum(100 - offInput)}% of it becomes{' '}
-                    {products.find((p) => String(p.id) === String(form.product_id))?.name || 'the output'} — meaning{' '}
-                    100 ÷ {((100 - offInput) / 100).toFixed(4)} = <b className="text-foreground">{formatNum(tor)}%</b> has
-                    to be put in.
-                  </>
-                ) : (
-                  <>Nothing is lost, so the blend goes in one for one with the output.</>
-                )}
-              </p>
+              <div className="bg-gradient-to-b from-[#1a2c56] to-[#132247] p-5 text-white">
+                <p className="text-[12px] leading-relaxed text-white/70">
+                  {hasPerInputAutoCalc ? (
+                    <>
+                      One or more inputs carry their own TOR multiplier (a blend of differing-quality raw oils), so the
+                      total isn&apos;t one shared loss — it&apos;s each input&apos;s own share × its own multiplier, summed:{' '}
+                      <b className="text-white">{formatNum(tor)}%</b> total raw material to make 100 of{' '}
+                      {products.find((p) => String(p.id) === String(form.product_id))?.name || 'the output'}.
+                    </>
+                  ) : offInput > 0 ? (
+                    <>
+                      {formatNum(byProductPct)}% by-products + {formatNum(lossPct)}% loss comes off the oil going in, so{' '}
+                      {formatNum(100 - offInput)}% of it becomes{' '}
+                      {products.find((p) => String(p.id) === String(form.product_id))?.name || 'the output'} — meaning{' '}
+                      100 ÷ {((100 - offInput) / 100).toFixed(4)} = <b className="text-white">{formatNum(tor)}%</b> has
+                      to be put in.
+                    </>
+                  ) : (
+                    <>Nothing is lost, so the blend goes in one for one with the output.</>
+                  )}
+                </p>
 
-              <div className="mt-3 border-t border-dotted border-[#d9d2b8] pt-3">
-                <div className="flex flex-wrap items-center gap-2 text-sm">
-                  <span className="font-semibold text-[#1a2c56]">TOR</span>
-                  <span className="text-muted-foreground">— to produce</span>
-                  <Input
-                    type="number"
-                    className="h-8 w-24 bg-white text-right"
-                    value={torQty}
-                    onChange={(e) => setTorQty(e.target.value)}
-                  />
-                  <span className="text-muted-foreground">{form.uom || 'MT'}, total oil required is</span>
-                  <span className="rounded bg-[#1a2c56] px-2 py-0.5 font-bold tabular-nums text-white">
-                    {formatNum(((Number(torQty) || 0) * tor) / 100)} {form.uom || 'MT'}
-                  </span>
+                <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl bg-black/20 p-4">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] uppercase tracking-wide text-white/60">Produce</span>
+                    <Input
+                      type="number"
+                      className="h-11 w-28 border-white/20 bg-white/10 text-center text-lg font-bold tabular-nums text-white"
+                      value={torQty}
+                      onChange={(e) => setTorQty(e.target.value)}
+                    />
+                    <span className="text-[11px] uppercase tracking-wide text-white/60">{form.uom || 'MT'}</span>
+                  </div>
+                  <ArrowRight className="h-5 w-5 shrink-0 text-white/40" />
+                  <div className="flex items-baseline gap-2 rounded-xl bg-amber-400/15 px-4 py-2">
+                    <span className="text-[11px] uppercase tracking-wide text-amber-300">Total oil required</span>
+                    <span className="text-2xl font-black tabular-nums text-amber-300">
+                      {formatNum(((Number(torQty) || 0) * tor) / 100)}
+                    </span>
+                    <span className="text-[11px] text-amber-300/80">{form.uom || 'MT'}</span>
+                  </div>
+                  <div className="ml-auto text-right">
+                    <div className="text-[10px] uppercase tracking-wide text-white/50">TOR per 100</div>
+                    <div className="text-xl font-bold tabular-nums">{formatNum(tor)}%</div>
+                  </div>
                 </div>
-                <div className="mt-2 space-y-0.5 text-xs text-muted-foreground">
-                  {items
-                    .filter((it) => it.product_id && Number(it.qty) > 0)
-                    .map((it, i) => {
-                      const p = products.find((x) => String(x.id) === String(it.product_id))
-                      const kind = String(it.kind || 'input')
-                      const share = Number(it.qty) || 0
-                      // Everything is measured against the oil going in, and
-                      // that quantity is the TOR — so every line scales by it.
-                      const effPct = (tor * share) / 100
-                      const q = ((Number(torQty) || 0) * effPct) / 100
-                      return (
-                        <div key={i} className="flex justify-between">
-                          <span>
-                            {kind === 'input' ? 'Needs' : kind === 'output' ? 'Yields' : 'Loses'} {p?.name || '—'}
-                            {kind === 'input' && share !== 100 && (
-                              <span className="ml-1 opacity-70">({formatNum(share)}% of blend)</span>
-                            )}
-                          </span>
-                          <span className="tabular-nums">
-                            {formatNum(q)} {form.uom || 'MT'} ({formatNum(effPct)}%)
-                          </span>
-                        </div>
-                      )
-                    })}
+
+                {/* Per-product requirement — separate, clear tiles, not a
+                    buried list — so exactly how much of each input this
+                    batch size needs is obvious at a glance. */}
+                <div className="mt-5">
+                  <div className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-white/60">Per-product requirement</div>
+                  <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+                    {items
+                      .filter((it) => it.product_id && Number(it.qty) > 0)
+                      .map((it, i) => {
+                        const p = products.find((x) => String(x.id) === String(it.product_id))
+                        const kind = String(it.kind || 'input')
+                        const share = Number(it.qty) || 0
+                        // An input with its own TOR multiplier takes share x its
+                        // own multiplier directly; everything else (a plain
+                        // input, or a by-product/loss line) rides on the
+                        // recipe's shared multiplier the way it always has.
+                        const effPct =
+                          kind === 'input'
+                            ? it.auto_calc
+                              ? share * inputTorMultiplier(it, lossPct)
+                              : (share * uniformTor) / 100
+                            : (uniformTor * share) / 100
+                        const q = ((Number(torQty) || 0) * effPct) / 100
+                        const tile = KIND_TILE[kind]
+                        return (
+                          <div key={i} className={cn('rounded-xl border p-3', tile.box)}>
+                            <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-white/70">
+                              <span>{tile.label}</span>
+                              {kind === 'input' && share !== 100 && <span>{formatNum(share)}% share</span>}
+                            </div>
+                            <div className="mt-1 truncate text-[13px] font-semibold">{p?.name || '—'}</div>
+                            <div className="mt-1 flex items-baseline gap-1.5">
+                              <span className="text-xl font-black tabular-nums">{formatNum(q)}</span>
+                              <span className="text-[11px] text-white/70">{form.uom || 'MT'}</span>
+                            </div>
+                            <div className="text-[10px] text-white/50">{formatNum(effPct)}% of TOR</div>
+                          </div>
+                        )
+                      })}
+                    {(() => {
+                      // The fatty acid each auto-calc input throws off is a real
+                      // by-product, not just a yield hit — summed here by
+                      // whichever product each one names, exactly what a
+                      // production run using this recipe will add to stock.
+                      const byproductAdds = new Map<number, number>()
+                      for (const it of items) {
+                        if (String(it.kind || 'input') !== 'input' || !it.auto_calc || !it.byproduct_product_id) continue
+                        const share = Number(it.qty) || 0
+                        const effPct = share * inputTorMultiplier(it, lossPct)
+                        // Raw, not the rounded display %, so this matches the
+                        // actual by-product qty a production run will add to
+                        // stock (src/main/production.ts does the same).
+                        const fattyAcidEffPct = (effPct * rawFattyAcidPct(it)) / 100
+                        const pid = Number(it.byproduct_product_id)
+                        byproductAdds.set(pid, (byproductAdds.get(pid) || 0) + fattyAcidEffPct)
+                      }
+                      return Array.from(byproductAdds.entries()).map(([pid, effPct]) => {
+                        const p = products.find((x) => Number(x.id) === pid)
+                        const q = ((Number(torQty) || 0) * effPct) / 100
+                        return (
+                          <div key={`byp-${pid}`} className={cn('rounded-xl border p-3', KIND_TILE.output.box)}>
+                            <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-white/70">
+                              <span>Yields</span>
+                              <span>auto, from FFA</span>
+                            </div>
+                            <div className="mt-1 truncate text-[13px] font-semibold">{p?.name || '—'}</div>
+                            <div className="mt-1 flex items-baseline gap-1.5">
+                              <span className="text-xl font-black tabular-nums">{formatNum(q)}</span>
+                              <span className="text-[11px] text-white/70">{form.uom || 'MT'}</span>
+                            </div>
+                            <div className="text-[10px] text-white/50">{formatNum(effPct)}% of TOR</div>
+                          </div>
+                        )
+                      })
+                    })()}
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div className="mt-5 flex justify-end gap-2">
+            <div className="flex justify-end gap-2 pb-2">
               <Button variant="outline" onClick={() => setBuilding(false)} disabled={saving}>
                 Cancel
               </Button>
-              <Button onClick={save} disabled={saving}>
+              <Button onClick={save} disabled={saving} className="bg-[#1a2c56] hover:bg-[#24407e]">
                 {saving ? 'Saving…' : 'Save formulation'}
               </Button>
             </div>
-          </Card>
+          </div>
         </div>
       </>
     )

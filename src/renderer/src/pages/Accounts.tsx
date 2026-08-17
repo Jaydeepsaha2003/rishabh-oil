@@ -23,6 +23,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { DbStatus } from '@/components/DbStatus'
 import { UpdateBadge } from '@/components/UpdateBadge'
@@ -30,7 +31,7 @@ import { FyPicker } from '@/components/FyPicker'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
-import { useGlobalDateRange } from '@/lib/globalDateRange'
+import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -394,7 +395,8 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   const monthStart = `${todayISO().slice(0, 7)}-01`
   const [dbFrom, setDbFrom] = useState(monthStart)
   const [dbTo, setDbTo] = useState(todayISO())
-  const [dbType, setDbType] = useState('ALL')
+  // Empty = every voucher type.
+  const [dbType, setDbType] = useState<string[]>([])
   const [dayRows, setDayRows] = useState<Row[]>([])
   const [viewRow, setViewRow] = useState<Row | null>(null)
 
@@ -424,7 +426,8 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   const [regTo, setRegTo] = useState('')
   const [regSearch, setRegSearch] = useState('')
   // 'all' | 'lc' (funded by an LC) | 'nolc' (not tagged to any LC)
-  const [regFunding, setRegFunding] = useState('all')
+  // Empty = both — checking neither/both funding types is the same as "all".
+  const [regFunding, setRegFunding] = useState<string[]>([])
   // Tag-a-purchase-to-an-LC dialog.
   const [tagForm, setTagForm] = useState<Row | null>(null)
   // Tag-a-sale-to-bill-discounting dialog — the sales-side mirror of Tag LC.
@@ -438,7 +441,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   // (Day Book, Ledger, Trial Balance, registers, Trading Account) adopts it.
   const globalRange = useGlobalDateRange()
   useEffect(() => {
-    if (globalRange.version === 0) return
+    if (!globalRangeAppliesTo(globalRange, 'accounts')) return
     setDbFrom(globalRange.from); setDbTo(globalRange.to)
     setLgFrom(globalRange.from); setLgTo(globalRange.to)
     setTbFrom(globalRange.from); setTbTo(globalRange.to)
@@ -473,7 +476,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       await window.api.vouchers.list({
         from: dbFrom || undefined,
         to: dbTo || undefined,
-        vchType: dbType === 'ALL' ? undefined : dbType,
+        vchType: dbType.length ? dbType : undefined,
         companyId: cid
       })
     )
@@ -1760,20 +1763,22 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         <DatePicker value={regFrom} onChange={(v) => setRegFrom(v || '')} max={regTo || undefined} className="h-8 w-[8.5rem] bg-white text-[11px]" />
         <span className="text-[11px] text-muted-foreground">to</span>
         <DatePicker value={regTo} onChange={(v) => setRegTo(v || '')} min={regFrom || undefined} className="h-8 w-[8.5rem] bg-white text-[11px]" />
-        <Select value={regFunding} onValueChange={setRegFunding}>
-          <SelectTrigger className="h-8 w-40 bg-white text-[11px]"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All</SelectItem>
-            <SelectItem value="lc">{fundingLabels[0]}</SelectItem>
-            <SelectItem value="nolc">{fundingLabels[1]}</SelectItem>
-          </SelectContent>
-        </Select>
-        {(regFrom || regTo || regSearch || regFunding !== 'all') && (
+        <MultiSelectFilter
+          options={[
+            { value: 'lc', label: fundingLabels[0] },
+            { value: 'nolc', label: fundingLabels[1] }
+          ]}
+          value={regFunding}
+          onApply={setRegFunding}
+          allLabel="All"
+          className="h-8 w-40 bg-white text-[11px]"
+        />
+        {(regFrom || regTo || regSearch || regFunding.length > 0) && (
           <Button
             variant="ghost"
             size="sm"
             className="h-8 px-2 text-xs"
-            onClick={() => { setRegFrom(''); setRegTo(''); setRegSearch(''); setRegFunding('all') }}
+            onClick={() => { setRegFrom(''); setRegTo(''); setRegSearch(''); setRegFunding([]) }}
           >
             Clear
           </Button>
@@ -1794,8 +1799,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     const q = regSearch.trim().toLowerCase()
     return purchases.filter((o) => {
       if (!inPeriod(o.order_date)) return false
-      if (regFunding === 'lc' && !o.lc_nos) return false
-      if (regFunding === 'nolc' && o.lc_nos) return false
+      if (regFunding.length && !regFunding.includes(o.lc_nos ? 'lc' : 'nolc')) return false
       if (!q) return true
       return [o.invoice_no, o.supplier_name, o.oil_code, o.oil_name, o.lc_nos]
         .filter(Boolean).join(' ').toLowerCase().includes(q)
@@ -1807,8 +1811,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     const q = regSearch.trim().toLowerCase()
     return saleRows.filter((s) => {
       if (!inPeriod(s.sale_date)) return false
-      if (regFunding === 'lc' && !s.discount_id) return false
-      if (regFunding === 'nolc' && s.discount_id) return false
+      if (regFunding.length && !regFunding.includes(s.discount_id ? 'lc' : 'nolc')) return false
       if (!q) return true
       return [s.invoice_no, s.customer, s.product_name, s.discount_bank, s.gate_vehicle_no]
         .filter(Boolean).join(' ').toLowerCase().includes(q)
@@ -2129,15 +2132,17 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
             <div className="w-40"><DatePicker value={dbFrom} onChange={setDbFrom} max={dbTo || undefined} /></div>
             <span className="text-[11px]">to</span>
             <div className="w-40"><DatePicker value={dbTo} onChange={setDbTo} min={dbFrom || undefined} /></div>
-            <Select value={dbType} onValueChange={setDbType}>
-              <SelectTrigger className="h-9 w-36 bg-white text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ALL">All vouchers</SelectItem>
-                {VCH_TYPES.map((v) => <SelectItem key={v.key} value={v.key}>{v.label}</SelectItem>)}
-                <SelectItem value="PURCHASE OIL">Purchase (auto)</SelectItem>
-                <SelectItem value="SALE">Sales (auto)</SelectItem>
-              </SelectContent>
-            </Select>
+            <MultiSelectFilter
+              options={[
+                ...VCH_TYPES.map((v) => ({ value: v.key, label: v.label })),
+                { value: 'PURCHASE OIL', label: 'Purchase (auto)' },
+                { value: 'SALE', label: 'Sales (auto)' }
+              ]}
+              value={dbType}
+              onApply={setDbType}
+              allLabel="All vouchers"
+              className="h-9 w-36 bg-white text-xs"
+            />
           </div>
         </div>
         <div className="max-h-[calc(100vh-225px)] overflow-auto">

@@ -77,7 +77,7 @@ export interface Api {
     stats: () => Promise<Row>
   }
   vouchers: {
-    list: (args?: { from?: string; to?: string; vchType?: string; companyId?: number }) => Promise<Row[]>
+    list: (args?: { from?: string; to?: string; vchType?: string | string[]; companyId?: number }) => Promise<Row[]>
     get: (id: number) => Promise<Row | null>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
@@ -206,6 +206,8 @@ export interface Api {
     ) => Promise<{ id: number; status: string; net: number | null; missing: string | null }>
     skipWeighment: (id: number) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
+    reject: (id: number, reason: string) => Promise<{ id: number }>
+    unreject: (id: number) => Promise<{ id: number }>
   }
   treasury: {
     alerts: () => Promise<Row>

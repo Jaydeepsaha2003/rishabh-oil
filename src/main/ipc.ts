@@ -114,7 +114,8 @@ import {
   createGateEntry,
   updateGateEntry,
   completeGateEntry,
-  deleteGateEntry, saveGateWeights, skipGateWeighment, partyCategories } from './gate'
+  deleteGateEntry, saveGateWeights, skipGateWeighment, partyCategories,
+  rejectGateEntry, unrejectGateEntry } from './gate'
 import { listCompanies, setActiveCompany, getActiveCompanyId } from './company'
 import {
   needsApproval,
@@ -464,7 +465,7 @@ export function registerIpc(): void {
     tradingAccount(from, to, companyId)
   )
   handle('dashboard:stats', () => dashboardStats())
-  handle('vouchers:list', (_e, args?: { from?: string; to?: string; vchType?: string; companyId?: number }) =>
+  handle('vouchers:list', (_e, args?: { from?: string; to?: string; vchType?: string | string[]; companyId?: number }) =>
     listVouchers(args?.from, args?.to, args?.vchType, args?.companyId)
   )
   handle('vouchers:get', (_e, { id }: { id: number }) => getVoucher(id))
@@ -613,6 +614,8 @@ export function registerIpc(): void {
   )
   handle('gate:skipWeighment', (_e, { id }: { id: number }) => skipGateWeighment(id))
   handle('gate:delete', (_e, { id }: { id: number }) => deleteGateEntry(id))
+  handle('gate:reject', (_e, { id, reason }: { id: number; reason: string }) => rejectGateEntry(id, reason))
+  handle('gate:unreject', (_e, { id }: { id: number }) => unrejectGateEntry(id))
 
   handle('lc:list', () => listLCs())
   handle('treasury:alerts', () => treasuryAlerts())

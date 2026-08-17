@@ -17,6 +17,8 @@ import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { computeMoney } from '@/lib/orderCalc'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
+import { FyPicker } from '@/components/FyPicker'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -40,6 +42,17 @@ export function Consignment(): React.JSX.Element {
   const [settings, setSettings] = useState<Row>({})
   const [loading, setLoading] = useState(true)
 
+  // Period for the register: opening balance before it, deposits/invoices
+  // within it — same convention as Stock's own MNC/Consignment tab.
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const ranged = !!(from || to)
+  // Alt+F2 broadcasts a period from anywhere.
+  const globalRange = useGlobalDateRange()
+  useEffect(() => {
+    if (globalRangeAppliesTo(globalRange, 'consignment')) { setFrom(globalRange.from); setTo(globalRange.to) }
+  }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // intake (deposit) dialog
   const [depOpen, setDepOpen] = useState(false)
   const [editing, setEditing] = useState<Row | null>(null)
@@ -57,7 +70,7 @@ export function Consignment(): React.JSX.Element {
     setLoading(true)
     const [d, sm, pg, s, p, b, cfg] = await Promise.all([
       window.api.consignment.list(),
-      window.api.consignment.summary(),
+      window.api.consignment.summary(ranged ? { from, to } : undefined),
       window.api.consignment.pending(),
       window.api.data.list('suppliers'),
       window.api.data.list('products'),
@@ -72,7 +85,7 @@ export function Consignment(): React.JSX.Element {
     setBargains(b)
     setSettings(cfg)
     setLoading(false)
-  }, [])
+  }, [ranged, from, to])
 
   useEffect(() => {
     load()
@@ -362,18 +375,21 @@ export function Consignment(): React.JSX.Element {
       band.products.push({
         ...r,
         lots: deposits
-          .filter(
-            (d) =>
-              String(d.supplier_id) === String(r.supplier_id) &&
-              String(d.product_id) === String(r.product_id)
-          )
+          .filter((d) => {
+            if (String(d.supplier_id) !== String(r.supplier_id) || String(d.product_id) !== String(r.product_id)) return false
+            if (!ranged) return true
+            const dt = String(d.deposit_date || '').slice(0, 10)
+            if (from && dt < from) return false
+            if (to && dt > to) return false
+            return true
+          })
           .sort((a, b) => String(a.deposit_date || '').localeCompare(String(b.deposit_date || '')))
       })
     }
     return Array.from(bands.values()).sort((a, b) =>
       String(a.supplier_name || '').localeCompare(String(b.supplier_name || ''))
     )
-  }, [summary, deposits])
+  }, [summary, deposits, ranged, from, to])
   const pendingLotCount = deposits.filter((d) => d.order_id == null).length
 
   return (
@@ -492,8 +508,22 @@ export function Consignment(): React.JSX.Element {
               {pendingLotCount > 0 && (
                 <Badge variant="warning">{pendingLotCount} tanker{pendingLotCount > 1 ? 's' : ''} pending booking</Badge>
               )}
-              <Badge className="bg-violet-600 hover:bg-violet-600">{formatNum(totalBalance)} MT in stock</Badge>
+              <Badge className="bg-violet-600 hover:bg-violet-600">
+                {formatNum(totalBalance)} MT {ranged ? 'closing' : 'in stock'}
+              </Badge>
             </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 border-b border-violet-100 bg-violet-50/40 px-5 py-2">
+            <FyPicker from={from} to={to} onRange={(f, t) => { setFrom(f); setTo(t) }} className="h-9 w-28 text-xs" />
+            <span className="text-[11px] font-semibold text-muted-foreground">From</span>
+            <div className="w-40"><DatePicker value={from} onChange={(v) => setFrom(v || '')} max={to || undefined} /></div>
+            <span className="text-[11px] font-semibold text-muted-foreground">To</span>
+            <div className="w-40"><DatePicker value={to} onChange={(v) => setTo(v || '')} min={from || undefined} /></div>
+            {ranged && (
+              <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={() => { setFrom(''); setTo('') }}>
+                Clear
+              </Button>
+            )}
           </div>
 
           {loading ? (

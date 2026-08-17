@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { formatDate, formatINR, todayISO } from '@/lib/format'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
@@ -23,7 +24,8 @@ export function BillDiscounting(): React.JSX.Element {
   const [entries, setEntries] = useState<Row[]>([])
   const [fundFlow, setFundFlow] = useState<Row | null>(null)
   const [activePartyId, setActivePartyId] = useState<number | null>(null)
-  const [statusFilter, setStatusFilter] = useState<string>('all')
+  // Empty = every status.
+  const [statusFilter, setStatusFilter] = useState<string[]>([])
 
   const [partyForm, setPartyForm] = useState<Row | null>(null)
   const [partySaving, setPartySaving] = useState(false)
@@ -43,7 +45,7 @@ export function BillDiscounting(): React.JSX.Element {
   const loadEntries = useCallback(async () => {
     const filter: Row = {}
     if (activePartyId) filter.bd_party_id = activePartyId
-    if (statusFilter !== 'all') filter.status = statusFilter
+    if (statusFilter.length) filter.status = statusFilter
     setEntries(await window.api.billDiscounting.entries(filter))
   }, [activePartyId, statusFilter])
 
@@ -216,15 +218,17 @@ export function BillDiscounting(): React.JSX.Element {
 
       <div className="flex items-center gap-2">
         <span className="text-[13px] font-bold uppercase tracking-widest">Entries {activePartyId ? `— ${parties.find((p) => Number(p.id) === activePartyId)?.party_name || ''}` : ''}</span>
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger className="ml-auto w-36"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All</SelectItem>
-            <SelectItem value="submitted">Submitted</SelectItem>
-            <SelectItem value="paid">Paid</SelectItem>
-            <SelectItem value="repaid">Repaid</SelectItem>
-          </SelectContent>
-        </Select>
+        <MultiSelectFilter
+          options={[
+            { value: 'submitted', label: 'Submitted' },
+            { value: 'paid', label: 'Paid' },
+            { value: 'repaid', label: 'Repaid' }
+          ]}
+          value={statusFilter}
+          onApply={setStatusFilter}
+          allLabel="All"
+          className="ml-auto w-36"
+        />
         {activePartyId && <Button size="sm" variant="ghost" onClick={() => setActivePartyId(null)}>Clear</Button>}
       </div>
 

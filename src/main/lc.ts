@@ -160,10 +160,28 @@ export async function saveLcLimit(v: Row): Promise<{ id: number }> {
   return { id: cid }
 }
 
+// A purchase invoice belongs to at most one LC at a time — the real
+// exclusivity boundary (a Trading deal's several invoices can each go to a
+// DIFFERENT LC, but the same invoice can't fund two). Refused rather than
+// silently stolen, same spirit as the old deal-level guard this replaced.
 async function syncLinkedOrders(lcId: number, orderIds: unknown): Promise<void> {
   const c = getClient()
-  await c.execute({ sql: 'DELETE FROM lc_linked_orders WHERE lc_id = ?', args: [lcId] })
   const ids = Array.isArray(orderIds) ? orderIds.map((x) => n(x)).filter((x) => x > 0) : []
+  if (ids.length) {
+    const taken = await c.execute({
+      sql: `SELECT lo.order_id, o.invoice_no, l.lc_no
+            FROM lc_linked_orders lo
+            JOIN orders o ON o.id = lo.order_id
+            LEFT JOIN letters_of_credit l ON l.id = lo.lc_id
+            WHERE lo.order_id IN (${ids.join(',')}) AND lo.lc_id != ?`,
+      args: [lcId]
+    })
+    if (taken.rows.length) {
+      const t = taken.rows[0] as Row
+      throw new Error(`Invoice ${t.invoice_no || `#${t.order_id}`} is already linked to ${t.lc_no ? `LC ${t.lc_no}` : 'another LC'}`)
+    }
+  }
+  await c.execute({ sql: 'DELETE FROM lc_linked_orders WHERE lc_id = ?', args: [lcId] })
   for (const oid of ids) {
     await c.execute({
       sql: 'INSERT OR IGNORE INTO lc_linked_orders (lc_id, order_id) VALUES (?, ?)',

@@ -15,6 +15,7 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
+import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import {
   Table,
   TableBody,
@@ -546,7 +547,7 @@ function AccessPanel(): React.JSX.Element {
   const [logs, setLogs] = useState<Row[]>([])
   const [logUsers, setLogUsers] = useState<string[]>([])
   const [logEntities, setLogEntities] = useState<string[]>([])
-  const [filter, setFilter] = useState<Row>({ username: '', entity: '', q: '', from: '', to: '' })
+  const [filter, setFilter] = useState<Row>({ username: [] as string[], entity: [] as string[], q: '', from: '', to: '' })
   const [retention, setRetention] = useState('30')
 
   const load = useCallback(async () => {
@@ -562,8 +563,8 @@ function AccessPanel(): React.JSX.Element {
 
   const loadLogs = useCallback(async () => {
     const f: Row = {}
-    if (filter.username) f.username = filter.username
-    if (filter.entity) f.entity = filter.entity
+    if (filter.username?.length) f.username = filter.username
+    if (filter.entity?.length) f.entity = filter.entity
     if (filter.q) f.q = filter.q
     if (filter.from) f.from = filter.from
     if (filter.to) f.to = filter.to
@@ -710,20 +711,18 @@ function AccessPanel(): React.JSX.Element {
             value={filter.q}
             onChange={(e) => setFilter((p) => ({ ...p, q: e.target.value }))}
           />
-          <Select value={filter.username || 'ALL'} onValueChange={(v) => setFilter((p) => ({ ...p, username: v === 'ALL' ? '' : v }))}>
-            <SelectTrigger><SelectValue placeholder="All users" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All users</SelectItem>
-              {logUsers.map((u) => <SelectItem key={u} value={u}>{u}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <Select value={filter.entity || 'ALL'} onValueChange={(v) => setFilter((p) => ({ ...p, entity: v === 'ALL' ? '' : v }))}>
-            <SelectTrigger><SelectValue placeholder="All sections" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All sections</SelectItem>
-              {logEntities.map((en) => <SelectItem key={en} value={en}>{en}</SelectItem>)}
-            </SelectContent>
-          </Select>
+          <MultiSelectFilter
+            options={logUsers.map((u) => ({ value: u, label: u }))}
+            value={filter.username || []}
+            onApply={(v) => setFilter((p) => ({ ...p, username: v }))}
+            allLabel="All users"
+          />
+          <MultiSelectFilter
+            options={logEntities.map((en) => ({ value: en, label: en }))}
+            value={filter.entity || []}
+            onApply={(v) => setFilter((p) => ({ ...p, entity: v }))}
+            allLabel="All sections"
+          />
           <Input type="date" value={filter.from} onChange={(e) => setFilter((p) => ({ ...p, from: e.target.value }))} />
           <Input type="date" value={filter.to} onChange={(e) => setFilter((p) => ({ ...p, to: e.target.value }))} />
         </div>

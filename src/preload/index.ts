@@ -106,7 +106,7 @@ const api = {
     stats: (): Promise<Row> => ipcRenderer.invoke('dashboard:stats')
   },
   vouchers: {
-    list: (args?: { from?: string; to?: string; vchType?: string; companyId?: number }): Promise<Row[]> =>
+    list: (args?: { from?: string; to?: string; vchType?: string | string[]; companyId?: number }): Promise<Row[]> =>
       ipcRenderer.invoke('vouchers:list', args),
     get: (id: number): Promise<Row | null> => ipcRenderer.invoke('vouchers:get', { id }),
     create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('vouchers:create', { values }),
@@ -279,7 +279,9 @@ const api = {
     ): Promise<{ id: number; status: string; net: number | null; missing: string | null }> =>
       ipcRenderer.invoke('gate:weights', { id, gross, tare, awaitingGrossOut, dispatchQty, invoiceGroup, outDate }),
     skipWeighment: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('gate:skipWeighment', { id }),
-    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('gate:delete', { id })
+    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('gate:delete', { id }),
+    reject: (id: number, reason: string): Promise<{ id: number }> => ipcRenderer.invoke('gate:reject', { id, reason }),
+    unreject: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('gate:unreject', { id })
   },
   treasury: {
     alerts: (): Promise<Row> => ipcRenderer.invoke('treasury:alerts'),

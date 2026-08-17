@@ -900,6 +900,25 @@ const MIGRATIONS = [
   'ALTER TABLE formulation_items ADD COLUMN ffa_pct REAL',
   'ALTER TABLE formulation_items ADD COLUMN loss_multiplier_pct REAL',
   'ALTER TABLE formulation_items ADD COLUMN moisture_pct REAL',
+  // An INPUT line's own auto-calc goes one step further than a by-product's:
+  // a blended recipe (several raw oils, each its own quality) needs its own
+  // TOR multiplier per ingredient — 1/(1 - fatty acid% - dead loss%) — rather
+  // than one loss shared across the whole blend. Dead loss is the recipe's
+  // own shared 'loss' line total (always present, same for every input), not
+  // a per-input value — this column shipped briefly but is unused now.
+  'ALTER TABLE formulation_items ADD COLUMN dead_loss_pct REAL',
+  // The fatty acid an auto-calculated input line throws off is a REAL
+  // by-product, not just a yield reduction — it lands in stock under
+  // whichever product this names, summed across every input that names the
+  // same one. NULL means this input's own fatty acid isn't tracked as stock.
+  'ALTER TABLE formulation_items ADD COLUMN byproduct_product_id INTEGER REFERENCES products(id)',
+  // A gate entry that will never be completed — the tanker it was cut for
+  // never took delivery (party refused, redirected elsewhere) — gets marked
+  // Rejected with a reason, rather than deleted outright or left stuck
+  // forever in "Pending weight". Keeps the paper trail; any stock/invoice
+  // correction (a Credit Note, say) is handled separately, on purpose.
+  'ALTER TABLE gate_entries ADD COLUMN rejected_at TEXT',
+  'ALTER TABLE gate_entries ADD COLUMN rejected_reason TEXT',
   // The round trip's last leg: the customer's payment for the resale actually
   // lands, closing a Trading LC out — Application -> Open -> Payment received
   // -> Preclose/Repayment -> Payment IN. Distinct from payment_received_date
