@@ -944,7 +944,12 @@ const MIGRATIONS = [
   // the invoice_group, since that's the unit every other invoice-level action
   // (setInvoiceStage, deleteSaleInvoice) already operates on.
   'ALTER TABLE sales ADD COLUMN rejected_at TEXT',
-  'ALTER TABLE sales ADD COLUMN rejected_reason TEXT'
+  'ALTER TABLE sales ADD COLUMN rejected_reason TEXT',
+  // A product can have more than one formulation (e.g. RPO's CPO-based recipe
+  // and its SHEA-based one) — recording which one a run actually used, so the
+  // consumption behind a past production entry can always be traced back to
+  // the exact recipe, even after a newer one is added for the same product.
+  'ALTER TABLE production ADD COLUMN formulation_id INTEGER REFERENCES formulations(id)'
 ]
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to

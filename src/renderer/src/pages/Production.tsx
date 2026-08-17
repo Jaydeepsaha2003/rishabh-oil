@@ -76,14 +76,25 @@ export function Production(): React.JSX.Element {
 
   const outputs = products.filter((p) => p.category === 'finished' || p.category === 'intermediate')
 
+  // A product can have more than one formulation (e.g. RPO's CPO-based recipe
+  // and a SHEA-based one) — listFormulations() already comes back newest
+  // first, so that's the default; the picker only shows at all once there's
+  // an actual choice to make.
+  const recipesForProduct = formulations.filter((x) => String(x.product_id) === String(form.product_id))
+
+  async function loadRecipe(formulationId: number | null): Promise<void> {
+    setForm((p) => ({ ...p, formulation_id: formulationId }))
+    setComponents(formulationId ? await window.api.formulations.items(formulationId) : [])
+  }
+
   async function selectProduct(v: string): Promise<void> {
-    setForm((p) => ({ ...p, product_id: v }))
-    const f = formulations.find((x) => String(x.product_id) === v)
-    setComponents(f ? await window.api.formulations.items(f.id as number) : [])
+    setForm((p) => ({ ...p, product_id: v, formulation_id: null }))
+    const matches = formulations.filter((x) => String(x.product_id) === v)
+    await loadRecipe(matches.length ? Number(matches[0].id) : null)
   }
 
   function openAdd(): void {
-    setForm({ prod_date: todayISO(), product_id: '', qty: '' })
+    setForm({ prod_date: todayISO(), product_id: '', qty: '', formulation_id: null })
     setComponents([])
     setBuilding(true)
   }
@@ -110,7 +121,8 @@ export function Production(): React.JSX.Element {
       await window.api.production.create({
         prod_date: form.prod_date,
         product_id: Number(form.product_id),
-        qty
+        qty,
+        formulation_id: form.formulation_id || null
       })
       toast.success('Production recorded')
       setBuilding(false)
@@ -171,9 +183,30 @@ export function Production(): React.JSX.Element {
                 </Select>
               </div>
             </div>
-            <div className="mt-3 flex max-w-[12rem] flex-col gap-1.5">
-              <Label>Quantity produced *</Label>
-              <Input type="number" value={form.qty} onChange={(e) => setForm((p) => ({ ...p, qty: e.target.value }))} />
+            <div className="mt-3 grid grid-cols-3 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label>Quantity produced *</Label>
+                <Input type="number" value={form.qty} onChange={(e) => setForm((p) => ({ ...p, qty: e.target.value }))} />
+              </div>
+              {/* Only shown once there's an actual choice — a product with a
+                  single formulation just uses it, same as before. */}
+              {recipesForProduct.length > 1 && (
+                <div className="col-span-2 flex flex-col gap-1.5">
+                  <Label>Recipe <span className="text-[10px] font-normal text-muted-foreground">({recipesForProduct.length} formulations for this product)</span></Label>
+                  <Select value={String(form.formulation_id ?? '')} onValueChange={(v) => void loadRecipe(Number(v))}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Choose which recipe to use" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {recipesForProduct.map((f) => (
+                        <SelectItem key={f.id} value={String(f.id)}>
+                          {f.name || `Recipe #${f.id}`} · TOR {formatNum(f.tor)}%
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
 
             <div className="mt-6">
@@ -295,7 +328,12 @@ export function Production(): React.JSX.Element {
                 paged.pageRows.map((row) => (
                   <TableRow key={row.id as number}>
                     <TableCell>{formatDate(row.prod_date)}</TableCell>
-                    <TableCell className="font-medium">{row.product_name}</TableCell>
+                    <TableCell className="font-medium">
+                      {row.product_name}
+                      {row.formulation_name && (
+                        <div className="text-xs font-normal text-muted-foreground">{row.formulation_name}</div>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <Badge variant={row.product_category === 'finished' ? 'success' : 'secondary'}>
                         {CAT_LABEL[row.product_category] ?? row.product_category}

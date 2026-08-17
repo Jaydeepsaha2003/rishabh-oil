@@ -104,6 +104,13 @@ export function expandRecipe(
     .filter((it) => kindOf(it) === 'input')
     .reduce((s, it) => s + n(it.qty), 0)
   const uniformTor = uniformRecipeTor(items)
+  // A loss or manual by-product line is a % OF THE INPUT, so it has to ride
+  // on what the recipe ACTUALLY draws in — recipeTor, not the uniform
+  // figure. Those two only coincide when no input carries its own
+  // auto-calculated multiplier; once one does (a blend of differing-quality
+  // raw oils), uniformTor is the wrong, smaller number and understates the
+  // loss (e.g. 1.01% instead of the correct 1.2375 on a 123.75% TOR).
+  const tor = recipeTor(items)
   const sharedDeadLossPct = items.filter((it) => kindOf(it) === 'loss').reduce((s, it) => s + n(it.qty), 0)
 
   const lines = items.map((it) => {
@@ -115,8 +122,8 @@ export function expandRecipe(
       const mult = it.auto_calc ? inputTorMultiplier(it, sharedDeadLossPct) : uniformTor / 100
       pct = blend > 0 ? n(it.qty) * mult : 0
     } else {
-      // Off the input, so it rides on the recipe's shared multiplier too.
-      pct = (uniformTor * n(it.qty)) / 100
+      // Off the input, so it rides on the recipe's real total TOR.
+      pct = (tor * n(it.qty)) / 100
     }
     return { product_id: Number(it.product_id), qty: (outputQty * pct) / 100, kind }
   })
@@ -143,9 +150,10 @@ export async function listProduction(): Promise<Row[]> {
   const res = await getClient().execute({
     args: [getActiveCompanyId()],
     sql: `
-    SELECT p.*, pr.name AS product_name, pr.category AS product_category
+    SELECT p.*, pr.name AS product_name, pr.category AS product_category, f.name AS formulation_name
     FROM production p
     LEFT JOIN products pr ON pr.id = p.product_id
+    LEFT JOIN formulations f ON f.id = p.formulation_id
     WHERE p.company_id = ?
     ORDER BY p.prod_date DESC, p.id DESC
   `
@@ -176,13 +184,25 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
 
   // Resolve the recipe first so we can check raw/intermediate stock BEFORE
   // writing anything — production consumes each component (its % of the output).
-  const fRes = await c.execute({
-    sql: 'SELECT id FROM formulations WHERE product_id = ? ORDER BY id DESC LIMIT 1',
-    args: [productId]
-  })
+  // A product can have more than one formulation (e.g. a CPO-based recipe and
+  // a SHEA-based one for the same RPO) — the caller picks which; falling back
+  // to the most recently created one when none is given keeps every existing
+  // caller working unchanged.
+  let fid = n(v.formulation_id)
+  if (fid) {
+    const owner = await c.execute({ sql: 'SELECT product_id FROM formulations WHERE id = ?', args: [fid] })
+    if (!owner.rows.length || Number(owner.rows[0].product_id) !== productId) {
+      throw new Error("That recipe doesn't belong to the selected product")
+    }
+  } else {
+    const fRes = await c.execute({
+      sql: 'SELECT id FROM formulations WHERE product_id = ? ORDER BY id DESC LIMIT 1',
+      args: [productId]
+    })
+    fid = fRes.rows.length ? Number(fRes.rows[0].id) : 0
+  }
   const lines: { product_id: number; qty: number; kind: string }[] = []
-  if (fRes.rows.length) {
-    const fid = Number(fRes.rows[0].id)
+  if (fid) {
     const items = await c.execute({
       sql: 'SELECT product_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct, byproduct_product_id FROM formulation_items WHERE formulation_id = ?',
       args: [fid]
@@ -211,8 +231,8 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
   }
 
   const ins = await c.execute({
-    sql: 'INSERT INTO production (company_id, prod_date, product_id, qty, uom, note) VALUES (?, ?, ?, ?, ?, ?)',
-    args: [getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', v.note || null]
+    sql: 'INSERT INTO production (company_id, prod_date, product_id, qty, uom, note, formulation_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    args: [getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', v.note || null, fid || null]
   })
   const id = Number(ins.lastInsertRowid)
 

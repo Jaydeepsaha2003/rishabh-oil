@@ -271,6 +271,13 @@ export function Formulation(): React.JSX.Element {
   const hasPerInputAutoCalc = items.some((it) => String(it.kind || 'input') === 'input' && it.auto_calc)
   const tor = recipeTorOf(items)
   const balanced = Math.abs(blendPct - 100) < 0.01
+  // The manual By-products section is legacy — new recipes recover a
+  // by-product through an input's own "By-product goes to" field instead.
+  // Only shown at all when the recipe being edited already has one of these
+  // lines (e.g. IVF, which can't move to the per-input model without
+  // changing its recovered quantity) — hidden for every new recipe.
+  const hasManualByproduct = items.some((it) => String(it.kind || 'input') === 'output')
+  const visibleSections = hasManualByproduct ? SECTIONS : SECTIONS.filter((sec) => sec.kind !== 'output')
   // What the recipe means in real quantities, for a batch the user names.
   const [torQty, setTorQty] = useState('100')
 
@@ -405,7 +412,7 @@ export function Formulation(): React.JSX.Element {
                 drawn from stock, what the batch throws off besides the main
                 product, and what is simply lost — by-products and loss are
                 struck on the input going in, not the output coming out. */}
-            {SECTIONS.map((sec) => {
+            {visibleSections.map((sec) => {
               const secItems = items.map((it, idx) => ({ it, idx })).filter(({ it }) => String(it.kind || 'input') === sec.kind)
               return (
                 // No overflow-hidden here either — each item row's product
@@ -490,42 +497,50 @@ export function Formulation(): React.JSX.Element {
                             </Button>
                           </div>
                           {(sec.kind === 'output' || sec.kind === 'input') && it.auto_calc && (
-                            <div className={cn('mt-2.5 grid gap-2 rounded-lg border p-2.5', sec.kind === 'input' ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3', sec.calcBox)}>
+                            <div className={cn('mt-2.5 grid gap-2.5 rounded-lg border p-2.5', sec.kind === 'input' ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3', sec.calcBox)}>
                               <div className="flex flex-col gap-0.5">
-                                <Label className="text-[10px] font-normal text-muted-foreground">Oil FFA %</Label>
+                                <Label className="flex items-center gap-1 text-[10px] font-semibold text-amber-800">
+                                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" /> Oil FFA %
+                                </Label>
                                 <Input
                                   type="number"
-                                  className="h-8 bg-white text-right"
+                                  className="h-8 border-amber-200 bg-amber-50/60 text-right focus-visible:ring-amber-400"
                                   value={it.ffa_pct ?? ''}
                                   onChange={(e) => setItemFormula(idx, 'ffa_pct', e.target.value)}
                                 />
                               </div>
                               <div className="flex flex-col gap-0.5">
-                                <Label className="text-[10px] font-normal text-muted-foreground">Loss multiplier % (the "1 +")</Label>
+                                <Label className="flex items-center gap-1 text-[10px] font-semibold text-rose-800">
+                                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-rose-500" /> Loss multiplier % (the "1 +")
+                                </Label>
                                 <Input
                                   type="number"
-                                  className="h-8 bg-white text-right"
+                                  className="h-8 border-rose-200 bg-rose-50/60 text-right focus-visible:ring-rose-400"
                                   value={it.loss_multiplier_pct ?? ''}
                                   onChange={(e) => setItemFormula(idx, 'loss_multiplier_pct', e.target.value)}
                                 />
                               </div>
                               <div className="flex flex-col gap-0.5">
-                                <Label className="text-[10px] font-normal text-muted-foreground">Moisture loss %</Label>
+                                <Label className="flex items-center gap-1 text-[10px] font-semibold text-cyan-800">
+                                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-500" /> Moisture loss %
+                                </Label>
                                 <Input
                                   type="number"
-                                  className="h-8 bg-white text-right"
+                                  className="h-8 border-cyan-200 bg-cyan-50/60 text-right focus-visible:ring-cyan-400"
                                   value={it.moisture_pct ?? ''}
                                   onChange={(e) => setItemFormula(idx, 'moisture_pct', e.target.value)}
                                 />
                               </div>
                               {sec.kind === 'input' && (
                                 <div className="flex flex-col gap-0.5">
-                                  <Label className="text-[10px] font-normal text-muted-foreground">By-product goes to *</Label>
+                                  <Label className="flex items-center gap-1 text-[10px] font-semibold text-emerald-800">
+                                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" /> By-product goes to *
+                                  </Label>
                                   <Select
                                     value={it.byproduct_product_id ? String(it.byproduct_product_id) : ''}
                                     onValueChange={(v) => setItem(idx, 'byproduct_product_id', v)}
                                   >
-                                    <SelectTrigger className="h-8 bg-white text-xs"><SelectValue placeholder="e.g. Fatty Acid" /></SelectTrigger>
+                                    <SelectTrigger className="h-8 border-emerald-200 bg-emerald-50/60 text-xs"><SelectValue placeholder="e.g. Fatty Acid" /></SelectTrigger>
                                     <SelectContent>
                                       {products.map((p) => (
                                         <SelectItem key={p.id} value={String(p.id)}>
@@ -537,14 +552,20 @@ export function Formulation(): React.JSX.Element {
                                 </div>
                               )}
                               {sec.kind === 'input' ? (
-                                <div className={cn('col-span-2 flex items-center justify-between text-[11px] sm:col-span-4', sec.formulaText)}>
-                                  <span>1 ÷ (1 − (FFA % × (1 + loss %) + moisture %) − recipe's dead loss %) = this ingredient's own TOR multiplier</span>
-                                  <span className="font-semibold tabular-nums">×{inputTorMultiplier(it, lossPct).toFixed(4)}</span>
+                                <div className="col-span-2 flex flex-wrap items-center justify-between gap-2 rounded-md bg-white/70 px-2.5 py-1.5 sm:col-span-4">
+                                  <span className={cn('text-[11px]', sec.formulaText)}>
+                                    1 ÷ (1 − (FFA % × (1 + loss %) + moisture %) − recipe's dead loss %) = this ingredient's own TOR multiplier
+                                  </span>
+                                  <span className="rounded-full bg-sky-600 px-2.5 py-0.5 text-[12px] font-bold tabular-nums text-white">
+                                    ×{inputTorMultiplier(it, lossPct).toFixed(4)}
+                                  </span>
                                 </div>
                               ) : (
-                                <div className="col-span-3 flex items-center justify-between text-[11px] text-emerald-800">
-                                  <span>FFA % × (1 + loss %) + moisture % = % of input</span>
-                                  <span className="font-semibold tabular-nums">{formatNum(autoCalcPct(it))}%</span>
+                                <div className="col-span-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-white/70 px-2.5 py-1.5">
+                                  <span className="text-[11px] text-emerald-800">FFA % × (1 + loss %) + moisture % = % of input</span>
+                                  <span className="rounded-full bg-emerald-600 px-2.5 py-0.5 text-[12px] font-bold tabular-nums text-white">
+                                    {formatNum(autoCalcPct(it))}%
+                                  </span>
                                 </div>
                               )}
                             </div>
@@ -618,81 +639,162 @@ export function Formulation(): React.JSX.Element {
                   </div>
                 </div>
 
-                {/* Per-product requirement — separate, clear tiles, not a
-                    buried list — so exactly how much of each input this
-                    batch size needs is obvious at a glance. */}
+                {/* Per-product requirement — one table, not a wall of
+                    tiles, so exactly how much of each product this batch
+                    size needs (and what it recovers, and loses) reads the
+                    way the client's own spreadsheet lays it out. */}
                 <div className="mt-5">
                   <div className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-white/60">Per-product requirement</div>
-                  <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
-                    {items
-                      .filter((it) => it.product_id && Number(it.qty) > 0)
-                      .map((it, i) => {
-                        const p = products.find((x) => String(x.id) === String(it.product_id))
-                        const kind = String(it.kind || 'input')
-                        const share = Number(it.qty) || 0
-                        // An input with its own TOR multiplier takes share x its
-                        // own multiplier directly; everything else (a plain
-                        // input, or a by-product/loss line) rides on the
-                        // recipe's shared multiplier the way it always has.
-                        const effPct =
-                          kind === 'input'
-                            ? it.auto_calc
-                              ? share * inputTorMultiplier(it, lossPct)
-                              : (share * uniformTor) / 100
-                            : (uniformTor * share) / 100
-                        const q = ((Number(torQty) || 0) * effPct) / 100
-                        const tile = KIND_TILE[kind]
-                        return (
-                          <div key={i} className={cn('rounded-xl border p-3', tile.box)}>
-                            <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-white/70">
-                              <span>{tile.label}</span>
-                              {kind === 'input' && share !== 100 && <span>{formatNum(share)}% share</span>}
-                            </div>
-                            <div className="mt-1 truncate text-[13px] font-semibold">{p?.name || '—'}</div>
-                            <div className="mt-1 flex items-baseline gap-1.5">
-                              <span className="text-xl font-black tabular-nums">{formatNum(q)}</span>
-                              <span className="text-[11px] text-white/70">{form.uom || 'MT'}</span>
-                            </div>
-                            <div className="text-[10px] text-white/50">{formatNum(effPct)}% of TOR</div>
-                          </div>
-                        )
-                      })}
-                    {(() => {
-                      // The fatty acid each auto-calc input throws off is a real
-                      // by-product, not just a yield hit — summed here by
-                      // whichever product each one names, exactly what a
-                      // production run using this recipe will add to stock.
-                      const byproductAdds = new Map<number, number>()
-                      for (const it of items) {
-                        if (String(it.kind || 'input') !== 'input' || !it.auto_calc || !it.byproduct_product_id) continue
-                        const share = Number(it.qty) || 0
-                        const effPct = share * inputTorMultiplier(it, lossPct)
-                        // Raw, not the rounded display %, so this matches the
-                        // actual by-product qty a production run will add to
-                        // stock (src/main/production.ts does the same).
-                        const fattyAcidEffPct = (effPct * rawFattyAcidPct(it)) / 100
-                        const pid = Number(it.byproduct_product_id)
-                        byproductAdds.set(pid, (byproductAdds.get(pid) || 0) + fattyAcidEffPct)
-                      }
-                      return Array.from(byproductAdds.entries()).map(([pid, effPct]) => {
-                        const p = products.find((x) => Number(x.id) === pid)
-                        const q = ((Number(torQty) || 0) * effPct) / 100
-                        return (
-                          <div key={`byp-${pid}`} className={cn('rounded-xl border p-3', KIND_TILE.output.box)}>
-                            <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-white/70">
-                              <span>Yields</span>
-                              <span>auto, from FFA</span>
-                            </div>
-                            <div className="mt-1 truncate text-[13px] font-semibold">{p?.name || '—'}</div>
-                            <div className="mt-1 flex items-baseline gap-1.5">
-                              <span className="text-xl font-black tabular-nums">{formatNum(q)}</span>
-                              <span className="text-[11px] text-white/70">{form.uom || 'MT'}</span>
-                            </div>
-                            <div className="text-[10px] text-white/50">{formatNum(effPct)}% of TOR</div>
-                          </div>
-                        )
-                      })
-                    })()}
+                  <div className="overflow-x-auto rounded-xl border border-white/10">
+                    <table className="w-full text-[12px]">
+                      <thead>
+                        <tr className="bg-white/5 text-[10px] uppercase tracking-wide text-white/60">
+                          <th className="px-3 py-2 text-left">Type</th>
+                          <th className="px-3 py-2 text-left">Product</th>
+                          <th className="px-3 py-2 text-right">Share</th>
+                          <th className="px-3 py-2 text-right">Quantity</th>
+                          <th className="px-3 py-2 text-right">Fatty yield</th>
+                          <th className="px-3 py-2 text-right">Multiplier</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          // Multiplier = effPct ÷ the line's own entered %, the
+                          // same "TOR MULTIPLE" the client's spreadsheet shows —
+                          // for an input that's its per-kg TOR multiplier, and
+                          // for a loss/by-product line it collapses to the
+                          // recipe's overall TOR ÷ 100 (since that line rides on
+                          // the whole recipe's draw, not its own multiplier).
+                          type ReqRow = { key: string; kind: string; name: string; share: number | null; q: number; fattyYield: number | null; multiplier: number | null; auto?: boolean }
+                          const rows: ReqRow[] = []
+                          const batchQty = Number(torQty) || 0
+                          items
+                            .filter((it) => it.product_id && Number(it.qty) > 0)
+                            .forEach((it, i) => {
+                              const p = products.find((x) => String(x.id) === String(it.product_id))
+                              const kind = String(it.kind || 'input')
+                              const share = Number(it.qty) || 0
+                              // An input with its own TOR multiplier takes share x
+                              // its own multiplier directly; a plain input rides
+                              // on the recipe's shared multiplier. A by-product/
+                              // loss line is a % of the input, so it rides on the
+                              // recipe's REAL total TOR — not the uniform figure,
+                              // which understates it once any input carries its
+                              // own multiplier (e.g. 1.01% instead of the correct
+                              // 1.2375% on a 123.75% TOR).
+                              const effPct =
+                                kind === 'input'
+                                  ? it.auto_calc
+                                    ? share * inputTorMultiplier(it, lossPct)
+                                    : (share * uniformTor) / 100
+                                  : (tor * share) / 100
+                              // This input's OWN slice of the recovered fatty
+                              // acid — the client's spreadsheet shows this per
+                              // ingredient (22.31 / 0.053 / 0.143), not just the
+                              // pooled total.
+                              const fattyYield =
+                                kind === 'input' && it.auto_calc
+                                  ? (batchQty * effPct * rawFattyAcidPct(it)) / 100 / 100
+                                  : null
+                              rows.push({
+                                key: `it-${i}`,
+                                kind,
+                                name: p?.name || '—',
+                                share: kind === 'input' ? share : null,
+                                q: (batchQty * effPct) / 100,
+                                fattyYield,
+                                multiplier: share > 0 ? effPct / share : null
+                              })
+                            })
+                          // The fatty acid each auto-calc input throws off is a
+                          // real by-product, not just a yield hit — summed here
+                          // by whichever product each one names, exactly what a
+                          // production run using this recipe will add to stock.
+                          const byproductAdds = new Map<number, number>()
+                          for (const it of items) {
+                            if (String(it.kind || 'input') !== 'input' || !it.auto_calc || !it.byproduct_product_id) continue
+                            const share = Number(it.qty) || 0
+                            const effPct = share * inputTorMultiplier(it, lossPct)
+                            // Raw, not the rounded display %, so this matches the
+                            // actual by-product qty a production run will add to
+                            // stock (src/main/production.ts does the same).
+                            const fattyAcidEffPct = (effPct * rawFattyAcidPct(it)) / 100
+                            const pid = Number(it.byproduct_product_id)
+                            byproductAdds.set(pid, (byproductAdds.get(pid) || 0) + fattyAcidEffPct)
+                          }
+                          let fattyYieldTotal = 0
+                          for (const [pid, effPct] of byproductAdds) {
+                            const p = products.find((x) => Number(x.id) === pid)
+                            const q = (batchQty * effPct) / 100
+                            fattyYieldTotal += q
+                            rows.push({
+                              key: `byp-${pid}`,
+                              kind: 'output',
+                              name: p?.name || '—',
+                              share: null,
+                              q,
+                              // Same figure as Quantity for this row — it IS the
+                              // pooled fatty yield — but shown here too so the
+                              // total lines up under its own column, not just in
+                              // Quantity.
+                              fattyYield: q,
+                              // Pooled across every input that recovers into this
+                              // same product, each at its own multiplier — no
+                              // single multiplier describes the combined line.
+                              multiplier: null,
+                              auto: true
+                            })
+                          }
+                          const bodyRows = rows.map((r) => {
+                            const tile = KIND_TILE[r.kind]
+                            return (
+                              <tr key={r.key} className={cn('border-t border-white/10', tile.box)}>
+                                <td className="px-3 py-2 font-semibold uppercase tracking-wide text-[11px] text-white/80">{tile.label}</td>
+                                <td className="px-3 py-2 font-medium">
+                                  {r.name}
+                                  {r.auto && <span className="ml-1.5 text-[10px] font-normal text-white/50">auto, from FFA</span>}
+                                </td>
+                                <td className="px-3 py-2 text-right tabular-nums text-white/70">{r.share != null ? `${formatNum(r.share)}%` : '—'}</td>
+                                <td className="px-3 py-2 text-right font-bold tabular-nums">
+                                  {formatNum(r.q)} <span className="font-normal text-white/60">{form.uom || 'MT'}</span>
+                                </td>
+                                <td className="px-3 py-2 text-right tabular-nums text-emerald-300">
+                                  {r.fattyYield != null ? `${formatNum(r.fattyYield)} ${form.uom || 'MT'}` : '—'}
+                                </td>
+                                <td className="px-3 py-2 text-right tabular-nums text-white/60">{r.multiplier != null ? `×${r.multiplier.toFixed(4)}` : '—'}</td>
+                              </tr>
+                            )
+                          })
+                          // Net = everything drawn in, minus what came back out as
+                          // by-product or loss — the same reconciliation the
+                          // client's spreadsheet ends on, and it should always
+                          // land back on the batch size itself.
+                          const inputTotal = rows.filter((r) => r.kind === 'input').reduce((s, r) => s + r.q, 0)
+                          const deadLossTotal = rows.filter((r) => r.kind === 'loss').reduce((s, r) => s + r.q, 0)
+                          const net = inputTotal - fattyYieldTotal - deadLossTotal
+                          bodyRows.push(
+                            <tr key="net" className="border-t border-white/20 bg-white/5 font-bold">
+                              <td colSpan={2} className="px-3 py-2 text-[11px] uppercase tracking-wide text-white/70">Net</td>
+                              <td colSpan={4} className="px-3 py-2 text-right">
+                                <span className="inline-flex flex-wrap items-baseline justify-end gap-1.5 tabular-nums">
+                                  <span className="text-white">{formatNum(inputTotal)}</span>
+                                  <span className="text-white/50">−</span>
+                                  <span className="text-emerald-300">{formatNum(fattyYieldTotal)}</span>
+                                  <span className="text-white/50">−</span>
+                                  <span className="text-rose-300">{formatNum(deadLossTotal)}</span>
+                                  <span className="text-white/50">=</span>
+                                  <span className="text-amber-300">{formatNum(net)} {form.uom || 'MT'}</span>
+                                </span>
+                                <div className="mt-0.5 text-right text-[10px] font-normal normal-case tracking-normal text-white/40">
+                                  inputs − fatty yield − dead loss = batch size
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                          return bodyRows
+                        })()}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               </div>
