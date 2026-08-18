@@ -495,11 +495,18 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
         facility_id: lcForm.facility_id ? Number(lcForm.facility_id) : null,
         status: lcForm.status || 'open'
       }
-      if (lcForm.id) await window.api.lc.update(Number(lcForm.id), payload)
-      else await window.api.lc.create(payload)
-      toast.success(`LC ${lcForm.lc_no} saved — margin, interest & charges posted to the books`)
+      const res = lcForm.id
+        ? await window.api.lc.update(Number(lcForm.id), payload)
+        : await window.api.lc.create(payload)
+      // A voucher that couldn't be re-posted is said out loud rather than
+      // logged and forgotten — the LC itself is saved either way, but the
+      // books would be out of step with it.
+      if (res?.warning) toast.warning(res.warning, { duration: 10000 })
+      else toast.success(`LC ${lcForm.lc_no} saved — margin, interest & charges posted to the books`)
       setLcForm(null)
-      load()
+      // Awaited, so the register can't still be showing pre-save figures by
+      // the time the dialog is gone (which reads as "it didn't save").
+      await load()
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -603,7 +610,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   async function pickRepaymentDocument(): Promise<void> {
     if (!repayForm) return
     const r = await window.api.files.pickDocument()
-    if (r.path) setRepayForm({ ...repayForm, document_path: r.path })
+    if (r.path) setRepayForm((p) => ({ ...p, document_path: r.path }))
   }
 
   async function saveRepayment(): Promise<void> {
@@ -699,7 +706,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     const total = round2(
       paymentInInvoices.filter((x) => next.includes(String(x.key))).reduce((s, x) => s + n(x.due), 0)
     )
-    setPaymentInForm({ ...paymentInForm, selected_keys: next, amount: String(total) })
+    setPaymentInForm((p) => ({ ...p, selected_keys: next, amount: String(total) }))
   }
   async function savePaymentIn(): Promise<void> {
     if (!paymentInForm) return
@@ -1692,7 +1699,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 <Label>Date <span className="text-red-600">*</span></Label>
                 <DatePicker
                   value={String(precloseForm.preclose_date || '')}
-                  onChange={(v) => setPrecloseForm({ ...precloseForm, preclose_date: v })}
+                  onChange={(v) => setPrecloseForm((p) => ({ ...p, preclose_date: v }))}
                   min={precloseRow?.open_date || undefined}
                 />
               </div>
@@ -1744,7 +1751,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       <button
                         type="button"
                         className="text-[10px] font-medium text-teal-700 underline-offset-2 hover:underline"
-                        onClick={() => setPrecloseForm({ ...precloseForm, premature_interest: String(preclosePreview.prematureInterest) })}
+                        onClick={() => setPrecloseForm((p) => ({ ...p, premature_interest: String(preclosePreview.prematureInterest) }))}
                       >
                         Use calculated ({formatINR(preclosePreview.prematureInterest)})
                       </button>
@@ -1752,7 +1759,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <Input
                       type="number"
                       value={precloseForm.premature_interest ?? ''}
-                      onChange={(e) => setPrecloseForm({ ...precloseForm, premature_interest: e.target.value })}
+                      onChange={(e) => setPrecloseForm((p) => ({ ...p, premature_interest: e.target.value }))}
                     />
                   </div>
                   <div className="flex flex-col gap-1.5">
@@ -1760,7 +1767,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <div className="grid grid-cols-2 gap-1.5">
                       <button
                         type="button"
-                        onClick={() => setPrecloseForm({ ...precloseForm, premature_interest_direction: 'credit_to_us' })}
+                        onClick={() => setPrecloseForm((p) => ({ ...p, premature_interest_direction: 'credit_to_us' }))}
                         className={cn(
                           'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
                           precloseForm.premature_interest_direction !== 'pay_to_party'
@@ -1772,7 +1779,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       </button>
                       <button
                         type="button"
-                        onClick={() => setPrecloseForm({ ...precloseForm, premature_interest_direction: 'pay_to_party' })}
+                        onClick={() => setPrecloseForm((p) => ({ ...p, premature_interest_direction: 'pay_to_party' }))}
                         className={cn(
                           'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
                           precloseForm.premature_interest_direction === 'pay_to_party'
@@ -1812,7 +1819,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   <Label>
                     Total debited from bank (₹) <span className="text-red-600">*</span>
                   </Label>
-                  <Input type="number" value={precloseForm.amount ?? ''} onChange={(e) => setPrecloseForm({ ...precloseForm, amount: e.target.value })} />
+                  <Input type="number" value={precloseForm.amount ?? ''} onChange={(e) => setPrecloseForm((p) => ({ ...p, amount: e.target.value }))} />
                   {preclosePreview && n(precloseForm.amount) > 0 && n(precloseForm.amount) < n(preclosePreview.openAmount) - 0.005 && (
                     <span className="text-[10px] font-medium text-rose-600">Cannot be less than the open amount</span>
                   )}
@@ -1834,7 +1841,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <Input
                               type="number"
                               value={precloseForm.comm_charges ?? ''}
-                              onChange={(e) => setPrecloseForm({ ...precloseForm, comm_charges: e.target.value })}
+                              onChange={(e) => setPrecloseForm((p) => ({ ...p, comm_charges: e.target.value }))}
                             />
                           </div>
                           <div className="flex flex-col gap-1.5">
@@ -1842,7 +1849,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <Input
                               type="number"
                               value={precloseForm.bank_charges ?? ''}
-                              onChange={(e) => setPrecloseForm({ ...precloseForm, bank_charges: e.target.value })}
+                              onChange={(e) => setPrecloseForm((p) => ({ ...p, bank_charges: e.target.value }))}
                             />
                           </div>
                         </div>
@@ -1861,7 +1868,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     type="checkbox"
                     className="h-4 w-4"
                     checked={!!precloseForm.release_margin}
-                    onChange={(e) => setPrecloseForm({ ...precloseForm, release_margin: e.target.checked })}
+                    onChange={(e) => setPrecloseForm((p) => ({ ...p, release_margin: e.target.checked }))}
                   />
                   Also release the margin FD ({formatINR(preclosePreview.margin)}) — a separate Dr Bank / Cr LC Margin entry
                 </label>
@@ -1913,14 +1920,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   <section className="grid gap-3 rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm sm:grid-cols-2">
                     <div className="flex flex-col gap-1.5">
                       <Label>LC no <span className="text-red-600">*</span></Label>
-                      <Input value={stageForm.lc_no ?? ''} onChange={(e) => setStageForm({ ...stageForm, lc_no: e.target.value })} />
+                      <Input value={stageForm.lc_no ?? ''} onChange={(e) => setStageForm((p) => ({ ...p, lc_no: e.target.value }))} />
                       <span className="text-[10px] text-muted-foreground">Issued by the bank now that the LC is actually open.</span>
                     </div>
                     <div className="flex flex-col gap-1.5">
                       <Label>Open date <span className="text-red-600">*</span></Label>
                       <DatePicker
                         value={String(stageForm.opened_date || '')}
-                        onChange={(v) => setStageForm({ ...stageForm, opened_date: v })}
+                        onChange={(v) => setStageForm((p) => ({ ...p, opened_date: v }))}
                         min={String(stageRow?.open_date || '') || undefined}
                       />
                     </div>
@@ -1939,7 +1946,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <Label>Payment received date <span className="text-red-600">*</span></Label>
                             <DatePicker
                               value={String(stageForm.payment_received_date || '')}
-                              onChange={(v) => setStageForm({ ...stageForm, payment_received_date: v })}
+                              onChange={(v) => setStageForm((p) => ({ ...p, payment_received_date: v }))}
                               min={String(stageRow?.opened_date || '') || undefined}
                             />
                           </div>
@@ -1947,7 +1954,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <Label>Maturity date <span className="text-red-600">*</span></Label>
                             <DatePicker
                               value={String(stageForm.expiry_date || '')}
-                              onChange={(v) => setStageForm({ ...stageForm, expiry_date: v })}
+                              onChange={(v) => setStageForm((p) => ({ ...p, expiry_date: v }))}
                               min={String(stageForm.payment_received_date || '') || undefined}
                             />
                           </div>
@@ -1961,19 +1968,19 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         <div className="grid grid-cols-3 gap-3">
                           <div className="flex flex-col gap-1.5">
                             <Label>Margin %</Label>
-                            <Input type="number" value={stageForm.margin_pct ?? ''} onChange={(e) => setStageForm({ ...stageForm, margin_pct: e.target.value })} />
+                            <Input type="number" value={stageForm.margin_pct ?? ''} onChange={(e) => setStageForm((p) => ({ ...p, margin_pct: e.target.value }))} />
                           </div>
                           <div className="flex flex-col gap-1.5">
                             <Label>Interest % p.a. (ROI)</Label>
-                            <Input type="number" value={stageForm.interest_pct ?? ''} onChange={(e) => setStageForm({ ...stageForm, interest_pct: e.target.value })} />
+                            <Input type="number" value={stageForm.interest_pct ?? ''} onChange={(e) => setStageForm((p) => ({ ...p, interest_pct: e.target.value }))} />
                           </div>
                           <div className="flex flex-col gap-1.5">
                             <Label>LC charges (₹)</Label>
-                            <Input type="number" value={stageForm.charges ?? ''} onChange={(e) => setStageForm({ ...stageForm, charges: e.target.value })} />
+                            <Input type="number" value={stageForm.charges ?? ''} onChange={(e) => setStageForm((p) => ({ ...p, charges: e.target.value }))} />
                           </div>
                         </div>
                         <div className="mt-3 flex items-center gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
-                          <Switch checked={!!stageForm.interest_upfront} onCheckedChange={(v) => setStageForm({ ...stageForm, interest_upfront: v })} />
+                          <Switch checked={!!stageForm.interest_upfront} onCheckedChange={(v) => setStageForm((p) => ({ ...p, interest_upfront: v }))} />
                           <div className="text-[12px] font-semibold">Interest & charges paid upfront</div>
                         </div>
                       </section>
@@ -2070,7 +2077,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="flex flex-col gap-1.5">
                     <Label>LC no {String(lcForm.stage || 'application') !== 'application' && <span className="text-red-600">*</span>}</Label>
-                    <Input value={lcForm.lc_no ?? ''} onChange={(e) => setLcForm({ ...lcForm, lc_no: e.target.value })} placeholder={String(lcForm.stage || 'application') === 'application' ? 'Obtained once the LC is Open' : ''} />
+                    <Input value={lcForm.lc_no ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, lc_no: e.target.value }))} placeholder={String(lcForm.stage || 'application') === 'application' ? 'Obtained once the LC is Open' : ''} />
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Bank / discounting bank <span className="text-red-600">*</span></Label>
@@ -2085,11 +2092,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           <Input
                             autoFocus={addingNewBank}
                             value={bank}
-                            onChange={(e) => setLcForm({ ...lcForm, bank: e.target.value })}
+                            onChange={(e) => setLcForm((p) => ({ ...p, bank: e.target.value }))}
                             placeholder="Type the new bank's name"
                           />
                           {bankOptions.length > 0 && (
-                            <Button type="button" variant="outline" size="icon" className="h-9 w-9 shrink-0" title="Pick from the list instead" onClick={() => { setAddingNewBank(false); setLcForm({ ...lcForm, bank: '' }) }}>
+                            <Button type="button" variant="outline" size="icon" className="h-9 w-9 shrink-0" title="Pick from the list instead" onClick={() => { setAddingNewBank(false); setLcForm((p) => ({ ...p, bank: '' })) }}>
                               <ChevronDown className="h-4 w-4" />
                             </Button>
                           )}
@@ -2110,7 +2117,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 setLcForm((p) => (p ? { ...p, bank: '' } : p))
                               }, 0)
                             } else {
-                              setLcForm({ ...lcForm, bank: v })
+                              setLcForm((p) => ({ ...p, bank: v }))
                             }
                           }}
                         >
@@ -2125,7 +2132,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>FD No <span className="text-red-600">*</span></Label>
-                    <Input value={lcForm.fd_no ?? ''} onChange={(e) => setLcForm({ ...lcForm, fd_no: e.target.value })} placeholder="e.g. FD/2026/045" />
+                    <Input value={lcForm.fd_no ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, fd_no: e.target.value }))} placeholder="e.g. FD/2026/045" />
                     <span className="text-[10px] text-muted-foreground">Fixed deposit lodged as security</span>
                   </div>
                   <div className="flex flex-col gap-1.5 sm:col-span-2">
@@ -2135,7 +2142,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         <button
                           key={s}
                           type="button"
-                          onClick={() => setLcForm({ ...lcForm, stage: s })}
+                          onClick={() => setLcForm((p) => ({ ...p, stage: s }))}
                           className={cn(
                             'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
                             String(lcForm.stage || 'application') === s
@@ -2162,7 +2169,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <Select
                       value={String(lcForm.purpose || '')}
                       onValueChange={(v) =>
-                        setLcForm({ ...lcForm, purpose: v, party_id: '', linked_order_ids: [], linked_deal_ids: [], amount_manual: false })
+                        setLcForm((p) => ({ ...p, purpose: v, party_id: '', linked_order_ids: [], linked_deal_ids: [], amount_manual: false }))
                       }
                     >
                       <SelectTrigger><SelectValue placeholder="Select purpose" /></SelectTrigger>
@@ -2177,7 +2184,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <Select
                       disabled={!lcForm.purpose}
                       value={lcForm.party_id ? String(lcForm.party_id) : ''}
-                      onValueChange={(v) => setLcForm({ ...lcForm, party_id: v })}
+                      onValueChange={(v) => setLcForm((p) => ({ ...p, party_id: v }))}
                     >
                       <SelectTrigger><SelectValue placeholder={lcForm.purpose ? 'Select supplier' : 'Select a purpose first'} /></SelectTrigger>
                       <SelectContent className="max-h-64">
@@ -2300,7 +2307,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                   // second invoice should sum with the first, not just
                                   // shrink toward it. Only stop once the user has typed
                                   // their own figure into the field below.
-                                  setLcForm({ ...lcForm, linked_order_ids: next, amount: lcForm.amount_manual ? lcForm.amount : String(total) })
+                                  setLcForm((p) => ({ ...p, linked_order_ids: next, amount: p?.amount_manual ? p.amount : String(total) }))
                                 }}
                               />
                               <span className="flex-1">{o.invoice_no} · {formatDate(o.order_date)}</span>
@@ -2337,7 +2344,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       <Label>Party payment will be received from</Label>
                       <Select
                         value={lcForm.receivable_party_id ? String(lcForm.receivable_party_id) : ''}
-                        onValueChange={(v) => setLcForm({ ...lcForm, receivable_party_id: v })}
+                        onValueChange={(v) => setLcForm((p) => ({ ...p, receivable_party_id: v }))}
                       >
                         <SelectTrigger className="bg-white"><SelectValue placeholder="Select customer" /></SelectTrigger>
                         <SelectContent className="max-h-64">
@@ -2382,7 +2389,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <button
                               type="button"
                               className="text-[10px] font-medium text-teal-700 underline-offset-2 hover:underline"
-                              onClick={() => setLcForm({ ...lcForm, amount: String(total), amount_manual: false })}
+                              onClick={() => setLcForm((p) => ({ ...p, amount: String(total), amount_manual: false }))}
                             >
                               Reset to sum
                             </button>
@@ -2391,11 +2398,39 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         <Input
                           type="number"
                           value={lcForm.amount ?? ''}
-                          onChange={(e) => setLcForm({ ...lcForm, amount: e.target.value, amount_manual: e.target.value !== '' })}
+                          onChange={(e) => setLcForm((p) => ({ ...p, amount: e.target.value, amount_manual: e.target.value !== '' }))}
                         />
                         {hasInvoices && (
                           <span className="text-[10px] text-muted-foreground">Suggested from the selected invoices — edit freely, but it can't exceed their total.</span>
                         )}
+                        {/* Interest and charges come out of the open amount
+                            before any bill draws on it, so raising either can
+                            push an LC that already has bills issued into a
+                            negative available balance. Shown live here rather
+                            than only refused at save, so the shortfall (and the
+                            open amount that would clear it) is visible while
+                            the figures are still being typed. */}
+                        {(() => {
+                          const issued = n(lcForm.utilized)
+                          if (issued <= 0) return null
+                          const amt = n(lcForm.amount)
+                          const interest = lcForm.interest_upfront
+                            ? 0
+                            : round2((amt * n(lcForm.interest_pct) * n(lcForm.usance_days)) / (100 * 365))
+                          const charges = lcForm.interest_upfront ? 0 : round2(n(lcForm.charges))
+                          const avail = round2(amt - interest - charges - issued)
+                          if (avail >= -0.005) return null
+                          return (
+                            <div className="flex items-start gap-1.5 rounded-md border border-rose-300 bg-rose-50 px-2.5 py-2 text-[11px] text-rose-800">
+                              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                              <span>
+                                Short by <b>{formatINR(Math.abs(avail))}</b> — interest {formatINR(interest)} + charges{' '}
+                                {formatINR(charges)} + {formatINR(issued)} of bills already issued exceed this open amount.
+                                Raise it to at least <b>{formatINR(round2(amt - avail))}</b>, or lower the interest % / charges.
+                              </span>
+                            </div>
+                          )
+                        })()}
                       </div>
                     )
                   })()}
@@ -2410,13 +2445,13 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       <>
                         <div className="flex flex-col gap-1.5">
                           <Label>Application date <span className="text-red-600">*</span></Label>
-                          <DatePicker value={String(lcForm.open_date || '')} onChange={(v) => setLcForm({ ...lcForm, open_date: v })} />
+                          <DatePicker value={String(lcForm.open_date || '')} onChange={(v) => setLcForm((p) => ({ ...p, open_date: v }))} />
                         </div>
                         <div className="flex flex-col gap-1.5">
                           <Label>Open date</Label>
                           <DatePicker
                             value={String(lcForm.opened_date || '')}
-                            onChange={(v) => setLcForm({ ...lcForm, opened_date: v })}
+                            onChange={(v) => setLcForm((p) => ({ ...p, opened_date: v }))}
                             disabled={stage === 'application'}
                             min={String(lcForm.open_date || '') || undefined}
                           />
@@ -2428,7 +2463,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             value={String(lcForm.payment_received_date || '')}
                             onChange={(v) => {
                               const usanceDays = v && lcForm.expiry_date ? daysTo(lcForm.expiry_date)! - daysTo(v)! : lcForm.usance_days
-                              setLcForm({ ...lcForm, payment_received_date: v, usance_days: usanceDays })
+                              setLcForm((p) => ({ ...p, payment_received_date: v, usance_days: usanceDays }))
                             }}
                             disabled={stage !== 'payment_received'}
                             min={String(lcForm.opened_date || '') || undefined}
@@ -2441,7 +2476,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             value={String(lcForm.expiry_date || '')}
                             onChange={(v) => {
                               const usanceDays = v && lcForm.payment_received_date ? daysTo(v)! - daysTo(lcForm.payment_received_date)! : lcForm.usance_days
-                              setLcForm({ ...lcForm, expiry_date: v, usance_days: usanceDays })
+                              setLcForm((p) => ({ ...p, expiry_date: v, usance_days: usanceDays }))
                             }}
                             disabled={stage !== 'payment_received'}
                             min={String(lcForm.payment_received_date || '') || undefined}
@@ -2473,19 +2508,19 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   Margin, interest & charges
                 </h3>
                 <div className="grid gap-3 sm:grid-cols-3">
-                  <div className="flex flex-col gap-1.5"><Label>Margin %</Label><Input type="number" value={lcForm.margin_pct ?? ''} onChange={(e) => setLcForm({ ...lcForm, margin_pct: e.target.value })} /></div>
+                  <div className="flex flex-col gap-1.5"><Label>Margin %</Label><Input type="number" value={lcForm.margin_pct ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, margin_pct: e.target.value }))} /></div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Interest % p.a. (ROI) {String(lcForm.stage) !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set with payment received)</span>}</Label>
-                    <Input type="number" value={lcForm.interest_pct ?? ''} onChange={(e) => setLcForm({ ...lcForm, interest_pct: e.target.value })} disabled={String(lcForm.stage) !== 'payment_received'} />
+                    <Input type="number" value={lcForm.interest_pct ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, interest_pct: e.target.value }))} disabled={String(lcForm.stage) !== 'payment_received'} />
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>LC charges (₹) {String(lcForm.stage) !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set with payment received)</span>}</Label>
-                    <Input type="number" value={lcForm.charges ?? ''} onChange={(e) => setLcForm({ ...lcForm, charges: e.target.value })} disabled={String(lcForm.stage) !== 'payment_received'} />
+                    <Input type="number" value={lcForm.charges ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, charges: e.target.value }))} disabled={String(lcForm.stage) !== 'payment_received'} />
                   </div>
                 </div>
                 <span className="mt-1 block text-[10px] text-muted-foreground">ROI and LC charges are obtained once payment is received; interest is charged over the interest days (maturity date − payment received date).</span>
                 <div className="mt-3 flex items-center gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
-                  <Switch checked={!!lcForm.interest_upfront} onCheckedChange={(v) => setLcForm({ ...lcForm, interest_upfront: v })} />
+                  <Switch checked={!!lcForm.interest_upfront} onCheckedChange={(v) => setLcForm((p) => ({ ...p, interest_upfront: v }))} />
                   <div className="text-[12px] font-semibold">Interest & charges paid upfront</div>
                 </div>
               </section>
@@ -2533,7 +2568,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 )
               })()}
 
-              <div className="flex flex-col gap-1.5 lg:col-span-2"><Label>Note</Label><Input value={lcForm.note ?? ''} onChange={(e) => setLcForm({ ...lcForm, note: e.target.value })} /></div>
+              <div className="flex flex-col gap-1.5 lg:col-span-2"><Label>Note</Label><Input value={lcForm.note ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, note: e.target.value }))} /></div>
             </div>
           )}
           <DialogFooter className="border-t border-[#e5dfc8] bg-muted/20 px-6 py-4">
@@ -2571,9 +2606,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   </DialogTitle>
                 </DialogHeader>
                 <div className="space-y-4">
-                  <div className="flex flex-wrap items-center gap-3 text-[12px] text-muted-foreground">
-                    <span className="flex items-center gap-1.5"><Landmark className="h-3.5 w-3.5 shrink-0" /> {dRow.bank}</span>
-                    <span className="flex items-center gap-1.5"><Users className="h-3.5 w-3.5 shrink-0" /> {dRow.supplier_name || '—'}</span>
+                  <div className="flex flex-wrap items-center gap-3 text-[12px] font-medium text-foreground">
+                    <span className="flex items-center gap-1.5"><Landmark className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> {dRow.bank}</span>
+                    <span className="flex items-center gap-1.5"><Users className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> {dRow.supplier_name || '—'}</span>
                     {dRow.fd_no && <span>FD {dRow.fd_no}</span>}
                   </div>
                   <div className="rounded-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-3 text-center shadow-sm">
@@ -2671,7 +2706,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="flex flex-col gap-1.5 sm:col-span-2">
                 <Label>Related party <span className="text-[10px] font-normal text-muted-foreground">(optional — for reference only, not posted)</span></Label>
-                <Select value={repayForm.party_id ? String(repayForm.party_id) : ''} onValueChange={(v) => setRepayForm({ ...repayForm, party_id: v })}>
+                <Select value={repayForm.party_id ? String(repayForm.party_id) : ''} onValueChange={(v) => setRepayForm((p) => ({ ...p, party_id: v }))}>
                   <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
                   <SelectContent className="max-h-64">
                     {customers.map((x) => <SelectItem key={String(x.id)} value={String(x.id)}>{x.name}</SelectItem>)}
@@ -2686,12 +2721,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label>Repayment amount (₹) *</Label>
-                <Input type="number" value={repayForm.amount ?? ''} onChange={(e) => setRepayForm({ ...repayForm, amount: e.target.value })} />
+                <Input type="number" value={repayForm.amount ?? ''} onChange={(e) => setRepayForm((p) => ({ ...p, amount: e.target.value }))} />
                 {n(repayForm.amount) > 0 && n(repayForm.amount) < n(repayForm.open_amount) - 0.005 && (
                   <span className="text-[10px] font-medium text-rose-600">Cannot be less than the open amount</span>
                 )}
               </div>
-              <div className="flex flex-col gap-1.5"><Label>Date</Label><DatePicker value={String(repayForm.repay_date || '')} onChange={(v) => setRepayForm({ ...repayForm, repay_date: v })} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Date</Label><DatePicker value={String(repayForm.repay_date || '')} onChange={(v) => setRepayForm((p) => ({ ...p, repay_date: v }))} /></div>
               {(() => {
                 const excess = round2(n(repayForm.amount) - n(repayForm.open_amount))
                 if (excess <= 0.005) return null
@@ -2705,11 +2740,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div className="flex flex-col gap-1.5">
                         <Label>Comm. charges (₹)</Label>
-                        <Input type="number" value={repayForm.comm_charges ?? ''} onChange={(e) => setRepayForm({ ...repayForm, comm_charges: e.target.value })} />
+                        <Input type="number" value={repayForm.comm_charges ?? ''} onChange={(e) => setRepayForm((p) => ({ ...p, comm_charges: e.target.value }))} />
                       </div>
                       <div className="flex flex-col gap-1.5">
                         <Label>Bank charges (₹)</Label>
-                        <Input type="number" value={repayForm.bank_charges ?? ''} onChange={(e) => setRepayForm({ ...repayForm, bank_charges: e.target.value })} />
+                        <Input type="number" value={repayForm.bank_charges ?? ''} onChange={(e) => setRepayForm((p) => ({ ...p, bank_charges: e.target.value }))} />
                       </div>
                     </div>
                     {splitOff && (
@@ -2743,13 +2778,13 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   )}
                 </div>
               </div>
-              <div className="flex flex-col gap-1.5 sm:col-span-2"><Label>Note</Label><Input value={repayForm.note ?? ''} onChange={(e) => setRepayForm({ ...repayForm, note: e.target.value })} /></div>
+              <div className="flex flex-col gap-1.5 sm:col-span-2"><Label>Note</Label><Input value={repayForm.note ?? ''} onChange={(e) => setRepayForm((p) => ({ ...p, note: e.target.value }))} /></div>
               <label className="flex cursor-pointer items-center gap-2 text-[13px] sm:col-span-2">
                 <input
                   type="checkbox"
                   className="h-4 w-4"
                   checked={!!repayForm.posted}
-                  onChange={(e) => setRepayForm({ ...repayForm, posted: e.target.checked })}
+                  onChange={(e) => setRepayForm((p) => ({ ...p, posted: e.target.checked }))}
                 />
                 Post to the books now — Dr LC Repayment (+ Maturity charges) / Cr Bank
               </label>
@@ -2798,14 +2833,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label>Date</Label>
-                <DatePicker value={String(paymentInForm.date || '')} onChange={(v) => setPaymentInForm({ ...paymentInForm, date: v })} />
+                <DatePicker value={String(paymentInForm.date || '')} onChange={(v) => setPaymentInForm((p) => ({ ...p, date: v }))} />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label>Amount received (₹) *</Label>
                 <Input
                   type="number"
                   value={paymentInForm.amount ?? ''}
-                  onChange={(e) => setPaymentInForm({ ...paymentInForm, amount: e.target.value })}
+                  onChange={(e) => setPaymentInForm((p) => ({ ...p, amount: e.target.value }))}
                 />
               </div>
             </div>
@@ -2831,7 +2866,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   value={bdForm.invoice_group ? String(bdForm.invoice_group) : ''}
                   onValueChange={(v) => {
                     const inv = saleInvoices.find((x) => x.group === v)
-                    if (inv) setBdForm({ ...bdForm, invoice_group: v, bill_nos: inv.invoice_no, party_name: inv.customer, customer_id: inv.customer_id, amount: String(Math.round(inv.net)) })
+                    if (inv) setBdForm((p) => ({ ...p, invoice_group: v, bill_nos: inv.invoice_no, party_name: inv.customer, customer_id: inv.customer_id, amount: String(Math.round(inv.net)) }))
                   }}
                 >
                   <SelectTrigger><SelectValue placeholder="Pick the invoice being discounted" /></SelectTrigger>
@@ -2844,17 +2879,17 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="flex flex-col gap-1.5"><Label>Discounting bank *</Label><Input value={bdForm.disc_bank ?? ''} onChange={(e) => setBdForm({ ...bdForm, disc_bank: e.target.value })} /></div>
-              <div className="flex flex-col gap-1.5"><Label>Bill amount (₹) *</Label><Input type="number" value={bdForm.amount ?? ''} onChange={(e) => setBdForm({ ...bdForm, amount: e.target.value })} /></div>
-              <div className="flex flex-col gap-1.5"><Label>Discount date</Label><DatePicker value={String(bdForm.open_date || '')} onChange={(v) => setBdForm({ ...bdForm, open_date: v })} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Discounting bank *</Label><Input value={bdForm.disc_bank ?? ''} onChange={(e) => setBdForm((p) => ({ ...p, disc_bank: e.target.value }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Bill amount (₹) *</Label><Input type="number" value={bdForm.amount ?? ''} onChange={(e) => setBdForm((p) => ({ ...p, amount: e.target.value }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Discount date</Label><DatePicker value={String(bdForm.open_date || '')} onChange={(v) => setBdForm((p) => ({ ...p, open_date: v }))} /></div>
               <div className="flex flex-col gap-1.5">
                 <Label>Maturity date</Label>
-                <DatePicker value={String(bdForm.maturity_date || '')} onChange={(v) => setBdForm({ ...bdForm, maturity_date: v })} />
+                <DatePicker value={String(bdForm.maturity_date || '')} onChange={(v) => setBdForm((p) => ({ ...p, maturity_date: v }))} />
                 <span className="text-[10px] text-muted-foreground">or leave blank and give tenor days</span>
               </div>
-              <div className="flex flex-col gap-1.5"><Label>Tenor (days)</Label><Input type="number" value={bdForm.tenor_days ?? ''} onChange={(e) => setBdForm({ ...bdForm, tenor_days: e.target.value })} /></div>
-              <div className="flex flex-col gap-1.5"><Label>Rate % p.a. *</Label><Input type="number" value={bdForm.rate_pct ?? ''} onChange={(e) => setBdForm({ ...bdForm, rate_pct: e.target.value })} /></div>
-              <div className="flex flex-col gap-1.5"><Label>Bank charges (₹)</Label><Input type="number" value={bdForm.charges ?? ''} onChange={(e) => setBdForm({ ...bdForm, charges: e.target.value })} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Tenor (days)</Label><Input type="number" value={bdForm.tenor_days ?? ''} onChange={(e) => setBdForm((p) => ({ ...p, tenor_days: e.target.value }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Rate % p.a. *</Label><Input type="number" value={bdForm.rate_pct ?? ''} onChange={(e) => setBdForm((p) => ({ ...p, rate_pct: e.target.value }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Bank charges (₹)</Label><Input type="number" value={bdForm.charges ?? ''} onChange={(e) => setBdForm((p) => ({ ...p, charges: e.target.value }))} /></div>
               {bdPreview && n(bdForm.amount) > 0 && (
                 <div className="sm:col-span-2 grid grid-cols-3 gap-2 rounded-lg border bg-muted/30 p-2.5 text-center">
                   <div><div className="text-[10px] uppercase tracking-wide text-muted-foreground">{bdPreview.days} days interest</div><div className="text-[13px] font-semibold tabular-nums text-rose-700">{formatINR(bdPreview.interest)}</div></div>

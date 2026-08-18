@@ -162,6 +162,25 @@ export async function postLcUpfrontInterest(lcId: number, dateIn?: string): Prom
   return { id: je.id }
 }
 
+// Keeps an ALREADY-POSTED upfront interest/charges voucher in step with the
+// LC's own numbers, for when interest %, charges, the open amount or the
+// interest days are edited after the fact. Deliberately only refreshes an
+// entry that already exists — posting one early is the bank reconciliation's
+// job (see postLcUpfrontInterest above), not an edit's. The original entry
+// date is kept, since that's the date the bank actually took the money.
+export async function refreshLcUpfrontInterest(lcId: number): Promise<void> {
+  const c = getClient()
+  const res = await c.execute({
+    sql: 'SELECT interest_journal_entry_id FROM letters_of_credit WHERE id = ?',
+    args: [lcId]
+  })
+  const jeId = n(res.rows[0]?.interest_journal_entry_id)
+  if (!jeId) return
+  const je = await c.execute({ sql: 'SELECT entry_date FROM journal_entries WHERE id = ?', args: [jeId] })
+  const date = String(je.rows[0]?.entry_date || '').slice(0, 10)
+  await postLcUpfrontInterest(lcId, date || undefined)
+}
+
 // Reverses the upfront-interest posting above — used when its bank statement
 // line is un-reconciled (or reclassified to misc), so the books don't keep an
 // entry no longer backed by a confirmed statement line.

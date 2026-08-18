@@ -12,6 +12,7 @@ import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
+import { ColumnFilter } from '@/components/ui/column-filter'
 import { Switch } from '@/components/ui/switch'
 import { InfoTip } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
@@ -30,6 +31,15 @@ type Row = Record<string, any>
 // Receipt classification for a gate entry.
 // Miscellaneous covers goods with no trading party behind them — workshop
 // material, empty drums, samples. The gate records what it is, not whose it is.
+// The register's Status column is binary: a row is either weighed off and
+// closed, or still waiting for a weight. Fixed rather than derived from the
+// data so both choices are always offered, even when the current page happens
+// to hold only one of them.
+const GATE_STATUS_OPTIONS = [
+  { value: 'done', label: 'Completed' },
+  { value: 'pending', label: 'Pending weight' }
+]
+
 const isMisc = (v: unknown): boolean => {
   const c = String(v || '').trim().toUpperCase()
   return c === 'MISCELLANEOUS' || c === 'MISC'
@@ -120,6 +130,8 @@ export function GateEntry(): React.JSX.Element {
   // through the full weighbridge (Tare/Gross). Separate enough in what they
   // record that the register benefits from filtering one out from the other.
   const [gKind, setGKind] = useState<'ALL' | 'quick' | 'normal'>('ALL')
+  // Excel-style filter on the register's own Status column. Empty = no filter.
+  const [gStatus, setGStatus] = useState<string[]>([])
   const gCatOptions = useMemo(
     () => Array.from(new Set(rows.map((r) => String(r.rec_type || '')).filter(Boolean))).sort(),
     [rows]
@@ -140,6 +152,7 @@ export function GateEntry(): React.JSX.Element {
         if (gKind === 'quick' && !isQuick) return false
         if (gKind === 'normal' && isQuick) return false
       }
+      if (gStatus.length && !gStatus.includes(String(r.status) === 'pending' ? 'pending' : 'done')) return false
       if (!q) return true
       return [r.gate_entry_no, r.ref_no, r.tanker_no, r.supplier_name, r.sale_customer, r.sale_invoice, r.person, r.note]
         .filter(Boolean)
@@ -147,7 +160,7 @@ export function GateEntry(): React.JSX.Element {
         .toLowerCase()
         .includes(q)
     })
-  }, [rows, gFrom, gTo, gCats, gDir, gKind, gSearch])
+  }, [rows, gFrom, gTo, gCats, gDir, gKind, gStatus, gSearch])
   const paged = usePaged(filteredRows)
   const [tankers, setTankers] = useState<Row[]>([])
   const [suppliers, setSuppliers] = useState<Row[]>([])
@@ -1174,13 +1187,13 @@ export function GateEntry(): React.JSX.Element {
                     className="h-7 w-[10.5rem] shrink-0 text-[11px]"
                   />
                 </div>
-                {(gFrom || gTo || gCats.length > 0 || gDir !== 'ALL' || gKind !== 'ALL' || gSearch) && (
+                {(gFrom || gTo || gCats.length > 0 || gDir !== 'ALL' || gKind !== 'ALL' || gStatus.length > 0 || gSearch) && (
                   <>
                     <div className="h-5 shrink-0 border-l border-[#d9d2b8]" />
                     <button
                       type="button"
                       className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-rose-700 hover:text-rose-900"
-                      onClick={() => { setGFrom(''); setGTo(''); setGCats([]); setGDir('ALL'); setGKind('ALL'); setGSearch('') }}
+                      onClick={() => { setGFrom(''); setGTo(''); setGCats([]); setGDir('ALL'); setGKind('ALL'); setGStatus([]); setGSearch('') }}
                     >
                       Clear
                     </button>
@@ -1674,7 +1687,14 @@ export function GateEntry(): React.JSX.Element {
               <TableHead className="text-right">Dis Qty</TableHead>
               <TableHead className="text-right">Rec (net)</TableHead>
               <TableHead className="text-right">Difference</TableHead>
-              <TableHead>Status</TableHead>
+              <TableHead>
+                <ColumnFilter
+                  label="Status"
+                  options={GATE_STATUS_OPTIONS}
+                  value={gStatus}
+                  onApply={setGStatus}
+                />
+              </TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow></TableHeader>
             <TableBody>

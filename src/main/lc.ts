@@ -1,7 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
-import { postLcOpening, settleLcBillsCombined, postLcMarginRelease, postLcPrematureInterestRebate, saveLcRepayment } from './treasury'
+import { postLcOpening, settleLcBillsCombined, postLcMarginRelease, postLcPrematureInterestRebate, saveLcRepayment, refreshLcUpfrontInterest } from './treasury'
 import { facilityHeadroom } from './facilities'
 import { linkTradingDealsToLc } from './trading'
 
@@ -351,6 +351,35 @@ async function assertWithinInvoiceCover(v: Row): Promise<void> {
   }
 }
 
+// Interest and charges come out of the open amount BEFORE any bill draws on
+// it, so raising either — or cutting the open amount — can retroactively push
+// an LC past what it can actually cover, leaving a negative available balance
+// against bills the bank has already issued. issueLC() enforces this when a
+// bill is created; without the same check on the LC's own fields an edit could
+// walk it negative afterwards, which is how LC-2 ended up at -847.37.
+async function assertCoversIssuedBills(v: Row, lcId: number): Promise<void> {
+  if (!lcId) return
+  const res = await getClient().execute({
+    sql: 'SELECT COALESCE(SUM(amount), 0) AS issued FROM lc_issuances WHERE lc_id = ?',
+    args: [lcId]
+  })
+  const issued = n(res.rows[0]?.issued)
+  if (issued <= 0) return
+  const available = netAvailable(v, issued)
+  if (available < -0.005) {
+    const upfront = !!v.interest_upfront
+    const interest = upfront ? 0 : round2((n(v.amount) * n(v.interest_pct) * n(v.usance_days)) / (100 * 365))
+    const charges = upfront ? 0 : round2(n(v.charges))
+    const needed = round2(n(v.amount) - available)
+    throw new Error(
+      `This would leave the LC ${Math.abs(available).toFixed(2)} short. ` +
+        `Interest ${interest.toFixed(2)} + charges ${charges.toFixed(2)} + the ${issued.toFixed(2)} of bills already ` +
+        `issued come to more than the ${n(v.amount).toFixed(2)} open amount. ` +
+        `Raise the open amount to at least ${needed.toFixed(2)}, or lower the interest % / charges.`
+    )
+  }
+}
+
 // The LC number itself isn't known until the bank actually opens the LC —
 // at Application it's just a request, so only Open onward requires it.
 function assertLcNoIfPastApplication(v: Row): void {
@@ -371,7 +400,29 @@ function assertPaymentReceivedNotBeforeOpen(v: Row): void {
   }
 }
 
-export async function createLC(v: Row): Promise<{ id: number }> {
+// Re-post every voucher whose figures come off the LC's own fields, so the
+// books always match what was just saved. Failures are COLLECTED rather than
+// swallowed: the LC row itself is already written by this point, so throwing
+// would strand the caller, but staying silent used to leave the ledger quietly
+// out of step with the LC (the bug this replaces). The caller passes the
+// warning back to the user instead.
+async function syncLcVouchers(id: number): Promise<string | undefined> {
+  const problems: string[] = []
+  try {
+    await postLcOpening(id)
+  } catch (e) {
+    problems.push(`the margin/interest/charges voucher (${(e as Error).message})`)
+  }
+  try {
+    await refreshLcUpfrontInterest(id)
+  } catch (e) {
+    problems.push(`the upfront interest voucher (${(e as Error).message})`)
+  }
+  if (!problems.length) return undefined
+  return `The LC saved, but ${problems.join(' and ')} could not be re-posted — the books are out of step until that is fixed.`
+}
+
+export async function createLC(v: Row): Promise<{ id: number; warning?: string }> {
   if (!v.bank) throw new Error('Bank is required')
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
@@ -389,11 +440,11 @@ export async function createLC(v: Row): Promise<{ id: number }> {
   await linkTradingDealsToLc(id, v.linked_deal_ids)
   await syncPaymentReceivedIssuance(id, v)
   // Margin + charges voucher into the books (skipped when both are zero).
-  await postLcOpening(id).catch((e) => console.error('[lc] opening voucher failed:', (e as Error).message))
-  return { id }
+  const warning = await syncLcVouchers(id)
+  return { id, warning }
 }
 
-export async function updateLC(id: number, v: Row): Promise<{ id: number }> {
+export async function updateLC(id: number, v: Row): Promise<{ id: number; warning?: string }> {
   if (!v.bank) throw new Error('Bank is required')
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
@@ -401,6 +452,7 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number }> {
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v, id)
   await assertWithinInvoiceCover(v)
+  await assertCoversIssuedBills(v, id)
   await getClient().execute({
     sql: `UPDATE letters_of_credit SET ${LC_COLS.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`,
     args: [...lcArgs(v), id]
@@ -408,8 +460,8 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number }> {
   await syncLinkedOrders(id, v.linked_order_ids)
   await linkTradingDealsToLc(id, v.linked_deal_ids)
   await syncPaymentReceivedIssuance(id, v)
-  await postLcOpening(id).catch((e) => console.error('[lc] opening voucher failed:', (e as Error).message))
-  return { id }
+  const warning = await syncLcVouchers(id)
+  return { id, warning }
 }
 
 function todayISO(): string {

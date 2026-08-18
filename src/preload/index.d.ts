@@ -224,8 +224,8 @@ export interface Api {
   lc: {
     list: () => Promise<Row[]>
     issuances: (lcId: number) => Promise<Row[]>
-    create: (values: Row) => Promise<{ id: number }>
-    update: (id: number, values: Row) => Promise<{ id: number }>
+    create: (values: Row) => Promise<{ id: number; warning?: string }>
+    update: (id: number, values: Row) => Promise<{ id: number; warning?: string }>
     remove: (id: number) => Promise<{ id: number }>
     issue: (values: Row) => Promise<{ id: number }>
     removeIssuance: (id: number) => Promise<{ id: number }>
