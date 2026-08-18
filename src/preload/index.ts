@@ -330,7 +330,8 @@ const api = {
         release_margin?: boolean
       }
     ): Promise<{ id: number }> => ipcRenderer.invoke('lc:preclose', { id, values }),
-    getLimit: (): Promise<Row> => ipcRenderer.invoke('lc:getLimit'),
+    getLimit: (bankId?: number): Promise<Row> => ipcRenderer.invoke('lc:getLimit', { bankId }),
+    bankLimits: (): Promise<Row[]> => ipcRenderer.invoke('lc:bankLimits'),
     saveLimit: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('lc:saveLimit', { values })
   },
   files: {

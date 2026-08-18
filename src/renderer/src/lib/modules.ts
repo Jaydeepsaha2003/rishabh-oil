@@ -27,6 +27,7 @@ export const MODULES: ModuleDef[] = [
   { key: 'transporters', label: 'Transporters' },
   { key: 'customers', label: 'Customers' },
   { key: 'ports', label: 'Ports' },
+  { key: 'banks', label: 'Manage Banks' },
   { key: 'brokers', label: 'Brokers' },
   { key: 'packaging', label: 'Packed SKU' },
   { key: 'approvals', label: 'Approvals' },

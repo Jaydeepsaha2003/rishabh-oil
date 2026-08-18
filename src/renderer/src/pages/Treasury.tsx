@@ -76,7 +76,7 @@ const DUE_PERIODS: { key: string; label: string; maxDays?: number }[] = [
 function DueBadge({ date }: { date: unknown }): React.JSX.Element | null {
   const d = daysTo(date)
   if (d == null) return null
-  const label = d < 0 ? `${-d}d overdue` : d === 0 ? 'due today' : `${d}d left`
+  const label = d < 0 ? `${-d}D overdue` : d === 0 ? 'due today' : `${d}D left`
   return (
     <Badge variant={d < 0 ? 'destructive' : d <= 7 ? 'warning' : 'muted'} className="tabular-nums">
       {label}
@@ -149,9 +149,13 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   const [activeCompany, setActiveCompany] = useState(0)
   const [companies, setCompanies] = useState<Row[]>([])
   const [lcLimit, setLcLimit] = useState<Row | null>(null)
+  const [banks, setBanks] = useState<Row[]>([])
+  // Which bank the page is looking at. '' = every bank rolled together, the
+  // same idea as the company switcher's "All companies".
+  const [activeBank, setActiveBank] = useState('')
 
   const load = useCallback(async () => {
-    const [l, b, a, sup, cust, sl, od, deals, tr, act, comps, lim] = await Promise.all([
+    const [l, b, a, sup, cust, sl, od, deals, tr, act, comps, lim, bnk] = await Promise.all([
       window.api.lc.list(),
       window.api.billDiscounts.list(),
       window.api.treasury.alerts(),
@@ -163,7 +167,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       window.api.treasury.paymentTracker(),
       window.api.company.getActive(),
       window.api.company.list(),
-      window.api.lc.getLimit()
+      window.api.lc.getLimit(activeBank ? Number(activeBank) : undefined),
+      window.api.data.list('banks')
     ])
     setLcs(l.filter((x) => String(x.facility_type || 'lc') === 'lc'))
     setBills(b.filter((x) => String(x.medium || '') === 'bill_discounting' || x.rate_pct != null))
@@ -177,7 +182,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     setActiveCompany(Number(act?.id) || 0)
     setCompanies(comps)
     setLcLimit(lim)
-  }, [])
+    setBanks(bnk.filter((x) => x.active))
+  }, [activeBank])
 
   useEffect(() => {
     load()
@@ -324,7 +330,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   const [lcLimitSaving, setLcLimitSaving] = useState(false)
 
   function openLcLimit(): void {
+    // A limit belongs to one bank, so the dialog opens on the bank in view —
+    // or the only bank on file when the page is showing all of them.
+    const only = banks.length === 1 ? String(banks[0].id) : ''
     setLcLimitForm({
+      bank_id: activeBank || only,
       fixed_limit: lcLimit ? String(lcLimit.fixed_limit ?? 0) : '0',
       convertible_limit: lcLimit ? String(lcLimit.convertible_limit ?? 0) : '0',
       convertible_enabled: !!lcLimit?.convertible_enabled
@@ -336,6 +346,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     setLcLimitSaving(true)
     try {
       await window.api.lc.saveLimit({
+        bank_id: n(lcLimitForm.bank_id),
         fixed_limit: n(lcLimitForm.fixed_limit),
         convertible_limit: n(lcLimitForm.convertible_limit),
         convertible_enabled: !!lcLimitForm.convertible_enabled
@@ -620,13 +631,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     return suppliers.filter((s) => (String(s.business_type || 'Manufacturing') === 'Trading') === wantTrading)
   }, [lcForm?.purpose, suppliers])
 
-  // Banks already on record — from LCs — so the field can offer a pick-list
-  // while still taking a bank that isn't in it yet.
+  // The banks master drives the pick-list, so a bank added on the Banks page
+  // is offered here immediately rather than only after some LC has used it.
+  // Names already sitting on older LCs are kept in the list too, so an LC
+  // written before the master existed still shows its own bank.
   const bankOptions = useMemo(() => {
     const set = new Set<string>()
+    for (const b of banks) if (b.name) set.add(String(b.name).trim())
     for (const l of lcs) if (l.bank) set.add(String(l.bank).trim())
     return Array.from(set).sort()
-  }, [lcs])
+  }, [banks, lcs])
   const NEW_BANK = '__new_bank__'
   const [addingNewBank, setAddingNewBank] = useState(false)
   const lcFormOpen = !!lcForm
@@ -845,13 +859,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     let rows = lcsWithDue
     if (lcStageFilter) rows = rows.filter((l) => String(l.stage || 'application') === lcStageFilter)
     if (lcPurposeFilter) rows = rows.filter((l) => String(l.purpose || 'manufacturing') === lcPurposeFilter)
+    if (activeBank) rows = rows.filter((l) => String(l.our_bank_id || '') === String(activeBank))
     if (lcDuePeriod === 'all') return rows
     const maxDays = DUE_PERIODS.find((p) => p.key === lcDuePeriod)?.maxDays
     if (maxDays == null) return rows
     // Cumulative: overdue and everything due sooner counts too, not just the
     // slice of days that falls exactly in this bucket.
     return rows.filter((l) => l.days_left_effective != null && l.days_left_effective <= maxDays)
-  }, [lcsWithDue, lcDuePeriod, lcStageFilter, lcPurposeFilter])
+  }, [lcsWithDue, lcDuePeriod, lcStageFilter, lcPurposeFilter, activeBank])
 
   const [lcExporting, setLcExporting] = useState(false)
   async function downloadLcRegister(): Promise<void> {
@@ -1046,6 +1061,24 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
         title="Treasury"
         hint="LCs carry interest days: every bill issued under one gets a maturity date, and settling it pays the supplier through the books against the original invoice. Discounting a sale bill brings the bank money in now (interest and charges to expenses) and clears the customer when the bill is realized. Everything shows in the Day Book, ledgers and Trial Balance."
         actions={
+          <>
+          {/* The bank in view scopes the whole page: the register below, the
+              facility limit above it, and which bank a new LC opens at. */}
+          <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Active bank
+          </span>
+          <Select value={activeBank} onValueChange={setActiveBank}>
+            <SelectTrigger className="h-8 w-52 text-xs font-semibold uppercase tracking-wide">
+              <span className="flex min-w-0 items-center gap-1.5">
+                <Landmark className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <SelectValue placeholder="All my banks" />
+              </span>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">All my banks</SelectItem>
+              {banks.map((b) => <SelectItem key={String(b.id)} value={String(b.id)}>{b.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
           <Select value={tab} onValueChange={setTab}>
             <SelectTrigger className="h-8 w-56 text-xs font-semibold uppercase tracking-wide">
               <SelectValue placeholder="Select a view" />
@@ -1056,6 +1089,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               <SelectItem value="tracker">Payment Tracker ({tracker.filter((x) => !x.settled).length})</SelectItem>
             </SelectContent>
           </Select>
+          </>
         }
       />
       <div className="space-y-4 px-4 py-4">
@@ -1139,7 +1173,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           <div className="tabular-nums">{r.due_date ? formatDate(r.due_date) : '—'}</div>
                           {!r.settled && r.days_left != null && (
                             <div className={cn('text-[10px]', r.overdue ? 'font-semibold text-red-600' : 'text-muted-foreground')}>
-                              {r.overdue ? `${Math.abs(r.days_left)}d overdue` : `${r.days_left}d left`}
+                              {r.overdue ? `${Math.abs(r.days_left)}D overdue` : `${r.days_left}D left`}
                             </div>
                           )}
                         </TableCell>
@@ -1280,7 +1314,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
             {lcView === 'cards' ? (
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 <Card className="flex items-center justify-center border-dashed p-6">
-                  <Button className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application' })}>
+                  <Button className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application', our_bank_id: activeBank || '' })}>
                     <Plus className="h-4 w-4" /> Open new LC
                   </Button>
                 </Card>
@@ -1420,7 +1454,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 >
                   <FileSpreadsheet className="h-4 w-4" /> {lcExporting ? 'Preparing…' : 'Download Excel'}
                 </Button>
-                <Button size="sm" className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application' })}>
+                <Button size="sm" className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application', our_bank_id: activeBank || '' })}>
                   <Plus className="h-4 w-4" /> Open new LC
                 </Button>
               </div>
@@ -1673,6 +1707,20 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>LC facility limit</DialogTitle></DialogHeader>
           <div className="grid gap-3">
+            {/* The limit is sanctioned against one of OUR accounts, so it is
+                always saved against a bank rather than the company as a whole. */}
+            <div className="grid gap-1.5">
+              <Label>My bank <span className="text-red-600">*</span></Label>
+              <Select
+                value={String(lcLimitForm.bank_id ?? '')}
+                onValueChange={(v) => setLcLimitForm((p) => ({ ...p, bank_id: v }))}
+              >
+                <SelectTrigger><SelectValue placeholder="Which bank sanctioned this limit" /></SelectTrigger>
+                <SelectContent>
+                  {banks.map((b) => <SelectItem key={String(b.id)} value={String(b.id)}>{b.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="grid gap-1.5">
               <Label>Fixed limit (₹) *</Label>
               <Input type="number" value={lcLimitForm.fixed_limit ?? ''} onChange={(e) => setLcLimitForm({ ...lcLimitForm, fixed_limit: e.target.value })} />
@@ -2174,6 +2222,21 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <Input value={lcForm.fd_no ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, fd_no: e.target.value }))} placeholder="e.g. FD/2026/045" />
                     <span className="text-[10px] text-muted-foreground">Fixed deposit lodged as security</span>
                   </div>
+                  {/* Our own account, distinct from the discounting bank above:
+                      the bank above FINANCES the LC, this is the account the
+                      money actually leaves from when it is repaid. */}
+                  <div className="flex flex-col gap-1.5">
+                    <Label>My bank <span className="text-[10px] font-normal text-muted-foreground">(repayments go out of this)</span></Label>
+                    <Select
+                      value={lcForm.our_bank_id ? String(lcForm.our_bank_id) : ''}
+                      onValueChange={(v) => setLcForm((p) => ({ ...p, our_bank_id: v }))}
+                    >
+                      <SelectTrigger><SelectValue placeholder={banks.length ? 'Which of my accounts' : 'Add one under Manage Banks first'} /></SelectTrigger>
+                      <SelectContent>
+                        {banks.map((b) => <SelectItem key={String(b.id)} value={String(b.id)}>{b.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
                   <div className="flex flex-col gap-1.5 sm:col-span-2">
                     <Label>Stage</Label>
                     <div className="grid grid-cols-3 gap-1.5">
@@ -2443,12 +2506,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           <span className="text-[10px] text-muted-foreground">Suggested from the selected invoices — edit freely, but it can't exceed their total.</span>
                         )}
                         {/* Interest and charges come out of the open amount
-                            before any bill draws on it, so raising either can
-                            push an LC that already has bills issued into a
-                            negative available balance. Shown live here rather
-                            than only refused at save, so the shortfall (and the
-                            open amount that would clear it) is visible while
-                            the figures are still being typed. */}
+                            before any bill draws on it, so raising either
+                            leaves part of an already-issued bill unfunded.
+                            That difference is credited back to the party
+                            automatically on save — stated here so the effect
+                            is visible before it happens, not refused. */}
                         {(() => {
                           const issued = n(lcForm.utilized)
                           if (issued <= 0) return null
@@ -2457,15 +2519,15 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             ? 0
                             : round2((amt * n(lcForm.interest_pct) * n(lcForm.usance_days)) / (100 * 365))
                           const charges = lcForm.interest_upfront ? 0 : round2(n(lcForm.charges))
-                          const avail = round2(amt - interest - charges - issued)
-                          if (avail >= -0.005) return null
+                          const over = round2(issued - round2(amt - interest - charges))
+                          if (over < 0.005) return null
                           return (
-                            <div className="flex items-start gap-1.5 rounded-md border border-rose-300 bg-rose-50 px-2.5 py-2 text-[11px] text-rose-800">
+                            <div className="flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-900">
                               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                               <span>
-                                Short by <b>{formatINR(Math.abs(avail))}</b> — interest {formatINR(interest)} + charges{' '}
-                                {formatINR(charges)} + {formatINR(issued)} of bills already issued exceed this open amount.
-                                Raise it to at least <b>{formatINR(round2(amt - avail))}</b>, or lower the interest % / charges.
+                                <b>{formatINR(over)}</b> of the {formatINR(issued)} bill is taken by interest{' '}
+                                {formatINR(interest)} + charges {formatINR(charges)}, so it never reaches the party — on
+                                save, their account is credited back that much (On Account).
                               </span>
                             </div>
                           )

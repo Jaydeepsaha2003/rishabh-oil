@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  Undo2, ArrowLeft, BarChart3, Eye, Pencil, Plus, Trash2, Truck } from 'lucide-react'
+  Undo2, ArrowLeft, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, Eye,
+  IndianRupee, Pencil, Plus, Trash2, Truck, type LucideIcon } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { FyPicker } from '@/components/FyPicker'
 import { ExcelButton } from '@/components/ExcelButton'
@@ -145,6 +146,21 @@ function MoneyRow({ label, value, strong, title }: { label: string; value: strin
     <div className="flex items-center justify-between py-1.5 text-sm" title={title}>
       <span className={cn(strong ? 'font-semibold text-foreground' : 'text-muted-foreground', title && 'cursor-help underline decoration-dotted decoration-muted-foreground/50 underline-offset-4')}>{label}</span>
       <span className={strong ? 'font-semibold tabular-nums' : 'tabular-nums'}>{value}</span>
+    </div>
+  )
+}
+
+// Small labeled fact card for a detail dialog's key figures — an icon +
+// muted caption + the value, so a handful of facts read at a glance instead
+// of as a stack of plain label/value lines.
+function InfoTile({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }): React.JSX.Element {
+  return (
+    <div className="flex items-start gap-2 rounded-lg border bg-muted/30 px-3 py-2">
+      <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <div className="min-w-0">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
+        <div className="truncate text-sm font-medium" title={value}>{value}</div>
+      </div>
     </div>
   )
 }
@@ -472,17 +488,113 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       // it stays visible regardless of the date window (and so does its
       // delay flag) until it actually reaches Empty.
       if (String(t.status) !== 'empty') return true
-      const d = String(t.loaded_date || t.factory_entry_date || t.created_at || '').slice(0, 10)
+      // Same rule the pivot above it uses: a finished tanker belongs to the
+      // window by the day it was actually EMPTIED (received), not the day it
+      // was loaded — filtering by loaded_date here let the pivot's count
+      // include a tanker (loaded before the window, received inside it)
+      // while this list silently dropped it, so the two disagreed.
+      const d = String(t.empty_date || '').slice(0, 10)
       return !!d && d >= start && d <= end
     })
   }, [moveTankers, pivotStart, pivotEnd, pivotSel, inCategory])
-  const tankerPaged = usePaged(visibleTankers)
+  // Split of the SAME set above — not a wider query — by whether the tanker
+  // was also LOADED inside the window. Together these two always add up to
+  // visibleTankers.length; nothing outside that count is pulled in.
+  const [inLoadedRangeTankers, outOfRangeTankers] = useMemo(() => {
+    if (pivotSel) return [visibleTankers, [] as Row[]]
+    const start = pivotStart
+    const end = pivotEnd < pivotStart ? pivotStart : pivotEnd
+    const inR: Row[] = []
+    const outR: Row[] = []
+    for (const t of visibleTankers) {
+      const d = String(t.loaded_date || '').slice(0, 10)
+      const loadedInRange = !!d && d >= start && d <= end
+      ;(loadedInRange ? inR : outR).push(t)
+    }
+    return [inR, outR]
+  }, [visibleTankers, pivotStart, pivotEnd, pivotSel])
+  const tankerPaged = usePaged(inLoadedRangeTankers)
+  const outOfRangePaged = usePaged(outOfRangeTankers)
+
+  // Shared row markup for the tanker list — used for both the in-range table
+  // and the out-of-range one below it, so the two stay visually identical.
+  function renderTankerRow(row: Row): React.JSX.Element {
+    const next = nextTankerStage(row.status)
+    return <TableRow key={row.id}>
+      <TableCell><div className={cn('font-medium', !String(row.tanker_no || '').trim() && 'italic text-muted-foreground')}>{String(row.tanker_no || '').trim() || 'No number yet'}</div><div className="text-xs text-muted-foreground">{row.status === 'supplier_factory' ? `Entered ${formatDate(row.loaded_date)}` : `Loaded ${formatDate(row.loaded_date)}`}</div>{!!row.gate_entry_no && (
+          <div className="mt-0.5 text-[11px] text-sky-700">
+            Gate {row.gate_entry_no}
+            {row.gate_tanker_no && String(row.gate_tanker_no).trim() !== String(row.tanker_no || '').trim()
+              ? ` · vehicle ${row.gate_tanker_no}`
+              : ''}
+            {Number(row.gate_qty) > 0 ? ` · weighed ${formatNum(row.gate_qty)}` : ''}
+          </div>
+        )}{!!row.last_replacement && (
+          <div className="mt-0.5 text-[11px] text-amber-700" title="Tanker replaced en route">
+            Replaced: {row.last_replacement}
+          </div>
+        )}</TableCell>
+      <TableCell>
+        <div>{row.supplier_name}</div>
+        <div className="text-xs text-muted-foreground">
+          {row.bargain_no}
+          {row.extra_bargain_no && (
+            <span title={`Split: ${formatNum((Number(row.loaded_qty) || 0) - (Number(row.extra_qty) || 0))} ${row.uom} + ${formatNum(row.extra_qty)} ${row.uom} excess`}>
+              {' '}+ {row.extra_bargain_no} <span className="text-sky-600">(split)</span>
+            </span>
+          )}
+        </div>
+      </TableCell>
+      <TableCell className="text-right tabular-nums">{Number(row.loaded_qty) > 0 ? `${formatNum(row.loaded_qty)} ${row.uom}` : 'Not loaded'}</TableCell>
+      <TableCell>{row.payment_mode === 'pending' ? <span className="text-muted-foreground">Not decided</span> : row.payment_mode === 'supplier_finance' ? <Badge variant="warning">Supplier financed</Badge> : <Badge variant="muted">Paid by us</Badge>}</TableCell>
+      <TableCell>{row.invoice_no || <span className="text-muted-foreground">Not entered</span>}</TableCell>
+      <TableCell>
+        <StatusBadge status={row.status} />
+        {(() => {
+          const d = tankerDelay(row)
+          return d ? <div className={cn('mt-1 text-[11px] font-medium', d.tone)}>{d.label}</div> : null
+        })()}
+      </TableCell>
+      <TableCell className="text-right"><div className="flex justify-end gap-1">
+        {TANKER_STAGES.indexOf(String(row.status)) > TANKER_STAGES.indexOf('loaded') && (
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 text-amber-700"
+            title={`Undo — back to ${TANKER_LABEL[TANKER_STAGES[TANKER_STAGES.indexOf(String(row.status)) - 1]]}`}
+            onClick={() => void revertTanker(row)}
+          >
+            <Undo2 className="h-4 w-4" />
+          </Button>
+        )}
+        {next && <Button size="sm" variant="outline" onClick={() => openTankerAction(row)}>{TANKER_LABEL[next]}</Button>}
+        {row.status === 'transit' && (
+          <Button size="sm" variant="outline" className="text-amber-700" title="Replace this tanker (accident/breakdown)" onClick={() => openReplaceTanker(row)}>
+            <Truck className="h-4 w-4" /> Replace
+          </Button>
+        )}
+        <Button size="icon" variant="ghost" className="h-8 w-8" title="Edit stage entries" onClick={() => openEditTanker(row)}><Pencil className="h-4 w-4" /></Button>
+        {!row.order_id && <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => deleteTanker(row)}><Trash2 className="h-4 w-4" /></Button>}
+      </div></TableCell>
+    </TableRow>
+  }
+
+  function tankerTableHeader(): React.JSX.Element {
+    return <TableHeader><TableRow className="bg-muted/60">
+      <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Tanker</TableHead><TableHead className="text-[10px] font-semibold uppercase tracking-wide">Supplier / bargain</TableHead><TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Loaded qty</TableHead>
+      <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Payment</TableHead><TableHead className="text-[10px] font-semibold uppercase tracking-wide">Invoice</TableHead><TableHead className="text-[10px] font-semibold uppercase tracking-wide">Stage</TableHead><TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Action</TableHead>
+    </TableRow></TableHeader>
+  }
   // Purchase entries filters: a date range on the invoice date, and the product
   // category. Both narrow the list the page shows and exports.
   const [poFrom, setPoFrom] = useState('')
   const [poTo, setPoTo] = useState('')
   // Empty = every category.
   const [poCategory, setPoCategory] = useState<string[]>([])
+  // ON by default: also pull in a purchase whose invoice date is outside the
+  // window but a tanker on it was received inside it. Switching it off goes
+  // back to strictly the invoice date.
+  const [poIncludeReceipt, setPoIncludeReceipt] = useState(true)
   // Alt+F2 broadcasts a period from anywhere.
   const globalRange = useGlobalDateRange()
   useEffect(() => {
@@ -496,14 +608,33 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   )
   const filteredOrders = useMemo(
     () =>
-      rows.filter((r) => {
-        const d = String(r.order_date || '').slice(0, 10)
-        if (poFrom && d < poFrom) return false
-        if (poTo && d > poTo) return false
-        if (poCategory.length && !poCategory.includes(String(r.product_category || ''))) return false
-        return true
-      }),
-    [rows, poFrom, poTo, poCategory]
+      rows
+        .map((r): Row => {
+          const d = String(r.order_date || '').slice(0, 10)
+          const invoicedInRange = (!poFrom || d >= poFrom) && (!poTo || d <= poTo)
+          // The invoice date alone can sit days before the tanker actually
+          // arrives and gets weighed — so a purchase also belongs to the
+          // window if any of its tankers was RECEIVED (reached Empty) inside
+          // it, even when the invoice itself was raised outside the range.
+          const receivedInRange =
+            poIncludeReceipt &&
+            !invoicedInRange &&
+            tankers.some((t) => {
+              if (Number(t.order_id) !== Number(r.id)) return false
+              const rd = String(t.empty_date || '').slice(0, 10)
+              if (!rd) return false
+              if (poFrom && rd < poFrom) return false
+              if (poTo && rd > poTo) return false
+              return true
+            })
+          return { ...r, _shownForReceipt: receivedInRange, _inWindow: invoicedInRange || receivedInRange }
+        })
+        .filter((r) => {
+          if (!r._inWindow) return false
+          if (poCategory.length && !poCategory.includes(String(r.product_category || ''))) return false
+          return true
+        }),
+    [rows, tankers, poFrom, poTo, poCategory, poIncludeReceipt]
   )
   const orderPaged = usePaged(filteredOrders)
 
@@ -2345,6 +2476,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       className="h-7 w-[11.5rem] shrink-0 text-[11px]"
                     />
                   </div>
+                  <div className="h-5 shrink-0 border-l" />
+                  <div className="flex shrink-0 items-center gap-1.5" title="When on, a purchase also shows if a tanker on it was received in this window — even if the invoice itself was raised outside it.">
+                    <Switch checked={poIncludeReceipt} onCheckedChange={setPoIncludeReceipt} className="shrink-0" />
+                    <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+                      Include by receipt date
+                    </span>
+                  </div>
                   {(poFrom || poTo || poCategory.length > 0) && (
                     <>
                       <div className="h-5 shrink-0 border-l" />
@@ -2514,78 +2652,49 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 </div>
               )}
               <div className="overflow-hidden rounded-xl border bg-card">
+                {/* This card + the "Loaded outside" one below it split the
+                    SAME pivot total between them by loaded date — their two
+                    badge counts always add up to the pivot's grand total,
+                    never more. */}
+                {!pivotSel && (
+                  <div className="flex items-center gap-1.5 border-b bg-emerald-50 px-3 py-2">
+                    <CalendarDays className="h-3.5 w-3.5 text-emerald-600" />
+                    <span className="text-xs font-semibold text-emerald-800">
+                      Loaded & received within {formatDate(pivotStart)} – {formatDate(pivotEnd)}
+                    </span>
+                    <Badge variant="success" className="text-[10px]">{inLoadedRangeTankers.length}</Badge>
+                  </div>
+                )}
                 <Table className="text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:h-9 [&_th]:px-3">
-                  <TableHeader><TableRow className="bg-muted/60">
-                    <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Tanker</TableHead><TableHead className="text-[10px] font-semibold uppercase tracking-wide">Supplier / bargain</TableHead><TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Loaded qty</TableHead>
-                    <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Payment</TableHead><TableHead className="text-[10px] font-semibold uppercase tracking-wide">Invoice</TableHead><TableHead className="text-[10px] font-semibold uppercase tracking-wide">Stage</TableHead><TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Action</TableHead>
-                  </TableRow></TableHeader>
+                  {tankerTableHeader()}
                   <TableBody>
                     {loading ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
-                      : visibleTankers.length === 0 ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">{tankers.length === 0 ? 'No tankers yet. Add the first loaded tanker.' : pivotSel ? 'No tankers match the selected cell.' : 'No tankers in this date range.'}</TableCell></TableRow>
-                        : tankerPaged.pageRows.map((row) => {
-                          const next = nextTankerStage(row.status)
-                          return <TableRow key={row.id}>
-                            <TableCell><div className={cn('font-medium', !String(row.tanker_no || '').trim() && 'italic text-muted-foreground')}>{String(row.tanker_no || '').trim() || 'No number yet'}</div><div className="text-xs text-muted-foreground">{row.status === 'supplier_factory' ? `Entered ${formatDate(row.loaded_date)}` : `Loaded ${formatDate(row.loaded_date)}`}</div>{!!row.gate_entry_no && (
-                              <div className="mt-0.5 text-[11px] text-sky-700">
-                                Gate {row.gate_entry_no}
-                                {row.gate_tanker_no && String(row.gate_tanker_no).trim() !== String(row.tanker_no || '').trim()
-                                  ? ` · vehicle ${row.gate_tanker_no}`
-                                  : ''}
-                                {Number(row.gate_qty) > 0 ? ` · weighed ${formatNum(row.gate_qty)}` : ''}
-                              </div>
-                            )}{!!row.last_replacement && (
-                              <div className="mt-0.5 text-[11px] text-amber-700" title="Tanker replaced en route">
-                                Replaced: {row.last_replacement}
-                              </div>
-                            )}</TableCell>
-                            <TableCell>
-                              <div>{row.supplier_name}</div>
-                              <div className="text-xs text-muted-foreground">
-                                {row.bargain_no}
-                                {row.extra_bargain_no && (
-                                  <span title={`Split: ${formatNum((Number(row.loaded_qty) || 0) - (Number(row.extra_qty) || 0))} ${row.uom} + ${formatNum(row.extra_qty)} ${row.uom} excess`}>
-                                    {' '}+ {row.extra_bargain_no} <span className="text-sky-600">(split)</span>
-                                  </span>
-                                )}
-                              </div>
-                            </TableCell>
-                            <TableCell className="text-right tabular-nums">{Number(row.loaded_qty) > 0 ? `${formatNum(row.loaded_qty)} ${row.uom}` : 'Not loaded'}</TableCell>
-                            <TableCell>{row.payment_mode === 'pending' ? <span className="text-muted-foreground">Not decided</span> : row.payment_mode === 'supplier_finance' ? <Badge variant="warning">Supplier financed</Badge> : <Badge variant="muted">Paid by us</Badge>}</TableCell>
-                            <TableCell>{row.invoice_no || <span className="text-muted-foreground">Not entered</span>}</TableCell>
-                            <TableCell>
-                              <StatusBadge status={row.status} />
-                              {(() => {
-                                const d = tankerDelay(row)
-                                return d ? <div className={cn('mt-1 text-[11px] font-medium', d.tone)}>{d.label}</div> : null
-                              })()}
-                            </TableCell>
-                            <TableCell className="text-right"><div className="flex justify-end gap-1">
-                              {TANKER_STAGES.indexOf(String(row.status)) > TANKER_STAGES.indexOf('loaded') && (
-                                <Button
-                                  size="icon"
-                                  variant="ghost"
-                                  className="h-8 w-8 text-amber-700"
-                                  title={`Undo — back to ${TANKER_LABEL[TANKER_STAGES[TANKER_STAGES.indexOf(String(row.status)) - 1]]}`}
-                                  onClick={() => void revertTanker(row)}
-                                >
-                                  <Undo2 className="h-4 w-4" />
-                                </Button>
-                              )}
-                              {next && <Button size="sm" variant="outline" onClick={() => openTankerAction(row)}>{TANKER_LABEL[next]}</Button>}
-                              {row.status === 'transit' && (
-                                <Button size="sm" variant="outline" className="text-amber-700" title="Replace this tanker (accident/breakdown)" onClick={() => openReplaceTanker(row)}>
-                                  <Truck className="h-4 w-4" /> Replace
-                                </Button>
-                              )}
-                              <Button size="icon" variant="ghost" className="h-8 w-8" title="Edit stage entries" onClick={() => openEditTanker(row)}><Pencil className="h-4 w-4" /></Button>
-                              {!row.order_id && <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => deleteTanker(row)}><Trash2 className="h-4 w-4" /></Button>}
-                            </div></TableCell>
-                          </TableRow>
-                        })}
+                      : inLoadedRangeTankers.length === 0 ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">{tankers.length === 0 ? 'No tankers yet. Add the first loaded tanker.' : pivotSel ? 'No tankers match the selected cell.' : 'No tankers in this date range.'}</TableCell></TableRow>
+                        : tankerPaged.pageRows.map(renderTankerRow)}
                   </TableBody>
                 </Table>
                 <Pagination {...tankerPaged} label="tankers" className="border-t px-3" />
               </div>
+              {/* The rest of the SAME pivot-counted set — received in this
+                  window, but loaded before/after it. Not a wider historical
+                  query: card above + this card always total the pivot's own
+                  grand total, no more. */}
+              {outOfRangeTankers.length > 0 && (
+                <div className="overflow-hidden rounded-xl border bg-card">
+                  <div className="flex items-center gap-1.5 border-b bg-amber-50 px-3 py-2">
+                    <CalendarDays className="h-3.5 w-3.5 text-amber-600" />
+                    <span className="text-xs font-semibold text-amber-800">
+                      Loaded outside {formatDate(pivotStart)} – {formatDate(pivotEnd)}
+                    </span>
+                    <Badge variant="warning" className="text-[10px]">{outOfRangeTankers.length}</Badge>
+                  </div>
+                  <Table className="text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:h-9 [&_th]:px-3">
+                    {tankerTableHeader()}
+                    <TableBody>{outOfRangePaged.pageRows.map(renderTankerRow)}</TableBody>
+                  </Table>
+                  <Pagination {...outOfRangePaged} label="tankers" className="border-t px-3" />
+                </div>
+              )}
             </TabsContent>
 
             <TabsContent value="purchases">
@@ -2599,7 +2708,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     {loading ? <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
                       : filteredOrders.length === 0 ? <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">{rows.length ? 'No purchase entry matches these filters.' : 'No purchase entries yet.'}</TableCell></TableRow>
                         : orderPaged.pageRows.map((row) => <TableRow key={row.id} className="hover:bg-amber-50">
-                          <TableCell><div className="font-medium">{row.invoice_no}</div><div className="text-[11px] text-muted-foreground">{formatDate(row.order_date)}</div></TableCell>
+                          <TableCell>
+                            <div className="font-medium">{row.invoice_no}</div>
+                            <div className="text-[11px] text-muted-foreground">{formatDate(row.order_date)}</div>
+                            {row._shownForReceipt && (
+                              <div
+                                className="text-[10px] text-sky-600"
+                                title="Invoiced outside this date range, but a tanker on it was received within it"
+                              >
+                                shown for receipt date
+                              </div>
+                            )}
+                          </TableCell>
                           <TableCell>{row.supplier_name}</TableCell>
                           <TableCell className="uppercase text-muted-foreground">{row.product_category || '—'}</TableCell>
                           <TableCell className="font-medium">{row.oil_code || row.oil_name || '—'}</TableCell>
@@ -3451,19 +3571,154 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       </Dialog>
 
       <Dialog open={!!detailRow} onOpenChange={(open) => !open && setDetailRow(null)}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Purchase {detailRow?.invoice_no}</DialogTitle></DialogHeader>
-          {detailRow && <div className="grid gap-2">
-            <MoneyRow label="Supplier" value={detailRow.supplier_name || '—'} />
-            <MoneyRow label="Purchase date" value={formatDate(detailRow.order_date)} />
-            <MoneyRow label="Tankers" value={detailRow.tanker_nos || '—'} />
-            <MoneyRow label="Total quantity" value={`${formatNum(detailRow.ordered_qty)} ${detailRow.uom}`} />
-            <MoneyRow label="Net amount" value={formatINR(detailRow.net_amount)} strong />
+        {/* min-w-0 down this whole chain, not just max-w-2xl on the dialog
+            itself — a plain grid/flex item defaults to min-width:auto (its
+            content's own preferred width), so the wide nowrap tanker table
+            deep inside was pushing every ancestor open past the dialog's
+            edge instead of triggering its own overflow-x-auto scrollbar. */}
+        <DialogContent className="max-h-[85vh] max-w-2xl min-w-0 overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex flex-wrap items-center gap-2">
+              <span>Purchase {detailRow?.invoice_no}</span>
+              {detailRow && (
+                <Badge variant={detailRow.status === 'received' ? 'success' : 'warning'} className="text-[10px]">
+                  {detailRow.status === 'received' ? 'Completed' : 'In process'}
+                </Badge>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          {detailRow && <div className="grid min-w-0 gap-3">
+            <div className="grid grid-cols-2 gap-2">
+              <InfoTile icon={Building2} label="Supplier" value={detailRow.supplier_name || '—'} />
+              <InfoTile icon={CalendarDays} label="Purchase date" value={formatDate(detailRow.order_date)} />
+              <InfoTile icon={Truck} label="Tankers" value={detailRow.tanker_nos || '—'} />
+              <InfoTile icon={Boxes} label="Total quantity" value={`${formatNum(detailRow.ordered_qty)} ${detailRow.uom}`} />
+            </div>
+            <div className="flex items-center justify-between rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-500 px-4 py-3 text-white shadow-sm">
+              <span className="flex items-center gap-1.5 text-sm font-medium text-indigo-50">
+                <IndianRupee className="h-4 w-4" /> Net amount
+              </span>
+              <span className="text-lg font-bold tabular-nums">{formatINR(detailRow.net_amount)}</span>
+            </div>
             {detailRow.remarks && (
-              <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
-                <span className="font-semibold">Remarks:</span> {detailRow.remarks}
+              <p className="rounded-lg bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
+                <span className="font-semibold text-foreground">Remarks:</span> {detailRow.remarks}
               </p>
             )}
+            {(() => {
+              // Same "deductible" rule shown on the Pur BG tanker breakdown —
+              // an EX bargain puts shortage beyond the allowed tolerance on
+              // the supplier, so it's surfaced here too rather than only
+              // being visible by going back to the bargain screen.
+              const list = tankers.filter((t) => Number(t.order_id) === Number(detailRow.id))
+              if (!list.length) return null
+              const isEx = detailRow.bargain_type === 'EX'
+              const rows = list.map((t) => {
+                const loaded = Number(t.loaded_qty) || 0
+                const rec = t.status === 'empty' && t.received_qty != null ? Number(t.received_qty) : null
+                const shortage = rec != null ? Math.max(0, loaded - rec) : null
+                const pct = Number(t.order_allowed_shortage_pct ?? detailRow.allowed_shortage_pct ?? t.allowed_shortage_pct ?? 0)
+                const allowedAmt = loaded > 0 ? (loaded * pct) / 100 : 0
+                const deductible = isEx && shortage != null && shortage > allowedAmt ? shortage - allowedAmt : null
+                return { t, loaded, rec, shortage, allowedAmt, deductible }
+              })
+              const anyPending = rows.some((r) => r.t.status !== 'empty')
+              const tot = rows.reduce(
+                (s, r) => ({
+                  loaded: s.loaded + r.loaded,
+                  rec: s.rec + (r.rec ?? 0),
+                  shortage: s.shortage + (r.shortage ?? 0),
+                  allowed: s.allowed + r.allowedAmt
+                }),
+                { loaded: 0, rec: 0, shortage: 0, allowed: 0 }
+              )
+              const totDeductible = isEx && tot.shortage > tot.allowed ? tot.shortage - tot.allowed : null
+              return (
+                <div className="min-w-0">
+                  <div className="min-w-0 overflow-hidden rounded-xl border">
+                    <div className="flex items-center gap-1.5 border-b bg-slate-50 px-3 py-1.5">
+                      <Truck className="h-3.5 w-3.5 text-slate-500" />
+                      <span className="text-xs font-semibold text-slate-700">Tanker-wise shortage</span>
+                    </div>
+                    <div className="min-w-0 overflow-x-auto">
+                      <table className="w-full whitespace-nowrap text-xs [&_td]:px-2.5 [&_td]:py-1.5 [&_th]:px-2.5 [&_th]:py-1.5">
+                        <thead>
+                          <tr className="border-b bg-muted/40 text-left text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            <th>Tanker</th>
+                            <th>Loaded date</th>
+                            <th>Received date</th>
+                            <th className="text-right">Loaded</th>
+                            <th className="text-right">Received</th>
+                            <th className="text-right">Shortage</th>
+                            <th className="text-right">Allowed MT</th>
+                            {isEx && <th className="text-right">Deductible</th>}
+                            {anyPending && <th>Stage</th>}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((r) => (
+                            <tr
+                              key={r.t.id as number}
+                              className={cn('border-b last:border-0', r.deductible != null ? 'bg-red-50/70' : 'hover:bg-muted/20')}
+                            >
+                              <td className="font-medium">
+                                {r.t.tanker_no}
+                                {r.t.transporter_name && (
+                                  <div className="text-[10px] font-normal text-muted-foreground">{r.t.transporter_name}</div>
+                                )}
+                                {r.t.gate_entry_no && (
+                                  <div className="text-[10px] font-normal text-muted-foreground">Gate {r.t.gate_entry_no}</div>
+                                )}
+                              </td>
+                              <td className="text-muted-foreground">{r.t.loaded_date ? formatDate(r.t.loaded_date) : '—'}</td>
+                              <td className="text-muted-foreground">{r.t.empty_date ? formatDate(r.t.empty_date) : '—'}</td>
+                              <td className="text-right tabular-nums">{formatNum(r.loaded)}</td>
+                              <td className="text-right tabular-nums">{r.rec != null ? formatNum(r.rec) : '—'}</td>
+                              <td className="text-right tabular-nums">{r.shortage != null ? formatNum(r.shortage) : '—'}</td>
+                              <td className="text-right tabular-nums">{formatNum(r.allowedAmt)}</td>
+                              {isEx && (
+                                <td className="text-right font-semibold tabular-nums text-red-600">
+                                  {r.deductible != null ? formatNum(r.deductible) : ''}
+                                </td>
+                              )}
+                              {anyPending && (
+                                <td><StatusBadge status={String(r.t.status || '')} /></td>
+                              )}
+                            </tr>
+                          ))}
+                        </tbody>
+                        {rows.length > 1 && (
+                          <tfoot>
+                            <tr className="border-t-2 border-amber-400 bg-amber-50 font-semibold text-amber-900">
+                              <td colSpan={3}>Total</td>
+                              <td className="text-right tabular-nums">{formatNum(tot.loaded)}</td>
+                              <td className="text-right tabular-nums">{formatNum(tot.rec)}</td>
+                              <td className="text-right tabular-nums">{formatNum(tot.shortage)}</td>
+                              <td className="text-right tabular-nums">{formatNum(tot.allowed)}</td>
+                              {isEx && (
+                                <td className="text-right tabular-nums text-red-600">
+                                  {totDeductible != null ? formatNum(totDeductible) : ''}
+                                </td>
+                              )}
+                              {anyPending && <td />}
+                            </tr>
+                          </tfoot>
+                        )}
+                      </table>
+                    </div>
+                  </div>
+                  {isEx && totDeductible != null && (
+                    <div className="mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700">
+                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      <div>
+                        <span className="font-semibold">{formatNum(totDeductible)} {detailRow.uom || 'MT'} deductible</span> — shortage
+                        beyond the allowed tolerance; deduct from what&apos;s owed to the supplier.
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
           </div>}
         </DialogContent>
       </Dialog>

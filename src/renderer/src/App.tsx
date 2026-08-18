@@ -25,6 +25,7 @@ import { Suppliers } from './pages/Suppliers'
 import { Transporters } from './pages/Transporters'
 import { Customers } from './pages/Customers'
 import { Ports } from './pages/Ports'
+import { Banks } from './pages/Banks'
 import { Brokers } from './pages/Brokers'
 import { Packaging } from './pages/Packaging'
 import { Approvals } from './pages/Approvals'
@@ -346,6 +347,7 @@ function App(): React.JSX.Element {
         {view === 'transporters' && <Transporters />}
         {view === 'customers' && <Customers />}
         {view === 'ports' && <Ports />}
+        {view === 'banks' && <Banks />}
         {view === 'brokers' && <Brokers />}
         {view === 'packaging' && <Packaging />}
         {view === 'approvals' && <Approvals />}

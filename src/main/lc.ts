@@ -1,9 +1,10 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
-import { postLcOpening, settleLcBillsCombined, postLcMarginRelease, postLcPrematureInterestRebate, saveLcRepayment, refreshLcUpfrontInterest } from './treasury'
+import { postLcOpening, settleLcBillsCombined, postLcMarginRelease, postLcPrematureInterestRebate, saveLcRepayment, refreshLcUpfrontInterest, syncLcFeeAdjustment, lcFeeDelta } from './treasury'
 import { facilityHeadroom } from './facilities'
 import { linkTradingDealsToLc } from './trading'
+import { getSetting } from './repos'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -46,6 +47,8 @@ export async function listLCs(): Promise<Row[]> {
     sql: `
     SELECT l.*,
       s.name AS supplier_name,
+      l.bank AS bank_name,
+      ob.name AS our_bank_name,
       f.name AS facility_name,
       rp.name AS receivable_party_name,
       (SELECT GROUP_CONCAT(lo.order_id) FROM lc_linked_orders lo WHERE lo.lc_id = l.id) AS linked_order_ids_csv,
@@ -56,11 +59,14 @@ export async function listLCs(): Promise<Row[]> {
       (SELECT COUNT(*) FROM lc_linked_orders lo WHERE lo.lc_id = l.id) AS linked_invoice_count,
       (SELECT GROUP_CONCAT(td.id) FROM trading_deals td WHERE td.lc_id = l.id) AS linked_deal_ids_csv,
       COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS utilized,
+      COALESCE((SELECT SUM(CASE WHEN status = 'settled' THEN amount ELSE 0 END) FROM lc_issuances WHERE lc_id = l.id), 0) AS settled_total,
+      COALESCE((SELECT COUNT(CASE WHEN order_id IS NOT NULL THEN 1 END) FROM lc_issuances WHERE lc_id = l.id), 0) AS linked_bill_count,
       l.amount - COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS available,
       COALESCE((SELECT SUM(amount) FROM lc_repayments WHERE lc_id = l.id AND posted = 1), 0) AS repaid,
       (SELECT MIN(due_date) FROM lc_issuances WHERE lc_id = l.id AND COALESCE(status, 'outstanding') != 'settled') AS next_due_date
     FROM letters_of_credit l
     LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+    LEFT JOIN banks ob ON ob.id = l.our_bank_id
     LEFT JOIN bank_facilities f ON f.id = l.facility_id
     LEFT JOIN customers rp ON rp.id = l.receivable_party_id
     WHERE l.company_id = ?
@@ -97,7 +103,12 @@ export async function listLCs(): Promise<Row[]> {
       lc_net_available: Math.round((n(l.amount) - chargedInterest - charges) * 100) / 100,
       // What's actually left to issue bills against — interest and charges
       // come out of the open amount before issued bills reduce it further.
-      available: netAvailable(l, n(l.utilized)),
+      // The shortfall an over-drawn LC used to show as a negative balance is
+      // now credited back to the party instead (syncLcFeeAdjustment), so the
+      // LC itself is square — reporting it as still negative would double-count
+      // a correction that has already been posted.
+      fee_adjustment: lcFeeDelta(l, n(l.settled_total), n(l.linked_bill_count)),
+      available: round2(netAvailable(l, n(l.utilized)) - lcFeeDelta(l, n(l.settled_total), n(l.linked_bill_count))),
       // What's still owed against the LC's full sanctioned limit, net of
       // repayments — explicitly requested this way even for an LC that's
       // barely drawn down, so it reads as the limit's outstanding exposure.
@@ -112,17 +123,51 @@ export async function listLCs(): Promise<Row[]> {
 // when switched on — tracked against every LC's own open amount by stage.
 // A preclosed LC has been wound up early, so it no longer holds any of the
 // limit; only what's genuinely still open counts against it.
-export async function getLcLimit(): Promise<Row> {
+// The LC book's limit, per bank. Each bank sanctions its own line, so a bank
+// id scopes both the limit and the utilisation to that bank. Passing none rolls
+// every bank up into one view ("All banks") — the limits summed, the stage
+// figures summed — which is what the register shows when no bank is selected.
+//
+// Fixed always counts, Convertible only when switched on. A preclosed LC has
+// been wound up early, so it no longer holds any of the limit; only what is
+// genuinely still open counts against it.
+export async function getLcLimit(bankId?: number): Promise<Row> {
   const c = getClient()
   const cid = getActiveCompanyId()
-  const limitRes = await c.execute({ sql: 'SELECT * FROM lc_limits WHERE company_id = ?', args: [cid] })
-  const limit = limitRes.rows.length ? toPlain(limitRes)[0] : { fixed_limit: 0, convertible_limit: 0, convertible_enabled: 0 }
+  const bank = n(bankId)
+  const limitRes = bank
+    ? await c.execute({
+        sql: 'SELECT fixed_limit, convertible_limit, convertible_enabled FROM bank_lc_limits WHERE company_id = ? AND bank_id = ?',
+        args: [cid, bank]
+      })
+    : await c.execute({
+        sql: `SELECT COALESCE(SUM(fixed_limit), 0) AS fixed_limit,
+                     COALESCE(SUM(convertible_limit), 0) AS convertible_limit,
+                     MAX(convertible_enabled) AS convertible_enabled
+              FROM bank_lc_limits WHERE company_id = ?`,
+        args: [cid]
+      })
+  let limit = limitRes.rows.length
+    ? toPlain(limitRes)[0]
+    : { fixed_limit: 0, convertible_limit: 0, convertible_enabled: 0 }
+  // Until a limit has been sanctioned against one of our own accounts, fall
+  // back to the single company-wide figure the books were kept on before
+  // limits became per-bank. Without this the dashboard would read zero — and
+  // every LC as over limit — purely because the new figure isn't entered yet.
+  if (!bank && n(limit.fixed_limit) === 0 && n(limit.convertible_limit) === 0) {
+    const legacy = await c.execute({
+      sql: 'SELECT fixed_limit, convertible_limit, convertible_enabled FROM lc_limits WHERE company_id = ?',
+      args: [cid]
+    })
+    if (legacy.rows.length) limit = toPlain(legacy)[0]
+  }
 
   const sumsRes = await c.execute({
     sql: `SELECT stage, COALESCE(SUM(amount), 0) AS total FROM letters_of_credit
           WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
+            ${bank ? 'AND our_bank_id = ?' : ''}
           GROUP BY stage`,
-    args: [cid]
+    args: bank ? [cid, bank] : [cid]
   })
   const byStage: Record<string, number> = { application: 0, open: 0, payment_received: 0 }
   for (const r of toPlain(sumsRes)) {
@@ -133,6 +178,7 @@ export async function getLcLimit(): Promise<Row> {
   const totalLimit = round2(n(limit.fixed_limit) + (limit.convertible_enabled ? n(limit.convertible_limit) : 0))
   const utilized = round2(byStage.application + byStage.open + byStage.payment_received)
   return {
+    bank_id: bank || null,
     fixed_limit: n(limit.fixed_limit),
     convertible_limit: n(limit.convertible_limit),
     convertible_enabled: !!n(limit.convertible_enabled),
@@ -145,19 +191,47 @@ export async function getLcLimit(): Promise<Row> {
   }
 }
 
+// Per-bank limits, one row per bank the company has a line with — for the
+// bank-wise breakdown beside the register.
+export async function listBankLcLimits(): Promise<Row[]> {
+  const cid = getActiveCompanyId()
+  const res = await getClient().execute({
+    sql: `SELECT b.id AS bank_id, b.name AS bank, b.active,
+                 COALESCE(l.fixed_limit, 0) AS fixed_limit,
+                 COALESCE(l.convertible_limit, 0) AS convertible_limit,
+                 COALESCE(l.convertible_enabled, 0) AS convertible_enabled,
+                 (SELECT COUNT(*) FROM letters_of_credit x WHERE x.company_id = ? AND x.our_bank_id = b.id) AS lc_count,
+                 COALESCE((SELECT SUM(x.amount) FROM letters_of_credit x
+                           WHERE x.company_id = ? AND x.our_bank_id = b.id
+                             AND COALESCE(x.facility_type, 'lc') = 'lc' AND x.preclosed_date IS NULL), 0) AS utilized
+          FROM banks b
+          LEFT JOIN bank_lc_limits l ON l.bank_id = b.id AND l.company_id = ?
+          ORDER BY b.name`,
+    args: [cid, cid, cid]
+  })
+  return toPlain(res).map((r) => {
+    const total = round2(n(r.fixed_limit) + (n(r.convertible_enabled) ? n(r.convertible_limit) : 0))
+    return { ...r, convertible_enabled: !!n(r.convertible_enabled), total_limit: total, available: round2(total - n(r.utilized)) }
+  })
+}
+
+// A limit belongs to one bank, so which bank has to be named — there is no
+// company-wide figure to fall back on once several banks are in play.
 export async function saveLcLimit(v: Row): Promise<{ id: number }> {
   const cid = getActiveCompanyId()
+  const bankId = n(v.bank_id)
+  if (!bankId) throw new Error('Pick which bank this limit is sanctioned by')
   await getClient().execute({
-    sql: `INSERT INTO lc_limits (company_id, fixed_limit, convertible_limit, convertible_enabled, updated_at)
-          VALUES (?, ?, ?, ?, datetime('now'))
-          ON CONFLICT(company_id) DO UPDATE SET
+    sql: `INSERT INTO bank_lc_limits (company_id, bank_id, fixed_limit, convertible_limit, convertible_enabled, updated_at)
+          VALUES (?, ?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(company_id, bank_id) DO UPDATE SET
             fixed_limit = excluded.fixed_limit,
             convertible_limit = excluded.convertible_limit,
             convertible_enabled = excluded.convertible_enabled,
             updated_at = excluded.updated_at`,
-    args: [cid, n(v.fixed_limit), n(v.convertible_limit), v.convertible_enabled ? 1 : 0]
+    args: [cid, bankId, n(v.fixed_limit), n(v.convertible_limit), v.convertible_enabled ? 1 : 0]
   })
-  return { id: cid }
+  return { id: bankId }
 }
 
 // A purchase invoice belongs to at most one LC at a time — the real
@@ -225,10 +299,14 @@ async function syncPaymentReceivedIssuance(lcId: number, v: Row): Promise<void> 
         remaining -= issueAmount
       }
     } else if (netAvailable(v, 0) > 0) {
+      // No real invoice to name it after (relaxed rule or back-entry) — leave
+      // bill_no unset rather than filling it with the LC's own number, so
+      // settlement below falls through to a true ON ACCOUNT allocation
+      // instead of a synthetic "reference" that isn't really an invoice.
       await c.execute({
         sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, bill_no, due_date, status)
               VALUES (?, ?, ?, ?, ?, 'outstanding')`,
-        args: [lcId, issueDate, netAvailable(v, 0), String(v.lc_no || ''), dueDate]
+        args: [lcId, issueDate, netAvailable(v, 0), null, dueDate]
       })
     }
   }
@@ -258,6 +336,7 @@ export async function listLCIssuances(lcId: number): Promise<Row[]> {
 }
 
 const LC_COLS = [
+  'our_bank_id',
   'usance_days',
   'margin_pct',
   'lc_no',
@@ -299,6 +378,7 @@ function lcArgs(v: Row): (string | number | null)[] {
       return null
     }
     if (
+      k === 'our_bank_id' ||
       k === 'party_id' ||
       k === 'amount' ||
       k === 'interest_pct' ||
@@ -351,34 +431,6 @@ async function assertWithinInvoiceCover(v: Row): Promise<void> {
   }
 }
 
-// Interest and charges come out of the open amount BEFORE any bill draws on
-// it, so raising either — or cutting the open amount — can retroactively push
-// an LC past what it can actually cover, leaving a negative available balance
-// against bills the bank has already issued. issueLC() enforces this when a
-// bill is created; without the same check on the LC's own fields an edit could
-// walk it negative afterwards, which is how LC-2 ended up at -847.37.
-async function assertCoversIssuedBills(v: Row, lcId: number): Promise<void> {
-  if (!lcId) return
-  const res = await getClient().execute({
-    sql: 'SELECT COALESCE(SUM(amount), 0) AS issued FROM lc_issuances WHERE lc_id = ?',
-    args: [lcId]
-  })
-  const issued = n(res.rows[0]?.issued)
-  if (issued <= 0) return
-  const available = netAvailable(v, issued)
-  if (available < -0.005) {
-    const upfront = !!v.interest_upfront
-    const interest = upfront ? 0 : round2((n(v.amount) * n(v.interest_pct) * n(v.usance_days)) / (100 * 365))
-    const charges = upfront ? 0 : round2(n(v.charges))
-    const needed = round2(n(v.amount) - available)
-    throw new Error(
-      `This would leave the LC ${Math.abs(available).toFixed(2)} short. ` +
-        `Interest ${interest.toFixed(2)} + charges ${charges.toFixed(2)} + the ${issued.toFixed(2)} of bills already ` +
-        `issued come to more than the ${n(v.amount).toFixed(2)} open amount. ` +
-        `Raise the open amount to at least ${needed.toFixed(2)}, or lower the interest % / charges.`
-    )
-  }
-}
 
 // The LC number itself isn't known until the bank actually opens the LC —
 // at Application it's just a request, so only Open onward requires it.
@@ -399,6 +451,11 @@ async function assertHasLinkedInvoice(v: Row): Promise<void> {
     ? v.linked_order_ids.map((x: unknown) => n(x)).filter((x: number) => x > 0)
     : []
   if (ids.length) return
+  // Admin-only override (Settings → General): when off, every LC is treated
+  // like the back-entry case below regardless of date — there just isn't
+  // always a real invoice to point at, and the business still needs to open
+  // the LC and record payment against it as an on-account receipt.
+  if ((await getSetting('lc_require_linked_invoice')) === '0') return
   // Back-entered history is exempt. The books only start partway through, so
   // an LC opened before that has no invoice on file to point at — the goods it
   // financed were invoiced long before anything was keyed in. Demanding a link
@@ -453,6 +510,11 @@ async function syncLcVouchers(id: number): Promise<string | undefined> {
   } catch (e) {
     problems.push(`the upfront interest voucher (${(e as Error).message})`)
   }
+  try {
+    await syncLcFeeAdjustment(id)
+  } catch (e) {
+    problems.push(`the party's fee adjustment (${(e as Error).message})`)
+  }
   if (!problems.length) return undefined
   return `The LC saved, but ${problems.join(' and ')} could not be re-posted — the books are out of step until that is fixed.`
 }
@@ -489,7 +551,6 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number; warnin
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v, id)
   await assertWithinInvoiceCover(v)
-  await assertCoversIssuedBills(v, id)
   await getClient().execute({
     sql: `UPDATE letters_of_credit SET ${LC_COLS.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`,
     args: [...lcArgs(v), id]

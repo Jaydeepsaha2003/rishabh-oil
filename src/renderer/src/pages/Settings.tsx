@@ -486,15 +486,19 @@ const companyColumns: ColumnDef[] = [
   { key: 'created_at', label: 'Created', type: 'date' }
 ]
 
-function GeneralSettings(): React.JSX.Element {
+function GeneralSettings({ isAdmin }: { isAdmin: boolean }): React.JSX.Element {
   const [shortage, setShortage] = useState('')
   const [uom, setUom] = useState('')
+  // Default true (required) — an LC needs a real invoice to draw against
+  // unless an admin explicitly relaxes it here.
+  const [lcRequireInvoice, setLcRequireInvoice] = useState(true)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     window.api.settings.all().then((s) => {
       setShortage(s.allowed_shortage_pct ?? '0.2')
       setUom(s.default_uom ?? 'ton')
+      setLcRequireInvoice(s.lc_require_linked_invoice !== '0')
     })
   }, [])
 
@@ -503,6 +507,7 @@ function GeneralSettings(): React.JSX.Element {
     try {
       await window.api.settings.set('allowed_shortage_pct', shortage)
       await window.api.settings.set('default_uom', uom)
+      if (isAdmin) await window.api.settings.set('lc_require_linked_invoice', lcRequireInvoice ? '1' : '0')
       toast.success('Settings saved')
     } catch (e) {
       toast.error((e as Error).message)
@@ -512,32 +517,51 @@ function GeneralSettings(): React.JSX.Element {
   }
 
   return (
-    <Card className="max-w-md p-6">
-      <h3 className="mb-4 text-base font-medium">General</h3>
-      <div className="grid gap-4">
-        <div className="flex flex-col gap-1.5">
-          <Label>Allowed shortage % (edible oil tankers)</Label>
-          <Input
-            type="number"
-            value={shortage}
-            onChange={(e) => setShortage(e.target.value)}
-            placeholder="0.2"
-          />
-          <p className="text-xs text-muted-foreground">
-            Shortage beyond this tolerance is charged to the transporter at the bargain rate.
-          </p>
+    <div className="grid max-w-md gap-6">
+      <Card className="p-6">
+        <h3 className="mb-4 text-base font-medium">General</h3>
+        <div className="grid gap-4">
+          <div className="flex flex-col gap-1.5">
+            <Label>Allowed shortage % (edible oil tankers)</Label>
+            <Input
+              type="number"
+              value={shortage}
+              onChange={(e) => setShortage(e.target.value)}
+              placeholder="0.2"
+            />
+            <p className="text-xs text-muted-foreground">
+              Shortage beyond this tolerance is charged to the transporter at the bargain rate.
+            </p>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Default unit of measure</Label>
+            <Input value={uom} onChange={(e) => setUom(e.target.value)} placeholder="ton" />
+          </div>
         </div>
-        <div className="flex flex-col gap-1.5">
-          <Label>Default unit of measure</Label>
-          <Input value={uom} onChange={(e) => setUom(e.target.value)} placeholder="ton" />
-        </div>
-        <div>
-          <Button onClick={save} disabled={saving}>
-            {saving ? 'Saving…' : 'Save'}
-          </Button>
-        </div>
+      </Card>
+      {isAdmin && (
+        <Card className="p-6">
+          <h3 className="mb-1 text-base font-medium">Letters of Credit</h3>
+          <p className="mb-4 text-xs text-muted-foreground">Admin only — changes the rule for every LC going forward.</p>
+          <div className="flex items-start justify-between gap-4 rounded-lg border bg-muted/30 p-3">
+            <div>
+              <Label>Require a linked purchase invoice</Label>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {lcRequireInvoice
+                  ? 'ON — an LC must name the invoice(s) it covers before it can leave Application, same as today.'
+                  : 'OFF — an LC can be opened and taken to Payment received with no invoice linked. It settles as an ON ACCOUNT receipt against the supplier instead of a specific bill.'}
+              </p>
+            </div>
+            <Switch checked={lcRequireInvoice} onCheckedChange={setLcRequireInvoice} />
+          </div>
+        </Card>
+      )}
+      <div>
+        <Button onClick={save} disabled={saving}>
+          {saving ? 'Saving…' : 'Save'}
+        </Button>
       </div>
-    </Card>
+    </div>
   )
 }
 
@@ -867,7 +891,7 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
             />
           </TabsContent>
           <TabsContent value="general" className="mt-6">
-            <GeneralSettings />
+            <GeneralSettings isAdmin={isAdmin} />
           </TabsContent>
           <TabsContent value="update" className="mt-6">
             <UpdatePanel />

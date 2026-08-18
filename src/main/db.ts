@@ -949,8 +949,58 @@ const MIGRATIONS = [
   // and its SHEA-based one) — recording which one a run actually used, so the
   // consumption behind a past production entry can always be traced back to
   // the exact recipe, even after a newer one is added for the same product.
-  'ALTER TABLE production ADD COLUMN formulation_id INTEGER REFERENCES formulations(id)'
+  'ALTER TABLE production ADD COLUMN formulation_id INTEGER REFERENCES formulations(id)',
+  // The bank's interest and charges come out of an LC's open amount BEFORE the
+  // beneficiary is paid, so a bill issued for the gross overpays the party on
+  // paper. When interest/charges are later revised the shortfall moves with
+  // them, so it is corrected by its own re-postable voucher (Dr Bank / Cr the
+  // party, allocated On Account) rather than by rewriting the original
+  // settlement — the payment that actually happened stays on the record and
+  // the correction sits beside it.
+  'ALTER TABLE letters_of_credit ADD COLUMN fee_adjust_journal_entry_id INTEGER',
+  // OUR OWN bank accounts — the ones money actually moves out of for LC
+  // repayments and other transactions. Deliberately NOT the same thing as an
+  // LC's discounting bank (letters_of_credit.bank), which is the institution
+  // that FINANCES the LC and is somebody else's bank, not ours.
+  // Shared across companies, because an account is the same account whichever
+  // set of books is looking at it — what differs per company is the LC limit
+  // sanctioned against it, which lives in bank_lc_limits below.
+  `CREATE TABLE IF NOT EXISTS banks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    branch TEXT,
+    account_no TEXT,
+    ifsc TEXT,
+    note TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_banks_name ON banks(name)',
+  // Superseded by our_bank_id below: this briefly held the DISCOUNTING bank,
+  // which does not belong in our own-accounts master. Left in place unused
+  // rather than dropped, since dropping a referenced column is not worth the
+  // risk for a column nothing now reads.
+  'ALTER TABLE letters_of_credit ADD COLUMN bank_id INTEGER REFERENCES banks(id)',
+  // Which of OUR accounts this LC's money moves through — the one a repayment
+  // goes out of. The financing side stays on `bank` (the discounting bank).
+  'ALTER TABLE letters_of_credit ADD COLUMN our_bank_id INTEGER REFERENCES banks(id)',
+  'CREATE INDEX IF NOT EXISTS idx_lc_our_bank ON letters_of_credit(our_bank_id)',
+  // Each bank sanctions its own LC limit, per company — the single company-wide
+  // figure lc_limits held can't express "how much of THIS bank's line is used"
+  // once there is more than one bank. lc_limits is left in place untouched; the
+  // rows it held are copied across by backfillBankMaster() below.
+  `CREATE TABLE IF NOT EXISTS bank_lc_limits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    bank_id INTEGER NOT NULL REFERENCES banks(id),
+    fixed_limit REAL NOT NULL DEFAULT 0,
+    convertible_limit REAL NOT NULL DEFAULT 0,
+    convertible_enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_lc_limits ON bank_lc_limits(company_id, bank_id)'
 ]
+
 
 // One-time cleanup: trailing bargain serials were 4-digit (…/0017); reformat to
 // the 2-digit scheme (…/17), keeping the same number. Idempotent — already

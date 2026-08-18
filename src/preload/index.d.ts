@@ -248,7 +248,8 @@ export interface Api {
         release_margin?: boolean
       }
     ) => Promise<{ id: number }>
-    getLimit: () => Promise<Row>
+    getLimit: (bankId?: number) => Promise<Row>
+    bankLimits: () => Promise<Row[]>
     saveLimit: (values: Row) => Promise<{ id: number }>
   }
   files: {

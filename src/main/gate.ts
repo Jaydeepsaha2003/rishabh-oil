@@ -291,11 +291,46 @@ export async function saveGateWeights(
   // stopped awaiting anything.
   const nowOut = both && n(row.awaiting_gross_out) === 1 && !!group
   const direction = nowOut ? 'out' : String(row.direction || 'in')
+  // A purchase tanker is weighed Gross when it arrives loaded, then Tare once
+  // it has tipped and is ready to leave — so the day that second weight closes
+  // the weighment IS the day the vehicle goes out. Stamp it so the register can
+  // show the visit from both ends (IN on arrival, OUT on the tare) without
+  // turning the entry outbound: the goods genuinely came in.
+  //
+  // Stamped the day the TARE itself is entered — not when the pair happens to
+  // complete — because the tare is the weighing that says the vehicle is empty
+  // and leaving. Whichever order the weighbridge enters the two figures, the
+  // out date is the day the tare was taken.
+  //
+  // Deliberately narrow: only an inbound entry, only when the tare is being
+  // recorded for the FIRST time (correcting it later must not move the date the
+  // vehicle actually left), never over a date already set, and never for the
+  // Tare-first sale flow above — that one gets its out date when its Gross is
+  // taken at Gate Out instead.
+  const tareJustTaken = t != null && row.tare_weight == null
+  const inboundClosed =
+    !nowOut &&
+    tareJustTaken &&
+    String(row.direction || 'in') === 'in' &&
+    n(row.awaiting_gross_out) !== 1 &&
+    !row.out_date
+  // A dispatch entry created straight as OUT (a loaded vehicle weighed at the
+  // gate, not one that came in empty and got flagged for a later sale) never
+  // passes through either case above, so it completed with no out_date at
+  // all — the bug behind GO/0113, GO/0114 etc. showing a blank OUT column.
+  // Same rule as inboundClosed, mirrored for the direction it was already in.
+  const directOutClosing =
+    !nowOut &&
+    both &&
+    String(row.direction || 'in') === 'out' &&
+    n(row.awaiting_gross_out) !== 1 &&
+    !row.out_date
   // entry_date stays as the day it arrived; the departure gets its own date so
   // the register can show the visit from both ends.
-  const leftOn = nowOut
-    ? String(outDate || '').slice(0, 10) || new Date().toISOString().slice(0, 10)
-    : (row.out_date as string | null)
+  const leftOn =
+    nowOut || inboundClosed || directOutClosing
+      ? String(outDate || '').slice(0, 10) || new Date().toISOString().slice(0, 10)
+      : (row.out_date as string | null)
   await c.execute({
     sql: `UPDATE gate_entries
           SET gross_weight = ?, tare_weight = ?, received_qty = ?, status = ?, awaiting_gross_out = ?,

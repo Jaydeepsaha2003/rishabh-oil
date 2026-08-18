@@ -58,6 +58,7 @@ export type Page =
   | 'transporters'
   | 'customers'
   | 'ports'
+  | 'banks'
   | 'brokers'
   | 'packaging'
   | 'approvals'
@@ -82,6 +83,7 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   transporters: { label: 'Transporters', icon: Truck },
   customers: { label: 'Customers', icon: Contact },
   ports: { label: 'Ports', icon: Anchor },
+  banks: { label: 'Manage Banks', icon: Landmark },
   brokers: { label: 'Brokers', icon: Briefcase },
   packaging: { label: 'Packed SKU', icon: Package },
   trading: { label: 'Trading', icon: Repeat },
@@ -96,7 +98,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Sales', ids: ['salesBargains', 'sales'] },
   { label: 'Trading', ids: ['trading'] },
   { label: 'Accounts', ids: ['accounts', 'treasury', 'bankRecon'] },
-  { label: 'Masters', ids: ['categories', 'suppliers', 'transporters', 'customers', 'ports', 'brokers', 'packaging'] },
+  { label: 'Masters', ids: ['categories', 'suppliers', 'transporters', 'customers', 'ports', 'banks', 'brokers', 'packaging'] },
   { label: 'System', ids: ['approvals', 'settings'] }
 ]
 

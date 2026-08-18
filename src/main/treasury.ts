@@ -76,6 +76,19 @@ async function allocAgainst(entryId: number, partyName: string, ref: string | nu
   })
 }
 
+// Which ledger account an LC's bank movements post to. Each of our own
+// accounts keeps its own line in the books, so money leaving one bank is
+// visible separately from another rather than lumped into one figure. An LC
+// with no bank of ours named yet falls back to the single generic account the
+// books used before, so nothing is stranded.
+async function bankAccountFor(lc: Row): Promise<string> {
+  const id = n(lc.our_bank_id)
+  if (!id) return 'BANK A/C'
+  const r = await getClient().execute({ sql: 'SELECT name FROM banks WHERE id = ?', args: [id] })
+  const name = String(r.rows[0]?.name || '').trim()
+  return name ? `${name.toUpperCase()} A/C` : 'BANK A/C'
+}
+
 // ---------------------------------------------------------------------------
 // Letter of Credit: open charges, usance due dates, maturity settlement.
 // ---------------------------------------------------------------------------
@@ -89,6 +102,7 @@ export async function postLcOpening(lcId: number): Promise<void> {
   const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [lcId] })
   if (!res.rows.length) return
   const lc = toPlain(res)[0]
+  const bankAcc = await bankAccountFor(lc)
   await dropEntry(n(lc.journal_entry_id) || null)
   // Margin is the security deposit the bank asks for on the LC's own open
   // amount — a straight percentage of the credit limit itself, not of
@@ -121,7 +135,7 @@ export async function postLcOpening(lcId: number): Promise<void> {
       { account: 'LC MARGIN A/C', group: 'Deposits (Asset)', dr: margin },
       { account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest },
       { account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: charges },
-      { account: 'BANK A/C', group: 'Bank Accounts', cr: round2(margin + interest + charges) }
+      { account: bankAcc, group: 'Bank Accounts', cr: round2(margin + interest + charges) }
     ]
   })
   await c.execute({ sql: 'UPDATE letters_of_credit SET journal_entry_id = ? WHERE id = ?', args: [je.id, lcId] })
@@ -138,6 +152,7 @@ export async function postLcUpfrontInterest(lcId: number, dateIn?: string): Prom
   const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [lcId] })
   if (!res.rows.length) throw new Error('LC not found')
   const lc = toPlain(res)[0]
+  const bankAcc = await bankAccountFor(lc)
   await dropEntry(n(lc.interest_journal_entry_id) || null)
   const interest = round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
   const charges = round2(n(lc.charges))
@@ -155,11 +170,101 @@ export async function postLcUpfrontInterest(lcId: number, dateIn?: string): Prom
     lines: [
       { account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest },
       { account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: charges },
-      { account: 'BANK A/C', group: 'Bank Accounts', cr: total }
+      { account: bankAcc, group: 'Bank Accounts', cr: total }
     ]
   })
   await c.execute({ sql: 'UPDATE letters_of_credit SET interest_journal_entry_id = ? WHERE id = ?', args: [je.id, lcId] })
   return { id: je.id }
+}
+
+// What the LC actually released to the beneficiary, against what its settled
+// bills say they were paid. Signed: negative means the bank retained part of the
+// bill (interest/charges), positive means it released more than the bill records.
+//
+// Only meaningful once something has actually been paid, and only for a bill
+// auto-issued for the whole limit — a bill sized to a specific purchase invoice
+// is deliberate, so a leftover there is genuine undrawn limit, not a shortfall
+// to settle. Such an LC is therefore only ever corrected DOWNWARD, never paid
+// more than its invoice called for.
+export function lcFeeDelta(lc: Row, settled: number, invoiceLinkedBills: number): number {
+  if (settled <= 0.005) return 0
+  const upfront = !!lc.interest_upfront
+  const interest = upfront ? 0 : round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
+  const charges = upfront ? 0 : round2(n(lc.charges))
+  const released = round2(n(lc.amount) - interest - charges)
+  const delta = round2(released - settled)
+  if (Math.abs(delta) < 0.005) return 0
+  if (delta > 0 && invoiceLinkedBills > 0) return 0
+  return delta
+}
+
+// The bank deducts its interest and charges from the LC's open amount before it
+// releases anything to the beneficiary, so a bill issued for the gross records
+// the party as paid more than they actually received. This posts the difference
+// back to the party — Dr Bank / Cr the party, allocated On Account — so their
+// ledger shows what really reached them.
+//
+// Re-postable on every LC save: raise the charges and the correction grows,
+// lower them and it shrinks or disappears entirely. The original settlement
+// voucher is never touched, so the payment as it happened stays on the record
+// with the correction sitting beside it.
+export async function syncLcFeeAdjustment(lcId: number): Promise<number> {
+  const c = getClient()
+  const res = await c.execute({
+    sql: `SELECT l.*, s.name AS supplier_name
+          FROM letters_of_credit l
+          LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+          WHERE l.id = ?`,
+    args: [lcId]
+  })
+  if (!res.rows.length) return 0
+  const lc = toPlain(res)[0]
+  const bankAcc = await bankAccountFor(lc)
+  const iss = await c.execute({
+    sql: `SELECT COALESCE(SUM(CASE WHEN status = 'settled' THEN amount ELSE 0 END), 0) AS settled,
+                 COUNT(CASE WHEN order_id IS NOT NULL THEN 1 END) AS linked
+          FROM lc_issuances WHERE lc_id = ?`,
+    args: [lcId]
+  })
+  const delta = lcFeeDelta(lc, n(iss.rows[0]?.settled), n(iss.rows[0]?.linked))
+  await dropEntry(n(lc.fee_adjust_journal_entry_id) || null)
+  const party = String(lc.supplier_name || '').trim()
+  if (delta === 0 || !party) {
+    await c.execute({
+      sql: 'UPDATE letters_of_credit SET fee_adjust_journal_entry_id = NULL WHERE id = ?',
+      args: [lcId]
+    })
+    return 0
+  }
+  const size = round2(Math.abs(delta))
+  const retained = delta < 0
+  const je = await postJournal({
+    date: String(lc.payment_received_date || lc.open_date || todayISO()).slice(0, 10),
+    vchType: 'JOURNAL',
+    vchNo: String(lc.lc_no || ''),
+    narration: retained
+      ? `LC ${lc.lc_no} — ${size.toFixed(2)} of the bill was retained by ${lc.bank} as interest and charges, ` +
+        `so it never reached ${party}; their account is credited back by that much`
+      : `LC ${lc.lc_no} — ${lc.bank} released ${size.toFixed(2)} to ${party} beyond the bill as drawn, ` +
+        `so their account is debited by that much`,
+    companyId: n(lc.company_id) || undefined,
+    lines: retained
+      ? [
+          { account: bankAcc, group: 'Bank Accounts', dr: size },
+          { account: party, group: 'Sundry Creditors', cr: size }
+        ]
+      : [
+          { account: party, group: 'Sundry Creditors', dr: size },
+          { account: bankAcc, group: 'Bank Accounts', cr: size }
+        ]
+  })
+  // On Account: this corrects the party's balance as a whole, not one named bill.
+  await allocAgainst(je.id, party, null, size)
+  await c.execute({
+    sql: 'UPDATE letters_of_credit SET fee_adjust_journal_entry_id = ? WHERE id = ?',
+    args: [je.id, lcId]
+  })
+  return delta
 }
 
 // Keeps an ALREADY-POSTED upfront interest/charges voucher in step with the
@@ -201,6 +306,7 @@ export async function postLcMarginRelease(lcId: number, amount: number, dateIn?:
   const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [lcId] })
   if (!res.rows.length) throw new Error('LC not found')
   const lc = toPlain(res)[0]
+  const bankAcc = await bankAccountFor(lc)
   const value = round2(amount)
   if (value < 0.005) return null
   const je = await postJournal({
@@ -210,7 +316,7 @@ export async function postLcMarginRelease(lcId: number, amount: number, dateIn?:
     narration: `LC ${lc.lc_no} preclosed — margin of ${value.toFixed(2)} refunded by ${lc.bank}`,
     companyId: n(lc.company_id) || undefined,
     lines: [
-      { account: 'BANK A/C', group: 'Bank Accounts', dr: value },
+      { account: bankAcc, group: 'Bank Accounts', dr: value },
       { account: 'LC MARGIN A/C', group: 'Deposits (Asset)', cr: value }
     ]
   })
@@ -238,6 +344,7 @@ export async function postLcPrematureInterestRebate(
   })
   if (!res.rows.length) throw new Error('LC not found')
   const lc = toPlain(res)[0]
+  const bankAcc = await bankAccountFor(lc)
   const value = round2(amount)
   if (value < 0.005) return null
   const date = String(dateIn || todayISO()).slice(0, 10)
@@ -245,7 +352,7 @@ export async function postLcPrematureInterestRebate(
   let narration: string
   if (direction === 'credit_to_us') {
     lines = [
-      { account: 'BANK A/C', group: 'Bank Accounts', dr: value },
+      { account: bankAcc, group: 'Bank Accounts', dr: value },
       { account: 'INTEREST A/C', group: 'Indirect Expenses', cr: value }
     ]
     narration = `LC ${lc.lc_no} preclosed — interest rebate of ${value.toFixed(2)} for the days that won't happen, credited by ${lc.bank}`
@@ -254,7 +361,7 @@ export async function postLcPrematureInterestRebate(
     if (!party) throw new Error('The LC has no supplier party — set it on the LC first')
     lines = [
       { account: party, group: 'Sundry Creditors', dr: value },
-      { account: 'BANK A/C', group: 'Bank Accounts', cr: value }
+      { account: bankAcc, group: 'Bank Accounts', cr: value }
     ]
     narration = `LC ${lc.lc_no} preclosed — interest rebate of ${value.toFixed(2)} passed on to ${party}`
   }
@@ -382,6 +489,7 @@ export async function postLcPaymentIn(
   selectedKeys?: string[]
 ): Promise<{ id: number; date: string }> {
   const { lc, customerName, refs } = await outstandingSaleRefsForLc(lcId)
+  const bankAcc = await bankAccountFor(lc)
   const wanted = Array.isArray(selectedKeys) && selectedKeys.length ? new Set(selectedKeys.map(String)) : null
   const outstanding = wanted ? refs.filter((r) => wanted.has(r.key)) : refs
   if (!outstanding.length) throw new Error('Every sale invoice on this deal is already fully paid')
@@ -402,7 +510,7 @@ export async function postLcPaymentIn(
     narration: `LC ${lc.lc_no} — payment IN of ${value.toFixed(2)} received from ${customerName}`,
     companyId: n(lc.company_id) || undefined,
     lines: [
-      { account: 'BANK A/C', group: 'Bank Accounts', dr: value },
+      { account: bankAcc, group: 'Bank Accounts', dr: value },
       { account: customerName, group: 'Sundry Debtors', cr: value }
     ]
   })
@@ -443,7 +551,7 @@ export async function deleteLcPaymentIn(id: number): Promise<{ id: number }> {
 export async function settleLcBill(issuanceId: number, dateIn?: string): Promise<{ id: number }> {
   const c = getClient()
   const res = await c.execute({
-    sql: `SELECT i.*, l.lc_no, l.bank, l.party_type, l.party_id, l.company_id, s.name AS supplier_name, o.invoice_no
+    sql: `SELECT i.*, l.lc_no, l.bank, l.our_bank_id, l.party_type, l.party_id, l.company_id, s.name AS supplier_name, o.invoice_no
           FROM lc_issuances i
           JOIN letters_of_credit l ON l.id = i.lc_id
           LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
@@ -453,6 +561,7 @@ export async function settleLcBill(issuanceId: number, dateIn?: string): Promise
   })
   if (!res.rows.length) throw new Error('LC bill not found')
   const b = toPlain(res)[0]
+  const bankAcc = await bankAccountFor(b)
   if (String(b.status) === 'settled') throw new Error('This bill is already settled')
   const party = String(b.supplier_name || '').trim()
   if (!party) throw new Error('The LC has no supplier party — set it on the LC first')
@@ -462,11 +571,11 @@ export async function settleLcBill(issuanceId: number, dateIn?: string): Promise
     date,
     vchType: 'PAYMENT',
     vchNo: String(b.bill_no || b.lc_no || ''),
-    narration: `LC ${b.lc_no} bill ${b.bill_no || ''} matured — paid by ${b.bank}`,
+    narration: `LC ${b.lc_no} ${b.bill_no ? `bill ${b.bill_no}` : 'on account'} matured — paid by ${b.bank}`,
     companyId: n(b.company_id) || undefined,
     lines: [
       { account: party, group: 'Sundry Creditors', dr: amount },
-      { account: 'BANK A/C', group: 'Bank Accounts', cr: amount }
+      { account: bankAcc, group: 'Bank Accounts', cr: amount }
     ]
   })
   await allocAgainst(je.id, party, b.invoice_no ? String(b.invoice_no) : b.bill_no ? String(b.bill_no) : null, amount)
@@ -486,7 +595,7 @@ export async function settleLcBillsCombined(issuanceIds: number[], dateIn?: stri
   if (!issuanceIds.length) return null
   const c = getClient()
   const res = await c.execute({
-    sql: `SELECT i.*, l.lc_no, l.bank, l.party_type, l.party_id, l.company_id, s.name AS supplier_name, o.invoice_no
+    sql: `SELECT i.*, l.lc_no, l.bank, l.our_bank_id, l.party_type, l.party_id, l.company_id, s.name AS supplier_name, o.invoice_no
           FROM lc_issuances i
           JOIN letters_of_credit l ON l.id = i.lc_id
           LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
@@ -497,6 +606,7 @@ export async function settleLcBillsCombined(issuanceIds: number[], dateIn?: stri
   const bills = toPlain(res).filter((b) => String(b.status) !== 'settled')
   if (!bills.length) return null
   const first = bills[0]
+  const bankAcc = await bankAccountFor(first)
   const party = String(first.supplier_name || '').trim()
   if (!party) throw new Error('The LC has no supplier party — set it on the LC first')
   const date = String(dateIn || todayISO()).slice(0, 10)
@@ -507,12 +617,12 @@ export async function settleLcBillsCombined(issuanceIds: number[], dateIn?: stri
     vchNo: String(first.lc_no || ''),
     narration:
       bills.length === 1
-        ? `LC ${first.lc_no} bill ${first.bill_no || ''} matured — paid by ${first.bank}`
+        ? `LC ${first.lc_no} ${first.bill_no ? `bill ${first.bill_no}` : 'on account'} matured — paid by ${first.bank}`
         : `LC ${first.lc_no} — ${bills.length} bills matured — paid by ${first.bank}`,
     companyId: n(first.company_id) || undefined,
     lines: [
       { account: party, group: 'Sundry Creditors', dr: total },
-      { account: 'BANK A/C', group: 'Bank Accounts', cr: total }
+      { account: bankAcc, group: 'Bank Accounts', cr: total }
     ]
   })
   for (const b of bills) {
@@ -568,7 +678,7 @@ export async function listLcRepayments(lcId: number): Promise<Row[]> {
 async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   const c = getClient()
   const res = await c.execute({
-    sql: `SELECT r.*, l.lc_no, l.company_id, l.bank, l.amount AS lc_open_amount
+    sql: `SELECT r.*, l.lc_no, l.company_id, l.bank, l.our_bank_id, l.amount AS lc_open_amount
           FROM lc_repayments r
           JOIN letters_of_credit l ON l.id = r.lc_id
           WHERE r.id = ?`,
@@ -576,6 +686,7 @@ async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   })
   if (!res.rows.length) throw new Error('Repayment not found')
   const rep = toPlain(res)[0]
+  const bankAcc = await bankAccountFor(rep)
   await dropEntry(n(rep.journal_entry_id) || null)
   // rep.amount is the TOTAL the bank debited (open amount + any excess) —
   // comm_charges/bank_charges are that excess broken into expense categories,
@@ -592,7 +703,7 @@ async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   if (commCharges > 0.005) lines.push({ account: 'COMM. CHARGES A/C', group: 'Indirect Expenses', dr: commCharges })
   if (bankCharges > 0.005) lines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: bankCharges })
   const totalCharges = round2(commCharges + bankCharges)
-  lines.push({ account: 'BANK A/C', group: 'Bank Accounts', cr: round2(openAmount + totalCharges) })
+  lines.push({ account: bankAcc, group: 'Bank Accounts', cr: round2(openAmount + totalCharges) })
   const je = await postJournal({
     date,
     vchType: 'PAYMENT',

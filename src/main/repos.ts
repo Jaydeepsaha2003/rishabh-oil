@@ -5,6 +5,7 @@ import { getClient } from './db'
 // ever come from this map (never from the renderer), so the dynamic SQL below
 // is safe — all *values* are passed as bound parameters.
 const TABLES: Record<string, string[]> = {
+  banks: ['name', 'branch', 'account_no', 'ifsc', 'note', 'active'],
   categories: ['name', 'applies_to', 'note', 'active'],
   oil_types: ['code', 'name', 'active'],
   products: ['code', 'name', 'category', 'material_type', 'active'],
@@ -170,6 +171,10 @@ export async function update(table: string, id: number, values: Row): Promise<{ 
 // a bare "FOREIGN KEY constraint failed" from SQLite, which tells the person at
 // the screen nothing — so the references are counted first and named.
 const DEPENDENTS: Record<string, { table: string; column: string; label: string }[]> = {
+  banks: [
+    { table: 'letters_of_credit', column: 'our_bank_id', label: 'LC' },
+    { table: 'bank_lc_limits', column: 'bank_id', label: 'sanctioned limit' }
+  ],
   suppliers: [
     { table: 'bargains', column: 'supplier_id', label: 'purchase bargain' },
     { table: 'orders', column: 'supplier_id', label: 'purchase' },
