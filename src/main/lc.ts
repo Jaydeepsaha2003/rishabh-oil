@@ -393,16 +393,34 @@ function assertLcNoIfPastApplication(v: Row): void {
 // against, and the bill it auto-issues on Payment received ends up named
 // after the LC itself rather than a real invoice. At Application it is still
 // only a request to the bank, so the invoice isn't required yet.
-function assertHasLinkedInvoice(v: Row): void {
+async function assertHasLinkedInvoice(v: Row): Promise<void> {
   if (String(v.stage || 'application') === 'application') return
   const ids = Array.isArray(v.linked_order_ids)
     ? v.linked_order_ids.map((x: unknown) => n(x)).filter((x: number) => x > 0)
     : []
-  if (!ids.length) {
-    throw new Error(
-      'Link at least one purchase invoice before the LC leaves Application — an LC that is Open or has received payment must name the invoice(s) it covers.'
-    )
-  }
+  if (ids.length) return
+  // Back-entered history is exempt. The books only start partway through, so
+  // an LC opened before that has no invoice on file to point at — the goods it
+  // financed were invoiced long before anything was keyed in. Demanding a link
+  // there is a dead end, not a control. So the rule only bites once the
+  // supplier actually HAS an invoice dated on or before this LC's own
+  // application date: nothing to link, nothing to insist on. It needs no
+  // configured start date and stops exempting anything by itself, the moment
+  // real invoices exist to choose from.
+  const res = await getClient().execute({
+    sql: `SELECT COUNT(*) AS n FROM orders
+          WHERE supplier_id = ? AND company_id = ? AND COALESCE(is_trading, 0) = ? AND order_date <= ?`,
+    args: [
+      n(v.party_id),
+      n(v.company_id) || getActiveCompanyId(),
+      String(v.purpose || '') === 'trading' ? 1 : 0,
+      String(v.open_date || '').slice(0, 10)
+    ]
+  })
+  if (n(res.rows[0]?.n) === 0) return
+  throw new Error(
+    'Link at least one purchase invoice before the LC leaves Application — an LC that is Open or has received payment must name the invoice(s) it covers.'
+  )
 }
 
 // The bank can't have paid the beneficiary before it even opened the LC.
@@ -443,7 +461,7 @@ export async function createLC(v: Row): Promise<{ id: number; warning?: string }
   if (!v.bank) throw new Error('Bank is required')
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
-  assertHasLinkedInvoice(v)
+  await assertHasLinkedInvoice(v)
   assertPaymentReceivedNotBeforeOpen(v)
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v)
@@ -466,7 +484,7 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number; warnin
   if (!v.bank) throw new Error('Bank is required')
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
-  assertHasLinkedInvoice(v)
+  await assertHasLinkedInvoice(v)
   assertPaymentReceivedNotBeforeOpen(v)
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v, id)

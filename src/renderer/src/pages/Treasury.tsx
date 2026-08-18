@@ -275,7 +275,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     if (next === 'open' && (!stageForm.opened_date || !String(stageForm.lc_no || '').trim())) {
       return setStageError('The LC number and the date it opened are both needed')
     }
-    if (!(Array.isArray(stageRow.linked_order_ids) ? stageRow.linked_order_ids : []).length) {
+    if (needsLinkedInvoice({ ...stageRow, stage: next })) {
       return setStageError(
         'This LC has no purchase invoice linked. Close this, press Edit and tick the invoice(s) it covers before moving it past Application.'
       )
@@ -472,6 +472,25 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     return { amount, days, interest, charges, margin, netAvailable, upfront }
   }, [stageRow, stageForm.payment_received_date, stageForm.expiry_date, stageForm.margin_pct, stageForm.interest_pct, stageForm.charges, stageForm.interest_upfront])
 
+  // Mirrors the backend rule (assertHasLinkedInvoice in lc.ts): an LC past
+  // Application must name the invoice(s) it covers — UNLESS the supplier has
+  // no invoice on file dated on or before the LC's own application date, which
+  // is the case for back-entered history from before the books began. Nothing
+  // to link, nothing to insist on.
+  function needsLinkedInvoice(row: Row): boolean {
+    if (String(row.stage || 'application') === 'application') return false
+    if ((Array.isArray(row.linked_order_ids) ? row.linked_order_ids : []).length) return false
+    const wantTrading = String(row.purpose || '') === 'trading'
+    const on = String(row.open_date || '').slice(0, 10)
+    return orders.some(
+      (o) =>
+        Number(o.supplier_id) === Number(row.party_id) &&
+        Number(o.company_id) === Number(row.company_id || activeCompany) &&
+        !!o.is_trading === wantTrading &&
+        String(o.order_date || '').slice(0, 10) <= on
+    )
+  }
+
   async function saveLc(): Promise<void> {
     if (!lcForm) return
     if (!String(lcForm.open_date || '').trim()) return void toast.error('Application date is required')
@@ -484,10 +503,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     // Past Application the LC is financing real goods, so it has to name the
     // invoice(s) it covers — otherwise the bill it auto-issues has nothing
     // behind it but the LC's own number.
-    if (
-      String(lcForm.stage || 'application') !== 'application' &&
-      !(Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []).length
-    ) {
+    if (needsLinkedInvoice(lcForm)) {
       return void toast.error('Link at least one purchase invoice — an LC past Application must name the invoice(s) it covers')
     }
     {
