@@ -275,6 +275,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     if (next === 'open' && (!stageForm.opened_date || !String(stageForm.lc_no || '').trim())) {
       return setStageError('The LC number and the date it opened are both needed')
     }
+    if (!(Array.isArray(stageRow.linked_order_ids) ? stageRow.linked_order_ids : []).length) {
+      return setStageError(
+        'This LC has no purchase invoice linked. Close this, press Edit and tick the invoice(s) it covers before moving it past Application.'
+      )
+    }
     if (next === 'payment_received' && (!stageForm.payment_received_date || !stageForm.expiry_date)) {
       return setStageError('Both the payment received date and the maturity date are needed')
     }
@@ -475,6 +480,15 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     if (!lcForm.party_id) return void toast.error('Supplier is required')
     if (String(lcForm.stage || 'application') !== 'application' && !String(lcForm.lc_no || '').trim()) {
       return void toast.error('LC number is required once the LC is Open')
+    }
+    // Past Application the LC is financing real goods, so it has to name the
+    // invoice(s) it covers — otherwise the bill it auto-issues has nothing
+    // behind it but the LC's own number.
+    if (
+      String(lcForm.stage || 'application') !== 'application' &&
+      !(Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []).length
+    ) {
+      return void toast.error('Link at least one purchase invoice — an LC past Application must name the invoice(s) it covers')
     }
     {
       const linkedIds: number[] = Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []
@@ -854,7 +868,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               <tbody>
                 {kids.map((b) => (
                   <tr key={String(b.id)} className="border-b last:border-0">
-                    <td className="font-medium">{b.bill_no || b.invoice_no || '—'}</td>
+                    <td className="font-medium">
+                      {b.bill_no || b.invoice_no || '—'}
+                      {/* An LC opened without a linked purchase invoice auto-issues
+                          one bill for its whole net available, named after the LC
+                          itself — say so, or the row just looks like the LC number
+                          repeated back. */}
+                      {!b.order_id && (
+                        <div className="text-[10px] font-normal text-muted-foreground">Full limit — no purchase invoice linked</div>
+                      )}
+                    </td>
                     <td className="tabular-nums">{formatDate(b.issue_date)}</td>
                     <td><span className="mr-1.5 tabular-nums">{formatDate(b.due_date)}</span>{String(b.status) !== 'settled' && <DueBadge date={b.due_date} />}</td>
                     <td className="text-right font-medium tabular-nums">{formatINR(b.amount)}</td>
@@ -2652,6 +2675,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <div><div className="text-muted-foreground">Charges</div><div className="font-medium tabular-nums">{formatINR(dRow.charges)}</div></div>
                     <div><div className="text-muted-foreground">Int. days</div><div className="font-medium tabular-nums">{n(dRow.usance_days) > 0 ? n(dRow.usance_days) : '—'}</div></div>
                   </div>
+                  <div className="border-t border-[#e5dfc8] pt-1 [&>div]:px-0 [&>div]:sm:px-0">{lcExpanded(dRow)}</div>
                   <div className="flex flex-wrap gap-1.5 border-t border-dashed border-[#e5dfc8] pt-3">
                     {(() => {
                       const next = nextLcStage(String(dRow.stage || 'application'))
@@ -2690,7 +2714,6 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       <Trash2 className="h-3.5 w-3.5" /> Delete
                     </Button>
                   </div>
-                  <div className="border-t border-[#e5dfc8] pt-1 [&>div]:px-0 [&>div]:sm:px-0">{lcExpanded(dRow)}</div>
                 </div>
               </>
             )

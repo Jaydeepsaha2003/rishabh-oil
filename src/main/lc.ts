@@ -388,6 +388,23 @@ function assertLcNoIfPastApplication(v: Row): void {
   }
 }
 
+// An LC past Application is financing actual goods, so it has to name the
+// purchase invoice(s) it covers — without one the LC has nothing to draw
+// against, and the bill it auto-issues on Payment received ends up named
+// after the LC itself rather than a real invoice. At Application it is still
+// only a request to the bank, so the invoice isn't required yet.
+function assertHasLinkedInvoice(v: Row): void {
+  if (String(v.stage || 'application') === 'application') return
+  const ids = Array.isArray(v.linked_order_ids)
+    ? v.linked_order_ids.map((x: unknown) => n(x)).filter((x: number) => x > 0)
+    : []
+  if (!ids.length) {
+    throw new Error(
+      'Link at least one purchase invoice before the LC leaves Application — an LC that is Open or has received payment must name the invoice(s) it covers.'
+    )
+  }
+}
+
 // The bank can't have paid the beneficiary before it even opened the LC.
 function assertPaymentReceivedNotBeforeOpen(v: Row): void {
   if (
@@ -426,6 +443,7 @@ export async function createLC(v: Row): Promise<{ id: number; warning?: string }
   if (!v.bank) throw new Error('Bank is required')
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
+  assertHasLinkedInvoice(v)
   assertPaymentReceivedNotBeforeOpen(v)
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v)
@@ -448,6 +466,7 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number; warnin
   if (!v.bank) throw new Error('Bank is required')
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
+  assertHasLinkedInvoice(v)
   assertPaymentReceivedNotBeforeOpen(v)
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v, id)
