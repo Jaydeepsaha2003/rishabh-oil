@@ -15,6 +15,9 @@ let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
   const win = new BrowserWindow({
+    // The size the window returns to when un-maximized — it always OPENS
+    // maximized (below), since every register and ledger on here is a wide
+    // table that reads badly in a small window.
     width: 1280,
     height: 800,
     show: false,
@@ -31,7 +34,11 @@ function createWindow(): void {
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
   })
-  win.on('ready-to-show', () => win.show())
+  // Maximize BEFORE showing, so the window never flashes at 1280×800 first.
+  win.on('ready-to-show', () => {
+    win.maximize()
+    win.show()
+  })
 
   win.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)

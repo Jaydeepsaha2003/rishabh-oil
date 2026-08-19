@@ -17,6 +17,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { Tooltip, TooltipContent, TooltipTrigger, InfoTip } from '@/components/ui/tooltip'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
+import { RowActions } from '@/components/ui/row-actions'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
@@ -555,27 +556,41 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           return d ? <div className={cn('mt-1 text-[11px] font-medium', d.tone)}>{d.label}</div> : null
         })()}
       </TableCell>
-      <TableCell className="text-right"><div className="flex justify-end gap-1">
-        {TANKER_STAGES.indexOf(String(row.status)) > TANKER_STAGES.indexOf('loaded') && (
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-8 w-8 text-amber-700"
-            title={`Undo — back to ${TANKER_LABEL[TANKER_STAGES[TANKER_STAGES.indexOf(String(row.status)) - 1]]}`}
-            onClick={() => void revertTanker(row)}
-          >
-            <Undo2 className="h-4 w-4" />
-          </Button>
-        )}
-        {next && <Button size="sm" variant="outline" onClick={() => openTankerAction(row)}>{TANKER_LABEL[next]}</Button>}
-        {row.status === 'transit' && (
-          <Button size="sm" variant="outline" className="text-amber-700" title="Replace this tanker (accident/breakdown)" onClick={() => openReplaceTanker(row)}>
-            <Truck className="h-4 w-4" /> Replace
-          </Button>
-        )}
-        <Button size="icon" variant="ghost" className="h-8 w-8" title="Edit stage entries" onClick={() => openEditTanker(row)}><Pencil className="h-4 w-4" /></Button>
-        {!row.order_id && <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => deleteTanker(row)}><Trash2 className="h-4 w-4" /></Button>}
-      </div></TableCell>
+      {/* Moving the tanker on is the only action worth a real button — undo,
+          edit, replace and delete all sit behind the ⋮, which keeps this
+          column narrow and gives the table's own data the width. */}
+      <TableCell className="text-right">
+        <div className="flex items-center justify-end gap-1">
+          {next && (
+            <Button size="sm" variant="outline" onClick={() => openTankerAction(row)}>
+              {TANKER_LABEL[next]}
+            </Button>
+          )}
+          <RowActions
+            actions={[
+              ...(TANKER_STAGES.indexOf(String(row.status)) > TANKER_STAGES.indexOf('loaded')
+                ? [{
+                    label: `Undo — back to ${TANKER_LABEL[TANKER_STAGES[TANKER_STAGES.indexOf(String(row.status)) - 1]]}`,
+                    icon: Undo2,
+                    onClick: () => void revertTanker(row)
+                  }]
+                : []),
+              { label: 'Edit stage entries', icon: Pencil, onClick: () => openEditTanker(row) },
+              ...(row.status === 'transit'
+                ? [{ label: 'Replace tanker', icon: Truck, onClick: () => openReplaceTanker(row) }]
+                : []),
+              {
+                label: 'Delete tanker',
+                icon: Trash2,
+                danger: true,
+                onClick: () => void deleteTanker(row),
+                disabled: !!row.order_id,
+                disabledReason: 'Billed on a purchase invoice — delete that invoice first'
+              }
+            ]}
+          />
+        </div>
+      </TableCell>
     </TableRow>
   }
 
@@ -1051,7 +1066,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
 
   function openNewPurchase(): void {
     setEditing(null)
-    setForm({ company_id: String(activeCompany || ''), invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '', round_off: '', round_off_manual: false, charge_interest: false, interest_touched: false, remarks: '', freight_paid_to_supplier: false })
+    setForm({ company_id: String(activeCompany || ''), invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '', round_off: '', round_off_manual: false, charge_interest: false, interest_touched: false, remarks: '', freight_paid_to_supplier: false, bargain_interest: {} })
     setSelected([])
     setLotIds([])
     setLotBargains({})
@@ -1090,6 +1105,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       interest_pct: Number(row.interest_pct) > 0 ? row.interest_pct : (supplier?.interest_pct ?? 0),
       interest_days: Number(row.interest_days) > 0 ? row.interest_days : (supplier?.interest_days ?? 0),
       additional_interest: row.additional_interest ?? '',
+      // Replaced by the saved per-bargain overrides once they load, if any.
+      bargain_interest: {},
       charge_interest: Number(row.interest_pct) > 0 && Number(row.interest_days) > 0,
       interest_touched: true,
       transporter_id: row.transporter_id || '',
@@ -1207,6 +1224,27 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       .catch(() => {})
     return () => { active = false }
   }, [formPage, editing])
+  // Per-bargain interest overrides saved on the invoice being edited, so an
+  // edit doesn't silently drop them back to the invoice-wide figures.
+  useEffect(() => {
+    if (!formPage || !editing?.id) return
+    let active = true
+    window.api.orders
+      .bargainInterest(Number(editing.id))
+      .then((rows) => {
+        if (!active || !rows.length) return
+        const map: Record<string, { additional_interest?: string; interest_days?: string }> = {}
+        for (const r of rows) {
+          map[String(r.bargain_id)] = {
+            additional_interest: Number(r.additional_interest) ? String(r.additional_interest) : '',
+            interest_days: Number(r.interest_days) ? String(r.interest_days) : ''
+          }
+        }
+        setForm((p) => ({ ...p, bargain_interest: map }))
+      })
+      .catch(() => {})
+    return () => { active = false }
+  }, [formPage, editing])
   // Tankers already on the invoice being edited are not "pending", so pull the
   // invoice's own lots in separately and pre-tick them.
   const [ownLots, setOwnLots] = useState<Row[]>([])
@@ -1276,13 +1314,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   }
   const bgAllocated = bgLines.reduce((sum, l) => sum + (Number(l.qty) || 0), 0)
   const bgAlloc = useMemo(() => {
-    const m = new Map<string, { bargain_no: string; rate: number; qty: number }>()
+    const m = new Map<string, { bargain_id: number; bargain_no: string; rate: number; qty: number }>()
     for (const l of bgLines) {
       const qty = Number(l.qty) || 0
       if (!l.bargain_id || qty <= 0) continue
       const b = bargains.find((x) => String(x.id) === String(l.bargain_id))
       const k = String(l.bargain_id)
-      const cur = m.get(k) || { bargain_no: String(b?.bargain_no || '—'), rate: Number(b?.rate_per_uom) || 0, qty: 0 }
+      const cur = m.get(k) || { bargain_id: Number(l.bargain_id), bargain_no: String(b?.bargain_no || '—'), rate: Number(b?.rate_per_uom) || 0, qty: 0 }
       cur.qty += qty
       m.set(k, cur)
     }
@@ -1325,12 +1363,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     setLotBargains((p) => ({ ...p, [id]: { ...(p[id] || {}), ...patch } }))
   // What each bargain ends up drawing across every ticked tanker.
   const lotAlloc = useMemo(() => {
-    const m = new Map<string, { bargain_no: string; rate: number; qty: number }>()
+    const m = new Map<string, { bargain_id: number; bargain_no: string; rate: number; qty: number }>()
     const add = (id: unknown, qty: number): void => {
       if (!id || qty <= 1e-9) return
       const b = bargains.find((x) => String(x.id) === String(id))
       const k = String(id)
       const cur = m.get(k) || {
+        bargain_id: Number(id),
         bargain_no: String(b?.bargain_no || '—'),
         rate: Number(b?.rate_per_uom) || 0,
         qty: 0
@@ -1469,11 +1508,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     // invoice carries it on the invoice itself.
     if (directMode && chosenLots.length) return lotAlloc
     if (directMode && bgAlloc.length) return bgAlloc
-    const m = new Map<string, { bargain_no: string; rate: number; qty: number }>()
+    const m = new Map<string, { bargain_id: number; bargain_no: string; rate: number; qty: number }>()
     const add = (id: unknown, no: unknown, rate: number, qty: number): void => {
       if (!id || qty <= 0) return
       const k = String(id)
-      const cur = m.get(k) || { bargain_no: String(no || '—'), rate, qty: 0 }
+      const cur = m.get(k) || { bargain_id: Number(id), bargain_no: String(no || '—'), rate, qty: 0 }
       cur.qty += qty
       m.set(k, cur)
     }
@@ -1496,10 +1535,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const totalQty = directMode || isTrading
     ? Number(form.ordered_qty) || 0
     : chosenTankers.reduce((sum, x) => sum + Number(x.loaded_qty || 0), 0)
-  // Quantity-weighted average bargain rate across the allocation.
+  // Quantity-weighted average bargain rate across the allocation. Rounded to
+  // paise — it is written into the rate FIELDS, and a raw float average put
+  // something like 128781.58844765343 in front of the user. The taxable value
+  // is summed from each bargain's own line rate, not from this, so rounding
+  // it changes nothing that is actually billed.
   const blendedRate = useMemo(() => {
     const q = rateAlloc.reduce((s, a) => s + a.qty, 0)
-    return q > 0 ? rateAlloc.reduce((s, a) => s + a.rate * a.qty, 0) / q : 0
+    if (q <= 0) return 0
+    return Math.round((rateAlloc.reduce((s, a) => s + a.rate * a.qty, 0) / q) * 100) / 100
   }, [rateAlloc])
   // Multi-bargain invoices price at the blended (weighted-average) rate — both
   // the bargain rate (interest/final basis) and the default invoice rate.
@@ -1532,6 +1576,62 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       setForm((p) => ({ ...p, transporter_id: tankerTransporterId }))
     }
   }, [tankerTransporterId]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Per-bargain additional interest / interest days, keyed by bargain id. An
+  // entry left blank simply inherits the invoice-wide figure, so this stays
+  // empty for the ordinary single-rate invoice.
+  const bargainInterest: Record<string, { additional_interest?: string; interest_days?: string }> =
+    form.bargain_interest || {}
+  function setBargainInterest(bargainId: number, field: 'additional_interest' | 'interest_days', value: string): void {
+    setForm((p) => ({
+      ...p,
+      bargain_interest: {
+        ...(p.bargain_interest || {}),
+        [String(bargainId)]: { ...((p.bargain_interest || {})[String(bargainId)] || {}), [field]: value }
+      }
+    }))
+  }
+  // The per-line figures actually used for pricing — a blank override falls
+  // back to the invoice-wide value, matching applyBargainInterestOverrides in
+  // the main process.
+  const lineInterestOf = useCallback(
+    (bargainId: number): { additionalInterest: number; interestDays: number } => {
+      const o = (form.bargain_interest || {})[String(bargainId)] || {}
+      const addl = o.additional_interest != null && o.additional_interest !== ''
+        ? Number(o.additional_interest) || 0
+        : Number(form.additional_interest) || 0
+      const days = o.interest_days != null && o.interest_days !== ''
+        ? Number(o.interest_days) || 0
+        : Number(form.interest_days) || 0
+      return { additionalInterest: addl, interestDays: days }
+    },
+    [form.bargain_interest, form.additional_interest, form.interest_days]
+  )
+  // Anything the invoice rate carries above the blended bargain rate is
+  // supplier freight billed inside the rate — it lands on every bargain line.
+  // Mirrors computeMoney, paisa guard included.
+  const ratePremium = useMemo(() => {
+    if (rateAlloc.length < 2 || blendedRate <= 0) return 0
+    const d = Math.round(((Number(form.invoice_rate) || 0) - blendedRate) * 100) / 100
+    return Math.abs(d) < 0.01 ? 0 : d
+  }, [rateAlloc.length, blendedRate, form.invoice_rate])
+  // What one bargain's line actually prices at, per unit: its own rate, its own
+  // interest (shared %, its own days), its own additional interest and any
+  // freight premium, rounded up to the whole rupee the supplier bills at.
+  // Shared by the form panel and the summary so the two can never disagree.
+  const lineFiguresOf = useCallback(
+    (bargainId: number, rate: number): { perUnitInterest: number; additionalInterest: number; lineRate: number } => {
+      const eff = lineInterestOf(bargainId)
+      const perUnitInterest = form.charge_interest
+        ? rate * (1 + (Number(form.gst_pct) || 0) / 100) * ((Number(form.interest_pct) || 0) / 100) * (eff.interestDays / 365)
+        : 0
+      return {
+        perUnitInterest,
+        additionalInterest: eff.additionalInterest,
+        lineRate: Math.ceil(rate + perUnitInterest + eff.additionalInterest + ratePremium)
+      }
+    },
+    [lineInterestOf, form.charge_interest, form.gst_pct, form.interest_pct, ratePremium]
+  )
   const calc = useMemo(() => computeMoney({
     orderedQty: totalQty,
     invoiceRate: Number(form.invoice_rate) || 0,
@@ -1545,9 +1645,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     tdsThreshold: Number(form.tds_threshold) || 0,
     tdsPctAbove: Number(form.tds_pct) || 0,
     tdsPrior: Number(form.tds_prior) || 0,
-    lines: rateAlloc.map((a) => ({ rate: a.rate, qty: a.qty })),
+    lines: rateAlloc.map((a) => ({ rate: a.rate, qty: a.qty, ...lineInterestOf(a.bargain_id) })),
     roundOff: Number(form.round_off) || 0
-  }), [form, totalQty, rateAlloc])
+  }), [form, totalQty, rateAlloc, lineInterestOf])
 
   // Default the per-invoice interest toggle: ON when the supplier charges
   // interest AND the purchase is supplier-financed. A manual flip sticks.
@@ -1638,6 +1738,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         ? bgLines
             .filter((l) => l.bargain_id && (Number(l.qty) || 0) > 0)
             .map((l) => ({ bargain_id: Number(l.bargain_id), qty: Number(l.qty) || 0 }))
+        : [],
+      // Only meaningful once the invoice spans more than one bargain; a single
+      // bargain uses the invoice-wide figures alone.
+      bargain_interest: rateAlloc.length > 1
+        ? rateAlloc
+            .map((a) => {
+              const o = (form.bargain_interest || {})[String(a.bargain_id)] || {}
+              return {
+                bargain_id: a.bargain_id,
+                additional_interest: o.additional_interest ?? '',
+                interest_days: o.interest_days ?? ''
+              }
+            })
+            .filter((o) => o.additional_interest !== '' || o.interest_days !== '')
         : [],
       transporter_id: directMode || isTrading || !form.transporter_id ? null : Number(form.transporter_id),
       allowed_shortage_pct:
@@ -1852,7 +1966,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Invoice rate *</Label>
-                    <Input type="number" value={form.invoice_rate ?? ''} onChange={(e) => setForm((p) => ({ ...p, invoice_rate: e.target.value, invoice_rate_touched: true }))} />
+                    <Input type="number" step="0.01" value={form.invoice_rate ?? ''} onChange={(e) => setForm((p) => ({ ...p, invoice_rate: e.target.value, invoice_rate_touched: true }))} />
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>GST %</Label>
@@ -1923,29 +2037,93 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         value={form.interest_pct ?? ''}
                         onChange={(e) => setForm((p) => ({ ...p, interest_pct: e.target.value }))}
                       />
-                      <Label className="text-xs">Days</Label>
-                      <Input
-                        type="number"
-                        className="h-8 w-20 text-right"
-                        disabled={!form.charge_interest}
-                        value={form.interest_days ?? ''}
-                        onChange={(e) => setForm((p) => ({ ...p, interest_days: e.target.value }))}
-                      />
+                      {/* Days and additional interest move into the per-bargain
+                          panel below once the invoice spans several bargains —
+                          shown in both places they read as duplicates. */}
+                      {rateAlloc.length < 2 && (
+                        <>
+                          <Label className="text-xs">Days</Label>
+                          <Input
+                            type="number"
+                            className="h-8 w-20 text-right"
+                            disabled={!form.charge_interest}
+                            value={form.interest_days ?? ''}
+                            onChange={(e) => setForm((p) => ({ ...p, interest_days: e.target.value }))}
+                          />
+                        </>
+                      )}
                     </div>
-                    <div className="flex items-center gap-2">
-                      <div className="flex items-center gap-1">
-                        <Label className="text-xs">Additional interest (₹/{form.uom || 'MT'})</Label>
-                        <InfoTip text="A manual per-unit interest you can add on top; it is included in the adjusted invoice rate (and therefore the taxable value, GST and net)." />
+                    {rateAlloc.length < 2 ? (
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1">
+                          <Label className="text-xs">Additional interest (₹/{form.uom || 'MT'})</Label>
+                          <InfoTip text="A manual per-unit interest you can add on top; it is included in the adjusted invoice rate (and therefore the taxable value, GST and net)." />
+                        </div>
+                        <Input
+                          type="number"
+                          className="h-8 w-24 text-right"
+                          placeholder="0"
+                          value={form.additional_interest ?? ''}
+                          onChange={(e) => setForm((p) => ({ ...p, additional_interest: e.target.value }))}
+                        />
                       </div>
-                      <Input
-                        type="number"
-                        className="h-8 w-24 text-right"
-                        placeholder="0"
-                        value={form.additional_interest ?? ''}
-                        onChange={(e) => setForm((p) => ({ ...p, additional_interest: e.target.value }))}
-                      />
-                    </div>
+                    ) : (
+                      <span className="text-[11px] text-muted-foreground">
+                        Days &amp; additional interest are set per bargain below.
+                      </span>
+                    )}
                   </div>
+
+                  {/* Two bargains on one invoice are two different deals — each
+                      can carry its own additional interest and its own days,
+                      added straight into THAT bargain's rate. Left blank, a
+                      bargain just inherits the invoice-wide figures above. */}
+                  {rateAlloc.length > 1 && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2.5 md:col-span-3">
+                      <div className="mb-2 flex items-center gap-1.5">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-amber-900">
+                          Per-bargain interest
+                        </span>
+                        <InfoTip text="Set against one bargain, these replace the invoice-wide additional interest / days for that bargain's quantity only. Leave a box empty to inherit the shared value." />
+                      </div>
+                      <div className="grid gap-2">
+                        {rateAlloc.map((a) => {
+                          const { lineRate } = lineFiguresOf(a.bargain_id, a.rate)
+                          return (
+                            <div key={a.bargain_id} className="flex flex-wrap items-center gap-2 rounded-md bg-card px-2.5 py-2">
+                              <div className="min-w-[13rem] flex-1">
+                                <div className="text-xs font-medium">{a.bargain_no}</div>
+                                <div className="text-[11px] text-muted-foreground">
+                                  {formatINR(a.rate)} · {formatNum(a.qty)} {form.uom || 'MT'}
+                                </div>
+                              </div>
+                              <Label className="text-[11px] text-muted-foreground">Addl. int (₹/{form.uom || 'MT'})</Label>
+                              <Input
+                                type="number"
+                                className="h-8 w-24 text-right"
+                                placeholder={String(Number(form.additional_interest) || 0)}
+                                value={bargainInterest[String(a.bargain_id)]?.additional_interest ?? ''}
+                                onChange={(e) => setBargainInterest(a.bargain_id, 'additional_interest', e.target.value)}
+                              />
+                              <Label className="text-[11px] text-muted-foreground">Days</Label>
+                              <Input
+                                type="number"
+                                className="h-8 w-20 text-right"
+                                disabled={!form.charge_interest}
+                                placeholder={String(Number(form.interest_days) || 0)}
+                                value={bargainInterest[String(a.bargain_id)]?.interest_days ?? ''}
+                                onChange={(e) => setBargainInterest(a.bargain_id, 'interest_days', e.target.value)}
+                              />
+                              <div className="ml-auto text-right">
+                                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Line rate</div>
+                                <div className="text-xs font-semibold tabular-nums">{formatINR(lineRate)}</div>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
 
                   {Number(form.bargain_rate) > 0 && Number(form.invoice_rate) > Number(form.bargain_rate) && (
                     <div className="flex flex-wrap items-center gap-4 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 md:col-span-3">
@@ -2348,37 +2526,82 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               ) : (
                 <MoneyRow label="Bargain rate" value={formatINR(Number(form.bargain_rate) || 0)} />
               )}
-              {!!form.charge_interest && (rateAlloc.length > 1 ? (
-                rateAlloc.map((a, i) => {
-                  const perUnit = a.rate * (1 + (Number(form.gst_pct) || 0) / 100) * ((Number(form.interest_pct) || 0) / 100) * ((Number(form.interest_days) || 0) / 365)
-                  return (
+              {/* Interest, per bargain when the invoice spans more than one.
+                  Quoted PER UNIT like every other rate row in this block — the
+                  line total is on hover. Hidden entirely when it works out to
+                  nothing, so a 0%/0-day invoice carries no empty row. */}
+              {rateAlloc.length > 1
+                ? rateAlloc.map((a, i) => {
+                    const { perUnitInterest } = lineFiguresOf(a.bargain_id, a.rate)
+                    if (perUnitInterest <= 0) return null
+                    const eff = lineInterestOf(a.bargain_id)
+                    return (
+                      <MoneyRow
+                        key={`${a.bargain_no}-int`}
+                        label={`Interest ${i + 1} @ ${Number(form.interest_pct) || 0}% · ${eff.interestDays}d`}
+                        title={`${a.bargain_no} — per ${form.uom || 'MT'} · ${formatNum(a.qty)} ${form.uom || 'MT'} = ${formatINR(perUnitInterest * a.qty)}`}
+                        value={formatINR(perUnitInterest)}
+                      />
+                    )
+                  })
+                : !!form.charge_interest && calc.interestPerUnit > 0 && (
                     <MoneyRow
-                      key={`${a.bargain_no}-int`}
-                      label={`Interest ${i + 1} @ ${Number(form.interest_pct) || 0}% · ${Number(form.interest_days) || 0}d`}
-                      title={`${a.bargain_no} · ${formatNum(a.qty)} ${form.uom || 'MT'}`}
-                      value={formatINR(perUnit * a.qty)}
+                      label={`Interest @ ${Number(form.interest_pct) || 0}% · ${Number(form.interest_days) || 0}d`}
+                      title={`Per ${form.uom || 'MT'} · ${formatNum(totalQty)} ${form.uom || 'MT'} = ${formatINR(calc.interestPerUnit * totalQty)}`}
+                      value={formatINR(calc.interestPerUnit)}
                     />
-                  )
-                })
-              ) : (
+                  )}
+              {/* Additional interest — the value shown is that bargain's rate
+                  WITH its own additional interest folded in, so the running
+                  per-unit rate is readable line by line. */}
+              {rateAlloc.length > 1
+                ? rateAlloc.map((a, i) => {
+                    const { additionalInterest } = lineFiguresOf(a.bargain_id, a.rate)
+                    if (additionalInterest <= 0) return null
+                    return (
+                      <MoneyRow
+                        key={`${a.bargain_no}-addl`}
+                        label={`Additional interest ${i + 1} (${formatINR(additionalInterest)}/${form.uom || 'MT'})`}
+                        title={`${a.bargain_no} — bargain rate ${formatINR(a.rate)} plus ${formatINR(additionalInterest)}/${form.uom || 'MT'}`}
+                        value={formatINR(a.rate + additionalInterest)}
+                      />
+                    )
+                  })
+                : Number(form.additional_interest) > 0 && (
+                    <MoneyRow
+                      label={`Additional interest (${formatINR(Number(form.additional_interest))}/${form.uom || 'MT'})`}
+                      title={`Bargain rate ${formatINR(Number(form.bargain_rate) || 0)} plus ${formatINR(Number(form.additional_interest))}/${form.uom || 'MT'}`}
+                      value={formatINR((Number(form.bargain_rate) || 0) + (Number(form.additional_interest) || 0))}
+                    />
+                  )}
+              {/* Freight the supplier billed inside the rate — shown on its own
+                  row so a premium that reaches every line is never invisible. */}
+              {ratePremium !== 0 && (
                 <MoneyRow
-                  label={`Interest @ ${Number(form.interest_pct) || 0}% · ${Number(form.interest_days) || 0}d`}
-                  value={formatINR(calc.interestPerUnit * totalQty)}
+                  label={`Freight in invoice rate (${formatINR(ratePremium)}/${form.uom || 'MT'})`}
+                  title={`Invoice rate ${formatINR(Number(form.invoice_rate) || 0)} less the blended bargain rate ${formatINR(blendedRate)} — applied to every bargain line`}
+                  value={formatINR(ratePremium * totalQty)}
                 />
-              ))}
-              {/* T1 is the subtotal BEFORE additional interest — only meaningful
-                  when additional interest is actually applied on top of it. */}
-              {!!form.charge_interest && Number(form.additional_interest) > 0 && (
+              )}
+              {/* T1, T2 … — each bargain's finished per-unit rate (whole rupee,
+                  as the supplier bills it). The average below is these
+                  weighted by quantity, which is what the invoice charges. */}
+              {rateAlloc.length > 1 && (
                 <>
                   <div className="border-t" />
-                  <MoneyRow label="T1 (rate + interest)" value={formatINR(calc.adjustedRate - (Number(form.additional_interest) || 0))} strong />
+                  {rateAlloc.map((a, i) => {
+                    const { lineRate } = lineFiguresOf(a.bargain_id, a.rate)
+                    return (
+                      <MoneyRow
+                        key={`${a.bargain_no}-t`}
+                        label={`T${i + 1} (${a.bargain_no})`}
+                        title={`Final rate per ${form.uom || 'MT'} · ${formatNum(a.qty)} ${form.uom || 'MT'} = ${formatINR(lineRate * a.qty)}`}
+                        value={formatINR(lineRate)}
+                        strong
+                      />
+                    )
+                  })}
                 </>
-              )}
-              {Number(form.additional_interest) > 0 && (
-                <MoneyRow
-                  label={`Additional interest (${formatINR(Number(form.additional_interest))}/${form.uom || 'MT'})`}
-                  value={formatINR((Number(form.additional_interest) || 0) * totalQty)}
-                />
               )}
               <MoneyRow
                 label={rateAlloc.length > 1 ? 'Adjusted invoice rate (avg)' : 'Adjusted invoice rate'}

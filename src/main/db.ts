@@ -1003,7 +1003,20 @@ const MIGRATIONS = [
   // left as-is here; splitting its existing links is a data fix, not schema.
   'ALTER TABLE banks ADD COLUMN company_id INTEGER REFERENCES companies(id)',
   'DROP INDEX IF EXISTS idx_banks_name',
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_banks_company_name ON banks(company_id, name)'
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_banks_company_name ON banks(company_id, name)',
+  // A per-bargain override on an invoice that spans more than one bargain —
+  // each bargain's own additional interest (₹/unit) and its own interest
+  // days, added straight into THAT bargain's line instead of one shared
+  // figure applied to every line alike. Absent for a bargain means it just
+  // inherits the invoice's shared additional interest / interest days.
+  `CREATE TABLE IF NOT EXISTS order_bargain_interest (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL REFERENCES orders(id),
+    bargain_id INTEGER NOT NULL REFERENCES bargains(id),
+    additional_interest REAL NOT NULL DEFAULT 0,
+    interest_days INTEGER NOT NULL DEFAULT 0
+  )`,
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_order_bargain_interest ON order_bargain_interest(order_id, bargain_id)'
 ]
 
 

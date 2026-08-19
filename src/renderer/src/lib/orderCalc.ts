@@ -15,7 +15,9 @@ export interface MoneyInput {
   tdsPctAbove?: number
   tdsPrior?: number
   // Per-bargain shares when the invoice spans more than one bargain rate.
-  lines?: { rate: number; qty: number }[]
+  // additionalInterest/interestDays on a line override the invoice-level ones
+  // for just that line — absent means it inherits the shared value.
+  lines?: { rate: number; qty: number; additionalInterest?: number; interestDays?: number }[]
   // Applied to the total excluding TDS, which then becomes the TDS base.
   roundOff?: number
 }
@@ -65,15 +67,23 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   // Mirrors main: each bargain line is billed at a whole-rupee rate (rounded
   // up), so taxable = Σ line values. One bargain → ceil(rate) × qty.
   const num = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
-  const kFactor = (1 + (i.gstPct || 0) / 100) * (interestPct / 100) * (interestDays / 365)
+  const r2 = (v: number): number => Math.round(v * 100) / 100
   const lines = (i.lines || []).filter((l) => num(l.qty) > 0)
   const lineQty = lines.reduce((s, l) => s + num(l.qty), 0)
+  // Mirrors main: an invoice rate above the blended bargain rate (supplier
+  // freight in the rate) is spread onto every line, with a paisa guard so the
+  // blended average's own rounding is not mistaken for a premium.
+  const blended = lineQty > 0 ? r2(lines.reduce((s, l) => s + num(l.rate) * num(l.qty), 0) / lineQty) : 0
+  const rawPremium = r2(i.invoiceRate - blended)
+  const ratePremium = Math.abs(rawPremium) < 0.01 ? 0 : rawPremium
   const taxableValue =
     lines.length > 1 && lineQty > 0
-      ? lines.reduce(
-          (s, l) => s + Math.ceil(num(l.rate) + num(l.rate) * kFactor + (i.additionalInterest || 0)) * num(l.qty),
-          0
-        )
+      ? lines.reduce((s, l) => {
+          const days = l.interestDays != null ? num(l.interestDays) : interestDays
+          const addl = l.additionalInterest != null ? num(l.additionalInterest) : i.additionalInterest || 0
+          const kF = (1 + (i.gstPct || 0) / 100) * (interestPct / 100) * (days / 365)
+          return s + Math.ceil(num(l.rate) + num(l.rate) * kF + addl + ratePremium) * num(l.qty)
+        }, 0)
       : Math.ceil(rawAdjustedRate) * i.orderedQty
   const adjustedRate = i.orderedQty > 0 ? taxableValue / i.orderedQty : Math.ceil(rawAdjustedRate)
   const gstAmount = (taxableValue * i.gstPct) / 100

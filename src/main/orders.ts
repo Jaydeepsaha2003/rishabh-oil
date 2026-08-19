@@ -72,7 +72,9 @@ export interface MoneyInput {
   tdsPrior?: number // taxable already billed to this party this FY (before this order)
   // Per-bargain shares when the invoice spans more than one bargain rate. Each
   // line is rated (and rounded) on its own, matching how suppliers bill.
-  lines?: { rate: number; qty: number }[]
+  // additionalInterest/interestDays here override the invoice-level ones
+  // above for just that one line — absent means it inherits the shared value.
+  lines?: { rate: number; qty: number; bargainId?: number; additionalInterest?: number; interestDays?: number }[]
   // Applied to the total excluding TDS, which then becomes the TDS base.
   roundOff?: number
 }
@@ -162,15 +164,29 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   // Suppliers bill each bargain line at a WHOLE-RUPEE rate (rounded up), so the
   // taxable value is the sum of those line values — not one blended rate times
   // the total quantity. With a single bargain this is just ceil(rate) × qty.
-  const kFactor = (1 + (i.gstPct || 0) / 100) * (interestPct / 100) * (interestDays / 365)
+  // Each line's own additional interest / interest days (when set) apply only
+  // to that line, added straight into its own rate rather than blended in.
+  const round2 = (v: number): number => Math.round(v * 100) / 100
   const lines = (i.lines || []).filter((l) => n(l.qty) > 0)
   const lineQty = lines.reduce((s, l) => s + n(l.qty), 0)
+  // Whatever the invoice rate carries ABOVE the blended bargain rate — freight
+  // the supplier billed inside the rate, usually — belongs on every line, the
+  // same way a single-bargain invoice folds it into its one rate. Without this
+  // a multi-bargain invoice, priced purely off each bargain's own rate, would
+  // silently drop it on every re-save. The paisa guard stops the blended
+  // average's OWN rounding from reading as a premium and pushing each line's
+  // ceil() up by a whole rupee.
+  const blendedRate = lineQty > 0 ? round2(lines.reduce((s, l) => s + n(l.rate) * n(l.qty), 0) / lineQty) : 0
+  const rawPremium = round2(i.invoiceRate - blendedRate)
+  const ratePremium = Math.abs(rawPremium) < 0.01 ? 0 : rawPremium
   const taxableValue =
     lines.length > 1 && lineQty > 0
-      ? lines.reduce(
-          (s, l) => s + Math.ceil(n(l.rate) + n(l.rate) * kFactor + (i.additionalInterest || 0)) * n(l.qty),
-          0
-        )
+      ? lines.reduce((s, l) => {
+          const days = l.interestDays != null ? n(l.interestDays) : interestDays
+          const addl = l.additionalInterest != null ? n(l.additionalInterest) : i.additionalInterest || 0
+          const kF = (1 + (i.gstPct || 0) / 100) * (interestPct / 100) * (days / 365)
+          return s + Math.ceil(n(l.rate) + n(l.rate) * kF + addl + ratePremium) * n(l.qty)
+        }, 0)
       : Math.ceil(rawAdjustedRate) * i.orderedQty
   // The rate actually charged (taxable ÷ qty) — what the invoice shows per unit.
   const adjustedRate = i.orderedQty > 0 ? taxableValue / i.orderedQty : Math.ceil(rawAdjustedRate)
@@ -181,7 +197,6 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   const roundedTotal = taxableValue + gstAmount + roundOff
   // TDS is rounded to paise ONCE and the net derived from that rounded
   // figure, so the summary and the ledger cannot disagree by a paisa.
-  const round2 = (v: number): number => Math.round(v * 100) / 100
   const tdsAmount = round2(tierTds(roundedTotal, prior, threshold, i.tdsPct, abovePct))
   const netAmount = round2(roundedTotal - tdsAmount)
 
@@ -318,7 +333,9 @@ export async function listOrders(): Promise<Row[]> {
 // Per-bargain rate/qty shares for the tankers on an invoice. A split tanker
 // contributes to BOTH its primary and its excess bargain, so an invoice spanning
 // two bargains is priced line-wise (each at its own rate) like the supplier does.
-async function bargainLinesForTankers(tankerIds: unknown): Promise<{ rate: number; qty: number }[]> {
+async function bargainLinesForTankers(
+  tankerIds: unknown
+): Promise<{ rate: number; qty: number; bargainId: number }[]> {
   const ids = (Array.isArray(tankerIds) ? tankerIds : []).map((x) => n(x)).filter((x) => x > 0)
   if (ids.length === 0) return []
   const res = await getClient().execute({
@@ -330,11 +347,11 @@ async function bargainLinesForTankers(tankerIds: unknown): Promise<{ rate: numbe
           WHERE pt.id IN (${ids.map(() => '?').join(',')})`,
     args: ids
   })
-  const m = new Map<string, { rate: number; qty: number }>()
+  const m = new Map<string, { rate: number; qty: number; bargainId: number }>()
   const add = (id: unknown, rate: number, qty: number): void => {
     if (!id || qty <= 0) return
     const k = String(id)
-    const cur = m.get(k) || { rate, qty: 0 }
+    const cur = m.get(k) || { rate, qty: 0, bargainId: n(id) }
     cur.qty += qty
     m.set(k, cur)
   }
@@ -345,6 +362,53 @@ async function bargainLinesForTankers(tankerIds: unknown): Promise<{ rate: numbe
     if (extra > 0) add(r.extra_bargain_id, n(r.extra_rate), extra)
   }
   return Array.from(m.values())
+}
+
+// Per-bargain additional-interest / interest-days overrides typed on the
+// form, merged onto the priced lines by bargain id before computeMoney runs.
+interface BargainInterestOverride {
+  bargain_id: number
+  additional_interest?: number | string | null
+  interest_days?: number | string | null
+}
+function applyBargainInterestOverrides<T extends { rate: number; qty: number; bargainId?: number }>(
+  lines: T[],
+  overrides: unknown
+): (T & { additionalInterest?: number; interestDays?: number })[] {
+  const list = Array.isArray(overrides) ? (overrides as BargainInterestOverride[]) : []
+  const byBargain = new Map(list.map((o) => [n(o.bargain_id), o]))
+  return lines.map((l) => {
+    const o = l.bargainId ? byBargain.get(l.bargainId) : undefined
+    const additionalInterest =
+      o && o.additional_interest != null && o.additional_interest !== '' ? n(o.additional_interest) : undefined
+    const interestDays =
+      o && o.interest_days != null && o.interest_days !== '' ? n(o.interest_days) : undefined
+    return { ...l, additionalInterest, interestDays }
+  })
+}
+
+async function saveOrderBargainInterest(orderId: number, overrides: unknown): Promise<void> {
+  const c = getClient()
+  await c.execute({ sql: 'DELETE FROM order_bargain_interest WHERE order_id = ?', args: [orderId] })
+  const list = Array.isArray(overrides) ? (overrides as BargainInterestOverride[]) : []
+  for (const o of list) {
+    const bargainId = n(o.bargain_id)
+    const additionalInterest = o.additional_interest != null && o.additional_interest !== '' ? n(o.additional_interest) : 0
+    const interestDays = o.interest_days != null && o.interest_days !== '' ? n(o.interest_days) : 0
+    if (!bargainId || (!additionalInterest && !interestDays)) continue
+    await c.execute({
+      sql: 'INSERT INTO order_bargain_interest (order_id, bargain_id, additional_interest, interest_days) VALUES (?, ?, ?, ?)',
+      args: [orderId, bargainId, additionalInterest, interestDays]
+    })
+  }
+}
+
+export async function listOrderBargainInterest(orderId: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: 'SELECT bargain_id, additional_interest, interest_days FROM order_bargain_interest WHERE order_id = ?',
+    args: [orderId]
+  })
+  return toPlain(res)
 }
 
 // How a consignment / direct purchase is spread across bargains. The quantity is
@@ -376,7 +440,7 @@ async function priceBargainLines(
   productId: number,
   orderedQty: number,
   uom: string
-): Promise<{ lines: { rate: number; qty: number }[]; primaryBargainId: number }> {
+): Promise<{ lines: { rate: number; qty: number; bargainId: number }[]; primaryBargainId: number }> {
   if (!lines.length) return { lines: [], primaryBargainId: 0 }
   const total = lines.reduce((sum, l) => sum + l.qty, 0)
   if (Math.abs(total - orderedQty) > 0.001) {
@@ -384,7 +448,7 @@ async function priceBargainLines(
       `The bargain quantities add up to ${total.toFixed(3)} but the invoice is for ${orderedQty.toFixed(3)} ${uom}`
     )
   }
-  const out: { rate: number; qty: number }[] = []
+  const out: { rate: number; qty: number; bargainId: number }[] = []
   for (const l of lines) {
     const r = await getClient().execute({
       sql: 'SELECT id, bargain_no, supplier_id, oil_type_id, rate_per_uom FROM bargains WHERE id = ? LIMIT 1',
@@ -394,7 +458,7 @@ async function priceBargainLines(
     const b = toPlain(r)[0]
     if (n(b.supplier_id) !== supplierId) throw new Error(`Bargain ${b.bargain_no} belongs to a different supplier`)
     if (n(b.oil_type_id) !== productId) throw new Error(`Bargain ${b.bargain_no} is for a different product`)
-    out.push({ rate: n(b.rate_per_uom), qty: l.qty })
+    out.push({ rate: n(b.rate_per_uom), qty: l.qty, bargainId: l.bargain_id })
   }
   return { lines: out, primaryBargainId: lines[0].bargain_id }
 }
@@ -505,8 +569,9 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   const bargainLines = obPriced.lines.length
     ? obPriced.lines
     : lotAlloc.lines.length
-      ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty }))
+      ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty, bargainId: l.bargain_id }))
       : await bargainLinesForTankers(v.tanker_ids)
+  const pricedLines = applyBargainInterestOverrides(bargainLines, v.bargain_interest)
   const m = computeMoney({
     orderedQty: n(v.ordered_qty),
     invoiceRate: n(v.invoice_rate),
@@ -524,7 +589,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     tdsPctAbove: n(v.tds_pct),
     tdsPrior: prior,
     roundOff,
-    lines: bargainLines
+    lines: pricedLines
   })
   const res = await getClient().execute({
     sql: `INSERT INTO orders
@@ -599,6 +664,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id), bookInCompany)
     await applySupplierFreight(id, v)
   }
+  await saveOrderBargainInterest(id, v.bargain_interest)
   await setSupplierPayable(id, n(v.supplier_id), m.net_amount, String(v.order_date))
   await postOrderJournal(id, v, m, supplier, roundOff)
   return { id }
@@ -673,7 +739,10 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     if (lotAlloc.primaryBargainId) v.bargain_id = lotAlloc.primaryBargainId
   }
   const obLines = wasConsignment && !picks.length ? toBargainLines(v.bargain_lines) : []
-  let obPriced: { lines: { rate: number; qty: number }[]; primaryBargainId: number } = { lines: [], primaryBargainId: 0 }
+  let obPriced: { lines: { rate: number; qty: number; bargainId: number }[]; primaryBargainId: number } = {
+    lines: [],
+    primaryBargainId: 0
+  }
   if (obLines.length) {
     obPriced = await priceBargainLines(
       obLines,
@@ -689,8 +758,9 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
   const bargainLines = obPriced.lines.length
     ? obPriced.lines
     : lotAlloc.lines.length
-      ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty }))
+      ? lotAlloc.lines.map((l) => ({ rate: l.rate, qty: l.qty, bargainId: l.bargain_id }))
       : await bargainLinesForTankers(v.tanker_ids)
+  const pricedLines = applyBargainInterestOverrides(bargainLines, v.bargain_interest)
   const m = computeMoney({
     orderedQty: n(v.ordered_qty),
     invoiceRate: n(v.invoice_rate),
@@ -708,8 +778,9 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     tdsPctAbove: n(v.tds_pct),
     tdsPrior: prior,
     roundOff,
-    lines: bargainLines
+    lines: pricedLines
   })
+  await saveOrderBargainInterest(id, v.bargain_interest)
   await getClient().execute({
     sql: `UPDATE orders SET
       invoice_no = ?, order_date = ?, bargain_id = ?, supplier_id = ?, oil_type_id = ?, bargain_type = ?,
@@ -853,6 +924,7 @@ export async function deleteOrder(id: number): Promise<{ id: number }> {
   // allocation goes with it.
   await releaseConsignmentLots(id)
   await c.execute({ sql: 'DELETE FROM order_bargains WHERE order_id = ?', args: [id] })
+  await c.execute({ sql: 'DELETE FROM order_bargain_interest WHERE order_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM orders WHERE id = ?', args: [id] })
   return { id }
 }
