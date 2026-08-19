@@ -370,11 +370,19 @@ export async function skipGateWeighment(id: number): Promise<{ id: number }> {
 export async function updateGateEntry(id: number, v: Row): Promise<{ id: number }> {
   const gross = v.gross_weight != null && v.gross_weight !== '' ? n(v.gross_weight) : null
   const tare = v.tare_weight != null && v.tare_weight !== '' ? n(v.tare_weight) : null
+  const both = gross != null && tare != null
+  const net = both ? Math.round(((gross as number) - (tare as number)) * 1000) / 1000 : null
+  if (both && (net as number) <= 0) {
+    throw new Error('Net weight (gross − tare) must be greater than zero — check the two figures')
+  }
   // A weighed entry's net IS gross − tare and is never typed: the weighbridge
-  // decides it, not the operator. Only an entry with no gross — one finished
-  // without weighment — carries a net of its own.
-  const received =
-    gross != null ? Math.round((gross - (tare || 0)) * 1000) / 1000 : n(v.received_qty)
+  // decides it, not the operator. An entry with NEITHER weight is one
+  // finished without weighment and carries its own typed received qty; one
+  // with only ONE of the two is genuinely still incomplete — treating a
+  // blank tare as zero (the previous bug here) let editing an unrelated
+  // field on a half-weighed entry silently mark it Completed with the full
+  // gross carried over as the net.
+  const received = gross == null && tare == null ? n(v.received_qty) : both ? (net as number) : 0
   const status = received > 0 ? 'completed' : 'pending'
   const dUp = parseDispatch(v.dispatch_na ? 'NA' : v.dispatch_qty)
   await getClient().execute({

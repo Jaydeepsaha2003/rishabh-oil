@@ -795,8 +795,48 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
   return { id }
 }
 
+// A few things point at a purchase that deleteOrder itself doesn't own —
+// unlike the ledger rows/tankers/consignment lots below (which the delete is
+// allowed to unwind), these represent a decision made elsewhere (an LC
+// naming this invoice, a bill already issued against it, a trading deal
+// built from it) that would otherwise surface as a raw FOREIGN KEY error
+// instead of telling the user what to undo first.
+async function assertOrderNotInUse(id: number): Promise<void> {
+  const c = getClient()
+  const lc = await c.execute({
+    sql: `SELECT l.lc_no FROM lc_linked_orders lo JOIN letters_of_credit l ON l.id = lo.lc_id WHERE lo.order_id = ? LIMIT 1`,
+    args: [id]
+  })
+  if (lc.rows.length) {
+    throw new Error(
+      `This purchase is linked to LC ${lc.rows[0].lc_no} — edit that LC and untick this invoice before deleting it.`
+    )
+  }
+  const issuance = await c.execute({
+    sql: `SELECT l.lc_no FROM lc_issuances i JOIN letters_of_credit l ON l.id = i.lc_id WHERE i.order_id = ? LIMIT 1`,
+    args: [id]
+  })
+  if (issuance.rows.length) {
+    throw new Error(
+      `A bill has already been issued against this purchase under LC ${issuance.rows[0].lc_no} — that bill has to be removed first.`
+    )
+  }
+  const deal = await c.execute({
+    sql: `SELECT DISTINCT d.id, d.deal_date FROM trading_deals d
+          LEFT JOIN trading_deal_orders x ON x.deal_id = d.id
+          WHERE d.order_id = ? OR x.order_id = ? LIMIT 1`,
+    args: [id, id]
+  })
+  if (deal.rows.length) {
+    throw new Error(
+      `This purchase is part of a Trading deal dated ${String(deal.rows[0].deal_date).slice(0, 10)} — remove it from that deal on the Trading page first.`
+    )
+  }
+}
+
 export async function deleteOrder(id: number): Promise<{ id: number }> {
   const c = getClient()
+  await assertOrderNotInUse(id)
   await deleteJournalByRef('order_id', id)
   await c.execute({ sql: 'DELETE FROM supplier_ledger WHERE order_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM transporter_ledger WHERE order_id = ?', args: [id] })

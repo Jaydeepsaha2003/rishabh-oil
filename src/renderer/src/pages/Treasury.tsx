@@ -153,9 +153,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   // Which bank the page is looking at. '' = every bank rolled together, the
   // same idea as the company switcher's "All companies".
   const [activeBank, setActiveBank] = useState('')
+  // Admin-only Settings toggle (General tab) — mirrors the backend's default
+  // when off (require a linked invoice); '0' relaxes it everywhere.
+  const [relaxedInvoiceRule, setRelaxedInvoiceRule] = useState(false)
 
   const load = useCallback(async () => {
-    const [l, b, a, sup, cust, sl, od, deals, tr, act, comps, lim, bnk] = await Promise.all([
+    const [l, b, a, sup, cust, sl, od, deals, tr, act, comps, lim, bnk, invRule] = await Promise.all([
       window.api.lc.list(),
       window.api.billDiscounts.list(),
       window.api.treasury.alerts(),
@@ -168,7 +171,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       window.api.company.getActive(),
       window.api.company.list(),
       window.api.lc.getLimit(activeBank ? Number(activeBank) : undefined),
-      window.api.data.list('banks')
+      window.api.data.list('banks'),
+      window.api.settings.get('lc_require_linked_invoice')
     ])
     setLcs(l.filter((x) => String(x.facility_type || 'lc') === 'lc'))
     setBills(b.filter((x) => String(x.medium || '') === 'bill_discounting' || x.rate_pct != null))
@@ -183,6 +187,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     setCompanies(comps)
     setLcLimit(lim)
     setBanks(bnk.filter((x) => x.active))
+    setRelaxedInvoiceRule(invRule === '0')
   }, [activeBank])
 
   useEffect(() => {
@@ -490,6 +495,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   // to link, nothing to insist on.
   function needsLinkedInvoice(row: Row): boolean {
     if (String(row.stage || 'application') === 'application') return false
+    if (relaxedInvoiceRule) return false
     if ((Array.isArray(row.linked_order_ids) ? row.linked_order_ids : []).length) return false
     const wantTrading = String(row.purpose || '') === 'trading'
     const on = String(row.open_date || '').slice(0, 10)

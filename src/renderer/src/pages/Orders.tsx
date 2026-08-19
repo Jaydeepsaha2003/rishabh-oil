@@ -3617,7 +3617,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 const loaded = Number(t.loaded_qty) || 0
                 const rec = t.status === 'empty' && t.received_qty != null ? Number(t.received_qty) : null
                 const shortage = rec != null ? Math.max(0, loaded - rec) : null
-                const pct = Number(t.order_allowed_shortage_pct ?? detailRow.allowed_shortage_pct ?? t.allowed_shortage_pct ?? 0)
+                // Same fallback chain the Pur BG breakdown uses: an order- or
+                // bargain-specific override wins if set, otherwise the
+                // company-wide default (Settings → General) applies — NOT a
+                // bare 0%, which was wrongly flagging any shortage at all as
+                // deductible whenever neither override was set.
+                const pct = Number(
+                  t.order_allowed_shortage_pct ?? detailRow.allowed_shortage_pct ?? t.allowed_shortage_pct ?? settings.allowed_shortage_pct ?? 0
+                )
                 const allowedAmt = loaded > 0 ? (loaded * pct) / 100 : 0
                 const deductible = isEx && shortage != null && shortage > allowedAmt ? shortage - allowedAmt : null
                 return { t, loaded, rec, shortage, allowedAmt, deductible }
@@ -3670,12 +3677,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                   <div className="text-[10px] font-normal text-muted-foreground">Gate {r.t.gate_entry_no}</div>
                                 )}
                               </td>
-                              <td className="text-muted-foreground">{r.t.loaded_date ? formatDate(r.t.loaded_date) : '—'}</td>
-                              <td className="text-muted-foreground">{r.t.empty_date ? formatDate(r.t.empty_date) : '—'}</td>
-                              <td className="text-right tabular-nums">{formatNum(r.loaded)}</td>
-                              <td className="text-right tabular-nums">{r.rec != null ? formatNum(r.rec) : '—'}</td>
-                              <td className="text-right tabular-nums">{r.shortage != null ? formatNum(r.shortage) : '—'}</td>
-                              <td className="text-right tabular-nums">{formatNum(r.allowedAmt)}</td>
+                              <td className="text-slate-700">{r.t.loaded_date ? formatDate(r.t.loaded_date) : '—'}</td>
+                              <td className="text-slate-700">{r.t.empty_date ? formatDate(r.t.empty_date) : '—'}</td>
+                              <td className="text-right tabular-nums text-foreground">{formatNum(r.loaded)}</td>
+                              <td className="text-right tabular-nums text-foreground">{r.rec != null ? formatNum(r.rec) : '—'}</td>
+                              <td className="text-right tabular-nums text-foreground">{r.shortage != null ? formatNum(r.shortage) : '—'}</td>
+                              <td className="text-right tabular-nums text-foreground">{formatNum(r.allowedAmt)}</td>
                               {isEx && (
                                 <td className="text-right font-semibold tabular-nums text-red-600">
                                   {r.deductible != null ? formatNum(r.deductible) : ''}
