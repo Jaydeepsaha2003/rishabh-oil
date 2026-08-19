@@ -134,7 +134,14 @@ export async function listLCs(): Promise<Row[]> {
 export async function getLcLimit(bankId?: number): Promise<Row> {
   const c = getClient()
   const cid = getActiveCompanyId()
-  const bank = n(bankId)
+  let bank = n(bankId)
+  // A bank now belongs to one company — a stale bank id left over from
+  // switching companies (rather than a real cross-company mix-up) is treated
+  // as "no bank picked" instead of quietly showing another company's figures.
+  if (bank) {
+    const owner = await c.execute({ sql: 'SELECT company_id FROM banks WHERE id = ?', args: [bank] })
+    if (n(owner.rows[0]?.company_id) !== cid) bank = 0
+  }
   const limitRes = bank
     ? await c.execute({
         sql: 'SELECT fixed_limit, convertible_limit, convertible_enabled FROM bank_lc_limits WHERE company_id = ? AND bank_id = ?',
@@ -206,8 +213,9 @@ export async function listBankLcLimits(): Promise<Row[]> {
                              AND COALESCE(x.facility_type, 'lc') = 'lc' AND x.preclosed_date IS NULL), 0) AS utilized
           FROM banks b
           LEFT JOIN bank_lc_limits l ON l.bank_id = b.id AND l.company_id = ?
+          WHERE b.company_id = ?
           ORDER BY b.name`,
-    args: [cid, cid, cid]
+    args: [cid, cid, cid, cid]
   })
   return toPlain(res).map((r) => {
     const total = round2(n(r.fixed_limit) + (n(r.convertible_enabled) ? n(r.convertible_limit) : 0))
@@ -221,6 +229,8 @@ export async function saveLcLimit(v: Row): Promise<{ id: number }> {
   const cid = getActiveCompanyId()
   const bankId = n(v.bank_id)
   if (!bankId) throw new Error('Pick which bank this limit is sanctioned by')
+  const owner = await getClient().execute({ sql: 'SELECT company_id FROM banks WHERE id = ?', args: [bankId] })
+  if (n(owner.rows[0]?.company_id) !== cid) throw new Error('That bank belongs to a different company')
   await getClient().execute({
     sql: `INSERT INTO bank_lc_limits (company_id, bank_id, fixed_limit, convertible_limit, convertible_enabled, updated_at)
           VALUES (?, ?, ?, ?, ?, datetime('now'))
@@ -519,11 +529,26 @@ async function syncLcVouchers(id: number): Promise<string | undefined> {
   return `The LC saved, but ${problems.join(' and ')} could not be re-posted — the books are out of step until that is fixed.`
 }
 
+// A bank belongs to one company (own-account, not the financing/discounting
+// bank) — this catches a stale picker left over from switching companies
+// before saving, rather than letting an LC quietly point at another
+// company's account.
+async function assertOwnBankBelongsToCompany(v: Row): Promise<void> {
+  const bankId = n(v.our_bank_id)
+  if (!bankId) return
+  const cid = n(v.company_id) || getActiveCompanyId()
+  const owner = await getClient().execute({ sql: 'SELECT company_id FROM banks WHERE id = ?', args: [bankId] })
+  if (n(owner.rows[0]?.company_id) !== cid) {
+    throw new Error("That bank belongs to a different company — pick one of this company's own banks")
+  }
+}
+
 export async function createLC(v: Row): Promise<{ id: number; warning?: string }> {
   if (!v.bank) throw new Error('Bank is required')
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
   await assertHasLinkedInvoice(v)
+  await assertOwnBankBelongsToCompany(v)
   assertPaymentReceivedNotBeforeOpen(v)
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v)
@@ -547,6 +572,7 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number; warnin
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
   await assertHasLinkedInvoice(v)
+  await assertOwnBankBelongsToCompany(v)
   assertPaymentReceivedNotBeforeOpen(v)
   if (!String(v.fd_no || '').trim()) throw new Error('FD No is required')
   await assertWithinFacility(v, id)

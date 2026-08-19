@@ -1,11 +1,12 @@
 import type { InValue } from '@libsql/client'
 import { getClient } from './db'
+import { getActiveCompanyId } from './company'
 
 // Whitelist of writable columns per table. Table names and column names only
 // ever come from this map (never from the renderer), so the dynamic SQL below
 // is safe — all *values* are passed as bound parameters.
 const TABLES: Record<string, string[]> = {
-  banks: ['name', 'branch', 'account_no', 'ifsc', 'note', 'active'],
+  banks: ['name', 'branch', 'account_no', 'ifsc', 'note', 'active', 'company_id'],
   categories: ['name', 'applies_to', 'note', 'active'],
   oil_types: ['code', 'name', 'active'],
   products: ['code', 'name', 'category', 'material_type', 'active'],
@@ -68,6 +69,13 @@ const TABLES: Record<string, string[]> = {
 
 type Row = Record<string, unknown>
 
+// Most masters (suppliers, products, categories...) are shared across every
+// company's books. Banks are the odd one out — a bank ACCOUNT belongs to one
+// company, not to the business in general — so this is the one table that
+// gets scoped like the transactional tables (orders, bargains) do, instead of
+// sitting in the generic shared-master pool with everything else here.
+const COMPANY_SCOPED_TABLES = new Set(['banks'])
+
 function assertTable(table: string): string[] {
   const cols = TABLES[table]
   if (!cols) throw new Error(`Unknown table: ${table}`)
@@ -100,14 +108,20 @@ async function assertUniqueName(table: string, values: Row, excludeId?: number):
   const name = String(values.name ?? '').trim()
   if (!name) return
   const c = getClient()
+  const scoped = COMPANY_SCOPED_TABLES.has(table)
+  // Whichever company the row is actually going into — the form's own
+  // picker, not necessarily the one currently active in the sidebar.
+  const targetCompany = Number(values.company_id) || getActiveCompanyId()
+  const scopeSql = scoped ? ' AND company_id = ?' : ''
+  const scopeArg = scoped ? [targetCompany] : []
   if (excludeId) {
     const cur = await c.execute({ sql: `SELECT name FROM ${table} WHERE id = ?`, args: [excludeId] })
     const before = String(cur.rows[0]?.name ?? '').trim().toLowerCase()
     if (before === name.toLowerCase()) return // not a rename — leave it alone
   }
   const hit = await c.execute({
-    sql: `SELECT id, name FROM ${table} WHERE TRIM(LOWER(name)) = ?${excludeId ? ' AND id != ?' : ''} LIMIT 1`,
-    args: excludeId ? [name.toLowerCase(), excludeId] : [name.toLowerCase()]
+    sql: `SELECT id, name FROM ${table} WHERE TRIM(LOWER(name)) = ?${scopeSql}${excludeId ? ' AND id != ?' : ''} LIMIT 1`,
+    args: [name.toLowerCase(), ...scopeArg, ...(excludeId ? [excludeId] : [])]
   })
   if (hit.rows.length) {
     throw new Error(`"${String(hit.rows[0].name)}" already exists — give this one a different name`)
@@ -116,10 +130,16 @@ async function assertUniqueName(table: string, values: Row, excludeId?: number):
 
 export async function list(table: string): Promise<Row[]> {
   assertTable(table)
+  const scoped = COMPANY_SCOPED_TABLES.has(table)
   // Every master table has a `name` and feeds dropdowns across the app —
-  // always list A→Z.
+  // always list A→Z. Company-scoped tables only ever show the active
+  // company's own rows (a bank with no company set yet — there isn't a way
+  // to create one, but one could exist from before this was added — simply
+  // won't appear until it's given one).
   const res = await getClient().execute(
-    `SELECT * FROM ${table} ORDER BY name COLLATE NOCASE ASC`
+    scoped
+      ? { sql: `SELECT * FROM ${table} WHERE company_id = ? ORDER BY name COLLATE NOCASE ASC`, args: [getActiveCompanyId()] }
+      : `SELECT * FROM ${table} ORDER BY name COLLATE NOCASE ASC`
   )
   return res.rows.map((r) => {
     const o: Row = {}
@@ -143,6 +163,12 @@ export async function get(table: string, id: number): Promise<Row | null> {
 
 export async function create(table: string, values: Row): Promise<{ id: number }> {
   const allowed = assertTable(table)
+  // The form carries its own company picker — respect whichever company was
+  // actually chosen there, only falling back to the active one if somehow
+  // nothing was picked at all.
+  if (COMPANY_SCOPED_TABLES.has(table) && !values.company_id) {
+    values = { ...values, company_id: getActiveCompanyId() }
+  }
   await assertUniqueName(table, values)
   const keys = pickKeys(values, allowed)
   if (keys.length === 0) throw new Error('No valid columns to insert')

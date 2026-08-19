@@ -962,9 +962,6 @@ const MIGRATIONS = [
   // repayments and other transactions. Deliberately NOT the same thing as an
   // LC's discounting bank (letters_of_credit.bank), which is the institution
   // that FINANCES the LC and is somebody else's bank, not ours.
-  // Shared across companies, because an account is the same account whichever
-  // set of books is looking at it — what differs per company is the LC limit
-  // sanctioned against it, which lives in bank_lc_limits below.
   `CREATE TABLE IF NOT EXISTS banks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -998,7 +995,15 @@ const MIGRATIONS = [
     convertible_enabled INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_lc_limits ON bank_lc_limits(company_id, bank_id)'
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_lc_limits ON bank_lc_limits(company_id, bank_id)',
+  // A bank ACCOUNT belongs to one company's books, not to the business in
+  // general — the SAME real-world bank used by two companies gets its own
+  // separate row per company, same as any other company-scoped record. The
+  // one bank that existed before this (shared, used by both companies) is
+  // left as-is here; splitting its existing links is a data fix, not schema.
+  'ALTER TABLE banks ADD COLUMN company_id INTEGER REFERENCES companies(id)',
+  'DROP INDEX IF EXISTS idx_banks_name',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_banks_company_name ON banks(company_id, name)'
 ]
 
 
