@@ -166,6 +166,19 @@ function InfoTile({ icon: Icon, label, value }: { icon: LucideIcon; label: strin
   )
 }
 
+// Label-over-value, for a fact sitting inside a grid alongside others — a
+// row-style label-left/value-right control (MoneyRow) squeezed into a narrow
+// grid cell wraps its label and value onto separate lines that no longer
+// line up with the cell next to it. Stacking removes that fight for width.
+function Fact({ label, value }: { label: string; value: string }): React.JSX.Element {
+  return (
+    <div className="min-w-0">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="truncate text-sm" title={value}>{value}</div>
+    </div>
+  )
+}
+
 interface OrdersProps {
   focusId?: number | null
   onFocusHandled?: () => void
@@ -3822,14 +3835,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <Boxes className="h-3.5 w-3.5 text-slate-500" />
                     <span className="text-xs font-semibold text-slate-700">Quantity</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 p-3 sm:grid-cols-4">
-                    <MoneyRow label="Loaded" value={`${formatNum(t.loaded_qty)} ${t.uom || 'MT'}`} />
-                    <MoneyRow label="Received" value={t.received_qty != null ? `${formatNum(t.received_qty)} ${t.uom || 'MT'}` : '—'} />
+                  <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-4">
+                    <Fact label="Loaded" value={`${formatNum(t.loaded_qty)} ${t.uom || 'MT'}`} />
+                    <Fact label="Received" value={t.received_qty != null ? `${formatNum(t.received_qty)} ${t.uom || 'MT'}` : '—'} />
                     {Number(t.extra_qty) > 0 && (
-                      <MoneyRow label="Split to extra bargain" value={`${formatNum(t.extra_qty)} ${t.uom || 'MT'}`} />
+                      <Fact label="Split to extra bargain" value={`${formatNum(t.extra_qty)} ${t.uom || 'MT'}`} />
                     )}
                     {Number(t.loss_qty) > 0 && (
-                      <MoneyRow label="Lost (replaced)" value={`${formatNum(t.loss_qty)} ${t.uom || 'MT'}`} />
+                      <Fact label="Lost (replaced)" value={`${formatNum(t.loss_qty)} ${t.uom || 'MT'}`} />
                     )}
                   </div>
                 </div>
@@ -3839,13 +3852,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <CalendarDays className="h-3.5 w-3.5 text-slate-500" />
                     <span className="text-xs font-semibold text-slate-700">Timeline</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 p-3 sm:grid-cols-3">
-                    <MoneyRow label="Loaded" value={t.loaded_date ? formatDate(t.loaded_date) : '—'} />
-                    <MoneyRow label="In transit" value={t.transit_date ? formatDate(t.transit_date) : '—'} />
-                    <MoneyRow label="Expected delivery" value={t.expected_delivery_date ? formatDate(t.expected_delivery_date) : '—'} />
-                    <MoneyRow label="Outside factory" value={t.outside_factory_date ? formatDate(t.outside_factory_date) : '—'} />
-                    <MoneyRow label="Inside factory" value={t.inside_factory_date ? formatDate(t.inside_factory_date) : '—'} />
-                    <MoneyRow label="Empty" value={t.empty_date ? formatDate(t.empty_date) : '—'} />
+                  <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3">
+                    <Fact label="Loaded" value={t.loaded_date ? formatDate(t.loaded_date) : '—'} />
+                    <Fact label="In transit" value={t.transit_date ? formatDate(t.transit_date) : '—'} />
+                    <Fact label="Expected delivery" value={t.expected_delivery_date ? formatDate(t.expected_delivery_date) : '—'} />
+                    <Fact label="Outside factory" value={t.outside_factory_date ? formatDate(t.outside_factory_date) : '—'} />
+                    <Fact label="Inside factory" value={t.inside_factory_date ? formatDate(t.inside_factory_date) : '—'} />
+                    <Fact label="Empty" value={t.empty_date ? formatDate(t.empty_date) : '—'} />
                   </div>
                 </div>
 
@@ -3855,12 +3868,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       <Truck className="h-3.5 w-3.5 text-slate-500" />
                       <span className="text-xs font-semibold text-slate-700">Transport</span>
                     </div>
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 p-3">
-                      <MoneyRow label="Transporter" value={t.transporter_name || '—'} />
-                      <MoneyRow label="Rate" value={Number(t.transport_rate_per_ton) > 0 ? `${formatINR(t.transport_rate_per_ton)}/${t.uom || 'MT'}` : '—'} />
-                      <MoneyRow label="Freight amount" value={Number(t.transport_amount) > 0 ? formatINR(t.transport_amount) : '—'} />
+                    <div className="grid grid-cols-2 gap-3 p-3">
+                      <Fact label="Transporter" value={t.transporter_name || '—'} />
+                      <Fact label="Rate" value={Number(t.transport_rate_per_ton) > 0 ? `${formatINR(t.transport_rate_per_ton)}/${t.uom || 'MT'}` : '—'} />
+                      <Fact label="Freight amount" value={Number(t.transport_amount) > 0 ? formatINR(t.transport_amount) : '—'} />
                       {Number(t.shortage_charge_amount) > 0 && (
-                        <MoneyRow label="Shortage charged to transporter" value={formatINR(t.shortage_charge_amount)} />
+                        <Fact label="Shortage charged to transporter" value={formatINR(t.shortage_charge_amount)} />
                       )}
                     </div>
                   </div>
@@ -3872,13 +3885,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       <DoorOpen className="h-3.5 w-3.5 text-slate-500" />
                       <span className="text-xs font-semibold text-slate-700">Gate</span>
                     </div>
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 p-3">
-                      <MoneyRow label="Gate entry" value={t.gate_entry_no} />
-                      <MoneyRow label="Gate date" value={t.gate_date ? formatDate(t.gate_date) : '—'} />
+                    <div className="grid grid-cols-2 gap-3 p-3">
+                      <Fact label="Gate entry" value={t.gate_entry_no} />
+                      <Fact label="Gate date" value={t.gate_date ? formatDate(t.gate_date) : '—'} />
                       {t.gate_tanker_no && String(t.gate_tanker_no).trim() !== String(t.tanker_no || '').trim() && (
-                        <MoneyRow label="Vehicle at gate" value={t.gate_tanker_no} />
+                        <Fact label="Vehicle at gate" value={t.gate_tanker_no} />
                       )}
-                      {Number(t.gate_qty) > 0 && <MoneyRow label="Weighed" value={`${formatNum(t.gate_qty)} ${t.uom || 'MT'}`} />}
+                      {Number(t.gate_qty) > 0 && <Fact label="Weighed" value={`${formatNum(t.gate_qty)} ${t.uom || 'MT'}`} />}
                     </div>
                   </div>
                 )}

@@ -10,7 +10,11 @@ type Status = { state: string; version?: string; percent?: number; message?: str
 // `publish` block in package.json). Update files are downloaded in the
 // background; the renderer is notified so the UI can offer "Restart to update".
 export function registerUpdater(getWindow: () => BrowserWindow | null): void {
+  // Tracked so the periodic re-check below can skip itself once an update is
+  // already found — there's nothing to gain from asking again mid-download.
+  let lastState = 'none'
   const send = (status: Status): void => {
+    lastState = status.state
     const win = getWindow()
     if (win && !win.isDestroyed()) win.webContents.send('update:status', status)
   }
@@ -50,10 +54,17 @@ export function registerUpdater(getWindow: () => BrowserWindow | null): void {
     return { ok: app.isPackaged }
   })
 
-  // Auto-check a few seconds after launch (installed builds only).
+  // Auto-check a few seconds after launch, then every 30 minutes for as long
+  // as the app stays open — this is left running all day, so a release that
+  // ships mid-session has to be noticed without anyone closing and reopening
+  // it. Skipped once an update is already available/downloading/downloaded;
+  // nothing is gained by re-asking mid-download.
   if (app.isPackaged) {
-    setTimeout(() => {
+    const check = (): void => {
+      if (lastState === 'available' || lastState === 'downloading' || lastState === 'downloaded') return
       autoUpdater.checkForUpdates().catch(() => {})
-    }, 4000)
+    }
+    setTimeout(check, 4000)
+    setInterval(check, 30 * 60 * 1000)
   }
 }
