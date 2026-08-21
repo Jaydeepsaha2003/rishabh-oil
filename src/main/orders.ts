@@ -1,5 +1,5 @@
 import type { InValue, ResultSet } from '@libsql/client'
-import { getClient } from './db'
+import { getClient, todayISO } from './db'
 import { getSetting } from './repos'
 import { tankerGateReceived } from './gate'
 import { createBargain, ensureOilType, adjustBargainQty } from './bargains'
@@ -102,6 +102,19 @@ function fyRange(dateStr: string): { start: string; end: string } {
   return { start: `${startY}-04-01`, end: `${startY + 1}-03-31` }
 }
 
+// A Trading supplier can be the same real-world party (PAN) as an existing
+// Manufacturing supplier, kept as its own row so a trading deal never mixes
+// with the manufacturing relationship's bargains. When one is linked to the
+// other (suppliers.linked_party_id), the law's TDS slab is per-PAN, not per
+// row — so every id sharing that link resolves together here.
+async function relatedSupplierIds(supplierId: number): Promise<number[]> {
+  const c = getClient()
+  const row = await c.execute({ sql: 'SELECT linked_party_id FROM suppliers WHERE id = ?', args: [supplierId] })
+  const root = n(row.rows[0]?.linked_party_id) || supplierId
+  const linked = await c.execute({ sql: 'SELECT id FROM suppliers WHERE linked_party_id = ?', args: [root] })
+  return Array.from(new Set([root, supplierId, ...linked.rows.map((r) => Number(r.id))]))
+}
+
 export async function supplierFyTaxable(
   supplierId: number,
   dateStr: string,
@@ -109,21 +122,23 @@ export async function supplierFyTaxable(
 ): Promise<number> {
   const { start, end } = fyRange(dateStr)
   const c = getClient()
+  const ids = await relatedSupplierIds(supplierId)
   const res = await c.execute({
     sql: `SELECT COALESCE(SUM(taxable_value), 0) AS t FROM orders
-          WHERE supplier_id = ? AND order_date BETWEEN ? AND ? AND id != ? AND company_id = ?`,
-    args: [supplierId, start, dateStr, excludeId || 0, getActiveCompanyId()]
+          WHERE supplier_id IN (${ids.map(() => '?').join(',')}) AND order_date BETWEEN ? AND ? AND id != ? AND company_id = ?`,
+    args: [...ids, start, dateStr, excludeId || 0, getActiveCompanyId()]
   })
   // Add the "purchase bill amount as on <date>" if that date is in this FY —
-  // it seeds the cumulative taxable so the TDS slab picks up from the right point.
+  // it seeds the cumulative taxable so the TDS slab picks up from the right
+  // point. Any of the linked rows can carry its own opening figure.
   const sup = await c.execute({
-    sql: 'SELECT opening_purchase_amount, opening_purchase_date FROM suppliers WHERE id = ?',
-    args: [supplierId]
+    sql: `SELECT opening_purchase_amount, opening_purchase_date FROM suppliers WHERE id IN (${ids.map(() => '?').join(',')})`,
+    args: ids
   })
   let opening = 0
-  if (sup.rows.length) {
-    const od = String(sup.rows[0].opening_purchase_date || '')
-    if (od && od >= start && od <= end) opening = Number(sup.rows[0].opening_purchase_amount) || 0
+  for (const r of sup.rows) {
+    const od = String(r.opening_purchase_date || '')
+    if (od && od >= start && od <= end) opening += Number(r.opening_purchase_amount) || 0
   }
   return (Number(res.rows[0].t) || 0) + opening
 }
@@ -515,6 +530,12 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   // it just also never lands in stock (affects_stock, set below).
   const isTrading = !!v.is_trading
   const isConsignment = !!v.is_consignment || !!supplier?.skip_tanker_stages || isTrading
+  // The company this purchase belongs to. It is chosen on the form, so a tanker
+  // recorded under the wrong company can be billed into the right one — the
+  // tankers move with the invoice (see assignTankers). A consignment lot pick
+  // below must resolve against this SAME company, since a deposit and the
+  // purchase drawing on it always belong to one company together.
+  const bookInCompany = v.company_id ? n(v.company_id) : getActiveCompanyId()
   // Tankers picked from Log Consignment Stock, each with the bargain(s) it draws
   // against. The invoiced quantity is their sum, exactly as a tanker-based
   // invoice adds up its loaded qty. Validated up front so a bad pick never
@@ -522,7 +543,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   const picks = toLotPicks(v.consignment_lot_ids)
   let lotAlloc: LotAllocation = { total: 0, lines: [], primaryBargainId: 0 }
   if (picks.length) {
-    lotAlloc = await validateConsignmentLots(picks, n(v.supplier_id), n(v.oil_type_id))
+    lotAlloc = await validateConsignmentLots(picks, n(v.supplier_id), n(v.oil_type_id), 0, bookInCompany)
     v.ordered_qty = lotAlloc.total
     // The invoice's own bargain_id is the first tanker's — the split lives on
     // the tankers, as it does for loaded ones.
@@ -549,20 +570,18 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     // quantity typed. A plain direct-purchase supplier holds nothing, so it is
     // unrestricted. A Trading purchase never draws on consigned stock at all —
     // it is a separate pass-through deal, not a draw against what that
-    // supplier has deposited with us.
-    const deposited = isTrading ? 0 : await consignmentDeposited(n(v.supplier_id), n(v.oil_type_id))
+    // supplier has deposited with us. The balance is checked in the SAME
+    // company the invoice is being booked into — a consignment deposit and its
+    // purchase always belong to one company together.
+    const deposited = isTrading ? 0 : await consignmentDeposited(n(v.supplier_id), n(v.oil_type_id), bookInCompany)
     if (deposited > 0) {
-      const avail = await consignmentAvailable(n(v.supplier_id), n(v.oil_type_id))
+      const avail = await consignmentAvailable(n(v.supplier_id), n(v.oil_type_id), bookInCompany)
       if (n(v.ordered_qty) > avail + 1e-6) {
         throw new Error(`Only ${avail.toFixed(3)} of consigned stock is available for this supplier and product`)
       }
     }
   }
   const prior = await supplierFyTaxable(n(v.supplier_id), String(v.order_date), 0)
-  // The company this purchase belongs to. It is chosen on the form, so a tanker
-  // recorded under the wrong company can be billed into the right one — the
-  // tankers move with the invoice (see assignTankers).
-  const bookInCompany = v.company_id ? n(v.company_id) : getActiveCompanyId()
   const roundOff = n(v.round_off)
   // Consignment tankers bring their own per-bargain split; otherwise the split
   // comes from the loaded tankers on the invoice.
@@ -650,7 +669,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   const id = Number(res.lastInsertRowid)
   if (isConsignment) {
     if (picks.length) {
-      const alloc = await assignConsignmentLots(id, picks, n(v.supplier_id), n(v.oil_type_id))
+      const alloc = await assignConsignmentLots(id, picks, n(v.supplier_id), n(v.oil_type_id), bookInCompany)
       // Mirror the tanker split onto the invoice, which is what the register reads.
       await saveOrderBargains(id, alloc.lines.map((l) => ({ bargain_id: l.bargain_id, qty: l.qty })))
     } else {
@@ -658,7 +677,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
         id,
         obLines.length ? obLines : v.bargain_id ? [{ bargain_id: n(v.bargain_id), qty: n(v.ordered_qty) }] : []
       )
-      await autoAssignConsignmentLots(id, n(v.supplier_id), n(v.oil_type_id), n(v.ordered_qty), n(v.bargain_id))
+      await autoAssignConsignmentLots(id, n(v.supplier_id), n(v.oil_type_id), n(v.ordered_qty), n(v.bargain_id), bookInCompany)
     }
   } else {
     await assignTankers(id, v.tanker_ids, n(v.bargain_id), n(v.transporter_id), bookInCompany)
@@ -1349,7 +1368,7 @@ export async function replaceTanker(id: number, v: Row): Promise<{ id: number }>
     throw new Error(`Loss cannot be at or above the ${n(tanker.loaded_qty)} ${tanker.uom || 'MT'} loaded — nothing would remain to replace`)
   }
   const newLoadedQty = Math.round((n(tanker.loaded_qty) - lossQty) * 1000) / 1000
-  const replacedDate = v.date ? String(v.date).slice(0, 10) : new Date().toISOString().slice(0, 10)
+  const replacedDate = v.date ? String(v.date).slice(0, 10) : todayISO()
   await c.execute({
     sql: 'UPDATE purchase_tankers SET tanker_no = ?, loaded_qty = ?, loss_qty = loss_qty + ? WHERE id = ?',
     args: [newTankerNo, newLoadedQty, lossQty, id]

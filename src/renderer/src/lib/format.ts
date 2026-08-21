@@ -44,8 +44,13 @@ export function formatDateTime(value: string | null | undefined): string {
   return `${dd}-${mm}-${yy} ${hh}:${mi}`
 }
 
+// The LOCAL calendar day — never `.toISOString()`, which renders in UTC. For
+// any timezone ahead of UTC (IST is UTC+5:30), the stretch between local
+// midnight and UTC midnight would read back as YESTERDAY in every date field
+// that defaults to "today".
 export function todayISO(): string {
-  return new Date().toISOString().slice(0, 10)
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 // Convert a quantity between units of the SAME dimension (mass or volume).

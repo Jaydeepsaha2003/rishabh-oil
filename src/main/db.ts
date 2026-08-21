@@ -26,6 +26,17 @@ export function resetClient(): void {
   client = null
 }
 
+// Today's date, in the LOCAL calendar day — never `new Date().toISOString()`,
+// which renders in UTC. For any timezone ahead of UTC (IST is UTC+5:30), the
+// stretch between local midnight and UTC midnight reads back as YESTERDAY —
+// exactly what stamped a gate entry's OUT date a day before its own IN date
+// when the weighment was saved just after midnight. Every "today" a date
+// field defaults to, or a save-time stamp falls back to, must use this.
+export function todayISO(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 function loadEnv(): void {
   // Node 22+ can read a local .env into process.env. In dev the cwd is the
   // project root, so the .env you create there is picked up. (Packaged builds
@@ -1016,7 +1027,15 @@ const MIGRATIONS = [
     additional_interest REAL NOT NULL DEFAULT 0,
     interest_days INTEGER NOT NULL DEFAULT 0
   )`,
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_order_bargain_interest ON order_bargain_interest(order_id, bargain_id)'
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_order_bargain_interest ON order_bargain_interest(order_id, bargain_id)',
+  // A Trading party can be the same real-world PAN as an existing
+  // Manufacturing party, entered as its own row so a trading deal never mixes
+  // with the manufacturing relationship's bargains/tankers. Linking the two
+  // means the TDS slab (which the law applies per PAN, not per row) sums
+  // both rows' taxable value together instead of quietly restarting the
+  // slab at zero for whichever row a given invoice happens to sit under.
+  'ALTER TABLE suppliers ADD COLUMN linked_party_id INTEGER REFERENCES suppliers(id)',
+  'ALTER TABLE customers ADD COLUMN linked_party_id INTEGER REFERENCES customers(id)'
 ]
 
 

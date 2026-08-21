@@ -1,5 +1,5 @@
 import type { ResultSet } from '@libsql/client'
-import { getClient } from './db'
+import { getClient, todayISO } from './db'
 import { getActiveCompanyId } from './company'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -292,7 +292,7 @@ export async function adjustBargainQty(
     args: [newQty, newQty * rate, remarks || null, id]
   })
   // Dated log so the top-up shows under "Addition" for its month in the register.
-  const adjDate = (date && String(date).slice(0, 10)) || new Date().toISOString().slice(0, 10)
+  const adjDate = (date && String(date).slice(0, 10)) || todayISO()
   await c.execute({
     sql: "INSERT INTO bargain_adjustments (kind, bargain_id, delta, adj_date, note) VALUES ('purchase', ?, ?, ?, ?)",
     args: [id, d, adjDate, note ? String(note).trim() : null]

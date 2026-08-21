@@ -1,5 +1,5 @@
 import type { ResultSet } from '@libsql/client'
-import { getClient } from './db'
+import { getClient, todayISO } from './db'
 import { getActiveCompanyId } from './company'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -93,7 +93,7 @@ export async function adjustSkuStock(
   if (d === 0) throw new Error('Enter a quantity to add or remove')
   const pkg = await c.execute({ sql: 'SELECT id FROM packagings WHERE id = ?', args: [pid] })
   if (!pkg.rows.length) throw new Error('SKU not found')
-  const adjDate = (date && String(date).slice(0, 10)) || new Date().toISOString().slice(0, 10)
+  const adjDate = (date && String(date).slice(0, 10)) || todayISO()
   await c.execute({
     sql: `INSERT INTO sku_adjustments (company_id, packaging_id, delta, adj_date, note)
           VALUES (?, ?, ?, ?, ?)`,

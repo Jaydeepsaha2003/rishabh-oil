@@ -392,7 +392,17 @@ export function GateEntry(): React.JSX.Element {
   // what it has actually traded. Anything that belongs to other categories is
   // hidden — HUSK means HUSK parties. "Show all" below the field is the escape
   // for a party that has neither a tag nor any history yet.
-  function partiesIn(list: Row[], side: 'supplier' | 'customer', category: string): { rows: Row[]; narrowed: boolean } {
+  // keepId: a party already linked on the row being edited stays in the list
+  // even if it doesn't match the category — otherwise editing an entry whose
+  // party was tagged (or re-tagged) into a different category than the entry
+  // itself makes the field render as if the party had been lost, when it is
+  // really just filtered out of view.
+  function partiesIn(
+    list: Row[],
+    side: 'supplier' | 'customer',
+    category: string,
+    keepId?: number | string | null
+  ): { rows: Row[]; narrowed: boolean } {
     const cat = String(category || '').trim().toUpperCase()
     if (!cat || showAllParties) return { rows: list, narrowed: false }
     const traded = new Set(
@@ -404,6 +414,11 @@ export function GateEntry(): React.JSX.Element {
       const tag = tagOf(x)
       return tag ? tag === cat : traded.has(Number(x.id))
     })
+    const keep = Number(keepId) || 0
+    if (keep && !hit.some((x) => Number(x.id) === keep)) {
+      const current = list.find((x) => Number(x.id) === keep)
+      if (current) hit.unshift(current)
+    }
     return { rows: hit, narrowed: hit.length < list.length }
   }
 
@@ -609,6 +624,15 @@ export function GateEntry(): React.JSX.Element {
     return d == null ? f : { ...f, received_qty: String(d) }
   }
 
+  // The manual "Party (supplier or customer)" picker only ever applies to a
+  // hand-typed vehicle that is not Direct MNC, not carrying a tanker (whose
+  // party comes from its bargain), not already named by a sale invoice, and
+  // not Miscellaneous (which has no trading party at all) — same rule the
+  // arrival/gate-out forms use when first recording the entry.
+  function partyEditable(f: Row): boolean {
+    return !f.is_direct_mnc && !f.tanker_id && !f.invoice_group && !isMisc(f.rec_type)
+  }
+
   function openEdit(row: Row): void {
     setEditRow(row)
     setEditForm({
@@ -626,12 +650,29 @@ export function GateEntry(): React.JSX.Element {
       uom: row.uom || 'MT',
       note: row.note || '',
       is_direct_mnc: !!row.is_direct_mnc,
-      supplier_id: row.supplier_id ? String(row.supplier_id) : ''
+      invoice_group: row.invoice_group || '',
+      supplier_id: row.supplier_id ? String(row.supplier_id) : '',
+      customer_id: row.customer_id ? String(row.customer_id) : '',
+      party: row.supplier_id ? `s:${row.supplier_id}` : row.customer_id ? `c:${row.customer_id}` : ''
     })
   }
 
   async function saveEdit(): Promise<void> {
     if (!editRow) return
+    // Whichever of supplier/customer the manual picker resolved to, when it
+    // was eligible to be shown at all — otherwise the party this entry
+    // already carries (from its tanker or sale invoice) is left untouched.
+    const editable = partyEditable(editForm)
+    const supplierId = editForm.is_direct_mnc
+      ? editForm.supplier_id ? Number(editForm.supplier_id) : null
+      : editable
+        ? String(editForm.party || '').startsWith('s:') ? Number(String(editForm.party).slice(2)) : null
+        : editForm.supplier_id ? Number(editForm.supplier_id) : null
+    const customerId = !editForm.is_direct_mnc && editable && String(editForm.party || '').startsWith('c:')
+      ? Number(String(editForm.party).slice(2))
+      : !editForm.is_direct_mnc && !editable && editForm.customer_id
+        ? Number(editForm.customer_id)
+        : null
     try {
       await window.api.gate.update(editRow.id, {
         ...editForm,
@@ -641,7 +682,8 @@ export function GateEntry(): React.JSX.Element {
         dispatch_na: isNa(editForm.dispatch_qty),
         received_qty: Number(editForm.received_qty) || 0,
         is_direct_mnc: !!editForm.is_direct_mnc,
-        supplier_id: editForm.is_direct_mnc && editForm.supplier_id ? Number(editForm.supplier_id) : null
+        supplier_id: supplierId,
+        customer_id: customerId
       })
       toast.success('Gate entry updated')
       setEditRow(null)
@@ -1953,28 +1995,80 @@ export function GateEntry(): React.JSX.Element {
             </label>
             {editForm.is_direct_mnc && (
               <div className="flex flex-col gap-1.5">
-                <Label>MNC / party *</Label>
+                <Label>MNC / party</Label>
+                <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                  {editForm.supplier_id ? (
+                    suppliers.find((x) => String(x.id) === String(editForm.supplier_id))?.name || '—'
+                  ) : (
+                    <span className="italic text-muted-foreground">
+                      Not set yet — assign it from Consignment stock → Validate
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+            {partyEditable(editForm) && (
+              <div className="flex flex-col gap-1.5">
+                <Label>
+                  Party <span className="text-[10px] font-normal text-muted-foreground">(supplier or customer)</span>
+                </Label>
                 <Select
                   searchable
-                  value={String(editForm.supplier_id || '')}
-                  onValueChange={(v) => setEditForm((p) => ({ ...p, supplier_id: v }))}
+                  value={String(editForm.party || '')}
+                  onValueChange={(v) => setEditForm((p) => ({ ...p, party: v }))}
                 >
                   <SelectTrigger><SelectValue placeholder="Select the party" /></SelectTrigger>
-                  <SelectContent>
-                    {partiesIn(suppliers, 'supplier', String(editForm.rec_type || '')).rows.map((x) => (
-                      <SelectItem key={x.id} value={String(x.id)}>{x.name}</SelectItem>
-                    ))}
+                  <SelectContent className="max-h-72">
+                    {(() => {
+                      const keepSup = String(editForm.party || '').startsWith('s:') ? String(editForm.party).slice(2) : null
+                      const keepCus = String(editForm.party || '').startsWith('c:') ? String(editForm.party).slice(2) : null
+                      const sup = partiesIn(allSuppliers, 'supplier', String(editForm.rec_type || ''), keepSup)
+                      const cus = partiesIn(customers, 'customer', String(editForm.rec_type || ''), keepCus)
+                      return (
+                        <>
+                          {sup.rows.length > 0 && (
+                            <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                              Suppliers
+                            </div>
+                          )}
+                          {sup.rows.map((x) => (
+                            <SelectItem key={`s${x.id}`} value={`s:${x.id}`}>{x.name}</SelectItem>
+                          ))}
+                          {cus.rows.length > 0 && (
+                            <div className="mt-1 border-t px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                              Customers
+                            </div>
+                          )}
+                          {cus.rows.map((x) => (
+                            <SelectItem key={`c${x.id}`} value={`c:${x.id}`}>{x.name}</SelectItem>
+                          ))}
+                        </>
+                      )
+                    })()}
                   </SelectContent>
                 </Select>
               </div>
             )}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <div className="flex flex-col gap-1.5"><Label>{editForm.is_direct_mnc ? 'Vehicle number *' : 'Tanker no *'}</Label><Input value={editForm.tanker_no || ''} onChange={(e) => setEditForm((p) => ({ ...p, tanker_no: e.target.value }))} /></div>
               <div className="flex flex-col gap-1.5">
                 <Label>Rec type</Label>
                 <Select searchable value={editForm.rec_type || 'OIL'} onValueChange={(v) => setEditForm((p) => ({ ...p, rec_type: v }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>{recTypes.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Product</Label>
+                <Select
+                  searchable
+                  value={String(editForm.oil_type_id || '')}
+                  onValueChange={(v) => setEditForm((p) => ({ ...p, oil_type_id: v }))}
+                >
+                  <SelectTrigger><SelectValue placeholder="Select product" /></SelectTrigger>
+                  <SelectContent>
+                    {products.map((p) => <SelectItem key={p.id} value={String(p.id)}>{p.code || p.name}</SelectItem>)}
+                  </SelectContent>
                 </Select>
               </div>
             </div>

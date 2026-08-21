@@ -1,9 +1,13 @@
+import { useEffect, useState } from 'react'
 import { PageHeader } from '@/components/PageHeader'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { loadUser } from '@/lib/session'
 import { canWrite } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
-import { COMPANY_TYPES, BUSINESS_TYPES } from '@/lib/constants'
+import { COMPANY_TYPES, BUSINESS_TYPES, isTradingParty } from '@/lib/constants'
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Row = Record<string, any>
 
 const baseFields: FieldDef[] = [
   { key: 'name', label: 'Name', type: 'text', required: true },
@@ -11,6 +15,17 @@ const baseFields: FieldDef[] = [
   { key: 'supplier_type', label: 'Category', type: 'creatable', options: [] },
   { key: 'company_type', label: 'Company type', type: 'select', options: COMPANY_TYPES },
   { key: 'business_type', label: 'Trading or Manufacturing', type: 'select', options: BUSINESS_TYPES, default: 'Manufacturing' },
+  // Only meaningful for a Trading supplier that is, in real life, the same
+  // party (PAN) as one of the Manufacturing suppliers already on file — the
+  // TDS slab is then tracked across both rows together instead of each
+  // quietly restarting the slab at zero.
+  {
+    key: 'linked_party_id',
+    label: 'Same party as (Manufacturing) — for TDS slab',
+    type: 'select',
+    options: [],
+    enabledWhen: (f) => isTradingParty(f)
+  },
   { key: 'gstin', label: 'GSTIN', type: 'text' },
   { key: 'state', label: 'State', type: 'text' },
   { key: 'gst_pct', label: 'GST %', type: 'number', default: 0 },
@@ -39,7 +54,7 @@ const TYPE_DEFAULTS: Record<string, Record<string, number | boolean>> = {
   CHEMICAL: { tds_pct: 0.1, tds_threshold: 5000000, tds_above_only: true }
 }
 
-const columns: ColumnDef[] = [
+const baseColumns: ColumnDef[] = [
   { key: 'name', label: 'Name' },
   { key: 'supplier_type', label: 'Type' },
   { key: 'business_type', label: 'Trading/Mfg' },
@@ -53,12 +68,36 @@ const columns: ColumnDef[] = [
 export function Suppliers(): React.JSX.Element {
   // A supplier is a buying relationship.
   const { categories } = useCategories([], 'purchase')
-  const fields = baseFields.map((f) =>
-    f.key === 'supplier_type' ? { ...f, options: categories.map((c) => ({ value: c, label: c })) } : f
+  // For linking a Trading supplier to its real-world Manufacturing
+  // counterpart, so the TDS slab is tracked across both rows together.
+  const [allSuppliers, setAllSuppliers] = useState<Row[]>([])
+  useEffect(() => {
+    window.api.data.list('suppliers').then(setAllSuppliers).catch(() => setAllSuppliers([]))
+  }, [])
+  const manufacturingOptions = allSuppliers
+    .filter((s) => !isTradingParty(s) && s.active)
+    .map((s) => ({ value: String(s.id), label: s.name }))
+  const nameById = new Map(allSuppliers.map((s) => [String(s.id), s.name]))
+
+  const fields = baseFields.map((f) => {
+    if (f.key === 'supplier_type') return { ...f, options: categories.map((c) => ({ value: c, label: c })) }
+    if (f.key === 'linked_party_id') return { ...f, options: manufacturingOptions }
+    return f
+  })
+  const columns = baseColumns.map((c) =>
+    c.key === 'business_type'
+      ? {
+          ...c,
+          value: (row: Row) =>
+            row.linked_party_id && nameById.get(String(row.linked_party_id))
+              ? `${row.business_type} · same as ${nameById.get(String(row.linked_party_id))}`
+              : String(row.business_type || '')
+        }
+      : c
   )
   return (
     <>
-      <PageHeader title="Suppliers" subtitle="GST, TDS slab, credit period, interest rule and purchase flow per supplier" hint="Slab TDS is cumulative per financial year: a base % up to the threshold, then a higher % above it. 'Below slab no TDS' charges TDS only above the threshold. 'Direct purchase' suppliers keep their goods at our site, so no tanker is sent to them — the purchase is booked in one step against the bargain." />
+      <PageHeader title="Suppliers" subtitle="GST, TDS slab, credit period, interest rule and purchase flow per supplier" hint="Slab TDS is cumulative per financial year: a base % up to the threshold, then a higher % above it. 'Below slab no TDS' charges TDS only above the threshold. 'Direct purchase' suppliers keep their goods at our site, so no tanker is sent to them — the purchase is booked in one step against the bargain. A Trading supplier that is really the same party as one of your Manufacturing suppliers can be linked to it, so the TDS slab tracks both together instead of restarting at zero." />
       <div className="px-4 py-6">
         <EntityManager
           table="suppliers"

@@ -40,6 +40,8 @@ export function Consignment(): React.JSX.Element {
   const [products, setProducts] = useState<Row[]>([])
   const [bargains, setBargains] = useState<Row[]>([])
   const [settings, setSettings] = useState<Row>({})
+  const [companies, setCompanies] = useState<Row[]>([])
+  const [activeCompany, setActiveCompany] = useState<number>(0)
   const [loading, setLoading] = useState(true)
 
   // Period for the register: opening balance before it, deposits/invoices
@@ -68,14 +70,16 @@ export function Consignment(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [d, sm, pg, s, p, b, cfg] = await Promise.all([
+    const [d, sm, pg, s, p, b, cfg, co, act] = await Promise.all([
       window.api.consignment.list(),
       window.api.consignment.summary(ranged ? { from, to } : undefined),
       window.api.consignment.pending(),
       window.api.data.list('suppliers'),
       window.api.data.list('products'),
       window.api.bargains.list(),
-      window.api.settings.all()
+      window.api.settings.all(),
+      window.api.company.list(),
+      window.api.company.getActive()
     ])
     setDeposits(d)
     setSummary(sm)
@@ -84,6 +88,8 @@ export function Consignment(): React.JSX.Element {
     setProducts(p.filter((x) => x.active && x.category === 'raw'))
     setBargains(b)
     setSettings(cfg)
+    setCompanies(co.filter((x) => x.active))
+    setActiveCompany(Number(act?.id) || 0)
     setLoading(false)
   }, [ranged, from, to])
 
@@ -104,7 +110,15 @@ export function Consignment(): React.JSX.Element {
 
   function openAddDeposit(): void {
     setEditing(null)
-    setDepForm({ supplier_id: '', product_id: '', qty: '', uom: defaultUom, deposit_date: todayISO(), note: '' })
+    setDepForm({
+      supplier_id: '',
+      product_id: '',
+      qty: '',
+      uom: defaultUom,
+      deposit_date: todayISO(),
+      note: '',
+      company_id: String(activeCompany || '')
+    })
     setDepError(null)
     setDepOpen(true)
   }
@@ -133,7 +147,8 @@ export function Consignment(): React.JSX.Element {
           : '',
       uom: g.uom || defaultUom,
       deposit_date: g.entry_date ?? todayISO(),
-      note: g.note || ''
+      note: g.note || '',
+      company_id: String(activeCompany || '')
     })
     setDepError(null)
     setDepOpen(true)
@@ -149,13 +164,15 @@ export function Consignment(): React.JSX.Element {
       shortage_pct: row.shortage_pct ?? '',
       uom: row.uom ?? defaultUom,
       deposit_date: row.deposit_date ?? todayISO(),
-      note: row.note ?? ''
+      note: row.note ?? '',
+      company_id: String(row.company_id ?? activeCompany ?? '')
     })
     setDepError(null)
     setDepOpen(true)
   }
 
   async function saveDeposit(): Promise<void> {
+    if (!depForm.company_id) return setDepError('Choose which company this stock belongs to')
     if (!depForm.supplier_id) return setDepError('Supplier is required')
     if (!depForm.product_id) return setDepError('Product is required')
     if (!depForm.qty || Number(depForm.qty) <= 0) return setDepError('Quantity must be greater than 0')
@@ -167,6 +184,7 @@ export function Consignment(): React.JSX.Element {
       qty: Number(depForm.qty),
       uom: depForm.uom || defaultUom,
       deposit_date: depForm.deposit_date,
+      company_id: Number(depForm.company_id),
       note:
         depForm.note ||
         (Number(depForm.shortage_pct) > 0 && Number(depForm.weighed_qty) > 0
@@ -233,7 +251,7 @@ export function Consignment(): React.JSX.Element {
     return Math.min(consign, barg)
   }, [book, chosenBargain])
 
-  async function openBooking(sumRow: Row): Promise<void> {
+  async function openBooking(sumRow: Row, presetQty?: unknown): Promise<void> {
     const supplier = suppliers.find((x) => String(x.id) === String(sumRow.supplier_id))
     setBook(sumRow)
     setBookError(null)
@@ -241,7 +259,7 @@ export function Consignment(): React.JSX.Element {
       bargain_id: '',
       invoice_no: '',
       order_date: todayISO(),
-      ordered_qty: '',
+      ordered_qty: presetQty ?? '',
       invoice_rate: '',
       gst_pct: supplier?.gst_pct ?? 0,
       gst_type: 'CGST_SGST',
@@ -253,8 +271,22 @@ export function Consignment(): React.JSX.Element {
       interest_pct: supplier?.interest_pct ?? 0,
       interest_days: supplier?.interest_days ?? 0,
       remarks: '',
-      tds_prior: 0
+      tds_prior: 0,
+      company_id: String(activeCompany || '')
     })
+  }
+
+  // Shortcut from a single lot's edit dialog: book straight against that lot's
+  // supplier + product, defaulting the quantity to what this lot holds.
+  function openBookFromLot(row: Row): void {
+    const sumRow = summary.find(
+      (s) => String(s.supplier_id) === String(row.supplier_id) && String(s.product_id) === String(row.product_id)
+    )
+    if (!sumRow) {
+      toast.error('No consignment balance found for this supplier and product')
+      return
+    }
+    openBooking(sumRow, row.qty)
   }
 
   // When a bargain is chosen, default the invoice rate to its bargain rate.
@@ -300,6 +332,7 @@ export function Consignment(): React.JSX.Element {
 
   async function saveBooking(): Promise<void> {
     if (!book) return
+    if (!bookForm.company_id) return setBookError('Choose which company to book this purchase into')
     if (!bookForm.bargain_id) return setBookError('Select the bargain to invoice against')
     if (!bookForm.invoice_no) return setBookError('Invoice number is required')
     const qty = Number(bookForm.ordered_qty) || 0
@@ -313,6 +346,7 @@ export function Consignment(): React.JSX.Element {
     try {
       await window.api.orders.create({
         is_consignment: true,
+        company_id: Number(bookForm.company_id),
         invoice_no: bookForm.invoice_no,
         order_date: bookForm.order_date,
         bargain_id: Number(bookForm.bargain_id),
@@ -722,6 +756,27 @@ export function Consignment(): React.JSX.Element {
               </div>
             )}
             <div className="flex flex-col gap-1.5">
+              <Label>Company *</Label>
+              <Select
+                value={String(depForm.company_id || '')}
+                onValueChange={(v) => setDepForm((p) => ({ ...p, company_id: v }))}
+              >
+                <SelectTrigger><SelectValue placeholder="Select the company" /></SelectTrigger>
+                <SelectContent>
+                  {companies.map((cm) => (
+                    <SelectItem key={cm.id} value={String(cm.id)}>{cm.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {String(depForm.company_id || '') !== String(activeCompany) && !!depForm.company_id && (
+                <span className="text-[11px] font-medium text-amber-700">
+                  {editing
+                    ? `This stock will move to ${companies.find((cm) => String(cm.id) === String(depForm.company_id))?.name}.`
+                    : `This stock will be maintained under ${companies.find((cm) => String(cm.id) === String(depForm.company_id))?.name}, not the company you are viewing now.`}
+                </span>
+              )}
+            </div>
+            <div className="flex flex-col gap-1.5">
               <Label className="flex items-center gap-1.5">
                 Supplier *
                 {depForm.supplier_prefilled && (
@@ -807,6 +862,11 @@ export function Consignment(): React.JSX.Element {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDepOpen(false)} disabled={savingDep}>Cancel</Button>
+            {editing && (
+              <Button variant="outline" onClick={() => { setDepOpen(false); openBookFromLot(editing) }} disabled={savingDep}>
+                Book this stock
+              </Button>
+            )}
             <Button onClick={saveDeposit} disabled={savingDep}>{savingDep ? 'Saving…' : 'Save'}</Button>
           </DialogFooter>
         </DialogContent>
@@ -826,6 +886,26 @@ export function Consignment(): React.JSX.Element {
               <div className="rounded-md bg-muted px-3 py-2 text-sm">
                 {book.supplier_name} · {book.product_code || book.product_name} · available{' '}
                 <b>{formatNum(book.balance)} {book.uom}</b>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Book into company *</Label>
+                <Select
+                  value={String(bookForm.company_id || '')}
+                  onValueChange={(v) => setBookForm((p) => ({ ...p, company_id: v }))}
+                >
+                  <SelectTrigger><SelectValue placeholder="Select the company" /></SelectTrigger>
+                  <SelectContent>
+                    {companies.map((cm) => (
+                      <SelectItem key={cm.id} value={String(cm.id)}>{cm.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {String(bookForm.company_id || '') !== String(activeCompany) && !!bookForm.company_id && (
+                  <span className="text-[11px] font-medium text-amber-700">
+                    This purchase will be booked into{' '}
+                    {companies.find((cm) => String(cm.id) === String(bookForm.company_id))?.name}.
+                  </span>
+                )}
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label>Bargain *</Label>

@@ -1,5 +1,5 @@
 import type { ResultSet } from '@libsql/client'
-import { getClient } from './db'
+import { getClient, todayISO } from './db'
 import { deleteJournalByRef, postSaleJournal } from './journal'
 import { getActiveCompanyId } from './company'
 import { productStockAvailable, stockMap } from './stock'
@@ -155,6 +155,19 @@ function fyRange(dateStr: string): { start: string; end: string } {
   return { start: `${startY}-04-01`, end: `${startY + 1}-03-31` }
 }
 
+// A Trading customer can be the same real-world party (PAN) as an existing
+// Manufacturing customer, kept as its own row so a trading deal never mixes
+// with the manufacturing relationship's bargains. When one is linked to the
+// other (customers.linked_party_id), the law's TDS slab is per-PAN, not per
+// row — so every id sharing that link resolves together here.
+async function relatedCustomerIds(customerId: number): Promise<number[]> {
+  const c = getClient()
+  const row = await c.execute({ sql: 'SELECT linked_party_id FROM customers WHERE id = ?', args: [customerId] })
+  const root = Number(row.rows[0]?.linked_party_id) || customerId
+  const linked = await c.execute({ sql: 'SELECT id FROM customers WHERE linked_party_id = ?', args: [root] })
+  return Array.from(new Set([root, customerId, ...linked.rows.map((r) => Number(r.id))]))
+}
+
 // What has already been billed to this customer this financial year, which is
 // where the slab picks up from.
 export async function customerFyTaxable(
@@ -163,10 +176,11 @@ export async function customerFyTaxable(
   excludeId: number
 ): Promise<number> {
   const { start } = fyRange(dateStr)
+  const ids = await relatedCustomerIds(customerId)
   const res = await getClient().execute({
     sql: `SELECT COALESCE(SUM(amount), 0) AS t FROM sales
-          WHERE customer_id = ? AND sale_date BETWEEN ? AND ? AND id != ? AND company_id = ?`,
-    args: [customerId, start, String(dateStr).slice(0, 10), excludeId || 0, getActiveCompanyId()]
+          WHERE customer_id IN (${ids.map(() => '?').join(',')}) AND sale_date BETWEEN ? AND ? AND id != ? AND company_id = ?`,
+    args: [...ids, start, String(dateStr).slice(0, 10), excludeId || 0, getActiveCompanyId()]
   })
   return Number(res.rows[0].t) || 0
 }
@@ -538,7 +552,7 @@ export async function adjustSalesBargainQty(
     args: [newQty, newNote || null, id]
   })
   // Dated log so the top-up shows under "Addition" for its month in the register.
-  const adjDate = (date && String(date).slice(0, 10)) || new Date().toISOString().slice(0, 10)
+  const adjDate = (date && String(date).slice(0, 10)) || todayISO()
   await c.execute({
     sql: "INSERT INTO bargain_adjustments (kind, bargain_id, delta, adj_date, note) VALUES ('sales', ?, ?, ?, ?)",
     args: [id, d, adjDate, note ? String(note).trim() : null]

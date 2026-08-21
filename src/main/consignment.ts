@@ -1,5 +1,5 @@
 import type { ResultSet } from '@libsql/client'
-import { getClient } from './db'
+import { getClient, todayISO } from './db'
 import { getActiveCompanyId } from './company'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -32,7 +32,7 @@ export async function saveOpeningStock(v: Row): Promise<{ id: number }> {
   if (!productId) throw new Error('Choose the product')
   if (qty <= 0) throw new Error('Enter an opening quantity greater than zero — use the history to restore an older figure')
   if (!date) throw new Error('Enter the opening date')
-  if (date > new Date().toISOString().slice(0, 10)) throw new Error('The opening date cannot be in the future')
+  if (date > todayISO()) throw new Error('The opening date cannot be in the future')
 
   const existing = await c.execute({
     sql: `SELECT * FROM consignment_stock
@@ -85,19 +85,19 @@ export async function listOpeningLog(supplierId: number, productId: number): Pro
   return toPlain(res)
 }
 
-export async function consignmentDeposited(supplierId: number, productId: number): Promise<number> {
+export async function consignmentDeposited(supplierId: number, productId: number, companyId?: number): Promise<number> {
   const res = await getClient().execute({
     sql: 'SELECT COALESCE(SUM(qty), 0) AS q FROM consignment_stock WHERE company_id = ? AND supplier_id = ? AND product_id = ?',
-    args: [getActiveCompanyId(), supplierId, productId]
+    args: [companyId || getActiveCompanyId(), supplierId, productId]
   })
   return n(res.rows[0]?.q)
 }
 
 // Consigned qty still lying at our place (deposited − invoiced) for a
-// supplier+product in the active company.
-export async function consignmentAvailable(supplierId: number, productId: number): Promise<number> {
+// supplier+product, in the given company (defaults to the active one).
+export async function consignmentAvailable(supplierId: number, productId: number, companyId?: number): Promise<number> {
   const c = getClient()
-  const cid = getActiveCompanyId()
+  const cid = companyId || getActiveCompanyId()
   const dep = await c.execute({
     sql: 'SELECT COALESCE(SUM(qty), 0) AS q FROM consignment_stock WHERE company_id = ? AND supplier_id = ? AND product_id = ?',
     args: [cid, supplierId, productId]
@@ -195,7 +195,8 @@ export async function validateConsignmentLots(
   picks: unknown,
   supplierId: number,
   productId: number,
-  orderId = 0
+  orderId = 0,
+  companyId?: number
 ): Promise<LotAllocation> {
   const list = toLotPicks(picks)
   if (!list.length) return { total: 0, lines: [], primaryBargainId: 0 }
@@ -203,7 +204,7 @@ export async function validateConsignmentLots(
   const res = await getClient().execute({
     sql: `SELECT id, supplier_id, product_id, qty, order_id, tanker_no
           FROM consignment_stock WHERE company_id = ? AND id IN (${ids.map(() => '?').join(',')})`,
-    args: [getActiveCompanyId(), ...ids]
+    args: [companyId || getActiveCompanyId(), ...ids]
   })
   if (res.rows.length !== ids.length) throw new Error('One of the selected consignment tankers no longer exists')
   const byId = new Map(res.rows.map((r) => [Number(r.id), r]))
@@ -278,11 +279,12 @@ export async function assignConsignmentLots(
   orderId: number,
   picks: unknown,
   supplierId: number,
-  productId: number
+  productId: number,
+  companyId?: number
 ): Promise<LotAllocation> {
   const list = toLotPicks(picks)
   if (!list.length) return { total: 0, lines: [], primaryBargainId: 0 }
-  const alloc = await validateConsignmentLots(list, supplierId, productId, orderId)
+  const alloc = await validateConsignmentLots(list, supplierId, productId, orderId, companyId)
   const c = getClient()
   for (const p of list) {
     await c.execute({
@@ -310,13 +312,14 @@ export async function autoAssignConsignmentLots(
   supplierId: number,
   productId: number,
   qty: number,
-  bargainId = 0
+  bargainId = 0,
+  companyId?: number
 ): Promise<number> {
   const free = await getClient().execute({
     sql: `SELECT id, qty FROM consignment_stock
           WHERE company_id = ? AND supplier_id = ? AND product_id = ? AND order_id IS NULL
           ORDER BY deposit_date, id`,
-    args: [getActiveCompanyId(), supplierId, productId]
+    args: [companyId || getActiveCompanyId(), supplierId, productId]
   })
   const take: number[] = []
   let used = 0
@@ -482,7 +485,7 @@ const CONSIGNMENT_UOMS = ['MT', 'KG', 'L']
 // Same tolerance the purchase side allows between a gate weighment and the books.
 const GATE_BUFFER = 1
 
-async function validateLot(v: Row, existing: Row | null): Promise<{
+async function validateLot(v: Row, existing: Row | null, companyId?: number): Promise<{
   supplierId: number
   productId: number
   qty: number
@@ -490,6 +493,7 @@ async function validateLot(v: Row, existing: Row | null): Promise<{
   depositDate: string
 }> {
   const c = getClient()
+  const cid = companyId || getActiveCompanyId()
   const supplierId = v.supplier_id ? n(v.supplier_id) : n(existing?.supplier_id)
   const productId = v.product_id ? n(v.product_id) : n(existing?.product_id)
   const qty = v.qty != null && v.qty !== '' ? n(v.qty) : n(existing?.qty)
@@ -504,7 +508,7 @@ async function validateLot(v: Row, existing: Row | null): Promise<{
     throw new Error(`Unit must be one of ${CONSIGNMENT_UOMS.join(', ')}`)
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(depositDate)) throw new Error('Enter the date this stock came in')
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayISO()
   if (depositDate > today) throw new Error('The date cannot be in the future')
 
   // The party must be a real, live supplier.
@@ -556,7 +560,7 @@ async function validateLot(v: Row, existing: Row | null): Promise<{
       sql: `SELECT id, qty, uom FROM consignment_stock
             WHERE company_id = ? AND supplier_id = ? AND product_id = ?
               AND is_opening = 1 AND order_id IS NULL LIMIT 1`,
-      args: [getActiveCompanyId(), supplierId, productId]
+      args: [cid, supplierId, productId]
     })
     if (dup.rows.length) {
       const d = dup.rows[0]
@@ -576,7 +580,7 @@ async function validateLot(v: Row, existing: Row | null): Promise<{
             WHERE company_id = ? AND supplier_id = ? AND product_id = ?
               AND substr(deposit_date, 1, 10) = ? AND UPPER(TRIM(tanker_no)) = ?
               AND id <> ? LIMIT 1`,
-      args: [getActiveCompanyId(), supplierId, productId, depositDate, tankerNo.toUpperCase(), n(existing?.id) || 0]
+      args: [cid, supplierId, productId, depositDate, tankerNo.toUpperCase(), n(existing?.id) || 0]
     })
     if (dup.rows.length) {
       throw new Error(`Tanker ${tankerNo} is already logged for this party and product on ${depositDate}`)
@@ -604,13 +608,14 @@ export async function createConsignment(v: Row): Promise<{ id: number }> {
     if (dup.rows.length) throw new Error('This gate entry has already been validated into consignment stock')
     if (!tankerNo) tankerNo = ge.rows[0].tanker_no ? String(ge.rows[0].tanker_no) : null
   }
-  const ok = await validateLot({ ...v, tanker_no: tankerNo }, null)
+  const bookCompany = v.company_id ? n(v.company_id) : getActiveCompanyId()
+  const ok = await validateLot({ ...v, tanker_no: tankerNo }, null, bookCompany)
   const res = await c.execute({
     sql: `INSERT INTO consignment_stock (company_id, supplier_id, product_id, qty, uom, deposit_date, note,
             gate_entry_id, tanker_no, is_opening, weighed_qty, shortage_pct)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
-      getActiveCompanyId(),
+      bookCompany,
       ok.supplierId,
       ok.productId,
       ok.qty,
@@ -646,17 +651,22 @@ export async function updateConsignment(id: number, v: Row): Promise<{ id: numbe
       `This tanker is already booked on purchase invoice ${no || '(unknown)'} — edit or delete that purchase first`
     )
   }
-  const ok = await validateLot(v, row)
+  const newCompany = v.company_id ? n(v.company_id) : n(row.company_id)
+  const ok = await validateLot(v, row, newCompany)
   const newQty = ok.qty
   // The party and the product are editable too, so a lot can be moved to the
   // pair it should have been logged against.
   const newSupplier = ok.supplierId
   const newProduct = ok.productId
-  const moved = newSupplier !== n(row.supplier_id) || newProduct !== n(row.product_id)
-  const avail = await consignmentAvailable(n(row.supplier_id), n(row.product_id))
+  const moved = newSupplier !== n(row.supplier_id) || newProduct !== n(row.product_id) || newCompany !== n(row.company_id)
+  // Checked against the OLD company — that is whose books this lot is
+  // currently sitting in, and whose already-invoiced quantity it must keep
+  // covering if it moves away.
+  const avail = await consignmentAvailable(n(row.supplier_id), n(row.product_id), n(row.company_id))
   if (moved) {
-    // The whole lot leaves its old supplier+product, so that pair loses all of
-    // it — it must still cover whatever has already been invoiced from it.
+    // The whole lot leaves its old supplier+product+company, so that pair
+    // loses all of it — it must still cover whatever has already been
+    // invoiced from it.
     if (avail - n(row.qty) < -1e-6) {
       throw new Error('Cannot move this stock — part of this supplier and product has already been invoiced')
     }
@@ -666,10 +676,11 @@ export async function updateConsignment(id: number, v: Row): Promise<{ id: numbe
   }
   await c.execute({
     sql: `UPDATE consignment_stock
-          SET supplier_id = ?, product_id = ?, qty = ?, uom = ?, deposit_date = ?, note = ?,
+          SET company_id = ?, supplier_id = ?, product_id = ?, qty = ?, uom = ?, deposit_date = ?, note = ?,
               weighed_qty = ?, shortage_pct = ?
           WHERE id = ?`,
     args: [
+      newCompany,
       newSupplier,
       newProduct,
       newQty,

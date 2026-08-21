@@ -1,5 +1,5 @@
 import type { ResultSet } from '@libsql/client'
-import { getClient } from './db'
+import { getClient, todayISO } from './db'
 import { getActiveCompanyId } from './company'
 import { postJournal } from './journal'
 
@@ -114,7 +114,7 @@ export async function createNote(v: Row): Promise<{ id: number; note_no: string 
   const defaultAgainst = type === 'debit' ? 'PURCHASE RETURN A/C' : 'SALES RETURN A/C'
   const against = (String(v.against_account || '').trim() || defaultAgainst).toUpperCase()
   const noteNo = await nextNoteNo(type, cid)
-  const date = String(v.note_date || new Date().toISOString().slice(0, 10)).slice(0, 10)
+  const date = String(v.note_date || todayISO()).slice(0, 10)
   const narration = v.narration ? String(v.narration).trim() : null
 
   // 1) Double-entry journal voucher.

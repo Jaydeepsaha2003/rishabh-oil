@@ -433,7 +433,7 @@ export function EntityManager({
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="border-[#d9d2b8] bg-[#fffdf4]">
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-2xl border-[#d9d2b8] bg-[#fffdf4]">
           <DialogHeader className="-mx-6 -mt-6 mb-1 rounded-t-lg bg-[#dce6f5] px-6 py-2.5">
             <DialogTitle className="text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]">
               {editingId == null ? `Create ${title}` : `Alter ${title}`}

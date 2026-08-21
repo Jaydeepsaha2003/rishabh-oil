@@ -664,6 +664,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         })
         .filter((r) => {
           if (!r._inWindow) return false
+          // Trading is a pass-through deal booked and tracked on its own page —
+          // it never touches this supplier's regular purchase relationship, so
+          // it does not belong in this register.
+          if (Number(r.is_trading) === 1) return false
           if (poCategory.length && !poCategory.includes(String(r.product_category || ''))) return false
           return true
         }),
@@ -3935,7 +3939,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             content's own preferred width), so the wide nowrap tanker table
             deep inside was pushing every ancestor open past the dialog's
             edge instead of triggering its own overflow-x-auto scrollbar. */}
-        <DialogContent className="max-h-[85vh] max-w-2xl min-w-0 overflow-y-auto">
+        <DialogContent className="max-h-[85vh] w-[calc(100vw-2rem)] max-w-4xl min-w-0 overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex flex-wrap items-center gap-2">
               <span>Purchase {detailRow?.invoice_no}</span>
@@ -3947,11 +3951,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             </DialogTitle>
           </DialogHeader>
           {detailRow && <div className="grid min-w-0 gap-3">
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               <InfoTile icon={Building2} label="Supplier" value={detailRow.supplier_name || '—'} />
               <InfoTile icon={CalendarDays} label="Purchase date" value={formatDate(detailRow.order_date)} />
               <InfoTile icon={Truck} label="Tankers" value={detailRow.tanker_nos || '—'} />
               <InfoTile icon={Boxes} label="Total quantity" value={`${formatNum(detailRow.ordered_qty)} ${detailRow.uom}`} />
+              <InfoTile icon={IndianRupee} label="Invoice rate" value={`${formatINR(detailRow.invoice_rate)} / ${detailRow.uom}`} />
             </div>
             <div className="flex items-center justify-between rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-500 px-4 py-3 text-white shadow-sm">
               <span className="flex items-center gap-1.5 text-sm font-medium text-indigo-50">
@@ -3972,6 +3977,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               const list = tankers.filter((t) => Number(t.order_id) === Number(detailRow.id))
               if (!list.length) return null
               const isEx = detailRow.bargain_type === 'EX'
+              const invoiceRate = Number(detailRow.invoice_rate) || 0
               const rows = list.map((t) => {
                 const loaded = Number(t.loaded_qty) || 0
                 const rec = t.status === 'empty' && t.received_qty != null ? Number(t.received_qty) : null
@@ -3986,7 +3992,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 )
                 const allowedAmt = loaded > 0 ? (loaded * pct) / 100 : 0
                 const deductible = isEx && shortage != null && shortage > allowedAmt ? shortage - allowedAmt : null
-                return { t, loaded, rec, shortage, allowedAmt, deductible }
+                // The rate that actually prices this tanker is its own bargain's
+                // rate — same figure the shortage-penalty calc on the tanker
+                // stage uses (excess × bargain rate), not the invoice rate. A
+                // tanker split across two bargains blends both rates by the
+                // qty each one actually carries, so the second bargain's rate
+                // is not silently dropped.
+                const extraQty = t.extra_bargain_id ? Number(t.extra_qty) || 0 : 0
+                const primaryQty = Math.max(0, loaded - extraQty)
+                const primaryRate = Number(t.bargain_rate) || 0
+                const extraRate = Number(t.extra_bargain_rate) || 0
+                const bargainRate =
+                  loaded > 0 ? (primaryQty * primaryRate + extraQty * extraRate) / loaded : primaryRate
+                const deductibleValue = deductible != null ? deductible * bargainRate : null
+                return { t, loaded, rec, shortage, allowedAmt, deductible, extraQty, primaryQty, primaryRate, extraRate, bargainRate, deductibleValue }
               })
               const anyPending = rows.some((r) => r.t.status !== 'empty')
               const tot = rows.reduce(
@@ -3994,9 +4013,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   loaded: s.loaded + r.loaded,
                   rec: s.rec + (r.rec ?? 0),
                   shortage: s.shortage + (r.shortage ?? 0),
-                  allowed: s.allowed + r.allowedAmt
+                  allowed: s.allowed + r.allowedAmt,
+                  deductibleValue: s.deductibleValue + (r.deductibleValue ?? 0)
                 }),
-                { loaded: 0, rec: 0, shortage: 0, allowed: 0 }
+                { loaded: 0, rec: 0, shortage: 0, allowed: 0, deductibleValue: 0 }
               )
               const totDeductible = isEx && tot.shortage > tot.allowed ? tot.shortage - tot.allowed : null
               return (
@@ -4017,7 +4037,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                             <th className="text-right">Received</th>
                             <th className="text-right">Shortage</th>
                             <th className="text-right">Allowed MT</th>
+                            <th className="text-right">Bargain rate</th>
+                            <th className="text-right">Invoice rate</th>
                             {isEx && <th className="text-right">Deductible</th>}
+                            {isEx && <th className="text-right">Deductible ₹</th>}
                             {anyPending && <th>Stage</th>}
                           </tr>
                         </thead>
@@ -4042,9 +4065,25 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                               <td className="text-right tabular-nums text-foreground">{r.rec != null ? formatNum(r.rec) : '—'}</td>
                               <td className="text-right tabular-nums text-foreground">{r.shortage != null ? formatNum(r.shortage) : '—'}</td>
                               <td className="text-right tabular-nums text-foreground">{formatNum(r.allowedAmt)}</td>
+                              <td className="text-right tabular-nums text-foreground">
+                                {formatINR(r.bargainRate)}
+                                {r.extraQty > 0 && (
+                                  <div className="text-[10px] font-normal text-muted-foreground">
+                                    {formatNum(r.primaryQty)} @ {formatINR(r.primaryRate)}
+                                    {r.t.bargain_no ? ` (${r.t.bargain_no})` : ''} + {formatNum(r.extraQty)} @ {formatINR(r.extraRate)}
+                                    {r.t.extra_bargain_no ? ` (${r.t.extra_bargain_no})` : ''}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="text-right tabular-nums text-foreground">{formatINR(invoiceRate)}</td>
                               {isEx && (
                                 <td className="text-right font-semibold tabular-nums text-red-600">
                                   {r.deductible != null ? formatNum(r.deductible) : ''}
+                                </td>
+                              )}
+                              {isEx && (
+                                <td className="text-right font-semibold tabular-nums text-red-600">
+                                  {r.deductibleValue != null ? formatINR(r.deductibleValue) : ''}
                                 </td>
                               )}
                               {anyPending && (
@@ -4061,9 +4100,16 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                               <td className="text-right tabular-nums">{formatNum(tot.rec)}</td>
                               <td className="text-right tabular-nums">{formatNum(tot.shortage)}</td>
                               <td className="text-right tabular-nums">{formatNum(tot.allowed)}</td>
+                              <td />
+                              <td />
                               {isEx && (
                                 <td className="text-right tabular-nums text-red-600">
                                   {totDeductible != null ? formatNum(totDeductible) : ''}
+                                </td>
+                              )}
+                              {isEx && (
+                                <td className="text-right tabular-nums text-red-600">
+                                  {totDeductible != null ? formatINR(tot.deductibleValue) : ''}
                                 </td>
                               )}
                               {anyPending && <td />}
@@ -4077,8 +4123,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <div className="mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700">
                       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                       <div>
-                        <span className="font-semibold">{formatNum(totDeductible)} {detailRow.uom || 'MT'} deductible</span> — shortage
-                        beyond the allowed tolerance; deduct from what&apos;s owed to the supplier.
+                        <span className="font-semibold">
+                          {formatNum(totDeductible)} {detailRow.uom || 'MT'} deductible — {formatINR(tot.deductibleValue)}
+                        </span>{' '}
+                        — shortage beyond the allowed tolerance, valued at each tanker&apos;s own bargain rate; deduct
+                        from what&apos;s owed to the supplier.
                       </div>
                     </div>
                   )}

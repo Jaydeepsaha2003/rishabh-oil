@@ -1,5 +1,5 @@
 import type { ResultSet } from '@libsql/client'
-import { getClient } from './db'
+import { getClient, todayISO } from './db'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -329,7 +329,7 @@ export async function saveGateWeights(
   // the register can show the visit from both ends.
   const leftOn =
     nowOut || inboundClosed || directOutClosing
-      ? String(outDate || '').slice(0, 10) || new Date().toISOString().slice(0, 10)
+      ? String(outDate || '').slice(0, 10) || todayISO()
       : (row.out_date as string | null)
   await c.execute({
     sql: `UPDATE gate_entries
@@ -388,7 +388,7 @@ export async function updateGateEntry(id: number, v: Row): Promise<{ id: number 
   await getClient().execute({
     sql: `UPDATE gate_entries SET gate_entry_no = ?, ref_no = ?, entry_date = ?, tanker_id = ?, tanker_no = ?,
           oil_type_id = ?, dispatch_qty = ?, dispatch_na = ?, received_qty = ?, uom = ?, status = ?, note = ?, sale_id = ?,
-          rec_type = ?, gross_weight = ?, tare_weight = ?, supplier_id = ?, is_direct_mnc = ? WHERE id = ?`,
+          rec_type = ?, gross_weight = ?, tare_weight = ?, supplier_id = ?, customer_id = ?, is_direct_mnc = ? WHERE id = ?`,
     args: [
       String(v.gate_entry_no || '').trim(),
       v.ref_no ? String(v.ref_no).trim() : null,
@@ -407,6 +407,7 @@ export async function updateGateEntry(id: number, v: Row): Promise<{ id: number 
       gross,
       tare,
       v.supplier_id ? n(v.supplier_id) : null,
+      v.customer_id ? n(v.customer_id) : null,
       v.is_direct_mnc ? 1 : 0,
       id
     ]

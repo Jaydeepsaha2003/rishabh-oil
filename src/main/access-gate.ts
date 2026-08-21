@@ -5,7 +5,7 @@
 // channel behaves exactly as it did before. That is what makes it safe to extend
 // the map one entity at a time instead of gating everything at once and
 // discovering a legitimate edit is now impossible.
-import { getClient } from './db'
+import { getClient, todayISO } from './db'
 import { getCurrentUser } from './currentUser'
 import { can, type Action, type AccessUser } from './access-rules'
 
@@ -100,10 +100,6 @@ async function currentAccessUser(): Promise<AccessUser | null> {
   const user: AccessUser = { role: String(r.role || ''), permissions }
   cache = { id, user }
   return user
-}
-
-function todayISO(): string {
-  return new Date().toISOString().slice(0, 10)
 }
 
 // Throws with a sentence the renderer shows verbatim. Returns quietly when the
