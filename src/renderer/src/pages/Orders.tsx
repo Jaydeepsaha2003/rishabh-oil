@@ -205,23 +205,21 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     () => Array.from(new Set(tankers.map((t) => String(t.product_category || '')).filter(Boolean))).sort(),
     [tankers]
   )
-  // The movement views can look across companies: 'active' keeps today's
-  // behaviour, 'all' or a company id widens the lens (fetched on demand —
-  // booking lists stay scoped to the active company regardless).
+  // The movement views can look across companies: 'active' shows the company
+  // you are in, 'all' or a company id widens the lens.
   const [moveCompany, setMoveCompany] = useState('active')
   const [allTankers, setAllTankers] = useState<Row[]>([])
-  useEffect(() => {
-    if (moveCompany === 'active') return
-    let live = true
-    window.api.tankers.list(true).then((r) => { if (live) setAllTankers(r) })
-    return () => { live = false }
-  }, [moveCompany, tankers])
   const moveTankers = useMemo(() => {
-    if (moveCompany === 'active') return tankers
     const base = allTankers.length ? allTankers : tankers
     if (moveCompany === 'all') return base
-    return base.filter((t) => String(t.company_id) === moveCompany)
-  }, [moveCompany, tankers, allTankers])
+    const cid = moveCompany === 'active' ? String(activeCompany) : moveCompany
+    // A tanker only belongs to a company once an invoice books it there —
+    // until then it is just a vehicle in the yard, and which set of books it
+    // will be billed into is exactly what has not been decided yet. So an
+    // unbilled tanker shows under EVERY company; once billed it settles into
+    // the invoice's company and shows only there.
+    return base.filter((t) => !t.order_id || String(t.company_id) === cid)
+  }, [moveCompany, tankers, allTankers, activeCompany])
 
   const inCategory = useCallback(
     (t: Row): boolean => !tmCategory.length || tmCategory.includes(String(t.product_category || '')),
@@ -257,9 +255,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [o, pt, b, s, src, tr, cfg, ge, um, co, act, prod] = await Promise.all([
+    const [o, pt, ptAll, b, s, src, tr, cfg, ge, um, co, act, prod] = await Promise.all([
       window.api.orders.list(),
       window.api.tankers.list(),
+      // Every company's tankers, always — an unbilled tanker isn't tied to a
+      // company yet, so both the movement register and the booking picker
+      // need to see across all of them (each filters down its own way).
+      window.api.tankers.list(true),
       window.api.bargains.list(),
       window.api.data.list('suppliers'),
       window.api.data.list('sources'),
@@ -273,6 +275,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     ])
     setRows(o)
     setTankers(pt)
+    setAllTankers(ptAll)
     setBargains(b)
     setSuppliers(s)
     setSources(src.filter((x) => x.active))
@@ -1134,20 +1137,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     return () => { active = false }
   }, [form.supplier_id, form.order_date, editing])
 
-  // "Book into company" can target a company other than the sidebar's active
-  // one — its supplier/tanker pickers need THAT company's tankers, not the
-  // active company's (which is all `tankers` ever holds), so fetch across
-  // companies whenever the two diverge.
-  useEffect(() => {
-    if (!formPage || !form.company_id || String(form.company_id) === String(activeCompany)) return
-    let live = true
-    window.api.tankers.list(true).then((r) => { if (live) setAllTankers(r) })
-    return () => { live = false }
-  }, [formPage, form.company_id, activeCompany])
-  const tankersForBooking = useMemo(() => {
-    if (!form.company_id || String(form.company_id) === String(activeCompany)) return tankers
-    return allTankers.filter((t) => String(t.company_id) === String(form.company_id))
-  }, [tankers, allTankers, form.company_id, activeCompany])
+  // Booking sees EVERY company's tankers, not just the one being booked into.
+  // Which company a tanker ends up in is decided by the invoice that bills it
+  // ("Book into company" moves it), so pre-filtering the picker by company
+  // would hide the very tankers the user is choosing between. Tankers already
+  // billed elsewhere are excluded downstream in selectableTankers, so only
+  // genuinely unbilled ones cross over.
+  const tankersForBooking = allTankers.length ? allTankers : tankers
 
   const selectableTankers = useMemo(
     () => tankersForBooking.filter((x) =>

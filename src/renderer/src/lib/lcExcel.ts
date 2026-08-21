@@ -70,7 +70,7 @@ export async function exportLcRegister(lcs: Row[], filename: string): Promise<vo
     title: 'Letters of Credit — register with bills and repayments',
     columns: [
       { header: 'LC no', key: 'lc_no' },
-      { header: 'Bank', key: 'bank', width: 18 },
+      { header: 'Discounting Bank', key: 'bank', width: 18 },
       { header: 'Supplier', key: 'supplier', width: 24 },
       { header: 'FD No', key: 'fd_no', width: 14 },
       { header: 'Purpose', key: 'purpose' },
