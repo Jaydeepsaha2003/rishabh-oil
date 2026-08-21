@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  Undo2, ArrowLeft, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, Eye,
-  IndianRupee, Pencil, Plus, Trash2, Truck, type LucideIcon } from 'lucide-react'
+  Undo2, ArrowLeft, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, DoorOpen, Eye,
+  FileText, IndianRupee, Pencil, Plus, ScrollText, Trash2, Truck, type LucideIcon } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { FyPicker } from '@/components/FyPicker'
 import { ExcelButton } from '@/components/ExcelButton'
@@ -237,6 +237,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     { qty: number; balance: number; mode: 'new' | 'existing' | 'expand'; diffRate: boolean; rate: string; targetBargainId: string } | null
   >(null)
   const [detailRow, setDetailRow] = useState<Row | null>(null)
+  const [viewTankerRow, setViewTankerRow] = useState<Row | null>(null)
   // Tanker-count + quantity report, grouped by product/oil.
   const [reportOpen, setReportOpen] = useState(false)
   const [repFrom, setRepFrom] = useState('')
@@ -571,6 +572,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           )}
           <RowActions
             actions={[
+              { label: 'View tanker', icon: Eye, onClick: () => setViewTankerRow(row) },
               ...(TANKER_STAGES.indexOf(String(row.status)) > TANKER_STAGES.indexOf('loaded')
                 ? [{
                     label: `Undo — back to ${TANKER_LABEL[TANKER_STAGES[TANKER_STAGES.indexOf(String(row.status)) - 1]]}`,
@@ -3786,6 +3788,131 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             <Button variant="outline" onClick={() => setEditTanker(null)}>Cancel</Button>
             <Button onClick={saveEditTanker}>Save changes</Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!viewTankerRow} onOpenChange={(open) => !open && setViewTankerRow(null)}>
+        <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex flex-wrap items-center gap-2">
+              <span>{String(viewTankerRow?.tanker_no || '').trim() || 'Tanker'}</span>
+              {viewTankerRow && <StatusBadge status={String(viewTankerRow.status || '')} />}
+            </DialogTitle>
+          </DialogHeader>
+          {viewTankerRow && (() => {
+            const t = viewTankerRow
+            const invoiceCompany = t.order_id
+              ? companies.find((c) => Number(c.id) === Number(t.invoice_company_id))
+              : null
+            return (
+              <div className="grid gap-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <InfoTile icon={Building2} label="Supplier" value={t.supplier_name || '—'} />
+                  <InfoTile icon={Boxes} label="Product" value={t.oil_code || t.oil_name || '—'} />
+                  <InfoTile
+                    icon={ScrollText}
+                    label="Bargain"
+                    value={t.bargain_no ? `${t.bargain_no}${t.extra_bargain_no ? ` + ${t.extra_bargain_no}` : ''}` : '—'}
+                  />
+                  <InfoTile icon={CalendarDays} label="Source" value={t.source_name || '—'} />
+                </div>
+
+                <div className="rounded-xl border">
+                  <div className="flex items-center gap-1.5 border-b bg-slate-50 px-3 py-2">
+                    <Boxes className="h-3.5 w-3.5 text-slate-500" />
+                    <span className="text-xs font-semibold text-slate-700">Quantity</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 p-3 sm:grid-cols-4">
+                    <MoneyRow label="Loaded" value={`${formatNum(t.loaded_qty)} ${t.uom || 'MT'}`} />
+                    <MoneyRow label="Received" value={t.received_qty != null ? `${formatNum(t.received_qty)} ${t.uom || 'MT'}` : '—'} />
+                    {Number(t.extra_qty) > 0 && (
+                      <MoneyRow label="Split to extra bargain" value={`${formatNum(t.extra_qty)} ${t.uom || 'MT'}`} />
+                    )}
+                    {Number(t.loss_qty) > 0 && (
+                      <MoneyRow label="Lost (replaced)" value={`${formatNum(t.loss_qty)} ${t.uom || 'MT'}`} />
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border">
+                  <div className="flex items-center gap-1.5 border-b bg-slate-50 px-3 py-2">
+                    <CalendarDays className="h-3.5 w-3.5 text-slate-500" />
+                    <span className="text-xs font-semibold text-slate-700">Timeline</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 p-3 sm:grid-cols-3">
+                    <MoneyRow label="Loaded" value={t.loaded_date ? formatDate(t.loaded_date) : '—'} />
+                    <MoneyRow label="In transit" value={t.transit_date ? formatDate(t.transit_date) : '—'} />
+                    <MoneyRow label="Expected delivery" value={t.expected_delivery_date ? formatDate(t.expected_delivery_date) : '—'} />
+                    <MoneyRow label="Outside factory" value={t.outside_factory_date ? formatDate(t.outside_factory_date) : '—'} />
+                    <MoneyRow label="Inside factory" value={t.inside_factory_date ? formatDate(t.inside_factory_date) : '—'} />
+                    <MoneyRow label="Empty" value={t.empty_date ? formatDate(t.empty_date) : '—'} />
+                  </div>
+                </div>
+
+                {(t.transporter_name || Number(t.transport_amount) > 0 || Number(t.shortage_charge_amount) > 0) && (
+                  <div className="rounded-xl border">
+                    <div className="flex items-center gap-1.5 border-b bg-slate-50 px-3 py-2">
+                      <Truck className="h-3.5 w-3.5 text-slate-500" />
+                      <span className="text-xs font-semibold text-slate-700">Transport</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 p-3">
+                      <MoneyRow label="Transporter" value={t.transporter_name || '—'} />
+                      <MoneyRow label="Rate" value={Number(t.transport_rate_per_ton) > 0 ? `${formatINR(t.transport_rate_per_ton)}/${t.uom || 'MT'}` : '—'} />
+                      <MoneyRow label="Freight amount" value={Number(t.transport_amount) > 0 ? formatINR(t.transport_amount) : '—'} />
+                      {Number(t.shortage_charge_amount) > 0 && (
+                        <MoneyRow label="Shortage charged to transporter" value={formatINR(t.shortage_charge_amount)} />
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {t.gate_entry_no && (
+                  <div className="rounded-xl border">
+                    <div className="flex items-center gap-1.5 border-b bg-slate-50 px-3 py-2">
+                      <DoorOpen className="h-3.5 w-3.5 text-slate-500" />
+                      <span className="text-xs font-semibold text-slate-700">Gate</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 p-3">
+                      <MoneyRow label="Gate entry" value={t.gate_entry_no} />
+                      <MoneyRow label="Gate date" value={t.gate_date ? formatDate(t.gate_date) : '—'} />
+                      {t.gate_tanker_no && String(t.gate_tanker_no).trim() !== String(t.tanker_no || '').trim() && (
+                        <MoneyRow label="Vehicle at gate" value={t.gate_tanker_no} />
+                      )}
+                      {Number(t.gate_qty) > 0 && <MoneyRow label="Weighed" value={`${formatNum(t.gate_qty)} ${t.uom || 'MT'}`} />}
+                    </div>
+                  </div>
+                )}
+
+                {t.last_replacement && (
+                  <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    <span className="font-semibold">Replaced:</span> {t.last_replacement}
+                  </p>
+                )}
+
+                {/* Whether — and under which company — this tanker has actually
+                    been billed. A tanker isn't anyone's company until an
+                    invoice books it there, so this is the one place that
+                    matters, not the raw company_id column. */}
+                <div
+                  className={cn(
+                    'flex items-center gap-2 rounded-lg border px-3 py-2 text-sm',
+                    t.order_id ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-dashed bg-muted/30 text-muted-foreground'
+                  )}
+                >
+                  <FileText className="h-4 w-4 shrink-0" />
+                  {t.order_id ? (
+                    <span>
+                      Invoiced as <span className="font-semibold">{t.invoice_no}</span>
+                      {t.invoice_date && <> on {formatDate(t.invoice_date)}</>}
+                      {invoiceCompany && <> under <span className="font-semibold">{invoiceCompany.name}</span></>}
+                    </span>
+                  ) : (
+                    <span>Not yet invoiced — not tied to any company until it is.</span>
+                  )}
+                </div>
+              </div>
+            )
+          })()}
         </DialogContent>
       </Dialog>
 

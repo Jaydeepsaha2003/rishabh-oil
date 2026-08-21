@@ -968,7 +968,8 @@ export async function listPurchaseTankers(allCompanies = false): Promise<Row[]> 
   const res = await getClient().execute({
     args: allCompanies ? [] : [getActiveCompanyId()],
     sql: `
-    SELECT pt.*, o.invoice_no, o.allowed_shortage_pct AS order_allowed_shortage_pct,
+    SELECT pt.*, o.invoice_no, o.order_date AS invoice_date, o.company_id AS invoice_company_id,
+           o.allowed_shortage_pct AS order_allowed_shortage_pct,
            b.bargain_no, b.bargain_type, b.rate_per_uom AS bargain_rate,
            b.allowed_shortage_pct, s.name AS supplier_name,
            p.code AS oil_code, p.name AS oil_name, src.name AS source_name,
