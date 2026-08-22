@@ -88,6 +88,28 @@ export async function stockLevels(
       base: `SELECT product_id AS pid, SUM(qty) AS q FROM stock_transfers WHERE from_company_id IN (${ph})`,
       date: 'transfer_date',
       group: 'GROUP BY product_id'
+    },
+    // A return REVERSES the movement that first booked the goods, so each one
+    // is netted off the column it came from rather than inflating the other
+    // side: a sales return reduces Dispatch, a purchase return reduces Receipt.
+    // Only real returns move goods — a credit note to a supplier or a debit
+    // note to a customer is a rate/claim adjustment, money only — and a note
+    // with no item lines moves nothing at all.
+    returnedIn: {
+      base: `SELECT ni.product_id AS pid, SUM(ni.qty) AS q
+             FROM note_items ni JOIN notes nt ON nt.id = ni.note_id
+             WHERE nt.note_type = 'credit' AND nt.party_type = 'customer'
+               AND ni.product_id IS NOT NULL AND nt.company_id IN (${ph})`,
+      date: 'nt.note_date',
+      group: 'GROUP BY ni.product_id'
+    },
+    returnedOut: {
+      base: `SELECT ni.product_id AS pid, SUM(ni.qty) AS q
+             FROM note_items ni JOIN notes nt ON nt.id = ni.note_id
+             WHERE nt.note_type = 'debit' AND nt.party_type = 'supplier'
+               AND ni.product_id IS NOT NULL AND nt.company_id IN (${ph})`,
+      date: 'nt.note_date',
+      group: 'GROUP BY ni.product_id'
     }
   } as const
 
@@ -131,13 +153,14 @@ export async function stockLevels(
     const g = (m: Record<string, Map<number, number>>, k: string): number => m[k].get(id) || 0
     const open =
       g(opening, 'received') + g(opening, 'produced') + g(opening, 'byProduct') + g(opening, 'transferredIn') -
-      g(opening, 'consumed') - g(opening, 'sold') - g(opening, 'transferredOut')
-    const rec = g(period, 'received')
+      g(opening, 'consumed') - g(opening, 'sold') - g(opening, 'transferredOut') +
+      g(opening, 'returnedIn') - g(opening, 'returnedOut')
+    const rec = g(period, 'received') - g(period, 'returnedOut')
     // A by-product of someone else's batch is produced stock all the same, so
     // it lands in the same column rather than needing one of its own.
     const prod = g(period, 'produced') + g(period, 'byProduct')
     const cons = g(period, 'consumed')
-    const sld = g(period, 'sold')
+    const sld = g(period, 'sold') - g(period, 'returnedIn')
     const tIn = g(period, 'transferredIn')
     const tOut = g(period, 'transferredOut')
     return {
@@ -239,7 +262,14 @@ async function productStockForCompany(companyId: number, productId: number): Pro
   const sld = await one("SELECT COALESCE(SUM(qty), 0) AS q FROM sales WHERE status = 'done' AND COALESCE(affects_stock, 1) = 1 AND company_id = ? AND product_id = ?")
   const tIn = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE to_company_id = ? AND product_id = ?')
   const tOut = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE from_company_id = ? AND product_id = ?')
-  return rec + prod + byProd + tIn - cons - sld - tOut
+  // Returns, same rule as stockLevels: a sales return comes back in, a purchase
+  // return goes back out. Kept in step here or the dispatch guard would
+  // disagree with the register it is meant to protect.
+  const retIn = await one(`SELECT COALESCE(SUM(ni.qty), 0) AS q FROM note_items ni JOIN notes nt ON nt.id = ni.note_id
+                           WHERE nt.note_type = 'credit' AND nt.party_type = 'customer' AND nt.company_id = ? AND ni.product_id = ?`)
+  const retOut = await one(`SELECT COALESCE(SUM(ni.qty), 0) AS q FROM note_items ni JOIN notes nt ON nt.id = ni.note_id
+                            WHERE nt.note_type = 'debit' AND nt.party_type = 'supplier' AND nt.company_id = ? AND ni.product_id = ?`)
+  return rec + prod + byProd + tIn - cons - sld - tOut + retIn - retOut
 }
 
 // Party-wise breakdown per product for the active company: who we RECEIVED
@@ -362,7 +392,20 @@ export async function productStockAvailable(
   )
   const tIn = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE to_company_id = ? AND product_id = ?', [cid, productId])
   const tOut = await one('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE from_company_id = ? AND product_id = ?', [cid, productId])
-  return rec + prod + byProd + tIn - cons - sld - tOut
+  // Returns, same rule as stockLevels — the availability guard has to see the
+  // same balance the Stock page shows, or a dispatch would be refused (or
+  // allowed) on a figure nobody can reconcile.
+  const retIn = await one(
+    `SELECT COALESCE(SUM(ni.qty), 0) AS q FROM note_items ni JOIN notes nt ON nt.id = ni.note_id
+     WHERE nt.note_type = 'credit' AND nt.party_type = 'customer' AND nt.company_id = ? AND ni.product_id = ?`,
+    [cid, productId]
+  )
+  const retOut = await one(
+    `SELECT COALESCE(SUM(ni.qty), 0) AS q FROM note_items ni JOIN notes nt ON nt.id = ni.note_id
+     WHERE nt.note_type = 'debit' AND nt.party_type = 'supplier' AND nt.company_id = ? AND ni.product_id = ?`,
+    [cid, productId]
+  )
+  return rec + prod + byProd + tIn - cons - sld - tOut + retIn - retOut
 }
 
 // Transfers involving the active company (either direction), newest first.

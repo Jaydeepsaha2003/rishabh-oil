@@ -39,15 +39,19 @@ async function nextNoteNo(type: 'debit' | 'credit', companyId?: number): Promise
   return `${prefix}/${max + 1}`
 }
 
-export async function listNotes(): Promise<Row[]> {
+// The Accounting module pins itself to its own F3 company rather than the
+// app-wide one, so the company has to come in with the call — reading the global
+// active company here showed an empty register whenever the two differed.
+export async function listNotes(companyId?: number): Promise<Row[]> {
   const res = await getClient().execute({
-    args: [getActiveCompanyId()],
+    args: [companyId ? n(companyId) : getActiveCompanyId()],
     sql: `SELECT nt.*,
-            CASE nt.party_type WHEN 'supplier' THEN s.name WHEN 'customer' THEN c.name END AS party_name,
+            CASE nt.party_type WHEN 'supplier' THEN s.name WHEN 'customer' THEN c.name WHEN 'transporter' THEN tr.name END AS party_name,
             (SELECT COUNT(*) FROM note_items ni WHERE ni.note_id = nt.id) AS item_count
           FROM notes nt
           LEFT JOIN suppliers s ON nt.party_type = 'supplier' AND s.id = nt.party_id
           LEFT JOIN customers c ON nt.party_type = 'customer' AND c.id = nt.party_id
+          LEFT JOIN transporters tr ON nt.party_type = 'transporter' AND tr.id = nt.party_id
           WHERE nt.company_id = ?
           ORDER BY nt.id DESC`
   })
@@ -65,17 +69,33 @@ export async function listNoteItems(noteId: number): Promise<Row[]> {
   return toPlain(res)
 }
 
-// Create a Debit note (against a supplier) or Credit note (against a customer).
-// Posts a balanced journal voucher and a signed party-ledger row.
-//   Debit note (supplier, reduces payable):
-//     Dr Supplier (base+gst)  Cr {against A/C} (base)  Cr GST INPUT A/C (gst)
-//   Credit note (customer, reduces receivable):
-//     Dr {against A/C} (base)  Dr GST OUTPUT A/C (gst)  Cr Customer (base+gst)
-export async function createNote(v: Row): Promise<{ id: number; note_no: string }> {
+// Which side of the books a party sits on, and therefore how a note against
+// them posts. Note TYPE decides the direction (a debit note debits the party, a
+// credit note credits them); PARTY TYPE decides the ledger it lands in, the
+// Trial Balance group, and which GST account is touched — tax you pay a
+// supplier is Input, tax you charge a customer is Output, whichever kind of
+// note adjusts it.
+const PARTY_KINDS = {
+  supplier: { master: 'suppliers', ledger: 'supplier_ledger', idCol: 'supplier_id', refCol: 'order_id', group: 'Sundry Creditors', gst: 'GST INPUT A/C' },
+  customer: { master: 'customers', ledger: 'customer_ledger', idCol: 'customer_id', refCol: 'sale_id', group: 'Sundry Debtors', gst: 'GST OUTPUT A/C' },
+  transporter: { master: 'transporters', ledger: 'transporter_ledger', idCol: 'transporter_id', refCol: 'order_id', group: 'Sundry Creditors', gst: 'GST INPUT A/C' }
+} as const
+type PartyKind = keyof typeof PARTY_KINDS
+
+// Create a Debit or Credit note against ANY party — supplier, customer or
+// transporter. Posts a balanced journal voucher and a signed party-ledger row.
+//   Debit note (debits the party, so it reduces what we owe them):
+//     Dr Party (base+gst)  Cr {against A/C} (base)  Cr {GST A/C} (gst)
+//   Credit note (credits the party, so it reduces what they owe us):
+//     Dr {against A/C} (base)  Dr {GST A/C} (gst)  Cr Party (base+gst)
+export async function createNote(v: Row, existingId?: number): Promise<{ id: number; note_no: string }> {
   const c = getClient()
   const cid = v.company_id ? n(v.company_id) : getActiveCompanyId()
   const type: 'debit' | 'credit' = v.note_type === 'credit' ? 'credit' : 'debit'
-  const partyType = type === 'debit' ? 'supplier' : 'customer'
+  // Defaults preserve the old behaviour for any caller that doesn't say.
+  const requested = String(v.party_type || '').trim().toLowerCase()
+  const partyType: PartyKind = (requested in PARTY_KINDS ? requested : type === 'debit' ? 'supplier' : 'customer') as PartyKind
+  const kind = PARTY_KINDS[partyType]
   const partyId = n(v.party_id)
   if (!partyId) throw new Error(`Select the ${partyType}`)
   // Optional item lines. When present, they compute the base amount.
@@ -105,15 +125,47 @@ export async function createNote(v: Row): Promise<{ id: number; note_no: string 
 
   // Party name (must match the journal account used elsewhere for this party).
   const partyRes = await c.execute({
-    sql: `SELECT name FROM ${partyType === 'supplier' ? 'suppliers' : 'customers'} WHERE id = ?`,
+    sql: `SELECT name FROM ${kind.master} WHERE id = ?`,
     args: [partyId]
   })
   if (!partyRes.rows.length) throw new Error('Party not found')
   const partyName = String(partyRes.rows[0].name || '').trim()
 
-  const defaultAgainst = type === 'debit' ? 'PURCHASE RETURN A/C' : 'SALES RETURN A/C'
+  // A return account only makes sense on the side the goods came from: a
+  // supplier/transporter note is a purchase-side adjustment, a customer note a
+  // sales-side one. Whatever is defaulted here, the form lets it be overridden.
+  const purchaseSide = partyType !== 'customer'
+  const defaultAgainst = purchaseSide ? 'PURCHASE RETURN A/C' : 'SALES RETURN A/C'
+  const againstGroup = purchaseSide ? 'Purchase Accounts' : 'Sales Accounts'
   const against = (String(v.against_account || '').trim() || defaultAgainst).toUpperCase()
-  const noteNo = await nextNoteNo(type, cid)
+  // An edit keeps its own number — re-issuing one would renumber the register
+  // and break any reference already written against it.
+  const prior = existingId
+    ? ((await c.execute({ sql: 'SELECT * FROM notes WHERE id = ? AND company_id = ?', args: [existingId, cid] })).rows[0] as Row | undefined)
+    : undefined
+  if (existingId && !prior) throw new Error('That note no longer exists')
+  const noteNo = prior ? String(prior.note_no) : await nextNoteNo(type, cid)
+
+  // Reverse whatever the note posted before re-posting it, so an edit never
+  // leaves a stale voucher, ledger row or item line behind. Same
+  // reverse-then-repost shape the LC and purchase edits use.
+  if (prior) {
+    if (prior.journal_entry_id != null) {
+      await c.execute({
+        sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
+        args: [n(prior.journal_entry_id)]
+      })
+      await c.execute({ sql: 'DELETE FROM journal_lines WHERE entry_id = ?', args: [n(prior.journal_entry_id)] })
+      await c.execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [n(prior.journal_entry_id)] })
+    }
+    const priorLedger = String(prior.ledger_table || '')
+    if (['customer_ledger', 'transporter_ledger', 'supplier_ledger'].includes(priorLedger) && prior.ledger_id != null) {
+      await c.execute({ sql: `DELETE FROM ${priorLedger} WHERE id = ?`, args: [n(prior.ledger_id)] })
+    }
+    // Item lines are what move stock, so they go too — the re-insert below is
+    // what puts the new quantities back.
+    await c.execute({ sql: 'DELETE FROM note_items WHERE note_id = ?', args: [n(existingId)] })
+  }
   const date = String(v.note_date || todayISO()).slice(0, 10)
   const narration = v.narration ? String(v.narration).trim() : null
 
@@ -127,16 +179,16 @@ export async function createNote(v: Row): Promise<{ id: number; note_no: string 
     lines:
       type === 'debit'
         ? [
-            { account: partyName, group: 'Sundry Creditors', dr: total },
-            { account: against, group: 'Purchase Accounts', cr: base },
-            { account: 'GST INPUT A/C', group: 'Duties & Taxes', cr: gst },
+            { account: partyName, group: kind.group, dr: total },
+            { account: against, group: againstGroup, cr: base },
+            { account: kind.gst, group: 'Duties & Taxes', cr: gst },
             { account: 'ROUND OFF A/C', group: 'Indirect Expenses', cr: roundOff > 0 ? roundOff : 0, dr: roundOff < 0 ? -roundOff : 0 }
           ]
         : [
-            { account: against, group: 'Sales Accounts', dr: base },
-            { account: 'GST OUTPUT A/C', group: 'Duties & Taxes', dr: gst },
+            { account: against, group: againstGroup, dr: base },
+            { account: kind.gst, group: 'Duties & Taxes', dr: gst },
             { account: 'ROUND OFF A/C', group: 'Indirect Expenses', dr: roundOff > 0 ? roundOff : 0, cr: roundOff < 0 ? -roundOff : 0 },
-            { account: partyName || 'CASH CUSTOMER A/C', group: 'Sundry Debtors', cr: total }
+            { account: partyName || 'CASH CUSTOMER A/C', group: kind.group, cr: total }
           ]
   })
 
@@ -164,9 +216,9 @@ export async function createNote(v: Row): Promise<{ id: number; note_no: string 
   // 2) Signed party-ledger row (amount +ve = we owe the party, -ve = party owes
   //    us). Debit note debits the supplier (payable ↓ → negative); credit note
   //    credits the customer (receivable ↓ → positive).
-  const table = partyType === 'supplier' ? 'supplier_ledger' : 'customer_ledger'
-  const partyCol = partyType === 'supplier' ? 'supplier_id' : 'customer_id'
-  const refCol = partyType === 'supplier' ? 'order_id' : 'sale_id'
+  const table = kind.ledger
+  const partyCol = kind.idCol
+  const refCol = kind.refCol
   const signedAmount = type === 'debit' ? -total : total
   const led = await c.execute({
     sql: `INSERT INTO ${table} (${partyCol}, ${refCol}, entry_date, entry_type, amount, note, company_id)
@@ -174,18 +226,36 @@ export async function createNote(v: Row): Promise<{ id: number; note_no: string 
     args: [partyId, date, type === 'debit' ? 'dr_note' : 'cr_note', signedAmount, `${noteNo} — ${against}`, cid]
   })
 
-  const ins = await c.execute({
-    sql: `INSERT INTO notes
-      (company_id, note_type, note_no, note_date, party_type, party_id, against_account,
-       base_amount, gst_pct, gst_amount, total_amount, narration, journal_entry_id, ledger_table, ledger_id, against_ref)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    args: [
-      cid, type, noteNo, date, partyType, partyId, against,
-      base, gstPct, gst, total, narration,
-      je.id, table, Number(led.lastInsertRowid), againstRef
-    ]
-  })
-  const noteId = Number(ins.lastInsertRowid)
+  let noteId: number
+  if (prior) {
+    await c.execute({
+      sql: `UPDATE notes SET
+        note_type = ?, note_date = ?, party_type = ?, party_id = ?, against_account = ?,
+        base_amount = ?, gst_pct = ?, gst_amount = ?, total_amount = ?, narration = ?,
+        journal_entry_id = ?, ledger_table = ?, ledger_id = ?, against_ref = ?
+        WHERE id = ? AND company_id = ?`,
+      args: [
+        type, date, partyType, partyId, against,
+        base, gstPct, gst, total, narration,
+        je.id, table, Number(led.lastInsertRowid), againstRef,
+        existingId as number, cid
+      ]
+    })
+    noteId = existingId as number
+  } else {
+    const ins = await c.execute({
+      sql: `INSERT INTO notes
+        (company_id, note_type, note_no, note_date, party_type, party_id, against_account,
+         base_amount, gst_pct, gst_amount, total_amount, narration, journal_entry_id, ledger_table, ledger_id, against_ref)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        cid, type, noteNo, date, partyType, partyId, against,
+        base, gstPct, gst, total, narration,
+        je.id, table, Number(led.lastInsertRowid), againstRef
+      ]
+    })
+    noteId = Number(ins.lastInsertRowid)
+  }
   for (const it of items) {
     await c.execute({
       sql: 'INSERT INTO note_items (note_id, product_id, description, qty, rate, amount) VALUES (?, ?, ?, ?, ?, ?)',
@@ -195,9 +265,19 @@ export async function createNote(v: Row): Promise<{ id: number; note_no: string 
   return { id: noteId, note_no: noteNo }
 }
 
-export async function deleteNote(id: number): Promise<{ id: number }> {
+// Alter a posted note: its voucher, party-ledger row and item lines (and so any
+// stock the items moved) are reversed and re-posted from the new values, under
+// the same note number.
+export async function updateNote(id: number, v: Row): Promise<{ id: number; note_no: string }> {
+  return createNote(v, n(id))
+}
+
+export async function deleteNote(id: number, companyId?: number): Promise<{ id: number }> {
   const c = getClient()
-  const res = await c.execute({ sql: 'SELECT * FROM notes WHERE id = ? AND company_id = ?', args: [id, getActiveCompanyId()] })
+  const res = await c.execute({
+    sql: 'SELECT * FROM notes WHERE id = ? AND company_id = ?',
+    args: [id, companyId ? n(companyId) : getActiveCompanyId()]
+  })
   if (!res.rows.length) return { id }
   const note = res.rows[0]
   // Reverse the journal voucher (both legs) and the party-ledger row.
@@ -210,7 +290,10 @@ export async function deleteNote(id: number): Promise<{ id: number }> {
     await c.execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [Number(note.journal_entry_id)] })
   }
   if (note.ledger_table && note.ledger_id != null) {
-    const table = String(note.ledger_table) === 'customer_ledger' ? 'customer_ledger' : 'supplier_ledger'
+    const stored = String(note.ledger_table)
+    const table = ['customer_ledger', 'transporter_ledger', 'supplier_ledger'].includes(stored)
+      ? stored
+      : 'supplier_ledger'
     await c.execute({ sql: `DELETE FROM ${table} WHERE id = ?`, args: [Number(note.ledger_id)] })
   }
   await c.execute({ sql: 'DELETE FROM note_items WHERE note_id = ?', args: [id] })

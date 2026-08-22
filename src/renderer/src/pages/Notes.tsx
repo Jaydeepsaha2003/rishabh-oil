@@ -31,6 +31,7 @@ import { Pagination, usePaged } from '@/components/Pagination'
 type Row = Record<string, any>
 
 type NoteType = 'debit' | 'credit'
+type PartyType = 'supplier' | 'customer' | 'transporter'
 
 // One page per kind. Debit note → supplier (purchase return / reduce payable);
 // Credit note → customer (sales return / reduce receivable).
@@ -38,6 +39,7 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [suppliers, setSuppliers] = useState<Row[]>([])
   const [customers, setCustomers] = useState<Row[]>([])
+  const [transporters, setTransporters] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<Record<number, Row[]>>({})
@@ -49,15 +51,17 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [nts, sup, cus, prd] = await Promise.all([
+    const [nts, sup, cus, trs, prd] = await Promise.all([
       window.api.notes.list(),
       window.api.data.list('suppliers'),
       window.api.data.list('customers'),
+      window.api.data.list('transporters'),
       window.api.data.list('products')
     ])
     setRows(nts)
     setSuppliers(sup.filter((x) => x.active))
     setCustomers(cus.filter((x) => x.active))
+    setTransporters(trs.filter((x) => x.active))
     setProducts(prd.filter((x) => x.active))
     setExpanded({})
     setLoading(false)
@@ -86,6 +90,7 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
     setForm({
       note_type: type,
       note_date: todayISO(),
+      party_type: type === 'debit' ? 'supplier' : 'customer',
       party_id: '',
       against_account: type === 'debit' ? 'PURCHASE RETURN A/C' : 'SALES RETURN A/C',
       base_amount: '',
@@ -98,7 +103,17 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
   }
 
   const type: NoteType = form.note_type === 'credit' ? 'credit' : 'debit'
-  const parties = type === 'debit' ? suppliers : customers
+  // Either kind of note can be raised against any party — a credit note to a
+  // supplier (they billed us more) and a debit note to a customer (we are
+  // charging them more) are both ordinary. The note kind decides the direction;
+  // this decides whose ledger it lands in.
+  const partyType: PartyType = (['supplier', 'customer', 'transporter'] as const).includes(form.party_type)
+    ? form.party_type
+    : type === 'debit'
+      ? 'supplier'
+      : 'customer'
+  const parties =
+    partyType === 'supplier' ? suppliers : partyType === 'customer' ? customers : transporters
   // Products relevant to the note kind (raw for purchase returns, finished for
   // sales returns) with a fallback to everything.
   const noteProducts = useMemo(() => {
@@ -128,7 +143,7 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
   }
 
   async function save(): Promise<void> {
-    if (!form.party_id) { setError(`Select the ${type === 'debit' ? 'supplier' : 'customer'}`); return }
+    if (!form.party_id) { setError(`Select the ${partyType}`); return }
     if (base <= 0) { setError('Enter a base amount greater than zero'); return }
     setSaving(true)
     setError(null)
@@ -136,6 +151,7 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
       const res = await window.api.notes.create({
         note_type: type,
         note_date: form.note_date,
+        party_type: partyType,
         party_id: Number(form.party_id),
         against_account: form.against_account,
         base_amount: base,
@@ -331,11 +347,33 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
                   <DatePicker value={form.note_date} onChange={(v) => setForm((p) => ({ ...p, note_date: v || '' }))} />
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <Label>{type === 'debit' ? 'Supplier *' : 'Customer *'}</Label>
-                  <Select value={String(form.party_id || '')} onValueChange={(v) => setForm((p) => ({ ...p, party_id: v }))}>
-                    <SelectTrigger><SelectValue placeholder={`Select ${type === 'debit' ? 'supplier' : 'customer'}`} /></SelectTrigger>
+                  <Label>Party type</Label>
+                  <Select
+                    value={partyType}
+                    // Switching the kind clears the party — an id from the old
+                    // master would otherwise point at the wrong record.
+                    onValueChange={(v) => setForm((p) => ({ ...p, party_type: v, party_id: '' }))}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      {parties.map((p) => <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>)}
+                      <SelectItem value="supplier">Supplier</SelectItem>
+                      <SelectItem value="customer">Customer</SelectItem>
+                      <SelectItem value="transporter">Transporter</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label className="capitalize">{partyType} *</Label>
+                  <Select value={String(form.party_id || '')} onValueChange={(v) => setForm((p) => ({ ...p, party_id: v }))}>
+                    <SelectTrigger><SelectValue placeholder={`Select ${partyType}`} /></SelectTrigger>
+                    <SelectContent>
+                      {parties.length === 0 ? (
+                        <div className="px-2 py-3 text-center text-xs text-muted-foreground">
+                          No active {partyType}s on the master.
+                        </div>
+                      ) : (
+                        parties.map((p) => <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>)
+                      )}
                     </SelectContent>
                   </Select>
                 </div>

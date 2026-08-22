@@ -69,7 +69,7 @@ import {
 } from './stock'
 import { stockCountSheet, listStockCounts, saveStockCounts } from './stockcount'
 import { listSkuStock, adjustSkuStock } from './skustock'
-import { listNotes, listNoteItems, createNote, deleteNote } from './notes'
+import { listNotes, listNoteItems, createNote, updateNote, deleteNote } from './notes'
 import { daybook } from './daybook'
 import { dashboardStats } from './dashboard'
 import {
@@ -525,10 +525,11 @@ export function registerIpc(): void {
     adjustSkuStock(id, delta, note, date)
   )
 
-  handle('notes:list', () => listNotes())
+  handle('notes:list', (_e, a: { companyId?: number } = {}) => listNotes(a?.companyId))
   handle('notes:items', (_e, { id }: { id: number }) => listNoteItems(id))
   handle('notes:create', (_e, { values }: { values: Row }) => createNote(values))
-  handle('notes:delete', (_e, { id }: { id: number }) => deleteNote(id))
+  handle('notes:update', (_e, { id, values }: { id: number; values: Row }) => updateNote(id, values))
+  handle('notes:delete', (_e, { id, companyId }: { id: number; companyId?: number }) => deleteNote(id, companyId))
 
   handle('production:list', () => listProduction())
   handle('production:items', (_e, { id }: { id: number }) => getProductionItems(id))

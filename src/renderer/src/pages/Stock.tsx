@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowRightLeft, Building2, Check, ChevronDown, ChevronRight, Download, Plus, SlidersHorizontal, Trash2, Upload, X } from 'lucide-react'
+import { ArrowRightLeft, Building2, Check, ChevronDown, ChevronRight, Download, Eye, EyeOff, Plus, SlidersHorizontal, Trash2, Upload, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -162,8 +162,21 @@ function CompanyPicker({
   )
 }
 
-function StockTable({ rows, breakdown, label = 'stock', range, onRange, companyPicker, companySplit = {} }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[] }>; label?: string; range: { from: string; to: string }; onRange: (r: { from: string; to: string }) => void; companyPicker?: React.ReactNode; companySplit?: Record<number, Row[]> }): React.JSX.Element {
+function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange, companyPicker, companySplit = {}, stagePicker }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[] }>; label?: string; range: { from: string; to: string }; onRange: (r: { from: string; to: string }) => void; companyPicker?: React.ReactNode; companySplit?: Record<number, Row[]>; stagePicker?: React.ReactNode }): React.JSX.Element {
   const ranged = !!(range.from || range.to)
+  // A product with no opening, no movement and no closing balance is just noise
+  // in a long list, so it can be folded away. Everything below — KPIs, section
+  // counts, the grid and the Excel export — reads the filtered set, so what is
+  // downloaded is always what is on screen.
+  const [hideIdle, setHideIdle] = useState(false)
+  const FLOW_KEYS = ['opening', 'received', 'produced', 'transferred_in', 'transferred_out', 'consumed', 'sold', 'stock']
+  const isIdle = useCallback(
+    (r: Row): boolean => FLOW_KEYS.every((k) => Math.abs(Number(r[k]) || 0) < 1e-9),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  )
+  const idleCount = useMemo(() => allRows.filter(isIdle).length, [allRows, isIdle])
+  const rows = useMemo(() => (hideIdle ? allRows.filter((r) => !isIdle(r)) : allRows), [allRows, hideIdle, isIdle])
   const sum = (k: string): number => rows.reduce((s, r) => s + (Number(r[k]) || 0), 0)
   const totals = {
     opening: sum('opening'),
@@ -230,6 +243,23 @@ function StockTable({ rows, breakdown, label = 'stock', range, onRange, companyP
       <MiniStat label={negatives ? `In stock · ${negatives} negative` : 'In stock'} value={formatNum(totals.stock)} tone={negatives ? 'amber' : 'sky'} />
     </div>
     <div className="flex flex-wrap items-center justify-end gap-2">
+      {stagePicker}
+      {idleCount > 0 && (
+        <Button
+          variant={hideIdle ? 'default' : 'outline'}
+          size="sm"
+          className="h-9 gap-1.5 text-xs"
+          title={
+            hideIdle
+              ? `Showing only products with movement — ${idleCount} idle product${idleCount === 1 ? '' : 's'} hidden`
+              : `${idleCount} product${idleCount === 1 ? '' : 's'} have no opening, no movement and no closing balance`
+          }
+          onClick={() => setHideIdle((v) => !v)}
+        >
+          {hideIdle ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+          {hideIdle ? `${idleCount} zero-rows hidden` : `Hide ${idleCount} zero rows`}
+        </Button>
+      )}
       {companyPicker}
       <FyPicker from={range.from} to={range.to} onRange={(f, t) => onRange({ from: f, to: t })} className="h-9 w-28 text-xs" />
       {/* Period for the register: opening balance before it, flows within it. */}
@@ -289,7 +319,9 @@ function StockTable({ rows, breakdown, label = 'stock', range, onRange, companyP
       />
     </div>
     {rows.length === 0 ? (
-      <div className="rounded-xl border bg-card py-10 text-center text-muted-foreground shadow-sm">Nothing here yet.</div>
+      <div className="rounded-xl border bg-card py-10 text-center text-muted-foreground shadow-sm">
+        {hideIdle && allRows.length ? 'Every product here is at zero for this period.' : 'Nothing here yet.'}
+      </div>
     ) : (
       <div className="space-y-3">
         {groups.map((grp) => {
@@ -2310,6 +2342,22 @@ export function Stock(): React.JSX.Element {
   const companyPicker = (
     <CompanyPicker companies={companies} value={cids} onChange={setCids} activeId={activeCid} />
   )
+  // Book Stock's three stages, moved off their own tab strip and into the
+  // filter row so the register starts higher up the screen.
+  const stagePicker = (
+    <Select value={tab} onValueChange={setTab}>
+      <SelectTrigger className="h-9 w-44 text-xs font-semibold">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {(['raw', 'intermediate', 'finished'] as const).map((k) => (
+          <SelectItem key={k} value={k} className="text-xs">
+            {CAT_LABEL[k]} ({byCat(k).length})
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
 
   return (
     <>
@@ -2336,30 +2384,22 @@ export function Stock(): React.JSX.Element {
           ))}
         </div>
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList>
-            {stockGroup === 'book' ? (
-              <>
-                <TabsTrigger value="raw">Raw ({byCat('raw').length})</TabsTrigger>
-                <TabsTrigger value="intermediate">Intermediate ({byCat('intermediate').length})</TabsTrigger>
-                <TabsTrigger value="finished">Finished ({byCat('finished').length})</TabsTrigger>
-              </>
-            ) : (
-              <>
-                <TabsTrigger value="sku">Packed SKU</TabsTrigger>
-                <TabsTrigger value="mnc">MNC / Consignment</TabsTrigger>
-                <TabsTrigger value="transfers">Transfers</TabsTrigger>
-                <TabsTrigger value="dayclose">Day close (actual vs book)</TabsTrigger>
-              </>
-            )}
-          </TabsList>
-          <TabsContent value="raw" className="mt-6">
-            <StockTable rows={byCat('raw')} breakdown={breakdown} label="raw" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} />
+          {stockGroup !== 'book' && (
+            <TabsList>
+              <TabsTrigger value="sku">Packed SKU</TabsTrigger>
+              <TabsTrigger value="mnc">MNC / Consignment</TabsTrigger>
+              <TabsTrigger value="transfers">Transfers</TabsTrigger>
+              <TabsTrigger value="dayclose">Day close (actual vs book)</TabsTrigger>
+            </TabsList>
+          )}
+          <TabsContent value="raw" className="mt-1">
+            <StockTable rows={byCat('raw')} breakdown={breakdown} label="raw" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} />
           </TabsContent>
-          <TabsContent value="intermediate" className="mt-6">
-            <StockTable rows={byCat('intermediate')} breakdown={breakdown} label="intermediate" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} />
+          <TabsContent value="intermediate" className="mt-1">
+            <StockTable rows={byCat('intermediate')} breakdown={breakdown} label="intermediate" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} />
           </TabsContent>
-          <TabsContent value="finished" className="mt-6">
-            <StockTable rows={byCat('finished')} breakdown={breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} />
+          <TabsContent value="finished" className="mt-1">
+            <StockTable rows={byCat('finished')} breakdown={breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} />
           </TabsContent>
           <TabsContent value="sku" className="mt-6">
             <SkuStock />

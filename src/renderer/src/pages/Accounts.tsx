@@ -5,6 +5,7 @@ import {
   BookOpenText,
   Check,
   ChevronRight,
+  FileText,
   IndianRupee,
   Landmark,
   PackageSearch,
@@ -50,7 +51,7 @@ const T = {
 
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
 
-type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg' | 'trading'
+type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg' | 'trading' | 'notesreg'
 type VchType = 'CONTRA' | 'PAYMENT' | 'RECEIPT' | 'JOURNAL' | 'DEBIT NOTE' | 'CREDIT NOTE'
 
 const VCH_TYPES: { key: VchType; fkey: string; label: string }[] = [
@@ -193,7 +194,14 @@ function AllocPanel({
                   ref_name: bill ? String(bill.ref) : '',
                   order_id: bill?.order_id ?? null,
                   sale_invoice_group: bill?.sale_invoice_group ?? null,
-                  amount: a.amount || String(Math.min(Number(bill?.pending) || rest, rest))
+                  // ALWAYS recomputed from the bill just picked, capped by what
+                  // is still unallocated. This used to keep whatever was already
+                  // in the field (`a.amount || …`), and since a new row is
+                  // pre-filled with the remaining balance, the first bill
+                  // swallowed the whole voucher — leaving every later row stuck
+                  // at "0" (a truthy string, so the pick could not fix it) and
+                  // only one invoice linkable per voucher.
+                  amount: String(Math.min(Number(bill?.pending) || rest, rest))
                 })
               }}
             >
@@ -201,11 +209,33 @@ function AllocPanel({
                 <SelectValue placeholder={refs.length ? 'Pick a pending bill' : 'No pending bills found'} />
               </SelectTrigger>
               <SelectContent className="max-h-64">
-                {refs.map((r) => (
-                  <SelectItem key={billKey(r.ref, r.order_id, r.sale_invoice_group)} value={billKey(r.ref, r.order_id, r.sale_invoice_group)}>
-                    {String(r.ref)} — {formatINR(r.pending)} pending
-                  </SelectItem>
-                ))}
+                {(() => {
+                  // A bill already claimed on another row is dropped, so the
+                  // same invoice cannot be allocated twice on one voucher. The
+                  // row's own pick stays listed, or the trigger would blank.
+                  const mine = billKey(a.ref_name, a.order_id, a.sale_invoice_group)
+                  const taken = new Set(
+                    allocs
+                      .filter((o, y) => y !== j && o.method === 'agst_ref')
+                      .map((o) => billKey(o.ref_name, o.order_id, o.sale_invoice_group))
+                  )
+                  const open = refs.filter((r) => {
+                    const k = billKey(r.ref, r.order_id, r.sale_invoice_group)
+                    return k === mine || !taken.has(k)
+                  })
+                  if (open.length === 0) {
+                    return (
+                      <div className="px-2 py-3 text-center text-[11px] text-muted-foreground">
+                        Every pending bill is already allocated on this voucher.
+                      </div>
+                    )
+                  }
+                  return open.map((r) => (
+                    <SelectItem key={billKey(r.ref, r.order_id, r.sale_invoice_group)} value={billKey(r.ref, r.order_id, r.sale_invoice_group)}>
+                      {String(r.ref)} — {formatINR(r.pending)} pending
+                    </SelectItem>
+                  ))
+                })()}
               </SelectContent>
             </Select>
           ) : a.method === 'on_account' ? (
@@ -248,7 +278,11 @@ function AllocPanel({
         onClick={() =>
           onChange([
             ...allocs,
-            { method: refs.length ? 'agst_ref' : 'on_account', ref_name: '', amount: String(Math.max(0, remaining())) }
+            refs.length
+              // Agst Ref sizes itself from whichever bill is picked next, so it
+              // starts blank rather than grabbing the whole remaining balance.
+              ? { method: 'agst_ref', ref_name: '', amount: '' }
+              : { method: 'on_account', ref_name: '', amount: String(Math.max(0, remaining())) }
           ])
         }
       >
@@ -380,6 +414,10 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   // item lines (qty x rate) -> GST + round off, posted through the notes engine.
   const [noteMode, setNoteMode] = useState(true)
   const [noteParty, setNoteParty] = useState('')
+  // Whose ledger the note lands in. Independent of the note kind — a credit
+  // note to a supplier and a debit note to a customer are both ordinary — so
+  // it is chosen rather than inferred from Alt-F5 vs Alt-F6.
+  const [notePartyKind, setNotePartyKind] = useState<'supplier' | 'customer' | 'transporter'>('supplier')
   const [noteInvoice, setNoteInvoice] = useState('')
   const [noteGst, setNoteGst] = useState('5')
   const [noteItems, setNoteItems] = useState<{ product_id: string; qty: string; rate: string }[]>([
@@ -399,6 +437,18 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   const [dbType, setDbType] = useState<string[]>([])
   const [dayRows, setDayRows] = useState<Row[]>([])
   const [viewRow, setViewRow] = useState<Row | null>(null)
+  // Debit/Credit note register — the notes raised through Alt-F5/Alt-F6, which
+  // previously had nowhere to be seen or corrected once accepted.
+  const [noteRows, setNoteRows] = useState<Row[]>([])
+  const [noteRowItems, setNoteRowItems] = useState<Record<number, Row[]>>({})
+  const [noteOpen, setNoteOpen] = useState<number | null>(null)
+  const [noteKindFilter, setNoteKindFilter] = useState<'all' | 'debit' | 'credit'>('all')
+  const [nrFrom, setNrFrom] = useState('')
+  const [nrTo, setNrTo] = useState('')
+  const [nrSearch, setNrSearch] = useState('')
+  // Set while altering a posted note: the save path updates that note in
+  // place (reversing and re-posting it) instead of raising a new one.
+  const [noteEditId, setNoteEditId] = useState<number | null>(null)
 
   // Ledger screen.
   const [ledgerId, setLedgerId] = useState<number | null>(null)
@@ -500,6 +550,19 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   }, [loadLedger])
   useLiveRefresh(loadLedger)
 
+  const loadNoteRegister = useCallback(async () => {
+    if (!cid) return
+    try {
+      setNoteRows(await window.api.notes.list(cid))
+    } catch {
+      setNoteRows([])
+    }
+  }, [cid])
+  useEffect(() => {
+    if (screen !== 'notesreg') return
+    void loadNoteRegister()
+  }, [screen, loadNoteRegister])
+
   const loadTb = useCallback(async () => {
     if (screen !== 'trial' || !cid) return
     setTb(await window.api.journal.trialBalance({ from: tbFrom || undefined, to: tbTo || undefined, companyId: cid }))
@@ -536,6 +599,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
 
   function openVoucher(t: VchType): void {
     setEditingId(null)
+    setNoteEditId(null)
     setVchType(t)
     setVchDate(todayISO())
     setVchNo('')
@@ -553,6 +617,39 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     setScreen('voucher')
   }
 
+  // Alter a posted note: the same Alt-F5/Alt-F6 invoice form, pre-filled, saving
+  // through notes.update so the voucher, ledger row and stock are re-posted.
+  async function openNoteForAlter(r: Row): Promise<void> {
+    let its: Row[] = []
+    try {
+      its = await window.api.notes.items(Number(r.id))
+    } catch {
+      its = []
+    }
+    setEditingId(null)
+    setNoteEditId(Number(r.id))
+    setVchType(String(r.note_type) === 'credit' ? 'CREDIT NOTE' : 'DEBIT NOTE')
+    setVchDate(String(r.note_date || todayISO()).slice(0, 10))
+    setVchNo(String(r.note_no || ''))
+    setNarration(String(r.narration || ''))
+    setRawAlter(false)
+    setNoteMode(true)
+    setNotePartyKind(
+      (['supplier', 'customer', 'transporter'].includes(String(r.party_type))
+        ? String(r.party_type)
+        : 'supplier') as 'supplier' | 'customer' | 'transporter'
+    )
+    setNoteParty(String(r.party_id ?? ''))
+    setNoteInvoice(String(r.against_ref || ''))
+    setNoteGst(String(Number(r.gst_pct) || 0))
+    setNoteItems(
+      its.length
+        ? its.map((it) => ({ product_id: String(it.product_id ?? ''), qty: String(it.qty ?? ''), rate: String(it.rate ?? '') }))
+        : [{ product_id: '', qty: '', rate: '' }]
+    )
+    setScreen('voucher')
+  }
+
   function setLine(i: number, patch: Partial<VLine>): void {
     setLines((p) => p.map((l, j) => (j === i ? { ...l, ...patch } : l)))
   }
@@ -562,17 +659,30 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   // New notes open in Tally's invoice mode; altering an old grid voucher keeps the grid.
   const noteInvoiceMode = isNoteType && noteMode && editingId == null
 
+  // Switching voucher type resets the party side to the usual one for it, which
+  // keeps Alt-F5/Alt-F6 behaving as before unless the kind is changed by hand.
   useEffect(() => {
     if (!isNoteType) return
+    // An alter already carries the side the note was raised on — only a fresh
+    // Alt-F5/Alt-F6 gets the usual default.
+    if (noteEditId != null) return
+    setNotePartyKind(vchType === 'DEBIT NOTE' ? 'supplier' : 'customer')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vchType, isNoteType])
+
+  useEffect(() => {
+    if (!isNoteType) return
+    const master =
+      notePartyKind === 'supplier' ? 'suppliers' : notePartyKind === 'customer' ? 'customers' : 'transporters'
     window.api.data
-      .list(vchType === 'DEBIT NOTE' ? 'suppliers' : 'customers')
+      .list(master)
       .then(setNoteParties)
       .catch(() => setNoteParties([]))
     if (!noteProducts.length) {
       window.api.data.list('products').then(setNoteProducts).catch(() => {})
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vchType, isNoteType])
+  }, [notePartyKind, isNoteType])
 
   const notePartyName = String(noteParties.find((x) => String(x.id) === noteParty)?.name || '')
   const noteRefs = refsCache[notePartyName.toUpperCase()] || []
@@ -693,27 +803,44 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   async function saveVoucher(): Promise<void> {
     if (saving) return
     if (noteInvoiceMode) {
-      if (!noteParty) return void toast.error(`Select the ${vchType === 'DEBIT NOTE' ? 'supplier' : 'customer'}`)
+      if (!noteParty) return void toast.error(`Select the ${notePartyKind}`)
       const items = noteItems.filter((it) => it.product_id && Number(it.qty) > 0 && Number(it.rate) > 0)
       if (!items.length) return void toast.error('Add at least one item line (product, qty and rate)')
       setSaving(true)
       try {
-        const res = await window.api.notes.create({
+        const values = {
           note_type: vchType === 'DEBIT NOTE' ? 'debit' : 'credit',
           company_id: cid || undefined,
+          party_type: notePartyKind,
           party_id: Number(noteParty),
           note_date: vchDate,
           gst_pct: Number(noteGst) || 0,
           narration: narration || null,
           against_invoice: noteInvoice || null,
           items: items.map((it) => ({ product_id: Number(it.product_id), qty: Number(it.qty), rate: Number(it.rate) }))
-        })
-        toast.success(`${vchType} ${res.note_no} accepted — ${formatINR(noteTotals.total)}${noteInvoice ? ` against ${noteInvoice}` : ' on account'}`)
+        }
+        // Altering keeps the note's own number: the old voucher, ledger row and
+        // item lines are reversed and re-posted from these values.
+        const res =
+          noteEditId != null
+            ? await window.api.notes.update(noteEditId, values)
+            : await window.api.notes.create(values)
+        toast.success(
+          noteEditId != null
+            ? `${vchType} ${res.note_no} altered — ${formatINR(noteTotals.total)}`
+            : `${vchType} ${res.note_no} accepted — ${formatINR(noteTotals.total)}${noteInvoice ? ` against ${noteInvoice}` : ' on account'}`
+        )
         setNoteInvoice('')
         setNoteItems([{ product_id: '', qty: '', rate: '' }])
         setNarration('')
         setRefsCache({})
         loadAccounts()
+        if (noteEditId != null) {
+          setNoteEditId(null)
+          setNoteRowItems({})
+          setScreen('notesreg')
+          void loadNoteRegister()
+        }
       } catch (e) {
         toast.error((e as Error).message)
       } finally {
@@ -918,6 +1045,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       { key: 'P', label: 'Purchase Register', icon: PackageSearch, go: () => setScreen('purchreg') },
       { key: 'S', label: 'Sales Register', icon: Receipt, go: () => setScreen('salesreg') },
       { key: 'D', label: 'Day Book', icon: BookOpenText, go: () => setScreen('daybook') },
+      { key: 'N', label: 'Debit / Credit Notes', icon: FileText, go: () => setScreen('notesreg') },
       { key: 'L', label: 'Ledger Accounts', icon: Wallet, go: () => setScreen('ledger') },
       { key: 'T', label: 'Trial Balance', icon: Scale, go: () => setScreen('trial') },
       { key: 'U', label: 'Trading Account', icon: ArrowLeftRight, go: () => setScreen('trading') }
@@ -1140,6 +1268,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       <FKey k="P" label="Purchases" active={screen === 'purchreg'} onClick={() => setScreen('purchreg')} />
       <FKey k="S" label="Sales" active={screen === 'salesreg'} onClick={() => setScreen('salesreg')} />
       <FKey k="D" label="Day Book" active={screen === 'daybook'} onClick={() => setScreen('daybook')} />
+      <FKey k="N" label="Dr / Cr Notes" active={screen === 'notesreg'} onClick={() => setScreen('notesreg')} />
       <FKey k="L" label="Ledgers" active={screen === 'ledger'} onClick={() => setScreen('ledger')} />
       <FKey k="T" label="Trial Balance" active={screen === 'trial'} onClick={() => setScreen('trial')} />
       <FKey k="U" label="Trading Account" active={screen === 'trading'} onClick={() => setScreen('trading')} />
@@ -1197,13 +1326,31 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   )
 
   const voucherScreen = (
-    <div className="flex-1 p-3">
-      <div className={cn('mx-auto w-full max-w-6xl rounded-md border shadow-lg', T.paperEdge, T.paper)}>
+    <div className="flex flex-1 p-3">
+      <div
+        className={cn(
+          'mx-auto flex w-full flex-col rounded-md border shadow-lg',
+          noteInvoiceMode ? 'max-w-none min-h-[calc(100vh-68px)]' : 'max-w-6xl',
+          T.paperEdge,
+          T.paper
+        )}
+      >
         <div className={cn('flex items-center justify-between rounded-t-md px-4 py-2', T.headBar)}>
           <span className="text-[13px] font-bold uppercase tracking-widest">
-            {editingId != null ? `Alter ${vchType} voucher` : `${vchType} voucher`}
+            {editingId != null || noteEditId != null ? `Alter ${vchType}` : `${vchType} voucher`}
           </span>
-          <span className="text-[11px] font-medium">No: {vchNo || 'Auto'}</span>
+          <span className="flex items-center gap-3 text-[11px] font-medium">
+            No: {vchNo || 'Auto'}
+            {noteEditId != null && (
+              <button
+                type="button"
+                className="rounded bg-white/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide hover:bg-white/30"
+                onClick={() => { setNoteEditId(null); setScreen('notesreg') }}
+              >
+                Back to register
+              </button>
+            )}
+          </span>
         </div>
         <div className="flex flex-wrap items-end gap-3 border-b border-dashed px-4 py-2.5" style={{ borderColor: '#d9d2b8' }}>
           <div className="flex flex-col gap-1">
@@ -1216,7 +1363,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
             <Label className="text-[10px] uppercase tracking-wide">Voucher no (optional)</Label>
             <Input className="h-9 w-36 bg-white" value={vchNo} onChange={(e) => setVchNo(e.target.value)} />
           </div>
-          {isNoteType && editingId == null && (
+          {isNoteType && editingId == null && noteEditId == null && (
             <Button
               variant="outline"
               size="sm"
@@ -1374,11 +1521,35 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         )}
 
         {noteInvoiceMode && (
-          <div className="px-4 py-3">
-            <div className="mb-3 grid gap-3 sm:grid-cols-2">
+          <div className="flex min-h-0 flex-1 flex-col px-4 py-3">
+            <div className="mb-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <div className="flex flex-col gap-1">
+                <Label className="text-[10px] uppercase tracking-wide">Party type</Label>
+                <Select
+                  value={notePartyKind}
+                  onValueChange={(v) => {
+                    // The chosen party id belongs to the old master, so it and
+                    // the picked invoice are cleared with the switch.
+                    setNotePartyKind(v as 'supplier' | 'customer' | 'transporter')
+                    setNoteParty('')
+                    setNoteInvoice('')
+                  }}
+                >
+                  <SelectTrigger className="bg-white"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="supplier">Supplier</SelectItem>
+                    <SelectItem value="customer">Customer</SelectItem>
+                    <SelectItem value="transporter">Transporter</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="flex flex-col gap-1">
                 <Label className="text-[10px] uppercase tracking-wide">
-                  {vchType === 'DEBIT NOTE' ? 'Supplier (goods going back)' : 'Customer (goods coming back)'}
+                  {notePartyKind === 'customer'
+                    ? 'Customer (goods coming back)'
+                    : notePartyKind === 'supplier'
+                      ? 'Supplier (goods going back)'
+                      : 'Transporter'}
                 </Label>
                 <Select
                   value={noteParty}
@@ -1415,100 +1586,179 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
               </div>
             </div>
 
-            <div className="rounded border" style={{ borderColor: '#d9d2b8' }}>
+            {/* Items take the room they need and scroll on their own; the
+                running total sits alongside rather than under, so a long note
+                never pushes its own figures off the screen. */}
+            <div className="flex min-h-0 flex-1 flex-col gap-3 xl:flex-row">
               <div
-                className="grid grid-cols-[1fr_110px_130px_130px_32px] items-center gap-2 border-b bg-[#f1ecd9] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
+                className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border bg-white/40"
                 style={{ borderColor: '#d9d2b8' }}
               >
-                <span>Item</span>
-                <span className="text-right">Qty</span>
-                <span className="text-right">Rate</span>
-                <span className="text-right">Amount</span>
-                <span />
-              </div>
-              {noteItems.map((it, i) => (
                 <div
-                  key={i}
-                  className="grid grid-cols-[1fr_110px_130px_130px_32px] items-center gap-2 border-b border-dotted px-3 py-1.5 last:border-0"
-                  style={{ borderColor: '#e5dfc8' }}
+                  className="grid shrink-0 grid-cols-[28px_minmax(0,1fr)_120px_150px_150px_32px] items-center gap-2 border-b bg-[#f1ecd9] px-3 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
+                  style={{ borderColor: '#d9d2b8' }}
                 >
-                  <Select
-                    value={it.product_id}
-                    onValueChange={(v) => setNoteItems((p) => p.map((x, j) => (j === i ? { ...x, product_id: v } : x)))}
-                  >
-                    <SelectTrigger className="h-8 bg-white text-[13px]"><SelectValue placeholder="Product" /></SelectTrigger>
-                    <SelectContent className="max-h-72">
-                      {noteProducts.map((x) => (
-                        <SelectItem key={String(x.id)} value={String(x.id)}>{x.code || x.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Input
-                    type="number"
-                    className="h-8 bg-white text-right tabular-nums"
-                    placeholder="MT"
-                    value={it.qty}
-                    onChange={(e) => setNoteItems((p) => p.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)))}
-                  />
-                  <Input
-                    type="number"
-                    className="h-8 bg-white text-right tabular-nums"
-                    placeholder="₹ / MT"
-                    value={it.rate}
-                    onChange={(e) => setNoteItems((p) => p.map((x, j) => (j === i ? { ...x, rate: e.target.value } : x)))}
-                  />
-                  <span className="text-right text-[13px] font-medium tabular-nums">
-                    {formatINR(Math.round((Number(it.qty) || 0) * (Number(it.rate) || 0) * 100) / 100)}
-                  </span>
-                  <span className="text-right">
-                    {noteItems.length > 1 && (
-                      <button
-                        type="button"
-                        className="cursor-pointer text-muted-foreground hover:text-red-600"
-                        onClick={() => setNoteItems((p) => p.filter((_, j) => j !== i))}
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </span>
+                  <span>#</span>
+                  <span>Item</span>
+                  <span className="text-right">Qty (MT)</span>
+                  <span className="text-right">Rate (₹ / MT)</span>
+                  <span className="text-right">Amount</span>
+                  <span />
                 </div>
-              ))}
-              <div className="px-3 py-1.5">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 text-xs"
-                  onClick={() => setNoteItems((p) => [...p, { product_id: '', qty: '', rate: '' }])}
+                <div className="min-h-0 flex-1 overflow-auto">
+                  {noteItems.map((it, i) => (
+                    <div
+                      key={i}
+                      className={cn(
+                        'grid grid-cols-[28px_minmax(0,1fr)_120px_150px_150px_32px] items-center gap-2 border-b border-dotted px-3 py-2',
+                        i % 2 === 1 && 'bg-[#faf6e8]'
+                      )}
+                      style={{ borderColor: '#e5dfc8' }}
+                    >
+                      <span className="text-[11px] tabular-nums text-muted-foreground">{i + 1}</span>
+                      <Select
+                        value={it.product_id}
+                        onValueChange={(v) => setNoteItems((p) => p.map((x, j) => (j === i ? { ...x, product_id: v } : x)))}
+                      >
+                        <SelectTrigger className="h-9 bg-white text-[13px]"><SelectValue placeholder="Product" /></SelectTrigger>
+                        <SelectContent className="max-h-72">
+                          {noteProducts.map((x) => (
+                            <SelectItem key={String(x.id)} value={String(x.id)}>{x.code || x.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Input
+                        type="number"
+                        className="h-9 bg-white text-right tabular-nums"
+                        placeholder="0.000"
+                        value={it.qty}
+                        onChange={(e) => setNoteItems((p) => p.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)))}
+                      />
+                      <Input
+                        type="number"
+                        className="h-9 bg-white text-right tabular-nums"
+                        placeholder="0.00"
+                        value={it.rate}
+                        onChange={(e) => setNoteItems((p) => p.map((x, j) => (j === i ? { ...x, rate: e.target.value } : x)))}
+                      />
+                      <span className="text-right text-[13px] font-semibold tabular-nums">
+                        {formatINR(Math.round((Number(it.qty) || 0) * (Number(it.rate) || 0) * 100) / 100)}
+                      </span>
+                      <span className="text-right">
+                        {noteItems.length > 1 && (
+                          <button
+                            type="button"
+                            title="Remove this line"
+                            className="cursor-pointer text-muted-foreground hover:text-red-600"
+                            onClick={() => setNoteItems((p) => p.filter((_, j) => j !== i))}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                  <div className="px-3 py-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 bg-white text-xs"
+                      onClick={() => setNoteItems((p) => [...p, { product_id: '', qty: '', rate: '' }])}
+                    >
+                      <Plus className="h-3.5 w-3.5" /> Add item
+                    </Button>
+                  </div>
+                </div>
+                <div
+                  className="grid shrink-0 grid-cols-[28px_minmax(0,1fr)_120px_150px_150px_32px] items-center gap-2 border-t-2 bg-[#f1ecd9] px-3 py-2 text-[12px] font-bold"
+                  style={{ borderColor: '#1a2c56' }}
                 >
-                  <Plus className="h-3.5 w-3.5" /> Add item
-                </Button>
+                  <span />
+                  <span className="uppercase tracking-widest text-muted-foreground">
+                    {noteItems.filter((x) => x.product_id).length} item{noteItems.filter((x) => x.product_id).length === 1 ? '' : 's'}
+                  </span>
+                  <span className="text-right tabular-nums">
+                    {(noteItems.reduce((t, x) => t + (Number(x.qty) || 0), 0)).toFixed(3)}
+                  </span>
+                  <span />
+                  <span className="text-right tabular-nums">{formatINR(noteTotals.base)}</span>
+                  <span />
+                </div>
               </div>
-            </div>
 
-            <div className="mt-3 ml-auto w-72 space-y-1 text-[13px]">
-              <div className="flex justify-between"><span className="text-muted-foreground">Taxable value</span><span className="tabular-nums">{formatINR(noteTotals.base)}</span></div>
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-muted-foreground">
-                  GST
-                  <Input
-                    type="number"
-                    className="h-6 w-14 bg-white px-1 text-right text-[12px] tabular-nums"
-                    value={noteGst}
-                    onChange={(e) => setNoteGst(e.target.value)}
-                  />
-                  %
-                </span>
-                <span className="tabular-nums">{formatINR(noteTotals.gst)}</span>
+              <div className="flex w-full shrink-0 flex-col gap-3 xl:w-[340px]">
+                <div
+                  className="rounded-md border bg-white/60 px-4 py-3 text-[13px]"
+                  style={{ borderColor: '#d9d2b8' }}
+                >
+                  <div className="mb-2 flex items-center justify-between border-b border-dashed pb-2" style={{ borderColor: '#d9d2b8' }}>
+                    <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                      {vchType === 'DEBIT NOTE' ? 'Debit note' : 'Credit note'}
+                    </span>
+                    <span className="min-w-0 truncate text-[12px] font-semibold">{notePartyName || '—'}</span>
+                  </div>
+                  <div className="flex justify-between py-0.5">
+                    <span className="text-muted-foreground">Taxable value</span>
+                    <span className="tabular-nums">{formatINR(noteTotals.base)}</span>
+                  </div>
+                  <div className="flex items-center justify-between py-0.5">
+                    <span className="flex items-center gap-1.5 text-muted-foreground">
+                      GST
+                      <Input
+                        type="number"
+                        className="h-7 w-16 bg-white px-1.5 text-right text-[12px] tabular-nums"
+                        value={noteGst}
+                        onChange={(e) => setNoteGst(e.target.value)}
+                      />
+                      %
+                    </span>
+                    <span className="tabular-nums">{formatINR(noteTotals.gst)}</span>
+                  </div>
+                  <div className="flex justify-between py-0.5">
+                    <span className="text-muted-foreground">Round off</span>
+                    <span className="tabular-nums">{formatINR(noteTotals.ro)}</span>
+                  </div>
+                  <div
+                    className="mt-1.5 flex items-baseline justify-between border-t-2 pt-2 font-bold"
+                    style={{ borderColor: '#1a2c56' }}
+                  >
+                    <span className="text-[11px] uppercase tracking-wide">
+                      {vchType === 'DEBIT NOTE' ? 'Dr party' : 'Cr party'}
+                    </span>
+                    <span className="text-[17px] tabular-nums">{formatINR(noteTotals.total)}</span>
+                  </div>
+                </div>
+                <div
+                  className="rounded-md border border-dashed px-3 py-2.5 text-[11px] leading-relaxed text-muted-foreground"
+                  style={{ borderColor: '#d9d2b8' }}
+                >
+                  Posts{' '}
+                  <span className="font-semibold text-foreground">
+                    {notePartyKind === 'customer' ? 'SALES RETURN' : 'PURCHASE RETURN'}
+                  </span>{' '}
+                  against{' '}
+                  <span className="font-semibold text-foreground">
+                    {notePartyKind === 'customer' ? 'GST OUTPUT' : 'GST INPUT'}
+                  </span>{' '}
+                  with the round off, numbered automatically, and settles{' '}
+                  {noteInvoice ? (
+                    <>bill-wise against <span className="font-semibold text-foreground">{noteInvoice}</span></>
+                  ) : (
+                    'on account'
+                  )}
+                  .
+                  {noteItems.some((x) => x.product_id) && (
+                    <>
+                      {' '}Item lines move stock:{' '}
+                      {vchType === 'CREDIT NOTE' && notePartyKind === 'customer'
+                        ? 'goods come back in.'
+                        : vchType === 'DEBIT NOTE' && notePartyKind === 'supplier'
+                          ? 'goods go back out.'
+                          : 'money only — stock is untouched for this party side.'}
+                    </>
+                  )}
+                </div>
               </div>
-              <div className="flex justify-between"><span className="text-muted-foreground">Round off</span><span className="tabular-nums">{formatINR(noteTotals.ro)}</span></div>
-              <div className="flex justify-between border-t-2 pt-1 font-bold" style={{ borderColor: '#1a2c56' }}>
-                <span>{vchType === 'DEBIT NOTE' ? 'Dr supplier' : 'Cr customer'}</span>
-                <span className="tabular-nums">{formatINR(noteTotals.total)}</span>
-              </div>
-              <p className="pt-1 text-[10px] leading-relaxed text-muted-foreground">
-                Posts {vchType === 'DEBIT NOTE' ? 'PURCHASE RETURN + GST INPUT reversal' : 'SALES RETURN + GST OUTPUT reversal'} with
-                the round off, numbered automatically, settled bill-wise against the chosen invoice.
-              </p>
             </div>
           </div>
         )}
@@ -1729,13 +1979,19 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         </table>
         )}
 
-        <div className="flex items-end gap-3 px-4 pb-4 pt-1">
+        <div
+          className={cn(
+            'flex items-end gap-3 px-4 pb-4 pt-1',
+            noteInvoiceMode && 'mt-auto border-t border-dashed pt-3'
+          )}
+          style={noteInvoiceMode ? { borderColor: '#d9d2b8' } : undefined}
+        >
           <div className="flex flex-1 flex-col gap-1">
             <Label className="text-[10px] uppercase tracking-wide">Narration</Label>
             <Input className="h-9 bg-white" value={narration} onChange={(e) => setNarration(e.target.value)} placeholder="Being…" />
           </div>
           <Button className="bg-[#1a2c56] hover:bg-[#24407e]" disabled={saving} onClick={() => void saveVoucher()}>
-            {saving ? 'Saving…' : editingId != null ? 'Save changes (Ctrl+A)' : 'Accept (Ctrl+A)'}
+            {saving ? 'Saving…' : editingId != null || noteEditId != null ? 'Save changes (Ctrl+A)' : 'Accept (Ctrl+A)'}
           </Button>
           {editingId != null && (
             <Button variant="outline" className="text-red-600" onClick={() => void deleteVoucher()}>
@@ -2104,6 +2360,227 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                     </td>
                   </tr>
                 ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+
+  // Filtered view of the note register — kind, date range and a free-text match
+  // on the note number, party or narration.
+  const noteRegRows = useMemo(() => {
+    const q = nrSearch.trim().toUpperCase()
+    return noteRows.filter((r) => {
+      if (noteKindFilter !== 'all' && String(r.note_type) !== noteKindFilter) return false
+      const d = String(r.note_date || '').slice(0, 10)
+      if (nrFrom && d < nrFrom) return false
+      if (nrTo && d > nrTo) return false
+      if (!q) return true
+      return [r.note_no, r.party_name, r.narration, r.against_account, r.against_ref]
+        .some((x) => String(x || '').toUpperCase().includes(q))
+    })
+  }, [noteRows, noteKindFilter, nrFrom, nrTo, nrSearch])
+
+  const noteRegTotals = useMemo(
+    () =>
+      noteRegRows.reduce(
+        (t, r) => ({
+          base: t.base + (Number(r.base_amount) || 0),
+          gst: t.gst + (Number(r.gst_amount) || 0),
+          total: t.total + (Number(r.total_amount) || 0)
+        }),
+        { base: 0, gst: 0, total: 0 }
+      ),
+    [noteRegRows]
+  )
+
+  async function toggleNoteRow(id: number): Promise<void> {
+    if (noteOpen === id) return void setNoteOpen(null)
+    setNoteOpen(id)
+    if (noteRowItems[id]) return
+    try {
+      const its = await window.api.notes.items(id)
+      setNoteRowItems((p) => ({ ...p, [id]: its }))
+    } catch {
+      setNoteRowItems((p) => ({ ...p, [id]: [] }))
+    }
+  }
+
+  async function deleteNoteRow(r: Row): Promise<void> {
+    if (!window.confirm(`Delete ${String(r.note_type) === 'credit' ? 'credit' : 'debit'} note ${r.note_no}? Its voucher, ledger entry and any stock it moved are reversed.`)) return
+    try {
+      await window.api.notes.remove(Number(r.id), cid)
+      toast.success(`Note ${r.note_no} deleted`)
+      setNoteOpen(null)
+      setNoteRowItems({})
+      await loadNoteRegister()
+      loadAccounts()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  const notesRegisterScreen = (
+    <div className="flex-1 p-3">
+      <div className={cn('rounded-md border shadow-lg', T.paperEdge, T.paper)}>
+        <div className={cn('flex flex-wrap items-center gap-3 rounded-t-md px-4 py-2', T.headBar)}>
+          <span className="text-[13px] font-bold uppercase tracking-widest">Debit / Credit Notes</span>
+          <div className="flex items-center gap-1">
+            {(['all', 'debit', 'credit'] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setNoteKindFilter(k)}
+                className={cn(
+                  'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide',
+                  noteKindFilter === k ? 'bg-white text-slate-900' : 'bg-white/15 hover:bg-white/25'
+                )}
+              >
+                {k === 'all' ? 'All' : k === 'debit' ? 'Debit notes' : 'Credit notes'}
+              </button>
+            ))}
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <Input
+              className="h-9 w-44 bg-white text-xs"
+              placeholder="Search note / party…"
+              value={nrSearch}
+              onChange={(e) => setNrSearch(e.target.value)}
+            />
+            <FyPicker from={nrFrom} to={nrTo} onRange={(f, t) => { setNrFrom(f); setNrTo(t) }} className="h-9 w-28 bg-white text-xs" />
+            <div className="w-40"><DatePicker value={nrFrom} onChange={setNrFrom} max={nrTo || undefined} /></div>
+            <span className="text-[11px]">to</span>
+            <div className="w-40"><DatePicker value={nrTo} onChange={setNrTo} min={nrFrom || undefined} /></div>
+            {(nrFrom || nrTo) && (
+              <Button variant="ghost" size="sm" className="h-8 px-2 text-xs text-white hover:bg-white/20" onClick={() => { setNrFrom(''); setNrTo('') }}>
+                All
+              </Button>
+            )}
+          </div>
+        </div>
+        <div className="max-h-[calc(100vh-225px)] overflow-auto">
+          <table className="w-full text-[13px]">
+            <thead className="sticky top-0 bg-[#f1ecd9]">
+              <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                <th className="w-8 py-1.5 pl-4" />
+                <th className="px-2 py-1.5">Date</th>
+                <th className="px-2 py-1.5">Note no</th>
+                <th className="px-2 py-1.5">Type</th>
+                <th className="px-2 py-1.5">Party</th>
+                <th className="px-2 py-1.5">Against</th>
+                <th className="px-2 py-1.5">Orig. invoice</th>
+                <th className="px-2 py-1.5 text-right">Taxable</th>
+                <th className="px-2 py-1.5 text-right">GST</th>
+                <th className="px-2 py-1.5 text-right">Total</th>
+                <th className="w-24 py-1.5 pl-2 pr-4 text-center">Actions</th>
+              </tr>
+              {noteRegRows.length > 0 && (
+                <tr className="bg-[#e8e1c8] text-[12px] font-semibold">
+                  <td className="py-1.5 pl-4" colSpan={7}>
+                    {noteRegRows.length} note{noteRegRows.length === 1 ? '' : 's'}
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{formatINR(noteRegTotals.base)}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{formatINR(noteRegTotals.gst)}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{formatINR(noteRegTotals.total)}</td>
+                  <td className="py-1.5 pl-2 pr-4" />
+                </tr>
+              )}
+            </thead>
+            <tbody>
+              {noteRegRows.length === 0 ? (
+                <tr>
+                  <td colSpan={11} className="px-4 py-10 text-center text-muted-foreground">
+                    No debit or credit notes {noteRows.length ? 'match these filters' : 'raised yet'}.
+                  </td>
+                </tr>
+              ) : (
+                noteRegRows.map((r) => {
+                  const id = Number(r.id)
+                  const credit = String(r.note_type) === 'credit'
+                  const open = noteOpen === id
+                  return (
+                    <Fragment key={id}>
+                      <tr
+                        className="cursor-pointer border-b border-dotted hover:bg-amber-100/70"
+                        style={{ borderColor: '#e5dfc8' }}
+                        onClick={() => void toggleNoteRow(id)}
+                      >
+                        <td className="py-1.5 pl-4">
+                          <ChevronRight className={cn('h-3.5 w-3.5 text-muted-foreground transition-transform', open && 'rotate-90')} />
+                        </td>
+                        <td className="whitespace-nowrap px-2 py-1.5 tabular-nums">{formatDate(r.note_date)}</td>
+                        <td className="px-2 py-1.5 font-medium">{r.note_no}</td>
+                        <td className="px-2 py-1.5">
+                          <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase', credit ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700')}>
+                            {credit ? 'Credit' : 'Debit'}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <div className="font-medium">{r.party_name || '—'}</div>
+                          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{r.party_type}</div>
+                        </td>
+                        <td className="px-2 py-1.5 text-[12px]">{r.against_account || '—'}</td>
+                        <td className="px-2 py-1.5 text-[12px]">{r.against_ref || <span className="text-muted-foreground">On account</span>}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">{formatINR(r.base_amount)}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">
+                          {formatINR(r.gst_amount)}
+                          {Number(r.gst_pct) ? <span className="ml-1 text-[10px] text-muted-foreground">@{Number(r.gst_pct)}%</span> : null}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-semibold tabular-nums">{formatINR(r.total_amount)}</td>
+                        <td className="py-1.5 pl-2 pr-4" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-center gap-1">
+                            <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px]" onClick={() => void openNoteForAlter(r)}>
+                              Edit
+                            </Button>
+                            <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-rose-700 hover:bg-rose-100" onClick={() => void deleteNoteRow(r)}>
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                      {open && (
+                        <tr className="border-b border-dotted bg-amber-50/60" style={{ borderColor: '#e5dfc8' }}>
+                          <td />
+                          <td colSpan={10} className="px-2 py-2">
+                            {r.narration ? (
+                              <div className="mb-1.5 text-[12px] italic text-muted-foreground">{r.narration}</div>
+                            ) : null}
+                            {!noteRowItems[id] ? (
+                              <div className="text-[12px] text-muted-foreground">Loading item lines…</div>
+                            ) : noteRowItems[id].length === 0 ? (
+                              <div className="text-[12px] text-muted-foreground">
+                                No item lines — this note adjusts money only, so it does not move stock.
+                              </div>
+                            ) : (
+                              <table className="w-full max-w-3xl text-[12px]">
+                                <thead>
+                                  <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                                    <th className="py-1 pr-2">Product</th>
+                                    <th className="px-2 py-1 text-right">Qty</th>
+                                    <th className="px-2 py-1 text-right">Rate</th>
+                                    <th className="px-2 py-1 text-right">Amount</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {noteRowItems[id].map((it) => (
+                                    <tr key={String(it.id)}>
+                                      <td className="py-1 pr-2">{it.product_name || it.description || '—'}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums">{Number(it.qty) || 0}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums">{formatINR(it.rate)}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums">{formatINR(it.amount)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })
               )}
             </tbody>
           </table>
@@ -2515,6 +2992,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
             {screen === 'purchreg' && purchaseRegisterScreen}
             {screen === 'salesreg' && salesRegisterScreen}
             {screen === 'daybook' && daybookScreen}
+            {screen === 'notesreg' && notesRegisterScreen}
             {screen === 'ledger' && ledgerScreen}
             {screen === 'trial' && trialScreen}
             {screen === 'trading' && tradingScreen}
