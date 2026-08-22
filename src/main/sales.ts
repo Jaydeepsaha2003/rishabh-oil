@@ -722,9 +722,9 @@ export async function createSale(v: Row): Promise<{ id: number }> {
     : 0
   const res = await getClient().execute({
     sql: `INSERT INTO sales (company_id, sale_date, invoice_no, invoice_group, customer, customer_id, product_id, sales_bargain_id,
-            qty, uom, rate, amount, gst_pct, gst_amount, gst_type, round_off, tds_pct, tds_amount, status, dispatch_stage, track_stock, loaded_date, transit_date, unloaded_date, note, sale_type, packaging_id, boxes, pouches, freight_term,
+            qty, uom, rate, amount, gst_pct, gst_amount, gst_type, round_off, round_off_manual, tds_pct, tds_amount, status, dispatch_stage, track_stock, loaded_date, transit_date, unloaded_date, note, sale_type, packaging_id, boxes, pouches, freight_term,
             transporter_id, transport_rate, transport_amount, is_trading, affects_stock, deduct_freight)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       v.sale_date,
@@ -742,6 +742,7 @@ export async function createSale(v: Row): Promise<{ id: number }> {
       gstAmount,
       v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
       roundOff,
+      v.round_off_manual ? 1 : 0,
       tdsPct,
       tdsAmount,
       status,
@@ -826,7 +827,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
     : 0
   await getClient().execute({
     sql: `UPDATE sales SET sale_date = ?, invoice_no = ?, customer = ?, customer_id = ?, product_id = ?, sales_bargain_id = ?,
-          qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, round_off = ?, tds_pct = ?, tds_amount = ?, status = ?, dispatch_stage = ?, track_stock = ?, loaded_date = ?, transit_date = ?, unloaded_date = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
+          qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, round_off = ?, round_off_manual = ?, tds_pct = ?, tds_amount = ?, status = ?, dispatch_stage = ?, track_stock = ?, loaded_date = ?, transit_date = ?, unloaded_date = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
           pouches = ?, freight_term = ?, transporter_id = ?, transport_rate = ?, transport_amount = ?, deduct_freight = ? WHERE id = ?`,
     args: [
       v.sale_date,
@@ -843,6 +844,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       gstAmount,
       v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
       roundOff,
+      v.round_off_manual ? 1 : 0,
       tdsPct,
       tdsAmount,
       status,
@@ -983,7 +985,7 @@ export async function createSaleInvoice(v: Row): Promise<{ group: string; ids: n
   const ids: number[] = []
   for (let i = 0; i < items.length; i++) {
     // Invoice-level round off rides on the FIRST line only (others 0).
-    const res = await createSale({ ...mergeInvoiceItem(v, items[i], group), round_off: i === 0 ? v.round_off : 0 })
+    const res = await createSale({ ...mergeInvoiceItem(v, items[i], group), round_off: i === 0 ? v.round_off : 0, round_off_manual: i === 0 ? v.round_off_manual : 0 })
     ids.push(res.id)
   }
   return { group, ids }
@@ -1001,7 +1003,7 @@ export async function updateSaleInvoice(group: string, v: Row): Promise<{ group:
   for (const r of existing.rows) await deleteSale(Number(r.id))
   const ids: number[] = []
   for (let i = 0; i < items.length; i++) {
-    const res = await createSale({ ...mergeInvoiceItem(v, items[i], group), round_off: i === 0 ? v.round_off : 0 })
+    const res = await createSale({ ...mergeInvoiceItem(v, items[i], group), round_off: i === 0 ? v.round_off : 0, round_off_manual: i === 0 ? v.round_off_manual : 0 })
     ids.push(res.id)
   }
   return { group, ids }
@@ -1161,7 +1163,7 @@ export async function backfillSalesRoundOff(): Promise<void> {
   for (const lines of groups.values()) {
     // Don't touch invoices that already carry a round off.
     if (lines.some((l) => Math.abs(n(l.round_off)) > 0.004)) continue
-    const raw = lines.reduce((s, l) => s + n(l.amount) + n(l.gst_amount), 0)
+    const raw = Math.round(lines.reduce((s, l) => s + n(l.amount) + n(l.gst_amount), 0) * 100) / 100
     const ro = Math.round((Math.round(raw) - raw) * 100) / 100
     if (Math.abs(ro) < 0.005) continue
     const first = lines[0]
@@ -1192,6 +1194,77 @@ export async function backfillSalesRoundOff(): Promise<void> {
     "INSERT INTO app_settings (key, value) VALUES ('sales_round_off_backfilled_2', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"
   )
   if (applied > 0) console.log(`[sales] backfilled round off on ${applied} invoices`)
+}
+
+// One-time restatement: invoices whose round off is STALE — it exists, so the
+// backfill above skipped it, but it no longer makes the total a whole rupee
+// because the invoice was edited afterwards (a qty or rate changed) while the
+// form treated the stored figure as a manual override and never recomputed it.
+// Restates it to the correct auto value and re-posts that line's voucher and
+// customer receivable at the corrected net, same as the backfill does.
+export async function restateStaleSalesRoundOff(): Promise<void> {
+  const c = getClient()
+  const done = await c.execute("SELECT value FROM app_settings WHERE key = 'sales_round_off_restated_3'")
+  if (done.rows.length && String(done.rows[0].value) === '1') return
+
+  const sales = await c.execute(`
+    SELECT s.id, s.company_id, s.invoice_group, s.sale_date, s.invoice_no, s.customer, s.customer_id,
+           s.amount, s.gst_amount, s.round_off, s.round_off_manual, pr.code AS product_code, pr.name AS product_name
+    FROM sales s
+    LEFT JOIN products pr ON pr.id = s.product_id
+    ORDER BY s.id ASC
+  `)
+  const groups = new Map<string, Row[]>()
+  for (const r of toPlain(sales)) {
+    const g = String(r.invoice_group || `LEGACY-${r.id}`)
+    if (!groups.has(g)) groups.set(g, [])
+    groups.get(g)!.push(r)
+  }
+  let applied = 0
+  for (const lines of groups.values()) {
+    // A round off the user typed by hand is theirs — never restate it.
+    if (lines.some((l) => n(l.round_off_manual) === 1)) continue
+    const raw = Math.round(lines.reduce((s, l) => s + n(l.amount) + n(l.gst_amount), 0) * 100) / 100
+    if (raw <= 0) continue
+    const should = Math.round((Math.round(raw) - raw) * 100) / 100
+    const stored = Math.round(lines.reduce((s, l) => s + n(l.round_off), 0) * 100) / 100
+    if (Math.abs(stored - should) < 0.005) continue
+
+    // The round off belongs on the group's first line; clear any that drifted
+    // onto the others so the group's total is exactly `should`.
+    const first = lines[0]
+    await c.execute({ sql: 'UPDATE sales SET round_off = ? WHERE id = ?', args: [should, n(first.id)] })
+    for (const l of lines.slice(1)) {
+      if (Math.abs(n(l.round_off)) > 0.004) {
+        await c.execute({ sql: 'UPDATE sales SET round_off = 0 WHERE id = ?', args: [n(l.id)] })
+      }
+    }
+    const code = String(first.product_code || first.product_name || 'FG').toUpperCase()
+    await postSaleJournal({
+      saleId: n(first.id),
+      date: String(first.sale_date),
+      invoiceNo: first.invoice_no ? String(first.invoice_no) : null,
+      productCode: code,
+      customerName: String(first.customer || '').trim(),
+      amount: n(first.amount),
+      gst: n(first.gst_amount),
+      roundOff: should,
+      companyId: n(first.company_id) || 1
+    }).catch(() => {})
+    if (first.customer_id) {
+      await postCustomerReceivable(
+        n(first.id),
+        n(first.customer_id),
+        n(first.amount) + n(first.gst_amount) + should,
+        String(first.sale_date)
+      ).catch(() => {})
+    }
+    applied++
+  }
+  await c.execute(
+    "INSERT INTO app_settings (key, value) VALUES ('sales_round_off_restated_3', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"
+  )
+  if (applied > 0) console.log(`[sales] restated stale round off on ${applied} invoices`)
 }
 
 // One-time backfill: link existing sales bargains to the customer master by

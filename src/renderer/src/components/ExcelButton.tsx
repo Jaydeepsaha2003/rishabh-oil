@@ -1,6 +1,7 @@
 import { toast } from 'sonner'
 import { Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import { exportRowsToExcel, type ExcelColumn, type ExcelSheet } from '@/lib/excel'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -42,14 +43,17 @@ export function ExcelButton({
   }
   return (
     <Button
-      variant="outline"
-      size="sm"
+      size="icon"
       onClick={onClick}
       disabled={disabled || rows.length === 0}
-      className={className}
-      title="Download as Excel"
+      // Icon-only, in dark green — the download intent reads from the glyph, and
+      // the label survives as the tooltip so a page that names its export
+      // something specific ("Excel", "LC register"…) still says so on hover.
+      className={cn('h-9 w-9 bg-emerald-700 text-white shadow-sm hover:bg-emerald-800', className)}
+      title={label === 'Excel' ? 'Download as Excel' : `Download ${label} as Excel`}
+      aria-label={label === 'Excel' ? 'Download as Excel' : `Download ${label} as Excel`}
     >
-      <Download className="h-4 w-4" /> {label}
+      <Download className="h-4 w-4" />
     </Button>
   )
 }

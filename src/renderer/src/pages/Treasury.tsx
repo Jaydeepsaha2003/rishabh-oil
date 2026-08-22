@@ -810,8 +810,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     () =>
       lcs.map((l) => {
         const dueDate = l.next_due_date || l.expiry_date
-        const daysLeft = daysTo(dueDate)
-        const row: Row = { ...l, due_date_effective: dueDate, days_left_effective: daysLeft }
+        // A repaid/preclosed LC has been wound up — nothing is owed on it any
+        // more, so it carries no due date. Leaving one on would keep it
+        // counting under T+1/This week/Fortnight and reading as overdue for
+        // ever, long after it was settled.
+        const daysLeft = l.preclosed_date ? null : daysTo(dueDate)
+        const row: Row = {
+          ...l,
+          due_date_effective: l.preclosed_date ? null : dueDate,
+          days_left_effective: daysLeft
+        }
         return row
       }),
     [lcs]
@@ -821,8 +829,13 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     if (lcStageFilter) rows = rows.filter((l) => String(l.stage || 'application') === lcStageFilter)
     if (lcPurposeFilter) rows = rows.filter((l) => String(l.purpose || 'manufacturing') === lcPurposeFilter)
     if (activeBank) rows = rows.filter((l) => String(l.our_bank_id || '') === String(activeBank))
+    // The three states are mutually exclusive: Repaid (wound up), Matured
+    // (past its own expiry, still owed), and everything still running. The
+    // default deliberately shows only the last of those — a settled or
+    // expired LC needs no attention, so it would only pad the register.
     if (lcStatusFilter === 'matured') rows = rows.filter((l) => isLcPastMaturity(l) && !l.preclosed_date)
     else if (lcStatusFilter === 'repaid') rows = rows.filter((l) => !!l.preclosed_date)
+    else rows = rows.filter((l) => !l.preclosed_date && !isLcPastMaturity(l))
     // Same window the LC Facility Limit KPI above is scoped to — the register
     // and the KPI it summarises always show the same cohort of LCs.
     if (lcKpiFrom) rows = rows.filter((l) => String(l.open_date || '').slice(0, 10) >= lcKpiFrom)
@@ -1169,7 +1182,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       That's why this can read lower than the LC count in the
                       page header, which is every LC on record. */}
                   <span
-                    className="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold tabular-nums"
+                    className="rounded-full bg-white/15 px-2.5 py-0.5 text-[13px] font-semibold tabular-nums"
                     title={
                       `${lcLimit.lc_count} LC${n(lcLimit.lc_count) === 1 ? '' : 's'} still holding limit` +
                       (n(lcs.length) > n(lcLimit.lc_count)
@@ -1305,7 +1318,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               <div className="h-4 w-px bg-[#e5dfc8]" />
               {(
                 [
-                  { key: 'all', label: 'All LCs' },
+                  // Named for what it now shows — a chip labelled "All" that
+                  // hides the matured and repaid ones would misread.
+                  { key: 'all', label: 'Running' },
                   { key: 'matured', label: 'Matured' },
                   { key: 'repaid', label: 'Repaid' }
                 ] as const
@@ -1410,7 +1425,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           </div>
                           <div className="flex items-center justify-between text-[11px] text-muted-foreground">
                             <span className="flex items-center gap-1.5"><CalendarRange className="h-3 w-3 shrink-0" /> {formatDate(l.open_date)} → {formatDate(l.expiry_date)}</span>
-                            <DueBadge date={l.due_date_effective} />
+                            {/* Repaid means wound up — no live countdown. */}
+                            {l.preclosed_date ? (
+                              <Badge variant="muted" title={`Repaid ${formatDate(l.preclosed_date)}`}>Repaid</Badge>
+                            ) : (
+                              <DueBadge date={l.due_date_effective} />
+                            )}
                           </div>
                         </div>
                         <div className="flex flex-wrap gap-1.5 border-t border-dashed border-[#e5dfc8] px-4 py-3">
@@ -1539,7 +1559,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               <div>M - {formatDateShort(l.expiry_date)}</div>
                             </TableCell>
                             <TableCell className="whitespace-nowrap">
-                              {l.expiry_date ? <DueBadge date={l.expiry_date} /> : <span className="text-muted-foreground">—</span>}
+                              {/* Repaid means wound up — no live countdown. */}
+                              {l.preclosed_date ? (
+                                <Badge variant="muted" title={`Repaid ${formatDate(l.preclosed_date)}`}>Repaid</Badge>
+                              ) : l.expiry_date ? (
+                                <DueBadge date={l.expiry_date} />
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
                             </TableCell>
                             <TableCell className="whitespace-nowrap text-right tabular-nums text-muted-foreground">
                               {n(l.usance_days) > 0 ? n(l.usance_days) : '—'}

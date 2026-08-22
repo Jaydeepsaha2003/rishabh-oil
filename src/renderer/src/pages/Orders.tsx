@@ -619,6 +619,33 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Payment</TableHead><TableHead className="text-[10px] font-semibold uppercase tracking-wide">Invoice</TableHead><TableHead className="text-[10px] font-semibold uppercase tracking-wide">Stage</TableHead><TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Action</TableHead>
     </TableRow></TableHeader>
   }
+  // A tanker's governing EX/DLD condition — its own choice when one was made
+  // when it was sent to the supplier, otherwise its bargain's. Mirrors
+  // tankerIsEx() in the backend, which is what actually posts the freight and
+  // the shortage penalty.
+  function condIsEx(t: Row): boolean {
+    const own = String(t.condition ?? '').trim().toUpperCase()
+    if (own) return own !== 'DLD' && own !== 'DELIVERED'
+    return !['DLD', 'DELIVERED'].includes(String(t.bargain_type || '').toUpperCase())
+  }
+
+  // What to show as the invoice's condition. A tanker-based purchase is
+  // governed per tanker, so it's read off the tankers rather than off the
+  // invoice's own frozen bargain_type — that copy is taken when the invoice is
+  // booked and can end up disagreeing with the bargain it points at.
+  function invoiceCondition(row: Row): string {
+    const list = tankers.filter((t) => Number(t.order_id) === Number(row.id))
+    if (!list.length) {
+      return ['DLD', 'DELIVERED'].includes(String(row.bargain_type || '').toUpperCase())
+        ? 'DLD — delivered'
+        : 'EX — ex-works'
+    }
+    const ex = list.filter((t) => condIsEx(t)).length
+    if (ex === list.length) return 'EX — ex-works'
+    if (ex === 0) return 'DLD — delivered'
+    return `Mixed — ${ex} EX, ${list.length - ex} DLD`
+  }
+
   // Purchase entries filters: a date range on the invoice date, and the product
   // category. Both narrow the list the page shows and exports.
   const [poFrom, setPoFrom] = useState('')
@@ -956,7 +983,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       transporter_id: row.transporter_id ? String(row.transporter_id) : '',
       transport_rate_per_ton: row.transport_rate_per_ton ?? '',
       krfl_weighment_doc_no: row.krfl_weighment_doc_no || '',
-      outside_weighment_doc_no: row.outside_weighment_doc_no || ''
+      outside_weighment_doc_no: row.outside_weighment_doc_no || '',
+      // Blank = follow the bargain, which is what an un-overridden tanker does.
+      condition: row.condition || ''
     })
   }
 
@@ -1191,8 +1220,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       is_registered_transporter: !!row.is_registered_transporter,
       allowed_shortage_pct: row.allowed_shortage_pct ?? '',
       round_off: row.round_off ?? '',
-      // keep the saved round off on edit; auto kicks in only if it was zero
-      round_off_manual: !!(row.round_off && Number(row.round_off) !== 0),
+      // Whether it was typed by hand is RECORDED on the invoice, not guessed
+      // from "the value isn't zero" — that old guess froze a figure correct
+      // for the OLD totals the moment anything else was edited, so the net
+      // stopped landing on a whole rupee. Auto now keeps itself right, and a
+      // real manual override is both respected and visibly flagged.
+      round_off_manual: Number(row.round_off_manual) === 1,
       remarks: row.remarks ?? '',
       freight_paid_to_supplier: !!row.freight_paid_to_supplier,
       // the saved invoice rate is a deliberate choice — never auto-overwrite it
@@ -1738,7 +1771,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // manual edit overrides it; clearing the field brings the auto value back.
   useEffect(() => {
     if (!formPage || form.round_off_manual) return
-    const total = calc.totalExclTds
+    // Round the base to PAISA first. GST can carry a third decimal (5% of an
+    // odd taxable value lands on .xx5), and deriving the round off from that
+    // un-rounded figure leaves a half-paisa tail — which then surfaced as an
+    // invoice total one paisa off a whole rupee.
+    const total = Math.round(calc.totalExclTds * 100) / 100
     if (!Number.isFinite(total) || total <= 0) return
     const auto = Math.round(total) - total
     const val = Math.abs(auto) < 0.005 ? '' : auto.toFixed(2)
@@ -1830,6 +1867,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           ? null
           : Number(form.allowed_shortage_pct),
       round_off: Number(form.round_off) || 0,
+      round_off_manual: form.round_off_manual ? 1 : 0,
       financed_by_party: !directMode && !isTrading && selected.length > 0 && financedCount === selected.length,
       payment_date: form.order_date
     }
@@ -2994,7 +3032,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             <TabsContent value="purchases">
               <div className="overflow-hidden rounded-xl border bg-card">
                 <Table className="text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3">
-                  <TableHeader><TableRow>
+                  {/* Dark fill on the THEAD, not the row — see Sales.tsx. */}
+                  <TableHeader className="bg-[#1a2c56] [&_th]:text-white"><TableRow className="border-b-2 border-[#1a2c56]/30">
                     {PO_COLUMNS.map((c) => (
                       <TableHead
                         key={c.key}
@@ -3007,6 +3046,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           label={c.label}
                           options={poColOptions(c.key)}
                           value={poCols[c.key] ?? []}
+                          onDark
                           onApply={(v) => setPoCols((p) => ({ ...p, [c.key]: v }))}
                           align={c.key === 'net_amount' || c.key === 'ordered_qty' ? 'end' : 'start'}
                         />
@@ -3015,6 +3055,32 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <TableHead className="text-right">Actions</TableHead>
                   </TableRow></TableHeader>
                   <TableBody>
+                    {/* Totals for exactly the rows the filters left — sits under
+                        the header so the figure is read before scrolling. */}
+                    {!loading && filteredOrders.length > 0 && (
+                      <TableRow className="border-b-2 border-amber-400 bg-amber-50 hover:bg-amber-50">
+                        <TableCell className="font-semibold text-amber-900">
+                          Total
+                          <span className="ml-1.5 font-normal text-amber-800/70">
+                            ({filteredOrders.length} invoice{filteredOrders.length === 1 ? '' : 's'})
+                          </span>
+                        </TableCell>
+                        <TableCell />
+                        <TableCell />
+                        <TableCell />
+                        <TableCell className="text-center font-semibold tabular-nums text-amber-900">
+                          {filteredOrders.reduce((t, r) => t + (Number(r.tanker_count) || 0), 0)}
+                        </TableCell>
+                        <TableCell className="text-right font-semibold tabular-nums text-amber-900">
+                          {formatNum(filteredOrders.reduce((t, r) => t + (Number(r.ordered_qty) || 0), 0))}
+                        </TableCell>
+                        <TableCell className="text-right font-semibold tabular-nums text-amber-900">
+                          {formatINR(filteredOrders.reduce((t, r) => t + (Number(r.net_amount) || 0), 0))}
+                        </TableCell>
+                        <TableCell />
+                        <TableCell />
+                      </TableRow>
+                    )}
                     {loading ? <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
                       : filteredOrders.length === 0 ? <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">{rows.length ? 'No purchase entry matches these filters.' : 'No purchase entries yet.'}</TableCell></TableRow>
                         : orderPaged.pageRows.map((row) => <TableRow key={row.id} className="hover:bg-amber-50">
@@ -3737,6 +3803,43 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   </div>
                 </div>
 
+                {/* EX/DLD decides who bears the freight and who carries the
+                    shortage beyond tolerance, so it's correctable here rather
+                    than only at send-to-supplier time. */}
+                <div className="flex flex-col gap-1.5">
+                  <Label className="flex items-center gap-1">
+                    Condition
+                    <InfoTip text="EX — we bear the freight and the supplier owes us shortage beyond tolerance. DLD — the supplier delivers, so no freight of ours and no shortage deduction. 'Follow bargain' uses whatever this tanker's bargain says." />
+                  </Label>
+                  <div className="flex h-9 w-fit rounded-md border p-0.5">
+                    {[
+                      { v: '', label: 'Follow bargain' },
+                      { v: 'EX', label: 'EX' },
+                      { v: 'DLD', label: 'DLD' }
+                    ].map((c) => (
+                      <button
+                        key={c.v || 'inherit'}
+                        type="button"
+                        onClick={() => setEditTankerForm((p) => ({ ...p, condition: c.v }))}
+                        className={cn(
+                          'rounded px-3 text-xs font-semibold transition-colors',
+                          String(editTankerForm.condition || '') === c.v
+                            ? 'bg-primary text-primary-foreground shadow-sm'
+                            : 'text-muted-foreground hover:text-foreground'
+                        )}
+                      >
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+                  {!String(editTankerForm.condition || '') && (
+                    <span className="text-[11px] text-muted-foreground">
+                      Following the bargain — currently{' '}
+                      <b>{['DLD', 'DELIVERED'].includes(String(editTanker.bargain_type || '').toUpperCase()) ? 'DLD' : 'EX'}</b>
+                    </span>
+                  )}
+                </div>
+
                 {!!editTanker.extra_bargain_id && (() => {
                   const loaded = Number(editTankerForm.loaded_qty ?? editTanker.loaded_qty) || 0
                   const extra = Number(editTanker.extra_qty) || 0
@@ -4036,15 +4139,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               {/* EX vs DLD decides who carries the shortage beyond tolerance —
                   the same flag the deductible column below is driven by, so
                   it's named here rather than left to be inferred from it. */}
-              <InfoTile
-                icon={FileText}
-                label="Bargain type"
-                value={
-                  ['DLD', 'DELIVERED'].includes(String(detailRow.bargain_type || '').toUpperCase())
-                    ? 'DLD — delivered'
-                    : 'EX — ex-works'
-                }
-              />
+              <InfoTile icon={FileText} label="Condition" value={invoiceCondition(detailRow)} />
             </div>
             <div className="flex items-center justify-between rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-500 px-4 py-3 text-white shadow-sm">
               <span className="flex items-center gap-1.5 text-sm font-medium text-indigo-50">
@@ -4064,15 +4159,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               // being visible by going back to the bargain screen.
               const list = tankers.filter((t) => Number(t.order_id) === Number(detailRow.id))
               if (!list.length) return null
-              // Matches the backend's own isDelivered(): anything that isn't
-              // explicitly DLD/Delivered is EX, so the Deductible column can
-              // never hide a penalty the books have actually posted.
-              const isEx = !['DLD', 'DELIVERED'].includes(String(detailRow.bargain_type || '').toUpperCase())
+              // Whether ANY tanker on the invoice is EX decides whether the
+              // Deductible columns appear at all; each row then uses its own
+              // condition (see condIsEx) for its own figure.
+              const isEx = list.some((t) => condIsEx(t))
               const invoiceRate = Number(detailRow.invoice_rate) || 0
               const rows = list.map((t) => {
                 const loaded = Number(t.loaded_qty) || 0
                 const rec = t.status === 'empty' && t.received_qty != null ? Number(t.received_qty) : null
                 const shortage = rec != null ? Math.max(0, loaded - rec) : null
+                // Per tanker, matching the backend: its own EX/DLD choice when
+                // one was made, else its bargain's. Deliberately NOT the
+                // invoice's frozen bargain_type, which can disagree with the
+                // bargain it points at and was hiding real deductibles.
+                const rowIsEx = condIsEx(t)
                 // Same fallback chain the Pur BG breakdown uses: an order- or
                 // bargain-specific override wins if set, otherwise the
                 // company-wide default (Settings → General) applies — NOT a
@@ -4082,7 +4182,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   t.order_allowed_shortage_pct ?? detailRow.allowed_shortage_pct ?? t.allowed_shortage_pct ?? settings.allowed_shortage_pct ?? 0
                 )
                 const allowedAmt = loaded > 0 ? (loaded * pct) / 100 : 0
-                const deductible = isEx && shortage != null && shortage > allowedAmt ? shortage - allowedAmt : null
+                const deductible = rowIsEx && shortage != null && shortage > allowedAmt ? shortage - allowedAmt : null
                 // The rate that actually prices this tanker is its own bargain's
                 // rate — same figure the shortage-penalty calc on the tanker
                 // stage uses (excess × bargain rate), not the invoice rate. A
@@ -4113,14 +4213,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               return (
                 <div className="min-w-0">
                   <div className="min-w-0 overflow-hidden rounded-xl border">
-                    <div className="flex items-center gap-1.5 border-b bg-slate-50 px-3 py-1.5">
-                      <Truck className="h-3.5 w-3.5 text-slate-500" />
-                      <span className="text-xs font-semibold text-slate-700">Tanker-wise shortage</span>
+                    <div className="flex items-center gap-1.5 border-b bg-slate-50 px-3 py-2">
+                      <Truck className="h-4 w-4 text-slate-500" />
+                      <span className="text-[13px] font-semibold text-slate-700">Tanker-wise shortage</span>
                     </div>
                     <div className="min-w-0 overflow-x-auto">
-                      <table className="w-full whitespace-nowrap text-xs [&_td]:px-2.5 [&_td]:py-1.5 [&_th]:px-2.5 [&_th]:py-1.5">
+                      <table className="w-full whitespace-nowrap text-[13px] [&_td]:px-3 [&_td]:py-2 [&_th]:px-3 [&_th]:py-2">
                         <thead>
-                          <tr className="border-b bg-muted/40 text-left text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          <tr className="border-b bg-muted/40 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                             <th>Tanker</th>
                             <th>Loaded date</th>
                             <th>Received date</th>
@@ -4128,6 +4228,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                             <th className="text-right">Received</th>
                             <th className="text-right">Shortage</th>
                             <th className="text-right">Allowed MT</th>
+                            <th>Cond.</th>
                             <th className="text-right">Bargain rate</th>
                             <th className="text-right">Invoice rate</th>
                             {isEx && <th className="text-right">Deductible</th>}
@@ -4144,10 +4245,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                               <td className="font-medium">
                                 {r.t.tanker_no}
                                 {r.t.transporter_name && (
-                                  <div className="text-[10px] font-normal text-muted-foreground">{r.t.transporter_name}</div>
+                                  <div className="text-[11px] font-normal text-muted-foreground">{r.t.transporter_name}</div>
                                 )}
                                 {r.t.gate_entry_no && (
-                                  <div className="text-[10px] font-normal text-muted-foreground">Gate {r.t.gate_entry_no}</div>
+                                  <div className="text-[11px] font-normal text-muted-foreground">Gate {r.t.gate_entry_no}</div>
                                 )}
                               </td>
                               <td className="text-slate-700">{r.t.loaded_date ? formatDate(r.t.loaded_date) : '—'}</td>
@@ -4156,10 +4257,25 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                               <td className="text-right tabular-nums text-foreground">{r.rec != null ? formatNum(r.rec) : '—'}</td>
                               <td className="text-right tabular-nums text-foreground">{r.shortage != null ? formatNum(r.shortage) : '—'}</td>
                               <td className="text-right tabular-nums text-foreground">{formatNum(r.allowedAmt)}</td>
+                              <td>
+                                <span
+                                  className={cn(
+                                    'rounded px-2 py-0.5 text-[11px] font-semibold',
+                                    condIsEx(r.t) ? 'bg-amber-100 text-amber-800' : 'bg-sky-100 text-sky-800'
+                                  )}
+                                  title={
+                                    String(r.t.condition ?? '').trim()
+                                      ? 'Set on this tanker when it was sent to the supplier'
+                                      : `From the bargain (${r.t.bargain_no || 'its bargain'}) — not overridden on this tanker`
+                                  }
+                                >
+                                  {condIsEx(r.t) ? 'EX' : 'DLD'}
+                                </span>
+                              </td>
                               <td className="text-right tabular-nums text-foreground">
                                 {formatINR(r.bargainRate)}
                                 {r.extraQty > 0 && (
-                                  <div className="text-[10px] font-normal text-muted-foreground">
+                                  <div className="text-[11px] font-normal text-muted-foreground">
                                     {formatNum(r.primaryQty)} @ {formatINR(r.primaryRate)}
                                     {r.t.bargain_no ? ` (${r.t.bargain_no})` : ''} + {formatNum(r.extraQty)} @ {formatINR(r.extraRate)}
                                     {r.t.extra_bargain_no ? ` (${r.t.extra_bargain_no})` : ''}
@@ -4193,6 +4309,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                               <td className="text-right tabular-nums">{formatNum(tot.allowed)}</td>
                               <td />
                               <td />
+                              <td />
                               {isEx && (
                                 <td className="text-right tabular-nums text-red-600">
                                   {totDeductible != null ? formatNum(totDeductible) : ''}
@@ -4211,8 +4328,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     </div>
                   </div>
                   {isEx && totDeductible != null && (
-                    <div className="mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700">
-                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <div className="mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-700">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                       <div>
                         <span className="font-semibold">
                           {formatNum(totDeductible)} {detailRow.uom || 'MT'} deductible — {formatINR(tot.deductibleValue)}

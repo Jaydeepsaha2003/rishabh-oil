@@ -23,7 +23,8 @@ export function ColumnFilter({
   options,
   value,
   onApply,
-  align = 'start'
+  align = 'start',
+  onDark = false
 }: {
   label: string
   options: { value: string; label: string }[]
@@ -31,6 +32,9 @@ export function ColumnFilter({
   value: string[]
   onApply: (values: string[]) => void
   align?: 'start' | 'center' | 'end'
+  // Set on a dark table header — the funnel's own colours invert, or the
+  // active (filled navy) state would vanish into a navy header.
+  onDark?: boolean
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [staged, setStaged] = useState<Set<string>>(new Set(value))
@@ -95,7 +99,13 @@ export function ColumnFilter({
             title={active ? `Filtered — ${value.length} of ${options.length} shown` : `Filter by ${label}`}
             className={cn(
               'flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors',
-              active ? 'bg-[#1a2c56] text-white' : 'text-muted-foreground/50 hover:bg-muted hover:text-foreground'
+              onDark
+                ? active
+                  ? 'bg-white text-[#1a2c56]'
+                  : 'text-white/60 hover:bg-white/20 hover:text-white'
+                : active
+                  ? 'bg-[#1a2c56] text-white'
+                  : 'text-muted-foreground/50 hover:bg-muted hover:text-foreground'
             )}
           >
             <Filter className={cn('h-3 w-3', active && 'fill-current')} />

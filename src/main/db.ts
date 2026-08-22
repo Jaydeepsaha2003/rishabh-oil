@@ -1039,6 +1039,21 @@ const MIGRATIONS = [
   // Bill Discounting replaces the old party+entries tracker (bd_parties /
   // bd_entries — both confirmed empty) with one LC-style record per bill,
   // plus a proper NBFC master. Both old tables are dropped outright.
+  // A tanker's EX/DLD condition, as chosen per tanker when it's sent to the
+  // supplier. The picker for this already existed on that dialog but the value
+  // was thrown away on save, so freight and the shortage penalty always fell
+  // back to the bargain's own type — silently ignoring the choice. NULL means
+  // "not overridden", which keeps every existing tanker reading from its
+  // bargain exactly as before.
+  'ALTER TABLE purchase_tankers ADD COLUMN condition TEXT',
+  // Whether the round off on this invoice was typed by hand. Previously the
+  // form inferred it from "the stored value isn't zero", which froze a figure
+  // that was correct for the OLD totals the moment anything else was edited —
+  // so the invoice total quietly stopped landing on a whole rupee. Recording
+  // the intent explicitly means auto can keep itself right while a genuine
+  // manual override is respected AND visible as one.
+  'ALTER TABLE sales ADD COLUMN round_off_manual INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE orders ADD COLUMN round_off_manual INTEGER NOT NULL DEFAULT 0',
   'DROP TABLE IF EXISTS bd_entries',
   'DROP TABLE IF EXISTS bd_parties',
   `CREATE TABLE IF NOT EXISTS nbfcs (

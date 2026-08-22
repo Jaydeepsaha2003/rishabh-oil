@@ -6,7 +6,7 @@ import { initDb, startRevisionWatcher } from './db'
 import { backfillJournal } from './journal'
 import { dailyBackup } from './backup'
 import { backfillOrderStatuses, backfillPurchaseRoundOff } from './orders'
-import { backfillSalesGst, backfillSalesBargainCustomers, backfillSalesRoundOff, backfillExSalesDone } from './sales'
+import { backfillSalesGst, backfillSalesBargainCustomers, backfillSalesRoundOff, restateStaleSalesRoundOff, backfillExSalesDone } from './sales'
 import { seedDefaultAdmin } from './auth'
 import { seedProducts, seedFormulations, seedPackagings } from './seed'
 import { cleanupLogs } from './access'
@@ -57,6 +57,7 @@ app.whenReady().then(async () => {
   await backfillJournal().catch((e) => console.error('[journal] backfill failed:', e))
   await backfillSalesGst().catch((e) => console.error('[sales] GST backfill failed:', e))
   await backfillSalesRoundOff().catch((e) => console.error('[sales] round-off backfill failed:', e))
+  await restateStaleSalesRoundOff().catch((e) => console.error('[sales] round-off restatement failed:', e))
   await backfillExSalesDone().catch((e) => console.error('[sales] ex-done sweep failed:', e))
   // First launch of the day: a full portable dump of the cloud database.
   dailyBackup().catch((e) => console.error('[backup] daily backup failed:', e))

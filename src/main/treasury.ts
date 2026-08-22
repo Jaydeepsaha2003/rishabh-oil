@@ -815,7 +815,11 @@ export async function treasuryAlerts(): Promise<Row> {
       args: [cid]
     })
   )
+  // A preclosed LC has been repaid and wound up — its expiry date stops
+  // meaning anything, so it must not keep counting toward "LCs expiring" or
+  // showing as expired forever.
   const lcExpiring = lcs
+    .filter((l) => !l.preclosed_date)
     .map((l) => ({ ...l, days_left: l.expiry_date ? daysBetween(today, String(l.expiry_date)) : null }))
     .filter((l) => l.days_left != null && l.days_left <= 15)
     .sort((a, b) => (a.days_left as number) - (b.days_left as number))

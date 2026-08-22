@@ -55,6 +55,24 @@ function isDelivered(v: unknown): boolean {
   return s === 'DLD' || s === 'DELIVERED'
 }
 
+// A blank/unknown condition means "not overridden" — normalising to null (not
+// to 'EX') is what lets a tanker keep deferring to its bargain instead of
+// silently pinning itself to one condition the moment anything is saved.
+function normCondition(v: unknown): 'EX' | 'DLD' | null {
+  const s = String(v ?? '').trim().toUpperCase()
+  if (!s) return null
+  return s === 'DLD' || s === 'DELIVERED' ? 'DLD' : 'EX'
+}
+
+// The condition that actually governs THIS tanker: its own choice when one was
+// made when it was sent to the supplier, otherwise the bargain's. Freight and
+// the shortage penalty both hang off this, so a per-tanker override has to be
+// honoured here or the picker on the send-to-supplier dialog means nothing.
+function tankerIsEx(tankerCondition: unknown, bargainType: unknown): boolean {
+  const own = normCondition(tankerCondition)
+  return own ? own === 'EX' : !isDelivered(bargainType)
+}
+
 // --- the calculation engine (kept in sync with src/renderer/src/lib/orderCalc.ts) ---
 export interface MoneyInput {
   orderedQty: number
@@ -614,12 +632,12 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     sql: `INSERT INTO orders
       (company_id, invoice_no, order_date, bargain_id, supplier_id, oil_type_id, bargain_type, ordered_qty, uom,
        bargain_rate, invoice_rate, interest_pct, interest_days, additional_interest, adjusted_rate, taxable_value,
-       gst_pct, gst_type, gst_amount, tds_pct, tds_amount, round_off, net_amount,
+       gst_pct, gst_type, gst_amount, tds_pct, tds_amount, round_off, round_off_manual, net_amount,
        final_taxable_value, final_gst_amount, final_tds_amount, final_net_amount,
        tanker_no, transporter_id, allowed_shortage_pct, is_registered_transporter, posting, financed_by_party,
        payment_cleared_date, remarks, freight_paid_to_supplier, is_consignment, received_qty, received_date, status,
        is_trading, affects_stock)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       bookInCompany,
       v.invoice_no,
@@ -643,6 +661,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       n(v.tds_pct),
       m.tds_amount,
       roundOff,
+      v.round_off_manual ? 1 : 0,
       m.net_amount,
       m.final_taxable_value,
       m.final_gst_amount,
@@ -804,7 +823,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     sql: `UPDATE orders SET
       invoice_no = ?, order_date = ?, bargain_id = ?, supplier_id = ?, oil_type_id = ?, bargain_type = ?,
       ordered_qty = ?, uom = ?, bargain_rate = ?, invoice_rate = ?, interest_pct = ?, interest_days = ?, additional_interest = ?,
-      adjusted_rate = ?, taxable_value = ?, gst_pct = ?, gst_type = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, round_off = ?, net_amount = ?,
+      adjusted_rate = ?, taxable_value = ?, gst_pct = ?, gst_type = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, round_off = ?, round_off_manual = ?, net_amount = ?,
       final_taxable_value = ?, final_gst_amount = ?, final_tds_amount = ?, final_net_amount = ?,
       tanker_no = ?, transporter_id = ?, allowed_shortage_pct = ?, is_registered_transporter = ?, posting = 1, financed_by_party = ?,
       payment_cleared_date = ?, remarks = ?, freight_paid_to_supplier = ?
@@ -831,6 +850,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       n(v.tds_pct),
       m.tds_amount,
       roundOff,
+      v.round_off_manual ? 1 : 0,
       m.net_amount,
       m.final_taxable_value,
       m.final_gst_amount,
@@ -1029,8 +1049,8 @@ export async function createPurchaseTanker(v: Row): Promise<{ id: number }> {
   const res = await getClient().execute({
     sql: `INSERT INTO purchase_tankers
       (company_id, tanker_no, loaded_date, bargain_id, supplier_id, oil_type_id, loaded_qty, uom, payment_mode,
-       transporter_id, status)
-      VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, 'supplier_factory')`,
+       transporter_id, status, condition)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, 'supplier_factory', ?)`,
     args: [
       getActiveCompanyId(),
       String(v.tanker_no || '').trim(),
@@ -1039,7 +1059,8 @@ export async function createPurchaseTanker(v: Row): Promise<{ id: number }> {
       n(v.supplier_id),
       n(v.oil_type_id),
       v.uom || 'MT',
-      v.transporter_id ? n(v.transporter_id) : null
+      v.transporter_id ? n(v.transporter_id) : null,
+      normCondition(v.condition)
     ]
   })
   return { id: Number(res.lastInsertRowid) }
@@ -1124,7 +1145,8 @@ export async function updateTankerDetails(id: number, v: Row): Promise<{ id: num
   let transport = n(t.transport_amount)
   let penalty = n(t.shortage_charge_amount)
   if (String(t.status) === 'empty') {
-    const isEx = !isDelivered(b.bargain_type)
+    // This tanker's own EX/DLD choice wins over the bargain's when one was made.
+    const isEx = tankerIsEx(v.condition !== undefined ? v.condition : t.condition, b.bargain_type)
     rate = isEx ? rate : 0
     transport = loadedQty * rate
     let pct = b.allowed_shortage_pct == null
@@ -1174,7 +1196,7 @@ export async function updateTankerDetails(id: number, v: Row): Promise<{ id: num
       outside_factory_date = ?, inside_factory_date = ?, empty_date = ?,
       received_qty = ?, transporter_id = ?, transport_rate_per_ton = ?,
       transport_amount = ?, shortage_charge_amount = ?,
-      krfl_weighment_doc_no = ?, outside_weighment_doc_no = ?
+      krfl_weighment_doc_no = ?, outside_weighment_doc_no = ?, condition = ?
       WHERE id = ?`,
     args: [
       String(pick('tanker_no') || t.tanker_no).trim(),
@@ -1197,6 +1219,7 @@ export async function updateTankerDetails(id: number, v: Row): Promise<{ id: num
       penalty,
       (pick('krfl_weighment_doc_no') as string) || null,
       (pick('outside_weighment_doc_no') as string) || null,
+      normCondition(pick('condition')),
       id
     ]
   })
@@ -1251,7 +1274,7 @@ async function syncPurchaseFromTankers(orderId: number): Promise<void> {
 // vouchers are re-posted at the corrected figures. Runs once, behind a flag.
 export async function backfillPurchaseRoundOff(): Promise<void> {
   const c = getClient()
-  const done = await c.execute("SELECT value FROM app_settings WHERE key = 'purchase_round_off_backfilled'")
+  const done = await c.execute("SELECT value FROM app_settings WHERE key = 'purchase_round_off_backfilled_3'")
   if (done.rows.length && String(done.rows[0].value) === '1') return
 
   const sup = await c.execute(
@@ -1263,7 +1286,7 @@ export async function backfillPurchaseRoundOff(): Promise<void> {
   const res = await c.execute(`
     SELECT o.id, o.company_id, o.supplier_id, o.invoice_no, o.order_date, o.ordered_qty, o.bargain_rate,
            o.gst_pct, o.interest_pct, o.interest_days, o.taxable_value, o.gst_amount, o.tds_pct, o.tds_amount,
-           o.round_off, o.net_amount, o.final_taxable_value, o.final_gst_amount,
+           o.round_off, o.round_off_manual, o.net_amount, o.final_taxable_value, o.final_gst_amount,
            pr.code AS oil_code, pr.name AS oil_name
     FROM orders o LEFT JOIN products pr ON pr.id = o.oil_type_id
     ORDER BY o.order_date ASC, o.id ASC`)
@@ -1286,13 +1309,21 @@ export async function backfillPurchaseRoundOff(): Promise<void> {
     const before = prior.get(key)!
     prior.set(key, before + n(r.taxable_value))
 
-    const T = n(r.taxable_value) + n(r.gst_amount)
+    // A round off the user typed by hand is theirs — never restate it. The FY
+    // running total above is still advanced, so later invoices' TDS slabs stay
+    // correct.
+    if (n(r.round_off_manual) === 1) continue
+
+    // Base rounded to PAISA before the rupee rounding — GST can carry a
+    // third decimal, and rounding off from the un-rounded figure left the
+    // total a paisa short of whole.
+    const T = round2(n(r.taxable_value) + n(r.gst_amount))
     const ro = round2(Math.round(T) - T)
     const pct = s?.tds_above_only ? 0 : n(r.tds_pct)
     const threshold = n(s?.tds_threshold)
     const tds = round2(tierTds(T + ro, before, threshold, pct, n(r.tds_pct)))
     const net = round2(T + ro - tds)
-    const fT = n(r.final_taxable_value) + n(r.final_gst_amount)
+    const fT = round2(n(r.final_taxable_value) + n(r.final_gst_amount))
     const fTds = round2(tierTds(fT + ro, before, threshold, pct, n(r.tds_pct)))
     const fNet = round2(fT + ro - fTds)
     if (same(ro, n(r.round_off)) && same(tds, n(r.tds_amount)) && same(net, n(r.net_amount))) continue
@@ -1322,10 +1353,17 @@ export async function backfillPurchaseRoundOff(): Promise<void> {
       interest: interestPerUnit * n(r.ordered_qty),
       companyId: n(r.company_id) || 1
     }).catch((e) => console.error('[orders] journal re-post failed:', (e as Error).message))
+    // The payable ledger entry mirrors net_amount, so it has to be restated
+    // with it or the supplier's balance keeps the old figure.
+    if (n(r.supplier_id)) {
+      await setSupplierPayable(n(r.id), n(r.supplier_id), net, String(r.order_date)).catch((e) =>
+        console.error('[orders] payable re-post failed:', (e as Error).message)
+      )
+    }
     applied++
   }
   await c.execute(
-    "INSERT INTO app_settings (key, value) VALUES ('purchase_round_off_backfilled', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"
+    "INSERT INTO app_settings (key, value) VALUES ('purchase_round_off_backfilled_3', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"
   )
   if (applied > 0) console.log(`[orders] round-off repair corrected ${applied} purchases`)
 }
@@ -1594,7 +1632,8 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
       args: [n(tanker.bargain_id)]
     })
     const b = bargain.rows[0] || {}
-    const isEx = !isDelivered(b.bargain_type)
+    // The tanker's own EX/DLD choice wins over the bargain's when one was made.
+    const isEx = tankerIsEx(tanker.condition, b.bargain_type)
     const rate = isEx ? n(data.transport_rate_per_ton) : 0
     const transport = n(tanker.loaded_qty) * rate
     // Shortage tolerance: the purchase's own % (set at purchase creation when a

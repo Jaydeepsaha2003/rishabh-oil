@@ -252,12 +252,10 @@ function SalesTab({
     [invoices]
   )
   // Rejected invoices (the customer refused the consignment) stay right in
-  // the main list — they're still sales, just flagged with a badge — and
-  // the Status filter's own "Cancelled" option narrows to just them, so
-  // there's no separate toggle for it.
-  // Dispatch status filter — Pending/Loaded/In transit/Unloaded/Cancelled,
-  // the same states the "Dispatch" column itself shows.
-  const [statusFilter, setStatusFilter] = useState<string[]>([])
+  // the main list — they're still sales, just flagged with a badge. Narrowing
+  // by dispatch state is done from the "Dispatch" column's own header filter,
+  // which lists exactly the states the column actually shows (including
+  // "Done" and "Cancelled") — so there's no separate Status dropdown.
   // Excel-style per-column filters on the invoice register. Empty = that
   // column isn't filtering. Keyed by column so one state object covers them all.
   const [invCols, setInvCols] = useState<Record<string, string[]>>({})
@@ -269,16 +267,15 @@ function SalesTab({
     const t = dateTo || '9999-12-31'
     const q = search.trim().toLowerCase()
     return invoices.filter((inv) => {
+      // Trading is a pass-through deal booked and tracked on its own page — it
+      // never touches this customer's regular sales relationship, so it does
+      // not belong in this register. Same rule the Purchases register uses.
+      if (Number(inv.first.is_trading) === 1) return false
       const d = String(inv.first.sale_date || '').slice(0, 10)
       if (d < f || d > t) return false
       if (productType.length && !inv.lines.some((r) => productType.includes(String(r.product_category || '')))) {
         return false
       }
-      // Cancelled (rejected) sits outside the normal dispatch progression —
-      // an invoice can be rejected while still Pending, or after Loaded — so
-      // it's checked as its own status rather than one of DISPATCH_STAGES.
-      const effectiveStatus = inv.first.rejected_at ? 'cancelled' : stageInfo(inv.first).value
-      if (statusFilter.length && !statusFilter.includes(effectiveStatus)) return false
       if (!q) return true
       const hay = [
         inv.first.invoice_no,
@@ -290,7 +287,7 @@ function SalesTab({
         .toLowerCase()
       return hay.includes(q)
     })
-  }, [invoices, dateFrom, dateTo, search, productType, statusFilter])
+  }, [invoices, dateFrom, dateTo, search, productType])
 
   // The invoice-register columns that carry a header filter, and how each one
   // reads its value off a grouped invoice. Money/qty format the same way the
@@ -312,7 +309,16 @@ function SalesTab({
       {
         key: 'dispatch',
         label: 'Dispatch',
-        of: (inv) => (inv.first.rejected_at ? 'Cancelled' : String(stageInfo(inv.first).label || ''))
+        // Must match exactly what the Dispatch cell RENDERS, or the dropdown
+        // offers values the column never shows. An ex-term invoice (customer
+        // lifts, so there is no dispatch to track) displays "Done" rather than
+        // a stage — filtering on its underlying stage instead was hiding rows
+        // that visibly said Done.
+        of: (inv) => {
+          if (inv.first.rejected_at) return 'Cancelled'
+          if (String(inv.first.freight_term || 'FREIGHT_ON_GOODS') !== 'DLD') return 'Done'
+          return String(stageInfo(inv.first).label || '')
+        }
       }
     ],
     []
@@ -401,8 +407,12 @@ function SalesTab({
       unloaded_date: f.unloaded_date ?? '',
       // Round off lives on the first line of the group; sum is safe either way.
       round_off: inv.lines.reduce((s, r) => s + (Number(r.round_off) || 0), 0) || '',
-      // A stored round off is kept as typed — auto would silently reprice it.
-      round_off_manual: inv.lines.some((r) => Math.abs(Number(r.round_off) || 0) > 0.004),
+      // Whether it was typed by hand is RECORDED on the invoice, not guessed
+      // from "the value isn't zero" — that old guess froze a figure correct
+      // for the OLD totals the moment anything else was edited, so the total
+      // stopped landing on a whole rupee. Auto now keeps itself right, and a
+      // real manual override is both respected and visibly flagged.
+      round_off_manual: !!inv.lines.some((r) => Number(r.round_off_manual) === 1),
       tds_pct: f.tds_pct ?? ''
     })
     setItems(inv.lines.map((r) => ({
@@ -513,7 +523,11 @@ function SalesTab({
   // Auto round-off to the nearest rupee, same idiom as the purchase form. The
   // base (taxable + GST) does not depend on the round off, so this cannot
   // loop. A manual edit overrides it; clearing the field brings auto back.
-  const invoiceRawTotal = totals.amount + totals.gst
+  // Rounded to PAISA first. GST can carry a third decimal (5% of an odd
+  // taxable value lands on .xx5), and deriving the round off from that
+  // un-rounded figure leaves a half-paisa tail — which then surfaced as an
+  // invoice total one paisa off a whole rupee.
+  const invoiceRawTotal = Math.round((totals.amount + totals.gst) * 100) / 100
   useEffect(() => {
     if (header.round_off_manual) return
     if (!Number.isFinite(invoiceRawTotal) || invoiceRawTotal <= 0) return
@@ -857,6 +871,7 @@ function SalesTab({
       customer_id: header.customer_id ? Number(header.customer_id) : null,
       transporter_id: header.transporter_id ? Number(header.transporter_id) : null,
       round_off: Number(header.round_off) || 0,
+      round_off_manual: header.round_off_manual ? 1 : 0,
       tds_pct: Number(header.tds_pct) || 0,
       items: lines.map((it) => ({
         product_id: Number(it.product_id),
@@ -988,18 +1003,9 @@ function SalesTab({
           <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
             Date
           </span>
-          <FyPicker from={dateFrom} to={dateTo} onRange={(f, t) => { setDateFrom(f); setDateTo(t) }} className="h-8 w-28 shrink-0 text-[11px]" />
           <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
           <span className="shrink-0 text-[10px] text-muted-foreground">to</span>
           <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} min={dateFrom || undefined} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8 text-muted-foreground"
-            onClick={() => { setDateFrom(monthStartISO()); setDateTo(todayISO()); setSearch('') }}
-          >
-            This month
-          </Button>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
@@ -1011,18 +1017,6 @@ function SalesTab({
             onApply={setProductType}
             allLabel="All product types"
             className="h-9 w-[11.5rem] text-[12px]"
-          />
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
-            Status
-          </span>
-          <MultiSelectFilter
-            options={[...DISPATCH_STAGES.map((s) => ({ value: s.value, label: s.label })), { value: 'cancelled', label: 'Cancelled' }]}
-            value={statusFilter}
-            onApply={setStatusFilter}
-            allLabel="All statuses"
-            className="h-9 w-[10.5rem] text-[12px]"
           />
         </div>
         <ExcelButton
@@ -1044,8 +1038,13 @@ function SalesTab({
       </div>
       <div className="overflow-x-auto rounded-lg border bg-card">
         <Table className="min-w-[1040px]">
-          <TableHeader>
-            <TableRow>
+          {/* The dark fill belongs on the THEAD, not the row: TableHeader
+              carries [&_tr:hover]:bg-transparent (so a header never lights up
+              like a data row), and that descendant selector out-specifies any
+              hover: class on the row itself — which made the row go
+              transparent on hover and show the white card through it. */}
+          <TableHeader className="bg-[#1a2c56] [&_th]:text-white">
+            <TableRow className="border-b-2 border-[#1a2c56]/30">
               {INV_COLUMNS.map((c) => (
                 <TableHead
                   key={c.key}
@@ -1060,6 +1059,7 @@ function SalesTab({
                     label={c.label}
                     options={invColOptions(c.key)}
                     value={invCols[c.key] ?? []}
+                    onDark
                     onApply={(v) => setInvCols((p) => ({ ...p, [c.key]: v }))}
                     align={c.key === 'qty' || c.key === 'net' ? 'end' : 'start'}
                   />
@@ -1069,6 +1069,28 @@ function SalesTab({
             </TableRow>
           </TableHeader>
           <TableBody>
+            {/* Totals for exactly the rows the filters left — sits under the
+                header so the figure is read before scrolling, not after. */}
+            {!loading && filteredInvoices.length > 0 && (
+              <TableRow className="border-b-2 border-amber-400 bg-amber-50 hover:bg-amber-50">
+                <TableCell className="font-semibold text-amber-900">
+                  Total
+                  <span className="ml-1.5 font-normal text-amber-800/70">
+                    ({filteredInvoices.length} invoice{filteredInvoices.length === 1 ? '' : 's'})
+                  </span>
+                </TableCell>
+                <TableCell />
+                <TableCell />
+                <TableCell className="text-right font-semibold tabular-nums text-amber-900">
+                  {formatNum(filteredInvoices.reduce((t, inv) => t + (Number(inv.qty) || 0), 0))}
+                </TableCell>
+                <TableCell className="text-right font-semibold tabular-nums text-amber-900">
+                  {formatINR(filteredInvoices.reduce((t, inv) => t + (Number(inv.net) || 0), 0))}
+                </TableCell>
+                <TableCell />
+                <TableCell />
+              </TableRow>
+            )}
             {loading ? (
               <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
             ) : filteredInvoices.length === 0 ? (
