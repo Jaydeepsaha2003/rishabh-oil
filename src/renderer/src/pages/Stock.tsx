@@ -35,6 +35,7 @@ import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { downloadDayCloseExcel, parseDayCloseExcel } from '@/lib/dayCloseExcel'
 import { downloadSkuCountExcel, parseSkuCountExcel } from '@/lib/skuCountExcel'
 import { ExcelButton } from '@/components/ExcelButton'
+import { NUM_QTY } from '@/lib/excel'
 import { FyPicker } from '@/components/FyPicker'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -245,20 +246,42 @@ function StockTable({ rows, breakdown, label = 'stock', range, onRange, companyP
         filename={ranged ? `${label}-stock-${range.from || 'start'}-to-${range.to || todayISO()}` : `${label}-stock-${todayISO()}`}
         sheetName={`${label} stock`}
         title={`${label.charAt(0).toUpperCase()}${label.slice(1)} stock${ranged ? ` (${range.from || 'start'} → ${range.to || 'today'})` : ''}`}
+        subtitle={
+          `${rows.length} product${rows.length === 1 ? '' : 's'}` +
+          ` · quantities in MT` +
+          (ranged ? ` · period ${formatDate(range.from) } to ${formatDate(range.to || todayISO())}` : ` · as on ${formatDate(todayISO())}`) +
+          ` · generated ${formatDate(todayISO())}`
+        }
+        freezeCols={1}
+        totalLabel="GRAND TOTAL"
         columns={[
-          { header: 'Product', key: 'name', value: (r) => r.name || '' },
-          { header: 'Party', key: 'party', value: (r) => r.party || '' },
-          { header: 'Flow', key: 'flow', value: (r) => r.flow || '' },
+          { header: 'Product', key: 'name', width: 26, value: (r) => r.name || '' },
+          { header: 'Party', key: 'party', width: 24, value: (r) => r.party || '' },
+          { header: 'Flow', key: 'flow', width: 12, value: (r) => r.flow || '' },
           ...(ranged
-            ? [{ header: 'Opening', key: 'opening', align: 'right' as const, numFmt: '#,##0.000', value: (r: Row) => Number(r.opening) || 0 }]
+            ? [{
+                header: 'Opening', key: 'opening', align: 'right' as const, numFmt: NUM_QTY,
+                total: 'sum' as const, divider: true, value: (r: Row) => Number(r.opening) || 0
+              }]
             : []),
-          { header: 'Receipt', key: 'received', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.received) || 0 },
-          { header: 'Produced', key: 'produced', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.produced) || 0 },
-          { header: 'Transfer in', key: 'transferred_in', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.transferred_in) || 0 },
-          { header: 'Transfer out', key: 'transferred_out', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.transferred_out) || 0 },
-          { header: 'Consumed', key: 'consumed', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.consumed) || 0 },
-          { header: 'Dispatch', key: 'sold', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.sold) || 0 },
-          { header: ranged ? 'Closing' : 'In stock', key: 'stock', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.stock) || 0 }
+          // The IN flows, then the OUT flows, then the balance — each block
+          // opened by a rule so the sheet reads as three sections rather than
+          // eight look-alike number columns.
+          { header: 'Receipt', key: 'received', align: 'right', numFmt: NUM_QTY, total: 'sum', divider: !ranged, value: (r) => Number(r.received) || 0 },
+          { header: 'Produced', key: 'produced', align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.produced) || 0 },
+          { header: 'Transfer in', key: 'transferred_in', align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.transferred_in) || 0 },
+          { header: 'Transfer out', key: 'transferred_out', align: 'right', numFmt: NUM_QTY, total: 'sum', divider: true, value: (r) => Number(r.transferred_out) || 0 },
+          { header: 'Consumed', key: 'consumed', align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.consumed) || 0 },
+          { header: 'Dispatch', key: 'sold', align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.sold) || 0 },
+          {
+            header: ranged ? 'Closing' : 'In stock', key: 'stock', align: 'right', numFmt: NUM_QTY,
+            total: 'sum', divider: true,
+            // The figure the whole sheet exists to report — tinted so the eye
+            // lands on it, and red-flagged when a balance has gone negative.
+            headerFill: 'FF14532D',
+            fillFor: (r) => (Number(r.stock) < -0.0005 ? 'FFFFD9D9' : 'FFEAF5EC'),
+            value: (r) => Number(r.stock) || 0
+          }
         ]}
         rows={sheetRows}
         isGroup={(r) => !!r.is_group}

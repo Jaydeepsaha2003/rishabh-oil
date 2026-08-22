@@ -1007,32 +1007,93 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     )
   }
 
-  const alertItems: { tone: string; icon: typeof AlertTriangle; label: string; items: string[] }[] = []
+  // Each alert carries its FULL row set — clicking the chip opens a modal that
+  // lists every one. It used to render the first four inline with no "and N
+  // more", so a chip reading 6 showed 4 lines and the rest vanished.
+  interface AlertGroup {
+    key: string
+    tone: string
+    icon: typeof AlertTriangle
+    label: string
+    // What this alert actually means, spelled out at the top of the modal.
+    blurb: string
+    headers: string[]
+    aligns: ('left' | 'right')[]
+    rows: { cells: string[]; danger: boolean }[]
+  }
+  const alertItems: AlertGroup[] = []
   if (alerts) {
     const exp = (alerts.lcExpiring as Row[]) || []
     const lcDue = (alerts.lcBillsDue as Row[]) || []
     const bdDue = (alerts.billsDue as Row[]) || []
+    const dueText = (d: number): string => (d < 0 ? `${-d}d OVERDUE` : d === 0 ? 'due today' : `${d}d left`)
     if (exp.length)
       alertItems.push({
+        key: 'lcExpiring',
         tone: 'border-amber-300 bg-amber-50 text-amber-900',
         icon: CalendarClock,
         label: `${exp.length} LC${exp.length > 1 ? 's' : ''} expiring`,
-        items: exp.slice(0, 4).map((l) => `${l.lc_no} · ${l.bank} — ${l.days_left < 0 ? 'expired' : `${l.days_left}d left`}, ${formatINR(n(l.amount) - n(l.utilized))} unused`)
+        blurb:
+          'LCs whose own maturity date falls within the next 15 days. Unused is the sanctioned amount less the bills actually drawn under it \u2014 limit that lapses when the LC matures.',
+        headers: ['LC no', 'Bank', 'Supplier', 'Matures', 'Days', 'Sanctioned', 'Drawn', 'Unused'],
+        aligns: ['left', 'left', 'left', 'left', 'left', 'right', 'right', 'right'],
+        rows: exp.map((l) => ({
+          danger: n(l.days_left) < 0,
+          cells: [
+            String(l.lc_no || '\u2014'),
+            String(l.bank || '\u2014'),
+            String(l.supplier_name || '\u2014'),
+            formatDate(l.expiry_date),
+            n(l.days_left) < 0 ? 'expired' : dueText(n(l.days_left)),
+            formatINR(l.amount),
+            formatINR(l.utilized),
+            formatINR(n(l.amount) - n(l.utilized))
+          ]
+        }))
       })
     if (lcDue.length)
       alertItems.push({
+        key: 'lcBillsDue',
         tone: lcDue.some((b) => b.days_left < 0) ? 'border-red-300 bg-red-50 text-red-800' : 'border-sky-300 bg-sky-50 text-sky-900',
         icon: Landmark,
         label: `${lcDue.length} LC bill${lcDue.length > 1 ? 's' : ''} maturing`,
-        items: lcDue.slice(0, 4).map((b) => `${b.lc_no} ${b.bill_no || b.invoice_no || ''} — ${formatINR(b.amount)} ${b.days_left < 0 ? `${-b.days_left}d OVERDUE` : `due in ${b.days_left}d`}`)
+        blurb:
+          'Bills drawn under an LC that are still outstanding and reach their maturity date soon \u2014 these are payments the bank will take.',
+        headers: ['LC no', 'Bill / invoice', 'Supplier', 'Due', 'Days', 'Amount'],
+        aligns: ['left', 'left', 'left', 'left', 'left', 'right'],
+        rows: lcDue.map((b) => ({
+          danger: n(b.days_left) < 0,
+          cells: [
+            String(b.lc_no || '\u2014'),
+            String(b.bill_no || b.invoice_no || '\u2014'),
+            String(b.supplier_name || '\u2014'),
+            formatDate(b.due_date),
+            dueText(n(b.days_left)),
+            formatINR(b.amount)
+          ]
+        }))
       })
     if (bdDue.length)
       alertItems.push({
+        key: 'billsDue',
         tone: bdDue.some((b) => b.days_left < 0) ? 'border-red-300 bg-red-50 text-red-800' : 'border-indigo-300 bg-indigo-50 text-indigo-900',
         icon: Banknote,
         label: `${bdDue.length} discounted bill${bdDue.length > 1 ? 's' : ''} maturing`,
-        items: bdDue.slice(0, 4).map((b) => `${b.bill_nos || ''} ${b.party_name || ''} — ${formatINR(b.amount)} ${b.days_left < 0 ? `${-b.days_left}d OVERDUE` : `due in ${b.days_left}d`}`)
+        blurb: 'Discounted bills reaching maturity \u2014 the date the financier expects to be squared off.',
+        headers: ['Bill no', 'Party', 'Due', 'Days', 'Amount'],
+        aligns: ['left', 'left', 'left', 'left', 'right'],
+        rows: bdDue.map((b) => ({
+          danger: n(b.days_left) < 0,
+          cells: [
+            String(b.bill_nos || '\u2014'),
+            String(b.party_name || '\u2014'),
+            formatDate(b.maturity_date || b.due_date),
+            dueText(n(b.days_left)),
+            formatINR(b.amount)
+          ]
+        }))
       })
+  
   }
 
   return (
@@ -1074,33 +1135,119 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       />
       <div className="space-y-4 px-4 py-4">
         <Tabs value={tab} onValueChange={setTab}>
-          {alertItems.length > 0 && (
-            <div className="flex flex-col gap-2">
-              <div className="flex flex-wrap gap-2">
-                {alertItems.map((a) => (
-                  <button
-                    key={a.label}
-                    type="button"
-                    onClick={() => setExpandedAlert(expandedAlert === a.label ? null : a.label)}
-                    className={cn(
-                      'flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-bold uppercase tracking-wide transition-colors',
-                      a.tone,
-                      expandedAlert === a.label && 'ring-2 ring-offset-1'
-                    )}
-                  >
-                    <a.icon className="h-3.5 w-3.5" /> {a.label}
-                  </button>
-                ))}
-              </div>
-              {alertItems
-                .filter((a) => a.label === expandedAlert)
-                .map((a) => (
-                  <Card key={a.label} className={cn('border p-3', a.tone)}>
-                    {a.items.map((x) => (
-                      <div key={x} className="truncate text-[12px]" title={x}>{x}</div>
+          {/* Alerts and the LC filters share ONE row. The alerts stay outside
+              the tab panels so they show on every tab; the filters only render
+              on the LC tab, where they mean something. */}
+          {(alertItems.length > 0 || tab === 'lc') && (
+            <div className="flex flex-wrap items-center gap-2">
+              {alertItems.map((a) => (
+                <button
+                  key={a.key}
+                  type="button"
+                  title={`Click to see all ${a.rows.length}`}
+                  onClick={() => setExpandedAlert(a.key)}
+                  className={cn(
+                    'flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-bold uppercase tracking-wide transition-colors hover:brightness-95',
+                    a.tone
+                  )}
+                >
+                  <a.icon className="h-3.5 w-3.5" /> {a.label}
+                  <ChevronRight className="h-3.5 w-3.5 opacity-60" />
+                </button>
+              ))}
+              {alertItems.length > 0 && tab === 'lc' && <div className="h-4 w-px bg-[#e5dfc8]" />}
+              {tab === 'lc' && (
+                <>
+                    {/* One dropdown rather than four chips — they were mutually
+                        exclusive windows on the same thing (how soon it falls
+                        due), so a single control says that and frees the row.
+                        Disabled wholesale for Repaid: a repaid LC has no due
+                        date, so every window but All would come back empty. */}
+                    <span
+                      className="flex items-center gap-1.5"
+                      title={
+                        lcStatusFilter === 'repaid'
+                          ? 'A repaid LC has no due date — nothing is owed on it'
+                          : undefined
+                      }
+                    >
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        Due
+                      </span>
+                      <Select
+                        value={lcDuePeriod}
+                        onValueChange={setLcDuePeriod}
+                        disabled={lcStatusFilter === 'repaid'}
+                      >
+                        <SelectTrigger
+                          className={cn(
+                            'h-8 w-[9.5rem] text-[11px] font-semibold uppercase tracking-wide',
+                            lcDuePeriod !== 'all' && 'border-[#1a2c56] bg-[#1a2c56] text-white'
+                          )}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {DUE_PERIODS.map((p) => (
+                            <SelectItem key={p.key} value={p.key}>
+                              {p.key === 'all' ? 'Any due date' : p.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </span>
+                    <div className="h-4 w-px bg-[#e5dfc8]" />
+                    {(['manufacturing', 'trading'] as const).map((p) => (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => setLcPurposeFilter(lcPurposeFilter === p ? null : p)}
+                        className={cn(
+                          'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide capitalize transition-colors',
+                          lcPurposeFilter === p ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
+                        )}
+                      >
+                        {p}
+                      </button>
                     ))}
-                  </Card>
-                ))}
+                    <div className="h-4 w-px bg-[#e5dfc8]" />
+                    {(
+                      [
+                        // Named for what it now shows — a chip labelled "All" that
+                        // hides the matured and repaid ones would misread.
+                        { key: 'all', label: 'Running' },
+                        { key: 'matured', label: 'Matured' },
+                        { key: 'repaid', label: 'Repaid' }
+                      ] as const
+                    ).map((p) => (
+                      <button
+                        key={p.key}
+                        type="button"
+                        onClick={() => {
+                          setLcStatusFilter(p.key)
+                          // Switching to Repaid would otherwise leave a due-period
+                          // chip selected but dead, and the list empty for no
+                          // visible reason.
+                          if (p.key === 'repaid') setLcDuePeriod('all')
+                        }}
+                        className={cn(
+                          'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
+                          lcStatusFilter === p.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
+                        )}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                    <div className="ml-auto flex gap-1 rounded-md border border-[#d9d2b8] bg-white p-0.5">
+                      <Button size="icon" variant={lcView === 'cards' ? 'default' : 'ghost'} className="h-7 w-7" title="Card view" onClick={() => setLcView('cards')}>
+                        <LayoutGrid className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button size="icon" variant={lcView === 'table' ? 'default' : 'ghost'} className="h-7 w-7" title="Table view" onClick={() => setLcView('table')}>
+                        <List className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                </>
+              )}
             </div>
           )}
 
@@ -1287,83 +1434,6 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 </div>
               </div>
             )}
-            <div className="flex flex-wrap items-center gap-2">
-              {DUE_PERIODS.map((p) => {
-                // A repaid LC has no due date left, so pairing Repaid with a
-                // due-within window can only ever come back empty. Greyed
-                // rather than silently returning nothing, which reads as broken.
-                const dead = lcStatusFilter === 'repaid' && p.key !== 'all'
-                return (
-                  <button
-                    key={p.key}
-                    type="button"
-                    disabled={dead}
-                    title={dead ? 'A repaid LC has no due date — nothing is owed on it' : undefined}
-                    onClick={() => setLcDuePeriod(p.key)}
-                    className={cn(
-                      'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
-                      dead
-                        ? 'cursor-not-allowed border-[#e5dfc8] bg-[#f4f1e4] text-[#1a2c56]/35'
-                        : lcDuePeriod === p.key
-                          ? 'border-[#1a2c56] bg-[#1a2c56] text-white'
-                          : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
-                    )}
-                  >
-                    {p.label}
-                  </button>
-                )
-              })}
-              <div className="h-4 w-px bg-[#e5dfc8]" />
-              {(['manufacturing', 'trading'] as const).map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  onClick={() => setLcPurposeFilter(lcPurposeFilter === p ? null : p)}
-                  className={cn(
-                    'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide capitalize transition-colors',
-                    lcPurposeFilter === p ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
-                  )}
-                >
-                  {p}
-                </button>
-              ))}
-              <div className="h-4 w-px bg-[#e5dfc8]" />
-              {(
-                [
-                  // Named for what it now shows — a chip labelled "All" that
-                  // hides the matured and repaid ones would misread.
-                  { key: 'all', label: 'Running' },
-                  { key: 'matured', label: 'Matured' },
-                  { key: 'repaid', label: 'Repaid' }
-                ] as const
-              ).map((p) => (
-                <button
-                  key={p.key}
-                  type="button"
-                  onClick={() => {
-                    setLcStatusFilter(p.key)
-                    // Switching to Repaid would otherwise leave a due-period
-                    // chip selected but dead, and the list empty for no
-                    // visible reason.
-                    if (p.key === 'repaid') setLcDuePeriod('all')
-                  }}
-                  className={cn(
-                    'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
-                    lcStatusFilter === p.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
-                  )}
-                >
-                  {p.label}
-                </button>
-              ))}
-              <div className="ml-auto flex gap-1 rounded-md border border-[#d9d2b8] bg-white p-0.5">
-                <Button size="icon" variant={lcView === 'cards' ? 'default' : 'ghost'} className="h-7 w-7" title="Card view" onClick={() => setLcView('cards')}>
-                  <LayoutGrid className="h-3.5 w-3.5" />
-                </Button>
-                <Button size="icon" variant={lcView === 'table' ? 'default' : 'ghost'} className="h-7 w-7" title="Table view" onClick={() => setLcView('table')}>
-                  <List className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            </div>
 
             {lcView === 'cards' ? (
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -1538,6 +1608,30 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
+                  {/* Totals for exactly the rows the filters left, directly under
+                      the header so the figure is read before scrolling. Sums the
+                      sanctioned Limit and what is still Available across them. */}
+                  {lcsFiltered.length > 0 && (
+                    <TableRow className="border-b-2 border-amber-400 bg-amber-50 hover:bg-amber-50">
+                      <TableCell className="whitespace-nowrap font-semibold text-amber-900">
+                        Total
+                        <span className="ml-1.5 font-normal text-amber-800/70">
+                          ({lcsFiltered.length} LC{lcsFiltered.length === 1 ? '' : 's'})
+                        </span>
+                      </TableCell>
+                      <TableCell />
+                      <TableCell />
+                      <TableCell />
+                      <TableCell />
+                      <TableCell className="whitespace-nowrap text-right font-semibold tabular-nums text-amber-900">
+                        {formatINR(lcsFiltered.reduce((t, l) => t + n(l.amount), 0))}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-right font-semibold tabular-nums text-amber-900">
+                        {formatINR(lcsFiltered.reduce((t, l) => t + n(l.available), 0))}
+                      </TableCell>
+                      <TableCell />
+                    </TableRow>
+                  )}
                   {lcsFiltered.length === 0 ? (
                     <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No letters of credit in this bucket.</TableCell></TableRow>
                   ) : (
@@ -1707,6 +1801,70 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       </Dialog>
 
       {/* Edit the overall LC facility limit — Fixed + optional Convertible */}
+      {/* Alert detail — every row behind the chip that was clicked. The chips
+          used to expand inline and show only the first four, so a chip reading
+          "6" listed 4 and silently dropped the rest. */}
+      {(() => {
+        const grp = alertItems.find((a) => a.key === expandedAlert)
+        return (
+          <Dialog open={!!grp} onOpenChange={(o) => !o && setExpandedAlert(null)}>
+            <DialogContent className="max-h-[85vh] w-[calc(100vw-2rem)] max-w-4xl min-w-0 overflow-y-auto">
+              {grp && (
+                <>
+                  <DialogHeader>
+                    <DialogTitle className="flex flex-wrap items-center gap-2">
+                      <grp.icon className="h-4 w-4 shrink-0" />
+                      <span className="uppercase tracking-wide">{grp.label}</span>
+                      <Badge variant="muted" className="tabular-nums">{grp.rows.length}</Badge>
+                    </DialogTitle>
+                  </DialogHeader>
+                  <p className={cn('rounded-lg border px-3 py-2 text-[12px]', grp.tone)}>{grp.blurb}</p>
+                  <div className="min-w-0 overflow-x-auto rounded-lg border">
+                    <table className="w-full whitespace-nowrap text-[13px] [&_td]:px-3 [&_td]:py-2 [&_th]:px-3 [&_th]:py-2">
+                      <thead>
+                        <tr className="border-b bg-[#1a2c56] text-left text-[11px] font-semibold uppercase tracking-wide text-white">
+                          {grp.headers.map((h, i) => (
+                            <th key={h} className={cn(grp.aligns[i] === 'right' && 'text-right')}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {grp.rows.map((r, ri) => (
+                          <tr
+                            key={ri}
+                            className={cn(
+                              'border-b last:border-0',
+                              r.danger ? 'bg-red-50/70' : ri % 2 === 1 ? 'bg-muted/25' : ''
+                            )}
+                          >
+                            {r.cells.map((c, ci) => (
+                              <td
+                                key={ci}
+                                className={cn(
+                                  grp.aligns[ci] === 'right' && 'text-right tabular-nums',
+                                  ci === 0 && 'font-semibold',
+                                  // The days column is the one to react to.
+                                  grp.headers[ci] === 'Days' && r.danger && 'font-semibold text-red-600'
+                                )}
+                              >
+                                {c}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setExpandedAlert(null)}>Close</Button>
+                  </DialogFooter>
+                </>
+              )}
+            </DialogContent>
+          </Dialog>
+        )
+      })()}
+
       <Dialog open={lcLimitOpen} onOpenChange={(o) => !o && setLcLimitOpen(false)}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>LC facility limit</DialogTitle></DialogHeader>

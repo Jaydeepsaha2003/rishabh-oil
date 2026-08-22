@@ -12,11 +12,14 @@ export function ExcelButton({
   filename,
   sheetName,
   title,
+  subtitle,
   columns,
   rows,
   extraSheets,
   isGroup,
   outlineDetail,
+  freezeCols,
+  totalLabel,
   label = 'Excel',
   disabled,
   className
@@ -24,18 +27,21 @@ export function ExcelButton({
   filename: string
   sheetName?: string
   title?: string
+  subtitle?: string
   columns: ExcelColumn[]
   rows: Row[]
   extraSheets?: ExcelSheet[]
   isGroup?: (row: Row) => boolean
   outlineDetail?: boolean
+  freezeCols?: number
+  totalLabel?: string
   label?: string
   disabled?: boolean
   className?: string
 }): React.JSX.Element {
   async function onClick(): Promise<void> {
     try {
-      await exportRowsToExcel({ filename, sheetName, title, columns, rows, extraSheets, isGroup, outlineDetail })
+      await exportRowsToExcel({ filename, sheetName, title, subtitle, columns, rows, extraSheets, isGroup, outlineDetail, freezeCols, totalLabel })
       toast.success(`Exported ${rows.length} row${rows.length === 1 ? '' : 's'} to Excel`)
     } catch (e) {
       toast.error((e as Error).message)
