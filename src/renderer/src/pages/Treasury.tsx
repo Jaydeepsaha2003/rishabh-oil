@@ -1288,19 +1288,31 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               </div>
             )}
             <div className="flex flex-wrap items-center gap-2">
-              {DUE_PERIODS.map((p) => (
-                <button
-                  key={p.key}
-                  type="button"
-                  onClick={() => setLcDuePeriod(p.key)}
-                  className={cn(
-                    'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
-                    lcDuePeriod === p.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
-                  )}
-                >
-                  {p.label}
-                </button>
-              ))}
+              {DUE_PERIODS.map((p) => {
+                // A repaid LC has no due date left, so pairing Repaid with a
+                // due-within window can only ever come back empty. Greyed
+                // rather than silently returning nothing, which reads as broken.
+                const dead = lcStatusFilter === 'repaid' && p.key !== 'all'
+                return (
+                  <button
+                    key={p.key}
+                    type="button"
+                    disabled={dead}
+                    title={dead ? 'A repaid LC has no due date — nothing is owed on it' : undefined}
+                    onClick={() => setLcDuePeriod(p.key)}
+                    className={cn(
+                      'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
+                      dead
+                        ? 'cursor-not-allowed border-[#e5dfc8] bg-[#f4f1e4] text-[#1a2c56]/35'
+                        : lcDuePeriod === p.key
+                          ? 'border-[#1a2c56] bg-[#1a2c56] text-white'
+                          : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
+                    )}
+                  >
+                    {p.label}
+                  </button>
+                )
+              })}
               <div className="h-4 w-px bg-[#e5dfc8]" />
               {(['manufacturing', 'trading'] as const).map((p) => (
                 <button
@@ -1328,7 +1340,13 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 <button
                   key={p.key}
                   type="button"
-                  onClick={() => setLcStatusFilter(p.key)}
+                  onClick={() => {
+                    setLcStatusFilter(p.key)
+                    // Switching to Repaid would otherwise leave a due-period
+                    // chip selected but dead, and the list empty for no
+                    // visible reason.
+                    if (p.key === 'repaid') setLcDuePeriod('all')
+                  }}
                   className={cn(
                     'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
                     lcStatusFilter === p.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
