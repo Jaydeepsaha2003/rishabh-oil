@@ -17,6 +17,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { Tooltip, TooltipContent, TooltipTrigger, InfoTip } from '@/components/ui/tooltip'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
+import { ColumnFilter } from '@/components/ui/column-filter'
 import { RowActions } from '@/components/ui/row-actions'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -628,6 +629,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // window but a tanker on it was received inside it. Switching it off goes
   // back to strictly the invoice date.
   const [poIncludeReceipt, setPoIncludeReceipt] = useState(true)
+  // Excel-style per-column filters on the Purchase entries table. Empty = that
+  // column isn't filtering. Keyed by the column's own field so one state object
+  // covers every column instead of a useState each.
+  const [poCols, setPoCols] = useState<Record<string, string[]>>({})
   // Alt+F2 broadcasts a period from anywhere.
   const globalRange = useGlobalDateRange()
   useEffect(() => {
@@ -639,7 +644,47 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     () => Array.from(new Set(rows.map((r) => String(r.product_category || '')).filter(Boolean))).sort(),
     [rows]
   )
-  const filteredOrders = useMemo(
+  // The Purchase entries columns that carry an Excel-style header filter, and
+  // how each one reads its value off a row. Money/quantity columns format the
+  // same way the cell does, so the dropdown lists exactly what's on screen.
+  const PO_COLUMNS: { key: string; label: string; of: (r: Row) => string }[] = useMemo(
+    () => [
+      { key: 'invoice_no', label: 'Invoice', of: (r) => String(r.invoice_no || '') },
+      { key: 'supplier_name', label: 'Supplier', of: (r) => String(r.supplier_name || '') },
+      { key: 'product_category', label: 'Category', of: (r) => String(r.product_category || '') },
+      { key: 'oil_label', label: 'Product', of: (r) => String(r.oil_code || r.oil_name || '') },
+      { key: 'tanker_count', label: 'Tankers', of: (r) => String(Number(r.tanker_count) || 0) },
+      { key: 'ordered_qty', label: 'Quantity', of: (r) => `${formatNum(r.ordered_qty)} ${r.uom || ''}`.trim() },
+      { key: 'net_amount', label: 'Net amount', of: (r) => formatINR(r.net_amount) },
+      { key: 'status', label: 'Status', of: (r) => (r.status === 'received' ? 'Completed' : 'In process') }
+    ],
+    []
+  )
+
+  // Rows that pass every filter EXCEPT this column's own — so each dropdown
+  // lists the values still reachable given the other filters, the way Excel
+  // narrows its lists, instead of always offering the whole table.
+  function poColOptions(key: string): { value: string; label: string }[] {
+    const col = PO_COLUMNS.find((c) => c.key === key)
+    if (!col) return []
+    const seen = new Set<string>()
+    for (const r of poBaseRows) {
+      let ok = true
+      for (const other of PO_COLUMNS) {
+        if (other.key === key) continue
+        const sel = poCols[other.key]
+        if (sel?.length && !sel.includes(other.of(r))) { ok = false; break }
+      }
+      if (ok) seen.add(col.of(r))
+    }
+    return Array.from(seen)
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+      .map((v) => ({ value: v, label: v || '(blank)' }))
+  }
+
+  // Everything the date/category/trading rules allow — the pool the column
+  // filters then narrow, and the pool their dropdowns are built from.
+  const poBaseRows = useMemo(
     () =>
       rows
         .map((r): Row => {
@@ -672,6 +717,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           return true
         }),
     [rows, tankers, poFrom, poTo, poCategory, poIncludeReceipt]
+  )
+
+  const filteredOrders = useMemo(
+    () =>
+      poBaseRows.filter((r) =>
+        PO_COLUMNS.every((c) => {
+          const sel = poCols[c.key]
+          return !sel?.length || sel.includes(c.of(r))
+        })
+      ),
+    [poBaseRows, poCols, PO_COLUMNS]
   )
   const orderPaged = usePaged(filteredOrders)
 
@@ -2939,8 +2995,24 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               <div className="overflow-hidden rounded-xl border bg-card">
                 <Table className="text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3">
                   <TableHeader><TableRow>
-                    <TableHead>Invoice</TableHead><TableHead>Supplier</TableHead><TableHead>Category</TableHead><TableHead>Product</TableHead><TableHead className="text-center">Tankers</TableHead>
-                    <TableHead className="text-right">Quantity</TableHead><TableHead className="text-right">Net amount</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead>
+                    {PO_COLUMNS.map((c) => (
+                      <TableHead
+                        key={c.key}
+                        className={cn(
+                          c.key === 'tanker_count' && 'text-center',
+                          (c.key === 'ordered_qty' || c.key === 'net_amount') && 'text-right'
+                        )}
+                      >
+                        <ColumnFilter
+                          label={c.label}
+                          options={poColOptions(c.key)}
+                          value={poCols[c.key] ?? []}
+                          onApply={(v) => setPoCols((p) => ({ ...p, [c.key]: v }))}
+                          align={c.key === 'net_amount' || c.key === 'ordered_qty' ? 'end' : 'start'}
+                        />
+                      </TableHead>
+                    ))}
+                    <TableHead className="text-right">Actions</TableHead>
                   </TableRow></TableHeader>
                   <TableBody>
                     {loading ? <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
@@ -2969,10 +3041,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                               {row.status === 'received' ? 'Completed' : 'In process'}
                             </Badge>
                           </TableCell>
-                          <TableCell><div className="flex justify-end gap-1">
-                            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setDetailRow(row)}><Eye className="h-4 w-4" /></Button>
-                            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEditPurchase(row)}><Pencil className="h-4 w-4" /></Button>
-                            <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => deletePurchase(row)}><Trash2 className="h-4 w-4" /></Button>
+                          <TableCell><div className="flex justify-end">
+                            <RowActions
+                              actions={[
+                                { label: 'View details', icon: Eye, onClick: () => setDetailRow(row) },
+                                { label: 'Edit purchase', icon: Pencil, onClick: () => openEditPurchase(row) },
+                                { label: 'Delete purchase', icon: Trash2, danger: true, onClick: () => deletePurchase(row) }
+                              ]}
+                            />
                           </div></TableCell>
                         </TableRow>)}
                   </TableBody>
@@ -3957,6 +4033,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               <InfoTile icon={Truck} label="Tankers" value={detailRow.tanker_nos || '—'} />
               <InfoTile icon={Boxes} label="Total quantity" value={`${formatNum(detailRow.ordered_qty)} ${detailRow.uom}`} />
               <InfoTile icon={IndianRupee} label="Invoice rate" value={`${formatINR(detailRow.invoice_rate)} / ${detailRow.uom}`} />
+              {/* EX vs DLD decides who carries the shortage beyond tolerance —
+                  the same flag the deductible column below is driven by, so
+                  it's named here rather than left to be inferred from it. */}
+              <InfoTile
+                icon={FileText}
+                label="Bargain type"
+                value={
+                  ['DLD', 'DELIVERED'].includes(String(detailRow.bargain_type || '').toUpperCase())
+                    ? 'DLD — delivered'
+                    : 'EX — ex-works'
+                }
+              />
             </div>
             <div className="flex items-center justify-between rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-500 px-4 py-3 text-white shadow-sm">
               <span className="flex items-center gap-1.5 text-sm font-medium text-indigo-50">
@@ -3976,7 +4064,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               // being visible by going back to the bargain screen.
               const list = tankers.filter((t) => Number(t.order_id) === Number(detailRow.id))
               if (!list.length) return null
-              const isEx = detailRow.bargain_type === 'EX'
+              // Matches the backend's own isDelivered(): anything that isn't
+              // explicitly DLD/Delivered is EX, so the Deductible column can
+              // never hide a penalty the books have actually posted.
+              const isEx = !['DLD', 'DELIVERED'].includes(String(detailRow.bargain_type || '').toUpperCase())
               const invoiceRate = Number(detailRow.invoice_rate) || 0
               const rows = list.map((t) => {
                 const loaded = Number(t.loaded_qty) || 0

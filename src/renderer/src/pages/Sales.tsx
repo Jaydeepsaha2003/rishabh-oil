@@ -15,6 +15,8 @@ import {
   SelectValue
 } from '@/components/ui/select'
 import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
+import { ColumnFilter } from '@/components/ui/column-filter'
+import { RowActions } from '@/components/ui/row-actions'
 import {
   Table,
   TableBody,
@@ -256,7 +258,13 @@ function SalesTab({
   // Dispatch status filter — Pending/Loaded/In transit/Unloaded/Cancelled,
   // the same states the "Dispatch" column itself shows.
   const [statusFilter, setStatusFilter] = useState<string[]>([])
-  const filteredInvoices = useMemo(() => {
+  // Excel-style per-column filters on the invoice register. Empty = that
+  // column isn't filtering. Keyed by column so one state object covers them all.
+  const [invCols, setInvCols] = useState<Record<string, string[]>>({})
+
+  // Everything the date/type/status/search rules allow — the pool the column
+  // filters then narrow, and the pool their dropdowns are built from.
+  const invBaseRows = useMemo(() => {
     const f = dateFrom || '0000-01-01'
     const t = dateTo || '9999-12-31'
     const q = search.trim().toLowerCase()
@@ -283,6 +291,64 @@ function SalesTab({
       return hay.includes(q)
     })
   }, [invoices, dateFrom, dateTo, search, productType, statusFilter])
+
+  // The invoice-register columns that carry a header filter, and how each one
+  // reads its value off a grouped invoice. Money/qty format the same way the
+  // cell does, so the dropdown lists exactly what's on screen.
+  const INV_COLUMNS: { key: string; label: string; of: (inv: Row) => string }[] = useMemo(
+    () => [
+      { key: 'invoice_no', label: 'Date / Invoice', of: (inv) => String(inv.first.invoice_no || '') },
+      { key: 'customer', label: 'Customer', of: (inv) => String(inv.first.customer || '') },
+      {
+        key: 'items',
+        label: 'Items',
+        of: (inv) =>
+          Array.from(new Set((inv.lines as Row[]).map((r) => String(r.product_name || '')).filter(Boolean)))
+            .sort()
+            .join(', ')
+      },
+      { key: 'qty', label: 'Qty', of: (inv) => formatNum(inv.qty) },
+      { key: 'net', label: 'Invoice total', of: (inv) => formatINR(inv.net) },
+      {
+        key: 'dispatch',
+        label: 'Dispatch',
+        of: (inv) => (inv.first.rejected_at ? 'Cancelled' : String(stageInfo(inv.first).label || ''))
+      }
+    ],
+    []
+  )
+
+  // Rows that pass every filter EXCEPT this column's own — so each dropdown
+  // lists the values still reachable given the other filters, the way Excel
+  // narrows its lists, instead of always offering the whole table.
+  function invColOptions(key: string): { value: string; label: string }[] {
+    const col = INV_COLUMNS.find((c) => c.key === key)
+    if (!col) return []
+    const seen = new Set<string>()
+    for (const inv of invBaseRows) {
+      let ok = true
+      for (const other of INV_COLUMNS) {
+        if (other.key === key) continue
+        const sel = invCols[other.key]
+        if (sel?.length && !sel.includes(other.of(inv))) { ok = false; break }
+      }
+      if (ok) seen.add(col.of(inv))
+    }
+    return Array.from(seen)
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+      .map((v) => ({ value: v, label: v || '(blank)' }))
+  }
+
+  const filteredInvoices = useMemo(
+    () =>
+      invBaseRows.filter((inv) =>
+        INV_COLUMNS.every((c) => {
+          const sel = invCols[c.key]
+          return !sel?.length || sel.includes(c.of(inv))
+        })
+      ),
+    [invBaseRows, invCols, INV_COLUMNS]
+  )
 
   function blankHeader(): Row {
     return {
@@ -980,12 +1046,25 @@ function SalesTab({
         <Table className="min-w-[1040px]">
           <TableHeader>
             <TableRow>
-              <TableHead className="w-[150px]">Date / Invoice</TableHead>
-              <TableHead>Customer</TableHead>
-              <TableHead>Items</TableHead>
-              <TableHead className="w-[110px] text-right">Qty</TableHead>
-              <TableHead className="w-[140px] text-right">Invoice total</TableHead>
-              <TableHead className="w-[220px]">Dispatch</TableHead>
+              {INV_COLUMNS.map((c) => (
+                <TableHead
+                  key={c.key}
+                  className={cn(
+                    c.key === 'invoice_no' && 'w-[150px]',
+                    c.key === 'qty' && 'w-[110px] text-right',
+                    c.key === 'net' && 'w-[140px] text-right',
+                    c.key === 'dispatch' && 'w-[220px]'
+                  )}
+                >
+                  <ColumnFilter
+                    label={c.label}
+                    options={invColOptions(c.key)}
+                    value={invCols[c.key] ?? []}
+                    onApply={(v) => setInvCols((p) => ({ ...p, [c.key]: v }))}
+                    align={c.key === 'qty' || c.key === 'net' ? 'end' : 'start'}
+                  />
+                </TableHead>
+              ))}
               <TableHead className="w-[84px] text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -1067,32 +1146,30 @@ function SalesTab({
                         {untracked && <div className="mt-1 text-[10px] font-medium uppercase tracking-wide text-orange-600">Off-stock</div>}
                       </TableCell>
                       <TableCell className="align-top text-right" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex justify-end gap-0.5">
-                          {inv.first.rejected_at ? (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-emerald-600 hover:bg-emerald-50"
-                              title="Restore — puts it back in the active list"
-                              onClick={() => void restoreInvoice(inv)}
-                            >
-                              <RotateCcw className="h-4 w-4" />
-                            </Button>
-                          ) : (
-                            stg.value !== 'unloaded' && (
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-rose-600 hover:bg-rose-50"
-                                title="Reject — the customer refused this consignment"
-                                onClick={() => { setRejectInv(inv); setRejectReason('') }}
-                              >
-                                <Ban className="h-4 w-4" />
-                              </Button>
-                            )
-                          )}
-                          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditInvoice(inv)}><Pencil className="h-4 w-4" /></Button>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => delInvoice(inv)}><Trash2 className="h-4 w-4" /></Button>
+                        <div className="flex justify-end">
+                          <RowActions
+                            actions={[
+                              ...(inv.first.rejected_at
+                                ? [
+                                    {
+                                      label: 'Restore — back to the active list',
+                                      icon: RotateCcw,
+                                      onClick: () => void restoreInvoice(inv)
+                                    }
+                                  ]
+                                : stg.value !== 'unloaded'
+                                  ? [
+                                      {
+                                        label: 'Reject — customer refused it',
+                                        icon: Ban,
+                                        onClick: () => { setRejectInv(inv); setRejectReason('') }
+                                      }
+                                    ]
+                                  : []),
+                              { label: 'Edit invoice', icon: Pencil, onClick: () => openEditInvoice(inv) },
+                              { label: 'Delete invoice', icon: Trash2, danger: true, onClick: () => delInvoice(inv) }
+                            ]}
+                          />
                         </div>
                       </TableCell>
                     </TableRow>
@@ -2538,25 +2615,15 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                             <span className={reg.closing < -1e-9 ? 'text-red-600' : ''}>{formatNum(reg.closing)}</span>
                           </TableCell>
                           <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                            <div className="flex justify-end gap-1">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
-                                title="SKU rate card — download, fill the rates, upload"
-                                onClick={() => void openRates(row)}
-                              >
-                                <Tags className="h-4 w-4" />
-                              </Button>
-                              <Button variant="ghost" size="icon" className="h-8 w-8" title="Add / remove balance qty" onClick={() => openAdjust(row)}>
-                                <SlidersHorizontal className="h-4 w-4" />
-                              </Button>
-                              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(row)}>
-                                <Pencil className="h-4 w-4" />
-                              </Button>
-                              <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => del(row)}>
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
+                            <div className="flex justify-end">
+                              <RowActions
+                                actions={[
+                                  { label: 'SKU rate card', icon: Tags, onClick: () => void openRates(row) },
+                                  { label: 'Add / remove balance qty', icon: SlidersHorizontal, onClick: () => openAdjust(row) },
+                                  { label: 'Edit bargain', icon: Pencil, onClick: () => openEdit(row) },
+                                  { label: 'Delete bargain', icon: Trash2, danger: true, onClick: () => del(row) }
+                                ]}
+                              />
                             </div>
                           </TableCell>
                         </TableRow>

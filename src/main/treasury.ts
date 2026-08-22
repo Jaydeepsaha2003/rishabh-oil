@@ -797,121 +797,6 @@ export async function deleteLcRepayment(id: number): Promise<{ id: number }> {
 }
 
 // ---------------------------------------------------------------------------
-// Bill discounting (receivables): discount now, realize at maturity.
-//   Discount:  Dr BANK (net)  Dr BILL DISCOUNTING CHARGES (interest+charges)
-//                Cr BILLS DISCOUNTED (bill amount)
-//   Realize:   Dr BILLS DISCOUNTED (bill amount)  Cr Customer (agst ref)
-// ---------------------------------------------------------------------------
-
-export async function discountBill(v: Row): Promise<{ id: number }> {
-  const c = getClient()
-  const cid = getActiveCompanyId()
-  const amount = round2(n(v.amount))
-  if (amount <= 0) throw new Error('Enter the bill amount')
-  if (!v.disc_bank) throw new Error('Name the discounting bank')
-  const openDate = String(v.open_date || todayISO()).slice(0, 10)
-  const due = String(v.maturity_date || '').slice(0, 10) || addDays(openDate, n(v.tenor_days) || 0)
-  if (!due || due <= openDate) throw new Error('The maturity date must fall after the discount date')
-  const ratePct = n(v.rate_pct)
-  const days = daysBetween(openDate, due)
-  const interest = round2((amount * ratePct * days) / 36500)
-  const charges = round2(n(v.charges))
-  const net = round2(amount - interest - charges)
-  if (net <= 0) throw new Error('Interest and charges eat the whole bill — check the rate')
-
-  const partyName = String(v.party_name || '').trim()
-  const je = await postJournal({
-    date: openDate,
-    vchType: 'RECEIPT',
-    vchNo: v.bill_nos ? String(v.bill_nos) : null,
-    narration: `Bill ${v.bill_nos || ''} of ${partyName || 'party'} discounted at ${v.disc_bank} (${ratePct}% for ${days} days)`,
-    companyId: cid,
-    lines: [
-      { account: 'BANK A/C', group: 'Bank Accounts', dr: net },
-      { account: 'BILL DISCOUNTING CHARGES A/C', group: 'Indirect Expenses', dr: round2(interest + charges) },
-      { account: 'BILLS DISCOUNTED A/C', group: 'Current Liabilities', cr: amount }
-    ]
-  })
-  const ins = await c.execute({
-    sql: `INSERT INTO bill_discounts
-      (company_id, party_name, customer_id, invoice_group, disc_bank, bill_nos, amount, open_date, maturity_date,
-       rate_pct, charges, interest_amount, net_received, status, journal_entry_id, note, medium)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 'bill_discounting')`,
-    args: [
-      cid,
-      partyName || null,
-      v.customer_id ? n(v.customer_id) : null,
-      v.invoice_group ? String(v.invoice_group) : null,
-      String(v.disc_bank),
-      v.bill_nos ? String(v.bill_nos) : null,
-      amount,
-      openDate,
-      due,
-      ratePct,
-      charges,
-      interest,
-      net,
-      je.id,
-      v.note ? String(v.note) : null
-    ]
-  })
-  return { id: Number(ins.lastInsertRowid) }
-}
-
-// The customer's payment reaches the bank at maturity: the contingent
-// liability clears and the customer's bill is settled against its invoice.
-export async function realizeBill(id: number, dateIn?: string): Promise<{ id: number }> {
-  const c = getClient()
-  const res = await c.execute({ sql: 'SELECT * FROM bill_discounts WHERE id = ?', args: [id] })
-  if (!res.rows.length) throw new Error('Discounted bill not found')
-  const b = toPlain(res)[0]
-  if (String(b.status) === 'realized') throw new Error('Already realized')
-  const date = String(dateIn || todayISO()).slice(0, 10)
-  const amount = round2(n(b.amount))
-  const party = String(b.party_name || '').trim()
-  const je = await postJournal({
-    date,
-    vchType: 'JOURNAL',
-    vchNo: b.bill_nos ? String(b.bill_nos) : null,
-    narration: `Discounted bill ${b.bill_nos || ''} realized — ${party || 'party'} paid ${b.disc_bank}`,
-    companyId: n(b.company_id) || undefined,
-    lines: [
-      { account: 'BILLS DISCOUNTED A/C', group: 'Current Liabilities', dr: amount },
-      { account: party || 'CASH CUSTOMER A/C', group: 'Sundry Debtors', cr: amount }
-    ]
-  })
-  await allocAgainst(je.id, party || 'CASH CUSTOMER A/C', b.bill_nos ? String(b.bill_nos) : null, amount)
-  await c.execute({
-    sql: "UPDATE bill_discounts SET status = 'realized', payment_received_date = ?, realize_entry_id = ? WHERE id = ?",
-    args: [date, je.id, id]
-  })
-  return { id }
-}
-
-export async function unrealizeBill(id: number): Promise<{ id: number }> {
-  const c = getClient()
-  const res = await c.execute({ sql: 'SELECT realize_entry_id FROM bill_discounts WHERE id = ?', args: [id] })
-  if (!res.rows.length) throw new Error('Discounted bill not found')
-  await dropEntry(n(res.rows[0].realize_entry_id) || null)
-  await c.execute({
-    sql: "UPDATE bill_discounts SET status = 'pending', payment_received_date = NULL, realize_entry_id = NULL WHERE id = ?",
-    args: [id]
-  })
-  return { id }
-}
-
-export async function deleteDiscountedBill(id: number): Promise<{ id: number }> {
-  const c = getClient()
-  const res = await c.execute({ sql: 'SELECT journal_entry_id, realize_entry_id FROM bill_discounts WHERE id = ?', args: [id] })
-  if (res.rows.length) {
-    await dropEntry(n(res.rows[0].realize_entry_id) || null)
-    await dropEntry(n(res.rows[0].journal_entry_id) || null)
-  }
-  await c.execute({ sql: 'DELETE FROM bill_discounts WHERE id = ?', args: [id] })
-  return { id }
-}
-
-// ---------------------------------------------------------------------------
 // Monitoring: everything the treasury needs eyes on, in one call.
 // ---------------------------------------------------------------------------
 
@@ -953,8 +838,13 @@ export async function treasuryAlerts(): Promise<Row> {
 
   const bd = toPlain(
     await c.execute({
-      sql: `SELECT * FROM bill_discounts
-            WHERE company_id = ? AND status != 'realized' AND maturity_date IS NOT NULL`,
+      sql: `SELECT bd.*, nb.name AS nbfc_name,
+                   COALESCE(s.name, cu.name) AS party_name
+            FROM bill_discountings bd
+            LEFT JOIN nbfcs nb ON nb.id = bd.nbfc_id
+            LEFT JOIN suppliers s ON bd.party_type = 'supplier' AND s.id = bd.party_id
+            LEFT JOIN customers cu ON bd.party_type = 'customer' AND cu.id = bd.party_id
+            WHERE bd.company_id = ? AND bd.status = 'open' AND bd.maturity_date IS NOT NULL`,
       args: [cid]
     })
   )
@@ -1009,20 +899,25 @@ export async function listPaymentTracker(): Promise<Row[]> {
 
   const bd = toPlain(
     await c.execute({
-      sql: `SELECT id, amount, net_received, maturity_date, status, disc_bank, party_name, invoice_group, bill_nos
-            FROM bill_discounts WHERE company_id = ?`,
+      sql: `SELECT bd.id, bd.bd_no, bd.amount, bd.maturity_date, bd.status, bd.finance_type,
+                   nb.name AS nbfc_name, COALESCE(s.name, cu.name) AS party_name
+            FROM bill_discountings bd
+            LEFT JOIN nbfcs nb ON nb.id = bd.nbfc_id
+            LEFT JOIN suppliers s ON bd.party_type = 'supplier' AND s.id = bd.party_id
+            LEFT JOIN customers cu ON bd.party_type = 'customer' AND cu.id = bd.party_id
+            WHERE bd.company_id = ?`,
       args: [cid]
     })
   ).map((r) => ({
     kind: 'bill_discount' as const,
     kind_label: 'Bill discounting',
-    ref: String(r.bill_nos || r.invoice_group || ''),
-    detail: String(r.disc_bank || ''),
+    ref: String(r.bd_no || ''),
+    detail: `${r.nbfc_name || ''}${r.finance_type ? ` · ${r.finance_type}` : ''}`,
     party: String(r.party_name || ''),
     amount: n(r.amount),
     due_date: r.maturity_date ? String(r.maturity_date) : null,
-    status: String(r.status || 'outstanding'),
-    settled: String(r.status || '') === 'realized'
+    status: String(r.status || 'open'),
+    settled: String(r.status || '') === 'repaid'
   }))
 
   const all = [...lcBills, ...bd].map((r) => {

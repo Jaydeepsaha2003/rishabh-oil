@@ -103,9 +103,6 @@ export interface Api {
     addEntry: (data: Row) => Promise<{ id: number }>
     deleteEntry: (partyType: string, id: number) => Promise<{ id: number }>
   }
-  billDiscounts: {
-    list: () => Promise<Row[]>
-  }
   auth: {
     login: (username: string, password: string) => Promise<Row>
   }
@@ -217,10 +214,6 @@ export interface Api {
     paymentTracker: () => Promise<Row[]>
     settleLcBill: (id: number, date?: string) => Promise<{ id: number }>
     reopenLcBill: (id: number) => Promise<{ id: number }>
-    discount: (values: Row) => Promise<{ id: number }>
-    realize: (id: number, date?: string) => Promise<{ id: number }>
-    unrealize: (id: number) => Promise<{ id: number }>
-    deleteDiscount: (id: number) => Promise<{ id: number }>
   }
   lc: {
     list: () => Promise<Row[]>
@@ -249,7 +242,7 @@ export interface Api {
         release_margin?: boolean
       }
     ) => Promise<{ id: number }>
-    getLimit: (bankId?: number) => Promise<Row>
+    getLimit: (bankId?: number, from?: string, to?: string) => Promise<Row>
     bankLimits: () => Promise<Row[]>
     saveLimit: (values: Row) => Promise<{ id: number }>
   }
@@ -269,17 +262,17 @@ export interface Api {
     setSubEntry: (lineId: number, values: Row) => Promise<{ id: number }>
   }
   billDiscounting: {
-    parties: () => Promise<Row[]>
-    createParty: (values: Row) => Promise<{ id: number }>
-    updateParty: (id: number, values: Row) => Promise<{ id: number }>
-    deleteParty: (id: number) => Promise<{ id: number }>
-    entries: (filter: Row) => Promise<Row[]>
-    createEntry: (values: Row) => Promise<{ id: number }>
-    markPaid: (id: number, date?: string) => Promise<{ id: number }>
-    markRepaid: (id: number, date?: string) => Promise<{ id: number }>
-    recordInterest: (id: number, values: Row) => Promise<{ id: number }>
-    deleteEntry: (id: number) => Promise<{ id: number }>
-    fundFlow: () => Promise<Row>
+    list: (filter?: Row) => Promise<Row[]>
+    create: (values: Row) => Promise<{ id: number }>
+    update: (id: number, values: Row) => Promise<{ id: number }>
+    remove: (id: number) => Promise<{ id: number }>
+    repay: (
+      id: number,
+      values: { repay_date?: string; settle_via?: 'bank' | 'party'; ref?: string | null; release_margin?: boolean }
+    ) => Promise<{ id: number }>
+    reopen: (id: number) => Promise<{ id: number }>
+    upfrontInterest: (id: number, date?: string) => Promise<{ id: number } | null>
+    kpis: () => Promise<Row>
   }
   trading: {
     list: () => Promise<Row[]>

@@ -28,6 +28,19 @@ export function formatDate(value: string | null | undefined): string {
   return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`
 }
 
+// Compact dd/mm/yy, for a dense column that shows two dates stacked in one
+// cell (an LC's open + maturity, say) where the full dd-mm-yyyy is wider than
+// the column needs. Same no-timezone-shift handling as formatDate.
+export function formatDateShort(value: string | null | undefined): string {
+  if (!value) return '—'
+  const s = String(value)
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s)
+  if (m) return `${m[3]}/${m[2]}/${m[1].slice(-2)}`
+  const d = new Date(s)
+  if (Number.isNaN(d.getTime())) return s
+  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getFullYear()).slice(-2)}`
+}
+
 // dd-mm-yy hh:mm (local time). SQLite datetime('now') is stored as UTC
 // 'YYYY-MM-DD HH:MM:SS' — treated as UTC and converted to local for display.
 export function formatDateTime(value: string | null | undefined): string {

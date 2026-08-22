@@ -36,7 +36,6 @@ import {
   addLedgerEntry,
   deleteLedgerEntry
 } from './orders'
-import { listBillDiscounts } from './payments'
 import { listUnmappedOrders, unmappedCount, mapOrderToBargains } from './unmapped'
 import { listTradingDeals, createTradingDeal, updateTradingDeal, deleteTradingDeal } from './trading'
 import { assertAllowed, clearAccessCache } from './access-gate'
@@ -78,10 +77,6 @@ import {
   listPaymentTracker,
   settleLcBill,
   reopenLcBill,
-  discountBill,
-  realizeBill,
-  unrealizeBill,
-  deleteDiscountedBill,
   listLcRepayments,
   saveLcRepayment,
   deleteLcRepayment,
@@ -158,19 +153,7 @@ import {
   unreconcileBankLine,
   setBankLineSubEntry
 } from './bankRecon'
-import {
-  listBdParties,
-  createBdParty,
-  updateBdParty,
-  deleteBdParty,
-  listBdEntries,
-  createBdEntry,
-  markBdEntryPaid,
-  markBdEntryRepaid,
-  recordBdInterest,
-  deleteBdEntry,
-  bdFundFlowSummary
-} from './billDiscounting'
+import { listBd, createBd, updateBd, deleteBd, repayBd, reopenBd, postBdUpfrontInterest, bdKpis } from './billDiscounting'
 import {
   listFacilities,
   listFacilityExposures,
@@ -312,7 +295,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:parties$|^bd:entries$|^bd:fundFlow$|^trading:list$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^trading:list$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -489,10 +472,6 @@ export function registerIpc(): void {
     deleteLedgerEntry(partyType, id)
   )
 
-  // Bill discounting is read-only here — creating/altering happens from
-  // Treasury now, which owns that flow end to end.
-  handle('billDiscounts:list', () => listBillDiscounts())
-
   handle('auth:login', (_e, { username, password }: { username: string; password: string }) =>
     login(username, password)
   )
@@ -629,10 +608,6 @@ export function registerIpc(): void {
   handle('treasury:paymentTracker', () => listPaymentTracker())
   handle('treasury:settleLcBill', (_e, { id, date }: { id: number; date?: string }) => settleLcBill(id, date))
   handle('treasury:reopenLcBill', (_e, { id }: { id: number }) => reopenLcBill(id))
-  handle('treasury:discount', (_e, { values }: { values: Row }) => discountBill(values))
-  handle('treasury:realize', (_e, { id, date }: { id: number; date?: string }) => realizeBill(id, date))
-  handle('treasury:unrealize', (_e, { id }: { id: number }) => unrealizeBill(id))
-  handle('treasury:deleteDiscount', (_e, { id }: { id: number }) => deleteDiscountedBill(id))
   handle('lc:issuances', (_e, { lcId }: { lcId: number }) => listLCIssuances(lcId))
   handle('lc:create', (_e, { values }: { values: Row }) => createLC(values))
   handle('lc:update', (_e, { id, values }: { id: number; values: Row }) => updateLC(id, values))
@@ -673,7 +648,9 @@ export function registerIpc(): void {
   handle('lc:repayments', (_e, { lcId }: { lcId: number }) => listLcRepayments(lcId))
   handle('lc:saveRepayment', (_e, { values }: { values: Row }) => saveLcRepayment(values))
   handle('lc:deleteRepayment', (_e, { id }: { id: number }) => deleteLcRepayment(id))
-  handle('lc:getLimit', (_e, args?: { bankId?: number }) => getLcLimit(args?.bankId))
+  handle('lc:getLimit', (_e, args?: { bankId?: number; from?: string; to?: string }) =>
+    getLcLimit(args?.bankId, args?.from, args?.to)
+  )
   handle('lc:bankLimits', () => listBankLcLimits())
   handle('lc:saveLimit', (_e, { values }: { values: Row }) => saveLcLimit(values))
 
@@ -699,17 +676,18 @@ export function registerIpc(): void {
   handle('bankRecon:unreconcile', (_e, { lineId }: { lineId: number }) => unreconcileBankLine(lineId))
   handle('bankRecon:setSubEntry', (_e, { lineId, values }: { lineId: number; values: Row }) => setBankLineSubEntry(lineId, values))
 
-  handle('bd:parties', () => listBdParties())
-  handle('bd:createParty', (_e, { values }: { values: Row }) => createBdParty(values))
-  handle('bd:updateParty', (_e, { id, values }: { id: number; values: Row }) => updateBdParty(id, values))
-  handle('bd:deleteParty', (_e, { id }: { id: number }) => deleteBdParty(id))
-  handle('bd:entries', (_e, { filter }: { filter: Row }) => listBdEntries(filter))
-  handle('bd:createEntry', (_e, { values }: { values: Row }) => createBdEntry(values))
-  handle('bd:markPaid', (_e, { id, date }: { id: number; date?: string }) => markBdEntryPaid(id, date))
-  handle('bd:markRepaid', (_e, { id, date }: { id: number; date?: string }) => markBdEntryRepaid(id, date))
-  handle('bd:recordInterest', (_e, { id, values }: { id: number; values: Row }) => recordBdInterest(id, values))
-  handle('bd:deleteEntry', (_e, { id }: { id: number }) => deleteBdEntry(id))
-  handle('bd:fundFlow', () => bdFundFlowSummary())
+  handle('bd:list', (_e, { filter }: { filter?: Row } = {}) => listBd(filter))
+  handle('bd:create', (_e, { values }: { values: Row }) => createBd(values))
+  handle('bd:update', (_e, { id, values }: { id: number; values: Row }) => updateBd(id, values))
+  handle('bd:delete', (_e, { id }: { id: number }) => deleteBd(id))
+  handle(
+    'bd:repay',
+    (_e, { id, values }: { id: number; values: { repay_date?: string; settle_via?: 'bank' | 'party'; ref?: string | null; release_margin?: boolean } }) =>
+      repayBd(id, values)
+  )
+  handle('bd:reopen', (_e, { id }: { id: number }) => reopenBd(id))
+  handle('bd:upfrontInterest', (_e, { id, date }: { id: number; date?: string }) => postBdUpfrontInterest(id, date))
+  handle('bd:kpis', () => bdKpis())
 
   handle('trading:list', () => listTradingDeals())
   handle('trading:create', (_e, { values }: { values: Row }) => createTradingDeal(values))

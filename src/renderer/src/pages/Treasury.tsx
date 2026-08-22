@@ -34,7 +34,9 @@ import { InfoTip } from '@/components/ui/tooltip'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent } from '@/components/ui/tabs'
 import { PageHeader } from '@/components/PageHeader'
-import { formatDate, formatINR, todayISO } from '@/lib/format'
+import { PeriodPicker } from '@/components/PeriodPicker'
+import { RowActions } from '@/components/ui/row-actions'
+import { formatDate, formatDateShort, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { exportLcRegister } from '@/lib/lcExcel'
@@ -67,9 +69,7 @@ const DUE_PERIODS: { key: string; label: string; maxDays?: number }[] = [
   { key: 'all', label: 'All' },
   { key: 't1', label: 'T+1 due', maxDays: 1 },
   { key: 'week', label: 'This week', maxDays: 7 },
-  { key: 'fortnight', label: 'Fortnight', maxDays: 14 },
-  { key: 'month', label: 'Monthly', maxDays: 30 },
-  { key: 'quarter', label: 'Quarterly', maxDays: 90 }
+  { key: 'fortnight', label: 'Fortnight', maxDays: 14 }
 ]
 
 // Countdown chip: red overdue, amber close, muted otherwise.
@@ -142,6 +142,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   const [lcDuePeriod, setLcDuePeriod] = useState('all')
   const [lcStageFilter, setLcStageFilter] = useState<string | null>(null)
   const [lcPurposeFilter, setLcPurposeFilter] = useState<string | null>(null)
+  // 'all' = every LC; 'matured' = past its own expiry but not yet repaid;
+  // 'repaid' = preclosed/repaid already.
+  const [lcStatusFilter, setLcStatusFilter] = useState<'all' | 'matured' | 'repaid'>('all')
   // Every LC bill and discounted bill in one due-date-sorted list, regardless
   // of urgency — the alerts above only surface what's already close.
   const [tracker, setTracker] = useState<Row[]>([])
@@ -153,14 +156,18 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   // Which bank the page is looking at. '' = every bank rolled together, the
   // same idea as the company switcher's "All companies".
   const [activeBank, setActiveBank] = useState('')
+  // Narrows the LC Facility Limit KPI (Utilised/Available) to LCs opened in
+  // this window — empty means every currently-outstanding LC, unfiltered.
+  const [lcKpiFrom, setLcKpiFrom] = useState('')
+  const [lcKpiTo, setLcKpiTo] = useState('')
   // Admin-only Settings toggle (General tab) — mirrors the backend's default
   // when off (require a linked invoice); '0' relaxes it everywhere.
   const [relaxedInvoiceRule, setRelaxedInvoiceRule] = useState(false)
 
   const load = useCallback(async () => {
-    const [l, b, a, sup, cust, sl, od, deals, tr, act, comps, lim, bnk, invRule] = await Promise.all([
+    const [l, bd, a, sup, cust, sl, od, deals, tr, act, comps, lim, bnk, invRule] = await Promise.all([
       window.api.lc.list(),
-      window.api.billDiscounts.list(),
+      window.api.billDiscounting.list(),
       window.api.treasury.alerts(),
       window.api.data.list('suppliers'),
       window.api.data.list('customers'),
@@ -170,12 +177,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       window.api.treasury.paymentTracker(),
       window.api.company.getActive(),
       window.api.company.list(),
-      window.api.lc.getLimit(activeBank ? Number(activeBank) : undefined),
+      window.api.lc.getLimit(activeBank ? Number(activeBank) : undefined, lcKpiFrom || undefined, lcKpiTo || undefined),
       window.api.data.list('banks'),
       window.api.settings.get('lc_require_linked_invoice')
     ])
     setLcs(l.filter((x) => String(x.facility_type || 'lc') === 'lc'))
-    setBills(b.filter((x) => String(x.medium || '') === 'bill_discounting' || x.rate_pct != null))
+    setBills(bd)
     setAlerts(a)
     setSuppliers(sup.filter((x) => x.active))
     setCustomers(cust.filter((x) => x.active))
@@ -188,7 +195,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     setLcLimit(lim)
     setBanks(bnk.filter((x) => x.active))
     setRelaxedInvoiceRule(invRule === '0')
-  }, [activeBank])
+  }, [activeBank, lcKpiFrom, lcKpiTo])
 
   useEffect(() => {
     load()
@@ -740,6 +747,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   function canMarkPaymentIn(l: Row): boolean {
     return String(l.purpose || '') === 'trading' && String(l.stage || 'application') === 'payment_received' && !isLcPaymentInDone(l)
   }
+
+  // ONE badge — where the LC actually stands right now — instead of stacking
+  // the stage beside it. Both payment-IN states already require the LC to have
+  // reached Payment received (see canMarkPaymentIn), so showing the stage badge
+  // alongside them only repeated it and crowded the row.
+  function currentStageBadge(l: Row): React.JSX.Element {
+    if (canMarkPaymentIn(l)) return <Badge variant="warning">Awaiting Payment IN</Badge>
+    if (isLcPaymentInDone(l)) return <Badge variant="success">Payment IN</Badge>
+    return <StageBadge stage={String(l.stage || 'application')} />
+  }
   const [paymentInForm, setPaymentInForm] = useState<Row | null>(null)
   const [paymentInInvoices, setPaymentInInvoices] = useState<Row[]>([])
   async function openPaymentIn(l: Row): Promise<void> {
@@ -786,68 +803,6 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     load()
   }
 
-  // ---------------- bill discounting ----------------
-  const [bdForm, setBdForm] = useState<Row | null>(null)
-
-  // Sale invoices grouped, for the picker: one entry per invoice with its net.
-  const saleInvoices = useMemo(() => {
-    const by = new Map<string, { group: string; invoice_no: string; customer: string; customer_id: number | null; net: number; date: string }>()
-    for (const s of sales) {
-      const g = String(s.invoice_group || `L-${s.id}`)
-      const cur = by.get(g) || {
-        group: g,
-        invoice_no: String(s.invoice_no || ''),
-        customer: String(s.customer || ''),
-        customer_id: s.customer_id ? Number(s.customer_id) : null,
-        net: 0,
-        date: String(s.sale_date)
-      }
-      cur.net += n(s.amount) + n(s.gst_amount) + n(s.round_off)
-      by.set(g, cur)
-    }
-    return Array.from(by.values())
-      .filter((x) => x.invoice_no)
-      .sort((a, b) => b.date.localeCompare(a.date))
-  }, [sales])
-
-  const bdPreview = useMemo(() => {
-    if (!bdForm) return null
-    const amount = n(bdForm.amount)
-    const from = String(bdForm.open_date || todayISO())
-    const due = String(bdForm.maturity_date || '')
-    const days = due ? Math.max(0, daysTo(due)! - daysTo(from)!) : n(bdForm.tenor_days)
-    const interest = Math.round(((amount * n(bdForm.rate_pct) * days) / 36500) * 100) / 100
-    const net = Math.round((amount - interest - n(bdForm.charges)) * 100) / 100
-    return { days, interest, net }
-  }, [bdForm])
-
-  async function saveBd(): Promise<void> {
-    if (!bdForm) return
-    setBusy(true)
-    try {
-      await window.api.treasury.discount({
-        party_name: bdForm.party_name || null,
-        customer_id: bdForm.customer_id ? Number(bdForm.customer_id) : null,
-        invoice_group: bdForm.invoice_group || null,
-        bill_nos: bdForm.bill_nos || null,
-        disc_bank: bdForm.disc_bank,
-        amount: Number(bdForm.amount),
-        open_date: bdForm.open_date || todayISO(),
-        maturity_date: bdForm.maturity_date || undefined,
-        tenor_days: bdForm.tenor_days ? Number(bdForm.tenor_days) : undefined,
-        rate_pct: Number(bdForm.rate_pct) || 0,
-        charges: Number(bdForm.charges) || 0,
-        note: bdForm.note || null
-      })
-      toast.success('Bill discounted — bank credit and charges are in the books')
-      setBdForm(null)
-      load()
-    } catch (e) {
-      toast.error((e as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
 
   // Each LC's nearest due date (an outstanding bill, else the LC's own expiry)
   // and which due-period bucket that falls into, for the dashboard filter.
@@ -866,13 +821,19 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     if (lcStageFilter) rows = rows.filter((l) => String(l.stage || 'application') === lcStageFilter)
     if (lcPurposeFilter) rows = rows.filter((l) => String(l.purpose || 'manufacturing') === lcPurposeFilter)
     if (activeBank) rows = rows.filter((l) => String(l.our_bank_id || '') === String(activeBank))
+    if (lcStatusFilter === 'matured') rows = rows.filter((l) => isLcPastMaturity(l) && !l.preclosed_date)
+    else if (lcStatusFilter === 'repaid') rows = rows.filter((l) => !!l.preclosed_date)
+    // Same window the LC Facility Limit KPI above is scoped to — the register
+    // and the KPI it summarises always show the same cohort of LCs.
+    if (lcKpiFrom) rows = rows.filter((l) => String(l.open_date || '').slice(0, 10) >= lcKpiFrom)
+    if (lcKpiTo) rows = rows.filter((l) => String(l.open_date || '').slice(0, 10) <= lcKpiTo)
     if (lcDuePeriod === 'all') return rows
     const maxDays = DUE_PERIODS.find((p) => p.key === lcDuePeriod)?.maxDays
     if (maxDays == null) return rows
     // Cumulative: overdue and everything due sooner counts too, not just the
     // slice of days that falls exactly in this bucket.
     return rows.filter((l) => l.days_left_effective != null && l.days_left_effective <= maxDays)
-  }, [lcsWithDue, lcDuePeriod, lcStageFilter, lcPurposeFilter, activeBank])
+  }, [lcsWithDue, lcDuePeriod, lcStageFilter, lcPurposeFilter, lcStatusFilter, activeBank, lcKpiFrom, lcKpiTo])
 
   const [lcExporting, setLcExporting] = useState(false)
   async function downloadLcRegister(): Promise<void> {
@@ -1132,10 +1093,10 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
 
           <TabsContent value="tracker" className="mt-4">
             <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
-              <div className="flex flex-wrap items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/50"><CalendarClock className="h-3.5 w-3.5" /></span>
+              <div className="flex flex-wrap items-center gap-2 rounded-t-md bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2 text-white shadow-sm">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/15"><CalendarClock className="h-3.5 w-3.5" /></span>
                 <span className="text-[13px] font-bold uppercase tracking-widest">Payment Tracker</span>
-                <span className="text-[11px] text-[#1a2c56]/70">every LC bill and discounted bill, one due-date list</span>
+                <span className="text-[11px] text-white/60">every LC bill and discounted bill, one due-date list</span>
                 <label className="ml-auto flex cursor-pointer items-center gap-1.5 text-[11px]">
                   <input type="checkbox" className="h-3.5 w-3.5" checked={trackerShowSettled} onChange={(e) => setTrackerShowSettled(e.target.checked)} />
                   Show settled
@@ -1199,10 +1160,39 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
           <TabsContent value="lc" className="mt-4 space-y-3">
             {lcLimit && (
               <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
-                <div className="flex items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/50"><Landmark className="h-3.5 w-3.5" /></span>
+                <div className="flex items-center gap-2 rounded-t-md bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2 text-white shadow-sm">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/15"><Landmark className="h-3.5 w-3.5" /></span>
                   <span className="text-[13px] font-bold uppercase tracking-widest">LC Facility Limit</span>
-                  <Button size="sm" variant="outline" className="ml-auto h-7 bg-white px-2 text-xs" onClick={openLcLimit}>
+                  {/* Counts only LCs still HOLDING limit — a preclosed one has
+                      been wound up and no longer consumes the facility, so it
+                      is out of Utilised/Available and out of this count too.
+                      That's why this can read lower than the LC count in the
+                      page header, which is every LC on record. */}
+                  <span
+                    className="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold tabular-nums"
+                    title={
+                      `${lcLimit.lc_count} LC${n(lcLimit.lc_count) === 1 ? '' : 's'} still holding limit` +
+                      (n(lcs.length) > n(lcLimit.lc_count)
+                        ? ` — ${n(lcs.length) - n(lcLimit.lc_count)} preclosed LC${n(lcs.length) - n(lcLimit.lc_count) === 1 ? '' : 's'} excluded, since a wound-up LC no longer uses the facility`
+                        : '')
+                    }
+                  >
+                    {lcKpiFrom || lcKpiTo
+                      ? `${lcLimit.period_lc_count} of ${lcLimit.lc_count} holding limit`
+                      : `${lcLimit.lc_count} holding limit`}
+                  </span>
+                  <PeriodPicker
+                    from={lcKpiFrom}
+                    to={lcKpiTo}
+                    onChange={(f, t) => { setLcKpiFrom(f); setLcKpiTo(t) }}
+                    className="ml-auto h-7 border-white/30 bg-white/10 px-2 text-[11px] text-white hover:bg-white/20 hover:text-white"
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 border-white/30 bg-white/10 px-2 text-xs text-white hover:bg-white/20 hover:text-white"
+                    onClick={openLcLimit}
+                  >
                     Edit limit
                   </Button>
                 </div>
@@ -1263,6 +1253,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 <div className="flex items-center justify-between gap-3 border-t border-dashed border-[#e5dfc8] px-4 py-2.5">
                   <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     Utilised {formatINR(lcLimit.utilized)} of {formatINR(lcLimit.total_limit)}
+                    {(lcLimit.period_from || lcLimit.period_to) && (
+                      <span className="ml-1 font-normal text-muted-foreground/70">
+                        — LCs opened {formatDate(lcLimit.period_from)} to {formatDate(lcLimit.period_to)}
+                      </span>
+                    )}
                   </span>
                   {lcStageFilter && (
                     <button
@@ -1307,6 +1302,26 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   {p}
                 </button>
               ))}
+              <div className="h-4 w-px bg-[#e5dfc8]" />
+              {(
+                [
+                  { key: 'all', label: 'All LCs' },
+                  { key: 'matured', label: 'Matured' },
+                  { key: 'repaid', label: 'Repaid' }
+                ] as const
+              ).map((p) => (
+                <button
+                  key={p.key}
+                  type="button"
+                  onClick={() => setLcStatusFilter(p.key)}
+                  className={cn(
+                    'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
+                    lcStatusFilter === p.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
+                  )}
+                >
+                  {p.label}
+                </button>
+              ))}
               <div className="ml-auto flex gap-1 rounded-md border border-[#d9d2b8] bg-white p-0.5">
                 <Button size="icon" variant={lcView === 'cards' ? 'default' : 'ghost'} className="h-7 w-7" title="Card view" onClick={() => setLcView('cards')}>
                   <LayoutGrid className="h-3.5 w-3.5" />
@@ -1341,10 +1356,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <div>
                               <div className="flex flex-wrap items-center gap-1.5">
                                 <span className={cn('text-[15px] font-bold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
-                                <StageBadge stage={String(l.stage || 'application')} />
+                                {currentStageBadge(l)}
                                 {l.preclosed_date && <Badge variant="muted">Preclosed {formatDate(l.preclosed_date)}</Badge>}
-                                {isLcPaymentInDone(l) && <Badge variant="success">Payment IN</Badge>}
-                                {canMarkPaymentIn(l) && <Badge variant="warning">Awaiting Payment IN</Badge>}
                               </div>
                               <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
                                 <Landmark className="h-3 w-3 shrink-0" /> {l.bank}
@@ -1434,12 +1447,17 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               {isLcPastMaturity(l) ? 'Repay' : 'Preclose'}
                             </Button>
                           )}
-                          <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit LC" onClick={() => setLcForm({ ...l })}>
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" title="Delete LC (reverses its vouchers)" onClick={() => requestDeleteLc(l)}>
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
+                          <RowActions
+                            actions={[
+                              { label: 'Edit LC', icon: Pencil, onClick: () => setLcForm({ ...l }) },
+                              {
+                                label: 'Delete LC — reverses its vouchers',
+                                icon: Trash2,
+                                danger: true,
+                                onClick: () => requestDeleteLc(l)
+                              }
+                            ]}
+                          />
                         </div>
                       </Card>
                     )
@@ -1448,19 +1466,22 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               </div>
             ) : (
             <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
-              <div className="flex items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/50"><Banknote className="h-3.5 w-3.5" /></span>
+              <div className="flex items-center gap-2 rounded-t-md bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2 text-white shadow-sm">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/15"><Banknote className="h-3.5 w-3.5" /></span>
                 <span className="text-[13px] font-bold uppercase tracking-widest">Letters of Credit</span>
                 <Button
                   size="sm"
                   variant="outline"
-                  className="ml-auto gap-1.5 bg-white"
+                  className="ml-auto gap-1.5 border-white/30 bg-white/10 text-white hover:bg-white/20 hover:text-white"
                   disabled={lcExporting || lcsFiltered.length === 0}
                   onClick={() => void downloadLcRegister()}
                 >
                   <FileSpreadsheet className="h-4 w-4" /> {lcExporting ? 'Preparing…' : 'Download Excel'}
                 </Button>
-                <Button size="sm" className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application', our_bank_id: activeBank || '' })}>
+                {/* The one primary action on this bar — amber against the navy
+                    so it reads as the thing to click, rather than blending
+                    into a header that is now the same colour it used to be. */}
+                <Button size="sm" className="bg-amber-400 font-semibold text-[#1a2c56] shadow-sm hover:bg-amber-300" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application', our_bank_id: activeBank || '' })}>
                   <Plus className="h-4 w-4" /> Open new LC
                 </Button>
               </div>
@@ -1505,10 +1526,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 <div>
                                   <div className="flex items-center gap-1.5">
                                     <span className={cn('font-semibold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
-                                    <StageBadge stage={String(l.stage || 'application')} />
+                                    {currentStageBadge(l)}
                                     {l.preclosed_date && <Badge variant="muted">Preclosed</Badge>}
-                                    {isLcPaymentInDone(l) && <Badge variant="success">Payment IN</Badge>}
-                                    {canMarkPaymentIn(l) && <Badge variant="warning">Awaiting Payment IN</Badge>}
                                   </div>
                                   <div className="text-[11px] text-muted-foreground">{l.bank}{n(l.margin_pct) ? ` · margin ${l.margin_pct}%` : ''}</div>
                                 </div>
@@ -1516,8 +1535,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             </TableCell>
                             <TableCell className="whitespace-nowrap">{l.supplier_name || '—'}</TableCell>
                             <TableCell className="whitespace-nowrap tabular-nums">
-                              <div>O - {formatDate(l.open_date)}</div>
-                              <div>M - {formatDate(l.expiry_date)}</div>
+                              <div>O - {formatDateShort(l.open_date)}</div>
+                              <div>M - {formatDateShort(l.expiry_date)}</div>
                             </TableCell>
                             <TableCell className="whitespace-nowrap">
                               {l.expiry_date ? <DueBadge date={l.expiry_date} /> : <span className="text-muted-foreground">—</span>}
@@ -1566,12 +1585,17 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                     {isLcPastMaturity(l) ? 'Repay' : 'Preclose'}
                                   </Button>
                                 )}
-                                <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit LC" onClick={() => setLcForm({ ...l })}>
-                                  <Pencil className="h-3.5 w-3.5" />
-                                </Button>
-                                <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" title="Delete LC (reverses its vouchers)" onClick={() => requestDeleteLc(l)}>
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </Button>
+                                <RowActions
+                                  actions={[
+                                    { label: 'Edit LC', icon: Pencil, onClick: () => setLcForm({ ...l }) },
+                                    {
+                                      label: 'Delete LC — reverses its vouchers',
+                                      icon: Trash2,
+                                      danger: true,
+                                      onClick: () => requestDeleteLc(l)
+                                    }
+                                  ]}
+                                />
                               </div>
                             </TableCell>
                           </TableRow>
@@ -1587,77 +1611,6 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
           </TabsContent>
 
           <TabsContent value="bd" className="mt-4">
-            <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
-              <div className="flex items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/50"><FileText className="h-3.5 w-3.5" /></span>
-                <span className="text-[13px] font-bold uppercase tracking-widest">Bill Discounting</span>
-                <Button size="sm" className="ml-auto bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setBdForm({ open_date: todayISO(), rate_pct: '9', tenor_days: '60', charges: '' })}>
-                  <Plus className="h-4 w-4" /> Discount a bill
-                </Button>
-              </div>
-              <Table className="text-[13px]">
-                <TableHeader>
-                  <TableRow className="bg-[#f1ecd9] hover:bg-[#f1ecd9]">
-                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Bill · party</TableHead>
-                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Bank</TableHead>
-                    <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Bill amount</TableHead>
-                    <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Interest + charges</TableHead>
-                    <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Net received</TableHead>
-                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Maturity</TableHead>
-                    <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Status</TableHead>
-                    <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {bills.length === 0 ? (
-                    <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No discounted bills yet.</TableCell></TableRow>
-                  ) : (
-                    bills.map((b) => (
-                      <TableRow key={String(b.id)} className="border-b border-dotted border-[#e5dfc8] transition-colors hover:bg-amber-100/70">
-                        <TableCell>
-                          <div className="font-semibold">{b.bill_nos || '—'}</div>
-                          <div className="text-[11px] text-muted-foreground">{b.party_name || '—'}</div>
-                        </TableCell>
-                        <TableCell>{b.disc_bank || b.medium || '—'}</TableCell>
-                        <TableCell className="text-right font-medium tabular-nums">{formatINR(b.amount)}</TableCell>
-                        <TableCell className="text-right tabular-nums text-rose-700">
-                          {formatINR(n(b.interest_amount) + n(b.charges))}
-                          {n(b.rate_pct) > 0 && <div className="text-[10px] text-muted-foreground">@ {b.rate_pct}%</div>}
-                        </TableCell>
-                        <TableCell className="text-right font-semibold tabular-nums text-emerald-700">{n(b.net_received) ? formatINR(b.net_received) : '—'}</TableCell>
-                        <TableCell>
-                          <span className="mr-1.5 tabular-nums">{formatDate(b.maturity_date)}</span>
-                          {String(b.status) !== 'realized' && <DueBadge date={b.maturity_date} />}
-                        </TableCell>
-                        <TableCell>
-                          {String(b.status) === 'realized'
-                            ? <Badge variant="success">Realized {formatDate(b.payment_received_date)}</Badge>
-                            : <Badge variant="warning">Discounted</Badge>}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-1">
-                            {String(b.status) === 'realized' ? (
-                              <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={async () => { await window.api.treasury.unrealize(Number(b.id)); load() }}>
-                                <RotateCcw className="h-3 w-3" /> Undo
-                              </Button>
-                            ) : (
-                              <Button size="sm" variant="outline" className="h-7 px-2 text-xs text-emerald-700" onClick={async () => { try { await window.api.treasury.realize(Number(b.id)); toast.success('Realized — customer cleared against the invoice'); load() } catch (e) { toast.error((e as Error).message) } }}>
-                                <Check className="h-3 w-3" /> Realize
-                              </Button>
-                            )}
-                            <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" onClick={async () => { if (confirm('Delete this discounted bill? Its vouchers reverse too.')) { await window.api.treasury.deleteDiscount(Number(b.id)); load() } }}>
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-
-            <div className="my-4 border-t border-dashed" />
             <BillDiscounting />
           </TabsContent>
         </Tabs>
@@ -2961,57 +2914,6 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
         </DialogContent>
       </Dialog>
 
-      {/* Discount a bill */}
-      <Dialog open={!!bdForm} onOpenChange={(o) => !o && setBdForm(null)}>
-        <DialogContent className="max-w-xl">
-          <DialogHeader><DialogTitle>Discount a sale bill</DialogTitle></DialogHeader>
-          {bdForm && (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="flex flex-col gap-1.5 sm:col-span-2">
-                <Label>Sale invoice</Label>
-                <Select
-                  value={bdForm.invoice_group ? String(bdForm.invoice_group) : ''}
-                  onValueChange={(v) => {
-                    const inv = saleInvoices.find((x) => x.group === v)
-                    if (inv) setBdForm((p) => ({ ...p, invoice_group: v, bill_nos: inv.invoice_no, party_name: inv.customer, customer_id: inv.customer_id, amount: String(Math.round(inv.net)) }))
-                  }}
-                >
-                  <SelectTrigger><SelectValue placeholder="Pick the invoice being discounted" /></SelectTrigger>
-                  <SelectContent className="max-h-64">
-                    {saleInvoices.map((x) => (
-                      <SelectItem key={x.group} value={x.group}>
-                        {x.invoice_no} · {x.customer || 'CASH'} · {formatINR(x.net)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-1.5"><Label>Discounting bank *</Label><Input value={bdForm.disc_bank ?? ''} onChange={(e) => setBdForm((p) => ({ ...p, disc_bank: e.target.value }))} /></div>
-              <div className="flex flex-col gap-1.5"><Label>Bill amount (₹) *</Label><Input type="number" value={bdForm.amount ?? ''} onChange={(e) => setBdForm((p) => ({ ...p, amount: e.target.value }))} /></div>
-              <div className="flex flex-col gap-1.5"><Label>Discount date</Label><DatePicker value={String(bdForm.open_date || '')} onChange={(v) => setBdForm((p) => ({ ...p, open_date: v }))} /></div>
-              <div className="flex flex-col gap-1.5">
-                <Label>Maturity date</Label>
-                <DatePicker value={String(bdForm.maturity_date || '')} onChange={(v) => setBdForm((p) => ({ ...p, maturity_date: v }))} />
-                <span className="text-[10px] text-muted-foreground">or leave blank and give tenor days</span>
-              </div>
-              <div className="flex flex-col gap-1.5"><Label>Tenor (days)</Label><Input type="number" value={bdForm.tenor_days ?? ''} onChange={(e) => setBdForm((p) => ({ ...p, tenor_days: e.target.value }))} /></div>
-              <div className="flex flex-col gap-1.5"><Label>Rate % p.a. *</Label><Input type="number" value={bdForm.rate_pct ?? ''} onChange={(e) => setBdForm((p) => ({ ...p, rate_pct: e.target.value }))} /></div>
-              <div className="flex flex-col gap-1.5"><Label>Bank charges (₹)</Label><Input type="number" value={bdForm.charges ?? ''} onChange={(e) => setBdForm((p) => ({ ...p, charges: e.target.value }))} /></div>
-              {bdPreview && n(bdForm.amount) > 0 && (
-                <div className="sm:col-span-2 grid grid-cols-3 gap-2 rounded-lg border bg-muted/30 p-2.5 text-center">
-                  <div><div className="text-[10px] uppercase tracking-wide text-muted-foreground">{bdPreview.days} days interest</div><div className="text-[13px] font-semibold tabular-nums text-rose-700">{formatINR(bdPreview.interest)}</div></div>
-                  <div><div className="text-[10px] uppercase tracking-wide text-muted-foreground">Charges</div><div className="text-[13px] font-semibold tabular-nums text-rose-700">{formatINR(n(bdForm.charges))}</div></div>
-                  <div><div className="text-[10px] uppercase tracking-wide text-muted-foreground">Bank credits now</div><div className="text-[13px] font-bold tabular-nums text-emerald-700">{formatINR(bdPreview.net)}</div></div>
-                </div>
-              )}
-            </div>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setBdForm(null)}>Cancel</Button>
-            <Button disabled={busy} onClick={() => void saveBd()}>{busy ? 'Saving…' : 'Discount bill'}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </>
   )
 }

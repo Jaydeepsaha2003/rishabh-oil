@@ -7,6 +7,7 @@ import { getActiveCompanyId } from './company'
 // is safe — all *values* are passed as bound parameters.
 const TABLES: Record<string, string[]> = {
   banks: ['name', 'branch', 'account_no', 'ifsc', 'note', 'active', 'company_id'],
+  nbfcs: ['name', 'finance_type', 'tds_pct', 'interest_pct', 'interest_days', 'note', 'active', 'company_id'],
   categories: ['name', 'applies_to', 'note', 'active'],
   oil_types: ['code', 'name', 'active'],
   products: ['code', 'name', 'category', 'material_type', 'active'],
@@ -72,11 +73,11 @@ const TABLES: Record<string, string[]> = {
 type Row = Record<string, unknown>
 
 // Most masters (suppliers, products, categories...) are shared across every
-// company's books. Banks are the odd one out — a bank ACCOUNT belongs to one
-// company, not to the business in general — so this is the one table that
-// gets scoped like the transactional tables (orders, bargains) do, instead of
-// sitting in the generic shared-master pool with everything else here.
-const COMPANY_SCOPED_TABLES = new Set(['banks'])
+// company's books. Banks and NBFCs are the odd ones out — a bank ACCOUNT or a
+// discounting line belongs to one company, not to the business in general —
+// so these get scoped like the transactional tables (orders, bargains) do,
+// instead of sitting in the generic shared-master pool with everything else.
+const COMPANY_SCOPED_TABLES = new Set(['banks', 'nbfcs'])
 
 function assertTable(table: string): string[] {
   const cols = TABLES[table]
@@ -203,6 +204,7 @@ const DEPENDENTS: Record<string, { table: string; column: string; label: string 
     { table: 'letters_of_credit', column: 'our_bank_id', label: 'LC' },
     { table: 'bank_lc_limits', column: 'bank_id', label: 'sanctioned limit' }
   ],
+  nbfcs: [{ table: 'bill_discountings', column: 'nbfc_id', label: 'discounted bill' }],
   suppliers: [
     { table: 'bargains', column: 'supplier_id', label: 'purchase bargain' },
     { table: 'orders', column: 'supplier_id', label: 'purchase' },

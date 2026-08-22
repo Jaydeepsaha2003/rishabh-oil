@@ -46,8 +46,25 @@ export function DatePicker({
   if (maxDate) matchers.push({ after: maxDate })
 
   return (
-    // modal — otherwise the calendar is mouse-dead inside modal dialogs
-    <Popover modal open={open} onOpenChange={setOpen}>
+    // modal — otherwise the calendar is mouse-dead inside modal dialogs. That
+    // trade-off has its own cost: a modal Popover leaves body pointer-events
+    // disabled for a tick after it closes (a known Radix quirk), which
+    // silently swallows whatever the user clicks next — commonly the very
+    // next date field — until they click a second time. Clearing it right
+    // after close (rather than waiting on Radix's own cleanup) is what makes
+    // the first click after picking a date actually register.
+    <Popover
+      modal
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o)
+        if (!o) {
+          window.setTimeout(() => {
+            document.body.style.pointerEvents = ''
+          }, 0)
+        }
+      }}
+    >
       <PopoverTrigger asChild>
         <Button
           type="button"

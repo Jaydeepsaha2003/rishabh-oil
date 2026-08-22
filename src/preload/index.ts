@@ -141,9 +141,6 @@ const api = {
     deleteEntry: (partyType: string, id: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('ledger:deleteEntry', { partyType, id })
   },
-  billDiscounts: {
-    list: (): Promise<Row[]> => ipcRenderer.invoke('billDiscounts:list')
-  },
   auth: {
     login: (username: string, password: string): Promise<Row> =>
       ipcRenderer.invoke('auth:login', { username, password })
@@ -293,11 +290,7 @@ const api = {
     paymentTracker: (): Promise<Row[]> => ipcRenderer.invoke('treasury:paymentTracker'),
     settleLcBill: (id: number, date?: string): Promise<{ id: number }> =>
       ipcRenderer.invoke('treasury:settleLcBill', { id, date }),
-    reopenLcBill: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('treasury:reopenLcBill', { id }),
-    discount: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('treasury:discount', { values }),
-    realize: (id: number, date?: string): Promise<{ id: number }> => ipcRenderer.invoke('treasury:realize', { id, date }),
-    unrealize: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('treasury:unrealize', { id }),
-    deleteDiscount: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('treasury:deleteDiscount', { id })
+    reopenLcBill: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('treasury:reopenLcBill', { id })
   },
   lc: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('lc:list'),
@@ -331,7 +324,8 @@ const api = {
         release_margin?: boolean
       }
     ): Promise<{ id: number }> => ipcRenderer.invoke('lc:preclose', { id, values }),
-    getLimit: (bankId?: number): Promise<Row> => ipcRenderer.invoke('lc:getLimit', { bankId }),
+    getLimit: (bankId?: number, from?: string, to?: string): Promise<Row> =>
+      ipcRenderer.invoke('lc:getLimit', { bankId, from, to }),
     bankLimits: (): Promise<Row[]> => ipcRenderer.invoke('lc:bankLimits'),
     saveLimit: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('lc:saveLimit', { values })
   },
@@ -355,19 +349,18 @@ const api = {
       ipcRenderer.invoke('bankRecon:setSubEntry', { lineId, values })
   },
   billDiscounting: {
-    parties: (): Promise<Row[]> => ipcRenderer.invoke('bd:parties'),
-    createParty: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('bd:createParty', { values }),
-    updateParty: (id: number, values: Row): Promise<{ id: number }> =>
-      ipcRenderer.invoke('bd:updateParty', { id, values }),
-    deleteParty: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:deleteParty', { id }),
-    entries: (filter: Row): Promise<Row[]> => ipcRenderer.invoke('bd:entries', { filter }),
-    createEntry: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('bd:createEntry', { values }),
-    markPaid: (id: number, date?: string): Promise<{ id: number }> => ipcRenderer.invoke('bd:markPaid', { id, date }),
-    markRepaid: (id: number, date?: string): Promise<{ id: number }> => ipcRenderer.invoke('bd:markRepaid', { id, date }),
-    recordInterest: (id: number, values: Row): Promise<{ id: number }> =>
-      ipcRenderer.invoke('bd:recordInterest', { id, values }),
-    deleteEntry: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:deleteEntry', { id }),
-    fundFlow: (): Promise<Row> => ipcRenderer.invoke('bd:fundFlow')
+    list: (filter?: Row): Promise<Row[]> => ipcRenderer.invoke('bd:list', { filter }),
+    create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('bd:create', { values }),
+    update: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('bd:update', { id, values }),
+    remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:delete', { id }),
+    repay: (
+      id: number,
+      values: { repay_date?: string; settle_via?: 'bank' | 'party'; ref?: string | null; release_margin?: boolean }
+    ): Promise<{ id: number }> => ipcRenderer.invoke('bd:repay', { id, values }),
+    reopen: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:reopen', { id }),
+    upfrontInterest: (id: number, date?: string): Promise<{ id: number } | null> =>
+      ipcRenderer.invoke('bd:upfrontInterest', { id, date }),
+    kpis: (): Promise<Row> => ipcRenderer.invoke('bd:kpis')
   },
   trading: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('trading:list'),

@@ -1035,7 +1035,49 @@ const MIGRATIONS = [
   // both rows' taxable value together instead of quietly restarting the
   // slab at zero for whichever row a given invoice happens to sit under.
   'ALTER TABLE suppliers ADD COLUMN linked_party_id INTEGER REFERENCES suppliers(id)',
-  'ALTER TABLE customers ADD COLUMN linked_party_id INTEGER REFERENCES customers(id)'
+  'ALTER TABLE customers ADD COLUMN linked_party_id INTEGER REFERENCES customers(id)',
+  // Bill Discounting replaces the old party+entries tracker (bd_parties /
+  // bd_entries — both confirmed empty) with one LC-style record per bill,
+  // plus a proper NBFC master. Both old tables are dropped outright.
+  'DROP TABLE IF EXISTS bd_entries',
+  'DROP TABLE IF EXISTS bd_parties',
+  `CREATE TABLE IF NOT EXISTS nbfcs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    name TEXT NOT NULL,
+    finance_type TEXT NOT NULL DEFAULT 'BOTH',
+    tds_pct REAL NOT NULL DEFAULT 0,
+    interest_pct REAL NOT NULL DEFAULT 0,
+    interest_days REAL NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS bill_discountings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    bd_no TEXT,
+    nbfc_id INTEGER REFERENCES nbfcs(id),
+    finance_type TEXT NOT NULL DEFAULT 'PID',
+    party_type TEXT NOT NULL DEFAULT 'supplier',
+    party_id INTEGER,
+    purpose TEXT NOT NULL DEFAULT 'manufacturing',
+    amount REAL NOT NULL DEFAULT 0,
+    payment_received_date TEXT,
+    maturity_date TEXT,
+    margin_pct REAL NOT NULL DEFAULT 0,
+    interest_pct REAL NOT NULL DEFAULT 0,
+    tds_pct REAL NOT NULL DEFAULT 0,
+    interest_upfront INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'open',
+    repaid_date TEXT,
+    repaid_amount REAL,
+    journal_entry_id INTEGER,
+    repay_journal_entry_id INTEGER,
+    margin_release_journal_entry_id INTEGER,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`
 ]
 
 

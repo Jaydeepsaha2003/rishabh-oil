@@ -131,7 +131,7 @@ export async function listLCs(): Promise<Row[]> {
 // Fixed always counts, Convertible only when switched on. A preclosed LC has
 // been wound up early, so it no longer holds any of the limit; only what is
 // genuinely still open counts against it.
-export async function getLcLimit(bankId?: number): Promise<Row> {
+export async function getLcLimit(bankId?: number, from?: string, to?: string): Promise<Row> {
   const c = getClient()
   const cid = getActiveCompanyId()
   let bank = n(bankId)
@@ -169,18 +169,38 @@ export async function getLcLimit(bankId?: number): Promise<Row> {
     if (legacy.rows.length) limit = toPlain(legacy)[0]
   }
 
+  // A period narrows utilisation to the cohort of LCs actually OPENED in that
+  // window — still only counting what is genuinely still outstanding today,
+  // same as the unfiltered figure. It never touches the facility ceiling
+  // itself (fixed/convertible/total), which is a bank-sanctioned limit, not
+  // something that resets period to period.
+  const f = from ? String(from).slice(0, 10) : ''
+  const t = to ? String(to).slice(0, 10) : ''
   const sumsRes = await c.execute({
-    sql: `SELECT stage, COALESCE(SUM(amount), 0) AS total FROM letters_of_credit
+    sql: `SELECT stage, COALESCE(SUM(amount), 0) AS total, COUNT(*) AS cnt FROM letters_of_credit
           WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
             ${bank ? 'AND our_bank_id = ?' : ''}
+            ${f ? 'AND open_date >= ?' : ''}
+            ${t ? 'AND open_date <= ?' : ''}
           GROUP BY stage`,
-    args: bank ? [cid, bank] : [cid]
+    args: [cid, ...(bank ? [bank] : []), ...(f ? [f] : []), ...(t ? [t] : [])]
   })
   const byStage: Record<string, number> = { application: 0, open: 0, payment_received: 0 }
+  let periodCount = 0
   for (const r of toPlain(sumsRes)) {
     const stage = String(r.stage || 'application')
     if (stage in byStage) byStage[stage] = n(r.total)
+    periodCount += n(r.cnt)
   }
+  // The all-time count, ignoring the period, so the KPI can always show
+  // "N of M" — how many of the facility's LCs the current window covers.
+  const totalCountRes = await c.execute({
+    sql: `SELECT COUNT(*) AS cnt FROM letters_of_credit
+          WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
+            ${bank ? 'AND our_bank_id = ?' : ''}`,
+    args: bank ? [cid, bank] : [cid]
+  })
+  const totalCount = n(totalCountRes.rows[0]?.cnt)
 
   const totalLimit = round2(n(limit.fixed_limit) + (limit.convertible_enabled ? n(limit.convertible_limit) : 0))
   const utilized = round2(byStage.application + byStage.open + byStage.payment_received)
@@ -190,11 +210,15 @@ export async function getLcLimit(bankId?: number): Promise<Row> {
     convertible_limit: n(limit.convertible_limit),
     convertible_enabled: !!n(limit.convertible_enabled),
     total_limit: totalLimit,
+    lc_count: totalCount,
+    period_lc_count: periodCount,
     application: round2(byStage.application),
     open: round2(byStage.open),
     payment_received: round2(byStage.payment_received),
     utilized,
-    available: round2(totalLimit - utilized)
+    available: round2(totalLimit - utilized),
+    period_from: f || null,
+    period_to: t || null
   }
 }
 

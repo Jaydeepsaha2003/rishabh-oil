@@ -317,6 +317,51 @@ CREATE TABLE IF NOT EXISTS letters_of_credit (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- The lender master for Bill Discounting — company-scoped the same way the
+-- banks master is, so it can be managed through the generic EntityManager
+-- rather than needing its own IPC.
+CREATE TABLE IF NOT EXISTS nbfcs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER NOT NULL DEFAULT 1,
+  name TEXT NOT NULL,
+  finance_type TEXT NOT NULL DEFAULT 'BOTH',
+  tds_pct REAL NOT NULL DEFAULT 0,
+  interest_pct REAL NOT NULL DEFAULT 0,
+  interest_days REAL NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Bill Discounting (PID/SID): unlike an LC, a bill is opened directly with
+-- its own Payment Received and Maturity dates already known — there's no
+-- application/open/payment-received stage machine, and no invoice to link.
+CREATE TABLE IF NOT EXISTS bill_discountings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER NOT NULL DEFAULT 1,
+  bd_no TEXT,
+  nbfc_id INTEGER REFERENCES nbfcs(id),
+  finance_type TEXT NOT NULL DEFAULT 'PID',
+  party_type TEXT NOT NULL DEFAULT 'supplier',
+  party_id INTEGER,
+  purpose TEXT NOT NULL DEFAULT 'manufacturing',
+  amount REAL NOT NULL DEFAULT 0,
+  payment_received_date TEXT,
+  maturity_date TEXT,
+  margin_pct REAL NOT NULL DEFAULT 0,
+  interest_pct REAL NOT NULL DEFAULT 0,
+  tds_pct REAL NOT NULL DEFAULT 0,
+  interest_upfront INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'open',
+  repaid_date TEXT,
+  repaid_amount REAL,
+  journal_entry_id INTEGER,
+  repay_journal_entry_id INTEGER,
+  margin_release_journal_entry_id INTEGER,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS lc_issuances (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   lc_id INTEGER NOT NULL REFERENCES letters_of_credit(id),

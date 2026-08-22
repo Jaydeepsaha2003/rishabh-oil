@@ -430,8 +430,6 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   const [regFunding, setRegFunding] = useState<string[]>([])
   // Tag-a-purchase-to-an-LC dialog.
   const [tagForm, setTagForm] = useState<Row | null>(null)
-  // Tag-a-sale-to-bill-discounting dialog — the sales-side mirror of Tag LC.
-  const [tagBdForm, setTagBdForm] = useState<Row | null>(null)
   // Trading Account report — per-oil-code purchase vs sale roll-up.
   const [tradingRows, setTradingRows] = useState<Row[]>([])
   const [tradingFrom, setTradingFrom] = useState('')
@@ -1750,7 +1748,9 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   )
 
   // Shared filter bar for both registers: period, free text, funding state.
-  function registerFilters(fundingLabels: [string, string]): React.JSX.Element {
+  // fundingLabels omitted = no funding filter for that register (the sales
+  // register has none, since bill discounting no longer links to an invoice).
+  function registerFilters(fundingLabels?: [string, string]): React.JSX.Element {
     return (
       <div className="ml-auto flex flex-wrap items-center gap-2">
         <Input
@@ -1763,16 +1763,18 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         <DatePicker value={regFrom} onChange={(v) => setRegFrom(v || '')} max={regTo || undefined} className="h-8 w-[8.5rem] bg-white text-[11px]" />
         <span className="text-[11px] text-muted-foreground">to</span>
         <DatePicker value={regTo} onChange={(v) => setRegTo(v || '')} min={regFrom || undefined} className="h-8 w-[8.5rem] bg-white text-[11px]" />
-        <MultiSelectFilter
-          options={[
-            { value: 'lc', label: fundingLabels[0] },
-            { value: 'nolc', label: fundingLabels[1] }
-          ]}
-          value={regFunding}
-          onApply={setRegFunding}
-          allLabel="All"
-          className="h-8 w-40 bg-white text-[11px]"
-        />
+        {fundingLabels && (
+          <MultiSelectFilter
+            options={[
+              { value: 'lc', label: fundingLabels[0] },
+              { value: 'nolc', label: fundingLabels[1] }
+            ]}
+            value={regFunding}
+            onApply={setRegFunding}
+            allLabel="All"
+            className="h-8 w-40 bg-white text-[11px]"
+          />
+        )}
         {(regFrom || regTo || regSearch || regFunding.length > 0) && (
           <Button
             variant="ghost"
@@ -1811,13 +1813,12 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     const q = regSearch.trim().toLowerCase()
     return saleRows.filter((s) => {
       if (!inPeriod(s.sale_date)) return false
-      if (regFunding.length && !regFunding.includes(s.discount_id ? 'lc' : 'nolc')) return false
       if (!q) return true
-      return [s.invoice_no, s.customer, s.product_name, s.discount_bank, s.gate_vehicle_no]
+      return [s.invoice_no, s.customer, s.product_name, s.gate_vehicle_no]
         .filter(Boolean).join(' ').toLowerCase().includes(q)
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [saleRows, regFrom, regTo, regSearch, regFunding])
+  }, [saleRows, regFrom, regTo, regSearch])
 
   // Tag a purchase to an LC — issues a bill under that LC against the invoice,
   // which is what makes the purchase show as LC-funded and eats the limit.
@@ -1836,35 +1837,6 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       })
       toast.success(`${tagForm.invoice_no} tagged to the LC`)
       setTagForm(null)
-      void loadRegisters()
-    } catch (e) {
-      toast.error((e as Error).message)
-    }
-  }
-
-  // Tag a sale to bill discounting — discounts the invoice with a bank, which
-  // is what makes the sale show as discounted on the register.
-  async function saveTagBd(): Promise<void> {
-    if (!tagBdForm) return
-    if (!String(tagBdForm.disc_bank || '').trim()) return void toast.error('Name the discounting bank')
-    if (!(Number(tagBdForm.amount) > 0)) return void toast.error('Enter the bill amount')
-    if (!(Number(tagBdForm.rate_pct) > 0)) return void toast.error('Enter the discounting rate')
-    try {
-      await window.api.treasury.discount({
-        customer_id: tagBdForm.customer_id ? Number(tagBdForm.customer_id) : null,
-        party_name: tagBdForm.customer || null,
-        invoice_group: tagBdForm.invoice_group || null,
-        bill_nos: tagBdForm.invoice_no || null,
-        disc_bank: tagBdForm.disc_bank,
-        amount: Number(tagBdForm.amount),
-        open_date: tagBdForm.open_date || todayISO(),
-        maturity_date: tagBdForm.maturity_date || undefined,
-        tenor_days: tagBdForm.tenor_days ? Number(tagBdForm.tenor_days) : undefined,
-        rate_pct: Number(tagBdForm.rate_pct) || 0,
-        charges: Number(tagBdForm.charges) || 0
-      })
-      toast.success(`${tagBdForm.invoice_no} discounted with ${tagBdForm.disc_bank}`)
-      setTagBdForm(null)
       void loadRegisters()
     } catch (e) {
       toast.error((e as Error).message)
@@ -2002,7 +1974,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       <div className={cn('rounded-md border shadow-lg', T.paperEdge, T.paper)}>
         <div className={cn('flex flex-wrap items-center gap-3 rounded-t-md px-4 py-2', T.headBar)}>
           <span className="text-[13px] font-bold uppercase tracking-widest">Sales Register</span>
-          {registerFilters(['Bill discounted', 'Not discounted'])}
+          {registerFilters()}
         </div>
         <div className="max-h-[calc(100vh-230px)] overflow-auto">
           <table className="w-full min-w-[1000px] text-[12px]">
@@ -2015,20 +1987,17 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                 <th className="px-3 py-2 font-semibold">Product</th>
                 <th className="px-3 py-2 text-right font-semibold">Qty</th>
                 <th className="px-3 py-2 text-right font-semibold">Amount</th>
-                <th className="px-3 py-2 font-semibold">Discounting</th>
                 <th className="px-3 py-2 text-right font-semibold">Received</th>
                 <th className="px-3 py-2 text-right font-semibold">Balance</th>
-                <th className="px-3 py-2 text-right font-semibold">Tag</th>
               </tr>
             </thead>
             <tbody>
               {salesRegRows.length === 0 ? (
-                <tr><td colSpan={11} className="py-12 text-center text-muted-foreground">No sales for this filter.</td></tr>
+                <tr><td colSpan={9} className="py-12 text-center text-muted-foreground">No sales for this filter.</td></tr>
               ) : (
                 salesRegRows.map((s) => {
                   const net = n(s.amount) + n(s.gst_amount) + n(s.round_off)
                   const bal = net - n(s.received_amount)
-                  const overdue = s.discount_due && String(s.discount_due) < todayISO() && String(s.discount_status) !== 'realized'
                   return (
                     <tr key={String(s.id)} className="border-b border-dotted border-[#e5dfc8] hover:bg-amber-100/60">
                       <td className="whitespace-nowrap px-3 py-1.5 tabular-nums">{formatDate(s.sale_date)}</td>
@@ -2047,55 +2016,9 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                       <td className="px-3 py-1.5 text-muted-foreground">{s.product_name || '—'}</td>
                       <td className="px-3 py-1.5 text-right tabular-nums">{n(s.qty)} {s.uom || 'MT'}</td>
                       <td className="px-3 py-1.5 text-right font-medium tabular-nums">{formatINR(net)}</td>
-                      <td className="px-3 py-1.5">
-                        {s.discount_id ? (
-                          <span className="inline-flex flex-wrap items-center gap-1">
-                            <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-indigo-800">BD</span>
-                            <span className="font-medium">{s.discount_bank || ''}</span>
-                            <span
-                              className={cn(
-                                'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase',
-                                String(s.discount_status) === 'realized'
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : overdue
-                                    ? 'bg-red-100 text-red-700'
-                                    : 'bg-amber-100 text-amber-800'
-                              )}
-                            >
-                              {String(s.discount_status) === 'realized' ? 'realized' : overdue ? 'overdue' : 'open'}
-                              {s.discount_due && String(s.discount_status) !== 'realized' ? ` · ${formatDate(s.discount_due)}` : ''}
-                            </span>
-                          </span>
-                        ) : (
-                          <span className="text-[11px] text-muted-foreground">—</span>
-                        )}
-                      </td>
                       <td className="px-3 py-1.5 text-right tabular-nums text-emerald-700">{n(s.received_amount) ? formatINR(s.received_amount) : '—'}</td>
                       <td className={cn('px-3 py-1.5 text-right font-medium tabular-nums', bal > 0.005 ? 'text-rose-700' : 'text-muted-foreground')}>
                         {formatINR(bal)}
-                      </td>
-                      <td className="px-3 py-1.5 text-right">
-                        {s.discount_id ? (
-                          <span className="text-[11px] text-muted-foreground">already tagged</span>
-                        ) : (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-6 px-2 text-[11px]"
-                            onClick={() =>
-                              setTagBdForm({
-                                invoice_group: s.invoice_group,
-                                invoice_no: s.invoice_no,
-                                customer: s.customer,
-                                customer_id: s.customer_id,
-                                amount: String(Math.round(net)),
-                                open_date: todayISO()
-                              })
-                            }
-                          >
-                            Tag BD
-                          </Button>
-                        )}
                       </td>
                     </tr>
                   )
@@ -2109,10 +2032,8 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                     {salesRegRows.length} sale{salesRegRows.length === 1 ? '' : 's'}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-amber-900">{formatINR(salesTotals.net)}</td>
-                  <td />
                   <td className="px-3 py-2 text-right tabular-nums text-amber-900">{formatINR(salesTotals.recd)}</td>
                   <td className="px-3 py-2 text-right tabular-nums text-amber-900">{formatINR(salesTotals.net - salesTotals.recd)}</td>
-                  <td />
                 </tr>
               </tfoot>
             )}
@@ -2644,36 +2565,6 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         </DialogContent>
       </Dialog>
 
-      {/* Tag a sale to bill discounting */}
-      <Dialog open={!!tagBdForm} onOpenChange={(o) => !o && setTagBdForm(null)}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader><DialogTitle>Tag {tagBdForm?.invoice_no} to bill discounting</DialogTitle></DialogHeader>
-          {tagBdForm && (
-            <div className="grid gap-3">
-              <p className="text-xs text-muted-foreground">
-                {tagBdForm.customer} · this discounts the bill with the chosen bank — interest and charges post to the books now, and the customer clears when the bank realizes it.
-              </p>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="flex flex-col gap-1.5"><Label>Discounting bank *</Label><Input value={tagBdForm.disc_bank ?? ''} onChange={(e) => setTagBdForm({ ...tagBdForm, disc_bank: e.target.value })} /></div>
-                <div className="flex flex-col gap-1.5"><Label>Bill amount (₹) *</Label><Input type="number" value={tagBdForm.amount ?? ''} onChange={(e) => setTagBdForm({ ...tagBdForm, amount: e.target.value })} /></div>
-                <div className="flex flex-col gap-1.5"><Label>Discount date</Label><DatePicker value={String(tagBdForm.open_date || '')} onChange={(v) => setTagBdForm({ ...tagBdForm, open_date: v })} /></div>
-                <div className="flex flex-col gap-1.5">
-                  <Label>Maturity date</Label>
-                  <DatePicker value={String(tagBdForm.maturity_date || '')} onChange={(v) => setTagBdForm({ ...tagBdForm, maturity_date: v })} />
-                  <span className="text-[10px] text-muted-foreground">or leave blank and give tenor days</span>
-                </div>
-                <div className="flex flex-col gap-1.5"><Label>Tenor (days)</Label><Input type="number" value={tagBdForm.tenor_days ?? ''} onChange={(e) => setTagBdForm({ ...tagBdForm, tenor_days: e.target.value })} /></div>
-                <div className="flex flex-col gap-1.5"><Label>Rate % p.a. *</Label><Input type="number" value={tagBdForm.rate_pct ?? ''} onChange={(e) => setTagBdForm({ ...tagBdForm, rate_pct: e.target.value })} /></div>
-                <div className="flex flex-col gap-1.5"><Label>Bank charges (₹)</Label><Input type="number" value={tagBdForm.charges ?? ''} onChange={(e) => setTagBdForm({ ...tagBdForm, charges: e.target.value })} /></div>
-              </div>
-            </div>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setTagBdForm(null)}>Cancel</Button>
-            <Button onClick={() => void saveTagBd()}>Tag sale</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Read-only view of an auto-posted voucher */}
       <Dialog open={!!viewRow} onOpenChange={(o) => !o && setViewRow(null)}>
