@@ -129,20 +129,40 @@ function PartyCell({ value, parties, uom, tone }: { value: number; parties: Row[
   if (!parties || parties.length === 0) {
     return <TableCell className={cls}>{value ? cell : '—'}</TableCell>
   }
+  const hasReturn = parties.some((p) => p.isReturn)
   return (
     <TableCell className={cls}>
       <Tooltip>
         <TooltipTrigger asChild>
-          <span className="cursor-default underline decoration-dotted decoration-muted-foreground/50 underline-offset-4">{cell}</span>
+          <span
+            className={cn(
+              'cursor-default underline decoration-dotted underline-offset-4',
+              hasReturn ? 'decoration-rose-400 decoration-2' : 'decoration-muted-foreground/50'
+            )}
+          >
+            {cell}
+          </span>
         </TooltipTrigger>
-        <TooltipContent className="max-w-xs">
+        <TooltipContent className="max-w-sm">
           <div className="space-y-0.5">
             {parties.map((p, i) => (
-              <div key={i} className="flex justify-between gap-4">
-                <span>{p.party}</span>
-                <span className="tabular-nums font-medium">{formatNum(p.qty)} {uom || 'MT'}</span>
+              <div key={i} className={cn('flex justify-between gap-4', p.isReturn && 'opacity-90')}>
+                <span className={cn(p.isReturn && 'italic')}>{p.party}</span>
+                <span className={cn('tabular-nums font-medium', Number(p.qty) < 0 && 'text-rose-300')}>
+                  {Number(p.qty) < 0 ? '−' : ''}{formatNum(Math.abs(Number(p.qty) || 0))} {uom || 'MT'}
+                </span>
               </div>
             ))}
+            {/* The cell is net of any returns, so the lines have to add up to
+                it — otherwise the hover looks like it contradicts the column. */}
+            {parties.some((p) => p.isReturn) && (
+              <div className="mt-1 flex justify-between gap-4 border-t border-white/25 pt-1 font-semibold">
+                <span>Net</span>
+                <span className="tabular-nums">
+                  {formatNum(parties.reduce((t, p) => t + (Number(p.qty) || 0), 0))} {uom || 'MT'}
+                </span>
+              </div>
+            )}
           </div>
         </TooltipContent>
       </Tooltip>

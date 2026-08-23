@@ -156,6 +156,15 @@ import {
 } from './bankRecon'
 import { listBd, createBd, updateBd, deleteBd, repayBd, reopenBd, postBdUpfrontInterest, bdKpis } from './billDiscounting'
 import {
+  listTransporterFreight,
+  transporterFreightKpis,
+  listTransporterBills,
+  createTransporterBill,
+  updateTransporterBill,
+  deleteTransporterBill,
+  type FreightSide
+} from './transporterBilling'
+import {
   listFacilities,
   listFacilityExposures,
   facilityHeadroom,
@@ -529,6 +538,18 @@ export function registerIpc(): void {
     adjustSkuStock(id, delta, note, date)
   )
 
+  handle(
+    'tfreight:list',
+    (_e, a: { side: FreightSide; companyId?: number; from?: string; to?: string; transporterId?: number; state?: 'all' | 'unbilled' | 'billed' }) =>
+      listTransporterFreight(a.side, a)
+  )
+  handle('tfreight:kpis', (_e, a: { side: FreightSide; companyId?: number; from?: string; to?: string }) =>
+    transporterFreightKpis(a.side, a)
+  )
+  handle('tbill:list', (_e, a: { companyId?: number } = {}) => listTransporterBills(a?.companyId))
+  handle('tbill:create', (_e, { values }: { values: Row }) => createTransporterBill(values))
+  handle('tbill:update', (_e, { id, values }: { id: number; values: Row }) => updateTransporterBill(id, values))
+  handle('tbill:delete', (_e, { id }: { id: number }) => deleteTransporterBill(id))
   handle('notes:list', (_e, a: { companyId?: number } = {}) => listNotes(a?.companyId))
   handle('notes:items', (_e, { id }: { id: number }) => listNoteItems(id))
   handle('notes:create', (_e, { values }: { values: Row }) => createNote(values))
@@ -545,8 +566,12 @@ export function registerIpc(): void {
   handle('sales:update', (_e, { id, values }: { id: number; values: Row }) => updateSale(id, values))
   handle('sales:createInvoice', (_e, { values }: { values: Row }) => createSaleInvoice(values))
   handle('sales:updateInvoice', (_e, { group, values }: { group: string; values: Row }) => updateSaleInvoice(group, values))
-  handle('sales:setInvoiceStage', (_e, { group, stage, force, date }: { group: string; stage: string; force?: boolean; date?: string }) =>
-    setInvoiceStage(group, stage, force, date)
+  handle(
+    'sales:setInvoiceStage',
+    (
+      _e,
+      { group, stage, force, date, received }: { group: string; stage: string; force?: boolean; date?: string; received?: Record<string, number | null> }
+    ) => setInvoiceStage(group, stage, force, date, received)
   )
   handle('sales:deleteInvoice', (_e, { group }: { group: string }) => deleteSaleInvoice(group))
   handle('sales:rejectInvoice', (_e, { group, reason }: { group: string; reason: string }) => rejectSaleInvoice(group, reason))

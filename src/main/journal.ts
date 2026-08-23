@@ -338,7 +338,11 @@ export async function postPaymentJournal(v: {
 // FOR delivery (we run and pay the transporter, priced into the rate so the
 // customer's own line is untouched):
 //        Dr FREIGHT OUTWARD A/C  freight
-//          Cr {Transporter}      freight
+//          Cr FREIGHT PAYABLE A/C freight
+// The credit is a CONTROL account, not the transporter. A transporter runs
+// several tankers over a month and bills for the lot at once, so crediting
+// them per tanker made their ledger a list of things they had never invoiced.
+// Entering their bill moves the accrual across: Dr FREIGHT PAYABLE, Cr them.
 // Freight has to be in THIS same voucher, not a second one keyed by the same
 // sale_id — deleteJournalByRef below wipes every entry for a ref regardless
 // of vchType, so two independent postJournal calls for one sale would each
@@ -374,7 +378,7 @@ export async function postSaleJournal(v: {
   if (freight > 0 && transporterName) {
     lines.push(
       { account: 'FREIGHT OUTWARD A/C', group: 'Direct Expenses', dr: freight },
-      { account: transporterName, group: 'Sundry Creditors', cr: freight }
+      { account: 'FREIGHT PAYABLE A/C', group: 'Current Liabilities', cr: freight }
     )
   }
   await postJournal({

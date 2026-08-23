@@ -1012,6 +1012,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   // more", so a chip reading 6 showed 4 lines and the rest vanished.
   interface AlertGroup {
     key: string
+    // The tab this alert belongs to. An LC warning on the Bill Discounting tab
+    // is just noise — it is only actionable where the thing it is about lives.
+    tab: string
     tone: string
     icon: typeof AlertTriangle
     label: string
@@ -1030,6 +1033,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     if (exp.length)
       alertItems.push({
         key: 'lcExpiring',
+        tab: 'lc',
         tone: 'border-amber-300 bg-amber-50 text-amber-900',
         icon: CalendarClock,
         label: `${exp.length} LC${exp.length > 1 ? 's' : ''} expiring`,
@@ -1054,6 +1058,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     if (lcDue.length)
       alertItems.push({
         key: 'lcBillsDue',
+        tab: 'lc',
         tone: lcDue.some((b) => b.days_left < 0) ? 'border-red-300 bg-red-50 text-red-800' : 'border-sky-300 bg-sky-50 text-sky-900',
         icon: Landmark,
         label: `${lcDue.length} LC bill${lcDue.length > 1 ? 's' : ''} maturing`,
@@ -1076,6 +1081,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     if (bdDue.length)
       alertItems.push({
         key: 'billsDue',
+        tab: 'bd',
         tone: bdDue.some((b) => b.days_left < 0) ? 'border-red-300 bg-red-50 text-red-800' : 'border-indigo-300 bg-indigo-50 text-indigo-900',
         icon: Banknote,
         label: `${bdDue.length} discounted bill${bdDue.length > 1 ? 's' : ''} maturing`,
@@ -1095,6 +1101,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       })
   
   }
+
+  const tabAlerts = alertItems.filter((a) => a.tab === tab)
 
   return (
     <>
@@ -1138,9 +1146,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
           {/* Alerts and the LC filters share ONE row. The alerts stay outside
               the tab panels so they show on every tab; the filters only render
               on the LC tab, where they mean something. */}
-          {(alertItems.length > 0 || tab === 'lc') && (
+          {(tabAlerts.length > 0 || tab === 'lc') && (
             <div className="flex flex-wrap items-center gap-2">
-              {alertItems.map((a) => (
+              {tabAlerts.map((a) => (
                 <button
                   key={a.key}
                   type="button"
@@ -1155,7 +1163,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   <ChevronRight className="h-3.5 w-3.5 opacity-60" />
                 </button>
               ))}
-              {alertItems.length > 0 && tab === 'lc' && <div className="h-4 w-px bg-[#e5dfc8]" />}
+              {tabAlerts.length > 0 && tab === 'lc' && <div className="h-4 w-px bg-[#e5dfc8]" />}
               {tab === 'lc' && (
                 <>
                     {/* One dropdown rather than four chips — they were mutually

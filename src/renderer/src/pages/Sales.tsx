@@ -292,6 +292,17 @@ function SalesTab({
   // The invoice-register columns that carry a header filter, and how each one
   // reads its value off a grouped invoice. Money/qty format the same way the
   // cell does, so the dropdown lists exactly what's on screen.
+  // Freight sits on the invoice's lines (each carries its own transport_amount),
+  // so the invoice figure is their sum.
+  function invFreight(inv: { first: Row; lines: Row[] }): number {
+    if (String(inv.first.freight_term || 'FREIGHT_ON_GOODS') !== 'DLD') return 0
+    return inv.lines.reduce((t, l) => t + (Number(l.transport_amount) || 0), 0)
+  }
+  function invTransporter(inv: { first: Row; lines: Row[] }): string {
+    const names = [...new Set(inv.lines.map((l) => String(l.transporter_name || '')).filter(Boolean))]
+    return names.join(', ')
+  }
+
   const INV_COLUMNS: { key: string; label: string; of: (inv: Row) => string }[] = useMemo(
     () => [
       { key: 'invoice_no', label: 'Date / Invoice', of: (inv) => String(inv.first.invoice_no || '') },
@@ -306,6 +317,14 @@ function SalesTab({
       },
       { key: 'qty', label: 'Qty', of: (inv) => formatNum(inv.qty) },
       { key: 'net', label: 'Invoice total', of: (inv) => formatINR(inv.net) },
+      {
+        // Filters on the TERM (the dropdown then lists exactly FOR and Ex)
+        // while the cell also shows what the freight came to, so the column
+        // answers both "which ones do we carry?" and "how much?".
+        key: 'freight',
+        label: 'Freight',
+        of: (inv) => (String(inv.first.freight_term || 'FREIGHT_ON_GOODS') === 'DLD' ? 'FOR' : 'Ex')
+      },
       {
         key: 'dispatch',
         label: 'Dispatch',
@@ -916,11 +935,59 @@ function SalesTab({
     }
   }
 
-  async function changeInvoiceStage(group: string, stage: string): Promise<void> {
-    const label = DISPATCH_STAGES.find((x) => x.value === stage)?.label || stage
-    const today = todayISO()
+  // Marking an invoice Unloaded is the moment the transporter's delivered
+  // weight is known, so that is where it gets asked for — one figure per line,
+  // since an invoice can carry several products.
+  const [unloadInv, setUnloadInv] = useState<{ group: string; first: Row; lines: Row[] } | null>(null)
+  const [unloadDate, setUnloadDate] = useState(todayISO())
+  const [unloadQty, setUnloadQty] = useState<Record<string, string>>({})
+  const [unloadSaving, setUnloadSaving] = useState(false)
+
+  function openUnload(inv: { group: string; first: Row; lines: Row[] }): void {
+    setUnloadInv(inv)
+    setUnloadDate(String(inv.first.unloaded_date || todayISO()).slice(0, 10))
+    // Default each line to what was dispatched — the common case is that the
+    // whole load arrived, and a pre-filled figure is quicker to accept than to
+    // retype.
+    setUnloadQty(
+      Object.fromEntries(
+        inv.lines.map((l) => [String(l.id), String(l.received_qty ?? l.qty ?? '')])
+      )
+    )
+  }
+
+  async function confirmUnload(): Promise<void> {
+    if (!unloadInv) return
+    const received: Record<string, number | null> = {}
+    for (const l of unloadInv.lines) {
+      const raw = unloadQty[String(l.id)]
+      if (raw === '' || raw == null) {
+        received[String(l.id)] = null
+        continue
+      }
+      const q = Number(raw)
+      if (!Number.isFinite(q) || q < 0) return void toast.error(`Enter a valid received qty for ${l.product_name}`)
+      received[String(l.id)] = q
+    }
+    setUnloadSaving(true)
     try {
-      await window.api.sales.setInvoiceStage(group, stage, false, today)
+      await changeInvoiceStage(unloadInv.group, 'unloaded', unloadDate, received)
+      setUnloadInv(null)
+    } finally {
+      setUnloadSaving(false)
+    }
+  }
+
+  async function changeInvoiceStage(
+    group: string,
+    stage: string,
+    dateIn?: string,
+    received?: Record<string, number | null>
+  ): Promise<void> {
+    const label = DISPATCH_STAGES.find((x) => x.value === stage)?.label || stage
+    const today = dateIn || todayISO()
+    try {
+      await window.api.sales.setInvoiceStage(group, stage, false, today, received)
       toast.success(`Invoice marked ${label}`)
       await load()
     } catch (e) {
@@ -929,7 +996,7 @@ function SalesTab({
         const go = window.confirm(`${msg}\n\nDispatch anyway (off-stock)? The finished-goods stock will still be reduced by this invoice and may go negative — this only skips the "enough stock" check.`)
         if (!go) return
         try {
-          await window.api.sales.setInvoiceStage(group, stage, true, today)
+          await window.api.sales.setInvoiceStage(group, stage, true, today, received)
           toast.success(`Invoice marked ${label} — off-stock (stock still reduced)`)
           await load()
         } catch (e2) {
@@ -1052,6 +1119,7 @@ function SalesTab({
                     c.key === 'invoice_no' && 'w-[150px]',
                     c.key === 'qty' && 'w-[110px] text-right',
                     c.key === 'net' && 'w-[140px] text-right',
+                    c.key === 'freight' && 'w-[130px]',
                     c.key === 'dispatch' && 'w-[220px]'
                   )}
                 >
@@ -1087,14 +1155,17 @@ function SalesTab({
                 <TableCell className="text-right font-semibold tabular-nums text-amber-900">
                   {formatINR(filteredInvoices.reduce((t, inv) => t + (Number(inv.net) || 0), 0))}
                 </TableCell>
+                <TableCell className="font-semibold tabular-nums text-amber-900">
+                  {formatINR(filteredInvoices.reduce((t, inv) => t + invFreight(inv), 0))}
+                </TableCell>
                 <TableCell />
                 <TableCell />
               </TableRow>
             )}
             {loading ? (
-              <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
             ) : filteredInvoices.length === 0 ? (
-              <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">{invoices.length === 0 ? 'No sales yet.' : 'No sales in this period / search.'}</TableCell></TableRow>
+              <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">{invoices.length === 0 ? 'No sales yet.' : 'No sales in this period / search.'}</TableCell></TableRow>
             ) : (
               filteredInvoices.map((inv) => {
                 const stg = stageInfo(inv.first)
@@ -1139,6 +1210,25 @@ function SalesTab({
                       </TableCell>
                       <TableCell className="align-top text-right tabular-nums">{formatNum(inv.qty)}</TableCell>
                       <TableCell className="align-top text-right tabular-nums">{formatINR(inv.net)}</TableCell>
+                      <TableCell className="align-top">
+                        <span
+                          className={cn(
+                            'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                            exTerm ? 'bg-slate-200 text-slate-700' : 'bg-sky-100 text-sky-800'
+                          )}
+                          title={exTerm ? 'Ex — the customer lifts, no freight of ours' : 'FOR — we deliver and pay the transporter'}
+                        >
+                          {exTerm ? 'Ex' : 'FOR'}
+                        </span>
+                        {!exTerm && (
+                          <div className="mt-0.5 text-[11px] tabular-nums text-muted-foreground">
+                            {invFreight(inv) > 0 ? formatINR(invFreight(inv)) : '—'}
+                            {invTransporter(inv) && (
+                              <div className="truncate text-[10px]" title={invTransporter(inv)}>{invTransporter(inv)}</div>
+                            )}
+                          </div>
+                        )}
+                      </TableCell>
                       <TableCell className="align-top" onClick={(e) => e.stopPropagation()}>
                         {exTerm ? (
                           <span className="flex h-7 items-center gap-1 text-xs font-medium text-emerald-600" title="Customer lifts — no dispatch tracking">
@@ -1157,7 +1247,17 @@ function SalesTab({
                           </button>
                           <Badge variant={stg.badge} className="min-w-[76px] justify-center">{stg.label}</Badge>
                           {nextStage ? (
-                            <Button variant="outline" size="sm" className="h-7 gap-1 px-2 text-xs" title={`Mark ${nextStage.label}`} onClick={() => changeInvoiceStage(inv.group, nextStage.value)}>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 gap-1 px-2 text-xs"
+                              title={`Mark ${nextStage.label}`}
+                              onClick={() =>
+                                nextStage.value === 'unloaded'
+                                  ? openUnload(inv)
+                                  : void changeInvoiceStage(inv.group, nextStage.value)
+                              }
+                            >
                               {nextStage.label}<ChevronRight className="h-3.5 w-3.5" />
                             </Button>
                           ) : (
@@ -1207,6 +1307,20 @@ function SalesTab({
                           </TableCell>
                           <TableCell className="align-top text-right tabular-nums">
                             <div>{formatNum(r.qty)} {r.uom}</div>
+                            {r.received_qty != null ? (
+                              <div
+                                className={cn(
+                                  'text-[11px]',
+                                  Number(r.qty) - Number(r.received_qty) > 0.0005 ? 'text-rose-600' : 'text-emerald-700'
+                                )}
+                                title="Weighed in by the transporter at the customer's end"
+                              >
+                                rec {formatNum(r.received_qty)}
+                                {Number(r.qty) - Number(r.received_qty) > 0.0005 && (
+                                  <> · short {formatNum(Number(r.qty) - Number(r.received_qty))}</>
+                                )}
+                              </div>
+                            ) : null}
                             <div className="text-[11px] text-muted-foreground" title="Finished stock in hand">stk {formatNum(inStock)}</div>
                           </TableCell>
                           <TableCell className="align-top text-right tabular-nums">
@@ -1888,6 +2002,61 @@ function SalesTab({
       )}
 
       {/* Reject — the customer refused the consignment before it was fully delivered */}
+      {/* Marking Unloaded: capture what the transporter actually delivered. */}
+      <Dialog open={!!unloadInv} onOpenChange={(o) => !o && !unloadSaving && setUnloadInv(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Unload {unloadInv?.first.invoice_no || 'this invoice'}</DialogTitle>
+          </DialogHeader>
+          <p className="text-[12px] text-muted-foreground">
+            Enter the quantity the transporter actually delivered. It is recorded against the invoice and shown in its
+            details, and feeds the dispatch register. Leave a line blank if it was not weighed.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Unloaded date</Label>
+            <div className="w-44"><DatePicker value={unloadDate} onChange={(v) => setUnloadDate(v || todayISO())} /></div>
+          </div>
+          <div className="overflow-hidden rounded-md border">
+            <div className="grid grid-cols-[minmax(0,1fr)_84px_96px_76px] items-center gap-2 border-b bg-muted/60 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <span>Product</span>
+              <span className="text-right">Dispatched</span>
+              <span className="text-right">Received</span>
+              <span className="text-right">Shortage</span>
+            </div>
+            {(unloadInv?.lines || []).map((l) => {
+              const raw = unloadQty[String(l.id)]
+              const short = raw === '' || raw == null ? null : Number(l.qty) - Number(raw)
+              return (
+                <div key={String(l.id)} className="grid grid-cols-[minmax(0,1fr)_84px_96px_76px] items-center gap-2 border-b px-3 py-1.5 last:border-0">
+                  <span className="min-w-0 truncate text-[13px]">{l.product_name}</span>
+                  <span className="text-right text-[12px] tabular-nums text-muted-foreground">{formatNum(l.qty)}</span>
+                  <Input
+                    type="number"
+                    className="h-8 text-right tabular-nums"
+                    value={raw ?? ''}
+                    onChange={(e) => setUnloadQty((p) => ({ ...p, [String(l.id)]: e.target.value }))}
+                  />
+                  <span
+                    className={cn(
+                      'text-right text-[12px] tabular-nums',
+                      short != null && short > 0.0005 ? 'text-rose-600' : 'text-muted-foreground'
+                    )}
+                  >
+                    {short == null ? '—' : formatNum(short)}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUnloadInv(null)} disabled={unloadSaving}>Cancel</Button>
+            <Button onClick={() => void confirmUnload()} disabled={unloadSaving}>
+              {unloadSaving ? 'Saving…' : 'Mark unloaded'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!rejectInv} onOpenChange={(o) => !o && !rejecting && setRejectInv(null)}>
         <DialogContent className="max-w-sm">
           <DialogHeader>

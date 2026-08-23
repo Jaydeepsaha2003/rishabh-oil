@@ -148,6 +148,17 @@ export interface Api {
     list: (date?: string) => Promise<Row[]>
     adjust: (id: number, delta: number, note?: string, date?: string) => Promise<{ id: number; on_hand: number }>
   }
+  transporterFreight: {
+    list: (
+      side: 'purchase' | 'sales',
+      opts?: { companyId?: number; from?: string; to?: string; transporterId?: number; state?: 'all' | 'unbilled' | 'billed' }
+    ) => Promise<Row[]>
+    kpis: (side: 'purchase' | 'sales', opts?: { companyId?: number; from?: string; to?: string }) => Promise<Row>
+    bills: (companyId?: number) => Promise<Row[]>
+    createBill: (values: Row) => Promise<{ id: number }>
+    updateBill: (id: number, values: Row) => Promise<{ id: number }>
+    deleteBill: (id: number) => Promise<{ id: number }>
+  }
   notes: {
     list: (companyId?: number) => Promise<Row[]>
     items: (id: number) => Promise<Row[]>
@@ -171,7 +182,7 @@ export interface Api {
     remove: (id: number) => Promise<{ id: number }>
     createInvoice: (values: Row) => Promise<{ group: string; ids: number[] }>
     updateInvoice: (group: string, values: Row) => Promise<{ group: string; ids: number[] }>
-    setInvoiceStage: (group: string, stage: string, force?: boolean, date?: string) => Promise<{ group: string }>
+    setInvoiceStage: (group: string, stage: string, force?: boolean, date?: string, received?: Record<string, number | null>) => Promise<{ group: string }>
     removeInvoice: (group: string) => Promise<{ group: string }>
     rejectInvoice: (group: string, reason: string) => Promise<{ group: string }>
     unrejectInvoice: (group: string) => Promise<{ group: string }>

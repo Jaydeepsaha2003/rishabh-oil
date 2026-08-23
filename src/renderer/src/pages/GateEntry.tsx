@@ -219,6 +219,10 @@ export function GateEntry(): React.JSX.Element {
   }
   const [gateOut, setGateOut] = useState<Row>(blankGateOut())
   const [savingOut, setSavingOut] = useState(false)
+  // The Gate out form stays folded away until it is wanted — most of the time
+  // this tab is opened to weigh something already in the queue below, not to
+  // record a new tanker, and the form pushed that queue off the screen.
+  const [outFormOpen, setOutFormOpen] = useState(false)
   // per-pending-entry weighbridge inputs (gross / tare → net)
   const [weights, setWeights] = useState<Record<number, { gross: string; tare: string; dispatch: string }>>({})
   const [editRow, setEditRow] = useState<Row | null>(null)
@@ -1478,13 +1482,20 @@ export function GateEntry(): React.JSX.Element {
         {outMode === 'without' ? quickEntry('out') : (<>
         {/* Gate OUT — sale dispatch leaving the factory */}
         <section className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white">
-          <div className="mb-3 flex items-center gap-2 border-b border-dotted border-[#e5dfc8] pb-1.5">
+          <div className={cn("flex items-center gap-2", outFormOpen && "mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5")}>
             <div className="flex h-7 w-7 items-center justify-center rounded-md bg-sky-100 text-sky-700">
               <LogOut className="h-4 w-4" />
             </div>
             <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Gate out</h3>
             <InfoTip text="Record a sale tanker here — even the moment it arrives EMPTY for loading, before the invoice is ready (pick the party + a reason). It stays in the weighing queue below: enter its Tare (empty) weight now, then come back and enter the Gross (loaded) weight once it leaves — either order, either first. Net = Gross − Tare completes it." />
+            <label className="ml-auto flex cursor-pointer items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                {outFormOpen ? 'Hide form' : 'Record a tanker'}
+              </span>
+              <Switch checked={outFormOpen} onCheckedChange={setOutFormOpen} />
+            </label>
           </div>
+          {outFormOpen && (<>
           <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             <div className="flex min-w-0 flex-col gap-1 sm:col-span-2 lg:col-span-1">
               <Label>
@@ -1626,6 +1637,7 @@ export function GateEntry(): React.JSX.Element {
               {savingOut ? 'Saving…' : 'Record tanker'}
             </Button>
           </div>
+          </>)}
         </section>
 
         {awaitingGross.length > 0 && (

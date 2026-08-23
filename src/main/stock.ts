@@ -354,6 +354,45 @@ export async function stockPartyBreakdown(
       qty: Number(r.qty) || 0
     })
 
+  // Note returns move stock, so the register's Receipt and Dispatch figures are
+  // already NET of them. Without these lines the hover listed only the sales
+  // (or purchases) and never added up to the cell above it. They come back
+  // signed negative, which is also how they read: goods going the other way.
+  const noteB = bounds('nt.note_date')
+  const noteSide = async (
+    noteType: 'credit' | 'debit',
+    partyType: 'customer' | 'supplier',
+    master: string
+  ): Promise<Row[]> => {
+    const res = await c.execute({
+      sql: `SELECT ni.product_id AS pid, COALESCE(m.name, 'Unknown') AS party, co.name AS company,
+                   nt.note_no AS note_no, SUM(ni.qty) AS qty
+            FROM note_items ni
+            JOIN notes nt ON nt.id = ni.note_id
+            LEFT JOIN ${master} m ON m.id = nt.party_id
+            LEFT JOIN companies co ON co.id = nt.company_id
+            WHERE nt.note_type = ? AND nt.party_type = ? AND ni.product_id IS NOT NULL
+              AND nt.company_id IN (${ph}) ${noteB.sql}
+            GROUP BY ni.product_id, m.name, nt.company_id, nt.note_no
+            HAVING SUM(ni.qty) > 0
+            ORDER BY qty DESC`,
+      args: [noteType, partyType, ...cidList, ...noteB.args]
+    })
+    return res.rows as unknown as Row[]
+  }
+  for (const r of await noteSide('credit', 'customer', 'customers'))
+    ensure(Number(r.pid)).dispatch.push({
+      party: `${multi ? `${r.party} · ${r.company || ''}` : String(r.party)} — return ${r.note_no}`,
+      qty: -(Number(r.qty) || 0),
+      isReturn: true
+    })
+  for (const r of await noteSide('debit', 'supplier', 'suppliers'))
+    ensure(Number(r.pid)).receipt.push({
+      party: `${multi ? `${r.party} · ${r.company || ''}` : String(r.party)} — return ${r.note_no}`,
+      qty: -(Number(r.qty) || 0),
+      isReturn: true
+    })
+
   return out
 }
 
@@ -671,7 +710,10 @@ export async function stockRegisters(
                  g.tanker_no AS vehicle_no,
                  p.name AS oil_type,
                  s.qty AS dispatch_qty,
-                 g.received_qty AS received_qty,
+                 -- What the transporter delivered, captured when the invoice was
+                 -- marked Unloaded; the gate register is the fallback for a
+                 -- vehicle weighed at the yard instead.
+                 COALESCE(s.received_qty, g.received_qty) AS received_qty,
                  co.name AS company
           FROM sales s
           LEFT JOIN customers cu ON cu.id = s.customer_id

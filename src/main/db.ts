@@ -1053,6 +1053,41 @@ const MIGRATIONS = [
   // the intent explicitly means auto can keep itself right while a genuine
   // manual override is respected AND visible as one.
   'ALTER TABLE sales ADD COLUMN round_off_manual INTEGER NOT NULL DEFAULT 0',
+  // What the transporter actually delivered, captured when the invoice is
+  // marked Unloaded. Null until then — a zero would read as "nothing arrived"
+  // rather than "not weighed yet".
+  'ALTER TABLE sales ADD COLUMN received_qty REAL',
+  // --- Transporter billing -------------------------------------------------
+  // A transporter runs several tankers over a month and raises ONE bill for the
+  // lot, so their freight must not land on their ledger tanker by tanker. Each
+  // freight line now accrues to a control account and only reaches the
+  // transporter's own ledger when their bill is entered against it.
+  //   accrued          1 once the accrual voucher exists for this line
+  //   accrual_entry_id the voucher that accrued it (so an edit can reverse it)
+  //   bill_id          the transporter bill that has since settled it
+  'ALTER TABLE transporter_ledger ADD COLUMN accrued INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE transporter_ledger ADD COLUMN accrual_entry_id INTEGER',
+  'ALTER TABLE transporter_ledger ADD COLUMN bill_id INTEGER',
+  `CREATE TABLE IF NOT EXISTS transporter_bills (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    transporter_id INTEGER NOT NULL REFERENCES transporters(id),
+    -- 'purchase' = freight on inward tankers, 'sales' = on outward deliveries.
+    side TEXT NOT NULL DEFAULT 'purchase',
+    bill_no TEXT,
+    bill_date TEXT NOT NULL,
+    taxable REAL NOT NULL DEFAULT 0,
+    gst_pct REAL NOT NULL DEFAULT 0,
+    gst_amount REAL NOT NULL DEFAULT 0,
+    tds_pct REAL NOT NULL DEFAULT 0,
+    tds_amount REAL NOT NULL DEFAULT 0,
+    round_off REAL NOT NULL DEFAULT 0,
+    total REAL NOT NULL DEFAULT 0,
+    journal_entry_id INTEGER,
+    ledger_id INTEGER,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
   'ALTER TABLE orders ADD COLUMN round_off_manual INTEGER NOT NULL DEFAULT 0',
   'DROP TABLE IF EXISTS bd_entries',
   'DROP TABLE IF EXISTS bd_parties',

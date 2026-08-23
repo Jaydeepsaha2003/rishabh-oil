@@ -202,6 +202,18 @@ const api = {
     adjust: (id: number, delta: number, note?: string, date?: string): Promise<{ id: number; on_hand: number }> =>
       ipcRenderer.invoke('skuStock:adjust', { id, delta, note, date })
   },
+  transporterFreight: {
+    list: (
+      side: 'purchase' | 'sales',
+      opts: { companyId?: number; from?: string; to?: string; transporterId?: number; state?: 'all' | 'unbilled' | 'billed' } = {}
+    ): Promise<Row[]> => ipcRenderer.invoke('tfreight:list', { side, ...opts }),
+    kpis: (side: 'purchase' | 'sales', opts: { companyId?: number; from?: string; to?: string } = {}): Promise<Row> =>
+      ipcRenderer.invoke('tfreight:kpis', { side, ...opts }),
+    bills: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('tbill:list', { companyId }),
+    createBill: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('tbill:create', { values }),
+    updateBill: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('tbill:update', { id, values }),
+    deleteBill: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('tbill:delete', { id })
+  },
   notes: {
     list: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('notes:list', { companyId }),
     items: (id: number): Promise<Row[]> => ipcRenderer.invoke('notes:items', { id }),
@@ -237,8 +249,14 @@ const api = {
       ipcRenderer.invoke('sales:createInvoice', { values }),
     updateInvoice: (group: string, values: Row): Promise<{ group: string; ids: number[] }> =>
       ipcRenderer.invoke('sales:updateInvoice', { group, values }),
-    setInvoiceStage: (group: string, stage: string, force?: boolean, date?: string): Promise<{ group: string }> =>
-      ipcRenderer.invoke('sales:setInvoiceStage', { group, stage, force, date }),
+    setInvoiceStage: (
+      group: string,
+      stage: string,
+      force?: boolean,
+      date?: string,
+      received?: Record<string, number | null>
+    ): Promise<{ group: string }> =>
+      ipcRenderer.invoke('sales:setInvoiceStage', { group, stage, force, date, received }),
     removeInvoice: (group: string): Promise<{ group: string }> =>
       ipcRenderer.invoke('sales:deleteInvoice', { group }),
     rejectInvoice: (group: string, reason: string): Promise<{ group: string }> =>

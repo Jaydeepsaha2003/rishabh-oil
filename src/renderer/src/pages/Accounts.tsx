@@ -7,6 +7,7 @@ import {
   ChevronRight,
   FileText,
   IndianRupee,
+  Truck,
   Landmark,
   PackageSearch,
   Plus,
@@ -37,6 +38,16 @@ import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
 
+// products.category is the master's "Sub-category" (products.material_type is
+// its "Category"), stored lower-case.
+const SUB_CAT_LABEL: Record<string, string> = {
+  raw: 'Raw',
+  intermediate: 'Intermediate',
+  finished: 'Finished',
+  'by-product': 'By-product',
+  waste: 'Waste'
+}
+
 // ---------------------------------------------------------------------------
 // Tally's palette: navy frame, cream paper, amber selection, red key letters.
 // ---------------------------------------------------------------------------
@@ -51,7 +62,7 @@ const T = {
 
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
 
-type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg' | 'trading' | 'notesreg'
+type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg' | 'trading' | 'notesreg' | 'tfpur' | 'tfsal'
 type VchType = 'CONTRA' | 'PAYMENT' | 'RECEIPT' | 'JOURNAL' | 'DEBIT NOTE' | 'CREDIT NOTE'
 
 const VCH_TYPES: { key: VchType; fkey: string; label: string }[] = [
@@ -425,6 +436,10 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   ])
   const [noteParties, setNoteParties] = useState<Row[]>([])
   const [noteProducts, setNoteProducts] = useState<Row[]>([])
+  // Narrows the item picker by the product's SUB-CATEGORY — raw, intermediate,
+  // finished, by-product, waste — which is the split that matters when picking
+  // what came back on a return.
+  const [noteSubCat, setNoteSubCat] = useState('ALL')
   const [payLines, setPayLines] = useState<PayLine[]>([blankPayLine()])
   const [rawAlter, setRawAlter] = useState(false)
   const [refsCache, setRefsCache] = useState<Record<string, Row[]>>({})
@@ -443,6 +458,19 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   const [noteRowItems, setNoteRowItems] = useState<Record<number, Row[]>>({})
   const [noteOpen, setNoteOpen] = useState<number | null>(null)
   const [noteKindFilter, setNoteKindFilter] = useState<'all' | 'debit' | 'credit'>('all')
+  // Transporter freight registers — one per side. Freight accrues to a control
+  // account when the goods move and only reaches the transporter's own ledger
+  // when their (usually monthly, multi-tanker) bill is entered here.
+  const [tfRows, setTfRows] = useState<Row[]>([])
+  const [tfKpi, setTfKpi] = useState<Row | null>(null)
+  const [tfState, setTfState] = useState<'all' | 'unbilled' | 'billed'>('unbilled')
+  const [tfFrom, setTfFrom] = useState('')
+  const [tfTo, setTfTo] = useState('')
+  const [tfPicked, setTfPicked] = useState<number[]>([])
+  const [tfPickBy, setTfPickBy] = useState<'tanker' | 'invoice'>('tanker')
+  const [tfBillOpen, setTfBillOpen] = useState(false)
+  const [tfBill, setTfBill] = useState<Row>({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', note: '' })
+  const [tfSaving, setTfSaving] = useState(false)
   const [nrFrom, setNrFrom] = useState('')
   const [nrTo, setNrTo] = useState('')
   const [nrSearch, setNrSearch] = useState('')
@@ -550,6 +578,32 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   }, [loadLedger])
   useLiveRefresh(loadLedger)
 
+  const tfSide: 'purchase' | 'sales' = screen === 'tfsal' ? 'sales' : 'purchase'
+  const loadTFreight = useCallback(async () => {
+    if (!cid || (screen !== 'tfpur' && screen !== 'tfsal')) return
+    const side: 'purchase' | 'sales' = screen === 'tfsal' ? 'sales' : 'purchase'
+    const opts = { companyId: cid, from: tfFrom || undefined, to: tfTo || undefined }
+    try {
+      const [rows, kpi] = await Promise.all([
+        window.api.transporterFreight.list(side, { ...opts, state: tfState }),
+        window.api.transporterFreight.kpis(side, opts)
+      ])
+      setTfRows(rows)
+      setTfKpi(kpi)
+    } catch {
+      setTfRows([])
+      setTfKpi(null)
+    }
+  }, [cid, screen, tfFrom, tfTo, tfState])
+  useEffect(() => {
+    void loadTFreight()
+  }, [loadTFreight])
+  // Switching side or filter invalidates the tick-list — the picked ids may not
+  // even be on screen any more.
+  useEffect(() => {
+    setTfPicked([])
+  }, [screen, tfState, tfFrom, tfTo])
+
   const loadNoteRegister = useCallback(async () => {
     if (!cid) return
     try {
@@ -611,6 +665,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     setNoteParty('')
     setNoteInvoice('')
     setNoteItems([{ product_id: '', qty: '', rate: '' }])
+    setNoteSubCat('ALL')
     // Default the money side to the first bank ledger, like Tally remembers one.
     const bank = accounts.find((a) => String(a.name) === 'BANK A/C') || cashBankAccounts[0]
     setPayAccounts([bank ? { account: String(bank.name), group: String(bank.acc_group), amount: '', allocs: [] } : blankPayLine()])
@@ -647,6 +702,9 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         ? its.map((it) => ({ product_id: String(it.product_id ?? ''), qty: String(it.qty ?? ''), rate: String(it.rate ?? '') }))
         : [{ product_id: '', qty: '', rate: '' }]
     )
+    // Unfiltered, or the lines already on the note could point at products the
+    // picker is currently hiding.
+    setNoteSubCat('ALL')
     setScreen('voucher')
   }
 
@@ -684,6 +742,26 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notePartyKind, isNoteType])
 
+  // Only sub-categories that actually have products behind them, in the
+  // master's own order rather than alphabetical, each with its count.
+  const noteSubCats = useMemo(() => {
+    const order = ['raw', 'intermediate', 'finished', 'by-product', 'waste']
+    const count = new Map<string, number>()
+    for (const x of noteProducts) {
+      const k = String(x.category || '').trim().toLowerCase()
+      if (k) count.set(k, (count.get(k) || 0) + 1)
+    }
+    const known = order.filter((k) => count.has(k))
+    const extra = [...count.keys()].filter((k) => !order.includes(k)).sort()
+    return [...known, ...extra].map((k) => ({ key: k, label: SUB_CAT_LABEL[k] || k, count: count.get(k) || 0 }))
+  }, [noteProducts])
+  const noteProductsShown = useMemo(
+    () =>
+      noteSubCat === 'ALL'
+        ? noteProducts
+        : noteProducts.filter((x) => String(x.category || '').trim().toLowerCase() === noteSubCat),
+    [noteProducts, noteSubCat]
+  )
   const notePartyName = String(noteParties.find((x) => String(x.id) === noteParty)?.name || '')
   const noteRefs = refsCache[notePartyName.toUpperCase()] || []
   const noteTotals = (() => {
@@ -1046,6 +1124,8 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       { key: 'S', label: 'Sales Register', icon: Receipt, go: () => setScreen('salesreg') },
       { key: 'D', label: 'Day Book', icon: BookOpenText, go: () => setScreen('daybook') },
       { key: 'N', label: 'Debit / Credit Notes', icon: FileText, go: () => setScreen('notesreg') },
+      { key: 'R', label: 'Transporter Purchase', icon: Truck, go: () => setScreen('tfpur') },
+      { key: 'O', label: 'Transporter Sales', icon: Truck, go: () => setScreen('tfsal') },
       { key: 'L', label: 'Ledger Accounts', icon: Wallet, go: () => setScreen('ledger') },
       { key: 'T', label: 'Trial Balance', icon: Scale, go: () => setScreen('trial') },
       { key: 'U', label: 'Trading Account', icon: ArrowLeftRight, go: () => setScreen('trading') }
@@ -1269,6 +1349,8 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       <FKey k="S" label="Sales" active={screen === 'salesreg'} onClick={() => setScreen('salesreg')} />
       <FKey k="D" label="Day Book" active={screen === 'daybook'} onClick={() => setScreen('daybook')} />
       <FKey k="N" label="Dr / Cr Notes" active={screen === 'notesreg'} onClick={() => setScreen('notesreg')} />
+      <FKey k="R" label="Tptr Purchase" active={screen === 'tfpur'} onClick={() => setScreen('tfpur')} />
+      <FKey k="O" label="Tptr Sales" active={screen === 'tfsal'} onClick={() => setScreen('tfsal')} />
       <FKey k="L" label="Ledgers" active={screen === 'ledger'} onClick={() => setScreen('ledger')} />
       <FKey k="T" label="Trial Balance" active={screen === 'trial'} onClick={() => setScreen('trial')} />
       <FKey k="U" label="Trading Account" active={screen === 'trading'} onClick={() => setScreen('trading')} />
@@ -1330,7 +1412,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       <div
         className={cn(
           'mx-auto flex w-full flex-col rounded-md border shadow-lg',
-          noteInvoiceMode ? 'max-w-none min-h-[calc(100vh-68px)]' : 'max-w-6xl',
+          noteInvoiceMode ? 'max-w-none lg:min-h-[calc(100vh-68px)]' : 'max-w-6xl',
           T.paperEdge,
           T.paper
         )}
@@ -1521,10 +1603,10 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         )}
 
         {noteInvoiceMode && (
-          <div className="flex min-h-0 flex-1 flex-col px-4 py-3">
-            <div className="mb-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              <div className="flex flex-col gap-1">
-                <Label className="text-[10px] uppercase tracking-wide">Party type</Label>
+          <div className="flex min-h-0 flex-1 flex-col px-3 py-2 [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:text-[12px] [&_input]:h-8 [&_input]:text-[12px] [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide">
+            <div className="mb-2 grid gap-2 sm:grid-cols-2 md:grid-cols-3">
+              <div className="flex flex-col gap-0.5">
+                <Label>Party type</Label>
                 <Select
                   value={notePartyKind}
                   onValueChange={(v) => {
@@ -1543,8 +1625,8 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                   </SelectContent>
                 </Select>
               </div>
-              <div className="flex flex-col gap-1">
-                <Label className="text-[10px] uppercase tracking-wide">
+              <div className="flex flex-col gap-0.5">
+                <Label>
                   {notePartyKind === 'customer'
                     ? 'Customer (goods coming back)'
                     : notePartyKind === 'supplier'
@@ -1568,8 +1650,8 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                   </SelectContent>
                 </Select>
               </div>
-              <div className="flex flex-col gap-1">
-                <Label className="text-[10px] uppercase tracking-wide">Original invoice (Agst Ref)</Label>
+              <div className="flex flex-col gap-0.5">
+                <Label>Original invoice (Agst Ref)</Label>
                 <Select value={noteInvoice || 'ON_ACCOUNT'} onValueChange={(v) => setNoteInvoice(v === 'ON_ACCOUNT' ? '' : v)}>
                   <SelectTrigger className="bg-white">
                     <SelectValue placeholder={noteParty ? 'On account' : 'Pick the party first'} />
@@ -1589,13 +1671,45 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
             {/* Items take the room they need and scroll on their own; the
                 running total sits alongside rather than under, so a long note
                 never pushes its own figures off the screen. */}
-            <div className="flex min-h-0 flex-1 flex-col gap-3 xl:flex-row">
+            <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row">
               <div
                 className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border bg-white/40"
                 style={{ borderColor: '#d9d2b8' }}
               >
+                {/* Sub-category chips sit with the items, not with the party
+                    fields — they only ever narrow this picker. Few enough
+                    values that one click beats opening a dropdown. */}
                 <div
-                  className="grid shrink-0 grid-cols-[28px_minmax(0,1fr)_120px_150px_150px_32px] items-center gap-2 border-b bg-[#f1ecd9] px-3 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
+                  className="flex shrink-0 flex-wrap items-center gap-1.5 border-b bg-[#f7f2e2] px-3 py-1.5"
+                  style={{ borderColor: '#d9d2b8' }}
+                >
+                  <span className="mr-0.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                    Sub-category
+                  </span>
+                  {[{ key: 'ALL', label: 'All', count: noteProducts.length }, ...noteSubCats].map((c) => (
+                    <button
+                      key={c.key}
+                      type="button"
+                      onClick={() => setNoteSubCat(c.key)}
+                      className={cn(
+                        'cursor-pointer rounded-full border px-2 py-0.5 text-[11px] font-semibold transition-colors',
+                        noteSubCat === c.key
+                          ? 'border-[#1a2c56] bg-[#1a2c56] text-white'
+                          : 'border-[#d9d2b8] bg-white text-muted-foreground hover:bg-amber-50'
+                      )}
+                    >
+                      {c.label}
+                      <span className={cn('ml-1 text-[10px]', noteSubCat === c.key ? 'text-white/70' : 'text-muted-foreground/70')}>
+                        {c.count}
+                      </span>
+                    </button>
+                  ))}
+                  <span className="ml-auto hidden text-[11px] text-muted-foreground sm:inline">
+                    {noteProductsShown.length} to pick from
+                  </span>
+                </div>
+                <div
+                  className="hidden shrink-0 grid-cols-[24px_minmax(0,1fr)_88px_112px_120px_28px] items-center gap-2 border-b bg-[#f1ecd9] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground md:grid xl:grid-cols-[24px_minmax(0,1fr)_100px_130px_140px_28px]"
                   style={{ borderColor: '#d9d2b8' }}
                 >
                   <span>#</span>
@@ -1610,41 +1724,59 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                     <div
                       key={i}
                       className={cn(
-                        'grid grid-cols-[28px_minmax(0,1fr)_120px_150px_150px_32px] items-center gap-2 border-b border-dotted px-3 py-2',
+                        'grid grid-cols-[24px_minmax(0,1fr)_28px] items-center gap-x-2 gap-y-1 border-b border-dotted px-3 py-1.5',
+                        'md:grid-cols-[24px_minmax(0,1fr)_88px_112px_120px_28px] md:gap-y-0 md:py-1',
+                        'xl:grid-cols-[24px_minmax(0,1fr)_100px_130px_140px_28px]',
                         i % 2 === 1 && 'bg-[#faf6e8]'
                       )}
                       style={{ borderColor: '#e5dfc8' }}
                     >
-                      <span className="text-[11px] tabular-nums text-muted-foreground">{i + 1}</span>
+                      <span className="col-start-1 row-start-1 text-[11px] tabular-nums text-muted-foreground">{i + 1}</span>
+                      <div className="col-start-2 row-start-1 min-w-0 md:contents">
                       <Select
                         value={it.product_id}
                         onValueChange={(v) => setNoteItems((p) => p.map((x, j) => (j === i ? { ...x, product_id: v } : x)))}
                       >
-                        <SelectTrigger className="h-9 bg-white text-[13px]"><SelectValue placeholder="Product" /></SelectTrigger>
+                        <SelectTrigger className="bg-white"><SelectValue placeholder="Product" /></SelectTrigger>
                         <SelectContent className="max-h-72">
-                          {noteProducts.map((x) => (
-                            <SelectItem key={String(x.id)} value={String(x.id)}>{x.code || x.name}</SelectItem>
+                          {noteProductsShown.length === 0 && (
+                            <div className="px-2 py-3 text-center text-[12px] text-muted-foreground">
+                              No product in this sub-category.
+                            </div>
+                          )}
+                          {noteProductsShown.map((x) => (
+                            <SelectItem key={String(x.id)} value={String(x.id)}>
+                              {x.code || x.name}
+                              {x.code && x.name && x.code !== x.name && (
+                                <span className="ml-1.5 text-[11px] text-muted-foreground">{x.name}</span>
+                              )}
+                            </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                      <Input
-                        type="number"
-                        className="h-9 bg-white text-right tabular-nums"
-                        placeholder="0.000"
-                        value={it.qty}
-                        onChange={(e) => setNoteItems((p) => p.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)))}
-                      />
-                      <Input
-                        type="number"
-                        className="h-9 bg-white text-right tabular-nums"
-                        placeholder="0.00"
-                        value={it.rate}
-                        onChange={(e) => setNoteItems((p) => p.map((x, j) => (j === i ? { ...x, rate: e.target.value } : x)))}
-                      />
-                      <span className="text-right text-[13px] font-semibold tabular-nums">
-                        {formatINR(Math.round((Number(it.qty) || 0) * (Number(it.rate) || 0) * 100) / 100)}
-                      </span>
-                      <span className="text-right">
+                      </div>
+                      <div className="col-start-2 row-start-2 flex items-center gap-2 md:contents">
+                        <Input
+                          type="number"
+                          className="min-w-0 flex-1 bg-white text-right tabular-nums"
+                          placeholder="Qty"
+                          aria-label="Qty in MT"
+                          value={it.qty}
+                          onChange={(e) => setNoteItems((p) => p.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)))}
+                        />
+                        <Input
+                          type="number"
+                          className="min-w-0 flex-1 bg-white text-right tabular-nums"
+                          placeholder="Rate"
+                          aria-label="Rate per MT"
+                          value={it.rate}
+                          onChange={(e) => setNoteItems((p) => p.map((x, j) => (j === i ? { ...x, rate: e.target.value } : x)))}
+                        />
+                        <span className="shrink-0 text-right text-[12.5px] font-semibold tabular-nums">
+                          {formatINR(Math.round((Number(it.qty) || 0) * (Number(it.rate) || 0) * 100) / 100)}
+                        </span>
+                      </div>
+                      <span className="col-start-3 row-start-1 text-right md:col-auto md:row-auto">
                         {noteItems.length > 1 && (
                           <button
                             type="button"
@@ -1670,25 +1802,28 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                   </div>
                 </div>
                 <div
-                  className="grid shrink-0 grid-cols-[28px_minmax(0,1fr)_120px_150px_150px_32px] items-center gap-2 border-t-2 bg-[#f1ecd9] px-3 py-2 text-[12px] font-bold"
+                  className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-t-2 bg-[#f1ecd9] px-3 py-1.5 text-[12px] font-bold md:grid-cols-[24px_minmax(0,1fr)_88px_112px_120px_28px] xl:grid-cols-[24px_minmax(0,1fr)_100px_130px_140px_28px]"
                   style={{ borderColor: '#1a2c56' }}
                 >
-                  <span />
+                  <span className="hidden md:block" />
                   <span className="uppercase tracking-widest text-muted-foreground">
                     {noteItems.filter((x) => x.product_id).length} item{noteItems.filter((x) => x.product_id).length === 1 ? '' : 's'}
+                    <span className="ml-2 normal-case tracking-normal tabular-nums md:hidden">
+                      {(noteItems.reduce((t, x) => t + (Number(x.qty) || 0), 0)).toFixed(3)} MT
+                    </span>
                   </span>
-                  <span className="text-right tabular-nums">
+                  <span className="hidden text-right tabular-nums md:block">
                     {(noteItems.reduce((t, x) => t + (Number(x.qty) || 0), 0)).toFixed(3)}
                   </span>
-                  <span />
+                  <span className="hidden md:block" />
                   <span className="text-right tabular-nums">{formatINR(noteTotals.base)}</span>
-                  <span />
+                  <span className="hidden md:block" />
                 </div>
               </div>
 
-              <div className="flex w-full shrink-0 flex-col gap-3 xl:w-[340px]">
+              <div className="flex w-full shrink-0 flex-col gap-2 lg:w-[280px] xl:w-[300px]">
                 <div
-                  className="rounded-md border bg-white/60 px-4 py-3 text-[13px]"
+                  className="rounded-md border bg-white/60 px-3 py-2 text-[12.5px]"
                   style={{ borderColor: '#d9d2b8' }}
                 >
                   <div className="mb-2 flex items-center justify-between border-b border-dashed pb-2" style={{ borderColor: '#d9d2b8' }}>
@@ -1706,7 +1841,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                       GST
                       <Input
                         type="number"
-                        className="h-7 w-16 bg-white px-1.5 text-right text-[12px] tabular-nums"
+                        className="h-7 w-14 bg-white px-1.5 text-right text-[12px] tabular-nums"
                         value={noteGst}
                         onChange={(e) => setNoteGst(e.target.value)}
                       />
@@ -1982,7 +2117,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         <div
           className={cn(
             'flex items-end gap-3 px-4 pb-4 pt-1',
-            noteInvoiceMode && 'mt-auto border-t border-dashed pt-3'
+            noteInvoiceMode && 'mt-auto border-t border-dashed px-3 pb-3 pt-2'
           )}
           style={noteInvoiceMode ? { borderColor: '#d9d2b8' } : undefined}
         >
@@ -2589,6 +2724,306 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     </div>
   )
 
+  // ---- Transporter freight register (both sides share this) ----
+  const tfLabel = tfSide === 'purchase' ? 'Transporter Purchase' : 'Transporter Sales'
+  const tfPickedRows = useMemo(() => tfRows.filter((r) => tfPicked.includes(Number(r.id))), [tfRows, tfPicked])
+  const tfPickedTotal = useMemo(() => tfPickedRows.reduce((t, r) => t + (Number(r.amount) || 0), 0), [tfPickedRows])
+  // Every line on one bill has to be the same transporter — the backend
+  // enforces it, so the button says why rather than letting the save fail.
+  const tfPickedParties = useMemo(
+    () => [...new Set(tfPickedRows.map((r) => String(r.transporter_name || '')))],
+    [tfPickedRows]
+  )
+  const tfBillCalc = (() => {
+    const taxable = Math.round(tfPickedTotal * 100) / 100
+    const gst = Math.round(taxable * (Number(tfBill.gst_pct) || 0)) / 100
+    const tds = Math.round(taxable * (Number(tfBill.tds_pct) || 0)) / 100
+    const raw = Math.round((taxable + gst - tds) * 100) / 100
+    const total = Math.round(raw)
+    return { taxable, gst, tds, ro: Math.round((total - raw) * 100) / 100, total }
+  })()
+
+  function tfToggle(row: Row): void {
+    const id = Number(row.id)
+    // "By oil invoice" ticks every line of that document at once — one bill
+    // usually covers a whole invoice's tankers.
+    const ids =
+      tfPickBy === 'invoice'
+        ? tfRows
+            .filter((r) => String(r.doc_no || '') === String(row.doc_no || '') && String(r.transporter_name) === String(row.transporter_name))
+            .map((r) => Number(r.id))
+        : [id]
+    setTfPicked((p) => (p.includes(id) ? p.filter((x) => !ids.includes(x)) : [...new Set([...p, ...ids])]))
+  }
+
+  async function tfSaveBill(): Promise<void> {
+    if (!tfPickedRows.length) return void toast.error('Tick at least one freight line')
+    if (tfPickedParties.length > 1) return void toast.error('All the lines on one bill must be the same transporter')
+    setTfSaving(true)
+    try {
+      await window.api.transporterFreight.createBill({
+        company_id: cid,
+        transporter_id: Number(tfPickedRows[0].transporter_id),
+        side: tfSide,
+        bill_no: tfBill.bill_no || null,
+        bill_date: tfBill.bill_date || todayISO(),
+        gst_pct: Number(tfBill.gst_pct) || 0,
+        tds_pct: Number(tfBill.tds_pct) || 0,
+        note: tfBill.note || null,
+        line_ids: tfPickedRows.map((r) => Number(r.id))
+      })
+      toast.success(`Booked ${formatINR(tfBillCalc.total)} to ${tfPickedRows[0].transporter_name}`)
+      setTfBillOpen(false)
+      setTfPicked([])
+      setTfBill({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', note: '' })
+      await loadTFreight()
+      loadAccounts()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setTfSaving(false)
+    }
+  }
+
+  const tFreightScreen = (
+    <div className="flex-1 space-y-2 p-3">
+      <div className={cn('rounded-md border shadow-lg', T.paperEdge, T.paper)}>
+        <div className={cn('flex flex-wrap items-center gap-3 rounded-t-md px-4 py-2', T.headBar)}>
+          <span className="text-[13px] font-bold uppercase tracking-widest">{tfLabel}</span>
+          <div className="flex items-center gap-1">
+            {(['unbilled', 'billed', 'all'] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setTfState(k)}
+                className={cn(
+                  'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide',
+                  tfState === k ? 'bg-white text-slate-900' : 'bg-white/15 hover:bg-white/25'
+                )}
+              >
+                {k === 'unbilled' ? 'Not booked' : k === 'billed' ? 'Booked' : 'All'}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1 text-[11px]">
+            <span className="opacity-80">Pick by</span>
+            {(['tanker', 'invoice'] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => { setTfPickBy(k); setTfPicked([]) }}
+                className={cn(
+                  'rounded px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide',
+                  tfPickBy === k ? 'bg-amber-300 text-slate-900' : 'bg-white/15 hover:bg-white/25'
+                )}
+              >
+                {k === 'tanker' ? (tfSide === 'purchase' ? 'Tanker' : 'Line') : 'Oil invoice'}
+              </button>
+            ))}
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <FyPicker from={tfFrom} to={tfTo} onRange={(f, t) => { setTfFrom(f); setTfTo(t) }} className="h-9 w-28 bg-white text-xs" />
+            <div className="w-40"><DatePicker value={tfFrom} onChange={setTfFrom} max={tfTo || undefined} /></div>
+            <span className="text-[11px]">to</span>
+            <div className="w-40"><DatePicker value={tfTo} onChange={setTfTo} min={tfFrom || undefined} /></div>
+            {(tfFrom || tfTo) && (
+              <Button variant="ghost" size="sm" className="h-8 px-2 text-xs text-white hover:bg-white/20" onClick={() => { setTfFrom(''); setTfTo('') }}>
+                All
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {tfKpi && (
+          <div className="grid grid-cols-2 gap-px border-b bg-[#e5dfc8] sm:grid-cols-4" style={{ borderColor: '#d9d2b8' }}>
+            {([
+              { label: 'Freight earned', value: formatINR(tfKpi.total), tone: 'text-[#1a2c56]' },
+              { label: 'Booked to ledger', value: formatINR(tfKpi.billed), tone: 'text-emerald-700' },
+              { label: 'Not booked · firm', value: formatINR(tfKpi.firm), tone: 'text-rose-700' },
+              { label: 'Not booked · valuation', value: formatINR(tfKpi.provisional), tone: 'text-amber-700' }
+            ] as const).map((k) => (
+              <div key={k.label} className="bg-[#fffdf4] px-4 py-2">
+                <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{k.label}</div>
+                <div className={cn('text-[15px] font-bold tabular-nums', k.tone)}>{k.value}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="max-h-[calc(100vh-330px)] overflow-auto">
+          <table className="w-full text-[13px]">
+            <thead className="sticky top-0 bg-[#f1ecd9]">
+              <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                <th className="w-8 py-1.5 pl-4" />
+                <th className="px-2 py-1.5">Date</th>
+                <th className="px-2 py-1.5">Transporter</th>
+                <th className="px-2 py-1.5">Oil invoice</th>
+                {tfSide === 'purchase' && <th className="px-2 py-1.5">Tanker</th>}
+                <th className="px-2 py-1.5">{tfSide === 'purchase' ? 'Supplier' : 'Customer'}</th>
+                <th className="px-2 py-1.5">Product</th>
+                <th className="px-2 py-1.5 text-right">Freight</th>
+                <th className="px-2 py-1.5">Booked</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tfRows.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="px-4 py-10 text-center text-muted-foreground">
+                    No {tfSide === 'purchase' ? 'inward' : 'outward'} freight {tfState === 'unbilled' ? 'waiting to be booked' : 'here'}.
+                  </td>
+                </tr>
+              ) : (
+                tfRows.map((r) => {
+                  const id = Number(r.id)
+                  const picked = tfPicked.includes(id)
+                  const booked = r.bill_id != null
+                  return (
+                    <tr
+                      key={id}
+                      className={cn('border-b border-dotted', picked ? 'bg-amber-100/70' : 'hover:bg-amber-50', !booked && 'cursor-pointer')}
+                      style={{ borderColor: '#e5dfc8' }}
+                      onClick={() => !booked && tfToggle(r)}
+                    >
+                      <td className="py-1.5 pl-4">
+                        {!booked && (
+                          <input
+                            type="checkbox"
+                            className="h-3.5 w-3.5 cursor-pointer accent-[#1a2c56]"
+                            checked={picked}
+                            readOnly
+                          />
+                        )}
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-1.5 tabular-nums">{formatDate(r.entry_date)}</td>
+                      <td className="px-2 py-1.5 font-medium">{r.transporter_name || '—'}</td>
+                      <td className="px-2 py-1.5">{r.doc_no || '—'}</td>
+                      {tfSide === 'purchase' && <td className="px-2 py-1.5 text-[12px]">{r.vehicle_no || '—'}</td>}
+                      <td className="px-2 py-1.5 text-[12px]">{r.party_name || '—'}</td>
+                      <td className="px-2 py-1.5 text-[12px]">{r.product_name || '—'}</td>
+                      <td className={cn('px-2 py-1.5 text-right font-semibold tabular-nums', Number(r.amount) < 0 && 'text-rose-700')}>
+                        <span className={cn(Number(r.provisional) === 1 && 'italic text-amber-800')}>{formatINR(r.amount)}</span>
+                        {Number(r.provisional) === 1 && (
+                          <div
+                            className="text-[10px] font-normal uppercase tracking-wide text-amber-700"
+                            title={
+                              tfSide === 'sales'
+                                ? 'Not unloaded yet — worked out on the dispatched qty. It settles to received qty x rate once the invoice is marked Unloaded.'
+                                : 'Tanker not emptied yet — worked out on the ordered qty until it is weighed in.'
+                            }
+                          >
+                            valuation
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        {booked ? (
+                          <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-emerald-700">
+                            {r.bill_no || 'Booked'}
+                          </span>
+                        ) : (
+                          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-800">
+                            Pending
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Sticky action bar — what is ticked, and the one button that books it. */}
+      {tfPicked.length > 0 && (
+        <div className={cn('flex flex-wrap items-center gap-3 rounded-md border px-4 py-2 shadow-lg', T.paperEdge, T.paper)}>
+          <span className="text-[12px]">
+            <span className="font-bold tabular-nums">{tfPicked.length}</span> line{tfPicked.length === 1 ? '' : 's'} ticked ·{' '}
+            <span className="font-bold tabular-nums">{formatINR(tfPickedTotal)}</span>
+            {tfPickedParties.length === 1 && <> · {tfPickedParties[0]}</>}
+          </span>
+          {tfPickedParties.length > 1 && (
+            <span className="text-[12px] font-semibold text-rose-700">
+              Mixed transporters ({tfPickedParties.join(', ')}) — one bill can only cover one.
+            </span>
+          )}
+          {tfPickedRows.some((r) => Number(r.provisional) === 1) && (
+            <span className="text-[12px] font-medium text-amber-800">
+              {tfPickedRows.filter((r) => Number(r.provisional) === 1).length} of these is still a valuation — the final freight
+              lands once it is unloaded.
+            </span>
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => setTfPicked([])}>Clear</Button>
+            <Button
+              size="sm"
+              className="h-8 bg-[#1a2c56] text-xs hover:bg-[#24407e]"
+              disabled={tfPickedParties.length !== 1}
+              onClick={() => setTfBillOpen(true)}
+            >
+              Book transporter bill
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <Dialog open={tfBillOpen} onOpenChange={(o) => !o && !tfSaving && setTfBillOpen(false)}>
+        <DialogContent className="max-w-lg border-[#d9d2b8] bg-[#fffdf4]">
+          <DialogHeader>
+            <DialogTitle className="text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]">
+              Book bill — {tfPickedRows[0]?.transporter_name || ''}
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-[12px] text-muted-foreground">
+            Posts the transporter&apos;s bill for the {tfPicked.length} ticked line{tfPicked.length === 1 ? '' : 's'}. Until now this
+            freight sat against{' '}
+            {tfPickedRows.every((r) => Number(r.accrued) === 1) ? 'FREIGHT PAYABLE' : 'no ledger at all'} — booking it is what puts it on
+            their account.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-1">
+              <Label className="text-[10px] uppercase tracking-wide">Bill no</Label>
+              <Input className="bg-white" value={String(tfBill.bill_no ?? '')} onChange={(e) => setTfBill((p) => ({ ...p, bill_no: e.target.value }))} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-[10px] uppercase tracking-wide">Bill date</Label>
+              <DatePicker value={String(tfBill.bill_date || todayISO())} onChange={(v) => setTfBill((p) => ({ ...p, bill_date: v }))} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-[10px] uppercase tracking-wide">GST %</Label>
+              <Input type="number" className="bg-white" value={String(tfBill.gst_pct ?? '')} onChange={(e) => setTfBill((p) => ({ ...p, gst_pct: e.target.value }))} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-[10px] uppercase tracking-wide">TDS % on freight</Label>
+              <Input type="number" className="bg-white" value={String(tfBill.tds_pct ?? '')} onChange={(e) => setTfBill((p) => ({ ...p, tds_pct: e.target.value }))} />
+            </div>
+          </div>
+          <div className="rounded-md border bg-white/60 px-3 py-2 text-[13px]" style={{ borderColor: '#d9d2b8' }}>
+            <div className="flex justify-between py-0.5"><span className="text-muted-foreground">Freight (taxable)</span><span className="tabular-nums">{formatINR(tfBillCalc.taxable)}</span></div>
+            <div className="flex justify-between py-0.5"><span className="text-muted-foreground">GST</span><span className="tabular-nums">{formatINR(tfBillCalc.gst)}</span></div>
+            <div className="flex justify-between py-0.5"><span className="text-muted-foreground">TDS withheld</span><span className="tabular-nums">− {formatINR(tfBillCalc.tds)}</span></div>
+            <div className="flex justify-between py-0.5"><span className="text-muted-foreground">Round off</span><span className="tabular-nums">{formatINR(tfBillCalc.ro)}</span></div>
+            <div className="mt-1 flex items-baseline justify-between border-t-2 pt-1.5 font-bold" style={{ borderColor: '#1a2c56' }}>
+              <span className="text-[11px] uppercase tracking-wide">Cr transporter</span>
+              <span className="text-[17px] tabular-nums">{formatINR(tfBillCalc.total)}</span>
+            </div>
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label className="text-[10px] uppercase tracking-wide">Note</Label>
+            <Input className="bg-white" value={String(tfBill.note ?? '')} onChange={(e) => setTfBill((p) => ({ ...p, note: e.target.value }))} />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTfBillOpen(false)} disabled={tfSaving}>Cancel</Button>
+            <Button className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => void tfSaveBill()} disabled={tfSaving}>
+              {tfSaving ? 'Booking…' : 'Book bill'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+
   const ledgerScreen = (
     <div className="flex flex-1 gap-3 p-3">
       <div className={cn('flex w-80 shrink-0 flex-col rounded-md border shadow-lg xl:w-96', T.paperEdge, T.paper)}>
@@ -2993,6 +3428,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
             {screen === 'salesreg' && salesRegisterScreen}
             {screen === 'daybook' && daybookScreen}
             {screen === 'notesreg' && notesRegisterScreen}
+            {(screen === 'tfpur' || screen === 'tfsal') && tFreightScreen}
             {screen === 'ledger' && ledgerScreen}
             {screen === 'trial' && trialScreen}
             {screen === 'trading' && tradingScreen}

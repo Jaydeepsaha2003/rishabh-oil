@@ -1148,7 +1148,10 @@ export async function updateTankerDetails(id: number, v: Row): Promise<{ id: num
     // This tanker's own EX/DLD choice wins over the bargain's when one was made.
     const isEx = tankerIsEx(v.condition !== undefined ? v.condition : t.condition, b.bargain_type)
     rate = isEx ? rate : 0
-    transport = loadedQty * rate
+    // Freight is earned on what ARRIVED, not on what was loaded — the client's
+    // rule, and the reason a shortage costs the transporter twice over (it
+    // shrinks the freight base as well as attracting the penalty below).
+    transport = receivedQty * rate
     let pct = b.allowed_shortage_pct == null
       ? n((await getSetting('allowed_shortage_pct')) ?? '0')
       : n(b.allowed_shortage_pct)
@@ -1635,7 +1638,8 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
     // The tanker's own EX/DLD choice wins over the bargain's when one was made.
     const isEx = tankerIsEx(tanker.condition, b.bargain_type)
     const rate = isEx ? n(data.transport_rate_per_ton) : 0
-    const transport = n(tanker.loaded_qty) * rate
+    // On received qty, not loaded — see the note on the edit path.
+    const transport = receivedQty * rate
     // Shortage tolerance: the purchase's own % (set at purchase creation when a
     // transporter is attached) wins; else the bargain's; else the global default.
     let pct = b.allowed_shortage_pct == null

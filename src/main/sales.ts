@@ -127,6 +127,8 @@ function n(v: unknown): number {
   return Number.isFinite(x) ? x : 0
 }
 
+const round2 = (v: number): number => Math.round(v * 100) / 100
+
 // Maintain the receivable entry in the customer ledger for a sale.
 // Convention (shared with supplier/transporter ledger): amount positive = credit
 // (we owe the party), negative = debit. A sale debits the customer (they owe us).
@@ -618,6 +620,11 @@ async function resolveSaleQty(v: Row): Promise<{ qty: number; uom: string }> {
 // loose one — not the tonnage-equivalent quantity resolveSaleQty resolves
 // for stock-drawing purposes (1000 cases of 15kg reads as 15 MT there, but
 // the transporter's rate is quoted per case, not per those 15 MT).
+// The quantity the transporter is paid on. Loose oil is billed on what the
+// customer actually took in (received_qty, captured when the invoice is marked
+// Unloaded) rather than what left the gate — the client's rule, and the same
+// basis the purchase side uses. Until it is weighed in, the dispatched qty
+// stands in, so freight is never understated while a tanker is in transit.
 async function resolveFreightQty(v: Row, qty: number): Promise<number> {
   if (String(v.sale_type) === 'PACKED' && v.packaging_id) {
     const p = await getClient().execute({
@@ -629,7 +636,7 @@ async function resolveFreightQty(v: Row, qty: number): Promise<number> {
     const pouches = n(v.pouches)
     return ppb > 0 ? boxes + pouches / ppb : boxes
   }
-  return qty
+  return v.received_qty != null && n(v.received_qty) > 0 ? n(v.received_qty) : qty
 }
 
 // DLD deliveries: we manage the transporter, so post the freight to the
@@ -641,12 +648,17 @@ async function postSaleFreight(saleId: number, v: Row, qty: number): Promise<num
   await c.execute({ sql: "DELETE FROM customer_ledger WHERE sale_id = ? AND entry_type = 'freight'", args: [saleId] })
   if (String(v.freight_term) !== 'DLD') return 0
   const transporterId = v.transporter_id ? n(v.transporter_id) : null
-  const amount = n(v.transport_amount) > 0 ? n(v.transport_amount) : qty * n(v.transport_rate)
+  // Same basis as the invoice's own figure: rate x the qty resolved by
+  // resolveFreightQty (received once unloaded, dispatched until then).
+  const amount = n(v.transport_rate) > 0 ? round2(qty * n(v.transport_rate)) : n(v.transport_amount)
   if (!transporterId || amount <= 0) return amount > 0 ? amount : 0
   const companyId = getActiveCompanyId()
   await c.execute({
-    sql: `INSERT INTO transporter_ledger (transporter_id, sale_id, entry_date, entry_type, amount, note, company_id)
-          VALUES (?, ?, ?, 'freight', ?, 'Delivery freight', ?)`,
+    // accrued = 1: the sale voucher already carried Dr FREIGHT OUTWARD /
+    // Cr FREIGHT PAYABLE for this, so the transporter's bill must debit the
+    // payable rather than book the expense a second time.
+    sql: `INSERT INTO transporter_ledger (transporter_id, sale_id, entry_date, entry_type, amount, note, company_id, accrued)
+          VALUES (?, ?, ?, 'freight', ?, 'Delivery freight', ?, 1)`,
     args: [transporterId, saleId, v.sale_date, amount, companyId]
   })
   // Default: freight is recovered from the customer, on top of the goods
@@ -717,8 +729,12 @@ export async function createSale(v: Row): Promise<{ id: number }> {
     }
   }
   const freightQty = await resolveFreightQty(v, qty)
+  // FOR freight is received qty x rate, always recomputed from the rate rather
+  // than trusting a stored total — the total has to move when the invoice is
+  // unloaded and the real received qty replaces the dispatched one. A lump-sum
+  // freight (no rate) still stands on its stored amount.
   const transportAmount = String(v.freight_term) === 'DLD'
-    ? (n(v.transport_amount) > 0 ? n(v.transport_amount) : freightQty * n(v.transport_rate))
+    ? (n(v.transport_rate) > 0 ? round2(freightQty * n(v.transport_rate)) : n(v.transport_amount))
     : 0
   const res = await getClient().execute({
     sql: `INSERT INTO sales (company_id, sale_date, invoice_no, invoice_group, customer, customer_id, product_id, sales_bargain_id,
@@ -822,8 +838,12 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
     }
   }
   const freightQty = await resolveFreightQty(v, qty)
+  // FOR freight is received qty x rate, always recomputed from the rate rather
+  // than trusting a stored total — the total has to move when the invoice is
+  // unloaded and the real received qty replaces the dispatched one. A lump-sum
+  // freight (no rate) still stands on its stored amount.
   const transportAmount = String(v.freight_term) === 'DLD'
-    ? (n(v.transport_amount) > 0 ? n(v.transport_amount) : freightQty * n(v.transport_rate))
+    ? (n(v.transport_rate) > 0 ? round2(freightQty * n(v.transport_rate)) : n(v.transport_amount))
     : 0
   await getClient().execute({
     sql: `UPDATE sales SET sale_date = ?, invoice_no = ?, customer = ?, customer_id = ?, product_id = ?, sales_bargain_id = ?,
@@ -883,11 +903,44 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
 // Move a dispatch through its stages (pending → loaded → transit → unloaded).
 // Advancing from pending into any dispatched stage draws finished stock (guarded);
 // dropping back to pending releases it. Moving between dispatched stages is free.
-export async function setSaleStage(id: number, stageIn: string, force = false, dateIn?: string): Promise<{ id: number }> {
+// Re-strike a FOR sale's freight from its own row, after something other than
+// an invoice edit changed the quantity it is priced on.
+async function recomputeSaleFreight(id: number): Promise<void> {
+  const c = getClient()
+  const r = await c.execute({ sql: 'SELECT * FROM sales WHERE id = ?', args: [id] })
+  if (!r.rows.length) return
+  const row = r.rows[0] as unknown as Row
+  if (String(row.freight_term) !== 'DLD' || n(row.transport_rate) <= 0) return
+  const qty = await resolveFreightQty(row, n(row.qty))
+  const amount = round2(qty * n(row.transport_rate))
+  if (Math.abs(amount - n(row.transport_amount)) < 0.005) return
+  await c.execute({ sql: 'UPDATE sales SET transport_amount = ? WHERE id = ?', args: [amount, id] })
+  await postSaleFreight(id, { ...row, transport_amount: amount }, qty)
+  // The sale voucher carries the freight leg, so it has to be re-posted too or
+  // FREIGHT OUTWARD / FREIGHT PAYABLE would keep the old figure.
+  await postSaleEntry(
+    id,
+    { ...row, transport_amount: amount },
+    n(row.amount),
+    n(row.gst_amount),
+    n(row.round_off),
+    amount
+  )
+}
+
+export async function setSaleStage(
+  id: number,
+  stageIn: string,
+  force = false,
+  dateIn?: string,
+  // Weighed in at the customer's end. Only meaningful on Unloaded; anything
+  // earlier clears it, so stepping a stage back never leaves a stale figure.
+  receivedQty?: number | null
+): Promise<{ id: number }> {
   const stage = stageOf({ dispatch_stage: stageIn })
   const status = statusForStage(stage)
   const r = await getClient().execute({
-    sql: 'SELECT product_id, qty, uom, status, track_stock, loaded_date, transit_date, unloaded_date FROM sales WHERE id = ?',
+    sql: 'SELECT product_id, qty, uom, status, track_stock, loaded_date, transit_date, unloaded_date, received_qty FROM sales WHERE id = ?',
     args: [id]
   })
   if (!r.rows.length) throw new Error('Sale not found')
@@ -912,10 +965,20 @@ export async function setSaleStage(id: number, stageIn: string, force = false, d
   }
   // Stamp the reached stage's date (carrying earlier ones, clearing later ones).
   const dates = resolveStageDates(stage, row as unknown as Record<string, unknown>, dateIn || todayLocal())
+  // Keep whatever was already recorded when the caller says nothing, so an
+  // unrelated re-save of the same stage does not wipe it.
+  const recQty =
+    stage !== 'unloaded' ? null : receivedQty === undefined ? (row.received_qty == null ? null : n(row.received_qty)) : receivedQty
   await getClient().execute({
-    sql: 'UPDATE sales SET status = ?, dispatch_stage = ?, track_stock = ?, loaded_date = ?, transit_date = ?, unloaded_date = ? WHERE id = ?',
-    args: [status, stage, trackStock, dates.loaded_date, dates.transit_date, dates.unloaded_date, id]
+    sql: `UPDATE sales SET status = ?, dispatch_stage = ?, track_stock = ?,
+            loaded_date = ?, transit_date = ?, unloaded_date = ?, received_qty = ? WHERE id = ?`,
+    args: [status, stage, trackStock, dates.loaded_date, dates.transit_date, dates.unloaded_date, recQty, id]
   })
+  // The freight is priced on what arrived, so the moment a received qty is
+  // recorded the FOR freight has to be re-struck and re-posted — otherwise the
+  // transporter would stay billed on the dispatched quantity. Nothing to do for
+  // a lump-sum freight (no rate) or an Ex sale.
+  await recomputeSaleFreight(id)
   // Keep the linked auto-production in step with the sale's dispatch state.
   if (isDispatched(stage) && hasFormula) {
     const prodDate = dates.loaded_date || dates.transit_date || dates.unloaded_date || dateIn || todayLocal()
@@ -1014,13 +1077,20 @@ export async function setInvoiceStage(
   group: string,
   stage: string,
   force = false,
-  date?: string
+  date?: string,
+  // Received qty per LINE id — an invoice can carry several products and the
+  // transporter weighs each one, so a single number would not do.
+  received?: Record<string, number | null>
 ): Promise<{ group: string }> {
   const rows = await getClient().execute({
     sql: 'SELECT id FROM sales WHERE invoice_group = ? ORDER BY id',
     args: [group]
   })
-  for (const r of rows.rows) await setSaleStage(Number(r.id), stage, force, date)
+  for (const r of rows.rows) {
+    const id = Number(r.id)
+    const q = received ? received[String(id)] : undefined
+    await setSaleStage(id, stage, force, date, q === undefined ? undefined : q)
+  }
   return { group }
 }
 
