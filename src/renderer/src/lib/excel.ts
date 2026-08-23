@@ -248,14 +248,26 @@ function writeSheet(wb: ExcelJS.Workbook, spec: ExcelSheet, index: number): void
 
   // Printable out of the box: landscape, scaled to one page wide, with the
   // title and header band repeated on every page and the page number footed.
+  //
+  // fitToPage is deliberately OFF on a grouped sheet. ExcelJS renders the two
+  // children of <sheetPr> in the wrong order — it emits pageSetUpPr before
+  // outlinePr, where OOXML requires outlinePr first — and Excel enforces that
+  // order even though every other reader shrugs at it. A sheet carrying both
+  // is the file Excel refuses to open and offers to "recover". Emitting only
+  // one of them is always valid, so grouped sheets keep their outline handles
+  // and every other sheet keeps fit-to-one-page-wide printing.
+  const grouped = !!(spec.isGroup && spec.outlineDetail)
   ws.pageSetup = {
     orientation: 'landscape',
-    fitToPage: true,
-    fitToWidth: 1,
-    fitToHeight: 0,
+    ...(grouped ? {} : { fitToPage: true, fitToWidth: 1, fitToHeight: 0 }),
     horizontalCentered: true,
     margins: { left: 0.3, right: 0.3, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 },
     printTitlesRow: `1:${headerRowIdx}`
+  }
+  if (grouped) {
+    // Handles above each group, matching the parent-then-detail row order.
+    ws.properties.outlineLevelRow = 1
+    ws.properties.outlineProperties = { summaryBelow: false, summaryRight: false }
   }
   ws.headerFooter = { oddFooter: '&L&"Calibri,Italic"&9&F&C&"Calibri,Italic"&9Page &P of &N&R&"Calibri,Italic"&9&D' }
 }
@@ -266,6 +278,36 @@ function writeSheet(wb: ExcelJS.Workbook, spec: ExcelSheet, index: number): void
 // print-ready page setup. Pass `extraSheets` for a workbook with more than one
 // tab — e.g. a register summary plus its line-by-line detail. Downloads
 // immediately.
+// Hand a finished workbook to the browser as a download.
+//
+// The obvious version of this — create the object URL, click a detached
+// anchor, revoke the URL on the next line — is what every export here used to
+// do, and it is a race. Chromium writes the file asynchronously, so revoking
+// the blob in the same tick can pull the data out from under a write that has
+// not finished, leaving a truncated file: exactly the one Excel offers to
+// "recover". It survives small sheets and starts failing as they grow, which
+// is why it only showed up once the exports got bigger. So: attach the anchor,
+// click it, and let the URL live long enough for the write to complete.
+export function downloadWorkbook(buf: ArrayBuffer, filename: string): void {
+  const named = filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`
+  // Windows rejects these outright, and a rejected save also reads as a
+  // corrupt download.
+  const safe = named.replace(/[\/:*?"<>|]/g, '-')
+  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = safe
+  a.rel = 'noopener'
+  a.style.display = 'none'
+  document.body.appendChild(a)
+  a.click()
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url)
+    a.remove()
+  }, 60_000)
+}
+
 export async function exportRowsToExcel(opts: {
   filename: string
   sheetName?: string
@@ -299,18 +341,6 @@ export async function exportRowsToExcel(opts: {
     0
   )
   ;(opts.extraSheets || []).forEach((sh, i) => writeSheet(wb, sh, i + 1))
-  // Show the outline expanded, with the +/− summary handles above each group.
-  wb.eachSheet((ws) => {
-    ws.properties.outlineLevelRow = 1
-    ws.properties.outlineProperties = { summaryBelow: false, summaryRight: false }
-  })
 
-  const buf = await wb.xlsx.writeBuffer()
-  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`
-  a.click()
-  URL.revokeObjectURL(url)
+  downloadWorkbook(await wb.xlsx.writeBuffer(), filename)
 }

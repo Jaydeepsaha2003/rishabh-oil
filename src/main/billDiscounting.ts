@@ -42,8 +42,10 @@ function daysBetween(a: string, b: string): number {
 export function bdCalc(bd: Row): {
   intDays: number
   marginAmount: number
+  openAmount: number
   interestAmount: number
   tdsAmount: number
+  netInterest: number
   receiptAmount: number
 } {
   const amount = n(bd.amount)
@@ -51,12 +53,25 @@ export function bdCalc(bd: Row): {
   const to = String(bd.maturity_date || '').slice(0, 10)
   const intDays = from && to ? Math.max(0, daysBetween(from, to)) : 0
   const marginAmount = round2((amount * n(bd.margin_pct)) / 100)
-  const interestAmount = round2((amount * n(bd.interest_pct) * intDays) / (100 * 365))
+  // What the NBFC actually funds once its margin is held back. Interest runs on
+  // THIS, not on the face value of the bills — the margin never left the NBFC,
+  // so there is nothing to charge interest on.
+  const openAmount = round2(amount - marginAmount)
+  // A 360-day year by convention, overridable per record.
+  const daysYear = n(bd.days_year) || 360
+  const interestAmount = round2((openAmount * n(bd.interest_pct) * intDays) / (100 * daysYear))
   const tdsAmount = round2((interestAmount * n(bd.tds_pct)) / 100)
-  const receiptAmount = bd.interest_upfront
-    ? round2(amount - marginAmount)
-    : round2(amount - marginAmount - interestAmount + tdsAmount)
-  return { intDays, marginAmount, interestAmount, tdsAmount, receiptAmount }
+  // TDS is withheld out of the interest and paid to the department, so it does
+  // not come back to us — the NBFC still keeps the interest gross when it nets
+  // the payout.
+  const netInterest = round2(interestAmount - tdsAmount)
+  // What actually hits the bank. Normally the NBFC discounts its interest out
+  // of the disbursement, so the payout is the funded amount less the interest —
+  // the working sheet's 80,000 - 2,900 = 77,100. With interest upfront the
+  // interest is settled separately instead, so the whole funded amount lands
+  // and the interest posts on its own voucher when it is reconciled.
+  const receiptAmount = bd.interest_upfront ? openAmount : round2(openAmount - interestAmount)
+  return { intDays, marginAmount, openAmount, interestAmount, tdsAmount, netInterest, receiptAmount }
 }
 
 // Remove one manual journal entry (with its bill-wise rows) — used to
@@ -118,9 +133,18 @@ export async function postBdOpening(bdId: number): Promise<void> {
   const bd = await loadBd(bdId)
   await dropEntry(n(bd.journal_entry_id) || null)
   const calc = bdCalc(bd)
+  // The voucher is what the face amount split into, either way round:
+  //   interest discounted  ->  Dr Bank (open - interest) + Dr Margin + Dr Interest
+  //   interest upfront     ->  Dr Bank (open)            + Dr Margin
+  // both against Cr Bills discounted (the full face amount), so both balance.
+  //
+  // There is deliberately NO TDS leg here. The NBFC is paid the interest gross
+  // out of the disbursement, so nothing is withheld at this point — an earlier
+  // version credited TDS and only balanced because the payout wrongly added the
+  // same TDS back, which is what produced "Journal not balanced" once the payout
+  // was corrected to the sheet's open - interest.
   const upfront = !!bd.interest_upfront
   const interest = upfront ? 0 : calc.interestAmount
-  const tds = upfront ? 0 : calc.tdsAmount
   const amount = n(bd.amount)
   if (calc.marginAmount < 0.005 && interest < 0.005 && amount < 0.005) {
     await c.execute({ sql: 'UPDATE bill_discountings SET journal_entry_id = NULL WHERE id = ?', args: [bdId] })
@@ -129,7 +153,6 @@ export async function postBdOpening(bdId: number): Promise<void> {
   const lines: JournalLine[] = [{ account: 'BANK A/C', group: 'Bank Accounts', dr: calc.receiptAmount }]
   if (calc.marginAmount > 0.005) lines.push({ account: 'BD MARGIN A/C', group: 'Deposits (Asset)', dr: calc.marginAmount })
   if (interest > 0.005) lines.push({ account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: interest })
-  if (tds > 0.005) lines.push({ account: 'TDS ON INTEREST PAYABLE A/C', group: 'Duties & Taxes', cr: tds })
   lines.push({ account: 'BILLS DISCOUNTED A/C', group: 'Loans (Liability)', cr: amount })
   const je = await postJournal({
     date: String(bd.payment_received_date || todayISO()).slice(0, 10),
@@ -137,8 +160,8 @@ export async function postBdOpening(bdId: number): Promise<void> {
     vchNo: String(bd.bd_no || ''),
     narration:
       `Bill Discounting ${bd.bd_no || ''} (${bd.finance_type}) opened with ${bd.nbfc_name || 'the NBFC'} — ` +
-      `margin ${calc.marginAmount.toFixed(2)}, interest ${interest.toFixed(2)}, TDS ${tds.toFixed(2)}` +
-      (upfront ? ' (interest deferred, settled upfront on reconciliation)' : ''),
+      `margin ${calc.marginAmount.toFixed(2)}, interest ${interest.toFixed(2)}` +
+      (upfront ? ' (interest settled separately on reconciliation)' : ''),
     companyId: n(bd.company_id) || undefined,
     lines
   })
@@ -147,14 +170,13 @@ export async function postBdOpening(bdId: number): Promise<void> {
 
 // Posts the deferred interest + TDS voucher once reconciled from the bank
 // statement, for a bill that was opened with interest_upfront — mirrors LC's
-// postLcUpfrontInterest.
+// postLcUpfrontInterest. Only reachable for an upfront bill, whose opening
+// voucher deliberately left the interest out, so this cannot double-count.
 export async function postBdUpfrontInterest(bdId: number, dateIn?: string): Promise<{ id: number } | null> {
-  const c = getClient()
   const bd = await loadBd(bdId)
   if (!bd.interest_upfront) throw new Error('This Bill Discounting entry was not opened with interest upfront')
   const calc = bdCalc(bd)
-  const total = round2(calc.interestAmount)
-  if (total < 0.005) return null
+  if (calc.interestAmount < 0.005) return null
   const je = await postJournal({
     date: String(dateIn || todayISO()).slice(0, 10),
     vchType: 'JOURNAL',
@@ -164,7 +186,7 @@ export async function postBdUpfrontInterest(bdId: number, dateIn?: string): Prom
     lines: [
       { account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: calc.interestAmount },
       { account: 'TDS ON INTEREST PAYABLE A/C', group: 'Duties & Taxes', cr: calc.tdsAmount },
-      { account: 'BANK A/C', group: 'Bank Accounts', cr: round2(calc.interestAmount - calc.tdsAmount) }
+      { account: 'BANK A/C', group: 'Bank Accounts', cr: calc.netInterest }
     ]
   })
   return { id: je.id }
@@ -204,6 +226,7 @@ const BD_COLS = [
   'payment_received_date',
   'maturity_date',
   'margin_pct',
+  'days_year',
   'interest_pct',
   'tds_pct',
   'interest_upfront',
@@ -213,6 +236,7 @@ const BD_COLS = [
 function bdArgs(v: Row): (string | number | null)[] {
   return BD_COLS.map((k) => {
     if (k === 'interest_upfront') return v[k] ? 1 : 0
+    if (k === 'days_year') return n(v[k]) || 360
     if (['amount', 'margin_pct', 'interest_pct', 'tds_pct'].includes(k)) return n(v[k])
     if (k === 'nbfc_id') return v[k] ? n(v[k]) : null
     const val = v[k]

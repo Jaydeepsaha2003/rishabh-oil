@@ -91,6 +91,7 @@ const NBFC_FIELDS: FieldDef[] = [
   { key: 'interest_pct', label: 'Interest % p.a.', type: 'number', default: 0 },
   { key: 'interest_days', label: 'Interest days (default tenor)', type: 'number', default: 0 },
   { key: 'tds_pct', label: 'TDS % on interest', type: 'number', default: 0 },
+  { key: 'days_year', label: 'Days in year (360 / 365)', type: 'number', default: 360 },
   { key: 'note', label: 'Note', type: 'text' },
   { key: 'active', label: 'Active', type: 'switch', default: true }
 ]
@@ -101,16 +102,26 @@ const NBFC_COLUMNS: ColumnDef[] = [
   { key: 'interest_pct', label: 'Int %', align: 'right' },
   { key: 'interest_days', label: 'Int days', align: 'right' },
   { key: 'tds_pct', label: 'TDS %', align: 'right' },
+  { key: 'days_year', label: 'Yr basis', align: 'right' },
   { key: 'active', label: 'Active', type: 'switch' }
 ]
 
-// Margin/interest/TDS off the bill's face amount — the same arithmetic the
-// backend posts with, so the preview and the books never disagree.
+// The same arithmetic the backend posts with, so the preview and the books
+// never disagree. Mirrors the mill's working sheet:
+//   open amount = total bills - margin
+//   interest    = open amount x ROI x int days / (days-in-year x 100)
+//   TDS         = interest x TDS%
+//   net payout  = open amount - interest      (gross: the TDS is withheld out
+//                                              of the interest, not refunded)
+// With interest upfront the interest is settled separately instead, so the
+// whole open amount lands and the payout is not reduced.
 function bdCalc(f: Row): {
   intDays: number
   marginAmount: number
+  openAmount: number
   interestAmount: number
   tdsAmount: number
+  netInterest: number
   receiptAmount: number
 } {
   const amount = n(f.amount)
@@ -118,12 +129,13 @@ function bdCalc(f: Row): {
   const to = String(f.maturity_date || '').slice(0, 10)
   const intDays = from && to ? Math.max(0, (daysTo(to) ?? 0) - (daysTo(from) ?? 0)) : 0
   const marginAmount = round2((amount * n(f.margin_pct)) / 100)
-  const interestAmount = round2((amount * n(f.interest_pct) * intDays) / (100 * 365))
+  const openAmount = round2(amount - marginAmount)
+  const daysYear = n(f.days_year) || 360
+  const interestAmount = round2((openAmount * n(f.interest_pct) * intDays) / (100 * daysYear))
   const tdsAmount = round2((interestAmount * n(f.tds_pct)) / 100)
-  const receiptAmount = f.interest_upfront
-    ? round2(amount - marginAmount)
-    : round2(amount - marginAmount - interestAmount + tdsAmount)
-  return { intDays, marginAmount, interestAmount, tdsAmount, receiptAmount }
+  const netInterest = round2(interestAmount - tdsAmount)
+  const receiptAmount = f.interest_upfront ? openAmount : round2(openAmount - interestAmount)
+  return { intDays, marginAmount, openAmount, interestAmount, tdsAmount, netInterest, receiptAmount }
 }
 
 export function BillDiscounting(): React.JSX.Element {
@@ -210,6 +222,7 @@ export function BillDiscounting(): React.JSX.Element {
       margin_pct: '',
       interest_pct: '',
       tds_pct: '',
+      days_year: 360,
       interest_upfront: false
     })
   }
@@ -229,6 +242,7 @@ export function BillDiscounting(): React.JSX.Element {
       margin_pct: r.margin_pct ?? '',
       interest_pct: r.interest_pct ?? '',
       tds_pct: r.tds_pct ?? '',
+      days_year: r.days_year ?? 360,
       interest_upfront: !!r.interest_upfront,
       note: r.note || ''
     })
@@ -255,6 +269,7 @@ export function BillDiscounting(): React.JSX.Element {
       if (nb) {
         if (!n(p?.interest_pct)) next.interest_pct = nb.interest_pct ?? ''
         if (!n(p?.tds_pct)) next.tds_pct = nb.tds_pct ?? ''
+        if (n(nb.days_year) > 0) next.days_year = nb.days_year
         // A default tenor fills the maturity date forward from the receipt date.
         if (!p?.maturity_date && n(nb.interest_days) > 0 && p?.payment_received_date) {
           const d = new Date(`${String(p.payment_received_date).slice(0, 10)}T00:00:00`)
@@ -285,6 +300,7 @@ export function BillDiscounting(): React.JSX.Element {
         margin_pct: Number(form.margin_pct) || 0,
         interest_pct: Number(form.interest_pct) || 0,
         tds_pct: Number(form.tds_pct) || 0,
+        days_year: Number(form.days_year) || 360,
         interest_upfront: !!form.interest_upfront,
         note: form.note || null
       }
@@ -665,19 +681,19 @@ export function BillDiscounting(): React.JSX.Element {
 
       {/* Create / edit dialog */}
       <Dialog open={!!form} onOpenChange={(o) => !o && setForm(null)}>
-        <DialogContent className="max-h-[90vh] w-[calc(100vw-2rem)] max-w-3xl overflow-y-auto border-[#d9d2b8] bg-[#fffdf4]">
+        <DialogContent className="max-h-[92vh] w-[calc(100vw-2rem)] max-w-6xl overflow-y-auto border-[#d9d2b8] bg-[#fffdf4]">
           <DialogHeader className="-mx-6 -mt-6 mb-1 rounded-t-lg bg-[#dce6f5] px-6 py-2.5">
             <DialogTitle className="text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]">
               {form?.id ? 'Alter discounted bill' : 'Discount a bill'}
             </DialogTitle>
           </DialogHeader>
           {form && (
-            <div className="grid gap-4">
+            <div className="grid gap-3">
               <section className="rounded border border-[#e5dfc8] bg-white p-4">
                 <h3 className="mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
                   Facility
                 </h3>
-                <div className="grid gap-4 md:grid-cols-3">
+                <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-5">
                   <div className="flex flex-col gap-1.5">
                     <Label className="flex items-center gap-1">
                       Finance type *
@@ -720,7 +736,7 @@ export function BillDiscounting(): React.JSX.Element {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="flex flex-col gap-1.5 md:col-span-2">
+                  <div className="flex flex-col gap-1.5 md:col-span-2 xl:col-span-1">
                     <Label>{String(form.finance_type) === 'SID' ? 'Customer *' : 'Supplier *'}</Label>
                     <Select value={String(form.party_id || '')} onValueChange={(v) => setForm((p) => ({ ...p, party_id: v }))}>
                       <SelectTrigger>
@@ -744,7 +760,7 @@ export function BillDiscounting(): React.JSX.Element {
                 <h3 className="mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
                   Bill &amp; terms
                 </h3>
-                <div className="grid gap-4 md:grid-cols-3">
+                <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-4">
                   <div className="flex flex-col gap-1.5">
                     <Label>Bill amount (₹) *</Label>
                     <Input type="number" value={form.amount ?? ''} onChange={(e) => setForm((p) => ({ ...p, amount: e.target.value }))} />
@@ -783,36 +799,42 @@ export function BillDiscounting(): React.JSX.Element {
                     </Label>
                     <Input type="number" value={form.tds_pct ?? ''} onChange={(e) => setForm((p) => ({ ...p, tds_pct: e.target.value }))} />
                   </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label className="flex items-center gap-1">
+                      Days in year
+                      <InfoTip text="The day-count basis interest is worked out on. Bill discounting conventionally uses 360, not the calendar 365 — it comes from the NBFC's terms and is negotiated like the rate is." />
+                    </Label>
+                    <Input type="number" value={form.days_year ?? 360} onChange={(e) => setForm((p) => ({ ...p, days_year: e.target.value }))} />
+                  </div>
+                  <div className="flex flex-col justify-end gap-1.5">
+                    <label className="flex h-10 cursor-pointer items-center gap-2.5 rounded-md border px-3">
+                      <Switch checked={!!form.interest_upfront} onCheckedChange={(v) => setForm((p) => ({ ...p, interest_upfront: v }))} />
+                      <span className="flex items-center gap-1.5">
+                        <span className="text-sm font-medium">Interest upfront</span>
+                        <InfoTip text="The interest is paid separately from the bank rather than deducted from the bill — the opening voucher then leaves it out, and it posts once the matching bank line is reconciled." />
+                      </span>
+                    </label>
+                  </div>
                 </div>
-                <label className="mt-3 flex w-fit cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2">
-                  <Switch checked={!!form.interest_upfront} onCheckedChange={(v) => setForm((p) => ({ ...p, interest_upfront: v }))} />
-                  <span className="flex items-center gap-1.5">
-                    <span className="text-sm font-medium">Interest upfront</span>
-                    <InfoTip text="The interest is paid separately from the bank rather than deducted from the bill — the opening voucher then leaves it out, and it posts once the matching bank line is reconciled." />
-                  </span>
-                </label>
               </section>
 
               {preview && n(form.amount) > 0 && (
-                <div className="grid grid-cols-2 gap-px rounded-lg border border-[#e5dfc8] bg-[#e5dfc8] p-px sm:grid-cols-5">
-                  <div className="bg-white px-3 py-2 text-center">
-                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Int. days</div>
-                    <div className="text-[13px] font-semibold tabular-nums text-[#1a2c56]">{preview.intDays}</div>
-                  </div>
-                  <div className="bg-white px-3 py-2 text-center">
-                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Margin</div>
-                    <div className="text-[13px] font-semibold tabular-nums text-[#1a2c56]">{formatINR(preview.marginAmount)}</div>
-                  </div>
-                  <div className="bg-white px-3 py-2 text-center">
-                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Interest</div>
-                    <div className="text-[13px] font-semibold tabular-nums text-rose-700">{formatINR(preview.interestAmount)}</div>
-                  </div>
-                  <div className="bg-white px-3 py-2 text-center">
-                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">TDS</div>
-                    <div className="text-[13px] font-semibold tabular-nums text-[#1a2c56]">{formatINR(preview.tdsAmount)}</div>
-                  </div>
+                <div className="grid grid-cols-2 gap-px rounded-lg border border-[#e5dfc8] bg-[#e5dfc8] p-px sm:grid-cols-4 md:grid-cols-7">
+                  {([
+                    { label: 'Int. days', value: String(preview.intDays), tone: 'text-[#1a2c56]' },
+                    { label: 'Margin', value: formatINR(preview.marginAmount), tone: 'text-[#1a2c56]' },
+                    { label: 'Open amount', value: formatINR(preview.openAmount), tone: 'text-[#1a2c56]' },
+                    { label: 'Interest', value: formatINR(preview.interestAmount), tone: 'text-rose-700' },
+                    { label: 'TDS', value: formatINR(preview.tdsAmount), tone: 'text-[#1a2c56]' },
+                    { label: 'Net int.', value: formatINR(preview.netInterest), tone: 'text-[#1a2c56]' }
+                  ] as const).map((c) => (
+                    <div key={c.label} className="bg-white px-3 py-2 text-center">
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{c.label}</div>
+                      <div className={cn('text-[13px] font-semibold tabular-nums', c.tone)}>{c.value}</div>
+                    </div>
+                  ))}
                   <div className="bg-emerald-50 px-3 py-2 text-center">
-                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Receipt amount</div>
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Net payout</div>
                     <div className="text-[13px] font-bold tabular-nums text-emerald-700">{formatINR(preview.receiptAmount)}</div>
                   </div>
                 </div>

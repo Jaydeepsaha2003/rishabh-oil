@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowRightLeft, Building2, Check, ChevronDown, ChevronRight, Download, Eye, EyeOff, Plus, SlidersHorizontal, Trash2, Upload, X } from 'lucide-react'
+import { ArrowRightLeft, Building2, Check, ChevronDown, ChevronRight, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -35,11 +35,49 @@ import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { downloadDayCloseExcel, parseDayCloseExcel } from '@/lib/dayCloseExcel'
 import { downloadSkuCountExcel, parseSkuCountExcel } from '@/lib/skuCountExcel'
 import { ExcelButton } from '@/components/ExcelButton'
-import { NUM_QTY } from '@/lib/excel'
+import { NUM_QTY, exportRowsToExcel, type ExcelColumn } from '@/lib/excel'
 import { FyPicker } from '@/components/FyPicker'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
+
+// Every export is stamped to the minute, so two downloads of the same register
+// taken an hour apart never overwrite each other in the Downloads folder.
+function nowStamp(): string {
+  const d = new Date()
+  const p2 = (x: number): string => String(x).padStart(2, '0')
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}`
+}
+
+// The two movement registers share one column set: a line per document, with
+// the vehicle, the bill and both weights.
+const REGISTER_COLUMNS: ExcelColumn[] = [
+  { header: 'Loading date', key: 'loaded_date', width: 14, value: (r) => (r.loaded_date ? formatDate(r.loaded_date) : '') },
+  { header: 'Receiving date', key: 'received_date', width: 14, value: (r) => (r.received_date ? formatDate(r.received_date) : '') },
+  { header: 'Party name', key: 'party', width: 28, divider: true, value: (r) => r.party || '' },
+  { header: 'Transporter', key: 'transporter', width: 26, value: (r) => r.transporter || '' },
+  { header: 'Bill no', key: 'bill_no', width: 18, value: (r) => r.bill_no || '' },
+  { header: 'Vehicle no', key: 'vehicle_no', width: 16, value: (r) => r.vehicle_no || '' },
+  { header: 'Oil type', key: 'oil_type', width: 18, divider: true, value: (r) => r.oil_type || '' },
+  { header: 'Dispatch qty', key: 'dispatch_qty', width: 14, align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.dispatch_qty) || 0 },
+  { header: 'Received qty', key: 'received_qty', width: 14, align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.received_qty) || 0 },
+  {
+    header: 'Shortage', key: 'shortage', width: 12, align: 'right', numFmt: NUM_QTY, total: 'sum',
+    // Only meaningful once both weights exist; a blank received qty would
+    // otherwise read as the whole load having gone missing.
+    fillFor: (r) => (r.received_qty != null && Number(r.dispatch_qty) - Number(r.received_qty) > 0.0005 ? 'FFFFD9D9' : undefined),
+    value: (r) => (r.received_qty == null ? 0 : Math.round((Number(r.dispatch_qty) - Number(r.received_qty)) * 1000) / 1000)
+  }
+]
+
+// The receipt register carries one column the dispatch side has no equivalent
+// for: how much of the shortage the supplier actually wears. Computed in the
+// backend by the same EX/tolerance rule the purchase screens use.
+const DEDUCTIBLE_COLUMN: ExcelColumn = {
+  header: 'Deductible', key: 'deductible', width: 13, align: 'right', numFmt: NUM_QTY, total: 'sum',
+  fillFor: (r) => (r.deductible != null ? 'FFFFD9D9' : undefined),
+  value: (r) => Number(r.deductible) || 0
+}
 
 const CAT_LABEL: Record<string, string> = {
   raw: 'Raw',
@@ -162,7 +200,7 @@ function CompanyPicker({
   )
 }
 
-function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange, companyPicker, companySplit = {}, stagePicker }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[] }>; label?: string; range: { from: string; to: string }; onRange: (r: { from: string; to: string }) => void; companyPicker?: React.ReactNode; companySplit?: Record<number, Row[]>; stagePicker?: React.ReactNode }): React.JSX.Element {
+function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange, companyPicker, companySplit = {}, stagePicker, companyIds = [] }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[] }>; label?: string; range: { from: string; to: string }; onRange: (r: { from: string; to: string }) => void; companyPicker?: React.ReactNode; companySplit?: Record<number, Row[]>; stagePicker?: React.ReactNode; companyIds?: number[] }): React.JSX.Element {
   const ranged = !!(range.from || range.to)
   // A product with no opening, no movement and no closing balance is just noise
   // in a long list, so it can be folded away. Everything below — KPIs, section
@@ -211,6 +249,108 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
   // Excel rows: a line per product, then a line per party underneath it —
   // exactly what the hover shows — with the parties on outline level 1 so each
   // product collapses in Excel.
+  // Shared by the two-level export (product + party lines) and the flat
+  // product-only one, so the two can never drift apart.
+  const flowColumns: ExcelColumn[] = [
+    { header: 'Product', key: 'name', width: 26, value: (r) => r.name || '' },
+    ...(ranged
+      ? [{
+          header: 'Opening', key: 'opening', align: 'right' as const, numFmt: NUM_QTY,
+          total: 'sum' as const, divider: true, value: (r: Row) => Number(r.opening) || 0
+        }]
+      : []),
+    { header: 'Receipt', key: 'received', align: 'right', numFmt: NUM_QTY, total: 'sum', divider: !ranged, value: (r) => Number(r.received) || 0 },
+    { header: 'Produced', key: 'produced', align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.produced) || 0 },
+    { header: 'Transfer in', key: 'transferred_in', align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.transferred_in) || 0 },
+    { header: 'Transfer out', key: 'transferred_out', align: 'right', numFmt: NUM_QTY, total: 'sum', divider: true, value: (r) => Number(r.transferred_out) || 0 },
+    { header: 'Consumed', key: 'consumed', align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.consumed) || 0 },
+    { header: 'Dispatch', key: 'sold', align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.sold) || 0 },
+    {
+      header: ranged ? 'Closing' : 'In stock', key: 'stock', align: 'right', numFmt: NUM_QTY,
+      total: 'sum', divider: true,
+      headerFill: 'FF14532D',
+      fillFor: (r) => (Number(r.stock) < -0.0005 ? 'FFFFD9D9' : 'FFEAF5EC'),
+      value: (r) => Number(r.stock) || 0
+    }
+  ]
+
+  // Three things can be taken off this screen, so the download button opens a
+  // menu rather than assuming which one was wanted: what came in, what went
+  // out, and the product-level flow summary this page already shows.
+  const [dlOpen, setDlOpen] = useState(false)
+  const [dlBusy, setDlBusy] = useState('')
+  const periodLabel = ranged
+    ? `${formatDate(range.from || '')} to ${formatDate(range.to || todayISO())}`
+    : `as on ${formatDate(todayISO())}`
+  const periodSlug = ranged ? `${range.from || 'start'}-to-${range.to || todayISO()}` : todayISO()
+
+  async function downloadMovement(kind: 'receipt' | 'dispatch'): Promise<void> {
+    setDlBusy(kind)
+    try {
+      const regs = await window.api.stock.registers(companyIds, ranged ? range : undefined)
+      const data = kind === 'receipt' ? regs.receipts : regs.dispatches
+      if (!data.length) {
+        toast.error(`No ${kind}s in this period`)
+        return
+      }
+      const name = kind === 'receipt' ? 'Receipt' : 'Dispatch'
+      await exportRowsToExcel({
+        filename: `${kind}-register-${periodSlug}-${nowStamp()}`,
+        sheetName: `${name} register`,
+        title: `${name} register`,
+        subtitle:
+          `${data.length} ${kind}${data.length === 1 ? '' : 's'} · quantities in MT · ${periodLabel}` +
+          (kind === 'dispatch' ? ' · gross dispatches, before any credit-note returns' : '') +
+          ` · generated ${formatDate(todayISO())}`,
+        freezeCols: 2,
+        totalLabel: 'TOTAL',
+        columns: kind === 'receipt' ? [...REGISTER_COLUMNS, DEDUCTIBLE_COLUMN] : REGISTER_COLUMNS,
+        rows: data
+      })
+      toast.success(`Exported ${data.length} ${kind} row${data.length === 1 ? '' : 's'}`)
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setDlBusy('')
+      setDlOpen(false)
+    }
+  }
+
+  // The flow register: one line per product, or the same thing with each
+  // product's parties opened up underneath it.
+  async function downloadFlow(withParties: boolean): Promise<void> {
+    setDlBusy(withParties ? 'flowparty' : 'flow')
+    try {
+      await exportRowsToExcel({
+        filename: `${label}-stock-${withParties ? 'by-party' : 'flow'}-${periodSlug}-${nowStamp()}`,
+        sheetName: `${label} stock`,
+        title: `${label.charAt(0).toUpperCase()}${label.slice(1)} stock ${withParties ? 'by party' : 'flow'}`,
+        subtitle:
+          `${rows.length} product${rows.length === 1 ? '' : 's'} · quantities in MT · ${periodLabel}` +
+          ` · generated ${formatDate(todayISO())}`,
+        freezeCols: 1,
+        totalLabel: 'GRAND TOTAL',
+        columns: withParties
+          ? [
+              flowColumns[0],
+              { header: 'Party', key: 'party', width: 24, value: (r: Row) => r.party || '' },
+              { header: 'Flow', key: 'flow', width: 12, value: (r: Row) => r.flow || '' },
+              ...flowColumns.slice(1)
+            ]
+          : flowColumns,
+        rows: withParties ? sheetRows : rows,
+        isGroup: withParties ? (r) => !!r.is_group : undefined,
+        outlineDetail: withParties
+      })
+      toast.success(`Exported ${rows.length} product row${rows.length === 1 ? '' : 's'}`)
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setDlBusy('')
+      setDlOpen(false)
+    }
+  }
+
   const sheetRows = rows.flatMap((r) => {
     const bd = breakdown[r.id as number]
     const split = companySplit[r.id as number] || []
@@ -272,51 +412,77 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
           Clear
         </Button>
       )}
-      <ExcelButton
-        filename={ranged ? `${label}-stock-${range.from || 'start'}-to-${range.to || todayISO()}` : `${label}-stock-${todayISO()}`}
-        sheetName={`${label} stock`}
-        title={`${label.charAt(0).toUpperCase()}${label.slice(1)} stock${ranged ? ` (${range.from || 'start'} → ${range.to || 'today'})` : ''}`}
-        subtitle={
-          `${rows.length} product${rows.length === 1 ? '' : 's'}` +
-          ` · quantities in MT` +
-          (ranged ? ` · period ${formatDate(range.from) } to ${formatDate(range.to || todayISO())}` : ` · as on ${formatDate(todayISO())}`) +
-          ` · generated ${formatDate(todayISO())}`
-        }
-        freezeCols={1}
-        totalLabel="GRAND TOTAL"
-        columns={[
-          { header: 'Product', key: 'name', width: 26, value: (r) => r.name || '' },
-          { header: 'Party', key: 'party', width: 24, value: (r) => r.party || '' },
-          { header: 'Flow', key: 'flow', width: 12, value: (r) => r.flow || '' },
-          ...(ranged
-            ? [{
-                header: 'Opening', key: 'opening', align: 'right' as const, numFmt: NUM_QTY,
-                total: 'sum' as const, divider: true, value: (r: Row) => Number(r.opening) || 0
-              }]
-            : []),
-          // The IN flows, then the OUT flows, then the balance — each block
-          // opened by a rule so the sheet reads as three sections rather than
-          // eight look-alike number columns.
-          { header: 'Receipt', key: 'received', align: 'right', numFmt: NUM_QTY, total: 'sum', divider: !ranged, value: (r) => Number(r.received) || 0 },
-          { header: 'Produced', key: 'produced', align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.produced) || 0 },
-          { header: 'Transfer in', key: 'transferred_in', align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.transferred_in) || 0 },
-          { header: 'Transfer out', key: 'transferred_out', align: 'right', numFmt: NUM_QTY, total: 'sum', divider: true, value: (r) => Number(r.transferred_out) || 0 },
-          { header: 'Consumed', key: 'consumed', align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.consumed) || 0 },
-          { header: 'Dispatch', key: 'sold', align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.sold) || 0 },
-          {
-            header: ranged ? 'Closing' : 'In stock', key: 'stock', align: 'right', numFmt: NUM_QTY,
-            total: 'sum', divider: true,
-            // The figure the whole sheet exists to report — tinted so the eye
-            // lands on it, and red-flagged when a balance has gone negative.
-            headerFill: 'FF14532D',
-            fillFor: (r) => (Number(r.stock) < -0.0005 ? 'FFFFD9D9' : 'FFEAF5EC'),
-            value: (r) => Number(r.stock) || 0
-          }
-        ]}
-        rows={sheetRows}
-        isGroup={(r) => !!r.is_group}
-        outlineDetail
-      />
+      <Popover open={dlOpen} onOpenChange={setDlOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            size="icon"
+            className="h-9 w-9 bg-emerald-700 text-white shadow-sm hover:bg-emerald-800"
+            title="Download a register as Excel"
+            aria-label="Download a register as Excel"
+          >
+            <Download className="h-4 w-4" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-[22rem] p-1.5">
+          <p className="px-2 pb-1.5 pt-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+            Download · {periodLabel}
+          </p>
+          {([
+            {
+              key: 'receipt',
+              icon: TrendingUp,
+              tone: 'text-emerald-700',
+              label: 'Receipt register',
+              hint: 'One line per inward vehicle — loading and receiving dates, party, transporter, bill, vehicle, dispatch and received qty, shortage and deductible.',
+              run: () => downloadMovement('receipt')
+            },
+            {
+              key: 'dispatch',
+              icon: TrendingDown,
+              tone: 'text-rose-700',
+              label: 'Dispatch register',
+              hint: 'The same columns for everything that went out, before any credit-note returns.',
+              run: () => downloadMovement('dispatch')
+            },
+            {
+              key: 'flow',
+              icon: Layers,
+              tone: 'text-sky-700',
+              label: 'Stock flow register',
+              hint: `Opening, movement and closing for each of the ${rows.length} product${rows.length === 1 ? '' : 's'} on screen — one level, no party breakdown.`,
+              run: () => downloadFlow(false)
+            },
+            {
+              key: 'flowparty',
+              icon: Building2,
+              tone: 'text-indigo-700',
+              label: 'Stock flow, by party',
+              hint: 'The same sheet with each product opened up into the parties behind its receipts and dispatches.',
+              run: () => downloadFlow(true)
+            }
+          ] as const).map((o) => (
+            <button
+              key={o.key}
+              type="button"
+              disabled={!!dlBusy}
+              onClick={() => void o.run()}
+              className="flex w-full cursor-pointer items-start gap-2.5 rounded-md px-2 py-2 text-left hover:bg-accent disabled:cursor-wait disabled:opacity-60"
+            >
+              <o.icon className={cn('mt-0.5 h-4 w-4 shrink-0', o.tone)} />
+              <span className="min-w-0">
+                <span className="block text-[13px] font-semibold">
+                  {o.label}
+                  {dlBusy === o.key && <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">preparing…</span>}
+                </span>
+                <span className="block text-[11px] leading-snug text-muted-foreground">{o.hint}</span>
+              </span>
+            </button>
+          ))}
+          <p className="border-t px-2 pb-1 pt-1.5 text-[10px] leading-snug text-muted-foreground">
+            Each file is named with the period and a timestamp, so repeat downloads never overwrite one another.
+          </p>
+        </PopoverContent>
+      </Popover>
     </div>
     {rows.length === 0 ? (
       <div className="rounded-xl border bg-card py-10 text-center text-muted-foreground shadow-sm">
@@ -2393,13 +2559,13 @@ export function Stock(): React.JSX.Element {
             </TabsList>
           )}
           <TabsContent value="raw" className="mt-1">
-            <StockTable rows={byCat('raw')} breakdown={breakdown} label="raw" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} />
+            <StockTable rows={byCat('raw')} breakdown={breakdown} label="raw" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} />
           </TabsContent>
           <TabsContent value="intermediate" className="mt-1">
-            <StockTable rows={byCat('intermediate')} breakdown={breakdown} label="intermediate" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} />
+            <StockTable rows={byCat('intermediate')} breakdown={breakdown} label="intermediate" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} />
           </TabsContent>
           <TabsContent value="finished" className="mt-1">
-            <StockTable rows={byCat('finished')} breakdown={breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} />
+            <StockTable rows={byCat('finished')} breakdown={breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} />
           </TabsContent>
           <TabsContent value="sku" className="mt-6">
             <SkuStock />

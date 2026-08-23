@@ -63,6 +63,7 @@ import {
   stockLevels,
   productionNeeds,
   stockPartyBreakdown,
+  stockRegisters,
   listStockTransfers,
   createStockTransfer,
   deleteStockTransfer
@@ -507,6 +508,9 @@ export function registerIpc(): void {
 
   handle('stock:list', (_e, args?: { range?: { from?: string; to?: string }; companyIds?: number[] }) => stockLevels(args?.range, args?.companyIds))
   handle('stock:needs', () => productionNeeds())
+  handle('stock:registers', (_e, args?: { companyIds?: number[]; range?: { from?: string; to?: string } }) =>
+    stockRegisters(args?.companyIds, args?.range)
+  )
   handle('stock:breakdown', (_e, args?: { companyIds?: number[]; range?: { from?: string; to?: string } }) =>
     stockPartyBreakdown(args?.companyIds, args?.range)
   )

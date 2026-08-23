@@ -182,6 +182,8 @@ const api = {
     needs: (): Promise<Row[]> => ipcRenderer.invoke('stock:needs'),
     breakdown: (companyIds?: number[], range?: { from?: string; to?: string }): Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>> =>
       ipcRenderer.invoke('stock:breakdown', { companyIds, range }),
+    registers: (companyIds?: number[], range?: { from?: string; to?: string }): Promise<{ receipts: Row[]; dispatches: Row[] }> =>
+      ipcRenderer.invoke('stock:registers', { companyIds, range }),
     daybook: (from: string, to: string): Promise<{ vouchers: Row[]; material: Row[] }> => ipcRenderer.invoke('daybook:list', { from, to }),
     transfers: (): Promise<Row[]> => ipcRenderer.invoke('stock:transfers'),
     transfer: (values: Row): Promise<{ id: number }> =>

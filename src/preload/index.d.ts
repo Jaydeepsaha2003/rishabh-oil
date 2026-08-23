@@ -133,6 +133,7 @@ export interface Api {
     list: (range?: { from?: string; to?: string }, companyIds?: number[]) => Promise<Row[]>
     needs: () => Promise<Row[]>
     breakdown: (companyIds?: number[], range?: { from?: string; to?: string }) => Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>>
+    registers: (companyIds?: number[], range?: { from?: string; to?: string }) => Promise<{ receipts: Row[]; dispatches: Row[] }>
     daybook: (from: string, to: string) => Promise<{ vouchers: Row[]; material: Row[] }>
     transfers: () => Promise<Row[]>
     transfer: (values: Row) => Promise<{ id: number }>

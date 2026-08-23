@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs'
+import { downloadWorkbook } from './excel'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -122,14 +123,7 @@ export async function downloadDayCloseExcel(
     autoFilter: false
   })
 
-  const buf = await wb.xlsx.writeBuffer()
-  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `day-close-${section.key}-${date}.xlsx`
-  a.click()
-  URL.revokeObjectURL(url)
+  downloadWorkbook(await wb.xlsx.writeBuffer(), `day-close-${section.key}-${date}.xlsx`)
 }
 
 // Read a filled .xlsx day-close template back into { product_id, actual_qty, note }

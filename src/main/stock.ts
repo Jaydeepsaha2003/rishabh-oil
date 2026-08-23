@@ -1,5 +1,7 @@
+import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
+import { getSetting } from './repos'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -551,4 +553,162 @@ export async function productionNeeds(): Promise<Row[]> {
     })
   }
   return out
+}
+
+// stock.ts had no row-shaping helper because everything above it returns
+// hand-built objects; these registers hand their columns straight back.
+function toPlain(res: ResultSet): Row[] {
+  return res.rows.map((r) => {
+    const o: Row = {}
+    for (const col of res.columns) o[col] = (r as unknown as Row)[col]
+    return o
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Movement registers: the same period the Book Stock register covers, but one
+// line per physical document instead of one per product. Two of them —
+// everything that came IN, and everything that went OUT — with the vehicle,
+// the bill and both weights, which is what a gate/lorry register is checked
+// against.
+export async function stockRegisters(
+  companyIds?: number[],
+  range?: { from?: string; to?: string }
+): Promise<{ receipts: Row[]; dispatches: Row[] }> {
+  const c = getClient()
+  const cidList = (companyIds || []).map(Number).filter((x) => x > 0)
+  if (!cidList.length) cidList.push(getActiveCompanyId())
+  const ph = cidList.map(() => '?').join(', ')
+  const from = String(range?.from || '')
+  const to = String(range?.to || '')
+  const bounds = (dateExpr: string): { sql: string; args: string[] } => {
+    const parts: string[] = []
+    const args: string[] = []
+    if (from) {
+      parts.push(`AND ${dateExpr} >= ?`)
+      args.push(from)
+    }
+    if (to) {
+      parts.push(`AND ${dateExpr} <= ?`)
+      args.push(to)
+    }
+    return { sql: parts.join(' '), args }
+  }
+
+  // Same receipt date rule stockLevels and the party breakdown use, so a line
+  // here always lands in the period its quantity was counted in.
+  const recDateExpr = `CASE WHEN COALESCE(o.is_consignment, 0) = 1
+                             THEN o.order_date
+                             ELSE COALESCE(o.received_date, o.order_date) END`
+  const recB = bounds(recDateExpr)
+
+  // A purchase arrives one of two ways: as tankers booked against the order —
+  // then the vehicle, its loading date and its own two weights are what the
+  // register wants — or as a consignment/direct receipt with no vehicle behind
+  // it at all, which still has to appear or the register would not tie back to
+  // the stock figure. Hence the two halves.
+  const recTankers = await c.execute({
+    sql: `SELECT ${recDateExpr} AS received_date,
+                 pt.loaded_date AS loaded_date,
+                 COALESCE(sp.name, s2.name, 'Unknown') AS party,
+                 tr.name AS transporter,
+                 o.invoice_no AS bill_no,
+                 pt.tanker_no AS vehicle_no,
+                 p.name AS oil_type,
+                 pt.loaded_qty AS dispatch_qty,
+                 CASE WHEN pt.status = 'empty' THEN pt.received_qty ELSE NULL END AS received_qty,
+                 pt.condition AS tanker_condition,
+                 b.bargain_type AS bargain_type,
+                 o.allowed_shortage_pct AS order_pct,
+                 b.allowed_shortage_pct AS bargain_pct,
+                 co.name AS company
+          FROM purchase_tankers pt
+          JOIN orders o ON o.id = pt.order_id
+          LEFT JOIN bargains b ON b.id = pt.bargain_id
+          LEFT JOIN suppliers sp ON sp.id = pt.supplier_id
+          LEFT JOIN suppliers s2 ON s2.id = o.supplier_id
+          LEFT JOIN transporters tr ON tr.id = COALESCE(pt.transporter_id, o.transporter_id)
+          LEFT JOIN products p ON p.id = COALESCE(pt.oil_type_id, o.oil_type_id)
+          LEFT JOIN companies co ON co.id = o.company_id
+          WHERE o.status = 'received' AND COALESCE(o.affects_stock, 1) = 1
+            AND o.company_id IN (${ph}) ${recB.sql}`,
+    args: [...cidList, ...recB.args]
+  })
+  const recDirect = await c.execute({
+    sql: `SELECT ${recDateExpr} AS received_date,
+                 o.loaded_date AS loaded_date,
+                 COALESCE(s.name, 'Unknown') AS party,
+                 tr.name AS transporter,
+                 o.invoice_no AS bill_no,
+                 o.tanker_no AS vehicle_no,
+                 p.name AS oil_type,
+                 o.ordered_qty AS dispatch_qty,
+                 o.received_qty AS received_qty,
+                 NULL AS tanker_condition,
+                 COALESCE(b.bargain_type, o.bargain_type) AS bargain_type,
+                 o.allowed_shortage_pct AS order_pct,
+                 b.allowed_shortage_pct AS bargain_pct,
+                 co.name AS company
+          FROM orders o
+          LEFT JOIN bargains b ON b.id = o.bargain_id
+          LEFT JOIN suppliers s ON s.id = o.supplier_id
+          LEFT JOIN transporters tr ON tr.id = o.transporter_id
+          LEFT JOIN products p ON p.id = o.oil_type_id
+          LEFT JOIN companies co ON co.id = o.company_id
+          WHERE o.status = 'received' AND COALESCE(o.affects_stock, 1) = 1
+            AND o.company_id IN (${ph}) ${recB.sql}
+            AND NOT EXISTS (SELECT 1 FROM purchase_tankers pt WHERE pt.order_id = o.id)`,
+    args: [...cidList, ...recB.args]
+  })
+
+  const dispB = bounds('COALESCE(s.unloaded_date, s.sale_date)')
+  const disp = await c.execute({
+    sql: `SELECT s.loaded_date AS loaded_date,
+                 COALESCE(s.unloaded_date, s.sale_date) AS received_date,
+                 COALESCE(cu.name, s.customer, 'Unknown') AS party,
+                 tr.name AS transporter,
+                 s.invoice_no AS bill_no,
+                 g.tanker_no AS vehicle_no,
+                 p.name AS oil_type,
+                 s.qty AS dispatch_qty,
+                 g.received_qty AS received_qty,
+                 co.name AS company
+          FROM sales s
+          LEFT JOIN customers cu ON cu.id = s.customer_id
+          LEFT JOIN transporters tr ON tr.id = s.transporter_id
+          LEFT JOIN products p ON p.id = s.product_id
+          LEFT JOIN companies co ON co.id = s.company_id
+          LEFT JOIN gate_entries g ON g.sale_id = s.id
+          WHERE s.status = 'done' AND COALESCE(s.affects_stock, 1) = 1
+            AND s.company_id IN (${ph}) ${dispB.sql}`,
+    args: [...cidList, ...dispB.args]
+  })
+
+  // Shortage the supplier wears. Same rule the purchase screens show: only an
+  // EX load puts the loss on the supplier (on DLD the transporter or we do), and
+  // only the part beyond the agreed tolerance counts. The tolerance falls back
+  // order -> bargain -> the company default, and `??` is deliberate so an
+  // explicit 0% is honoured rather than treated as "not set".
+  const defaultPct = Number((await getSetting('allowed_shortage_pct')) ?? 0) || 0
+  const isEx = (tankerCondition: unknown, bargainType: unknown): boolean => {
+    const own = String(tankerCondition ?? '').trim().toUpperCase()
+    if (own) return own !== 'DLD' && own !== 'DELIVERED'
+    return !['DLD', 'DELIVERED'].includes(String(bargainType ?? '').trim().toUpperCase())
+  }
+  const withDeductible = (r: Row): Row => {
+    const loaded = Number(r.dispatch_qty) || 0
+    const rec = r.received_qty == null ? null : Number(r.received_qty)
+    if (rec == null || loaded <= 0 || !isEx(r.tanker_condition, r.bargain_type)) return { ...r, deductible: null }
+    const pct = Number(r.order_pct ?? r.bargain_pct ?? defaultPct) || 0
+    const allowed = (loaded * pct) / 100
+    const shortage = Math.max(0, loaded - rec)
+    return { ...r, deductible: shortage > allowed ? Math.round((shortage - allowed) * 1000) / 1000 : null }
+  }
+
+  // Newest first, the way every other register on the page reads.
+  const bySeq = (a: Row, b: Row): number =>
+    String(b.received_date || b.loaded_date || '').localeCompare(String(a.received_date || a.loaded_date || ''))
+  const receipts = [...toPlain(recTankers), ...toPlain(recDirect)].map(withDeductible).sort(bySeq)
+  const dispatches = toPlain(disp).sort(bySeq)
+  return { receipts, dispatches }
 }

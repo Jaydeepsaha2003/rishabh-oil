@@ -1064,6 +1064,7 @@ const MIGRATIONS = [
     tds_pct REAL NOT NULL DEFAULT 0,
     interest_pct REAL NOT NULL DEFAULT 0,
     interest_days REAL NOT NULL DEFAULT 0,
+    days_year REAL NOT NULL DEFAULT 360,
     active INTEGER NOT NULL DEFAULT 1,
     note TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1084,6 +1085,7 @@ const MIGRATIONS = [
     interest_pct REAL NOT NULL DEFAULT 0,
     tds_pct REAL NOT NULL DEFAULT 0,
     interest_upfront INTEGER NOT NULL DEFAULT 0,
+    days_year REAL NOT NULL DEFAULT 360,
     status TEXT NOT NULL DEFAULT 'open',
     repaid_date TEXT,
     repaid_amount REAL,
@@ -1093,6 +1095,13 @@ const MIGRATIONS = [
     note TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`
+,
+  // Bill discounting counts interest on a 360-day year, not 365 — the
+  // convention the mill's own working sheet uses. Kept per record (with an
+  // NBFC-level default) rather than hard-coded, since it is a term that is
+  // negotiated like the rate is.
+  'ALTER TABLE bill_discountings ADD COLUMN days_year REAL NOT NULL DEFAULT 360',
+  'ALTER TABLE nbfcs ADD COLUMN days_year REAL NOT NULL DEFAULT 360'
 ]
 
 
