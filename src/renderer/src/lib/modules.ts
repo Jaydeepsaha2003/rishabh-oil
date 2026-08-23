@@ -67,6 +67,20 @@ export function permLevel(user: PermUser, key: string): 'none' | 'read' | 'write
   return 'none'
 }
 
+// A narrowed job inside a module: the user reaches the page, but only the one
+// task the grant names. Today the only one is 'unload' on Sales — the unloading
+// desk, which sees FOR deliveries still out and records nothing but the
+// received quantity. Admins are never scoped.
+export function moduleScope(user: PermUser, key: string): string | null {
+  if (!user || user.role === 'admin') return null
+  const p = user.permissions
+  if (!p || Array.isArray(p) || typeof p !== 'object') return null
+  const v = (p as Record<string, unknown>)[key]
+  if (!v || typeof v !== 'object') return null
+  const scope = (v as Record<string, unknown>).scope
+  return scope ? String(scope) : null
+}
+
 export function canAccess(user: PermUser, key: string): boolean {
   return permLevel(user, key) !== 'none'
 }

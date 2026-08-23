@@ -20,6 +20,11 @@ export interface ModulePerm {
   edit?: boolean
   delete?: boolean
   editDays?: number | null
+  // A narrowed job inside the module, for a user who needs one task and must
+  // not see the rest of the page. Currently only 'unload' on the sales module:
+  // the unloading desk, which sees FOR invoices still out for delivery and may
+  // record nothing but the received quantity. Absent = the whole module.
+  scope?: string | null
 }
 
 export interface AccessUser {
@@ -73,6 +78,13 @@ export function modulePerm(user: AccessUser | null | undefined, moduleKey: strin
     }
   }
   return {}
+}
+
+// The narrowed job this user holds in a module, if any. Admins never have one.
+export function moduleScope(user: AccessUser | null | undefined, moduleKey: string): string | null {
+  if (!user || user.role === 'admin') return null
+  const scope = modulePerm(user, moduleKey).scope
+  return scope ? String(scope) : null
 }
 
 // Whole days between an entry's own date and today. Negative for a future date,

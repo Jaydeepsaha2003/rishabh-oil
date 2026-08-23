@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, Pencil, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -148,11 +148,11 @@ function UsersManager(): React.JSX.Element {
 
   // A module's rights, read from either the new object shape or the older
   // 'read' / 'write' string so existing users edit without being reset.
-  type Rights = { view: boolean; create: boolean; edit: boolean; delete: boolean; editDays: string }
+  type Rights = { view: boolean; create: boolean; edit: boolean; delete: boolean; editDays: string; scope: string }
   function rightsOf(key: string): Rights {
     const raw = (form.permissions || {})[key]
-    if (raw === 'write') return { view: true, create: true, edit: true, delete: true, editDays: '' }
-    if (raw === 'read') return { view: true, create: false, edit: false, delete: false, editDays: '' }
+    if (raw === 'write') return { view: true, create: true, edit: true, delete: true, editDays: '', scope: '' }
+    if (raw === 'read') return { view: true, create: false, edit: false, delete: false, editDays: '', scope: '' }
     if (raw && typeof raw === 'object') {
       const o = raw as Record<string, unknown>
       return {
@@ -160,10 +160,11 @@ function UsersManager(): React.JSX.Element {
         create: !!o.create,
         edit: !!o.edit,
         delete: !!o.delete,
-        editDays: o.editDays == null || o.editDays === '' ? '' : String(o.editDays)
+        editDays: o.editDays == null || o.editDays === '' ? '' : String(o.editDays),
+        scope: o.scope ? String(o.scope) : ''
       }
     }
-    return { view: false, create: false, edit: false, delete: false, editDays: '' }
+    return { view: false, create: false, edit: false, delete: false, editDays: '', scope: '' }
   }
 
   function writeRights(key: string, next: Rights): void {
@@ -181,6 +182,9 @@ function UsersManager(): React.JSX.Element {
         if (next.editDays !== '' && Number.isFinite(Number(next.editDays))) {
           entry.editDays = Math.max(0, Number(next.editDays))
         }
+        // Carried, not rebuilt — ticking any box on a scoped module would
+        // otherwise silently drop the restriction it was granted under.
+        if (next.scope) entry.scope = next.scope
         perms[key] = entry
       }
       return { ...p, permissions: perms }
@@ -218,6 +222,7 @@ function UsersManager(): React.JSX.Element {
         else {
           const entry: Record<string, unknown> = { view: true, create: next.create, edit: next.edit, delete: next.delete }
           if (next.editDays !== '') entry.editDays = Math.max(0, Number(next.editDays))
+          if (next.scope) entry.scope = next.scope
           perms[m.key] = entry
         }
       }
@@ -239,6 +244,29 @@ function UsersManager(): React.JSX.Element {
     })
   }
 
+  // Special access: the unloading desk. A grant of its own rather than a
+  // combination of tick boxes, because what it restricts is not an action but
+  // WHICH ROWS AND COLUMNS exist — the page shows Date/Invoice, Customer, Item
+  // and Dispatch status for FOR deliveries still out, and nothing else. The
+  // rights are fixed to view + edit: there is exactly one thing to record.
+  const unloadDesk = rightsOf('sales').scope === 'unload'
+  function setUnloadDesk(on: boolean): void {
+    setForm((p) => {
+      const perms = { ...(p.permissions || {}) }
+      if (!on) {
+        const cur = perms.sales
+        if (cur && typeof cur === 'object') {
+          const o = { ...(cur as Record<string, unknown>) }
+          delete o.scope
+          perms.sales = o
+        }
+      } else {
+        perms.sales = { view: true, create: false, edit: true, delete: false, scope: 'unload' }
+      }
+      return { ...p, permissions: perms }
+    })
+  }
+
   // Apply one read-only window to every module the user can edit.
   function setAllDays(days: string): void {
     setForm((p) => {
@@ -248,6 +276,7 @@ function UsersManager(): React.JSX.Element {
         if (!(cur.view || cur.create || cur.edit || cur.delete)) continue
         const entry: Record<string, unknown> = { view: true, create: cur.create, edit: cur.edit, delete: cur.delete }
         if (days !== '' && Number.isFinite(Number(days))) entry.editDays = Math.max(0, Number(days))
+        if (cur.scope) entry.scope = cur.scope
         perms[m.key] = entry
       }
       return { ...p, permissions: perms }
@@ -315,6 +344,43 @@ function UsersManager(): React.JSX.Element {
               </p>
             ) : (
               <>
+                {/* Special access sits ABOVE the grid, not under it: it is not
+                    one more right to tick but a different shape of page, and at
+                    the bottom of a 24-row table nobody found it. */}
+                <div
+                  className={cn(
+                    'rounded-lg border-2 p-3 transition-colors',
+                    unloadDesk ? 'border-amber-500 bg-amber-100/70' : 'border-dashed border-amber-400/70 bg-amber-50/50'
+                  )}
+                >
+                  <div className="flex items-start gap-3">
+                    <Switch checked={unloadDesk} onCheckedChange={setUnloadDesk} className="mt-0.5 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <ShieldCheck className={cn('h-4 w-4 shrink-0', unloadDesk ? 'text-amber-700' : 'text-amber-600/70')} />
+                        <span className="text-[13px] font-bold text-amber-900">Special access — unloading desk only</span>
+                        {unloadDesk ? (
+                          <Badge className="bg-amber-600 text-[10px] uppercase tracking-wide hover:bg-amber-600">On</Badge>
+                        ) : (
+                          <span className="text-[10px] font-semibold uppercase tracking-widest text-amber-700/60">Off</span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-[11px] leading-relaxed text-amber-900/85">
+                        Turns the Sales page into a receiving list instead of the invoice register: <b>Date / Invoice</b>,{' '}
+                        <b>Customer</b>, <b>Item</b> and <b>Dispatch status</b> only, for <b>FOR</b> deliveries still out.
+                        Everything already unloaded, every Ex sale, and every rate, invoice value, GST and freight figure is
+                        left out of the data entirely — not merely hidden. The one thing this user can record is the{' '}
+                        <b>received quantity</b> on unloading.
+                      </p>
+                      {unloadDesk && (
+                        <p className="mt-1.5 rounded bg-amber-200/70 px-2 py-1 text-[11px] font-medium text-amber-900">
+                          The Sales row in the grid below is overridden while this is on.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
                 <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
                   <span className="text-muted-foreground">Read-only after</span>
                   <Input
@@ -351,14 +417,31 @@ function UsersManager(): React.JSX.Element {
                         const r = rightsOf(m.key)
                         const granted = r.view || r.create || r.edit || r.delete
                         return (
-                          <tr key={m.key} className={cn('border-b last:border-0', i % 2 === 1 && 'bg-muted/30', !granted && 'opacity-60')}>
-                            <td className="px-3 py-1.5 font-medium">{m.label}</td>
+                          <tr
+                            key={m.key}
+                            className={cn(
+                              'border-b last:border-0',
+                              i % 2 === 1 && 'bg-muted/30',
+                              !granted && 'opacity-60',
+                              m.key === 'sales' && unloadDesk && 'bg-amber-100/70 opacity-100'
+                            )}
+                          >
+                            <td className="px-3 py-1.5 font-medium">
+                              {m.label}
+                              {m.key === 'sales' && unloadDesk && (
+                                <span className="ml-1.5 rounded bg-amber-600 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-white">
+                                  unloading desk
+                                </span>
+                              )}
+                            </td>
                             {(['view', 'create', 'edit', 'delete'] as const).map((f) => (
                               <td key={f} className="px-2 py-1.5 text-center">
                                 <input
                                   type="checkbox"
                                   className="h-3.5 w-3.5 accent-sky-600"
                                   checked={r[f]}
+                                  disabled={m.key === 'sales' && unloadDesk}
+                                  title={m.key === 'sales' && unloadDesk ? 'Fixed by the unloading-desk access above' : undefined}
                                   onChange={(e) => toggleRight(m.key, f, e.target.checked)}
                                 />
                               </td>
@@ -386,6 +469,7 @@ function UsersManager(): React.JSX.Element {
                   (invoice date, bargain date…) is more than N days old — 0 means the entry&apos;s own day only. The
                   entry stays visible either way, so totals still reconcile, and it is enforced on save, not just here.
                 </p>
+
               </>
             )}
           </div>

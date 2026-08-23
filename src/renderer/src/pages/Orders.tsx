@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   Undo2, ArrowLeft, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, DoorOpen, Eye,
-  FileText, IndianRupee, Pencil, Plus, ScrollText, Trash2, Truck, type LucideIcon } from 'lucide-react'
+  FileText, IndianRupee, Pencil, Plus, ScrollText, Search, Trash2, Truck, type LucideIcon } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { FyPicker } from '@/components/FyPicker'
 import { ExcelButton } from '@/components/ExcelButton'
@@ -234,17 +234,37 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // you are in, 'all' or a company id widens the lens.
   const [moveCompany, setMoveCompany] = useState('active')
   const [allTankers, setAllTankers] = useState<Row[]>([])
+  // Free-text search over the movement views. Applied to moveTankers rather
+  // than to one table, so the pivot counts, its Excel and the lists under it
+  // all answer the same question — a count you cannot reconcile with the list
+  // below it is worse than no search at all.
+  const [moveSearch, setMoveSearch] = useState('')
   const moveTankers = useMemo(() => {
     const base = allTankers.length ? allTankers : tankers
-    if (moveCompany === 'all') return base
     const cid = moveCompany === 'active' ? String(activeCompany) : moveCompany
     // A tanker only belongs to a company once an invoice books it there —
     // until then it is just a vehicle in the yard, and which set of books it
     // will be billed into is exactly what has not been decided yet. So an
     // unbilled tanker shows under EVERY company; once billed it settles into
     // the invoice's company and shows only there.
-    return base.filter((t) => !t.order_id || String(t.company_id) === cid)
-  }, [moveCompany, tankers, allTankers, activeCompany])
+    const scoped =
+      moveCompany === 'all' ? base : base.filter((t) => !t.order_id || String(t.company_id) === cid)
+    const q = moveSearch.trim().toLowerCase()
+    if (!q) return scoped
+    // Every term has to match somewhere, so "rj09 mahuwa" narrows instead of
+    // widening — the way anyone types two things they remember about a load.
+    const terms = q.split(/\s+/)
+    return scoped.filter((t) => {
+      const hay = [
+        t.tanker_no, t.gate_tanker_no, t.supplier_name, t.bargain_no, t.extra_bargain_no,
+        t.oil_code, t.oil_name, t.invoice_no, t.transporter_name, t.source_name, t.gate_entry_no
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+      return terms.every((w) => hay.includes(w))
+    })
+  }, [moveCompany, tankers, allTankers, activeCompany, moveSearch])
 
   const inCategory = useCallback(
     (t: Row): boolean => !tmCategory.length || tmCategory.includes(String(t.product_category || '')),
@@ -3035,6 +3055,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
+                    <div className="relative w-full sm:w-60">
+                      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        type="search"
+                        className="h-8 pl-8 text-[11px]"
+                        placeholder="Search tanker, party, bargain, invoice…"
+                        value={moveSearch}
+                        onChange={(e) => setMoveSearch(e.target.value)}
+                      />
+                    </div>
+                    <div className="h-5 shrink-0 border-l" />
                     <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
                       Company
                     </span>
@@ -3107,7 +3138,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   </TableRow></TableHeader>
                   <TableBody>
                     {pivot.rows.length === 0 ? (
-                      <TableRow><TableCell colSpan={PIVOT_STAGES.length + 2} className="py-8 text-center text-muted-foreground">No tankers to show for this period.</TableCell></TableRow>
+                      <TableRow><TableCell colSpan={PIVOT_STAGES.length + 2} className="py-8 text-center text-muted-foreground">
+                        {moveSearch.trim()
+                          ? `Nothing matches “${moveSearch.trim()}” in this period.`
+                          : 'No tankers to show for this period.'}
+                      </TableCell></TableRow>
                     ) : (
                       <>
                         {pivot.rows.map((row) => (

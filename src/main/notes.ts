@@ -23,11 +23,6 @@ function round2(x: number): number {
   return Math.round((x + Number.EPSILON) * 100) / 100
 }
 
-// Quantities are stored to 3 decimals everywhere else in the app.
-function round3(x: number): number {
-  return Math.round((x + Number.EPSILON) * 1000) / 1000
-}
-
 // Next running note number per type, per company: DN/1, CN/1, …
 async function nextNoteNo(type: 'debit' | 'credit', companyId?: number): Promise<string> {
   const prefix = type === 'debit' ? 'DN' : 'CN'
@@ -74,72 +69,6 @@ export async function listNoteItems(noteId: number): Promise<Row[]> {
     args: [noteId]
   })
   return toPlain(res)
-}
-
-// Undo whatever a note added back onto a sales bargain. Called before an alter
-// re-posts and before a delete, so a note never leaves a top-up behind. A
-// refusal here is deliberate: if dispatches have since drawn on the returned
-// quantity, silently pulling it back would leave the bargain oversold.
-async function reverseNoteBargain(noteId: number): Promise<void> {
-  const c = getClient()
-  const rows = await c.execute({
-    sql: 'SELECT id, bargain_id, delta FROM bargain_adjustments WHERE note_id = ?',
-    args: [noteId]
-  })
-  for (const r of rows.rows) {
-    const bid = n(r.bargain_id)
-    const delta = n(r.delta)
-    const b = await c.execute({ sql: 'SELECT qty FROM sales_bargains WHERE id = ?', args: [bid] })
-    if (b.rows.length) {
-      const sold = await c.execute({
-        sql: 'SELECT COALESCE(SUM(qty), 0) AS s FROM sales WHERE sales_bargain_id = ?',
-        args: [bid]
-      })
-      const newQty = round3(n(b.rows[0].qty) - delta)
-      const drawn = round3(n(sold.rows[0].s))
-      if (newQty < drawn - 1e-6) {
-        throw new Error(
-          `Dispatches have already used the ${delta.toFixed(3)} this note put back on sales bargain #${bid} — reverse those dispatches first.`
-        )
-      }
-      await c.execute({ sql: 'UPDATE sales_bargains SET qty = ? WHERE id = ?', args: [newQty, bid] })
-    }
-    await c.execute({ sql: 'DELETE FROM bargain_adjustments WHERE id = ?', args: [n(r.id)] })
-  }
-}
-
-// Put the returned quantity back on a sales bargain. Mirrors the manual
-// adjust: the live qty moves AND a dated log row is written, so the register
-// shows it under "Adjusted" for the note's month rather than blending it into
-// the opening balance.
-async function applyNoteBargain(
-  noteId: number,
-  bargainId: number,
-  qty: number,
-  date: string,
-  label: string,
-  customerId: number
-): Promise<void> {
-  const c = getClient()
-  const b = await c.execute({
-    sql: 'SELECT id, qty, customer_id, bargain_no FROM sales_bargains WHERE id = ?',
-    args: [bargainId]
-  })
-  if (!b.rows.length) throw new Error('That sales bargain no longer exists')
-  const owner = b.rows[0].customer_id == null ? 0 : n(b.rows[0].customer_id)
-  if (owner && customerId && owner !== customerId) {
-    throw new Error(`Sales bargain ${String(b.rows[0].bargain_no || bargainId)} belongs to another customer`)
-  }
-  const add = round3(qty)
-  if (add <= 0) return
-  await c.execute({
-    sql: 'UPDATE sales_bargains SET qty = ? WHERE id = ?',
-    args: [round3(n(b.rows[0].qty) + add), bargainId]
-  })
-  await c.execute({
-    sql: "INSERT INTO bargain_adjustments (kind, bargain_id, delta, adj_date, note, note_id) VALUES ('sales', ?, ?, ?, ?, ?)",
-    args: [bargainId, add, date, label, noteId]
-  })
 }
 
 // Which side of the books a party sits on, and therefore how a note against
@@ -195,12 +124,12 @@ export async function createNote(v: Row, existingId?: number): Promise<{ id: num
   const roundOff = round2(total - rawTotal)
   // The original invoice this note adjusts (GST's "original invoice no").
   const againstRef = v.against_invoice ? String(v.against_invoice).trim() : null
-  // A sales return can be credited back to the bargain it was drawn from, so
-  // the customer's committed quantity goes up again. Only meaningful on a
-  // customer credit note carrying item lines.
+  // Which bargain this return goes back onto, when the note does not name an
+  // original invoice to read it off. Stored, not acted on: the sales-bargain
+  // register derives the Return figure from the note itself, so there is one
+  // mechanism and nothing to unwind when the note is altered or deleted.
   const wantsBargain = type === 'credit' && partyType === 'customer'
   const bargainId = wantsBargain && v.bargain_id ? n(v.bargain_id) : 0
-  const returnQty = round3(items.reduce((sum, it) => sum + it.qty, 0))
 
   // Party name (must match the journal account used elsewhere for this party).
   const partyRes = await c.execute({
@@ -244,7 +173,6 @@ export async function createNote(v: Row, existingId?: number): Promise<{ id: num
     // Item lines are what move stock, so they go too — the re-insert below is
     // what puts the new quantities back.
     await c.execute({ sql: 'DELETE FROM note_items WHERE note_id = ?', args: [n(existingId)] })
-    await reverseNoteBargain(n(existingId))
   }
   const date = String(v.note_date || todayISO()).slice(0, 10)
   const narration = v.narration ? String(v.narration).trim() : null
@@ -342,9 +270,6 @@ export async function createNote(v: Row, existingId?: number): Promise<{ id: num
       args: [noteId, it.product_id, it.description, it.qty, it.rate, it.amount]
     })
   }
-  if (bargainId && returnQty > 0) {
-    await applyNoteBargain(noteId, bargainId, returnQty, date, `${noteNo} return`, partyId)
-  }
   return { id: noteId, note_no: noteNo }
 }
 
@@ -379,7 +304,6 @@ export async function deleteNote(id: number, companyId?: number): Promise<{ id: 
       : 'supplier_ledger'
     await c.execute({ sql: `DELETE FROM ${table} WHERE id = ?`, args: [Number(note.ledger_id)] })
   }
-  await reverseNoteBargain(id)
   await c.execute({ sql: 'DELETE FROM note_items WHERE note_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM notes WHERE id = ?', args: [id] })
   return { id }

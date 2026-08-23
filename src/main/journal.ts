@@ -146,6 +146,19 @@ export async function deleteManualEntry(id: number): Promise<{ id: number }> {
   if (noteRef.rows.length) {
     throw new Error('This voucher belongs to a Debit/Credit note — delete the note itself')
   }
+  // Same rule for a transporter's freight bill. Deleting its voucher here used
+  // to leave the bill row behind with its freight lines still flagged as
+  // billed, so they never came back to Unbilled on the Freight Working
+  // register — the voucher was gone but the register still read as booked.
+  const billRef = await c.execute({
+    sql: 'SELECT id, bill_no FROM transporter_bills WHERE journal_entry_id = ? LIMIT 1',
+    args: [id]
+  })
+  if (billRef.rows.length) {
+    throw new Error(
+      `This voucher is transporter bill ${String(billRef.rows[0].bill_no || billRef.rows[0].id)} — delete it from the Freight Working register so its freight lines go back to unbilled`
+    )
+  }
   await c.execute({
     sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
     args: [id]

@@ -7,7 +7,7 @@
 // discovering a legitimate edit is now impossible.
 import { getClient, todayISO } from './db'
 import { getCurrentUser } from './currentUser'
-import { can, type Action, type AccessUser } from './access-rules'
+import { can, moduleScope, type Action, type AccessUser } from './access-rules'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -62,7 +62,8 @@ const READ_OPS = new Set([
   'list', 'get', 'items', 'issuances', 'sheet', 'outstanding', 'all', 'summary', 'transfers',
   'fyTaxable', 'needs', 'breakdown', 'nextNo', 'liveUsers', 'ips', 'logs', 'dispatchableSales',
   'mine', 'pendingCount', 'pending', 'lots', 'unmapped', 'unmappedCount', 'bargainLines',
-  'consignmentDraws', 'accounts', 'statement', 'suppliers', 'transporters', 'customers'
+  'consignmentDraws', 'accounts', 'statement', 'suppliers', 'transporters', 'customers',
+  'returns', 'unattributedReturns'
 ])
 
 // What the operation amounts to. Anything that changes an existing row counts as
@@ -102,6 +103,28 @@ async function currentAccessUser(): Promise<AccessUser | null> {
   return user
 }
 
+// The narrowed job the signed-in user holds in a module, for the readers that
+// have to hand back less than the full row set. Null for an admin, for a user
+// the app does not know (harness, first run), or for an unrestricted grant.
+export async function currentScope(moduleKey: string): Promise<string | null> {
+  const user = await currentAccessUser()
+  if (!user) return null
+  return moduleScope(user, moduleKey)
+}
+
+// The unload desk may record exactly one thing: that a delivery arrived, and
+// what was weighed in. Everything else on the sales channel is refused here, so
+// the restriction is a control and not a hidden button.
+function assertScopedSales(op: string, args: unknown): void {
+  const stage = String((args as Row)?.stage || '')
+  const isUnload = (op === 'setInvoiceStage' || op === 'setStage') && stage === 'unloaded'
+  if (!isUnload) {
+    throw new Error(
+      'Your access to Sales covers recording received quantities on deliveries only — nothing else on this page can be changed.'
+    )
+  }
+}
+
 // Throws with a sentence the renderer shows verbatim. Returns quietly when the
 // channel is unmapped, the user is unknown, or the action is allowed.
 export async function assertAllowed(channel: string, args: unknown): Promise<void> {
@@ -112,6 +135,13 @@ export async function assertAllowed(channel: string, args: unknown): Promise<voi
   const user = await currentAccessUser()
   if (!user) return
   if (user.role === 'admin') return
+
+  // A narrowed job answers the whole question on its own — the ordinary
+  // per-action rights below would let an 'edit' grant through everything.
+  if (moduleScope(user, rule.module) === 'unload' && rule.module === 'sales') {
+    assertScopedSales(op, args)
+    return
+  }
 
   const action = actionFor(op)
   // The row's own date decides the read-only window; without one, only the

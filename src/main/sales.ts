@@ -278,6 +278,46 @@ export async function listCustomerLedger(): Promise<Row[]> {
   return toPlain(res)
 }
 
+// The unloading desk's own read. A user granted the 'unload' scope on Sales
+// gets a deliberately thin row: enough to identify the delivery and record what
+// arrived, and NOT ONE MONEY FIELD — no rate, no invoice value, no GST, no
+// freight. The restriction is in the SQL rather than in the page, so the
+// confidential columns never cross the IPC boundary in the first place.
+//
+// Rows: FOR deliveries only (an Ex sale is lifted by the customer, so there is
+// nothing for this desk to receive) that have not been unloaded yet, and no
+// cancelled or trading invoices.
+export async function listSalesForUnloadDesk(companyIds?: number[]): Promise<Row[]> {
+  const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
+  const res = await getClient().execute({
+    args: cos.length ? [] : [getActiveCompanyId()],
+    sql: `
+    SELECT s.id, s.invoice_no, s.invoice_group, s.sale_date, s.customer, s.customer_id,
+           s.product_id, s.packaging_id, s.qty, s.uom, s.received_qty,
+           s.dispatch_stage, s.status, s.freight_term, s.track_stock, s.is_trading,
+           s.loaded_date, s.transit_date, s.unloaded_date, s.rejected_at, s.company_id,
+           pr.name AS product_name, pr.material_type AS product_category,
+           pr.category AS product_sub_category, pk.name AS packaging_name,
+           cu.name AS customer_master, co.name AS company_name,
+           (SELECT ge.tanker_no FROM gate_entries ge
+             WHERE ge.direction = 'out' AND ge.invoice_group = s.invoice_group AND s.invoice_group IS NOT NULL
+             ORDER BY ge.id DESC LIMIT 1) AS gate_vehicle_no
+    FROM sales s
+    LEFT JOIN products pr ON pr.id = s.product_id
+    LEFT JOIN packagings pk ON pk.id = s.packaging_id
+    LEFT JOIN customers cu ON cu.id = s.customer_id
+    LEFT JOIN companies co ON co.id = s.company_id
+    WHERE ${cos.length ? `s.company_id IN (${cos.join(',')})` : 's.company_id = ?'}
+      AND COALESCE(s.freight_term, 'FREIGHT_ON_GOODS') = 'DLD'
+      AND COALESCE(s.dispatch_stage, CASE WHEN s.status = 'done' THEN 'unloaded' ELSE 'pending' END) <> 'unloaded'
+      AND s.rejected_at IS NULL
+      AND COALESCE(s.is_trading, 0) = 0
+    ORDER BY s.sale_date DESC, s.id DESC
+  `
+  })
+  return toPlain(res).map((r) => ({ ...r, customer: r.customer_master || r.customer }))
+}
+
 // companyIds is for the readers that have to span companies — the sales-bargain
 // register counts every company's dispatch in its balance, so its drilldown has
 // to be able to list them all. Left empty (the default) it stays on the active
@@ -330,6 +370,36 @@ function dayMonth(dateStr: string): string {
   return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
+// Which bargain a customer credit note gives its quantity back to. A sales
+// return is not guessed from the customer and product — a customer can hold
+// several bargains for the same oil and there would be no way to know which one
+// the goods left on. It is resolved from what the note already states:
+//
+//   1. the bargain named on the note itself (the picker on the note form), or
+//   2. the ORIGINAL INVOICE the note was raised against — that invoice's own
+//      lines say which bargain they drew on, and for which product.
+//
+// A note that names neither is left unattributed rather than allocated to a
+// guess; listUnattributedReturns reports those so they can be pointed at a
+// bargain instead of quietly going missing.
+const RETURN_MATCH = `(
+  nt.bargain_id = b.id
+  OR (nt.bargain_id IS NULL
+      AND COALESCE(nt.against_ref, '') <> ''
+      AND EXISTS (SELECT 1 FROM sales s2
+                   WHERE s2.sales_bargain_id = b.id
+                     AND s2.product_id = ni.product_id
+                     AND TRIM(UPPER(s2.invoice_no)) = TRIM(UPPER(nt.against_ref))))
+)`
+
+// SUM of returned quantity for bargain b, over whatever date window is passed.
+function returnSum(dateWhere: string, coWhere: string): string {
+  return `COALESCE((SELECT SUM(ni.qty)
+      FROM notes nt JOIN note_items ni ON ni.note_id = nt.id
+     WHERE nt.note_type = 'credit' AND nt.party_type = 'customer'
+       AND ${RETURN_MATCH}${coWhere}${dateWhere}), 0)`
+}
+
 export async function listSalesBargains(from?: string, to?: string, companyIds?: number[]): Promise<Row[]> {
   // Sales bargains are GENERAL — shared across every company, like purchase
   // bargains (no company filter; sold sums sales from all companies).
@@ -343,28 +413,73 @@ export async function listSalesBargains(from?: string, to?: string, companyIds?:
   // the invoice list shown underneath them.
   const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
   const sCo = cos.length ? ` AND company_id IN (${cos.join(',')})` : ''
+  const nCo = cos.length ? ` AND nt.company_id IN (${cos.join(',')})` : ''
   const res = await getClient().execute({
     sql: `
     SELECT b.*, pr.name AS product_name, pk.name AS packaging_name, cu.name AS customer_master,
       COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id${sCo}), 0) AS sold_qty,
-      b.qty - COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id${sCo}), 0) AS balance_qty,
+      b.qty - COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id${sCo}), 0)
+            + ${returnSum('', nCo)} AS balance_qty,
       COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id AND substr(sale_date, 1, 10) < ?${sCo}), 0) AS disp_before,
       COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id AND substr(sale_date, 1, 10) >= ? AND substr(sale_date, 1, 10) <= ?${sCo}), 0) AS disp_period,
       (SELECT MAX(substr(sale_date, 1, 10)) FROM sales WHERE sales_bargain_id = b.id${sCo}) AS last_dispatch_date,
       COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'sales' AND bargain_id = b.id AND substr(adj_date, 1, 10) < ?), 0) AS adj_before,
       COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'sales' AND bargain_id = b.id AND substr(adj_date, 1, 10) >= ? AND substr(adj_date, 1, 10) <= ?), 0) AS adj_in,
-      COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'sales' AND bargain_id = b.id AND substr(adj_date, 1, 10) > ?), 0) AS adj_after
+      COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'sales' AND bargain_id = b.id AND substr(adj_date, 1, 10) > ?), 0) AS adj_after,
+      ${returnSum('', nCo)} AS returned_qty,
+      ${returnSum(" AND substr(nt.note_date, 1, 10) < ?", nCo)} AS ret_before,
+      ${returnSum(" AND substr(nt.note_date, 1, 10) >= ? AND substr(nt.note_date, 1, 10) <= ?", nCo)} AS ret_in,
+      ${returnSum(" AND substr(nt.note_date, 1, 10) > ?", nCo)} AS ret_after
     FROM sales_bargains b
     LEFT JOIN products pr ON pr.id = b.product_id
     LEFT JOIN packagings pk ON pk.id = b.packaging_id
     LEFT JOIN customers cu ON cu.id = b.customer_id
     ORDER BY b.id DESC
   `,
-    args: [f, f, t, f, f, t, t]
+    args: [f, f, t, f, f, t, t, f, f, t, t]
   })
   // When linked to the master, always show the master's current name (renames
   // propagate); otherwise fall back to the free-text name stored on the bargain.
   return toPlain(res).map((r) => ({ ...r, customer: r.customer_master || r.customer }))
+}
+
+// The return lines behind the register's Return figure, so a balance that went
+// up can be traced to the note that put it back.
+export async function listSalesBargainReturns(companyIds?: number[]): Promise<Row[]> {
+  const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
+  const res = await getClient().execute(`
+    SELECT b.id AS bargain_id, nt.id AS note_id, nt.note_no, nt.note_date, nt.against_ref,
+           nt.company_id, co.name AS company_name, ni.qty, ni.rate, ni.amount,
+           p.name AS product_name, nt.bargain_id AS explicit_bargain_id
+      FROM notes nt
+      JOIN note_items ni ON ni.note_id = nt.id
+      JOIN sales_bargains b ON ${RETURN_MATCH}
+      LEFT JOIN products p ON p.id = ni.product_id
+      LEFT JOIN companies co ON co.id = nt.company_id
+     WHERE nt.note_type = 'credit' AND nt.party_type = 'customer'
+       ${cos.length ? `AND nt.company_id IN (${cos.join(',')})` : ''}
+     ORDER BY nt.note_date, nt.id`)
+  return toPlain(res)
+}
+
+// Customer credit notes carrying goods that no bargain could be matched to:
+// no bargain named on the note, and no original invoice (or one that never drew
+// on a bargain). Their quantity is NOT added to any balance, so they are
+// reported rather than silently dropped.
+export async function listUnattributedReturns(companyIds?: number[]): Promise<Row[]> {
+  const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
+  const res = await getClient().execute(`
+    SELECT nt.id AS note_id, nt.note_no, nt.note_date, nt.against_ref, nt.company_id,
+           cu.name AS customer, ni.qty, p.name AS product_name
+      FROM notes nt
+      JOIN note_items ni ON ni.note_id = nt.id
+      LEFT JOIN customers cu ON cu.id = nt.party_id
+      LEFT JOIN products p ON p.id = ni.product_id
+     WHERE nt.note_type = 'credit' AND nt.party_type = 'customer'
+       ${cos.length ? `AND nt.company_id IN (${cos.join(',')})` : ''}
+       AND NOT EXISTS (SELECT 1 FROM sales_bargains b WHERE ${RETURN_MATCH})
+     ORDER BY nt.note_date, nt.id`)
+  return toPlain(res)
 }
 
 // Format: FGCODE/DD-MM/PARTY/SERIAL (mirrors the purchase bargain number).
@@ -573,7 +688,17 @@ async function salesBargainBalanceFor(bargainId: number, excludeSaleId: number):
     sql: 'SELECT COALESCE(SUM(qty), 0) AS q FROM sales WHERE sales_bargain_id = ? AND id != ?',
     args: [bargainId, excludeSaleId || 0]
   })
-  return n(b.rows[0].qty) - n(sold.rows[0]?.q)
+  // Returned goods are back in our hands, so the bargain has room for them
+  // again — the register says so, and this check has to agree or a quantity
+  // shown as available would be refused on the invoice.
+  const ret = await c.execute({
+    sql: `SELECT COALESCE(SUM(ni.qty), 0) AS q
+            FROM notes nt JOIN note_items ni ON ni.note_id = nt.id
+            JOIN sales_bargains b ON b.id = ?
+           WHERE nt.note_type = 'credit' AND nt.party_type = 'customer' AND ${RETURN_MATCH}`,
+    args: [bargainId]
+  })
+  return n(b.rows[0].qty) - n(sold.rows[0]?.q) + n(ret.rows[0]?.q)
 }
 
 // Convert a quantity between units of the SAME dimension (mass or volume).

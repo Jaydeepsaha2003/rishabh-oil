@@ -1,6 +1,15 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Download, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Tags, Trash2, Upload } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Download, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Tags, Trash2, Truck, Upload } from 'lucide-react'
+import { moduleScope } from '@/lib/modules'
+import { loadUser } from '@/lib/session'
+
+// The unloading desk: a user granted the 'unload' scope on Sales reaches this
+// page to record one thing — what a delivery actually weighed in at. The rows
+// and columns it never gets are filtered in the main process (see
+// listSalesForUnloadDesk), so this flag shapes the page to match what the data
+// already is rather than being the restriction itself.
+const UNLOAD_DESK = (): boolean => moduleScope(loadUser(), 'sales') === 'unload'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -93,13 +102,18 @@ function round3(v: number): number {
 // in period) − dispatch (in period) = closing. `futureAdjusted` is any
 // adjustment dated after `to` — excluded from the period math (it hasn't
 // happened yet as of `to`) but surfaced separately so it isn't just dropped.
-function bargainRegister(r: Row, from: string, to: string): { opening: number; addition: number; adjusted: number; dispatch: number; closing: number; futureAdjusted: number } {
+function bargainRegister(r: Row, from: string, to: string): { opening: number; addition: number; adjusted: number; dispatch: number; ret: number; closing: number; futureAdjusted: number } {
   const qty = Number(r.qty) || 0
   const before = Number(r.disp_before) || 0
   const inP = Number(r.disp_period) || 0
   const adjBefore = Number(r.adj_before) || 0
   const adjIn = Number(r.adj_in) || 0
   const adjAfter = Number(r.adj_after) || 0
+  // Goods that came back on a customer credit note. Dated by the note, so a
+  // return sits in the month it was raised — and the opening balance carries
+  // whatever came back before the period, the same way dispatches do.
+  const retBefore = Number(r.ret_before) || 0
+  const retIn = Number(r.ret_in) || 0
   const bdate = String(r.bargain_date || '').slice(0, 10)
   const createdInRange = bdate >= from && bdate <= to
   const createdBefore = bdate < from
@@ -107,12 +121,13 @@ function bargainRegister(r: Row, from: string, to: string): { opening: number; a
   // Adjusted figure in the month they were made, not folded into Opening or
   // blended into Addition).
   const baseQty = qty - adjBefore - adjIn - adjAfter
-  const opening = round3(createdBefore ? Math.max(0, baseQty + adjBefore - before) : 0)
+  const opening = round3(createdBefore ? Math.max(0, baseQty + adjBefore - before + retBefore) : 0)
   const addition = round3(createdInRange ? baseQty : 0)
   const adjusted = round3(adjIn)
   const dispatch = round3(inP)
-  const closing = round3(opening + addition + adjusted - dispatch)
-  return { opening, addition, adjusted, dispatch, closing, futureAdjusted: round3(adjAfter) }
+  const ret = round3(retIn)
+  const closing = round3(opening + addition + adjusted - dispatch + ret)
+  return { opening, addition, adjusted, dispatch, ret, closing, futureAdjusted: round3(adjAfter) }
 }
 
 // Whether a bargain belongs in the register for [from,to]: created on/before the
@@ -172,7 +187,9 @@ function SalesTab({
   const [saving, setSaving] = useState(false)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [search, setSearch] = useState('')
-  const [dateFrom, setDateFrom] = useState(monthStartISO())
+  // The desk opens with no lower bound: a load that went out last month and is
+  // still not unloaded has to be on the list, not behind a date change.
+  const [dateFrom, setDateFrom] = useState(UNLOAD_DESK() ? '' : monthStartISO())
   const [dateTo, setDateTo] = useState(todayISO())
   // Empty = every product type.
   const [productType, setProductType] = useState<string[]>([])
@@ -184,6 +201,14 @@ function SalesTab({
 
   const load = useCallback(async () => {
     setLoading(true)
+    // The desk needs the deliveries and nothing else. Sales bargains carry
+    // contract rates and the masters are of no use without the invoice form, so
+    // they are not even fetched — the thin row set is the whole point.
+    if (UNLOAD_DESK()) {
+      setRows(await window.api.sales.list())
+      setLoading(false)
+      return
+    }
     const [s, pr, sb, st, cu, pk, tr] = await Promise.all([
       window.api.sales.list(),
       window.api.data.list('products'),
@@ -293,8 +318,11 @@ function SalesTab({
   // reads its value off a grouped invoice. Money/qty format the same way the
   // cell does, so the dropdown lists exactly what's on screen.
 
-  const INV_COLUMNS: { key: string; label: string; of: (inv: Row) => string }[] = useMemo(
-    () => [
+  const unloadOnly = UNLOAD_DESK()
+  // Columns rendered + the Actions column, for the empty/loading colSpan.
+  const colCount = unloadOnly ? 4 : 8
+  const INV_COLUMNS: { key: string; label: string; of: (inv: Row) => string }[] = useMemo(() => {
+    const all: { key: string; label: string; of: (inv: Row) => string }[] = [
       { key: 'invoice_no', label: 'Date / Invoice', of: (inv) => String(inv.first.invoice_no || '') },
       { key: 'customer', label: 'Customer', of: (inv) => String(inv.first.customer || '') },
       {
@@ -329,9 +357,11 @@ function SalesTab({
           return String(stageInfo(inv.first).label || '')
         }
       }
-    ],
-    []
-  )
+    ]
+    // The desk gets Date/Invoice, Customer, Item and Dispatch status — nothing
+    // else. Qty, invoice value and the freight term are not its business.
+    return all.filter((c) => !unloadOnly || ['invoice_no', 'customer', 'items', 'dispatch'].includes(c.key))
+  }, [unloadOnly])
 
   // Rows that pass every filter EXCEPT this column's own — so each dropdown
   // lists the values still reachable given the other filters, the way Excel
@@ -394,7 +424,7 @@ function SalesTab({
     setFormPage(true)
   }
   useEffect(() => {
-    onRegister?.({ open: openAdd, canAdd: products.length > 0, formOpen: formPage })
+    onRegister?.({ open: openAdd, canAdd: products.length > 0 && !unloadOnly, formOpen: formPage })
   }, [products.length, formPage]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function openEditInvoice(inv: { group: string; lines: Row[]; first: Row }): void {
@@ -1074,6 +1104,13 @@ function SalesTab({
             className="h-9 w-[11.5rem] text-[12px]"
           />
         </div>
+        {unloadOnly && (
+          <span className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-[11px] font-medium text-sky-900">
+            <Truck className="h-3.5 w-3.5 shrink-0" />
+            Deliveries still out — record what was received on unloading
+          </span>
+        )}
+        {!unloadOnly && (
         <ExcelButton
           className="ml-auto"
           filename={`sales-invoices-${todayISO()}`}
@@ -1090,9 +1127,10 @@ function SalesTab({
           ]}
           rows={filteredInvoices}
         />
+        )}
       </div>
       <div className="overflow-x-auto rounded-lg border bg-card">
-        <Table className="min-w-[1040px]">
+        <Table className={unloadOnly ? 'min-w-[720px]' : 'min-w-[1040px]'}>
           {/* The dark fill belongs on the THEAD, not the row: TableHeader
               carries [&_tr:hover]:bg-transparent (so a header never lights up
               like a data row), and that descendant selector out-specifies any
@@ -1121,13 +1159,13 @@ function SalesTab({
                   />
                 </TableHead>
               ))}
-              <TableHead className="w-[84px] text-right">Actions</TableHead>
+              {!unloadOnly && <TableHead className="w-[84px] text-right">Actions</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
             {/* Totals for exactly the rows the filters left — sits under the
                 header so the figure is read before scrolling, not after. */}
-            {!loading && filteredInvoices.length > 0 && (
+            {!loading && !unloadOnly && filteredInvoices.length > 0 && (
               <TableRow className="border-b-2 border-amber-400 bg-amber-50 hover:bg-amber-50">
                 <TableCell className="font-semibold text-amber-900">
                   Total
@@ -1149,9 +1187,13 @@ function SalesTab({
               </TableRow>
             )}
             {loading ? (
-              <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={colCount} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
             ) : filteredInvoices.length === 0 ? (
-              <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">{invoices.length === 0 ? 'No sales yet.' : 'No sales in this period / search.'}</TableCell></TableRow>
+              <TableRow><TableCell colSpan={colCount} className="py-10 text-center text-muted-foreground">
+                {unloadOnly
+                  ? 'Nothing waiting to be received — every delivery in this period has been unloaded.'
+                  : invoices.length === 0 ? 'No sales yet.' : 'No sales in this period / search.'}
+              </TableCell></TableRow>
             ) : (
               filteredInvoices.map((inv) => {
                 const stg = stageInfo(inv.first)
@@ -1163,10 +1205,13 @@ function SalesTab({
                 const isOpen = !!expanded[inv.group]
                 return (
                   <Fragment key={inv.group}>
-                    <TableRow className="cursor-pointer" onClick={() => setExpanded((p) => ({ ...p, [inv.group]: !p[inv.group] }))}>
+                    <TableRow
+                      className={unloadOnly ? undefined : 'cursor-pointer'}
+                      onClick={unloadOnly ? undefined : () => setExpanded((p) => ({ ...p, [inv.group]: !p[inv.group] }))}
+                    >
                       <TableCell className="align-top">
                         <div className="flex items-center gap-1.5">
-                          {isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                          {unloadOnly ? null : isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                           <div>
                             <div className="flex items-center gap-1.5 whitespace-nowrap">
                               {formatDate(inv.first.sale_date)}
@@ -1194,6 +1239,8 @@ function SalesTab({
                           {inv.lines.map((r) => r.product_name).join(', ')}
                         </div>
                       </TableCell>
+                      {!unloadOnly && (
+                        <>
                       <TableCell className="align-top text-right tabular-nums">{formatNum(inv.qty)}</TableCell>
                       <TableCell className="align-top text-right tabular-nums">{formatINR(inv.net)}</TableCell>
                       <TableCell className="align-top">
@@ -1207,8 +1254,24 @@ function SalesTab({
                           {exTerm ? 'Ex' : 'FOR'}
                         </span>
                       </TableCell>
+                        </>
+                      )}
                       <TableCell className="align-top" onClick={(e) => e.stopPropagation()}>
-                        {exTerm ? (
+                        {unloadOnly ? (
+                          // One action, and only once the load has actually left:
+                          // an invoice still Pending has not been dispatched, so
+                          // there is nothing to receive against it yet.
+                          <div className="flex items-center gap-2">
+                            <Badge variant={stg.badge} className="min-w-[76px] justify-center">{stg.label}</Badge>
+                            {stg.value === 'pending' ? (
+                              <span className="text-[11px] text-muted-foreground">Not dispatched yet</span>
+                            ) : (
+                              <Button size="sm" className="h-7 gap-1 px-2 text-xs" onClick={() => openUnload(inv)}>
+                                <Truck className="h-3.5 w-3.5" /> Record received
+                              </Button>
+                            )}
+                          </div>
+                        ) : exTerm ? (
                           <span className="flex h-7 items-center gap-1 text-xs font-medium text-emerald-600" title="Customer lifts — no dispatch tracking">
                             <Check className="h-3.5 w-3.5" /> Done
                           </span>
@@ -1243,8 +1306,9 @@ function SalesTab({
                           )}
                         </div>
                         )}
-                        {untracked && <div className="mt-1 text-[10px] font-medium uppercase tracking-wide text-orange-600">Off-stock</div>}
+                        {untracked && !unloadOnly && <div className="mt-1 text-[10px] font-medium uppercase tracking-wide text-orange-600">Off-stock</div>}
                       </TableCell>
+                      {!unloadOnly && (
                       <TableCell className="align-top text-right" onClick={(e) => e.stopPropagation()}>
                         <div className="flex justify-end">
                           <RowActions
@@ -1272,8 +1336,9 @@ function SalesTab({
                           />
                         </div>
                       </TableCell>
+                      )}
                     </TableRow>
-                    {isOpen && inv.lines.map((r) => {
+                    {!unloadOnly && isOpen && inv.lines.map((r) => {
                       const inStock = stock[r.product_id as number]?.stock ?? 0
                       return (
                         <TableRow key={r.id as number} className="bg-muted/30">
@@ -2126,6 +2191,8 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
   // narrows both together.
   const [companies, setCompanies] = useState<Row[]>([])
   const [coIds, setCoIds] = useState<number[]>([])
+  // The credit-note lines behind each bargain's Return figure.
+  const [returns, setReturns] = useState<Row[]>([])
   // listSales defaults to the ACTIVE company when given nothing, so "all" has
   // to be spelled out as every id. Known only after the first load; until then
   // the active company's invoices show, and the list fills in on the refresh.
@@ -2142,17 +2209,19 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
 
   const load = useCallback(async () => {
     const sel = coIds.length ? coIds : undefined
-    const [b, s, pr, cu, pk, cos] = await Promise.all([
+    const [b, s, pr, cu, pk, cos, ret] = await Promise.all([
       window.api.salesBargains.list(F, T, sel),
       window.api.sales.list(sel ?? companyAll),
       window.api.data.list('products'),
       window.api.data.list('customers'),
       window.api.data.list('packagings'),
-      window.api.company.list().catch(() => [] as Row[])
+      window.api.company.list().catch(() => [] as Row[]),
+      window.api.salesBargains.returns(sel).catch(() => [] as Row[])
     ])
     setRows(b)
     setSales(s)
     setCompanies(cos)
+    setReturns(ret)
     // All active products (not just finished) so byproducts — fatty, scrap,
     // spent earth, misc — can be sold under their sale-type bargains too.
     setProducts(pr.filter((x) => x.active))
@@ -2171,6 +2240,17 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
       ),
     [customers, form.customer_id]
   )
+
+  const returnsByBargain = useMemo(() => {
+    const m = new Map<number, Row[]>()
+    for (const r of returns) {
+      const id = Number(r.bargain_id)
+      if (!id) continue
+      if (!m.has(id)) m.set(id, [])
+      m.get(id)!.push(r)
+    }
+    return m
+  }, [returns])
 
   // Dispatches (sales) grouped by the bargain they drew down, for the expand row.
   const dispatchesByBargain = useMemo(() => {
@@ -2230,10 +2310,10 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
   )
 
   const groupStats = useMemo(() => {
-    const m = new Map<string, { count: number; opening: number; addition: number; adjusted: number; dispatch: number; closing: number; uom: string }>()
+    const m = new Map<string, { count: number; opening: number; addition: number; adjusted: number; dispatch: number; ret: number; closing: number; uom: string }>()
     for (const r of visibleRows) {
       const k = String(r.customer || '—')
-      if (!m.has(k)) m.set(k, { count: 0, opening: 0, addition: 0, adjusted: 0, dispatch: 0, closing: 0, uom: String(r.uom || 'MT') })
+      if (!m.has(k)) m.set(k, { count: 0, opening: 0, addition: 0, adjusted: 0, dispatch: 0, ret: 0, closing: 0, uom: String(r.uom || 'MT') })
       const g = m.get(k)!
       const reg = bargainRegister(r, F, T)
       g.count += 1
@@ -2241,22 +2321,24 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
       g.addition += reg.addition
       g.adjusted += reg.adjusted
       g.dispatch += reg.dispatch
+      g.ret += reg.ret
       g.closing += reg.closing
     }
     return m
   }, [visibleRows, F, T])
 
   const grand = useMemo(() => {
-    let count = 0, opening = 0, addition = 0, adjusted = 0, dispatch = 0, closing = 0
+    let count = 0, opening = 0, addition = 0, adjusted = 0, dispatch = 0, ret = 0, closing = 0
     for (const g of groupStats.values()) {
       count += g.count
       opening += g.opening
       addition += g.addition
       adjusted += g.adjusted
       dispatch += g.dispatch
+      ret += g.ret
       closing += g.closing
     }
-    return { count, opening, addition, adjusted, dispatch, closing }
+    return { count, opening, addition, adjusted, dispatch, ret, closing }
   }, [groupStats])
 
   function blank(): Row {
@@ -2370,7 +2452,8 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
         addition: reg.addition,
         adjusted: reg.adjusted,
         balance: reg.closing,
-        qty: reg.dispatch
+        qty: reg.dispatch,
+        ret: reg.ret
       })
       // One row per invoice, same as the on-screen drilldown — a split
       // invoice's lines are summed rather than listed separately, with a
@@ -2385,6 +2468,22 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
         g.qty += Number(d.qty) || 0
         g.taxable += Number(d.amount) || 0
         g.total += (Number(d.amount) || 0) + (Number(d.gst_amount) || 0)
+      }
+      for (const rl of returnsByBargain.get(Number(b.id)) || []) {
+        out.push({
+          bargain_no: b.bargain_no || '',
+          bargain_date: '',
+          customer: '',
+          product: String(rl.product_name || ''),
+          rate: Number(rl.rate) || 0,
+          invoice_no: `${String(rl.note_no || 'CN')} (return)`,
+          company_name: String(rl.company_name || ''),
+          sale_date: formatDate(rl.note_date),
+          stage: rl.explicit_bargain_id ? 'return — named on note' : `return vs ${String(rl.against_ref || '—')}`,
+          ret: Number(rl.qty) || 0,
+          sale_rate: Number(rl.rate) || 0,
+          amount: -(Number(rl.amount) || 0)
+        })
       }
       for (const g of byInvoice.values()) {
         out.push({
@@ -2685,6 +2784,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
               { header: 'Adjusted', key: 'adjusted', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).adjusted },
               { header: 'Rate', key: 'rate', align: 'right', numFmt: '#,##0.00', value: (r) => Number(r.rate) || 0 },
               { header: 'Dispatch', key: 'dispatch', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).dispatch },
+              { header: 'Return', key: 'ret', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).ret },
               { header: 'Balance', key: 'balance', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).closing }
             ]}
             rows={sortedRows}
@@ -2706,6 +2806,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                   { header: 'Dispatched on', key: 'sale_date' },
                   { header: 'Stage', key: 'stage' },
                   { header: 'Dis qty', key: 'qty', align: 'right', numFmt: '#,##0.000' },
+                  { header: 'Return', key: 'ret', align: 'right', numFmt: '#,##0.000' },
                   { header: 'Sale rate', key: 'sale_rate', align: 'right', numFmt: '#,##0.00' },
                   { header: 'Value incl. GST', key: 'amount', align: 'right', numFmt: '#,##0.00' },
                   { header: 'Balance', key: 'balance', align: 'right', numFmt: '#,##0.000' }
@@ -2735,6 +2836,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
               <TableHead className="text-right">Adjusted</TableHead>
               <TableHead className="text-right">Rate</TableHead>
               <TableHead className="text-right">Dispatch</TableHead>
+              <TableHead className="text-right">Return</TableHead>
               <TableHead className="text-right">Balance</TableHead>
               <TableHead className="w-[110px] text-right">Actions</TableHead>
             </TableRow>
@@ -2742,7 +2844,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
           <TableBody>
             {sortedRows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={11} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={12} className="py-10 text-center text-muted-foreground">
                   {rows.length === 0 ? 'No sales bargains yet.' : 'No sales bargains in this period.'}
                 </TableCell>
               </TableRow>
@@ -2760,6 +2862,9 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                   <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.adjusted)}</TableCell>
                   <TableCell className="py-2" />
                   <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.dispatch)}</TableCell>
+                  <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-emerald-800">
+                    {grand.ret > 0.0005 ? formatNum(grand.ret) : '0'}
+                  </TableCell>
                   <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grand.closing)} MT</TableCell>
                   <TableCell className="py-2" />
                 </TableRow>
@@ -2792,6 +2897,9 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                           <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.adjusted ?? 0)}</TableCell>
                           <TableCell className="py-1.5" />
                           <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.dispatch ?? 0)}</TableCell>
+                          <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-emerald-800">
+                            {(g?.ret ?? 0) > 0.0005 ? formatNum(g?.ret ?? 0) : '0'}
+                          </TableCell>
                           <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.closing ?? 0)} {g?.uom || 'MT'}</TableCell>
                           <TableCell className="py-1.5" />
                         </TableRow>
@@ -2835,6 +2943,12 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                           </TableCell>
                           <TableCell className="text-right tabular-nums">{formatINR(row.rate)}</TableCell>
                           <TableCell className={cn('text-right tabular-nums', reg.dispatch && 'font-bold text-red-600')}>{reg.dispatch ? formatNum(reg.dispatch) : '—'}</TableCell>
+                          <TableCell
+                            className={cn('text-right tabular-nums', reg.ret && 'font-bold text-emerald-700')}
+                            title={reg.ret ? 'Came back on a customer credit note — added back to the balance' : undefined}
+                          >
+                            {reg.ret ? formatNum(reg.ret) : '—'}
+                          </TableCell>
                           <TableCell className="text-right font-medium tabular-nums">
                             <span className={reg.closing < -1e-9 ? 'text-red-600' : ''}>{formatNum(reg.closing)}</span>
                           </TableCell>
@@ -2855,7 +2969,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                       })()}
                       {!isCollapsed && bgOpen && (
                         <TableRow className="bg-muted/20 hover:bg-muted/20">
-                          <TableCell colSpan={11} className="p-0">
+                          <TableCell colSpan={12} className="p-0">
                             {(() => {
                               const disp = dispatchesByBargain.get(Number(row.id)) || []
                               const tot = disp.reduce(
@@ -2883,18 +2997,72 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                 g.taxable += Number(d.amount) || 0
                                 g.total += (Number(d.amount) || 0) + (Number(d.gst_amount) || 0)
                               }
-                              const invoiceRows = Array.from(byInvoice.values())
+                              const retLines = returnsByBargain.get(Number(row.id)) || []
+                              // Dispatches and returns are the same story told in
+                              // date order, so they share one table: a return is a
+                              // negative line, and the total is what the bargain
+                              // actually kept rather than the gross it shipped.
+                              type Line = {
+                                key: string
+                                id: number
+                                kind: 'out' | 'ret'
+                                label: string
+                                sub: string
+                                date: string
+                                qty: number
+                                rate: number
+                                amount: number
+                                uom: string
+                              }
+                              const lines: Line[] = [
+                                ...Array.from(byInvoice.values()).map((g): Line => ({
+                                  key: `d${g.id}`,
+                                  id: g.id,
+                                  kind: 'out',
+                                  label: String(g.invoice_no || '—'),
+                                  sub: stageInfo(g.sample).label,
+                                  date: String(g.sale_date || ''),
+                                  qty: g.qty,
+                                  rate: g.qty > 0 ? g.taxable / g.qty : 0,
+                                  amount: g.total,
+                                  uom: String(g.sample.uom || row.uom || 'MT')
+                                })),
+                                ...retLines.map((rl, ri): Line => ({
+                                  key: `r${rl.note_id}-${ri}`,
+                                  id: 0,
+                                  kind: 'ret',
+                                  label: String(rl.note_no || 'CN'),
+                                  sub: rl.explicit_bargain_id
+                                    ? 'Return · named on the note'
+                                    : `Return vs ${String(rl.against_ref || '—')}`,
+                                  date: String(rl.note_date || ''),
+                                  qty: -(Number(rl.qty) || 0),
+                                  rate: Number(rl.rate) || 0,
+                                  amount: -(Number(rl.amount) || 0),
+                                  uom: String(row.uom || 'MT')
+                                }))
+                              ].sort((x, y) => x.date.localeCompare(y.date) || x.key.localeCompare(y.key))
+                              const net = lines.reduce(
+                                (acc, l) => {
+                                  acc.qty += l.qty
+                                  acc.amount += l.amount
+                                  if (l.kind === 'ret') acc.ret += -l.qty
+                                  else acc.out += l.qty
+                                  return acc
+                                },
+                                { qty: 0, amount: 0, out: 0, ret: 0 }
+                              )
                               return (
                                 <div className="bg-muted/20 px-6 py-3">
                                   {row.note && <p className="pb-2 text-xs text-muted-foreground"><span className="font-semibold">Note:</span> {row.note}</p>}
-                                  {disp.length === 0 ? (
+                                  {lines.length === 0 ? (
                                     <p className="text-xs text-muted-foreground">No dispatches on this bargain yet.</p>
                                   ) : (
                                     <table className="w-full text-xs">
                                       <thead>
                                         <tr className="border-b text-left text-muted-foreground">
-                                          <th className="py-1.5 pr-3 font-semibold w-8">#</th>
-                                          <th className="py-1.5 pr-3 font-semibold">Invoice</th>
+                                          <th className="w-8 py-1.5 pr-3 font-semibold">#</th>
+                                          <th className="py-1.5 pr-3 font-semibold">Invoice / Note</th>
                                           <th className="py-1.5 pr-3 font-semibold">Date</th>
                                           <th className="py-1.5 pr-3 font-semibold">Stage</th>
                                           <th className="py-1.5 pr-3 text-right font-semibold">Qty</th>
@@ -2903,30 +3071,62 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                         </tr>
                                       </thead>
                                       <tbody>
-                                        {invoiceRows.map((g, di) => (
-                                          <tr
-                                            key={g.id}
-                                            className={cn('border-b last:border-0', onOpenSale && 'cursor-pointer hover:bg-muted/40')}
-                                            title={onOpenSale ? 'Open this sale invoice' : undefined}
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              onOpenSale?.(g.id)
-                                            }}
-                                          >
-                                            <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{di + 1}</td>
-                                            <td className="py-1.5 pr-3 font-medium">{g.invoice_no || '—'}</td>
-                                            <td className="py-1.5 pr-3 whitespace-nowrap">{formatDate(g.sale_date)}</td>
-                                            <td className="py-1.5 pr-3">{stageInfo(g.sample).label}</td>
-                                            <td className="py-1.5 pr-3 text-right tabular-nums font-medium text-red-600">{formatNum(g.qty)} {g.sample.uom}</td>
-                                            <td className="py-1.5 pr-3 text-right tabular-nums">{formatINR(g.qty > 0 ? g.taxable / g.qty : 0)}</td>
-                                            <td className="py-1.5 text-right tabular-nums">{formatINR(g.total)}</td>
-                                          </tr>
-                                        ))}
-                                        <tr className="font-semibold">
-                                          <td className="py-1.5 pr-3" colSpan={4}>Total</td>
-                                          <td className="py-1.5 pr-3 text-right tabular-nums text-red-600">{formatNum(tot.qty)} {row.uom}</td>
+                                        {lines.map((l, di) => {
+                                          const isRet = l.kind === 'ret'
+                                          return (
+                                            <tr
+                                              key={l.key}
+                                              className={cn(
+                                                'border-b last:border-0',
+                                                isRet && 'bg-emerald-50/60',
+                                                !isRet && onOpenSale && 'cursor-pointer hover:bg-muted/40'
+                                              )}
+                                              title={isRet ? 'Returned on a credit note — added back to the balance' : onOpenSale ? 'Open this sale invoice' : undefined}
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                if (!isRet) onOpenSale?.(l.id)
+                                              }}
+                                            >
+                                              <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{di + 1}</td>
+                                              <td className="py-1.5 pr-3 font-medium">
+                                                <span className="inline-flex items-center gap-1.5">
+                                                  {l.label}
+                                                  {isRet && (
+                                                    <span className="rounded bg-emerald-100 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-emerald-800">
+                                                      return
+                                                    </span>
+                                                  )}
+                                                </span>
+                                              </td>
+                                              <td className="whitespace-nowrap py-1.5 pr-3">{formatDate(l.date)}</td>
+                                              <td className={cn('py-1.5 pr-3', isRet && 'text-emerald-800')}>{l.sub}</td>
+                                              <td
+                                                className={cn(
+                                                  'py-1.5 pr-3 text-right font-medium tabular-nums',
+                                                  isRet ? 'text-emerald-700' : 'text-red-600'
+                                                )}
+                                              >
+                                                {isRet ? '+' : ''}{formatNum(Math.abs(l.qty))} {l.uom}
+                                              </td>
+                                              <td className="py-1.5 pr-3 text-right tabular-nums">{formatINR(l.rate)}</td>
+                                              <td className={cn('py-1.5 text-right tabular-nums', isRet && 'text-emerald-700')}>
+                                                {isRet ? '−' : ''}{formatINR(Math.abs(l.amount))}
+                                              </td>
+                                            </tr>
+                                          )
+                                        })}
+                                        <tr className="border-t-2 font-semibold">
+                                          <td className="py-1.5 pr-3" colSpan={4}>
+                                            Net drawn
+                                            {net.ret > 0.0005 && (
+                                              <span className="ml-1.5 font-normal text-muted-foreground">
+                                                · {formatNum(net.out)} dispatched less {formatNum(net.ret)} returned
+                                              </span>
+                                            )}
+                                          </td>
+                                          <td className="py-1.5 pr-3 text-right tabular-nums text-red-600">{formatNum(net.qty)} {row.uom}</td>
                                           <td className="py-1.5" />
-                                          <td className="py-1.5 text-right tabular-nums">{formatINR(tot.amount)}</td>
+                                          <td className="py-1.5 text-right tabular-nums">{formatINR(net.amount)}</td>
                                         </tr>
                                       </tbody>
                                     </table>
@@ -3159,6 +3359,8 @@ export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?
   const [needsOpen, setNeedsOpen] = useState(false)
   const [salesAdd, setSalesAdd] = useState<{ open: () => void; canAdd: boolean; formOpen: boolean } | null>(null)
   const loadNeeds = useCallback(async () => {
+    // Hidden for the unloading desk, so it is not fetched either.
+    if (UNLOAD_DESK()) return
     setNeeds(await window.api.stock.needs())
   }, [])
   useEffect(() => {
@@ -3168,15 +3370,24 @@ export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?
 
   const rawShort = needs.filter((n) => n.raw_short).length
   const totalProduce = needs.reduce((s, n) => s + (Number(n.shortfall) || 0), 0)
+  const unloadOnly = UNLOAD_DESK()
 
   return (
     <>
       <PageHeader
-        title="Sales"
-        subtitle="Finished-goods dispatches drawn against sales bargains"
-        hint="Each dispatch draws down a sales bargain and reduces finished-goods stock. Short stock can be produced on the spot. Book the rate contracts under Sales Bargain."
+        title={unloadOnly ? 'Unloading desk' : 'Sales'}
+        subtitle={
+          unloadOnly
+            ? 'FOR deliveries still out — record the quantity received'
+            : 'Finished-goods dispatches drawn against sales bargains'
+        }
+        hint={
+          unloadOnly
+            ? 'Each delivery listed here has left the factory and is not yet unloaded. Open one, enter what the transporter actually delivered on every line, and it is marked unloaded.'
+            : 'Each dispatch draws down a sales bargain and reduces finished-goods stock. Short stock can be produced on the spot. Book the rate contracts under Sales Bargain.'
+        }
         actions={
-          salesAdd?.formOpen ? undefined : (
+          salesAdd?.formOpen || unloadOnly ? undefined : (
             <>
               <Button
                 size="sm"

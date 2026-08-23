@@ -295,13 +295,38 @@ export async function updateTransporterBill(id: number, v: Row): Promise<{ id: n
   return createTransporterBill(v, n(id))
 }
 
-export async function deleteTransporterBill(id: number): Promise<{ id: number }> {
+// Bills whose journal voucher no longer exists. Before the guard in
+// deleteManualEntry, a freight voucher could be deleted from the Day Book on
+// its own — which left the bill row standing and its freight lines flagged as
+// billed, so the Freight Working register still read as booked with nothing
+// behind it. Reported so the state can be seen rather than guessed at.
+export async function listOrphanedTransporterBills(companyId?: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT tb.*, tr.name AS transporter_name,
+                 (SELECT COUNT(*) FROM transporter_ledger l WHERE l.bill_id = tb.id) AS line_count,
+                 (SELECT ROUND(SUM(l.amount), 2) FROM transporter_ledger l WHERE l.bill_id = tb.id) AS line_amount
+            FROM transporter_bills tb
+            LEFT JOIN transporters tr ON tr.id = tb.transporter_id
+           WHERE tb.company_id = ?
+             AND tb.journal_entry_id IS NOT NULL
+             AND tb.journal_entry_id NOT IN (SELECT id FROM journal_entries)
+           ORDER BY tb.id`,
+    args: [companyId ? n(companyId) : getActiveCompanyId()]
+  })
+  return toPlain(res)
+}
+
+// companyId comes from the caller: the Accounting module pins its own company
+// (F3) rather than following the app-wide one, and reading the active company
+// here meant a delete issued from a register showing company A could silently
+// match nothing while the register kept showing the bill.
+export async function deleteTransporterBill(id: number, companyId?: number): Promise<{ id: number }> {
   const c = getClient()
   const res = await c.execute({
     sql: 'SELECT * FROM transporter_bills WHERE id = ? AND company_id = ?',
-    args: [id, getActiveCompanyId()]
+    args: [id, companyId ? n(companyId) : getActiveCompanyId()]
   })
-  if (!res.rows.length) return { id }
+  if (!res.rows.length) throw new Error('That transporter bill no longer exists in this company')
   const bill = res.rows[0] as Row
   await dropEntry(n(bill.journal_entry_id) || null)
   // The freight itself is not deleted — it was still earned. It simply goes

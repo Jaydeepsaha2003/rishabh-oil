@@ -162,7 +162,8 @@ export interface Api {
     bills: (companyId?: number) => Promise<Row[]>
     createBill: (values: Row) => Promise<{ id: number }>
     updateBill: (id: number, values: Row) => Promise<{ id: number }>
-    deleteBill: (id: number) => Promise<{ id: number }>
+    deleteBill: (id: number, companyId?: number) => Promise<{ id: number }>
+    orphanBills: (companyId?: number) => Promise<Row[]>
   }
   notes: {
     list: (companyId?: number) => Promise<Row[]>
@@ -200,6 +201,8 @@ export interface Api {
   }
   salesBargains: {
     list: (from?: string, to?: string, companyIds?: number[]) => Promise<Row[]>
+    returns: (companyIds?: number[]) => Promise<Row[]>
+    unattributedReturns: (companyIds?: number[]) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number; bargain_no: string }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>

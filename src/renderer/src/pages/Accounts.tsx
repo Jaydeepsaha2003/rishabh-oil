@@ -30,7 +30,7 @@ import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@
 import { DbStatus } from '@/components/DbStatus'
 import { UpdateBadge } from '@/components/UpdateBadge'
 import { FyPicker } from '@/components/FyPicker'
-import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
+import { errText, formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
@@ -622,21 +622,30 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     return () => window.clearTimeout(t)
   }, [screen])
 
+  // Unbooking a transporter bill, and bills whose voucher was deleted from the
+  // Day Book on its own (which used to leave their freight stuck on Booked).
+  const [tfUnbook, setTfUnbook] = useState<Row | null>(null)
+  const [tfUnbooking, setTfUnbooking] = useState(false)
+  const [tfOrphans, setTfOrphans] = useState<Row[]>([])
+
   const tfSide: 'purchase' | 'sales' = screen === 'tfsal' ? 'sales' : 'purchase'
   const loadTFreight = useCallback(async () => {
     if (!cid || (screen !== 'tfpur' && screen !== 'tfsal')) return
     const side: 'purchase' | 'sales' = screen === 'tfsal' ? 'sales' : 'purchase'
     const opts = { companyId: cid, from: tfFrom || undefined, to: tfTo || undefined }
     try {
-      const [rows, kpi] = await Promise.all([
+      const [rows, kpi, orphans] = await Promise.all([
         window.api.transporterFreight.list(side, { ...opts, state: tfState }),
-        window.api.transporterFreight.kpis(side, opts)
+        window.api.transporterFreight.kpis(side, opts),
+        window.api.transporterFreight.orphanBills(cid).catch(() => [] as Row[])
       ])
       setTfRows(rows)
       setTfKpi(kpi)
+      setTfOrphans(orphans)
     } catch {
       setTfRows([])
       setTfKpi(null)
+      setTfOrphans([])
     }
   }, [cid, screen, tfFrom, tfTo, tfState])
   useEffect(() => {
@@ -2958,6 +2967,27 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     }
   }
 
+  // Delete a booked bill: its voucher is reversed and every freight line on it
+  // goes back to Pending. The freight itself is untouched — it was still
+  // earned, it simply stops being billed.
+  async function tfConfirmUnbook(): Promise<void> {
+    const bill = tfUnbook
+    if (!bill) return
+    setTfUnbooking(true)
+    try {
+      await window.api.transporterFreight.deleteBill(Number(bill.bill_id ?? bill.id), cid)
+      toast.success(`Bill ${String(bill.bill_no || '')} deleted — its freight is back to pending`)
+      setTfUnbook(null)
+      setTfPicked([])
+      await loadTFreight()
+      loadAccounts()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setTfUnbooking(false)
+    }
+  }
+
   const tFreightScreen = (
     <div className="flex-1 space-y-2 p-3">
       <div className={cn('rounded-md border shadow-lg', T.paperEdge, T.paper)}>
@@ -3007,6 +3037,30 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
           </div>
         </div>
 
+        {tfOrphans.length > 0 && (
+          <div className="border-b border-rose-300 bg-rose-50 px-4 py-2" style={{ borderBottomWidth: 1 }}>
+            <div className="text-[11px] font-bold uppercase tracking-widest text-rose-800">
+              {tfOrphans.length} bill{tfOrphans.length === 1 ? '' : 's'} with no voucher behind them
+            </div>
+            <p className="mt-0.5 text-[11px] text-rose-900/80">
+              The journal voucher was deleted on its own, so the bill stayed and its freight is still showing as
+              booked. Clearing it releases those lines back to pending.
+            </p>
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {tfOrphans.map((o) => (
+                <button
+                  key={String(o.id)}
+                  type="button"
+                  className="rounded border border-rose-300 bg-white px-2 py-1 text-[11px] font-semibold text-rose-800 hover:bg-rose-100"
+                  onClick={() => setTfUnbook({ ...o, bill_id: o.id })}
+                >
+                  Clear {String(o.bill_no || `#${o.id}`)} · {String(o.transporter_name || '')} ·{' '}
+                  {formatINR(o.line_amount)} on {String(o.line_count)} line{Number(o.line_count) === 1 ? '' : 's'}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {tfKpi && (
           <div className="grid grid-cols-2 gap-px border-b bg-[#e5dfc8] sm:grid-cols-4" style={{ borderColor: '#d9d2b8' }}>
             {([
@@ -3090,9 +3144,14 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                       </td>
                       <td className="px-2 py-1.5">
                         {booked ? (
-                          <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-emerald-700">
+                          <button
+                            type="button"
+                            className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-emerald-700 hover:bg-rose-100 hover:text-rose-700"
+                            title="Delete this bill — its voucher is reversed and its freight goes back to pending"
+                            onClick={(e) => { e.stopPropagation(); setTfUnbook(r) }}
+                          >
                             {r.bill_no || 'Booked'}
-                          </span>
+                          </button>
                         ) : (
                           <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-800">
                             Pending
@@ -3140,6 +3199,36 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
           </div>
         </div>
       )}
+
+      <Dialog open={!!tfUnbook} onOpenChange={(o) => !o && !tfUnbooking && setTfUnbook(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete bill {String(tfUnbook?.bill_no || '')}?</DialogTitle>
+          </DialogHeader>
+          <p className="text-[12px] text-muted-foreground">
+            The bill and its journal voucher are reversed, and every freight line on it goes back to{' '}
+            <b>Pending</b> on this register. The freight itself is not touched — it was still earned, it just stops
+            being billed. A bill can cover several lines, so all of them are released together.
+          </p>
+          {tfUnbook?.transporter_name && (
+            <div className="rounded-md border bg-muted/40 px-3 py-2 text-[12px]">
+              <div><span className="text-muted-foreground">Transporter</span> · {String(tfUnbook.transporter_name)}</div>
+              {tfUnbook.line_count != null && (
+                <div>
+                  <span className="text-muted-foreground">Releases</span> · {String(tfUnbook.line_count)} line
+                  {Number(tfUnbook.line_count) === 1 ? '' : 's'} · {formatINR(tfUnbook.line_amount)}
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTfUnbook(null)} disabled={tfUnbooking}>Cancel</Button>
+            <Button variant="destructive" onClick={() => void tfConfirmUnbook()} disabled={tfUnbooking}>
+              {tfUnbooking ? 'Deleting…' : 'Delete bill'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={tfBillOpen} onOpenChange={(o) => !o && !tfSaving && setTfBillOpen(false)}>
         <DialogContent className="max-w-lg border-[#d9d2b8] bg-[#fffdf4]">

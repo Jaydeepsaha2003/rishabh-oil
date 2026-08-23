@@ -38,7 +38,7 @@ import {
 } from './orders'
 import { listUnmappedOrders, unmappedCount, mapOrderToBargains } from './unmapped'
 import { listTradingDeals, createTradingDeal, updateTradingDeal, deleteTradingDeal } from './trading'
-import { assertAllowed, clearAccessCache } from './access-gate'
+import { assertAllowed, clearAccessCache, currentScope } from './access-gate'
 import { listSkuRates, saveSkuRates, listPackagingParties, setPackagingParties } from './skurates'
 import {
   listConsignment,
@@ -159,6 +159,7 @@ import { listBd, createBd, updateBd, deleteBd, repayBd, reopenBd, postBdUpfrontI
 import {
   listTransporterFreight,
   transporterFreightKpis,
+  listOrphanedTransporterBills,
   listTransporterBills,
   createTransporterBill,
   updateTransporterBill,
@@ -177,6 +178,9 @@ import {
 } from './facilities'
 import {
   listSales,
+  listSalesForUnloadDesk,
+  listSalesBargainReturns,
+  listUnattributedReturns,
   customerFyTaxable,
   createSale,
   updateSale,
@@ -306,7 +310,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^trading:list$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^trading:list$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -561,7 +565,10 @@ export function registerIpc(): void {
   handle('tbill:list', (_e, a: { companyId?: number } = {}) => listTransporterBills(a?.companyId))
   handle('tbill:create', (_e, { values }: { values: Row }) => createTransporterBill(values))
   handle('tbill:update', (_e, { id, values }: { id: number; values: Row }) => updateTransporterBill(id, values))
-  handle('tbill:delete', (_e, { id }: { id: number }) => deleteTransporterBill(id))
+  handle('tbill:delete', (_e, { id, companyId }: { id: number; companyId?: number }) =>
+    deleteTransporterBill(id, companyId)
+  )
+  handle('tbill:orphans', (_e, a: { companyId?: number } = {}) => listOrphanedTransporterBills(a?.companyId))
   handle('notes:list', (_e, a: { companyId?: number } = {}) => listNotes(a?.companyId))
   handle('notes:items', (_e, { id }: { id: number }) => listNoteItems(id))
   handle('notes:create', (_e, { values }: { values: Row }) => createNote(values))
@@ -573,7 +580,14 @@ export function registerIpc(): void {
   handle('production:create', (_e, { values }: { values: Row }) => createProduction(values))
   handle('production:delete', (_e, { id }: { id: number }) => deleteProduction(id))
 
-  handle('sales:list', (_e, args?: { companyIds?: number[] }) => listSales(args?.companyIds))
+  // The unload desk's grant hands back its own thin row set — the money columns
+  // are never selected, so a restricted user cannot reach them even by calling
+  // the channel directly.
+  handle('sales:list', async (_e, args?: { companyIds?: number[] }) =>
+    (await currentScope('sales')) === 'unload'
+      ? listSalesForUnloadDesk(args?.companyIds)
+      : listSales(args?.companyIds)
+  )
   handle('sales:create', (_e, { values }: { values: Row }) => createSale(values))
   handle('sales:update', (_e, { id, values }: { id: number; values: Row }) => updateSale(id, values))
   handle('sales:createInvoice', (_e, { values }: { values: Row }) => createSaleInvoice(values))
@@ -598,6 +612,10 @@ export function registerIpc(): void {
 
   handle('salesBargains:list', (_e, args?: { from?: string; to?: string; companyIds?: number[] }) =>
     listSalesBargains(args?.from, args?.to, args?.companyIds)
+  )
+  handle('salesBargains:returns', (_e, args?: { companyIds?: number[] }) => listSalesBargainReturns(args?.companyIds))
+  handle('salesBargains:unattributedReturns', (_e, args?: { companyIds?: number[] }) =>
+    listUnattributedReturns(args?.companyIds)
   )
   handle('salesBargains:create', (_e, { values }: { values: Row }) => createSalesBargain(values))
   handle('salesBargains:update', (_e, { id, values }: { id: number; values: Row }) =>

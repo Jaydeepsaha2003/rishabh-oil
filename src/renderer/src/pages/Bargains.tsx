@@ -588,6 +588,15 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
   // Weighted average rate = total value ÷ total qty.
   const avgRate = (g: { total: number; qty: number }): number => (g.qty > 0 ? g.total / g.qty : 0)
 
+  // A bargain is general, so only what draws on it has a company: the tanker
+  // (through the invoice that booked it) and the consignment/direct purchase.
+  // Downloaded with more than one company in the books, the detail sheet has to
+  // say whose book each line landed in — otherwise KRFL and KRFIN rows sit
+  // side by side unlabelled.
+  const multiCo = companies.length > 1
+  const coName = (id: unknown): string =>
+    String(companies.find((c) => Number(c.id) === Number(id))?.name || '')
+
   function downloadExcel(): void {
     void exportRowsToExcel({
       filename: `bargains-${typeFilter.toLowerCase()}-${todayISO()}`,
@@ -639,6 +648,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
             { header: 'Loaded on', key: 'loaded_date' },
             { header: 'Stage', key: 'stage' },
             { header: 'Invoice', key: 'invoice_no' },
+            ...(multiCo ? [{ header: 'Company', key: 'company_name' as const }] : []),
             { header: 'Dis qty', key: 'dis_qty', align: 'right', numFmt: '#,##0.000' },
             { header: 'Received', key: 'received_qty', align: 'right', numFmt: '#,##0.000' },
             { header: 'Shortage', key: 'shortage', align: 'right', numFmt: '#,##0.000' },
@@ -708,6 +718,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
           loaded_date: formatDate(t.loaded_date),
           stage: String(t.status || ''),
           invoice_no: t.invoice_no || '',
+          company_name: coName(t.company_id),
           dis_qty: share,
           received_qty: rec != null ? rec : '',
           shortage: shortage != null ? shortage : '',
@@ -715,6 +726,30 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
           deductible: deductible != null ? deductible : '',
           status: deductible != null ? 'Deductible' : '',
           split: extra > 0 ? (isPrimary ? `split — ${extra} moved out` : 'split — excess share') : ''
+        })
+      }
+      // MNC / direct purchases draw on a bargain without a tanker of their own.
+      // The bargain's Dispatch figure counts them, so the sheet has to list
+      // them too or its detail lines fall short of its own parent row.
+      for (const d of draws.filter((x) => Number(x.bargain_id) === id)) {
+        out.push({
+          bargain_no: b.bargain_no || '',
+          bargain_date: '',
+          supplier_name: '',
+          oil: '',
+          rate: Number(b.rate_per_uom) || 0,
+          tanker_no: d.tanker_nos || '—',
+          loaded_date: formatDate(d.order_date),
+          stage: 'MNC / direct',
+          invoice_no: d.invoice_no || '',
+          company_name: String(d.company_name || coName(d.company_id)),
+          dis_qty: Number(d.qty) || 0,
+          received_qty: '',
+          shortage: '',
+          allowed_mt: '',
+          deductible: '',
+          status: '',
+          split: ''
         })
       }
     }

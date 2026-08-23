@@ -220,7 +220,9 @@ const api = {
     bills: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('tbill:list', { companyId }),
     createBill: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('tbill:create', { values }),
     updateBill: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('tbill:update', { id, values }),
-    deleteBill: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('tbill:delete', { id })
+    deleteBill: (id: number, companyId?: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('tbill:delete', { id, companyId }),
+    orphanBills: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('tbill:orphans', { companyId })
   },
   notes: {
     list: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('notes:list', { companyId }),
@@ -283,6 +285,10 @@ const api = {
   salesBargains: {
     list: (from?: string, to?: string, companyIds?: number[]): Promise<Row[]> =>
       ipcRenderer.invoke('salesBargains:list', { from, to, companyIds }),
+    returns: (companyIds?: number[]): Promise<Row[]> =>
+      ipcRenderer.invoke('salesBargains:returns', { companyIds }),
+    unattributedReturns: (companyIds?: number[]): Promise<Row[]> =>
+      ipcRenderer.invoke('salesBargains:unattributedReturns', { companyIds }),
     create: (values: Row): Promise<{ id: number; bargain_no: string }> =>
       ipcRenderer.invoke('salesBargains:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>
