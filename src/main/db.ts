@@ -49,6 +49,58 @@ function loadEnv(): void {
   }
 }
 
+// A libsql HTTP client carries a server-side stream handle (the hrana "baton")
+// plus a baseUrl pinning it to one node. When Turso expires that stream — after
+// an idle spell, or when the request lands on a different node — the next call
+// carrying the stale baton is rejected at the edge with a bare HTTP 400, before
+// it reaches SQLite at all. That is the intermittent
+//   SERVER_ERROR: Server returned HTTP status 400
+// seen on startup, on the access heartbeat, and on the stock_counts rebuild:
+// the error arrives with no JSON or text body precisely because no statement
+// ever ran.
+//
+// A stale baton never recovers on its own, so retrying the same client is
+// pointless — the client itself has to be thrown away so the next call opens a
+// fresh stream. Only rejections where the statement provably did NOT execute
+// are retried (HTTP 400 / 404 from the edge); a genuine SQL error, or anything
+// that might have already been applied, is passed straight through so a write
+// can never be doubled.
+function isStaleStream(e: unknown): boolean {
+  const err = e as { code?: unknown; cause?: { status?: unknown } } | null
+  if (!err || err.code !== 'SERVER_ERROR') return false
+  const status = Number(err.cause?.status)
+  return status === 400 || status === 404
+}
+
+// Wraps execute/batch/executeMultiple so a stale stream is retried once on a
+// brand-new client. Every caller in the app goes through getClient(), so this
+// covers all of them without touching a single call site.
+function withStreamRecovery(raw: Client): Client {
+  const methods = ['execute', 'batch', 'executeMultiple', 'migrate'] as const
+  return new Proxy(raw, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver)
+      if (typeof value !== 'function' || !(methods as readonly (string | symbol)[]).includes(prop)) {
+        return typeof value === 'function' ? value.bind(target) : value
+      }
+      return async (...args: unknown[]): Promise<unknown> => {
+        try {
+          return await (value as (...a: unknown[]) => Promise<unknown>).apply(target, args)
+        } catch (e) {
+          if (!isStaleStream(e)) throw e
+          console.warn(`[db] stale stream on ${String(prop)} — reopening and retrying once`)
+          // Drop the cached client so getClient() builds a new one with a new
+          // baton, then replay on that.
+          client = null
+          const fresh = getClient()
+          const fn = Reflect.get(fresh, prop) as (...a: unknown[]) => Promise<unknown>
+          return await fn.apply(fresh, args)
+        }
+      }
+    }
+  }) as Client
+}
+
 export function getClient(): Client {
   if (client) return client
   loadEnv()
@@ -68,7 +120,7 @@ export function getClient(): Client {
   if (!url) {
     throw new Error('Turso database URL is not set — enter it in the setup screen.')
   }
-  client = createClient({ url, authToken })
+  client = withStreamRecovery(createClient({ url, authToken }))
   return client
 }
 
