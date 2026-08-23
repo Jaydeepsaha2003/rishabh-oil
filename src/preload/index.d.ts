@@ -28,7 +28,7 @@ export interface Api {
     all: () => Promise<Record<string, string>>
   }
   bargains: {
-    list: (from?: string, to?: string) => Promise<Row[]>
+    list: (from?: string, to?: string, companyIds?: number[]) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number; bargain_no: string }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
@@ -44,7 +44,7 @@ export interface Api {
     unmapped: () => Promise<Row[]>
     bargainLines: (id: number) => Promise<Row[]>
     bargainInterest: (id: number) => Promise<Row[]>
-    consignmentDraws: () => Promise<Row[]>
+    consignmentDraws: (companyIds?: number[]) => Promise<Row[]>
     unmappedCount: () => Promise<number>
     map: (id: number, lines: Row[], force?: boolean) => Promise<{ id: number; bargain_id: number; valueDiff: number; toppedUp: { bargain_no: string; qty: number }[] }>
   }
@@ -88,7 +88,12 @@ export interface Api {
     trialBalance: (args?: { from?: string; to?: string; companyId?: number }) => Promise<Row>
     groups: (companyId?: number) => Promise<Row[]>
     groupNames: () => Promise<{ name: string; nature: string }[]>
-    pendingRefs: (account: string, companyId?: number) => Promise<Row[]>
+    billsOutstanding: (
+      account: string,
+      companyId?: number,
+      opts?: { asOf?: string; side?: 'customer' | 'supplier' }
+    ) => Promise<Row>
+    pendingRefs: (account: string, companyId?: number, side?: 'customer' | 'supplier') => Promise<Row[]>
     tradingAccount: (from?: string, to?: string, companyId?: number) => Promise<Row[]>
     accounts: (companyId?: number) => Promise<Row[]>
     createAccount: (name: string, group?: string) => Promise<{ id: number }>
@@ -173,7 +178,7 @@ export interface Api {
     remove: (id: number) => Promise<{ id: number }>
   }
   sales: {
-    list: () => Promise<Row[]>
+    list: (companyIds?: number[]) => Promise<Row[]>
     fyTaxable: (customerId: number, date: string, excludeId: number) => Promise<number>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
@@ -194,7 +199,7 @@ export interface Api {
     save: (id: number, rows: Row[]) => Promise<{ saved: number; cleared: number }>
   }
   salesBargains: {
-    list: (from?: string, to?: string) => Promise<Row[]>
+    list: (from?: string, to?: string, companyIds?: number[]) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number; bargain_no: string }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>

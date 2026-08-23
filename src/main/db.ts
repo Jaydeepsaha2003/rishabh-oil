@@ -1188,7 +1188,24 @@ const MIGRATIONS = [
   // NBFC-level default) rather than hard-coded, since it is a term that is
   // negotiated like the rate is.
   'ALTER TABLE bill_discountings ADD COLUMN days_year REAL NOT NULL DEFAULT 360',
-  'ALTER TABLE nbfcs ADD COLUMN days_year REAL NOT NULL DEFAULT 360'
+  'ALTER TABLE nbfcs ADD COLUMN days_year REAL NOT NULL DEFAULT 360',
+  // A transporter's bill rarely lands exactly on what the tanker lines add up
+  // to — a rate agreed later, detention, a negotiated reduction. The difference
+  // is recorded rather than the freight lines being edited, so the register
+  // still shows what each tanker earned and the bill still shows what was
+  // actually agreed. Positive adds, negative reduces.
+  'ALTER TABLE transporter_bills ADD COLUMN adjustment REAL NOT NULL DEFAULT 0',
+  'ALTER TABLE transporter_bills ADD COLUMN adjustment_note TEXT',
+  // The clock time a vehicle was booked in or out. entry_date alone answers
+  // "which day" — a gate register also has to answer "when", both to sequence
+  // two vehicles on the same day and to settle a dispute about detention.
+  'ALTER TABLE gate_entries ADD COLUMN entry_time TEXT',
+  // A customer credit note is a sales return: the goods come back, so the
+  // quantity has to go back onto the bargain it was drawn from. The note
+  // remembers which bargain it credited, and the adjustment log row remembers
+  // which note put it there, so altering or deleting the note reverses it.
+  'ALTER TABLE notes ADD COLUMN bargain_id INTEGER',
+  'ALTER TABLE bargain_adjustments ADD COLUMN note_id INTEGER'
 ]
 
 

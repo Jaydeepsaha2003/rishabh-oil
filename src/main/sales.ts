@@ -278,13 +278,19 @@ export async function listCustomerLedger(): Promise<Row[]> {
   return toPlain(res)
 }
 
-export async function listSales(): Promise<Row[]> {
+// companyIds is for the readers that have to span companies — the sales-bargain
+// register counts every company's dispatch in its balance, so its drilldown has
+// to be able to list them all. Left empty (the default) it stays on the active
+// company, which is what the invoice screens want.
+export async function listSales(companyIds?: number[]): Promise<Row[]> {
+  const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
   const res = await getClient().execute({
-    args: [getActiveCompanyId()],
+    args: cos.length ? [] : [getActiveCompanyId()],
     sql: `
     SELECT s.*, pr.name AS product_name, pr.material_type AS product_category,
            pr.category AS product_sub_category, sb.bargain_no AS sales_bargain_no,
            pk.name AS packaging_name, tr.name AS transporter_name, cu.name AS customer_master,
+           co.name AS company_name,
            COALESCE((SELECT SUM(cl.amount) FROM customer_ledger cl
                       WHERE cl.sale_id = s.id AND cl.entry_type = 'payment'), 0) AS received_amount,
            -- The vehicle that actually carried this invoice out, from the
@@ -305,7 +311,8 @@ export async function listSales(): Promise<Row[]> {
     LEFT JOIN packagings pk ON pk.id = s.packaging_id
     LEFT JOIN transporters tr ON tr.id = s.transporter_id
     LEFT JOIN customers cu ON cu.id = s.customer_id
-    WHERE s.company_id = ?
+    LEFT JOIN companies co ON co.id = s.company_id
+    WHERE ${cos.length ? `s.company_id IN (${cos.join(',')})` : 's.company_id = ?'}
     ORDER BY s.sale_date DESC, s.id DESC
   `
   })
@@ -323,7 +330,7 @@ function dayMonth(dateStr: string): string {
   return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
-export async function listSalesBargains(from?: string, to?: string): Promise<Row[]> {
+export async function listSalesBargains(from?: string, to?: string, companyIds?: number[]): Promise<Row[]> {
   // Sales bargains are GENERAL — shared across every company, like purchase
   // bargains (no company filter; sold sums sales from all companies).
   // Period register fields (relative to [from,to]): disp_before = dispatched
@@ -331,14 +338,19 @@ export async function listSalesBargains(from?: string, to?: string): Promise<Row
   // the date the last dispatch happened (used for the "finished this period" rule).
   const f = from || '0000-01-01'
   const t = to || '9999-12-31'
+  // Whose dispatches count. Empty = every company, which is the register's
+  // default reading; a picked company narrows the figures so they agree with
+  // the invoice list shown underneath them.
+  const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
+  const sCo = cos.length ? ` AND company_id IN (${cos.join(',')})` : ''
   const res = await getClient().execute({
     sql: `
     SELECT b.*, pr.name AS product_name, pk.name AS packaging_name, cu.name AS customer_master,
-      COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id), 0) AS sold_qty,
-      b.qty - COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id), 0) AS balance_qty,
-      COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id AND substr(sale_date, 1, 10) < ?), 0) AS disp_before,
-      COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id AND substr(sale_date, 1, 10) >= ? AND substr(sale_date, 1, 10) <= ?), 0) AS disp_period,
-      (SELECT MAX(substr(sale_date, 1, 10)) FROM sales WHERE sales_bargain_id = b.id) AS last_dispatch_date,
+      COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id${sCo}), 0) AS sold_qty,
+      b.qty - COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id${sCo}), 0) AS balance_qty,
+      COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id AND substr(sale_date, 1, 10) < ?${sCo}), 0) AS disp_before,
+      COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id AND substr(sale_date, 1, 10) >= ? AND substr(sale_date, 1, 10) <= ?${sCo}), 0) AS disp_period,
+      (SELECT MAX(substr(sale_date, 1, 10)) FROM sales WHERE sales_bargain_id = b.id${sCo}) AS last_dispatch_date,
       COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'sales' AND bargain_id = b.id AND substr(adj_date, 1, 10) < ?), 0) AS adj_before,
       COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'sales' AND bargain_id = b.id AND substr(adj_date, 1, 10) >= ? AND substr(adj_date, 1, 10) <= ?), 0) AS adj_in,
       COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'sales' AND bargain_id = b.id AND substr(adj_date, 1, 10) > ?), 0) AS adj_after

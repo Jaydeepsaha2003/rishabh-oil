@@ -30,7 +30,7 @@ import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@
 import { DbStatus } from '@/components/DbStatus'
 import { UpdateBadge } from '@/components/UpdateBadge'
 import { FyPicker } from '@/components/FyPicker'
-import { formatDate, formatINR, todayISO } from '@/lib/format'
+import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
@@ -436,6 +436,11 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   ])
   const [noteParties, setNoteParties] = useState<Row[]>([])
   const [noteProducts, setNoteProducts] = useState<Row[]>([])
+  // A customer credit note is a sales return, so the quantity can go straight
+  // back onto the bargain it was drawn from instead of being re-added by hand
+  // through the sales-bargain Adjust dialog.
+  const [noteBargain, setNoteBargain] = useState('')
+  const [noteBargains, setNoteBargains] = useState<Row[]>([])
   // Narrows the item picker by the product's SUB-CATEGORY — raw, intermediate,
   // finished, by-product, waste — which is the split that matters when picking
   // what came back on a return.
@@ -469,7 +474,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   const [tfPicked, setTfPicked] = useState<number[]>([])
   const [tfPickBy, setTfPickBy] = useState<'tanker' | 'invoice'>('tanker')
   const [tfBillOpen, setTfBillOpen] = useState(false)
-  const [tfBill, setTfBill] = useState<Row>({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', note: '' })
+  const [tfBill, setTfBill] = useState<Row>({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', adjustment: '', adjustment_note: '', note: '' })
   const [tfSaving, setTfSaving] = useState(false)
   const [nrFrom, setNrFrom] = useState('')
   const [nrTo, setNrTo] = useState('')
@@ -482,6 +487,12 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   const [ledgerId, setLedgerId] = useState<number | null>(null)
   const [ledgerLines, setLedgerLines] = useState<Row[]>([])
   const [ledgerSearch, setLedgerSearch] = useState('')
+  const ledgerSearchRef = useRef<HTMLInputElement>(null)
+  // Tally's Bills Outstanding for the open ledger: F5 while a party is
+  // selected. A sub-view of the ledger rather than a screen of its own, so Esc
+  // drops back to the statement it was opened from.
+  const [lgBills, setLgBills] = useState(false)
+  const [bills, setBills] = useState<Row | null>(null)
   const [lgFrom, setLgFrom] = useState('')
   const [lgTo, setLgTo] = useState('')
   const [lgMonthly, setLgMonthly] = useState(false)
@@ -577,6 +588,39 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     loadLedger()
   }, [loadLedger])
   useLiveRefresh(loadLedger)
+
+  const ledgerSide: 'customer' | 'supplier' | undefined = (() => {
+    const g = String(accounts.find((a2) => Number(a2.id) === ledgerId)?.acc_group || '')
+    return g === 'Sundry Debtors' ? 'customer' : g === 'Sundry Creditors' ? 'supplier' : undefined
+  })()
+  const loadBills = useCallback(async () => {
+    const nm = String(accounts.find((a2) => Number(a2.id) === ledgerId)?.name || '')
+    if (!lgBills || !nm || !cid) return
+    const g = String(accounts.find((a2) => Number(a2.id) === ledgerId)?.acc_group || '')
+    const side = g === 'Sundry Debtors' ? 'customer' : g === 'Sundry Creditors' ? 'supplier' : undefined
+    try {
+      setBills(await window.api.journal.billsOutstanding(nm, cid, { asOf: lgTo || undefined, side }))
+    } catch {
+      setBills(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lgBills, ledgerId, cid, lgTo, accounts])
+  useEffect(() => {
+    void loadBills()
+  }, [loadBills])
+  // Switching party closes the bills view — its figures belonged to the old one.
+  useEffect(() => {
+    setLgBills(false)
+  }, [ledgerId])
+
+  // Landing on Ledgers, the first thing anyone does is type a name — so put the
+  // caret there rather than making them click. Mount has to settle first or the
+  // caret lands nowhere.
+  useEffect(() => {
+    if (screen !== 'ledger') return
+    const t = window.setTimeout(() => ledgerSearchRef.current?.focus(), 40)
+    return () => window.clearTimeout(t)
+  }, [screen])
 
   const tfSide: 'purchase' | 'sales' = screen === 'tfsal' ? 'sales' : 'purchase'
   const loadTFreight = useCallback(async () => {
@@ -695,6 +739,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         : 'supplier') as 'supplier' | 'customer' | 'transporter'
     )
     setNoteParty(String(r.party_id ?? ''))
+    setNoteBargain(r.bargain_id == null ? '' : String(r.bargain_id))
     setNoteInvoice(String(r.against_ref || ''))
     setNoteGst(String(Number(r.gst_pct) || 0))
     setNoteItems(
@@ -716,6 +761,13 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   const isNoteType = vchType === 'DEBIT NOTE' || vchType === 'CREDIT NOTE'
   // New notes open in Tally's invoice mode; altering an old grid voucher keeps the grid.
   const noteInvoiceMode = isNoteType && noteMode && editingId == null
+  // Only a customer credit note puts goods back into our hands, so only it can
+  // credit a sales bargain.
+  const noteCanCreditBargain = vchType === 'CREDIT NOTE' && notePartyKind === 'customer'
+  const noteReturnQty = useMemo(
+    () => noteItems.reduce((sum, it) => sum + (Number(it.qty) || 0), 0),
+    [noteItems]
+  )
 
   // Switching voucher type resets the party side to the usual one for it, which
   // keeps Alt-F5/Alt-F6 behaving as before unless the kind is changed by hand.
@@ -742,6 +794,31 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notePartyKind, isNoteType])
 
+  // The chosen customer's sales bargains, so a return can be credited back to
+  // the one it was drawn from. Fetched per customer rather than up front —
+  // the register call is range-wide and there is no point paying for it until
+  // a credit note is actually being raised against a customer.
+  useEffect(() => {
+    if (!noteCanCreditBargain || !noteParty) {
+      setNoteBargains([])
+      return
+    }
+    let live = true
+    window.api.salesBargains
+      .list()
+      .then((rows) => {
+        if (!live) return
+        setNoteBargains(rows.filter((r) => String(r.customer_id ?? '') === String(noteParty)))
+      })
+      .catch(() => {
+        if (live) setNoteBargains([])
+      })
+    return () => {
+      live = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noteCanCreditBargain, noteParty])
+
   // Only sub-categories that actually have products behind them, in the
   // master's own order rather than alphabetical, each with its count.
   const noteSubCats = useMemo(() => {
@@ -763,7 +840,12 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     [noteProducts, noteSubCat]
   )
   const notePartyName = String(noteParties.find((x) => String(x.id) === noteParty)?.name || '')
-  const noteRefs = refsCache[notePartyName.toUpperCase()] || []
+  // Which of the party's documents a note can be set against: a customer's
+  // sales invoices, or a supplier's purchase bills. A transporter has neither,
+  // so it falls back to whatever its ledger group implies.
+  const noteSide: 'customer' | 'supplier' | undefined =
+    notePartyKind === 'customer' ? 'customer' : notePartyKind === 'supplier' ? 'supplier' : undefined
+  const noteRefs = refsCache[refsKey(notePartyName.toUpperCase(), noteSide)] || []
   const noteTotals = (() => {
     const base = noteItems.reduce((sum, it) => sum + Math.round((Number(it.qty) || 0) * (Number(it.rate) || 0) * 100) / 100, 0)
     const gst = Math.round(base * (Number(noteGst) || 0)) / 100
@@ -775,11 +857,19 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   const payTotal = payLines.reduce((s, l) => s + (Number(l.amount) || 0), 0)
   const payAccountTotal = payAccounts.reduce((s, l) => s + (Number(l.amount) || 0), 0)
 
-  async function loadRefs(name: string): Promise<void> {
-    if (!name || refsCache[name]) return
+  // `side` is passed when the caller knows which of the party's documents it
+  // wants — a note against a customer wants their sales invoices even if the
+  // party also happens to be a supplier. Cached under the side too, or the
+  // supplier view of a dual-role party would be served to the customer view.
+  function refsKey(name: string, side?: 'customer' | 'supplier'): string {
+    return side ? `${side}:${name}` : name
+  }
+  async function loadRefs(name: string, side?: 'customer' | 'supplier'): Promise<void> {
+    const key = refsKey(name, side)
+    if (!name || refsCache[key]) return
     try {
-      const r = await window.api.journal.pendingRefs(name, cid)
-      setRefsCache((p) => ({ ...p, [name]: r }))
+      const r = await window.api.journal.pendingRefs(name, cid, side)
+      setRefsCache((p) => ({ ...p, [key]: r }))
     } catch {
       /* refs are a convenience — entry still works without them */
     }
@@ -895,6 +985,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
           gst_pct: Number(noteGst) || 0,
           narration: narration || null,
           against_invoice: noteInvoice || null,
+          bargain_id: noteCanCreditBargain && noteBargain ? Number(noteBargain) : null,
           items: items.map((it) => ({ product_id: Number(it.product_id), qty: Number(it.qty), rate: Number(it.rate) }))
         }
         // Altering keeps the note's own number: the old voucher, ledger row and
@@ -909,6 +1000,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
             : `${vchType} ${res.note_no} accepted — ${formatINR(noteTotals.total)}${noteInvoice ? ` against ${noteInvoice}` : ' on account'}`
         )
         setNoteInvoice('')
+        setNoteBargain('')
         setNoteItems([{ product_id: '', qty: '', rate: '' }])
         setNarration('')
         setRefsCache({})
@@ -1124,8 +1216,8 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       { key: 'S', label: 'Sales Register', icon: Receipt, go: () => setScreen('salesreg') },
       { key: 'D', label: 'Day Book', icon: BookOpenText, go: () => setScreen('daybook') },
       { key: 'N', label: 'Debit / Credit Notes', icon: FileText, go: () => setScreen('notesreg') },
-      { key: 'R', label: 'Transporter Purchase', icon: Truck, go: () => setScreen('tfpur') },
-      { key: 'O', label: 'Transporter Sales', icon: Truck, go: () => setScreen('tfsal') },
+      { key: 'R', label: 'Fr. Inward Working', icon: Truck, go: () => setScreen('tfpur') },
+      { key: 'O', label: 'Fr. Outward Working', icon: Truck, go: () => setScreen('tfsal') },
       { key: 'L', label: 'Ledger Accounts', icon: Wallet, go: () => setScreen('ledger') },
       { key: 'T', label: 'Trial Balance', icon: Scale, go: () => setScreen('trial') },
       { key: 'U', label: 'Trading Account', icon: ArrowLeftRight, go: () => setScreen('trading') }
@@ -1161,6 +1253,13 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         setCompany(null)
         return
       }
+      // On a ledger with a party open, F5 is Tally's Bills Outstanding rather
+      // than a Payment voucher — checked before the voucher keys claim it.
+      if (e.key === 'F5' && !e.altKey && screen === 'ledger' && ledgerId) {
+        e.preventDefault()
+        setLgBills((b2) => !b2)
+        return
+      }
       // Function keys work everywhere on this page; letters only outside inputs.
       if (e.key === 'F4' || e.key === 'F5' || e.key === 'F6' || e.key === 'F7') {
         e.preventDefault()
@@ -1181,6 +1280,10 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         return
       }
       if (e.key === 'Escape') {
+        if (lgBills) {
+          e.preventDefault()
+          return setLgBills(false)
+        }
         if (viewRow) return setViewRow(null)
         if (newLedger) return setNewLedger(null)
         if (screen !== 'gateway') {
@@ -1205,29 +1308,51 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         void deleteVoucher()
         return
       }
+      // Arrowing the Gateway list is the Gateway's own affair.
       if (screen === 'gateway' && !typing) {
         if (e.key === 'ArrowDown') {
           e.preventDefault()
           setGwIndex((i) => (i + 1) % GATEWAY_ITEMS.length)
-        } else if (e.key === 'ArrowUp') {
+          return
+        }
+        if (e.key === 'ArrowUp') {
           e.preventDefault()
           setGwIndex((i) => (i - 1 + GATEWAY_ITEMS.length) % GATEWAY_ITEMS.length)
-        } else if (e.key === 'Enter') {
+          return
+        }
+        if (e.key === 'Enter') {
           e.preventDefault()
           GATEWAY_ITEMS[gwIndex].go()
-        } else {
-          const hit = GATEWAY_ITEMS.findIndex((g) => g.key.toLowerCase() === e.key.toLowerCase())
-          if (hit >= 0) {
-            e.preventDefault()
-            GATEWAY_ITEMS[hit].go()
-          }
+          return
+        }
+      }
+      // The section letters jump straight from ANY register or report to another,
+      // so the sidebar's highlighted letters work wherever the sidebar itself is
+      // — no need to go back to the Gateway first.
+      //
+      // Two deliberate exclusions. Voucher entry is a form: a stray letter with
+      // focus outside a field would navigate away and lose what was typed. And a
+      // plain letter with a modifier held belongs to whatever that combination
+      // does, not here.
+      // A dropdown, dialog or menu keeps focus on a non-input element, so
+      // `typing` is false inside one — a letter there would navigate away and
+      // yank the overlay out from under the user. Radix renders all of them in
+      // a popper wrapper or with one of these roles, so this catches the lot.
+      const inOverlay = !!(e.target as HTMLElement)?.closest?.(
+        '[role="dialog"],[role="listbox"],[role="menu"],[role="combobox"],[data-radix-popper-content-wrapper]'
+      )
+      if (!typing && !inOverlay && screen !== 'voucher' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        const hit = GATEWAY_ITEMS.findIndex((g) => g.key.toLowerCase() === e.key.toLowerCase())
+        if (hit >= 0) {
+          e.preventDefault()
+          GATEWAY_ITEMS[hit].go()
         }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, gwIndex, viewRow, newLedger, editingId, lines, payLines, payAccounts, rawAlter, vchDate, vchNo, narration, vchType, saving, onExit, company, companies, coIndex])
+  }, [screen, gwIndex, viewRow, newLedger, editingId, lines, payLines, payAccounts, rawAlter, vchDate, vchNo, narration, vchType, saving, onExit, company, companies, coIndex, ledgerId, lgBills])
 
   // ------- derived -------
   const ledgerAccount = accounts.find((a) => Number(a.id) === ledgerId)
@@ -1349,14 +1474,17 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       <FKey k="S" label="Sales" active={screen === 'salesreg'} onClick={() => setScreen('salesreg')} />
       <FKey k="D" label="Day Book" active={screen === 'daybook'} onClick={() => setScreen('daybook')} />
       <FKey k="N" label="Dr / Cr Notes" active={screen === 'notesreg'} onClick={() => setScreen('notesreg')} />
-      <FKey k="R" label="Tptr Purchase" active={screen === 'tfpur'} onClick={() => setScreen('tfpur')} />
-      <FKey k="O" label="Tptr Sales" active={screen === 'tfsal'} onClick={() => setScreen('tfsal')} />
+      <FKey k="R" label="Fr. Inward Working" active={screen === 'tfpur'} onClick={() => setScreen('tfpur')} />
+      <FKey k="O" label="Fr. Outward Working" active={screen === 'tfsal'} onClick={() => setScreen('tfsal')} />
       <FKey k="L" label="Ledgers" active={screen === 'ledger'} onClick={() => setScreen('ledger')} />
       <FKey k="T" label="Trial Balance" active={screen === 'trial'} onClick={() => setScreen('trial')} />
       <FKey k="U" label="Trading Account" active={screen === 'trading'} onClick={() => setScreen('trading')} />
       {screen === 'ledger' && (
         <>
           <div className="my-1 border-t border-white/20" />
+          {!!ledgerId && (
+            <FKey k="F5" label={lgBills ? 'Statement' : 'Bills outstanding'} active={lgBills} onClick={() => setLgBills((b2) => !b2)} />
+          )}
           <FKey k="Alt F1" label={lgDetailed ? 'Condensed' : 'Columnar'} onClick={() => setLgDetailed((d) => !d)} />
           <FKey k="M" label={lgMonthly ? 'Vouchers' : 'Monthly'} active={lgMonthly} onClick={() => setLgMonthly((m) => !m)} />
         </>
@@ -1615,6 +1743,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                     setNotePartyKind(v as 'supplier' | 'customer' | 'transporter')
                     setNoteParty('')
                     setNoteInvoice('')
+                    setNoteBargain('')
                   }}
                 >
                   <SelectTrigger className="bg-white"><SelectValue /></SelectTrigger>
@@ -1638,8 +1767,9 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                   onValueChange={(v) => {
                     setNoteParty(v)
                     setNoteInvoice('')
+                    setNoteBargain('')
                     const nm = String(noteParties.find((x) => String(x.id) === v)?.name || '')
-                    if (nm) void loadRefs(nm.toUpperCase())
+                    if (nm) void loadRefs(nm.toUpperCase(), noteSide)
                   }}
                 >
                   <SelectTrigger className="bg-white"><SelectValue placeholder="Select party" /></SelectTrigger>
@@ -1666,6 +1796,34 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                   </SelectContent>
                 </Select>
               </div>
+              {noteCanCreditBargain && (
+                <div className="flex flex-col gap-0.5">
+                  <Label>Credit back to sales bargain</Label>
+                  <Select value={noteBargain || 'NONE'} onValueChange={(v) => setNoteBargain(v === 'NONE' ? '' : v)}>
+                    <SelectTrigger className="bg-white">
+                      <SelectValue placeholder={noteParty ? 'Do not touch any bargain' : 'Pick the customer first'} />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-72">
+                      <SelectItem value="NONE">Do not touch any bargain</SelectItem>
+                      {noteBargains.map((b) => (
+                        <SelectItem key={String(b.id)} value={String(b.id)}>
+                          {String(b.manual_bargain_no || b.bargain_no || b.id)} — {String(b.product_name || '')}
+                          {' · bal '}
+                          {formatNum(b.balance_qty)} {String(b.uom || 'MT')}
+                        </SelectItem>
+                      ))}
+                      {noteBargains.length === 0 && (
+                        <div className="px-2 py-1.5 text-[11px] text-muted-foreground">No sales bargains for this customer</div>
+                      )}
+                    </SelectContent>
+                  </Select>
+                  {noteBargain && (
+                    <span className="text-[10px] text-muted-foreground">
+                      {formatNum(noteReturnQty)} will be added back to its balance
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Items take the room they need and scroll on their own; the
@@ -2448,6 +2606,8 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
               options={[
                 ...VCH_TYPES.map((v) => ({ value: v.key, label: v.label })),
                 { value: 'PURCHASE OIL', label: 'Purchase (auto)' },
+                { value: 'PURCHASE FREIGHT INWARD', label: 'Freight inward bill' },
+                { value: 'PURCHASE FREIGHT OUTWARD', label: 'Freight outward bill' },
                 { value: 'SALE', label: 'Sales (auto)' }
               ]}
               value={dbType}
@@ -2682,6 +2842,14 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                             {r.narration ? (
                               <div className="mb-1.5 text-[12px] italic text-muted-foreground">{r.narration}</div>
                             ) : null}
+                            {r.bargain_no ? (
+                              <div className="mb-1.5 text-[12px]">
+                                <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                                  Credited back to bargain{' '}
+                                </span>
+                                <span className="font-semibold">{String(r.bargain_no)}</span>
+                              </div>
+                            ) : null}
                             {!noteRowItems[id] ? (
                               <div className="text-[12px] text-muted-foreground">Loading item lines…</div>
                             ) : noteRowItems[id].length === 0 ? (
@@ -2725,7 +2893,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   )
 
   // ---- Transporter freight register (both sides share this) ----
-  const tfLabel = tfSide === 'purchase' ? 'Transporter Purchase' : 'Transporter Sales'
+  const tfLabel = tfSide === 'purchase' ? 'Fr. Inward Working' : 'Fr. Outward Working'
   const tfPickedRows = useMemo(() => tfRows.filter((r) => tfPicked.includes(Number(r.id))), [tfRows, tfPicked])
   const tfPickedTotal = useMemo(() => tfPickedRows.reduce((t, r) => t + (Number(r.amount) || 0), 0), [tfPickedRows])
   // Every line on one bill has to be the same transporter — the backend
@@ -2735,12 +2903,15 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     [tfPickedRows]
   )
   const tfBillCalc = (() => {
-    const taxable = Math.round(tfPickedTotal * 100) / 100
+    const lines = Math.round(tfPickedTotal * 100) / 100
+    // What the transporter actually billed, over or under the tanker lines.
+    const adj = Math.round((Number(tfBill.adjustment) || 0) * 100) / 100
+    const taxable = Math.round((lines + adj) * 100) / 100
     const gst = Math.round(taxable * (Number(tfBill.gst_pct) || 0)) / 100
     const tds = Math.round(taxable * (Number(tfBill.tds_pct) || 0)) / 100
     const raw = Math.round((taxable + gst - tds) * 100) / 100
     const total = Math.round(raw)
-    return { taxable, gst, tds, ro: Math.round((total - raw) * 100) / 100, total }
+    return { lines, adj, taxable, gst, tds, ro: Math.round((total - raw) * 100) / 100, total }
   })()
 
   function tfToggle(row: Row): void {
@@ -2769,13 +2940,15 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         bill_date: tfBill.bill_date || todayISO(),
         gst_pct: Number(tfBill.gst_pct) || 0,
         tds_pct: Number(tfBill.tds_pct) || 0,
+        adjustment: Number(tfBill.adjustment) || 0,
+        adjustment_note: tfBill.adjustment_note || null,
         note: tfBill.note || null,
         line_ids: tfPickedRows.map((r) => Number(r.id))
       })
       toast.success(`Booked ${formatINR(tfBillCalc.total)} to ${tfPickedRows[0].transporter_name}`)
       setTfBillOpen(false)
       setTfPicked([])
-      setTfBill({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', note: '' })
+      setTfBill({ bill_no: '', bill_date: todayISO(), gst_pct: '5', tds_pct: '', adjustment: '', adjustment_note: '', note: '' })
       await loadTFreight()
       loadAccounts()
     } catch (e) {
@@ -2840,7 +3013,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
               { label: 'Freight earned', value: formatINR(tfKpi.total), tone: 'text-[#1a2c56]' },
               { label: 'Booked to ledger', value: formatINR(tfKpi.billed), tone: 'text-emerald-700' },
               { label: 'Not booked · firm', value: formatINR(tfKpi.firm), tone: 'text-rose-700' },
-              { label: 'Not booked · valuation', value: formatINR(tfKpi.provisional), tone: 'text-amber-700' }
+              { label: 'Not booked · provisional', value: formatINR(tfKpi.provisional), tone: 'text-amber-700' }
             ] as const).map((k) => (
               <div key={k.label} className="bg-[#fffdf4] px-4 py-2">
                 <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{k.label}</div>
@@ -2911,7 +3084,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                                 : 'Tanker not emptied yet — worked out on the ordered qty until it is weighed in.'
                             }
                           >
-                            valuation
+                            provisional
                           </div>
                         )}
                       </td>
@@ -2950,7 +3123,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
           )}
           {tfPickedRows.some((r) => Number(r.provisional) === 1) && (
             <span className="text-[12px] font-medium text-amber-800">
-              {tfPickedRows.filter((r) => Number(r.provisional) === 1).length} of these is still a valuation — the final freight
+              {tfPickedRows.filter((r) => Number(r.provisional) === 1).length} of these is still provisional — the final freight
               lands once it is unloaded.
             </span>
           )}
@@ -2998,9 +3171,42 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
               <Label className="text-[10px] uppercase tracking-wide">TDS % on freight</Label>
               <Input type="number" className="bg-white" value={String(tfBill.tds_pct ?? '')} onChange={(e) => setTfBill((p) => ({ ...p, tds_pct: e.target.value }))} />
             </div>
+            <div className="flex flex-col gap-1">
+              <Label className="flex items-center gap-1 text-[10px] uppercase tracking-wide">
+                Adjustment (+ / −)
+              </Label>
+              <Input
+                type="number"
+                className="bg-white"
+                placeholder="0.00"
+                value={String(tfBill.adjustment ?? '')}
+                onChange={(e) => setTfBill((p) => ({ ...p, adjustment: e.target.value }))}
+              />
+              <span className="text-[10px] leading-snug text-muted-foreground">
+                Bill more or less than the tanker lines — a rate settled later, detention, a negotiated cut. Negative reduces.
+              </span>
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-[10px] uppercase tracking-wide">Reason for the adjustment</Label>
+              <Input
+                className="bg-white"
+                placeholder={Number(tfBill.adjustment) ? 'Say why' : 'Only if adjusted'}
+                value={String(tfBill.adjustment_note ?? '')}
+                onChange={(e) => setTfBill((p) => ({ ...p, adjustment_note: e.target.value }))}
+              />
+            </div>
           </div>
           <div className="rounded-md border bg-white/60 px-3 py-2 text-[13px]" style={{ borderColor: '#d9d2b8' }}>
-            <div className="flex justify-between py-0.5"><span className="text-muted-foreground">Freight (taxable)</span><span className="tabular-nums">{formatINR(tfBillCalc.taxable)}</span></div>
+            <div className="flex justify-between py-0.5"><span className="text-muted-foreground">Freight on the ticked lines</span><span className="tabular-nums">{formatINR(tfBillCalc.lines)}</span></div>
+            {!!tfBillCalc.adj && (
+              <div className="flex justify-between py-0.5">
+                <span className="text-muted-foreground">Adjustment</span>
+                <span className={cn('tabular-nums', tfBillCalc.adj < 0 ? 'text-rose-700' : 'text-emerald-700')}>
+                  {tfBillCalc.adj > 0 ? '+ ' : '− '}{formatINR(Math.abs(tfBillCalc.adj))}
+                </span>
+              </div>
+            )}
+            <div className="flex justify-between py-0.5"><span className="text-muted-foreground">Taxable</span><span className="tabular-nums">{formatINR(tfBillCalc.taxable)}</span></div>
             <div className="flex justify-between py-0.5"><span className="text-muted-foreground">GST</span><span className="tabular-nums">{formatINR(tfBillCalc.gst)}</span></div>
             <div className="flex justify-between py-0.5"><span className="text-muted-foreground">TDS withheld</span><span className="tabular-nums">− {formatINR(tfBillCalc.tds)}</span></div>
             <div className="flex justify-between py-0.5"><span className="text-muted-foreground">Round off</span><span className="tabular-nums">{formatINR(tfBillCalc.ro)}</span></div>
@@ -3032,6 +3238,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         </div>
         <div className="p-2">
           <Input
+            ref={ledgerSearchRef}
             className="h-8 bg-white text-[13px]"
             placeholder="Search ledger…"
             value={ledgerSearch}
@@ -3099,7 +3306,96 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                 </Button>
               </div>
             </div>
-            {lgMonthly ? (
+            {lgBills ? (
+              // Tally's Ledger Voucher Outstanding: a line per open bill, then a
+              // sub total, then whatever the bills do not account for.
+              (() => {
+                const rows = (bills?.rows as Row[]) || []
+                const dc = bills?.debtor ? 'Dr' : 'Cr'
+                const onAcc = Number(bills?.on_account) || 0
+                return (
+                  <div className="max-h-[calc(100vh-225px)] overflow-auto">
+                    <table className="w-full text-[13px]">
+                      <thead className="sticky top-0 bg-[#f1ecd9]">
+                        <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                          <th className="px-4 py-1.5">Date</th>
+                          <th className="px-2 py-1.5">Ref. no</th>
+                          <th className="px-2 py-1.5 text-right">Opening amount</th>
+                          <th className="px-2 py-1.5 text-right">Pending amount</th>
+                          <th className="px-2 py-1.5">Due on</th>
+                          <th className="px-2 py-1.5 text-right">Overdue by days</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="px-4 py-10 text-center text-muted-foreground">
+                              Nothing outstanding on this ledger{lgTo ? ` as on ${formatDate(lgTo)}` : ''}.
+                            </td>
+                          </tr>
+                        ) : (
+                          rows.map((b, i) => (
+                            <tr key={`${b.ref}-${i}`} className="border-b border-dotted" style={{ borderColor: '#e5dfc8' }}>
+                              <td className="whitespace-nowrap px-4 py-1.5 tabular-nums">{formatDate(b.bill_date)}</td>
+                              <td className="px-2 py-1.5 font-medium">{b.ref}</td>
+                              <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">
+                                {formatINR(Math.abs(Number(b.opening)))} {dc}
+                              </td>
+                              <td className="whitespace-nowrap px-2 py-1.5 text-right font-semibold tabular-nums">
+                                {formatINR(Math.abs(Number(b.pending)))} {dc}
+                              </td>
+                              <td className="whitespace-nowrap px-2 py-1.5 tabular-nums">{formatDate(b.due_on)}</td>
+                              <td
+                                className={cn(
+                                  'px-2 py-1.5 text-right tabular-nums',
+                                  Number(b.overdue_days) > 0 ? 'font-semibold text-rose-700' : 'text-muted-foreground'
+                                )}
+                              >
+                                {Number(b.overdue_days) > 0 ? Number(b.overdue_days) : '—'}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t-2 font-bold" style={{ borderColor: '#1a2c56' }}>
+                          <td className="px-4 py-2" colSpan={2}>Sub total</td>
+                          <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">
+                            {formatINR(Math.abs(Number(bills?.total_opening) || 0))} {dc}
+                          </td>
+                          <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">
+                            {formatINR(Math.abs(Number(bills?.total_pending) || 0))} {dc}
+                          </td>
+                          <td colSpan={2} />
+                        </tr>
+                        {Math.abs(onAcc) > 0.004 && (
+                          <tr className="border-t border-dashed italic" style={{ borderColor: '#d9d2b8' }}>
+                            <td className="whitespace-nowrap px-4 py-1.5 tabular-nums">{formatDate(bills?.as_of)}</td>
+                            <td className="px-2 py-1.5" title="The part of the balance no bill accounts for — an advance, an unallocated receipt, or an opening figure.">
+                              On account
+                            </td>
+                            <td />
+                            <td className="whitespace-nowrap px-2 py-1.5 text-right font-semibold tabular-nums">
+                              {formatINR(Math.abs(onAcc))} {onAcc >= 0 ? 'Dr' : 'Cr'}
+                            </td>
+                            <td colSpan={2} />
+                          </tr>
+                        )}
+                        <tr className="bg-[#f1ecd9] text-[11px]">
+                          <td className="px-4 py-1.5 uppercase tracking-wide text-muted-foreground" colSpan={3}>
+                            Ledger closing balance{bills?.credit_days ? ` · ${bills.credit_days} days credit` : ''}
+                          </td>
+                          <td className="whitespace-nowrap px-2 py-1.5 text-right font-bold tabular-nums">
+                            {formatINR(Math.abs(Number(bills?.balance) || 0))} {Number(bills?.balance) >= 0 ? 'Dr' : 'Cr'}
+                          </td>
+                          <td colSpan={2} />
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                )
+              })()
+            ) : lgMonthly ? (
               <div className="max-h-[calc(100vh-225px)] overflow-auto">
                 <table className="w-full text-[13px]">
                   <thead className="sticky top-0 bg-[#f1ecd9]">
@@ -3145,15 +3441,44 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
               </div>
             ) : (
               <div className="max-h-[calc(100vh-225px)] overflow-auto [scrollbar-gutter:stable] [&::-webkit-scrollbar]:h-3 [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-[#efe9d2] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[#1a2c56]/50 hover:[&::-webkit-scrollbar-thumb]:bg-[#1a2c56]/70">
-                <table className={cn('w-full text-[13px]', lgDetailed && legCols.length > 0 && 'min-w-max')}>
+                <table
+                  className={cn(
+                    'w-full text-[13px]',
+                    // Fixed layout in the normal view: Particulars takes the
+                    // slack and everything else keeps a stated width, so the
+                    // Balance column can no longer be shoved off the right edge
+                    // and the money columns line up down the page. Columnar mode
+                    // genuinely needs to be wider than the pane, so it opts out.
+                    // A floor on the whole table, so on a narrow pane it scrolls
+                    // rather than crushing Particulars down to a few pixels —
+                    // which is what fixed widths do to the one flexible column.
+                    // Wider than the floor, Particulars takes all the slack.
+                    lgDetailed && legCols.length > 0 ? 'min-w-max' : 'table-fixed min-w-[880px]'
+                  )}
+                >
+                  {!(lgDetailed && legCols.length > 0) && (
+                    <colgroup>
+                      {/* Date needs room for dd-mm-yyyy at 13px plus padding —
+                          84px clipped it into Particulars and wrapped the
+                          opening row onto two lines. */}
+                      <col className="w-[108px]" />
+                      <col />
+                      <col className="w-[62px]" />
+                      <col className="w-[110px]" />
+                      <col className="w-[116px]" />
+                      <col className="w-[116px]" />
+                      <col className="w-[140px]" />
+                    </colgroup>
+                  )}
                   <thead className="sticky top-0 z-20 bg-[#f1ecd9]">
                     <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
-                      <th className={cn('px-4 py-1.5', lgDetailed && 'sticky left-0 z-30 w-[104px] min-w-[104px] bg-[#f1ecd9]')}>Date</th>
+                      <th className={cn('px-3 py-1.5', lgDetailed && 'sticky left-0 z-30 w-[104px] min-w-[104px] bg-[#f1ecd9]')}>Date</th>
                       <th className={cn('px-2 py-1.5', lgDetailed && 'sticky left-[104px] z-30 w-[190px] min-w-[190px] bg-[#f1ecd9] shadow-[4px_0_6px_-4px_rgba(26,44,86,0.35)]')}>Particulars</th>
                       <th className="px-2 py-1.5">Vch</th>
-                      <th className="px-2 py-1.5 text-right">Debit</th>
+                      <th className="px-2 py-1.5">Bill ref</th>
+                      <th className="border-l px-2 py-1.5 text-right" style={{ borderColor: '#e0d8bd' }}>Debit</th>
                       <th className="px-2 py-1.5 text-right">Credit</th>
-                      <th className="px-2 py-1.5 text-right">Balance</th>
+                      <th className="border-l px-3 py-1.5 text-right" style={{ borderColor: '#e0d8bd' }}>Balance</th>
                       {lgDetailed &&
                         legCols.map((c) => (
                           <th key={c} className="max-w-[150px] truncate border-l px-2 py-1.5 text-right" style={{ borderColor: '#e5dfc8' }} title={c}>
@@ -3165,21 +3490,22 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                   <tbody>
                     {(lgFrom || Math.abs(stmt.opening) > 0.004) && (
                       <tr className="border-b bg-amber-50/60 font-medium" style={{ borderColor: '#e5dfc8' }}>
-                        <td className={cn('px-4 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground', lgDetailed && 'sticky left-0 z-10 bg-[#fbf3dc]')}>
+                        <td className={cn('whitespace-nowrap px-3 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground', lgDetailed && 'sticky left-0 z-10 bg-[#fbf3dc]')}>
                           {lgFrom ? formatDate(lgFrom) : ''}
                         </td>
-                        <td className={cn('px-2 py-1.5 italic', lgDetailed && 'sticky left-[104px] z-10 bg-[#fbf3dc]')} colSpan={lgDetailed ? 1 : 4}>Opening balance</td>
-                        {lgDetailed && <td colSpan={3} />}
-                        <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">
-                          {formatINR(Math.abs(stmt.opening))} {stmt.opening >= 0 ? 'Dr' : 'Cr'}
+                        <td className={cn('px-2 py-1.5 italic', lgDetailed && 'sticky left-[104px] z-10 bg-[#fbf3dc]')} colSpan={lgDetailed ? 1 : 5}>Opening balance</td>
+                        {lgDetailed && <td colSpan={4} />}
+                        <td className="whitespace-nowrap border-l px-3 py-1.5 text-right font-medium tabular-nums" style={{ borderColor: '#e0d8bd' }}>
+                          {formatINR(Math.abs(stmt.opening))}{' '}
+                          <span className="text-[10px] text-muted-foreground">{stmt.opening >= 0 ? 'Dr' : 'Cr'}</span>
                         </td>
                         {lgDetailed && legCols.length > 0 && <td colSpan={legCols.length} />}
                       </tr>
                     )}
                     {stmt.rows.map((l) => (
                       <tr key={String(l.id)} className="border-b border-dotted align-top" style={{ borderColor: '#e5dfc8' }}>
-                        <td className={cn('whitespace-nowrap px-4 py-1.5 tabular-nums', lgDetailed && 'sticky left-0 z-10 bg-[#fffdf4]')}>{formatDate(l.entry_date)}</td>
-                        <td className={cn('px-2 py-1.5', lgDetailed && 'sticky left-[104px] z-10 max-w-[190px] bg-[#fffdf4] shadow-[4px_0_6px_-4px_rgba(26,44,86,0.25)]')}>
+                        <td className={cn('whitespace-nowrap px-3 py-1.5 tabular-nums', lgDetailed && 'sticky left-0 z-10 bg-[#fffdf4]')}>{formatDate(l.entry_date)}</td>
+                        <td className={cn('overflow-hidden px-2 py-1.5', lgDetailed && 'sticky left-[104px] z-10 max-w-[190px] bg-[#fffdf4] shadow-[4px_0_6px_-4px_rgba(26,44,86,0.25)]')}>
                           <div className="truncate font-medium" title={String(l.particulars || l.vch_type)}>{l.particulars || l.vch_type}</div>
                           {l.narration && <div className="truncate text-[11px] italic text-muted-foreground">{l.narration}</div>}
                         </td>
@@ -3187,10 +3513,35 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                           <div>{l.voucher_code}</div>
                           {lgDetailed && <div>{l.vch_type}{l.vch_no ? ` · ${l.vch_no}` : ''}</div>}
                         </td>
-                        <td className="px-2 py-1.5 text-right tabular-nums">{Number(l.dr) ? formatINR(l.dr) : ''}</td>
-                        <td className="px-2 py-1.5 text-right tabular-nums">{Number(l.cr) ? formatINR(l.cr) : ''}</td>
-                        <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">
-                          {formatINR(Math.abs(l.running))} {l.running >= 0 ? 'Dr' : 'Cr'}
+                        <td className="max-w-[150px] overflow-hidden px-2 py-1.5 text-[11px]">
+                          {(() => {
+                            // The bill this line is against. A bill-wise
+                            // allocation is the truest answer — it names the
+                            // document being settled — and the voucher's own
+                            // number stands in when the line IS the document
+                            // (a purchase, a transporter's freight bill).
+                            const refs = [
+                              ...new Set(
+                                ((l.allocs as Row[]) || [])
+                                  .map((a2) => String(a2.ref_name || '').trim())
+                                  .filter(Boolean)
+                              )
+                            ]
+                            const text = refs.length ? refs.join(', ') : String(l.vch_no || '').trim()
+                            if (!text) {
+                              const onAccount = ((l.allocs as Row[]) || []).some((a2) => String(a2.method) === 'on_account')
+                              return <span className="text-muted-foreground">{onAccount ? 'On account' : '—'}</span>
+                            }
+                            return <span className="block truncate" title={text}>{text}</span>
+                          })()}
+                        </td>
+                        <td className="whitespace-nowrap border-l px-2 py-1.5 text-right tabular-nums" style={{ borderColor: '#f0ead2' }}>
+                          {Number(l.dr) ? formatINR(l.dr) : ''}
+                        </td>
+                        <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">{Number(l.cr) ? formatINR(l.cr) : ''}</td>
+                        <td className="whitespace-nowrap border-l px-3 py-1.5 text-right font-medium tabular-nums" style={{ borderColor: '#f0ead2' }}>
+                          {formatINR(Math.abs(l.running))}{' '}
+                          <span className="text-[10px] text-muted-foreground">{l.running >= 0 ? 'Dr' : 'Cr'}</span>
                         </td>
                         {lgDetailed &&
                           legCols.map((c) => {
@@ -3212,14 +3563,17 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                   </tbody>
                   <tfoot>
                     <tr className="border-t-2 bg-[#fffdf4] font-bold" style={{ borderColor: '#1a2c56' }}>
-                      <td className={cn('px-4 py-2', lgDetailed && 'sticky left-0 z-10 bg-[#fffdf4]')} colSpan={lgDetailed ? 2 : 3}>
+                      <td className={cn('px-3 py-2', lgDetailed && 'sticky left-0 z-10 bg-[#fffdf4]')} colSpan={lgDetailed ? 2 : 4}>
                         Closing balance{lgFrom || lgTo ? ' (period)' : ''}
                       </td>
-                      {lgDetailed && <td />}
-                      <td className="px-2 py-2 text-right tabular-nums">{formatINR(stmt.totDr)}</td>
-                      <td className="px-2 py-2 text-right tabular-nums">{formatINR(stmt.totCr)}</td>
-                      <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">
-                        {formatINR(Math.abs(stmt.closing))} {stmt.closing >= 0 ? 'Dr' : 'Cr'}
+                      {lgDetailed && <td colSpan={2} />}
+                      <td className="whitespace-nowrap border-l px-2 py-2 text-right tabular-nums" style={{ borderColor: '#1a2c56' }}>
+                        {formatINR(stmt.totDr)}
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatINR(stmt.totCr)}</td>
+                      <td className="whitespace-nowrap border-l px-3 py-2 text-right tabular-nums" style={{ borderColor: '#1a2c56' }}>
+                        {formatINR(Math.abs(stmt.closing))}{' '}
+                        <span className="text-[10px] font-normal text-muted-foreground">{stmt.closing >= 0 ? 'Dr' : 'Cr'}</span>
                       </td>
                       {lgDetailed &&
                         legCols.map((c) => {
@@ -3385,7 +3739,10 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
             {company.name} <span className="ml-1 text-amber-300">F3</span>
           </button>
         )}
-        <span className="text-[11px] text-white/60">F4 Contra · F5 Payment · F6 Receipt · F7 Journal · Ctrl+A accept · Esc back / exit</span>
+        <span className="text-[11px] text-white/60">
+          F4 Contra · F5 Payment · F6 Receipt · F7 Journal · Ctrl+A accept · Esc back / exit · the highlighted letter jumps to any
+          section
+        </span>
         <span className="ml-auto flex items-center gap-2"><UpdateBadge /><DbStatus /></span>
       </div>
       <div className="flex-1 px-2 pb-2">

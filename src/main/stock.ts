@@ -707,20 +707,32 @@ export async function stockRegisters(
                  COALESCE(cu.name, s.customer, 'Unknown') AS party,
                  tr.name AS transporter,
                  s.invoice_no AS bill_no,
-                 g.tanker_no AS vehicle_no,
+                 -- The vehicle that carried it out. Gate Out links to a sale by
+                 -- INVOICE GROUP, not sale_id — joining on gate_entries.sale_id
+                 -- matched nothing at all (it is null on every gate row), which
+                 -- is why this column came out empty in the register.
+                 (SELECT ge.tanker_no FROM gate_entries ge
+                   WHERE ge.direction = 'out' AND ge.invoice_group = s.invoice_group
+                     AND s.invoice_group IS NOT NULL
+                   ORDER BY ge.id DESC LIMIT 1) AS vehicle_no,
                  p.name AS oil_type,
                  s.qty AS dispatch_qty,
                  -- What the transporter delivered, captured when the invoice was
                  -- marked Unloaded; the gate register is the fallback for a
                  -- vehicle weighed at the yard instead.
-                 COALESCE(s.received_qty, g.received_qty) AS received_qty,
+                 COALESCE(
+                   s.received_qty,
+                   (SELECT ge.received_qty FROM gate_entries ge
+                     WHERE ge.direction = 'out' AND ge.invoice_group = s.invoice_group
+                       AND s.invoice_group IS NOT NULL AND ge.received_qty > 0
+                     ORDER BY ge.id DESC LIMIT 1)
+                 ) AS received_qty,
                  co.name AS company
           FROM sales s
           LEFT JOIN customers cu ON cu.id = s.customer_id
           LEFT JOIN transporters tr ON tr.id = s.transporter_id
           LEFT JOIN products p ON p.id = s.product_id
           LEFT JOIN companies co ON co.id = s.company_id
-          LEFT JOIN gate_entries g ON g.sale_id = s.id
           WHERE s.status = 'done' AND COALESCE(s.affects_stock, 1) = 1
             AND s.company_id IN (${ph}) ${dispB.sql}`,
     args: [...cidList, ...dispB.args]

@@ -39,7 +39,8 @@ const api = {
     all: (): Promise<Record<string, string>> => ipcRenderer.invoke('settings:all')
   },
   bargains: {
-    list: (from?: string, to?: string): Promise<Row[]> => ipcRenderer.invoke('bargains:list', { from, to }),
+    list: (from?: string, to?: string, companyIds?: number[]): Promise<Row[]> =>
+      ipcRenderer.invoke('bargains:list', { from, to, companyIds }),
     create: (values: Row): Promise<{ id: number; bargain_no: string }> =>
       ipcRenderer.invoke('bargains:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>
@@ -60,7 +61,8 @@ const api = {
     unmapped: (): Promise<Row[]> => ipcRenderer.invoke('orders:unmapped'),
     bargainLines: (id: number): Promise<Row[]> => ipcRenderer.invoke('orders:bargainLines', { id }),
     bargainInterest: (id: number): Promise<Row[]> => ipcRenderer.invoke('orders:bargainInterest', { id }),
-    consignmentDraws: (): Promise<Row[]> => ipcRenderer.invoke('orders:consignmentDraws'),
+    consignmentDraws: (companyIds?: number[]): Promise<Row[]> =>
+      ipcRenderer.invoke('orders:consignmentDraws', { companyIds }),
     unmappedCount: (): Promise<number> => ipcRenderer.invoke('orders:unmappedCount'),
     map: (id: number, lines: Row[], force?: boolean): Promise<Row> =>
       ipcRenderer.invoke('orders:map', { id, lines, force }),
@@ -120,7 +122,13 @@ const api = {
       ipcRenderer.invoke('journal:trialBalance', args),
     groups: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('journal:groups', { companyId }),
     groupNames: (): Promise<{ name: string; nature: string }[]> => ipcRenderer.invoke('journal:groupNames'),
-    pendingRefs: (account: string, companyId?: number): Promise<Row[]> => ipcRenderer.invoke('journal:pendingRefs', { account, companyId }),
+    billsOutstanding: (
+      account: string,
+      companyId?: number,
+      opts: { asOf?: string; side?: 'customer' | 'supplier' } = {}
+    ): Promise<Row> => ipcRenderer.invoke('journal:billsOutstanding', { account, companyId, ...opts }),
+    pendingRefs: (account: string, companyId?: number, side?: 'customer' | 'supplier'): Promise<Row[]> =>
+      ipcRenderer.invoke('journal:pendingRefs', { account, companyId, side }),
     tradingAccount: (from?: string, to?: string, companyId?: number): Promise<Row[]> =>
       ipcRenderer.invoke('journal:tradingAccount', { from, to, companyId }),
     accounts: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('journal:accounts', { companyId }),
@@ -233,7 +241,7 @@ const api = {
       ipcRenderer.invoke('production:delete', { id })
   },
   sales: {
-    list: (): Promise<Row[]> => ipcRenderer.invoke('sales:list'),
+    list: (companyIds?: number[]): Promise<Row[]> => ipcRenderer.invoke('sales:list', { companyIds }),
     fyTaxable: (customerId: number, date: string, excludeId: number): Promise<number> =>
       ipcRenderer.invoke('sales:fyTaxable', { customerId, date, excludeId }),
     create: (values: Row): Promise<{ id: number }> =>
@@ -273,7 +281,8 @@ const api = {
       ipcRenderer.invoke('skuRates:save', { id, rows })
   },
   salesBargains: {
-    list: (from?: string, to?: string): Promise<Row[]> => ipcRenderer.invoke('salesBargains:list', { from, to }),
+    list: (from?: string, to?: string, companyIds?: number[]): Promise<Row[]> =>
+      ipcRenderer.invoke('salesBargains:list', { from, to, companyIds }),
     create: (values: Row): Promise<{ id: number; bargain_no: string }> =>
       ipcRenderer.invoke('salesBargains:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>

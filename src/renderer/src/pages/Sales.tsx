@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, Ban, Check, ChevronDown, ChevronLeft, ChevronRight, Download, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Tags, Trash2, Upload } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Download, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Tags, Trash2, Upload } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -936,13 +936,12 @@ function SalesTab({
   function openUnload(inv: { group: string; first: Row; lines: Row[] }): void {
     setUnloadInv(inv)
     setUnloadDate(String(inv.first.unloaded_date || todayISO()).slice(0, 10))
-    // Default each line to what was dispatched — the common case is that the
-    // whole load arrived, and a pre-filled figure is quicker to accept than to
-    // retype.
+    // Deliberately blank. A pre-filled dispatched figure is quicker to accept
+    // than to retype, which is exactly the problem — it invites confirming a
+    // number nobody weighed. Whatever was recorded before is kept, so a re-open
+    // is an edit rather than a fresh ask.
     setUnloadQty(
-      Object.fromEntries(
-        inv.lines.map((l) => [String(l.id), String(l.received_qty ?? l.qty ?? '')])
-      )
+      Object.fromEntries(inv.lines.map((l) => [String(l.id), l.received_qty != null ? String(l.received_qty) : '']))
     )
   }
 
@@ -952,8 +951,7 @@ function SalesTab({
     for (const l of unloadInv.lines) {
       const raw = unloadQty[String(l.id)]
       if (raw === '' || raw == null) {
-        received[String(l.id)] = null
-        continue
+        return void toast.error(`Enter the received qty for ${l.product_name} — it is required to unload`)
       }
       const q = Number(raw)
       if (!Number.isFinite(q) || q < 0) return void toast.error(`Enter a valid received qty for ${l.product_name}`)
@@ -1989,8 +1987,8 @@ function SalesTab({
             <DialogTitle>Unload {unloadInv?.first.invoice_no || 'this invoice'}</DialogTitle>
           </DialogHeader>
           <p className="text-[12px] text-muted-foreground">
-            Enter the quantity the transporter actually delivered. It is recorded against the invoice and shown in its
-            details, and feeds the dispatch register. Leave a line blank if it was not weighed.
+            Enter the quantity the transporter actually delivered. It is recorded against the invoice, shown in its details,
+            feeds the dispatch register, and prices the freight — so every line has to be filled in.
           </p>
           <div className="flex flex-col gap-1.5">
             <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Unloaded date</Label>
@@ -2012,7 +2010,8 @@ function SalesTab({
                   <span className="text-right text-[12px] tabular-nums text-muted-foreground">{formatNum(l.qty)}</span>
                   <Input
                     type="number"
-                    className="h-8 text-right tabular-nums"
+                    className={cn('h-8 text-right tabular-nums', (raw ?? '') === '' && 'border-rose-400')}
+                    placeholder="Required"
                     value={raw ?? ''}
                     onChange={(e) => setUnloadQty((p) => ({ ...p, [String(l.id)]: e.target.value }))}
                   />
@@ -2030,7 +2029,15 @@ function SalesTab({
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setUnloadInv(null)} disabled={unloadSaving}>Cancel</Button>
-            <Button onClick={() => void confirmUnload()} disabled={unloadSaving}>
+            <Button
+              onClick={() => void confirmUnload()}
+              disabled={unloadSaving || (unloadInv?.lines || []).some((l) => (unloadQty[String(l.id)] ?? '') === '')}
+              title={
+                (unloadInv?.lines || []).some((l) => (unloadQty[String(l.id)] ?? '') === '')
+                  ? 'Fill in the received qty on every line first'
+                  : undefined
+              }
+            >
               {unloadSaving ? 'Saving…' : 'Mark unloaded'}
             </Button>
           </DialogFooter>
@@ -2113,23 +2120,46 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
   })
   const [adjustSaving, setAdjustSaving] = useState(false)
   const [adjustError, setAdjustError] = useState<string | null>(null)
+  // Sales bargains are general: the balance already counts every company's
+  // dispatch, so the register reads as ONE book by default (empty = all) and
+  // the invoice list underneath has to span the same companies. Picking one
+  // narrows both together.
+  const [companies, setCompanies] = useState<Row[]>([])
+  const [coIds, setCoIds] = useState<number[]>([])
+  // listSales defaults to the ACTIVE company when given nothing, so "all" has
+  // to be spelled out as every id. Known only after the first load; until then
+  // the active company's invoices show, and the list fills in on the refresh.
+  // Keyed off a string, not the array — every load hands back a fresh array,
+  // and a fresh identity in load's deps would re-trigger load forever.
+  const companyKey = companies
+    .map((c) => Number(c.id))
+    .sort((a, b) => a - b)
+    .join(',')
+  const companyAll = useMemo(
+    () => (companyKey ? companyKey.split(',').map(Number) : []),
+    [companyKey]
+  )
 
   const load = useCallback(async () => {
-    const [b, s, pr, cu, pk] = await Promise.all([
-      window.api.salesBargains.list(F, T),
-      window.api.sales.list(),
+    const sel = coIds.length ? coIds : undefined
+    const [b, s, pr, cu, pk, cos] = await Promise.all([
+      window.api.salesBargains.list(F, T, sel),
+      window.api.sales.list(sel ?? companyAll),
       window.api.data.list('products'),
       window.api.data.list('customers'),
-      window.api.data.list('packagings')
+      window.api.data.list('packagings'),
+      window.api.company.list().catch(() => [] as Row[])
     ])
     setRows(b)
     setSales(s)
+    setCompanies(cos)
     // All active products (not just finished) so byproducts — fatty, scrap,
     // spent earth, misc — can be sold under their sale-type bargains too.
     setProducts(pr.filter((x) => x.active))
     setCustomers(cu.filter((x) => x.active))
     setPackagings(pk.filter((x) => x.active))
-  }, [F, T])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [F, T, coIds, companyKey])
 
   // Same rule as the Sales invoice form: a bargain is a manufacturing rate
   // contract, so Trading customers are left out — but the bargain's own
@@ -2364,6 +2394,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
           product: '',
           rate: Number(b.rate) || 0,
           invoice_no: g.invoice_no || '—',
+          company_name: String(g.sample.company_name || ''),
           sale_date: formatDate(g.sale_date),
           stage: String(g.sample.stage || g.sample.status || ''),
           qty: g.qty,
@@ -2616,6 +2647,27 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
             <Button variant="ghost" size="sm" className="h-8 text-muted-foreground" onClick={() => { setDateFrom(''); setDateTo('') }}>Clear</Button>
           )}
         </div>
+        {companies.length > 1 && (
+          <Select
+            value={coIds.length === 1 ? String(coIds[0]) : 'all'}
+            onValueChange={(v) => setCoIds(v === 'all' ? [] : [Number(v)])}
+          >
+            <SelectTrigger className="h-8 w-[12rem] shrink-0 text-[12px]">
+              <span className="flex min-w-0 items-center gap-1.5">
+                <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <SelectValue />
+              </span>
+            </SelectTrigger>
+            <SelectContent className="max-h-72">
+              <SelectItem value="all" className="text-[12px]">All companies</SelectItem>
+              {companies.map((c) => (
+                <SelectItem key={String(c.id)} value={String(c.id)} className="text-[12px]">
+                  {String(c.name)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <ExcelButton
             filename={`sales-bargains-${todayISO()}`}
@@ -2650,6 +2702,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                   { header: 'Addition', key: 'addition', align: 'right', numFmt: '#,##0.000' },
                   { header: 'Adjusted', key: 'adjusted', align: 'right', numFmt: '#,##0.000' },
                   { header: 'Invoice', key: 'invoice_no' },
+                  { header: 'Company', key: 'company_name' },
                   { header: 'Dispatched on', key: 'sale_date' },
                   { header: 'Stage', key: 'stage' },
                   { header: 'Dis qty', key: 'qty', align: 'right', numFmt: '#,##0.000' },

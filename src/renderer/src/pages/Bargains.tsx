@@ -6,6 +6,7 @@ import {
   ArrowUp,
   ArrowUpDown,
   BarChart3,
+  Building2,
   ChevronDown,
   ChevronRight,
   FileSpreadsheet,
@@ -171,6 +172,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
   const [oilTypes, setOilTypes] = useState<Row[]>([])
   const [tankers, setTankers] = useState<Row[]>([])
   const [draws, setDraws] = useState<Row[]>([])
+  // Bargains are general, so the register reads as ONE book across every
+  // company by default — empty means all. Picking a company narrows whose
+  // tankers and whose consignment/direct purchases count as drawn against it.
+  const [companies, setCompanies] = useState<Row[]>([])
+  const [coIds, setCoIds] = useState<number[]>([])
   const [defaultShortagePct, setDefaultShortagePct] = useState('0.2')
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [defaultUom, setDefaultUom] = useState('MT')
@@ -246,17 +252,22 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [b, s, o, br, pt, settings, cd] = await Promise.all([
-      window.api.bargains.list(F, T),
+    const sel = coIds.length ? coIds : undefined
+    const [b, s, o, br, pt, settings, cd, cos] = await Promise.all([
+      window.api.bargains.list(F, T, sel),
       window.api.data.list('suppliers'),
       window.api.data.list('products'),
       window.api.data.list('brokers'),
       // bargains are general → show consumption from every company's tankers
       window.api.tankers.list(true),
       window.api.settings.all(),
-      window.api.orders.consignmentDraws().catch(() => [] as Row[])
+      // Every company's consignment / direct draws, for the same reason the
+      // tankers come from every company: the balance already counts them.
+      window.api.orders.consignmentDraws(sel).catch(() => [] as Row[]),
+      window.api.company.list().catch(() => [] as Row[])
     ])
     setRows(b)
+    setCompanies(cos)
     setSuppliers(s.filter((x) => x.active))
     setBrokers(br.filter((x) => x.active))
     setTankers(pt)
@@ -269,7 +280,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
     )
     setDefaultUom(settings.default_uom ?? 'MT')
     setLoading(false)
-  }, [F, T])
+  }, [F, T, coIds])
 
   useEffect(() => {
     load()
@@ -868,20 +879,42 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
         ) : (
           <>
             <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
-              <div className="flex shrink-0 gap-1 overflow-x-auto rounded-lg border bg-muted/40 p-1">
-                {TYPE_FILTERS.map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => setTypeFilter(t)}
-                    className={cn(
-                      'whitespace-nowrap rounded-md px-2.5 py-1.5 text-[13px] font-medium transition-colors',
-                      typeFilter === t ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
-                    )}
-                  >
-                    {t === 'ALL' ? 'All' : t}
-                  </button>
-                ))}
-              </div>
+              {/* One dropdown rather than a chip per category — the list grows
+                  with the Products master, so a row of chips only ever gets
+                  longer and starts scrolling sideways. */}
+              <Select value={typeFilter} onValueChange={setTypeFilter}>
+                <SelectTrigger className="h-9 w-48 shrink-0 text-[13px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="max-h-72">
+                  {TYPE_FILTERS.map((t) => (
+                    <SelectItem key={t} value={t} className="text-[13px]">
+                      {t === 'ALL' ? 'All categories' : t}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {companies.length > 1 && (
+                <Select
+                  value={coIds.length === 1 ? String(coIds[0]) : 'all'}
+                  onValueChange={(v) => setCoIds(v === 'all' ? [] : [Number(v)])}
+                >
+                  <SelectTrigger className="h-9 w-[13rem] shrink-0 text-[13px]">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <SelectValue />
+                    </span>
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    <SelectItem value="all" className="text-[13px]">All companies</SelectItem>
+                    {companies.map((c) => (
+                      <SelectItem key={String(c.id)} value={String(c.id)} className="text-[13px]">
+                        {String(c.name)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
               <div className="relative min-w-[180px] flex-1 basis-56">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
@@ -1085,8 +1118,12 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                   // its bargain gets loaded − extra, the auto-created line gets extra.
                                   const list = tankers.filter(
                                     (t) =>
-                                      Number(t.bargain_id) === Number(row.id) ||
-                                      (Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) === Number(row.id))
+                                      (Number(t.bargain_id) === Number(row.id) ||
+                                        (Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) === Number(row.id))) &&
+                                      // The register's figures are already scoped to
+                                      // the picked companies; the tanker list has to
+                                      // agree or the two stop adding up.
+                                      (coIds.length === 0 || coIds.includes(Number(t.company_id)))
                                   )
                                   // Consignment / direct purchases draw on a bargain
                                   // without a tanker of their own, so they are listed
@@ -1107,6 +1144,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                           <tr className="border-b text-left text-[10px] uppercase tracking-wide text-muted-foreground">
                                             <th className="px-3 py-1">Invoice</th>
                                             <th className="px-3 py-1">Date</th>
+                                            {companies.length > 1 && <th className="px-3 py-1">Co.</th>}
                                             <th className="px-3 py-1">Party</th>
                                             <th className="px-3 py-1">Tanker(s)</th>
                                             <th className="px-3 py-1 text-right">Drawn</th>
@@ -1123,6 +1161,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                             >
                                               <td className="px-3 py-1 font-medium">{d.invoice_no}</td>
                                               <td className="whitespace-nowrap px-3 py-1">{formatDate(d.order_date)}</td>
+                                              {companies.length > 1 && (
+                                                <td className="whitespace-nowrap px-3 py-1 text-muted-foreground">
+                                                  {String(d.company_name || '—')}
+                                                </td>
+                                              )}
                                               <td className="px-3 py-1">{d.supplier_name}</td>
                                               <td className="px-3 py-1 text-muted-foreground">{d.tanker_nos || '—'}</td>
                                               <td className="px-3 py-1 text-right font-bold tabular-nums text-red-600">

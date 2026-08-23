@@ -10,10 +10,10 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 // actually in that column. The funnel fills in while a filter is active, so a
 // narrowed column is obvious at a glance rather than silently hiding rows.
 //
-// Same staged-then-Apply behaviour as MultiSelectFilter (ticking stays local
-// until Apply; closing without it discards the pick) — this is just the
-// in-header presentation of it, for a column that has no room for a full
-// dropdown field in the filter bar above.
+// Ticking applies straight away — there is no OK to press. The list of values
+// a column offers is built from the rows that pass every OTHER filter, so this
+// column's own options do not shift under the cursor while it is being ticked,
+// which is what makes live filtering safe here.
 //
 // Search narrows the visible list; (Select All) then applies to WHAT IS
 // SHOWN, exactly as Excel does — so searching "GJ12" and hitting Select All
@@ -64,29 +64,29 @@ export function ColumnFilter({
 
   const allShownTicked = shown.length > 0 && shown.every((o) => staged.has(o.value))
 
+  // One place that both records the tick and pushes it out, so the table can
+  // never be showing something different from what the boxes say. A selection
+  // covering every value is stored as empty — that is the "no filter" form the
+  // row predicate and the funnel icon both read.
+  function commit(next: Set<string>): void {
+    setStaged(next)
+    onApply(next.size >= options.length ? [] : Array.from(next))
+  }
+
   function toggle(v: string): void {
-    setStaged((prev) => {
-      const next = new Set(prev)
-      if (next.has(v)) next.delete(v)
-      else next.add(v)
-      return next
-    })
+    const next = new Set(staged)
+    if (next.has(v)) next.delete(v)
+    else next.add(v)
+    commit(next)
   }
 
   // (Select All) acts on the searched subset, like Excel — and doubles as
   // "unselect these" once they're all already ticked.
   function toggleAllShown(): void {
-    setStaged((prev) => {
-      const next = new Set(prev)
-      if (allShownTicked) for (const o of shown) next.delete(o.value)
-      else for (const o of shown) next.add(o.value)
-      return next
-    })
-  }
-
-  function apply(): void {
-    onApply(staged.size >= options.length ? [] : Array.from(staged))
-    setOpen(false)
+    const next = new Set(staged)
+    if (allShownTicked) for (const o of shown) next.delete(o.value)
+    else for (const o of shown) next.add(o.value)
+    commit(next)
   }
 
   return (
@@ -181,30 +181,31 @@ export function ColumnFilter({
             )}
           </div>
           <div className="flex items-center justify-between gap-1 border-t p-1.5">
-            <div className="flex gap-1">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-6 px-1.5 text-[10px] font-normal normal-case tracking-normal"
-                title="Tick every value in this column"
-                onClick={() => setStaged(new Set(options.map((o) => o.value)))}
-              >
-                Select all
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-6 px-1.5 text-[10px] font-normal normal-case tracking-normal"
-                title="Untick everything"
-                onClick={() => setStaged(new Set())}
-              >
-                Clear
-              </Button>
-            </div>
-            <Button type="button" size="sm" className="h-6 px-2 text-[10px] font-normal normal-case tracking-normal" onClick={apply}>
-              OK
+            {/* One action, not two: an empty selection is stored as "no
+                filter" (that is the convention every caller's row predicate
+                reads), so unticking everything and ticking everything land in
+                the same place. Offering both would show two buttons with one
+                effect. To narrow to a few values, search and use (Select All)
+                on the results, the way Excel does. */}
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-6 px-1.5 text-[10px] font-normal normal-case tracking-normal"
+              title="Show every value in this column again"
+              disabled={!active}
+              onClick={() => commit(new Set(options.map((o) => o.value)))}
+            >
+              Clear filter
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-[10px] font-normal normal-case tracking-normal"
+              onClick={() => setOpen(false)}
+            >
+              Close
             </Button>
           </div>
         </PopoverContent>

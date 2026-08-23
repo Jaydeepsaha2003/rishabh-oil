@@ -34,35 +34,43 @@ function dayMonth(dateStr: string): string {
   return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
-export async function listBargains(from?: string, to?: string): Promise<Row[]> {
+export async function listBargains(from?: string, to?: string, companyIds?: number[]): Promise<Row[]> {
   // Bargains are GENERAL — shared across every company, not company-scoped.
   // loaded_qty = total dispatched (received in) across this bargain's tankers +
   // consignment orders; balance = qty − loaded. Period register fields (relative
   // to [from,to]) split that "loaded" by the tanker loaded_date / order_date.
+  //
+  // companyIds narrows WHOSE consumption counts — the tankers and the
+  // consignment/direct purchases booked under those companies. Left empty (the
+  // default) every company's draw counts, which is what the register has to
+  // show when it is read as one book across KRFL and KRFIN.
   const f = from || '0000-01-01'
   const t = to || '9999-12-31'
+  const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
+  const ptCo = cos.length ? ` AND company_id IN (${cos.join(',')})` : ''
+  const obCo = cos.length ? ` AND o2.company_id IN (${cos.join(',')})` : ''
   const res = await getClient().execute({
     sql: `
     SELECT b.*, s.name AS supplier_name, s.supplier_type AS supplier_type,
            br.name AS broker_name,
            o.code AS oil_code, o.name AS oil_name,
-           COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id), 0)
-             + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id), 0)
-             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob WHERE ob.bargain_id = b.id), 0) AS loaded_qty,
+           COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id${ptCo}), 0)
+             + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id${ptCo}), 0)
+             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id${obCo}), 0) AS loaded_qty,
            b.qty
-             - COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id), 0)
-             - COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id), 0)
-             - COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob WHERE ob.bargain_id = b.id), 0) AS balance_qty,
-           COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND substr(loaded_date, 1, 10) < ?), 0)
-             + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id AND substr(loaded_date, 1, 10) < ?), 0)
-             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id AND substr(o2.order_date, 1, 10) < ?), 0) AS disp_before,
-           COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND substr(loaded_date, 1, 10) >= ? AND substr(loaded_date, 1, 10) <= ?), 0)
-             + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id AND substr(loaded_date, 1, 10) >= ? AND substr(loaded_date, 1, 10) <= ?), 0)
-             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id AND substr(o2.order_date, 1, 10) >= ? AND substr(o2.order_date, 1, 10) <= ?), 0) AS disp_period,
+             - COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id${ptCo}), 0)
+             - COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id${ptCo}), 0)
+             - COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id${obCo}), 0) AS balance_qty,
+           COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND substr(loaded_date, 1, 10) < ?${ptCo}), 0)
+             + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id AND substr(loaded_date, 1, 10) < ?${ptCo}), 0)
+             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id AND substr(o2.order_date, 1, 10) < ?${obCo}), 0) AS disp_before,
+           COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND substr(loaded_date, 1, 10) >= ? AND substr(loaded_date, 1, 10) <= ?${ptCo}), 0)
+             + COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id AND substr(loaded_date, 1, 10) >= ? AND substr(loaded_date, 1, 10) <= ?${ptCo}), 0)
+             + COALESCE((SELECT SUM(ob.qty) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id AND substr(o2.order_date, 1, 10) >= ? AND substr(o2.order_date, 1, 10) <= ?${obCo}), 0) AS disp_period,
            (SELECT MAX(d) FROM (
-              SELECT MAX(substr(loaded_date, 1, 10)) AS d FROM purchase_tankers WHERE bargain_id = b.id
-              UNION ALL SELECT MAX(substr(loaded_date, 1, 10)) FROM purchase_tankers WHERE extra_bargain_id = b.id
-              UNION ALL SELECT MAX(substr(o2.order_date, 1, 10)) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id
+              SELECT MAX(substr(loaded_date, 1, 10)) AS d FROM purchase_tankers WHERE bargain_id = b.id${ptCo}
+              UNION ALL SELECT MAX(substr(loaded_date, 1, 10)) FROM purchase_tankers WHERE extra_bargain_id = b.id${ptCo}
+              UNION ALL SELECT MAX(substr(o2.order_date, 1, 10)) FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id${obCo}
            )) AS last_dispatch_date,
            COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'purchase' AND bargain_id = b.id AND substr(adj_date, 1, 10) < ?), 0) AS adj_before,
            COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'purchase' AND bargain_id = b.id AND substr(adj_date, 1, 10) >= ? AND substr(adj_date, 1, 10) <= ?), 0) AS adj_in,

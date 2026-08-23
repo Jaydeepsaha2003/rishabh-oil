@@ -51,6 +51,13 @@ function nowStamp(): string {
 
 // The two movement registers share one column set: a line per document, with
 // the vehicle, the bill and both weights.
+// Whose books the line belongs to. Only worth a column when more than one
+// company is in the download — on a single-company export it would be the same
+// value on every row.
+const COMPANY_COLUMN: ExcelColumn = {
+  header: 'Company', key: 'company', width: 22, value: (r) => r.company || ''
+}
+
 const REGISTER_COLUMNS: ExcelColumn[] = [
   { header: 'Loading date', key: 'loaded_date', width: 14, value: (r) => (r.loaded_date ? formatDate(r.loaded_date) : '') },
   { header: 'Receiving date', key: 'received_date', width: 14, value: (r) => (r.received_date ? formatDate(r.received_date) : '') },
@@ -319,6 +326,8 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
     setDlBusy(kind)
     try {
       const regs = await window.api.stock.registers(companyIds, ranged ? range : undefined)
+      // An empty selection means the active company only, so that is one book.
+      const multiCompany = companyIds.length > 1
       const data = kind === 'receipt' ? regs.receipts : regs.dispatches
       if (!data.length) {
         toast.error(`No ${kind}s in this period`)
@@ -337,7 +346,13 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
           ` · generated ${formatDate(todayISO())}`,
         freezeCols: 2,
         totalLabel: 'TOTAL',
-        columns: kind === 'receipt' ? [...REGISTER_COLUMNS, DEDUCTIBLE_COLUMN] : REGISTER_COLUMNS,
+        columns: (() => {
+          const base = [...REGISTER_COLUMNS]
+          // Right after Bill no, as asked — so the company reads next to the
+          // document it belongs to.
+          if (multiCompany) base.splice(base.findIndex((c) => c.key === 'bill_no') + 1, 0, COMPANY_COLUMN)
+          return kind === 'receipt' ? [...base, DEDUCTIBLE_COLUMN] : base
+        })(),
         rows: data
       })
       toast.success(`Exported ${data.length} ${kind} row${data.length === 1 ? '' : 's'}`)

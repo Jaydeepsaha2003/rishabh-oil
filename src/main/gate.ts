@@ -12,6 +12,12 @@ function toPlain(res: ResultSet): Row[] {
   })
 }
 
+// Local wall-clock HH:MM — a gate time is read off the barrier, not off UTC.
+function nowHHMM(): string {
+  const d = new Date()
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 function n(v: unknown): number {
   const x = Number(v)
   return Number.isFinite(x) ? x : 0
@@ -165,12 +171,15 @@ export async function createGateEntry(v: Row): Promise<{ id: number }> {
   const status = noWeighment ? 'completed' : v.status || (n(v.received_qty) > 0 ? 'completed' : 'pending')
   const res = await c.execute({
     sql: `INSERT INTO gate_entries
-      (gate_entry_no, ref_no, entry_date, tanker_id, tanker_no, oil_type_id, dispatch_qty, dispatch_na, received_qty, uom, status, note, direction, sale_id, invoice_group, rec_type, gross_weight, tare_weight, supplier_id, is_direct_mnc, no_weighment, customer_id, person, entry_kind)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (gate_entry_no, ref_no, entry_date, entry_time, tanker_id, tanker_no, oil_type_id, dispatch_qty, dispatch_na, received_qty, uom, status, note, direction, sale_id, invoice_group, rec_type, gross_weight, tare_weight, supplier_id, is_direct_mnc, no_weighment, customer_id, person, entry_kind)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       gateNo,
       v.ref_no ? String(v.ref_no).trim() : null,
       v.entry_date,
+      // Whatever the barrier says, else the clock now — the gateman should not
+      // have to type the time of an entry he is making as it happens.
+      v.entry_time ? String(v.entry_time).slice(0, 5) : nowHHMM(),
       v.tanker_id ? n(v.tanker_id) : null,
       v.tanker_no || null,
       v.oil_type_id ? n(v.oil_type_id) : null,
@@ -386,13 +395,14 @@ export async function updateGateEntry(id: number, v: Row): Promise<{ id: number 
   const status = received > 0 ? 'completed' : 'pending'
   const dUp = parseDispatch(v.dispatch_na ? 'NA' : v.dispatch_qty)
   await getClient().execute({
-    sql: `UPDATE gate_entries SET gate_entry_no = ?, ref_no = ?, entry_date = ?, tanker_id = ?, tanker_no = ?,
+    sql: `UPDATE gate_entries SET gate_entry_no = ?, ref_no = ?, entry_date = ?, entry_time = COALESCE(?, entry_time), tanker_id = ?, tanker_no = ?,
           oil_type_id = ?, dispatch_qty = ?, dispatch_na = ?, received_qty = ?, uom = ?, status = ?, note = ?, sale_id = ?,
           rec_type = ?, gross_weight = ?, tare_weight = ?, supplier_id = ?, customer_id = ?, is_direct_mnc = ? WHERE id = ?`,
     args: [
       String(v.gate_entry_no || '').trim(),
       v.ref_no ? String(v.ref_no).trim() : null,
       v.entry_date,
+      v.entry_time ? String(v.entry_time).slice(0, 5) : null,
       v.tanker_id ? n(v.tanker_id) : null,
       v.tanker_no || null,
       v.oil_type_id ? n(v.oil_type_id) : null,

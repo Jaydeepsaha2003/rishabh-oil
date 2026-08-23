@@ -534,20 +534,29 @@ export async function listOrderBargains(orderId: number): Promise<Row[]> {
 
 // Consignment / direct draws across every bargain — the rows a bargain needs to
 // show alongside its tankers, since these purchases carry no tanker of their own.
-export async function listConsignmentDraws(): Promise<Row[]> {
+// The consignment / direct purchases that drew on a bargain. Bargains are
+// general, and listBargains already counts every company's draw in the balance,
+// so this drilldown has to be able to show every company's too — scoped to the
+// active company it silently hid the other book's invoices while their quantity
+// still sat in the register's Dispatch figure. companyIds narrows it; empty
+// means all.
+export async function listConsignmentDraws(companyIds?: number[]): Promise<Row[]> {
+  const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
   const res = await getClient().execute({
     sql: `SELECT ob.bargain_id, ob.qty, o.id AS order_id, o.invoice_no, o.order_date, o.uom,
                  o.invoice_rate, o.adjusted_rate, o.taxable_value, o.ordered_qty,
+                 o.company_id, co.name AS company_name,
                  s.name AS supplier_name, p.code AS oil_code, p.name AS oil_name,
                  (SELECT GROUP_CONCAT(cs.tanker_no, ', ') FROM consignment_stock cs
                    WHERE cs.order_id = o.id AND cs.tanker_no IS NOT NULL) AS tanker_nos
           FROM order_bargains ob
           JOIN orders o ON o.id = ob.order_id
+          LEFT JOIN companies co ON co.id = o.company_id
           LEFT JOIN suppliers s ON s.id = o.supplier_id
           LEFT JOIN products p ON p.id = o.oil_type_id
-          WHERE o.company_id = ?
+          ${cos.length ? `WHERE o.company_id IN (${cos.join(',')})` : ''}
           ORDER BY o.order_date, o.id`,
-    args: [getActiveCompanyId()]
+    args: []
   })
   return toPlain(res)
 }
@@ -1443,8 +1452,10 @@ export async function revertPurchaseTanker(id: number): Promise<{ id: number; st
   if (!res.rows.length) throw new Error('Tanker not found')
   const tanker = toPlain(res)[0]
   const current = TANKER_STAGES.indexOf(String(tanker.status))
-  const min = TANKER_STAGES.indexOf('loaded')
-  if (current <= min) throw new Error('Already at Loaded — a loaded tanker cannot go back further')
+  // Loading is a deliberate step now rather than a state the app passed through
+  // on its way to transit, so it can be undone back to the supplier's factory.
+  // Only the very first stage has nowhere to go.
+  if (current <= 0) throw new Error('Already at the supplier factory — nothing to undo')
   const prev = TANKER_STAGES[current - 1]
   const dateCol: Record<string, string> = {
     transit: 'transit_date',
@@ -1452,9 +1463,13 @@ export async function revertPurchaseTanker(id: number): Promise<{ id: number; st
     inside_factory: 'inside_factory_date',
     empty: 'empty_date'
   }
+  // Undoing the loading itself puts the quantity back too — a tanker at the
+  // supplier's factory has not been filled, and a stray loaded_qty would keep
+  // it counted as Loaded in the movement pivot.
+  const clearQty = String(tanker.status) === 'loaded' ? ', loaded_qty = 0' : ''
   const clear = dateCol[String(tanker.status)]
   await c.execute({
-    sql: `UPDATE purchase_tankers SET status = ?${clear ? `, ${clear} = NULL` : ''}${String(tanker.status) === 'empty' ? ', received_qty = NULL' : ''} WHERE id = ?`,
+    sql: `UPDATE purchase_tankers SET status = ?${clear ? `, ${clear} = NULL` : ''}${String(tanker.status) === 'empty' ? ', received_qty = NULL' : ''}${clearQty} WHERE id = ?`,
     args: [prev, id]
   })
   if (tanker.order_id) await syncPurchaseFromTankers(n(tanker.order_id)).catch(() => {})
@@ -1571,19 +1586,18 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
         extraBargainId = created.id
       }
     }
-    const sourceId = data.source_id ? n(data.source_id) : null
-    const transitDate = String(data.loaded_date || '')
-    let expected: string | null = null
-    if (sourceId && transitDate) {
-      const src = await c.execute({ sql: 'SELECT transit_days FROM sources WHERE id = ?', args: [sourceId] })
-      const d = new Date(transitDate)
-      d.setDate(d.getDate() + n(src.rows[0]?.transit_days))
-      expected = d.toISOString().slice(0, 10)
-    }
+    // Loading STOPS at Loaded. It used to stamp transit_date and jump straight
+    // to In transit, which skipped the transit step altogether — and with it
+    // the transporter rate that step asks for. Sending the tanker on its way is
+    // now its own deliberate step.
+    //
+    // The source / port IS captured here, because it is known at loading — but
+    // not the expected delivery date, which counts transit days from the day the
+    // tanker actually departs, and that is the transit step's business.
+    const loadSourceId = data.source_id ? n(data.source_id) : (tanker.source_id ?? null)
     await c.execute({
-      sql: `UPDATE purchase_tankers SET status = 'transit', tanker_no = ?, bargain_id = ?, loaded_date = ?, loaded_qty = ?,
-            payment_mode = ?, transit_date = ?, source_id = ?, expected_delivery_date = ?,
-            extra_bargain_id = ?, extra_qty = ?
+      sql: `UPDATE purchase_tankers SET status = 'loaded', tanker_no = ?, bargain_id = ?, loaded_date = ?, loaded_qty = ?,
+            payment_mode = ?, source_id = ?, extra_bargain_id = ?, extra_qty = ?
             WHERE id = ?`,
       args: [
         tankerNo,
@@ -1591,16 +1605,16 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
         data.loaded_date || null,
         qty,
         data.payment_mode === 'supplier_finance' ? 'supplier_finance' : 'paid_by_us',
-        transitDate || null,
-        sourceId,
-        expected,
+        loadSourceId,
         extraBargainId,
         extraQty,
         id
       ]
     })
   } else if (toStatus === 'transit') {
-    const sourceId = data.source_id ? n(data.source_id) : null
+    // Keep what loading captured when this step leaves the field alone —
+    // reading a blank as "no source" silently discarded it.
+    const sourceId = data.source_id ? n(data.source_id) : (tanker.source_id ?? null)
     const transitDate = String(data.transit_date || '')
     let expected: string | null = null
     if (sourceId && transitDate) {

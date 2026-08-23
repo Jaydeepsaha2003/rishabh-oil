@@ -1063,6 +1063,7 @@ export function GateEntry(): React.JSX.Element {
               { header: 'Gate no', key: 'gate_entry_no', value: (r) => r.gate_entry_no || '' },
               { header: 'Manual no', key: 'ref_no', value: (r) => r.ref_no || '' },
               { header: 'In date', key: 'entry_date', value: (r) => formatDate(r.entry_date) },
+              { header: 'In time', key: 'entry_time', width: 10, value: (r) => String(r.entry_time || '').slice(0, 5) },
               { header: 'Out date', key: 'out_date', value: (r) => (r.out_date ? formatDate(r.out_date) : '') },
               { header: 'In / Out', key: 'direction', value: (r) => (r.direction === 'out' ? 'OUT' : 'IN') },
               { header: 'Rec type', key: 'rec_type', value: (r) => r.rec_type || 'OIL' },
@@ -1778,6 +1779,9 @@ export function GateEntry(): React.JSX.Element {
                         <div className="whitespace-nowrap">
                           <span className="text-[10px] font-semibold uppercase text-muted-foreground">In </span>
                           {formatDate(row.entry_date)}
+                          {row.entry_time && (
+                            <span className="ml-1 text-[11px] tabular-nums text-muted-foreground">{String(row.entry_time).slice(0, 5)}</span>
+                          )}
                         </div>
                         {row.out_date && (
                           <div className="whitespace-nowrap">
@@ -1880,7 +1884,12 @@ export function GateEntry(): React.JSX.Element {
                             {row.direction === 'out' ? 'OUT' : 'IN'}
                           </Badge>
                         </TableCell>
-                        <TableCell className="whitespace-nowrap">{formatDate(row.entry_date)}</TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          <div>{formatDate(row.entry_date)}</div>
+                          {row.entry_time && (
+                            <div className="text-[11px] tabular-nums text-muted-foreground">{String(row.entry_time).slice(0, 5)}</div>
+                          )}
+                        </TableCell>
                         <TableCell>
                           <div>{row.tanker_no}</div>
                           <div className="text-xs text-muted-foreground">

@@ -19,6 +19,13 @@ function n(v: unknown): number {
   return Number.isFinite(x) ? x : 0
 }
 
+const round2 = (v: number): number => Math.round(v * 100) / 100
+const todayISO = (): string => {
+  const d = new Date()
+  const p2 = (x: number): string => String(x).padStart(2, '0')
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`
+}
+
 // ---------------------------------------------------------------------------
 // Tally's standard ledger groups, with the side of the books each belongs to.
 // acc_group on ledger_accounts stores the group name; anything unknown is
@@ -438,15 +445,34 @@ function dayBefore(iso: string): string {
 // which can be blank or duplicated across unrelated bills. Advance/New Ref
 // entries have no such id — they're a hand-typed name from the start — so
 // those stay matched by ref_name as before.
-export async function listPendingRefs(accountName: string, companyId?: number): Promise<Row[]> {
+// `side` says which of the party's documents to offer, for a caller that knows:
+// a credit note to a customer wants their SALES invoices, a debit note to a
+// supplier wants their PURCHASE bills. Left unset, the party's ledger group
+// decides, as before.
+//
+// This matters for a party that trades both ways — Bunge sells us oil and buys
+// finished goods, so its ledger sits under Sundry Creditors and the group alone
+// would only ever offer purchase bills, hiding every sales invoice from a credit
+// note against them.
+export async function listPendingRefs(
+  accountName: string,
+  companyId?: number,
+  side?: 'customer' | 'supplier'
+): Promise<Row[]> {
   const c = getClient()
   const cid = companyId || getActiveCompanyId()
   const name = String(accountName || '').trim().toUpperCase()
   if (!name) return []
-  const acc = await c.execute({ sql: 'SELECT id, acc_group FROM ledger_accounts WHERE name = ?', args: [name] })
-  if (!acc.rows.length) return []
-  const accountId = Number(acc.rows[0].id)
-  const group = String(acc.rows[0].acc_group || '')
+  // TRIM both sides. The incoming name is trimmed, so a master name carrying
+  // a trailing space could never match it — and a few do, which made every
+  // one of that party's invoices invisible here.
+  const acc = await c.execute({ sql: 'SELECT id, acc_group FROM ledger_accounts WHERE TRIM(UPPER(name)) = ?', args: [name] })
+  // A party with no ledger account yet still has documents worth offering when
+  // the caller has told us which side to look at — a trading-only customer
+  // never posts to these books, so no account exists for it.
+  const accountId = acc.rows.length ? Number(acc.rows[0].id) : 0
+  if (!accountId && !side) return []
+  const group = side === 'customer' ? 'Sundry Debtors' : side === 'supplier' ? 'Sundry Creditors' : String(acc.rows[0]?.acc_group || '')
 
   type Bill = { ref: string; bill_date: string; amount: number; order_id: number | null; sale_invoice_group: string | null }
   const bills: Bill[] = []
@@ -454,7 +480,7 @@ export async function listPendingRefs(accountName: string, companyId?: number): 
     const r = await c.execute({
       sql: `SELECT o.id AS order_id, o.invoice_no AS ref, o.order_date AS bill_date, o.net_amount AS amount
             FROM orders o JOIN suppliers s ON s.id = o.supplier_id
-            WHERE o.company_id = ? AND UPPER(s.name) = ? AND o.invoice_no IS NOT NULL AND o.invoice_no != ''`,
+            WHERE o.company_id = ? AND TRIM(UPPER(s.name)) = ? AND o.invoice_no IS NOT NULL AND o.invoice_no != ''`,
       args: [cid, name]
     })
     for (const b of toPlain(r)) {
@@ -462,10 +488,17 @@ export async function listPendingRefs(accountName: string, companyId?: number): 
     }
   } else if (group === 'Sundry Debtors') {
     const r = await c.execute({
+      // Match the CUSTOMER MASTER's name first, falling back to the sale's own
+      // free-text customer field. Matching the free text alone made every
+      // invoice booked against a customer record with that text blank or
+      // spelled differently invisible here — whole customers offered no
+      // invoices at all to a credit note.
       sql: `SELECT COALESCE(s.invoice_group, s.invoice_no) AS grp, MIN(s.invoice_no) AS ref, MIN(s.sale_date) AS bill_date,
                    SUM(s.amount + s.gst_amount + s.round_off) AS amount
             FROM sales s
-            WHERE s.company_id = ? AND UPPER(COALESCE(s.customer, '')) = ? AND s.invoice_no IS NOT NULL AND s.invoice_no != ''
+            LEFT JOIN customers cu ON cu.id = s.customer_id
+            WHERE s.company_id = ? AND TRIM(UPPER(COALESCE(cu.name, s.customer, ''))) = ?
+              AND s.invoice_no IS NOT NULL AND s.invoice_no != ''
             GROUP BY grp`,
       args: [cid, name]
     })
@@ -536,6 +569,101 @@ export async function listPendingRefs(accountName: string, companyId?: number): 
     }))
     .filter((b) => b.pending > 0.005)
     .sort((a, b) => a.bill_date.localeCompare(b.bill_date))
+}
+
+// ---------------------------------------------------------------------------
+// Bills Outstanding for one party, the way Tally's "Ledger Voucher Outstanding"
+// reads: a line per bill with what it was raised for, what is still open, when
+// it falls due, and how long it has been overdue — then a sub total, and an
+// "On Account" line for the part of the balance no bill claims.
+//
+// On Account is DERIVED (closing balance less the open bills) rather than
+// summed from on-account allocations. That way the report always ties to the
+// ledger it is reporting on: anything the bills do not explain has to be
+// on account by definition, including a payment entered before its invoice.
+// ---------------------------------------------------------------------------
+export async function billsOutstanding(
+  accountName: string,
+  companyId?: number,
+  opts: { asOf?: string; side?: 'customer' | 'supplier' } = {}
+): Promise<Row> {
+  const c = getClient()
+  const cid = companyId || getActiveCompanyId()
+  const name = String(accountName || '').trim().toUpperCase()
+  if (!name) return { rows: [], on_account: 0, total_opening: 0, total_pending: 0, as_of: opts.asOf || todayISO() }
+  const asOf = String(opts.asOf || todayISO()).slice(0, 10)
+
+  const acc = await c.execute({
+    sql: 'SELECT id, acc_group FROM ledger_accounts WHERE TRIM(UPPER(name)) = ?',
+    args: [name]
+  })
+  const accountId = acc.rows.length ? Number(acc.rows[0].id) : 0
+  const group = String(acc.rows[0]?.acc_group || '')
+  // Which way round this party's balance runs, so Dr/Cr reads correctly.
+  const debtor = opts.side === 'customer' || group === 'Sundry Debtors'
+
+  // The credit period the party was granted, for the due date.
+  const master = debtor ? 'customers' : 'suppliers'
+  const cp = await c.execute({
+    sql: `SELECT credit_period_days FROM ${master} WHERE TRIM(UPPER(name)) = ? LIMIT 1`,
+    args: [name]
+  })
+  const creditDays = cp.rows.length ? n(cp.rows[0].credit_period_days) : 0
+
+  const bills = await listPendingRefs(accountName, cid, opts.side)
+  const dayMs = 86400000
+  const asOfMs = Date.parse(`${asOf}T00:00:00Z`)
+  const rows = bills
+    .filter((b) => String(b.bill_date || '').slice(0, 10) <= asOf)
+    .map((b) => {
+      const billDate = String(b.bill_date || '').slice(0, 10)
+      let dueOn = billDate
+      if (billDate && creditDays > 0) {
+        const d = new Date(`${billDate}T00:00:00Z`)
+        d.setUTCDate(d.getUTCDate() + creditDays)
+        dueOn = d.toISOString().slice(0, 10)
+      }
+      const dueMs = dueOn ? Date.parse(`${dueOn}T00:00:00Z`) : NaN
+      const overdue = Number.isFinite(dueMs) && asOfMs > dueMs ? Math.floor((asOfMs - dueMs) / dayMs) : 0
+      return {
+        bill_date: billDate,
+        ref: b.ref,
+        opening: round2(n(b.amount)),
+        pending: round2(n(b.pending)),
+        due_on: dueOn,
+        overdue_days: overdue,
+        order_id: b.order_id,
+        sale_invoice_group: b.sale_invoice_group
+      }
+    })
+
+  // The ledger's own closing balance as at asOf, signed the same way the
+  // statement shows it (positive = Dr).
+  const balRes = accountId
+    ? await c.execute({
+        sql: `SELECT ROUND(COALESCE(SUM(jl.dr), 0) - COALESCE(SUM(jl.cr), 0), 2) AS bal
+              FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+              WHERE jl.account_id = ? AND je.company_id = ? AND je.entry_date <= ?`,
+        args: [accountId, cid, asOf]
+      })
+    : null
+  const balance = balRes ? n(balRes.rows[0]?.bal) : 0
+  const totalPending = round2(rows.reduce((t, r) => t + n(r.pending), 0))
+  // A debtor's bills are Dr, a creditor's are Cr — compare like for like before
+  // calling the remainder On Account.
+  const billsSigned = debtor ? totalPending : -totalPending
+  const onAccount = round2(balance - billsSigned)
+
+  return {
+    as_of: asOf,
+    debtor,
+    credit_days: creditDays,
+    rows,
+    total_opening: round2(rows.reduce((t, r) => t + n(r.opening), 0)),
+    total_pending: totalPending,
+    balance: round2(balance),
+    on_account: onAccount
+  }
 }
 
 // Turnover per oil, over a period: what was loaded in (purchases) against

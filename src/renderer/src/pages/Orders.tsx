@@ -114,10 +114,14 @@ function StatusBadge({ status }: { status: string }): React.JSX.Element {
   return <Badge variant={variant}>{TANKER_LABEL[status] ?? (status === 'received' ? 'Completed' : status)}</Badge>
 }
 
-// Movement-overview columns. 'loaded' is transient (loading jumps straight to
-// transit), so it is not shown as its own resting column.
+// Movement-overview columns. Confirming loading jumps straight to transit, so
+// 'loaded' looks transient — but Undo from In transit parks a tanker there and
+// refuses to go back further, so it IS a resting state. Without a column of its
+// own such a tanker was counted under "To be loaded" while its own row badge
+// said Loaded.
 const PIVOT_STAGES = [
   { key: 'supplier_factory', label: 'To be loaded' },
+  { key: 'loaded', label: 'Loaded' },
   { key: 'transit', label: 'In transit' },
   { key: 'outside_factory', label: 'Outside factory' },
   { key: 'inside_factory', label: 'Inside factory' },
@@ -141,6 +145,12 @@ function stageAsOf(t: Row, asOf: string): string {
   if (on(t.inside_factory_date)) return 'inside_factory'
   if (on(t.outside_factory_date)) return 'outside_factory'
   if (on(t.transit_date)) return 'transit'
+  // Loaded but not yet sent on its way — reached by undoing In transit, which
+  // clears transit_date and leaves loaded_date standing. loaded_date alone will
+  // not do: the column is NOT NULL and is stamped when the tanker is first sent
+  // to the supplier, so a tanker that has never been loaded has one too. A
+  // confirmed loaded_qty is what actually marks loading as done.
+  if (on(t.loaded_date) && Number(t.loaded_qty) > 0) return 'loaded'
   return 'supplier_factory'
 }
 
@@ -675,6 +685,67 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // The Purchase entries columns that carry an Excel-style header filter, and
   // how each one reads its value off a row. Money/quantity columns format the
   // same way the cell does, so the dropdown lists exactly what's on screen.
+  // The deductible on one tanker: shortage beyond the agreed tolerance, valued
+  // at the tanker's own bargain rate. Computed live rather than read from the
+  // stored shortage_charge_amount, because that column is only written when a
+  // tanker is emptied through the current code path — tankers emptied earlier
+  // carry 0 and would silently read as "nothing to deduct".
+  //
+  // Shared by the invoice View and the Purchases list so the two can never
+  // disagree: the list used to read the stored figure while the View computed
+  // it, which is exactly how a purchase could show a deductible in its detail
+  // and an unflagged EX chip in the table.
+  function tankerDeduct(t: Row, orderRow: Row): {
+    t: Row
+    loaded: number
+    rec: number | null
+    shortage: number | null
+    allowedAmt: number
+    deductible: number | null
+    extraQty: number
+    primaryQty: number
+    primaryRate: number
+    extraRate: number
+    bargainRate: number
+    deductibleValue: number | null
+  } {
+    const loaded = Number(t.loaded_qty) || 0
+    const rec = t.status === 'empty' && t.received_qty != null ? Number(t.received_qty) : null
+    const shortage = rec != null ? Math.max(0, loaded - rec) : null
+    // Per tanker, matching the backend: its own EX/DLD choice when one was
+    // made, else its bargain's. Deliberately NOT the invoice's frozen
+    // bargain_type, which can disagree with the bargain it points at.
+    const rowIsEx = condIsEx(t)
+    // An order- or bargain-specific override wins if set, otherwise the
+    // company-wide default — NOT a bare 0%, which would flag any shortage at
+    // all as deductible whenever neither override was set.
+    const pct = Number(
+      t.order_allowed_shortage_pct ?? orderRow.allowed_shortage_pct ?? t.allowed_shortage_pct ?? settings.allowed_shortage_pct ?? 0
+    )
+    const allowedAmt = loaded > 0 ? (loaded * pct) / 100 : 0
+    const deductible = rowIsEx && shortage != null && shortage > allowedAmt ? shortage - allowedAmt : null
+    // Priced at the tanker's own bargain rate, not the invoice rate. A tanker
+    // split across two bargains blends both by the qty each carries, so the
+    // second bargain's rate is not silently dropped.
+    const extraQty = t.extra_bargain_id ? Number(t.extra_qty) || 0 : 0
+    const primaryQty = Math.max(0, loaded - extraQty)
+    const primaryRate = Number(t.bargain_rate) || 0
+    const extraRate = Number(t.extra_bargain_rate) || 0
+    const bargainRate = loaded > 0 ? (primaryQty * primaryRate + extraQty * extraRate) / loaded : primaryRate
+    return {
+      t, loaded, rec, shortage, allowedAmt, deductible,
+      extraQty, primaryQty, primaryRate, extraRate, bargainRate,
+      deductibleValue: deductible != null ? deductible * bargainRate : null
+    }
+  }
+
+  // Summed across an invoice's tankers.
+  function orderDeductValue(r: Row): number {
+    return tankers
+      .filter((t) => Number(t.order_id) === Number(r.id))
+      .reduce((sum, t) => sum + (tankerDeduct(t, r).deductibleValue ?? 0), 0)
+  }
+
   // Freight on a purchase, and the part of it to be taken back by debit note.
   // Two figures only: what the transporter earned, and what comes off it for
   // the shortage beyond tolerance. The netting itself is unchanged — the ledger
@@ -695,7 +766,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   function poFreight(r: Row): { freight: number; deduct: number } {
     return {
       freight: Math.round((Number(r.tanker_freight_total) || 0) * 100) / 100,
-      deduct: Math.round((Number(r.tanker_shortage_charged) || 0) * 100) / 100
+      deduct: Math.round(orderDeductValue(r) * 100) / 100
     }
   }
 
@@ -935,14 +1006,16 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       loaded_date: todayISO(),
       loaded_qty: '',
       payment_mode: 'paid_by_us',
-      source_id: '',
+      source_id: row.source_id ? String(row.source_id) : '',
       tanker_no: String(row.tanker_no || ''),
       bargain_id: String(row.bargain_id || '')
     })
     if (target === 'transit')
       Object.assign(next, {
         transit_date: todayISO(),
-        source_id: '',
+        // Whatever was picked at loading, so this step confirms rather than asks
+        // again — and an untouched field can no longer blank it.
+        source_id: row.source_id ? String(row.source_id) : '',
         transporter_id: row.transporter_id ? String(row.transporter_id) : '',
         // Whatever is already on the tanker wins; otherwise the transporter
         // master's default rate, so the common case is one keystroke.
@@ -1161,7 +1234,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               : `Loading confirmed — extra ${formatNum(excess.qty)} added as a new bargain`
         )
       } else {
-        toast.success(target === 'loaded' ? 'Loading confirmed and tanker moved to In transit' : `Tanker moved to ${TANKER_LABEL[target]}`)
+        toast.success(target === 'loaded' ? 'Loading confirmed — mark it In transit when it sets off' : `Tanker moved to ${TANKER_LABEL[target]}`)
       }
       setActionRow(null)
       setExcess(null)
@@ -3645,11 +3718,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 </div>
               )
             })()}
-            <div className="flex flex-col gap-1.5">
+            <div className="flex min-w-0 flex-col gap-1.5">
               <Label>Source / port</Label>
               <Select value={String(actionForm.source_id || '')} onValueChange={(value) => setActionForm((p) => ({ ...p, source_id: value }))}>
-                <SelectTrigger><SelectValue placeholder="Select source for expected delivery" /></SelectTrigger>
-                <SelectContent>{sources.map((source) => <SelectItem key={source.id} value={String(source.id)}>{source.name} · {source.transit_days}d</SelectItem>)}</SelectContent>
+                <SelectTrigger><SelectValue placeholder="Where it loads from" /></SelectTrigger>
+                <SelectContent className="max-h-72 w-[var(--radix-select-trigger-width)]">
+                  {sources.map((source) => (
+                    <SelectItem key={source.id} value={String(source.id)}>
+                      <span className="block truncate">{source.name} · {source.transit_days}d</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
               </Select>
             </div>
             <div className="flex flex-col gap-1.5"><Label>Payment arrangement</Label>
@@ -3661,7 +3740,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 </SelectContent>
               </Select>
             </div>
-            <p className="text-xs text-muted-foreground">After confirming loading, this tanker will automatically move to In transit. A purchase invoice is not required first.</p>
+            <p className="text-xs text-muted-foreground">
+              This records the loading only. Sending it on its way is the next step, In transit, which asks for the transporter
+              rate and works the expected delivery out from the source&rsquo;s transit days. A purchase invoice is not required
+              first.
+            </p>
           </div>}
           {target === 'transit' && actionRow && (() => {
             // The freight rate is agreed when the tanker sets off, so it is
@@ -4547,40 +4630,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               // condition (see condIsEx) for its own figure.
               const isEx = list.some((t) => condIsEx(t))
               const invoiceRate = Number(detailRow.invoice_rate) || 0
-              const rows = list.map((t) => {
-                const loaded = Number(t.loaded_qty) || 0
-                const rec = t.status === 'empty' && t.received_qty != null ? Number(t.received_qty) : null
-                const shortage = rec != null ? Math.max(0, loaded - rec) : null
-                // Per tanker, matching the backend: its own EX/DLD choice when
-                // one was made, else its bargain's. Deliberately NOT the
-                // invoice's frozen bargain_type, which can disagree with the
-                // bargain it points at and was hiding real deductibles.
-                const rowIsEx = condIsEx(t)
-                // Same fallback chain the Pur BG breakdown uses: an order- or
-                // bargain-specific override wins if set, otherwise the
-                // company-wide default (Settings → General) applies — NOT a
-                // bare 0%, which was wrongly flagging any shortage at all as
-                // deductible whenever neither override was set.
-                const pct = Number(
-                  t.order_allowed_shortage_pct ?? detailRow.allowed_shortage_pct ?? t.allowed_shortage_pct ?? settings.allowed_shortage_pct ?? 0
-                )
-                const allowedAmt = loaded > 0 ? (loaded * pct) / 100 : 0
-                const deductible = rowIsEx && shortage != null && shortage > allowedAmt ? shortage - allowedAmt : null
-                // The rate that actually prices this tanker is its own bargain's
-                // rate — same figure the shortage-penalty calc on the tanker
-                // stage uses (excess × bargain rate), not the invoice rate. A
-                // tanker split across two bargains blends both rates by the
-                // qty each one actually carries, so the second bargain's rate
-                // is not silently dropped.
-                const extraQty = t.extra_bargain_id ? Number(t.extra_qty) || 0 : 0
-                const primaryQty = Math.max(0, loaded - extraQty)
-                const primaryRate = Number(t.bargain_rate) || 0
-                const extraRate = Number(t.extra_bargain_rate) || 0
-                const bargainRate =
-                  loaded > 0 ? (primaryQty * primaryRate + extraQty * extraRate) / loaded : primaryRate
-                const deductibleValue = deductible != null ? deductible * bargainRate : null
-                return { t, loaded, rec, shortage, allowedAmt, deductible, extraQty, primaryQty, primaryRate, extraRate, bargainRate, deductibleValue }
-              })
+              const rows = list.map((t) => tankerDeduct(t, detailRow))
               const anyPending = rows.some((r) => r.t.status !== 'empty')
               const tot = rows.reduce(
                 (s, r) => ({

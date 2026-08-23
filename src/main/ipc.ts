@@ -94,6 +94,7 @@ import {
   trialBalance,
   listGroups,
   listPendingRefs,
+  billsOutstanding,
   tradingAccount,
   TALLY_GROUPS,
   type VoucherInput
@@ -305,7 +306,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^trading:list$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^trading:list$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -371,7 +372,9 @@ export function registerIpc(): void {
   )
   handle('settings:all', () => allSettings())
 
-  handle('bargains:list', (_e, args?: { from?: string; to?: string }) => listBargains(args?.from, args?.to))
+  handle('bargains:list', (_e, args?: { from?: string; to?: string; companyIds?: number[] }) =>
+    listBargains(args?.from, args?.to, args?.companyIds)
+  )
   handle('bargains:create', (_e, { values }: { values: Row }) => createBargain(values))
   handle('bargains:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateBargain(id, values)
@@ -386,7 +389,7 @@ export function registerIpc(): void {
   handle('skuRates:parties', (_e, { packagingId }: { packagingId: number }) => listPackagingParties(packagingId))
   handle('skuRates:setParties', (_e, { packagingId, customerIds }: { packagingId: number; customerIds: number[] }) => setPackagingParties(packagingId, customerIds))
   handle('skuRates:save', (_e, { id, rows }: { id: number; rows: Row[] }) => saveSkuRates(id, rows))
-  handle('orders:consignmentDraws', () => listConsignmentDraws())
+  handle('orders:consignmentDraws', (_e, args?: { companyIds?: number[] }) => listConsignmentDraws(args?.companyIds))
   handle('orders:bargainLines', (_e, { id }: { id: number }) => listOrderBargains(id))
   handle('orders:bargainInterest', (_e, { id }: { id: number }) => listOrderBargainInterest(id))
   handle('tankers:list', (_e, args?: { all?: boolean }) => listPurchaseTankers(!!args?.all))
@@ -458,7 +461,16 @@ export function registerIpc(): void {
   )
   handle('journal:groups', (_e, args?: { companyId?: number }) => listGroups(args?.companyId))
   handle('journal:groupNames', () => TALLY_GROUPS)
-  handle('journal:pendingRefs', (_e, { account, companyId }: { account: string; companyId?: number }) => listPendingRefs(account, companyId))
+  handle(
+    'journal:billsOutstanding',
+    (_e, a: { account: string; companyId?: number; asOf?: string; side?: 'customer' | 'supplier' }) =>
+      billsOutstanding(a.account, a.companyId, { asOf: a.asOf, side: a.side })
+  )
+  handle(
+    'journal:pendingRefs',
+    (_e, { account, companyId, side }: { account: string; companyId?: number; side?: 'customer' | 'supplier' }) =>
+      listPendingRefs(account, companyId, side)
+  )
   handle('journal:tradingAccount', (_e, { from, to, companyId }: { from?: string; to?: string; companyId?: number }) =>
     tradingAccount(from, to, companyId)
   )
@@ -561,7 +573,7 @@ export function registerIpc(): void {
   handle('production:create', (_e, { values }: { values: Row }) => createProduction(values))
   handle('production:delete', (_e, { id }: { id: number }) => deleteProduction(id))
 
-  handle('sales:list', () => listSales())
+  handle('sales:list', (_e, args?: { companyIds?: number[] }) => listSales(args?.companyIds))
   handle('sales:create', (_e, { values }: { values: Row }) => createSale(values))
   handle('sales:update', (_e, { id, values }: { id: number; values: Row }) => updateSale(id, values))
   handle('sales:createInvoice', (_e, { values }: { values: Row }) => createSaleInvoice(values))
@@ -584,7 +596,9 @@ export function registerIpc(): void {
   )
   handle('sales:delete', (_e, { id }: { id: number }) => deleteSale(id))
 
-  handle('salesBargains:list', (_e, args?: { from?: string; to?: string }) => listSalesBargains(args?.from, args?.to))
+  handle('salesBargains:list', (_e, args?: { from?: string; to?: string; companyIds?: number[] }) =>
+    listSalesBargains(args?.from, args?.to, args?.companyIds)
+  )
   handle('salesBargains:create', (_e, { values }: { values: Row }) => createSalesBargain(values))
   handle('salesBargains:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateSalesBargain(id, values)

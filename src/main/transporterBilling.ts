@@ -202,8 +202,13 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
   const unaccrued = round2(picked.filter((l) => n(l.accrued) !== 1).reduce((t, l) => t + n(l.amount), 0))
   // A shortage penalty is stored negative, so the taxable value is the net of
   // what they earned less what we are holding back.
-  const taxable = round2(accrued + unaccrued)
-  if (taxable <= 0) throw new Error('The picked lines net to zero — nothing to bill')
+  const lineTotal = round2(accrued + unaccrued)
+  // What the transporter actually billed, less/more than the tanker lines come
+  // to. It rides on the same expense as the freight it adjusts, so the register
+  // and the ledger stay reconcilable.
+  const adjustment = round2(n(v.adjustment))
+  const taxable = round2(lineTotal + adjustment)
+  if (taxable <= 0) throw new Error('The bill nets to zero or less — check the adjustment')
   const gstPct = n(v.gst_pct)
   const gst = round2((taxable * gstPct) / 100)
   const tdsPct = n(v.tds_pct)
@@ -232,18 +237,26 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
 
   const je = await postJournal({
     date: billDate,
-    vchType: 'JOURNAL',
+    // A freight bill IS a purchase of a service, so it belongs in the purchase
+    // series and reads as PUR in the ledger — not as an unexplained JV.
+    vchType: side === 'purchase' ? 'PURCHASE FREIGHT INWARD' : 'PURCHASE FREIGHT OUTWARD',
     vchNo: billNo,
     narration:
       `Transporter bill ${billNo || ''} — ${partyName} (${side === 'purchase' ? 'inward' : 'outward'} freight, ` +
-      `${picked.length} line${picked.length === 1 ? '' : 's'})`,
+      `${picked.length} line${picked.length === 1 ? '' : 's'}` +
+      (adjustment ? `, adjusted by ${adjustment > 0 ? '+' : ''}${adjustment.toFixed(2)}` : '') +
+      ')' +
+      (v.adjustment_note ? ` — ${String(v.adjustment_note).trim()}` : ''),
     companyId: cid,
     lines: [
       { account: 'FREIGHT PAYABLE A/C', group: 'Current Liabilities', dr: accrued },
       {
         account: side === 'purchase' ? 'FREIGHT INWARD A/C' : 'FREIGHT OUTWARD A/C',
         group: 'Direct Expenses',
-        dr: unaccrued
+        // The adjustment is freight too, so it lands on the same expense —
+        // positive as more cost, negative as less.
+        dr: round2(unaccrued + adjustment) > 0 ? round2(unaccrued + adjustment) : 0,
+        cr: round2(unaccrued + adjustment) < 0 ? -round2(unaccrued + adjustment) : 0
       },
       { account: 'GST INPUT A/C', group: 'Duties & Taxes', dr: gst },
       { account: 'ROUND OFF A/C', group: 'Indirect Expenses', dr: roundOff > 0 ? roundOff : 0, cr: roundOff < 0 ? -roundOff : 0 },
@@ -257,17 +270,20 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
     await c.execute({
       sql: `UPDATE transporter_bills SET transporter_id = ?, side = ?, bill_no = ?, bill_date = ?,
               taxable = ?, gst_pct = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, round_off = ?,
-              total = ?, journal_entry_id = ?, note = ? WHERE id = ? AND company_id = ?`,
-      args: [transporterId, side, billNo, billDate, taxable, gstPct, gst, tdsPct, tds, roundOff, total, je.id ?? null, note, existingId as number, cid]
+              total = ?, journal_entry_id = ?, note = ?, adjustment = ?, adjustment_note = ?
+            WHERE id = ? AND company_id = ?`,
+      args: [transporterId, side, billNo, billDate, taxable, gstPct, gst, tdsPct, tds, roundOff, total, je.id ?? null, note,
+             adjustment, v.adjustment_note ? String(v.adjustment_note).trim() : null, existingId as number, cid]
     })
     billId = existingId as number
   } else {
     const ins = await c.execute({
       sql: `INSERT INTO transporter_bills
               (company_id, transporter_id, side, bill_no, bill_date, taxable, gst_pct, gst_amount,
-               tds_pct, tds_amount, round_off, total, journal_entry_id, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [cid, transporterId, side, billNo, billDate, taxable, gstPct, gst, tdsPct, tds, roundOff, total, je.id, note]
+               tds_pct, tds_amount, round_off, total, journal_entry_id, note, adjustment, adjustment_note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [cid, transporterId, side, billNo, billDate, taxable, gstPct, gst, tdsPct, tds, roundOff, total, je.id, note,
+             adjustment, v.adjustment_note ? String(v.adjustment_note).trim() : null]
     })
     billId = Number(ins.lastInsertRowid)
   }
