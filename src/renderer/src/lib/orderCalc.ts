@@ -139,7 +139,9 @@ export function computeShortage(i: ShortageInput): ShortageResult {
   const actualShortage = Math.max(0, i.orderedQty - i.receivedQty)
   const excessShortage = Math.max(0, actualShortage - allowedQty)
   const shortageCharge = excessShortage * i.bargainRate
-  const transportAmount = i.orderedQty * i.transportRatePerTon
+  // Freight is earned on what arrived, matching advancePurchaseTanker — a
+  // preview off the loaded qty would disagree with the figure that posts.
+  const transportAmount = i.receivedQty * i.transportRatePerTon
   return { allowedQty, actualShortage, excessShortage, shortageCharge, transportAmount }
 }
 

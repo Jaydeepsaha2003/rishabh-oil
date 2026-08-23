@@ -15,6 +15,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Tooltip, TooltipContent, TooltipTrigger, InfoTip } from '@/components/ui/tooltip'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { ColumnFilter } from '@/components/ui/column-filter'
@@ -674,6 +675,30 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // The Purchase entries columns that carry an Excel-style header filter, and
   // how each one reads its value off a row. Money/quantity columns format the
   // same way the cell does, so the dropdown lists exactly what's on screen.
+  // Freight on a purchase, and the part of it to be taken back by debit note.
+  // Two figures only: what the transporter earned, and what comes off it for
+  // the shortage beyond tolerance. The netting itself is unchanged — the ledger
+  // already carries freight less shortage — so this is the paperwork view of the
+  // same deduction.
+  // Who carried this invoice and at what rate. Per tanker, because every
+  // vehicle is priced on its own rate.
+  function poCarriers(r: Row): { tanker: string; name: string; rate: number }[] {
+    return tankers
+      .filter((t) => Number(t.order_id) === Number(r.id))
+      .map((t) => ({
+        tanker: String(t.tanker_no || ''),
+        name: String(t.transporter_name || ''),
+        rate: Number(t.transport_rate_per_ton) || 0
+      }))
+  }
+
+  function poFreight(r: Row): { freight: number; deduct: number } {
+    return {
+      freight: Math.round((Number(r.tanker_freight_total) || 0) * 100) / 100,
+      deduct: Math.round((Number(r.tanker_shortage_charged) || 0) * 100) / 100
+    }
+  }
+
   const PO_COLUMNS: { key: string; label: string; of: (r: Row) => string }[] = useMemo(
     () => [
       { key: 'invoice_no', label: 'Invoice', of: (r) => String(r.invoice_no || '') },
@@ -683,9 +708,24 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       { key: 'tanker_count', label: 'Tankers', of: (r) => String(Number(r.tanker_count) || 0) },
       { key: 'ordered_qty', label: 'Quantity', of: (r) => `${formatNum(r.ordered_qty)} ${r.uom || ''}`.trim() },
       { key: 'net_amount', label: 'Net amount', of: (r) => formatINR(r.net_amount) },
+      {
+        // Matches exactly what the cell shows — the condition, flagged when a
+        // debit note is due. A filter offering values the column never displays
+        // hides rows that visibly say otherwise.
+        key: 'shortage',
+        label: 'Freight',
+        of: (r) => {
+          const cond = invoiceCondition(r).split(' — ')[0].split(' ')[0]
+          return Number(r.tanker_shortage_charged) > 0 ? `${cond} · Dr note due` : cond
+        }
+      },
       { key: 'status', label: 'Status', of: (r) => (r.status === 'received' ? 'Completed' : 'In process') }
     ],
-    []
+    // The Freight column reads the tankers behind each invoice, so the memo has
+    // to rebuild when they load — otherwise the dropdown offers a condition
+    // worked out from an empty tanker list while the cell shows the real one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tankers]
   )
 
   // Rows that pass every filter EXCEPT this column's own — so each dropdown
@@ -899,7 +939,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       tanker_no: String(row.tanker_no || ''),
       bargain_id: String(row.bargain_id || '')
     })
-    if (target === 'transit') Object.assign(next, { transit_date: todayISO(), source_id: '' })
+    if (target === 'transit')
+      Object.assign(next, {
+        transit_date: todayISO(),
+        source_id: '',
+        transporter_id: row.transporter_id ? String(row.transporter_id) : '',
+        // Whatever is already on the tanker wins; otherwise the transporter
+        // master's default rate, so the common case is one keystroke.
+        transport_rate_per_ton:
+          row.transport_rate_per_ton ??
+          transporters.find((x) => x.id === row.transporter_id)?.default_rate_per_ton ??
+          ''
+      })
     if (target === 'outside_factory') next.outside_factory_date = todayISO()
     if (target === 'inside_factory') next.inside_factory_date = todayISO()
     if (target === 'empty') Object.assign(next, {
@@ -907,7 +958,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       // prefill with the gate-received qty so the gate cross-check passes
       received_qty: gateQtyFor(row.id) ?? row.loaded_qty,
       transporter_id: row.transporter_id || '',
-      transport_rate_per_ton: transporters.find((x) => x.id === row.transporter_id)?.default_rate_per_ton || ''
+      // What was agreed when the tanker set off wins. Only fall back to the
+      // transporter master's default for a tanker that reached transit before
+      // the rate was asked for there — otherwise this asked again from blank
+      // and the freight came out at zero.
+      transport_rate_per_ton:
+        Number(row.transport_rate_per_ton) > 0
+          ? row.transport_rate_per_ton
+          : transporters.find((x) => x.id === row.transporter_id)?.default_rate_per_ton || ''
     })
     setActionForm(next)
     setExcess(null)
@@ -2112,6 +2170,69 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       {directMode || isTrading ? 'No tanker movement, so no transporter.' : 'Taken from the selected tankers.'}
                     </span>
                   </div>
+                  {/* Freight per vehicle. Every tanker carries its own rate, so
+                      one field on the invoice could never show it — this lists
+                      them, and the pencil opens that tanker to change it. Only
+                      an EX tanker has freight of ours to price. */}
+                  {!directMode && !isTrading && chosenTankers.length > 0 && (
+                    <div className="flex flex-col gap-1.5 sm:col-span-2 lg:col-span-3">
+                      <Label>Transporter rate per {form.uom || 'MT'} (EX tankers)</Label>
+                      <div className="overflow-hidden rounded-md border">
+                        {chosenTankers.map((t, i) => {
+                          const ex = condIsEx(t)
+                          const rate = Number(t.transport_rate_per_ton) || 0
+                          const basis = t.received_qty != null ? Number(t.received_qty) : Number(t.loaded_qty) || 0
+                          return (
+                            <div
+                              key={String(t.id)}
+                              className={cn(
+                                'flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 text-[12px]',
+                                i % 2 === 1 && 'bg-muted/30'
+                              )}
+                            >
+                              <span className="min-w-0 shrink-0 font-medium">{t.tanker_no || '—'}</span>
+                              <span
+                                className={cn(
+                                  'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase',
+                                  ex ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-700'
+                                )}
+                              >
+                                {ex ? 'EX' : 'DLD'}
+                              </span>
+                              <span className="min-w-0 truncate text-muted-foreground">{t.transporter_name || (ex ? 'No transporter set' : '—')}</span>
+                              <span className="ml-auto shrink-0 tabular-nums">
+                                {ex ? (
+                                  rate > 0 ? (
+                                    <>
+                                      {formatINR(rate)}/{t.uom || 'MT'}
+                                      <span className="ml-2 text-[11px] text-muted-foreground">
+                                        ≈ {formatINR(rate * basis)}
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <span className="font-semibold text-rose-700">Rate not set</span>
+                                  )
+                                ) : (
+                                  <span className="text-muted-foreground">supplier pays</span>
+                                )}
+                              </span>
+                              <button
+                                type="button"
+                                title={`Edit ${t.tanker_no || 'this tanker'}`}
+                                className="shrink-0 cursor-pointer rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                                onClick={() => openEditTanker(t)}
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                      <span className="text-[11px] text-muted-foreground">
+                        Agreed when the tanker goes In transit. Freight is priced on the received quantity.
+                      </span>
+                    </div>
+                  )}
                   <div className={cn('flex flex-col gap-1.5', !tankerTransporterId && 'opacity-50')}>
                     <Label>Allowed shortage %</Label>
                     <Input
@@ -3039,7 +3160,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         key={c.key}
                         className={cn(
                           c.key === 'tanker_count' && 'text-center',
-                          (c.key === 'ordered_qty' || c.key === 'net_amount') && 'text-right'
+                          (c.key === 'ordered_qty' || c.key === 'net_amount') && 'text-right',
+                          c.key === 'shortage' && 'w-[130px]'
                         )}
                       >
                         <ColumnFilter
@@ -3079,10 +3201,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         </TableCell>
                         <TableCell />
                         <TableCell />
+                        <TableCell />
                       </TableRow>
                     )}
-                    {loading ? <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
-                      : filteredOrders.length === 0 ? <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">{rows.length ? 'No purchase entry matches these filters.' : 'No purchase entries yet.'}</TableCell></TableRow>
+                    {loading ? <TableRow><TableCell colSpan={10} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+                      : filteredOrders.length === 0 ? <TableRow><TableCell colSpan={10} className="py-10 text-center text-muted-foreground">{rows.length ? 'No purchase entry matches these filters.' : 'No purchase entries yet.'}</TableCell></TableRow>
                         : orderPaged.pageRows.map((row) => <TableRow key={row.id} className="hover:bg-amber-50">
                           <TableCell>
                             <div className="font-medium">{row.invoice_no}</div>
@@ -3102,6 +3225,54 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           <TableCell className="text-center"><Badge variant="secondary">{row.tanker_count || 0}</Badge></TableCell>
                           <TableCell className="text-right tabular-nums">{formatNum(row.ordered_qty)} {row.uom}</TableCell>
                           <TableCell className="text-right font-medium tabular-nums">{formatINR(row.net_amount)}</TableCell>
+                          <TableCell onClick={(e) => e.stopPropagation()}>
+                            {(() => {
+                              const f = poFreight(row)
+                              const cond = invoiceCondition(row)
+                              const label = cond.split(' — ')[0]
+                              const due = f.deduct > 0
+                              if (f.freight <= 0 && f.deduct <= 0 && !cond) return <span className="text-muted-foreground">—</span>
+                              return (
+                                <Popover>
+                                  <PopoverTrigger asChild>
+                                    <button
+                                      type="button"
+                                      title={due ? 'Debit note due — click for the figures' : 'Click for the freight figures'}
+                                      className={cn(
+                                        'cursor-pointer rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide transition-colors',
+                                        due
+                                          ? 'bg-rose-100 text-rose-700 ring-1 ring-rose-300 hover:bg-rose-200'
+                                          : label.startsWith('EX')
+                                            ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                                            : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+                                      )}
+                                    >
+                                      {label}
+                                    </button>
+                                  </PopoverTrigger>
+                                  <PopoverContent align="end" className="w-64 p-3 text-[12px]">
+                                    <div className="mb-1.5 border-b pb-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                                      {cond}
+                                    </div>
+                                    {poCarriers(row).map((cr, i) => (
+                                      <div key={i} className="flex items-baseline justify-between gap-3 py-0.5">
+                                        <span className="min-w-0 truncate">{cr.name || 'No transporter set'}</span>
+                                        <span className="shrink-0 tabular-nums text-muted-foreground">
+                                          {cr.rate > 0 ? `${formatINR(cr.rate)}/${row.uom || 'MT'}` : '—'}
+                                        </span>
+                                      </div>
+                                    ))}
+                                    <div className="mt-1 flex justify-between border-t pt-1.5 font-semibold">
+                                      <span>Deductible</span>
+                                      <span className={cn('tabular-nums', due && 'text-rose-700')}>
+                                        {due ? formatINR(f.deduct) : '—'}
+                                      </span>
+                                    </div>
+                                  </PopoverContent>
+                                </Popover>
+                              )
+                            })()}
+                          </TableCell>
                           <TableCell>
                             <Badge variant={row.status === 'received' ? 'success' : 'warning'}>
                               {row.status === 'received' ? 'Completed' : 'In process'}
@@ -3327,7 +3498,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       </Dialog>
 
       <Dialog open={!!actionRow} onOpenChange={(open) => { if (!open) { setActionRow(null); setExcess(null) } }}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto">
+        <DialogContent
+          className={cn(
+            'max-h-[92vh] w-[calc(100vw-2rem)] overflow-y-auto',
+            target === 'empty' ? 'sm:max-w-3xl' : 'sm:max-w-2xl'
+          )}
+        >
           <DialogHeader><DialogTitle>{target ? `Move ${String(actionRow?.tanker_no || '').trim() || 'tanker'} to ${TANKER_LABEL[target]}` : 'Update tanker'}</DialogTitle></DialogHeader>
           {target === 'loaded' && actionRow && <div className="grid gap-4">
             <div className="flex flex-col gap-1.5">
@@ -3487,10 +3663,80 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             </div>
             <p className="text-xs text-muted-foreground">After confirming loading, this tanker will automatically move to In transit. A purchase invoice is not required first.</p>
           </div>}
-          {target === 'transit' && <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1.5"><Label>Transit date</Label><DatePicker value={actionForm.transit_date || ''} min={actionRow?.loaded_date || undefined} onChange={(v) => setActionForm((p) => ({ ...p, transit_date: v }))} /></div>
-            <div className="flex flex-col gap-1.5"><Label>Source / port</Label><Select value={String(actionForm.source_id || '')} onValueChange={(v) => setActionForm((p) => ({ ...p, source_id: v }))}><SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger><SelectContent>{sources.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name} · {s.transit_days}d</SelectItem>)}</SelectContent></Select></div>
-          </div>}
+          {target === 'transit' && actionRow && (() => {
+            // The freight rate is agreed when the tanker sets off, so it is
+            // asked for here rather than weeks later at Empty. Only an EX load
+            // is ours to pay, so only EX makes it compulsory.
+            const ex = condIsEx(actionRow)
+            return (
+              <div className="grid gap-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5"><Label>Transit date</Label><DatePicker value={actionForm.transit_date || ''} min={actionRow?.loaded_date || undefined} onChange={(v) => setActionForm((p) => ({ ...p, transit_date: v }))} /></div>
+                  <div className="flex min-w-0 flex-col gap-1.5">
+                    <Label>Source / port</Label>
+                    <Select value={String(actionForm.source_id || '')} onValueChange={(v) => setActionForm((p) => ({ ...p, source_id: v }))}>
+                      <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                      <SelectContent className="max-h-72 w-[var(--radix-select-trigger-width)]">
+                        {sources.map((s) => (
+                          <SelectItem key={s.id} value={String(s.id)}>
+                            <span className="block truncate">{s.name} · {s.transit_days}d</span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3 rounded-lg border p-3">
+                  <div className="col-span-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
+                    <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase', ex ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-700')}>
+                      {ex ? 'EX' : 'DLD'}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {ex
+                        ? 'We pay the freight on this tanker, so the rate is required.'
+                        : 'The supplier carries the freight — the rate is only for the record.'}
+                    </span>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Transporter</Label>
+                    <Select
+                      value={String(actionForm.transporter_id || '')}
+                      onValueChange={(v) => {
+                        const tr = transporters.find((x) => String(x.id) === v)
+                        setActionForm((p) => ({
+                          ...p,
+                          transporter_id: v,
+                          transport_rate_per_ton: p.transport_rate_per_ton || tr?.default_rate_per_ton || ''
+                        }))
+                      }}
+                    >
+                      <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                      <SelectContent>{transporters.map((tr) => <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>
+                      Transporter rate / {actionRow.uom || 'MT'}
+                      {ex && <span className="ml-1 text-rose-600">*</span>}
+                    </Label>
+                    <Input
+                      type="number"
+                      className={cn(ex && !(Number(actionForm.transport_rate_per_ton) > 0) && 'border-rose-400')}
+                      placeholder={ex ? 'Required' : 'Optional'}
+                      value={actionForm.transport_rate_per_ton ?? ''}
+                      onChange={(e) => setActionForm((p) => ({ ...p, transport_rate_per_ton: e.target.value }))}
+                    />
+                    {Number(actionForm.transport_rate_per_ton) > 0 && Number(actionRow.loaded_qty) > 0 && (
+                      <span className="text-[11px] text-muted-foreground">
+                        ≈ {formatINR(Number(actionForm.transport_rate_per_ton) * Number(actionRow.loaded_qty))} on{' '}
+                        {formatNum(actionRow.loaded_qty)} {actionRow.uom || 'MT'} loaded — settles on the received qty.
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
           {target === 'outside_factory' && <div className="flex flex-col gap-1.5"><Label>Outside factory date</Label><DatePicker value={actionForm.outside_factory_date || ''} min={actionRow?.transit_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm({ outside_factory_date: v })} /></div>}
           {target === 'inside_factory' && <div className="flex flex-col gap-1.5"><Label>Inside factory date</Label><DatePicker value={actionForm.inside_factory_date || ''} min={actionRow?.outside_factory_date || actionRow?.transit_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm({ inside_factory_date: v })} /></div>}
           {target === 'empty' && actionRow && shortage && <div className="grid gap-4">
@@ -3516,13 +3762,47 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               <div className="flex flex-col gap-1.5"><Label>Empty date</Label><DatePicker value={actionForm.empty_date || ''} min={actionRow?.inside_factory_date || actionRow?.outside_factory_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm((p) => ({ ...p, empty_date: v }))} /></div>
               <div className="flex flex-col gap-1.5"><Label>Received quantity</Label><Input type="number" value={actionForm.received_qty || ''} onChange={(e) => setActionForm((p) => ({ ...p, received_qty: e.target.value }))} /></div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1.5"><Label>Transporter</Label><Select value={String(actionForm.transporter_id || '')} onValueChange={(v) => {
-                const tr = transporters.find((x) => String(x.id) === v)
-                setActionForm((p) => ({ ...p, transporter_id: v, transport_rate_per_ton: p.transport_rate_per_ton || tr?.default_rate_per_ton || '' }))
-              }}><SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger><SelectContent>{transporters.map((tr) => <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>)}</SelectContent></Select></div>
-              <div className="flex flex-col gap-1.5"><Label>Transport rate / {actionRow.uom}</Label><Input type="number" value={actionForm.transport_rate_per_ton || ''} onChange={(e) => setActionForm((p) => ({ ...p, transport_rate_per_ton: e.target.value }))} /></div>
-            </div>
+            {(() => {
+              // Both of these are settled when the tanker is sent In transit, so
+              // here they are a read-back rather than a question. A tanker that
+              // reached transit before the rate was asked for there has nothing
+              // to show, so those stay editable — otherwise the load could never
+              // be completed.
+              const agreed = Number(actionRow.transport_rate_per_ton) > 0
+              const tName = transporters.find((x) => String(x.id) === String(actionForm.transporter_id))?.name || ''
+              return (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Transporter</Label>
+                    {agreed ? (
+                      <div className="flex h-10 items-center rounded-md border bg-muted/50 px-3 text-sm">{tName || '—'}</div>
+                    ) : (
+                      <Select value={String(actionForm.transporter_id || '')} onValueChange={(v) => {
+                        const tr = transporters.find((x) => String(x.id) === v)
+                        setActionForm((p) => ({ ...p, transporter_id: v, transport_rate_per_ton: p.transport_rate_per_ton || tr?.default_rate_per_ton || '' }))
+                      }}><SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger><SelectContent>{transporters.map((tr) => <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>)}</SelectContent></Select>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Transport rate / {actionRow.uom}</Label>
+                    {agreed ? (
+                      <>
+                        <div className="flex h-10 items-center justify-between rounded-md border bg-muted/50 px-3 text-sm tabular-nums">
+                          <span>{formatINR(actionRow.transport_rate_per_ton)}</span>
+                          <span className="text-[11px] uppercase tracking-wide text-muted-foreground">set at In transit</span>
+                        </div>
+                        <span className="text-[11px] text-muted-foreground">Change it on the tanker&apos;s Edit form if it was agreed differently.</span>
+                      </>
+                    ) : (
+                      <>
+                        <Input type="number" value={actionForm.transport_rate_per_ton || ''} onChange={(e) => setActionForm((p) => ({ ...p, transport_rate_per_ton: e.target.value }))} />
+                        <span className="text-[11px] text-muted-foreground">No rate was captured at In transit for this tanker — enter it here.</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )
+            })()}
             <div className="grid gap-3 rounded-lg border p-3">
               <div className="text-sm font-medium">KRFL weighment slip</div>
               <div className="grid grid-cols-2 gap-3">
@@ -3547,7 +3827,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             </div>
             <div className="rounded-lg border bg-muted/30 p-3"><MoneyRow label="Loaded" value={`${formatNum(actionRow.loaded_qty)} ${actionRow.uom}`} /><MoneyRow label="Shortage" value={`${formatNum(shortage.actualShortage)} ${actionRow.uom}`} /><MoneyRow label="Freight" value={formatINR(shortage.transportAmount)} /></div>
           </div>}
-          <DialogFooter><Button variant="outline" onClick={() => { setActionRow(null); setExcess(null) }}>Cancel</Button><Button onClick={advanceTanker}>{excess ? (excess.mode === 'existing' ? 'Allocate & confirm' : 'Add bargain & confirm') : 'Confirm'}</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => { setActionRow(null); setExcess(null) }}>Cancel</Button><Button
+            onClick={advanceTanker}
+            disabled={target === 'transit' && !!actionRow && condIsEx(actionRow) && !(Number(actionForm.transport_rate_per_ton) > 0)}
+            title={
+              target === 'transit' && !!actionRow && condIsEx(actionRow) && !(Number(actionForm.transport_rate_per_ton) > 0)
+                ? 'Enter the transporter rate — it is required on an EX tanker'
+                : undefined
+            }
+          >{excess ? (excess.mode === 'existing' ? 'Allocate & confirm' : 'Add bargain & confirm') : 'Confirm'}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -3919,6 +4207,51 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   </div>
                 )}
 
+                {eIdx >= 2 && (
+                  <div className="grid gap-3 rounded-lg border p-3">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
+                      <span className="font-medium">Freight</span>
+                      <span className="text-muted-foreground">
+                        Agreed when the tanker goes In transit; change it here if it was settled differently. Priced on the
+                        received quantity.
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="flex min-w-0 flex-col gap-1.5">
+                        <Label>Transporter</Label>
+                        <Select value={String(editTankerForm.transporter_id || '')} onValueChange={(v) => {
+                          const tr = transporters.find((x) => String(x.id) === v)
+                          setEditTankerForm((p) => ({
+                            ...p,
+                            transporter_id: v,
+                            transport_rate_per_ton: p.transport_rate_per_ton || tr?.default_rate_per_ton || ''
+                          }))
+                        }}>
+                          <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                          <SelectContent className="max-h-72">
+                            {transporters.map((tr) => <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex min-w-0 flex-col gap-1.5">
+                        <Label>Transport rate / {editTanker.uom}</Label>
+                        <Input type="number" value={editTankerForm.transport_rate_per_ton ?? ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, transport_rate_per_ton: e.target.value }))} />
+                        {Number(editTankerForm.transport_rate_per_ton) > 0 && (
+                          <span className="text-[11px] tabular-nums text-muted-foreground">
+                            ≈ {formatINR(
+                              Number(editTankerForm.transport_rate_per_ton) *
+                                (Number(editTankerForm.received_qty) > 0
+                                  ? Number(editTankerForm.received_qty)
+                                  : Number(editTanker.loaded_qty) || 0)
+                            )}
+                            {Number(editTankerForm.received_qty) > 0 ? ' on the received qty' : ' on the loaded qty (until weighed in)'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {eIdx >= 3 && (
                   <div className="grid grid-cols-2 gap-3">
                     <div className="flex flex-col gap-1.5">
@@ -3944,21 +4277,6 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       <div className="flex flex-col gap-1.5">
                         <Label>Received qty {eGate != null ? `(gate: ${formatNum(eGate)})` : ''}</Label>
                         <Input type="number" value={editTankerForm.received_qty ?? ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, received_qty: e.target.value }))} />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="flex flex-col gap-1.5">
-                        <Label>Transporter</Label>
-                        <Select value={String(editTankerForm.transporter_id || '')} onValueChange={(v) => setEditTankerForm((p) => ({ ...p, transporter_id: v }))}>
-                          <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
-                          <SelectContent>
-                            {transporters.map((tr) => <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>)}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="flex flex-col gap-1.5">
-                        <Label>Transport rate / {editTanker.uom}</Label>
-                        <Input type="number" value={editTankerForm.transport_rate_per_ton ?? ''} onChange={(e) => setEditTankerForm((p) => ({ ...p, transport_rate_per_ton: e.target.value }))} />
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-3">
@@ -4045,22 +4363,53 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   </div>
                 </div>
 
-                {(t.transporter_name || Number(t.transport_amount) > 0 || Number(t.shortage_charge_amount) > 0) && (
-                  <div className="rounded-xl border">
-                    <div className="flex items-center gap-1.5 border-b bg-slate-50 px-3 py-2">
-                      <Truck className="h-3.5 w-3.5 text-slate-500" />
-                      <span className="text-xs font-semibold text-slate-700">Transport</span>
+                {(() => {
+                  // Read-only freight picture for this tanker. Shown for every EX
+                  // load even before a transporter is attached, so a missing rate
+                  // is visible here rather than only surfacing at Empty.
+                  const ex = condIsEx(t)
+                  const rate = Number(t.transport_rate_per_ton) || 0
+                  const rec = t.received_qty != null ? Number(t.received_qty) : null
+                  const basisQty = rec != null ? rec : Number(t.loaded_qty) || 0
+                  if (!ex && !t.transporter_name && !(Number(t.transport_amount) > 0)) return null
+                  return (
+                    <div className="rounded-xl border">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b bg-slate-50 px-3 py-2">
+                        <Truck className="h-3.5 w-3.5 text-slate-500" />
+                        <span className="text-xs font-semibold text-slate-700">Transport</span>
+                        <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase', ex ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-700')}>
+                          {ex ? 'EX — ours to pay' : 'DLD — supplier pays'}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 p-3">
+                        <Fact label="Transporter" value={t.transporter_name || (ex ? 'Not set' : '—')} />
+                        <Fact
+                          label={`Rate / ${t.uom || 'MT'}`}
+                          value={rate > 0 ? formatINR(rate) : ex ? 'Not set' : '—'}
+                        />
+                        <Fact
+                          label="Freight amount"
+                          value={Number(t.transport_amount) > 0 ? formatINR(t.transport_amount) : '—'}
+                        />
+                        {Number(t.shortage_charge_amount) > 0 && (
+                          <Fact label="Less shortage charged" value={formatINR(t.shortage_charge_amount)} />
+                        )}
+                        {rate > 0 && (
+                          <div className="col-span-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+                            {/* Spelling out the basis, since freight is priced on
+                                what arrived and that is not obvious from a total. */}
+                            {formatNum(basisQty)} {t.uom || 'MT'} {rec != null ? 'received' : 'loaded'} × {formatINR(rate)} ={' '}
+                            <span className="font-semibold tabular-nums text-foreground">{formatINR(basisQty * rate)}</span>
+                            {rec == null && ' — settles on the received qty once weighed in'}
+                            {rec != null && Number(t.shortage_charge_amount) > 0 && (
+                              <> , less {formatINR(t.shortage_charge_amount)} shortage = <span className="font-semibold tabular-nums text-foreground">{formatINR(basisQty * rate - Number(t.shortage_charge_amount))}</span> earned</>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-3 p-3">
-                      <Fact label="Transporter" value={t.transporter_name || '—'} />
-                      <Fact label="Rate" value={Number(t.transport_rate_per_ton) > 0 ? `${formatINR(t.transport_rate_per_ton)}/${t.uom || 'MT'}` : '—'} />
-                      <Fact label="Freight amount" value={Number(t.transport_amount) > 0 ? formatINR(t.transport_amount) : '—'} />
-                      {Number(t.shortage_charge_amount) > 0 && (
-                        <Fact label="Shortage charged to transporter" value={formatINR(t.shortage_charge_amount)} />
-                      )}
-                    </div>
-                  </div>
-                )}
+                  )
+                })()}
 
                 {t.gate_entry_no && (
                   <div className="rounded-xl border">
@@ -4130,6 +4479,40 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             </DialogTitle>
           </DialogHeader>
           {detailRow && <div className="grid min-w-0 gap-3">
+            {(() => {
+              // Who carried it and at what rate — nothing else. The amounts live
+              // on each tanker's own Transport panel further down.
+              const carriers = poCarriers(detailRow)
+              if (!carriers.length) return null
+              return (
+                <div className="rounded-xl border">
+                  <div className="flex items-center gap-1.5 border-b bg-slate-50 px-3 py-2">
+                    <Truck className="h-3.5 w-3.5 text-slate-500" />
+                    <span className="text-xs font-semibold text-slate-700">Transporter</span>
+                  </div>
+                  <div className="divide-y">
+                    {carriers.map((cr, i) => (
+                      <div key={i} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2 text-[13px]">
+                        {carriers.length > 1 && (
+                          <span className="shrink-0 text-[11px] font-medium text-muted-foreground">{cr.tanker || '—'}</span>
+                        )}
+                        <span className="min-w-0 truncate">{cr.name || 'Not set'}</span>
+                        <span className="ml-auto shrink-0 tabular-nums">
+                          {cr.rate > 0 ? (
+                            <>
+                              {formatINR(cr.rate)}
+                              <span className="text-[11px] text-muted-foreground">/{detailRow.uom || 'MT'}</span>
+                            </>
+                          ) : (
+                            <span className="text-[12px] font-semibold text-rose-700">Rate not set</span>
+                          )}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
             <div className="grid grid-cols-3 gap-2">
               <InfoTile icon={Building2} label="Supplier" value={detailRow.supplier_name || '—'} />
               <InfoTile icon={CalendarDays} label="Purchase date" value={formatDate(detailRow.order_date)} />

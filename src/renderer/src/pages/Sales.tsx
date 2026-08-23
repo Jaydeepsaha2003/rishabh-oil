@@ -292,16 +292,6 @@ function SalesTab({
   // The invoice-register columns that carry a header filter, and how each one
   // reads its value off a grouped invoice. Money/qty format the same way the
   // cell does, so the dropdown lists exactly what's on screen.
-  // Freight sits on the invoice's lines (each carries its own transport_amount),
-  // so the invoice figure is their sum.
-  function invFreight(inv: { first: Row; lines: Row[] }): number {
-    if (String(inv.first.freight_term || 'FREIGHT_ON_GOODS') !== 'DLD') return 0
-    return inv.lines.reduce((t, l) => t + (Number(l.transport_amount) || 0), 0)
-  }
-  function invTransporter(inv: { first: Row; lines: Row[] }): string {
-    const names = [...new Set(inv.lines.map((l) => String(l.transporter_name || '')).filter(Boolean))]
-    return names.join(', ')
-  }
 
   const INV_COLUMNS: { key: string; label: string; of: (inv: Row) => string }[] = useMemo(
     () => [
@@ -1155,9 +1145,7 @@ function SalesTab({
                 <TableCell className="text-right font-semibold tabular-nums text-amber-900">
                   {formatINR(filteredInvoices.reduce((t, inv) => t + (Number(inv.net) || 0), 0))}
                 </TableCell>
-                <TableCell className="font-semibold tabular-nums text-amber-900">
-                  {formatINR(filteredInvoices.reduce((t, inv) => t + invFreight(inv), 0))}
-                </TableCell>
+                <TableCell />
                 <TableCell />
                 <TableCell />
               </TableRow>
@@ -1220,14 +1208,6 @@ function SalesTab({
                         >
                           {exTerm ? 'Ex' : 'FOR'}
                         </span>
-                        {!exTerm && (
-                          <div className="mt-0.5 text-[11px] tabular-nums text-muted-foreground">
-                            {invFreight(inv) > 0 ? formatINR(invFreight(inv)) : '—'}
-                            {invTransporter(inv) && (
-                              <div className="truncate text-[10px]" title={invTransporter(inv)}>{invTransporter(inv)}</div>
-                            )}
-                          </div>
-                        )}
                       </TableCell>
                       <TableCell className="align-top" onClick={(e) => e.stopPropagation()}>
                         {exTerm ? (

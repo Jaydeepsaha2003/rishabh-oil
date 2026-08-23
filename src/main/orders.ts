@@ -333,6 +333,21 @@ export async function listOrders(): Promise<Row[]> {
            t.name AS transporter_name,
            (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_count,
            (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_nos,
+           -- Shortage rolled up from the tankers. The order's own
+           -- actual_shortage_qty columns are only written on the tanker-less
+           -- receipt path, so a tanker purchase showed nothing at all.
+           (SELECT COALESCE(SUM(MAX(0, pt.loaded_qty - pt.received_qty)), 0)
+              FROM purchase_tankers pt
+             WHERE pt.order_id = o.id AND pt.status = 'empty' AND pt.received_qty IS NOT NULL) AS tanker_shortage_qty,
+           -- Already recovered by docking the transporter's freight, so the part
+           -- still open is what a debit note would be raised for.
+           (SELECT COALESCE(SUM(pt.shortage_charge_amount), 0)
+              FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_shortage_charged,
+           -- Freight earned on this invoice, before the shortage deduction.
+           (SELECT COALESCE(SUM(pt.transport_amount), 0)
+              FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_freight_total,
+           (SELECT COUNT(*) FROM purchase_tankers pt
+             WHERE pt.order_id = o.id AND pt.status = 'empty' AND pt.received_qty IS NOT NULL) AS tanker_weighed_count,
            -- How this purchase is being funded, if through an LC. A purchase is
            -- tagged by issuing a bill under an LC against it, so the LC comes
            -- back through lc_issuances rather than sitting on the order itself.
@@ -1594,10 +1609,31 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
       d.setDate(d.getDate() + n(src.rows[0]?.transit_days))
       expected = d.toISOString().slice(0, 10)
     }
+    // The freight rate is agreed when the tanker is sent on its way, not when
+    // it is emptied weeks later, so it is captured here. On an EX load the
+    // freight is ours to pay and there is no rate to fall back on, so it is
+    // required; on DLD the supplier carries it and the field is ignored.
+    const bt = tanker.bargain_id
+      ? (await c.execute({ sql: 'SELECT bargain_type FROM bargains WHERE id = ?', args: [n(tanker.bargain_id)] })).rows[0]?.bargain_type
+      : null
+    const isEx = tankerIsEx(data.condition !== undefined ? data.condition : tanker.condition, bt)
+    const rate = n(data.transport_rate_per_ton)
+    const transporterId = data.transporter_id ? n(data.transporter_id) : (tanker.transporter_id ?? null)
+    if (isEx && rate <= 0) {
+      throw new Error(
+        `Tanker ${tanker.tanker_no} is on EX terms, so the transporter rate per ${String(tanker.uom || 'MT')} is required before it moves to In transit.`
+      )
+    }
+    const sets = ["status = 'transit'", 'transit_date = ?', 'source_id = ?', 'expected_delivery_date = ?']
+    const args: (string | number | null)[] = [transitDate || null, sourceId, expected]
+    if (isEx) {
+      sets.push('transport_rate_per_ton = ?', 'transporter_id = ?')
+      args.push(rate, transporterId)
+    }
+    args.push(id)
     await c.execute({
-      sql: `UPDATE purchase_tankers SET status = 'transit', transit_date = ?, source_id = ?,
-            expected_delivery_date = ? WHERE id = ?`,
-      args: [transitDate || null, sourceId, expected, id]
+      sql: `UPDATE purchase_tankers SET ${sets.join(', ')} WHERE id = ?`,
+      args
     })
   } else if (toStatus === 'outside_factory') {
     // Invoice gate: a loaded tanker must be billed on a purchase invoice
@@ -1793,7 +1829,8 @@ export async function advanceOrder(
     const receivedQty = n(data.received_qty)
     const bargainRate = n(order.bargain_rate)
     const transportRate = isEx ? n(data.transport_rate_per_ton) : 0
-    const transportAmount = isEx ? orderedQty * transportRate : 0
+    // On received qty, like the tanker paths — freight follows what arrived.
+    const transportAmount = isEx ? receivedQty * transportRate : 0
 
     let pct = n((await getSetting('allowed_shortage_pct')) ?? '0')
     if (order.bargain_id) {

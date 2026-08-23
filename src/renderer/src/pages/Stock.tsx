@@ -54,12 +54,23 @@ function nowStamp(): string {
 const REGISTER_COLUMNS: ExcelColumn[] = [
   { header: 'Loading date', key: 'loaded_date', width: 14, value: (r) => (r.loaded_date ? formatDate(r.loaded_date) : '') },
   { header: 'Receiving date', key: 'received_date', width: 14, value: (r) => (r.received_date ? formatDate(r.received_date) : '') },
-  { header: 'Party name', key: 'party', width: 28, divider: true, value: (r) => r.party || '' },
+  {
+    header: 'Party name', key: 'party', width: 28, divider: true,
+    // A return is the same party with the goods going the other way, so it is
+    // labelled rather than left looking like an ordinary movement.
+    value: (r) => (Number(r.is_return) === 1 ? `${r.party || ''} — return` : r.party || '')
+  },
   { header: 'Transporter', key: 'transporter', width: 26, value: (r) => r.transporter || '' },
   { header: 'Bill no', key: 'bill_no', width: 18, value: (r) => r.bill_no || '' },
   { header: 'Vehicle no', key: 'vehicle_no', width: 16, value: (r) => r.vehicle_no || '' },
   { header: 'Oil type', key: 'oil_type', width: 18, divider: true, value: (r) => r.oil_type || '' },
-  { header: 'Dispatch qty', key: 'dispatch_qty', width: 14, align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.dispatch_qty) || 0 },
+  {
+    header: 'Dispatch qty', key: 'dispatch_qty', width: 14, align: 'right', numFmt: NUM_QTY, total: 'sum',
+    // Returns come through negative, so the column total is the net movement —
+    // the same figure the Book Stock register shows.
+    fillFor: (r) => (Number(r.is_return) === 1 ? 'FFEAF0FB' : undefined),
+    value: (r) => Number(r.dispatch_qty) || 0
+  },
   { header: 'Received qty', key: 'received_qty', width: 14, align: 'right', numFmt: NUM_QTY, total: 'sum', value: (r) => Number(r.received_qty) || 0 },
   {
     header: 'Shortage', key: 'shortage', width: 12, align: 'right', numFmt: NUM_QTY, total: 'sum',
@@ -320,7 +331,9 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
         title: `${name} register`,
         subtitle:
           `${data.length} ${kind}${data.length === 1 ? '' : 's'} · quantities in MT · ${periodLabel}` +
-          (kind === 'dispatch' ? ' · gross dispatches, before any credit-note returns' : '') +
+          (kind === 'dispatch'
+            ? ' · credit-note returns included as negative lines, so the total is the net dispatch'
+            : ' · debit-note returns included as negative lines') +
           ` · generated ${formatDate(todayISO())}`,
         freezeCols: 2,
         totalLabel: 'TOTAL',

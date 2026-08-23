@@ -747,10 +747,46 @@ export async function stockRegisters(
     return { ...r, deductible: shortage > allowed ? Math.round((shortage - allowed) * 1000) / 1000 : null }
   }
 
+  // Note returns move stock, so they belong in these registers too — as
+  // NEGATIVE lines, which is what they are: goods travelling the other way. A
+  // credit note to a customer comes back off dispatch, a debit note to a
+  // supplier comes back off receipt. Without them the register totals were
+  // gross while the Book Stock figures they are checked against were net.
+  const noteB = bounds('nt.note_date')
+  const noteLines = async (
+    noteType: 'credit' | 'debit',
+    partyType: 'customer' | 'supplier',
+    master: string
+  ): Promise<Row[]> => {
+    const res = await c.execute({
+      sql: `SELECT nt.note_date AS received_date, NULL AS loaded_date,
+                   COALESCE(m.name, 'Unknown') AS party, NULL AS transporter,
+                   nt.note_no AS bill_no, NULL AS vehicle_no,
+                   p.name AS oil_type,
+                   -ni.qty AS dispatch_qty, NULL AS received_qty,
+                   co.name AS company, nt.against_ref AS against_ref,
+                   1 AS is_return
+            FROM note_items ni
+            JOIN notes nt ON nt.id = ni.note_id
+            LEFT JOIN ${master} m ON m.id = nt.party_id
+            LEFT JOIN products p ON p.id = ni.product_id
+            LEFT JOIN companies co ON co.id = nt.company_id
+            WHERE nt.note_type = ? AND nt.party_type = ? AND ni.product_id IS NOT NULL
+              AND ni.qty > 0 AND nt.company_id IN (${ph}) ${noteB.sql}`,
+      args: [noteType, partyType, ...cidList, ...noteB.args]
+    })
+    return toPlain(res)
+  }
+
   // Newest first, the way every other register on the page reads.
   const bySeq = (a: Row, b: Row): number =>
     String(b.received_date || b.loaded_date || '').localeCompare(String(a.received_date || a.loaded_date || ''))
-  const receipts = [...toPlain(recTankers), ...toPlain(recDirect)].map(withDeductible).sort(bySeq)
-  const dispatches = toPlain(disp).sort(bySeq)
+  const receipts = [
+    ...toPlain(recTankers).map(withDeductible),
+    ...toPlain(recDirect).map(withDeductible),
+    // A purchase return carries no deductible — nothing was short-delivered.
+    ...(await noteLines('debit', 'supplier', 'suppliers')).map((r) => ({ ...r, deductible: null }))
+  ].sort(bySeq)
+  const dispatches = [...toPlain(disp), ...(await noteLines('credit', 'customer', 'customers'))].sort(bySeq)
   return { receipts, dispatches }
 }
