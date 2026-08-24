@@ -1323,7 +1323,13 @@ function SalesTab({
                     c.key === 'qty' && 'w-[110px] text-right',
                     c.key === 'net' && 'w-[140px] text-right',
                     c.key === 'freight' && 'w-[130px]',
-                    c.key === 'dispatch' && 'w-[220px]'
+                    // The desk has four columns and no Actions, so Dispatch
+                    // carries the only control and is pulled to the right —
+                    // otherwise Items stretches and leaves a lane of white
+                    // space between the item and the button that acts on it.
+                    c.key === 'dispatch' && (unloadOnly ? 'w-[240px] text-right' : 'w-[220px]'),
+                    unloadOnly && c.key === 'customer' && 'w-[260px]',
+                    unloadOnly && c.key === 'items' && 'w-auto'
                   )}
                 >
                   <ColumnFilter
@@ -1332,7 +1338,9 @@ function SalesTab({
                     value={invCols[c.key] ?? []}
                     onDark
                     onApply={(v) => setInvCols((p) => ({ ...p, [c.key]: v }))}
-                    align={c.key === 'qty' || c.key === 'net' ? 'end' : 'start'}
+                    align={
+                      c.key === 'qty' || c.key === 'net' || (unloadOnly && c.key === 'dispatch') ? 'end' : 'start'
+                    }
                   />
                 </TableHead>
               ))}
@@ -1438,7 +1446,7 @@ function SalesTab({
                           // One action, and only once the load has actually left:
                           // an invoice still Pending has not been dispatched, so
                           // there is nothing to receive against it yet.
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center justify-end gap-2">
                             <Badge variant={stg.badge} className="min-w-[76px] justify-center">{stg.label}</Badge>
                             {stg.value === 'pending' ? (
                               <span className="text-[11px] text-muted-foreground">Not dispatched yet</span>

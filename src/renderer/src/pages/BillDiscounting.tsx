@@ -595,14 +595,16 @@ export function BillDiscounting({
         <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
           <div className="overflow-x-auto">
             <Table className="text-[13px]">
-              <TableHeader>
+              <TableHeader className="sticky top-0 z-10">
                 <TableRow className="border-b-2 border-[#1a2c56]/20 bg-[#dce6f5] hover:bg-[#dce6f5]">
                   <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">BD no · NBFC</TableHead>
                   <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Party</TableHead>
                   <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Validity</TableHead>
                   <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Days left</TableHead>
                   <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Int. days</TableHead>
-                  <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Bill amount</TableHead>
+                  <TableHead className="h-9 whitespace-nowrap border-l border-[#1a2c56]/15 text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                    Bill amount
+                  </TableHead>
                   <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Margin</TableHead>
                   <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Interest</TableHead>
                   <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">TDS</TableHead>
@@ -611,6 +613,44 @@ export function BillDiscounting({
                 </TableRow>
               </TableHeader>
               <TableBody>
+                {/* What the filters actually left, summed — the same idea the LC
+                    register uses, so a bucket answers "how much" without
+                    adding it up by eye. */}
+                {filtered.length > 0 && (
+                  <TableRow className="border-b-2 border-amber-400 bg-amber-50 hover:bg-amber-50">
+                    <TableCell className="whitespace-nowrap font-semibold text-amber-900">
+                      Total
+                      <span className="ml-1.5 font-normal text-amber-800/70">
+                        ({filtered.length} bill{filtered.length === 1 ? '' : 's'})
+                      </span>
+                    </TableCell>
+                    <TableCell />
+                    <TableCell />
+                    <TableCell />
+                    <TableCell />
+                    {(
+                      [
+                        ['amount', ''],
+                        ['marginAmount', ''],
+                        ['interestAmount', 'text-rose-700'],
+                        ['tdsAmount', ''],
+                        ['receiptAmount', 'text-emerald-700']
+                      ] as [string, string][]
+                    ).map(([k, tone], i) => (
+                      <TableCell
+                        key={k}
+                        className={cn(
+                          'whitespace-nowrap text-right font-semibold tabular-nums text-amber-900',
+                          i === 0 && 'border-l border-[#1a2c56]/15',
+                          tone
+                        )}
+                      >
+                        {formatINR(filtered.reduce((t, x) => t + n(x[k]), 0))}
+                      </TableCell>
+                    ))}
+                    <TableCell />
+                  </TableRow>
+                )}
                 {filtered.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={11} className="py-10 text-center text-muted-foreground">
@@ -647,14 +687,26 @@ export function BillDiscounting({
                           <div className="text-[11px] capitalize text-muted-foreground">{r.purpose}</div>
                         </TableCell>
                         <TableCell className="whitespace-nowrap tabular-nums">
-                          <div>R - {formatDateShort(r.payment_received_date)}</div>
-                          <div>M - {formatDateShort(r.maturity_date)}</div>
+                          <div>
+                            <span className="mr-1 text-[10px] font-semibold uppercase text-muted-foreground" title="Payment received">
+                              Rec
+                            </span>
+                            {formatDateShort(r.payment_received_date)}
+                          </div>
+                          <div>
+                            <span className="mr-1 text-[10px] font-semibold uppercase text-muted-foreground" title="Maturity">
+                              Mat
+                            </span>
+                            {formatDateShort(r.maturity_date)}
+                          </div>
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
                           {repaid ? <span className="text-muted-foreground">—</span> : <DueBadge date={r.maturity_date} />}
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-right tabular-nums text-muted-foreground">{n(r.intDays)}</TableCell>
-                        <TableCell className="whitespace-nowrap text-right font-medium tabular-nums">{formatINR(r.amount)}</TableCell>
+                        <TableCell className="whitespace-nowrap border-l border-[#1a2c56]/10 text-right font-medium tabular-nums">
+                          {formatINR(r.amount)}
+                        </TableCell>
                         <TableCell className="whitespace-nowrap text-right tabular-nums">{formatINR(r.marginAmount)}</TableCell>
                         <TableCell className="whitespace-nowrap text-right tabular-nums text-rose-700">{formatINR(r.interestAmount)}</TableCell>
                         <TableCell className="whitespace-nowrap text-right tabular-nums">{formatINR(r.tdsAmount)}</TableCell>
@@ -753,15 +805,21 @@ export function BillDiscounting({
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>NBFC *</Label>
-                    <div className="flex gap-1.5">
-                      <Select value={String(form.nbfc_id || '')} onValueChange={chooseNbfc}>
-                        <SelectTrigger><SelectValue placeholder={formNbfcs.length ? 'Select the NBFC' : 'No NBFC set up yet'} /></SelectTrigger>
-                        <SelectContent>
-                          {formNbfcs.map((nb) => (
-                            <SelectItem key={String(nb.id)} value={String(nb.id)}>{nb.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                    {/* The Select must be allowed to SHRINK. Without a
+                        min-w-0 flex-1 box around it, it sizes to its content
+                        and pushes the Manage button out of the cell — it landed
+                        on top of the Purpose field beside it. */}
+                    <div className="flex min-w-0 gap-1.5">
+                      <div className="min-w-0 flex-1">
+                        <Select value={String(form.nbfc_id || '')} onValueChange={chooseNbfc}>
+                          <SelectTrigger><SelectValue placeholder={formNbfcs.length ? 'Select the NBFC' : 'No NBFC set up yet'} /></SelectTrigger>
+                          <SelectContent>
+                            {formNbfcs.map((nb) => (
+                              <SelectItem key={String(nb.id)} value={String(nb.id)}>{nb.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
                       <Button type="button" size="icon" variant="outline" className="shrink-0" title="Manage NBFCs" onClick={() => setNbfcOpen(true)}>
                         <Settings2 className="h-4 w-4" />
                       </Button>

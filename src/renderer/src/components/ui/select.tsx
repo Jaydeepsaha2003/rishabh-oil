@@ -148,7 +148,12 @@ function Select({ value, onValueChange, disabled, children, searchable, showChec
           style: {
             position: 'absolute',
             left: t.left - c.left + dialog.scrollLeft,
-            width: t.width,
+            // The panel is at LEAST as wide as the trigger, but free to grow to
+            // its longest entry — pinned to the trigger's width, a 208px picker
+            // wrapped "VANIK FINANCE PRIVATE LIMITED" onto two lines. Capped to
+            // the room actually left to the right of the trigger.
+            minWidth: t.width,
+            maxWidth: Math.max(t.width, c.width - (t.left - c.left) - 8),
             ...(openUp
               ? { top: t.top - c.top + dialog.scrollTop - 4, transform: 'translateY(-100%)' }
               : { top: t.bottom - c.top + dialog.scrollTop + 4 })
@@ -248,8 +253,8 @@ function Select({ value, onValueChange, disabled, children, searchable, showChec
         portal
           ? 'z-[70]'
           : inlineFlip?.openUp
-            ? 'absolute left-0 bottom-full z-50 mb-1 w-full min-w-[10rem]'
-            : 'absolute left-0 top-full z-50 mt-1 w-full min-w-[10rem]'
+            ? 'absolute left-0 bottom-full z-50 mb-1 w-max min-w-full max-w-[min(26rem,90vw)]'
+            : 'absolute left-0 top-full z-50 mt-1 w-max min-w-full max-w-[min(26rem,90vw)]'
       )}
     >
       {showSearch && (
@@ -315,7 +320,7 @@ function Select({ value, onValueChange, disabled, children, searchable, showChec
               ) : (
                 <Check className={cn('mr-2 h-4 w-4 shrink-0', current === it.value ? 'opacity-100' : 'opacity-0')} />
               )}
-              <span className="flex-1">{it.label}</span>
+              <span className="min-w-0 flex-1 truncate" title={it.text || undefined}>{it.label}</span>
             </button>
           ))
         )}

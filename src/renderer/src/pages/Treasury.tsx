@@ -1655,7 +1655,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               </div>
               <div className="overflow-x-auto">
               <Table className="text-[13px]">
-                <TableHeader>
+                <TableHeader className="sticky top-0 z-10">
                   <TableRow className="border-b-2 border-[#1a2c56]/20 bg-[#dce6f5] hover:bg-[#dce6f5]">
                     <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">LC no · bank</TableHead>
                     <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Supplier</TableHead>
@@ -1663,7 +1663,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Days left</TableHead>
                     <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Int. days</TableHead>
                     <TableHead
-                      className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]"
+                      className="h-9 whitespace-nowrap border-l border-[#1a2c56]/15 text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]"
                       title="Interest for the days between preclosure and the LC's original maturity — the stretch that never happened"
                     >
                       Premature int.
@@ -1689,7 +1689,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       <TableCell />
                       <TableCell />
                       <TableCell />
-                      <TableCell className="whitespace-nowrap text-right font-semibold tabular-nums text-amber-900">
+                      <TableCell className="whitespace-nowrap border-l border-[#1a2c56]/15 text-right font-semibold tabular-nums text-amber-900">
                         {(() => {
                           const t = lcsFiltered.reduce((a2, l) => a2 + n(l.preclose_premature_interest), 0)
                           return t > 0.004 ? formatINR(t) : ''
@@ -1739,19 +1739,24 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             </TableCell>
                             <TableCell className="whitespace-nowrap">{l.supplier_name || '—'}</TableCell>
                             <TableCell className="whitespace-nowrap tabular-nums">
-                              <div>O - {formatDateShort(l.open_date)}</div>
+                              <div>
+                                <span className="mr-1 text-[10px] font-semibold uppercase text-muted-foreground" title="Opened">Op</span>
+                                {formatDateShort(l.open_date)}
+                              </div>
                               {/* A preclosed LC never reached its maturity, so the
                                   planned date is struck through and the date it
                                   actually closed on is shown beneath it. */}
                               <div className={cn(l.preclosed_date && 'text-muted-foreground line-through decoration-muted-foreground/60')}>
-                                M - {formatDateShort(l.expiry_date)}
+                                <span className="mr-1 text-[10px] font-semibold uppercase text-muted-foreground no-underline" title="Maturity">Mat</span>
+                                {formatDateShort(l.expiry_date)}
                               </div>
                               {!!l.preclosed_date && (
                                 <div
                                   className="mt-0.5 inline-flex items-center gap-1 rounded bg-violet-100 px-1.5 py-px text-[11px] font-semibold text-violet-800"
-                                  title={`Preclosed on ${formatDate(l.preclosed_date)} — ${formatDateShort(l.expiry_date)} never came`}
+                                  title={`Closed on ${formatDate(l.preclosed_date)} — ${formatDateShort(l.expiry_date)} never came`}
                                 >
-                                  C - {formatDateShort(l.preclosed_date)}
+                                  <span className="text-[9px] uppercase tracking-wide text-violet-700/70">Closed</span>
+                                  {formatDateShort(l.preclosed_date)}
                                 </div>
                               )}
                             </TableCell>
@@ -1768,7 +1773,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <TableCell className="whitespace-nowrap text-right tabular-nums text-muted-foreground">
                               {n(l.usance_days) > 0 ? n(l.usance_days) : '—'}
                             </TableCell>
-                            <TableCell className="whitespace-nowrap text-right tabular-nums">
+                            <TableCell className="whitespace-nowrap border-l border-[#1a2c56]/10 text-right tabular-nums">
                               {n(l.preclose_premature_interest) > 0.004 ? (
                                 <>
                                   <div className="font-semibold text-violet-800">{formatINR(l.preclose_premature_interest)}</div>
@@ -2449,9 +2454,10 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       // one-off bank name doesn't silently blank the field.
                       const showTextInput = addingNewBank || (bank !== '' && !bankOptions.includes(bank))
                       return showTextInput ? (
-                        <div className="flex gap-1.5">
+                        <div className="flex min-w-0 gap-1.5">
                           <Input
                             autoFocus={addingNewBank}
+                            className="min-w-0 flex-1"
                             value={bank}
                             onChange={(e) => setLcForm((p) => ({ ...p, bank: e.target.value }))}
                             placeholder="Type the new bank's name"
