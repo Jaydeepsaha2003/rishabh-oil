@@ -134,6 +134,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   const [issuances, setIssuances] = useState<Record<number, Row[]>>({})
   const [repayments, setRepayments] = useState<Record<number, Row[]>>({})
   const [paymentIns, setPaymentIns] = useState<Record<number, Row[]>>({})
+  // The lender picker in the header names BANKS on the LC tab and NBFCs on Bill
+  // Discounting — a discounted bill is against an NBFC, so naming it "bank"
+  // there was wrong and it scoped nothing.
+  const [nbfcs, setNbfcs] = useState<Row[]>([])
+  const [activeNbfc, setActiveNbfc] = useState('')
   const [lcDetailId, setLcDetailId] = useState<number | null>(null)
   const [lcView, setLcView] = useState<'cards' | 'table'>('table')
   const [expandedAlert, setExpandedAlert] = useState<string | null>(null)
@@ -404,6 +409,28 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       release_margin: false
     })
     setPrecloseError(null)
+  }
+
+  // Undo a preclosure booked by mistake. Everything the preclosure wrote is
+  // reversed — its rebate and margin vouchers, the repayment row it logged, and
+  // the interest period it shortened. Confirmed first: it re-posts vouchers.
+  const [unpreRow, setUnpreRow] = useState<Row | null>(null)
+  const [unpreBusy, setUnpreBusy] = useState(false)
+
+  async function confirmUnpreclose(): Promise<void> {
+    const l = unpreRow
+    if (!l) return
+    setUnpreBusy(true)
+    try {
+      const r = await window.api.lc.unpreclose(Number(l.id))
+      toast.success(`${String(l.lc_no || 'LC')} restored — ${r.removed.join(', ')}`)
+      setUnpreRow(null)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setUnpreBusy(false)
+    }
   }
 
   const preclosePreview = useMemo(() => {
@@ -1111,23 +1138,48 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
         hint="LCs carry interest days: every bill issued under one gets a maturity date, and settling it pays the supplier through the books against the original invoice. Discounting a sale bill brings the bank money in now (interest and charges to expenses) and clears the customer when the bill is realized. Everything shows in the Day Book, ledgers and Trial Balance."
         actions={
           <>
-          {/* The bank in view scopes the whole page: the register below, the
-              facility limit above it, and which bank a new LC opens at. */}
-          <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Active bank
-          </span>
-          <Select value={activeBank} onValueChange={setActiveBank}>
-            <SelectTrigger className="h-8 w-52 text-xs font-semibold uppercase tracking-wide">
-              <span className="flex min-w-0 items-center gap-1.5">
-                <Landmark className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <SelectValue placeholder="All my banks" />
+          {/* The lender in view scopes the register below it. On the LC tab
+              that is a BANK — it also drives the facility limit and which bank
+              a new LC opens at. On Bill Discounting it is an NBFC. */}
+          {tab === 'bd' ? (
+            <>
+              <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Active NBFC
               </span>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="">All my banks</SelectItem>
-              {banks.map((b) => <SelectItem key={String(b.id)} value={String(b.id)}>{b.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
+              <Select value={activeNbfc} onValueChange={setActiveNbfc}>
+                <SelectTrigger className="h-8 w-52 text-xs font-semibold uppercase tracking-wide">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <Landmark className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <SelectValue placeholder="All my NBFCs" />
+                  </span>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">All my NBFCs</SelectItem>
+                  {nbfcs
+                    .filter((x) => x.active)
+                    .map((x) => <SelectItem key={String(x.id)} value={String(x.id)}>{String(x.name)}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </>
+          ) : (
+            <>
+              <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Active bank
+              </span>
+              <Select value={activeBank} onValueChange={setActiveBank}>
+                <SelectTrigger className="h-8 w-52 text-xs font-semibold uppercase tracking-wide">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <Landmark className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <SelectValue placeholder="All my banks" />
+                  </span>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">All my banks</SelectItem>
+                  {banks.map((b) => <SelectItem key={String(b.id)} value={String(b.id)}>{b.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </>
+          )}
           <Select value={tab} onValueChange={setTab}>
             <SelectTrigger className="h-8 w-56 text-xs font-semibold uppercase tracking-wide">
               <SelectValue placeholder="Select a view" />
@@ -1610,6 +1662,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Validity</TableHead>
                     <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Days left</TableHead>
                     <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Int. days</TableHead>
+                    <TableHead
+                      className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]"
+                      title="Interest for the days between preclosure and the LC's original maturity — the stretch that never happened"
+                    >
+                      Premature int.
+                    </TableHead>
                     <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Limit</TableHead>
                     <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Available</TableHead>
                     <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Actions</TableHead>
@@ -1632,6 +1690,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       <TableCell />
                       <TableCell />
                       <TableCell className="whitespace-nowrap text-right font-semibold tabular-nums text-amber-900">
+                        {(() => {
+                          const t = lcsFiltered.reduce((a2, l) => a2 + n(l.preclose_premature_interest), 0)
+                          return t > 0.004 ? formatINR(t) : ''
+                        })()}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-right font-semibold tabular-nums text-amber-900">
                         {formatINR(lcsFiltered.reduce((t, l) => t + n(l.amount), 0))}
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-right font-semibold tabular-nums text-amber-900">
@@ -1641,7 +1705,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     </TableRow>
                   )}
                   {lcsFiltered.length === 0 ? (
-                    <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No letters of credit in this bucket.</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={9} className="py-10 text-center text-muted-foreground">No letters of credit in this bucket.</TableCell></TableRow>
                   ) : (
                     lcsFiltered.map((l) => {
                       const pct = n(l.amount) > 0 ? Math.min(100, (n(l.utilized) / n(l.amount)) * 100) : 0
@@ -1676,7 +1740,20 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <TableCell className="whitespace-nowrap">{l.supplier_name || '—'}</TableCell>
                             <TableCell className="whitespace-nowrap tabular-nums">
                               <div>O - {formatDateShort(l.open_date)}</div>
-                              <div>M - {formatDateShort(l.expiry_date)}</div>
+                              {/* A preclosed LC never reached its maturity, so the
+                                  planned date is struck through and the date it
+                                  actually closed on is shown beneath it. */}
+                              <div className={cn(l.preclosed_date && 'text-muted-foreground line-through decoration-muted-foreground/60')}>
+                                M - {formatDateShort(l.expiry_date)}
+                              </div>
+                              {!!l.preclosed_date && (
+                                <div
+                                  className="mt-0.5 inline-flex items-center gap-1 rounded bg-violet-100 px-1.5 py-px text-[11px] font-semibold text-violet-800"
+                                  title={`Preclosed on ${formatDate(l.preclosed_date)} — ${formatDateShort(l.expiry_date)} never came`}
+                                >
+                                  C - {formatDateShort(l.preclosed_date)}
+                                </div>
+                              )}
                             </TableCell>
                             <TableCell className="whitespace-nowrap">
                               {/* Repaid means wound up — no live countdown. */}
@@ -1690,6 +1767,18 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             </TableCell>
                             <TableCell className="whitespace-nowrap text-right tabular-nums text-muted-foreground">
                               {n(l.usance_days) > 0 ? n(l.usance_days) : '—'}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap text-right tabular-nums">
+                              {n(l.preclose_premature_interest) > 0.004 ? (
+                                <>
+                                  <div className="font-semibold text-violet-800">{formatINR(l.preclose_premature_interest)}</div>
+                                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                                    {String(l.preclose_interest_route || '') === 'pay_to_party' ? 'paid to party' : 'credited to us'}
+                                  </div>
+                                </>
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
                             </TableCell>
                             <TableCell className="whitespace-nowrap text-right font-medium tabular-nums">{formatINR(l.amount)}</TableCell>
                             <TableCell className="whitespace-nowrap text-right">
@@ -1734,6 +1823,15 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 )}
                                 <RowActions
                                   actions={[
+                                    ...(l.preclosed_date
+                                      ? [
+                                          {
+                                            label: 'Undo preclosure — put this LC back',
+                                            icon: RotateCcw,
+                                            onClick: () => setUnpreRow(l)
+                                          }
+                                        ]
+                                      : []),
                                     { label: 'Edit LC', icon: Pencil, onClick: () => setLcForm({ ...l }) },
                                     {
                                       label: 'Delete LC — reverses its vouchers',
@@ -1762,6 +1860,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               companies={companies}
               activeCompany={activeCompany}
               onCompanyChange={onCompanyChange}
+              nbfcFilter={activeNbfc}
+              onNbfcsLoaded={setNbfcs}
             />
           </TabsContent>
         </Tabs>
@@ -2854,6 +2954,36 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       </Dialog>
 
       {/* LC detail — a proper modal instead of expanding the row in place */}
+      <Dialog open={!!unpreRow} onOpenChange={(o) => !o && !unpreBusy && setUnpreRow(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Undo the preclosure of {String(unpreRow?.lc_no || 'this LC')}?</DialogTitle>
+          </DialogHeader>
+          <p className="text-[12px] text-muted-foreground">
+            The LC goes back to open, as though it had never been wound up. Everything the preclosure wrote is
+            reversed:
+          </p>
+          <ul className="ml-4 list-disc space-y-0.5 text-[12px] text-muted-foreground">
+            <li>the premature-interest rebate voucher</li>
+            <li>the margin-release voucher and the settlement it recorded</li>
+            <li>the repayment it logged on {formatDate(unpreRow?.preclosed_date)}</li>
+            <li>
+              the interest period, which preclosing shortened to the days actually elapsed — restored to the full
+              planned span up to {formatDate(unpreRow?.expiry_date)}
+            </li>
+          </ul>
+          <p className="text-[12px] text-muted-foreground">
+            Bills issued under this LC and any Payment IN are left untouched — they are not part of the preclosure.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUnpreRow(null)} disabled={unpreBusy}>Leave it preclosed</Button>
+            <Button onClick={() => void confirmUnpreclose()} disabled={unpreBusy}>
+              {unpreBusy ? 'Restoring…' : 'Undo preclosure'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={lcDetailId != null} onOpenChange={(o) => !o && setLcDetailId(null)}>
         <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
           {(() => {

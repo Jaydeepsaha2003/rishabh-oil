@@ -372,6 +372,10 @@ export async function postPaymentJournal(v: {
 // sale_id — deleteJournalByRef below wipes every entry for a ref regardless
 // of vchType, so two independent postJournal calls for one sale would each
 // erase the other's freight/sale lines on the next save.
+function round2(x: number): number {
+  return Math.round((x + Number.EPSILON) * 100) / 100
+}
+
 export async function postSaleJournal(v: {
   saleId: number
   date: string
@@ -383,6 +387,10 @@ export async function postSaleJournal(v: {
   roundOff?: number
   freightAmount?: number
   transporterName?: string | null
+  // The customer settles the transporter directly and the freight comes OFF
+  // their bill. See the freight legs below for why that changes the posting
+  // rather than just the wording.
+  deductFreight?: boolean
   companyId?: number
 }): Promise<void> {
   await deleteJournalByRef('sale_id', v.saleId)
@@ -394,17 +402,33 @@ export async function postSaleJournal(v: {
   const freight = n(v.freightAmount)
   const transporterName = String(v.transporterName || '').trim()
   if (taxable <= 0 && gst <= 0) return
+  // Freight deducted from the invoice: the customer pays the truck, so their
+  // bill drops by it and we never owe the transporter for it.
+  //
+  //   Dr Customer   t + g + ro − f
+  //   Dr Freight outward       f      (still our cost)
+  //   Cr Sales / GST / Round off
+  //
+  // The arithmetic forces the pairing: the customer paying f less and us still
+  // owing the transporter f cannot both hold without expensing the freight
+  // twice. So a deducted freight books NO payable — which is exactly why it
+  // also stops showing as ours to pay on the freight register.
+  const hasFreight = freight > 0 && !!transporterName
+  const deducted = !!v.deductFreight && hasFreight
+  const customerDr = round2(taxable + gst + ro - (deducted ? freight : 0))
   const lines: JournalLine[] = [
-    { account: v.customerName || 'CASH CUSTOMER A/C', group: 'Sundry Debtors', dr: taxable + gst + ro },
+    { account: v.customerName || 'CASH CUSTOMER A/C', group: 'Sundry Debtors', dr: customerDr },
     { account: `${v.productCode} SALE A/C`, group: 'Sales Accounts', cr: taxable },
     { account: 'GST OUTPUT A/C', group: 'Duties & Taxes', cr: gst },
     { account: 'ROUND OFF A/C', group: 'Indirect Expenses', cr: ro > 0 ? ro : 0, dr: ro < 0 ? -ro : 0 }
   ]
-  if (freight > 0 && transporterName) {
-    lines.push(
-      { account: 'FREIGHT OUTWARD A/C', group: 'Direct Expenses', dr: freight },
-      { account: 'FREIGHT PAYABLE A/C', group: 'Current Liabilities', cr: freight }
-    )
+  if (hasFreight) {
+    lines.push({ account: 'FREIGHT OUTWARD A/C', group: 'Direct Expenses', dr: freight })
+    // Not deducted: unchanged from before — we carry the cost and owe the
+    // transporter, and the customer's bill is the goods alone.
+    if (!deducted) {
+      lines.push({ account: 'FREIGHT PAYABLE A/C', group: 'Current Liabilities', cr: freight })
+    }
   }
   await postJournal({
     date: v.date,

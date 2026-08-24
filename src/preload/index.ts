@@ -372,6 +372,8 @@ const api = {
         release_margin?: boolean
       }
     ): Promise<{ id: number }> => ipcRenderer.invoke('lc:preclose', { id, values }),
+    unpreclose: (id: number): Promise<{ id: number; removed: string[] }> =>
+      ipcRenderer.invoke('lc:unpreclose', { id }),
     getLimit: (bankId?: number, from?: string, to?: string): Promise<Row> =>
       ipcRenderer.invoke('lc:getLimit', { bankId, from, to }),
     bankLimits: (): Promise<Row[]> => ipcRenderer.invoke('lc:bankLimits'),

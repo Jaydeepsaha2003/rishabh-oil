@@ -140,6 +140,7 @@ import {
   issueLC,
   deleteLCIssuance,
   precloseLC,
+  unPrecloseLC,
   getLcLimit,
   listBankLcLimits,
   saveLcLimit
@@ -684,6 +685,7 @@ export function registerIpc(): void {
   handle('lc:delete', (_e, { id }: { id: number }) => deleteLC(id))
   handle('lc:issue', (_e, { values }: { values: Row }) => issueLC(values))
   handle('lc:deleteIssuance', (_e, { id }: { id: number }) => deleteLCIssuance(id))
+  handle('lc:unpreclose', (_e, { id }: { id: number }) => unPrecloseLC(id))
   handle(
     'lc:preclose',
     (

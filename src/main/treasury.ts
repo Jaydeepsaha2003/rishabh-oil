@@ -706,7 +706,11 @@ async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   lines.push({ account: bankAcc, group: 'Bank Accounts', cr: round2(openAmount + totalCharges) })
   const je = await postJournal({
     date,
-    vchType: 'PAYMENT',
+    // A JOURNAL, not a PAYMENT: closing an LC squares the LC liability off
+    // against the bank rather than paying a party, so it reads as JV in the
+    // ledger. The two PAYMENT postings above are different — those settle a
+    // supplier's matured bill, which genuinely is a payment.
+    vchType: 'JOURNAL',
     vchNo: rep.lc_no ? String(rep.lc_no) : null,
     narration: `LC ${rep.lc_no} repaid to ${rep.bank || 'the bank'}${totalCharges > 0.005 ? ` (incl. ${totalCharges.toFixed(2)} charges)` : ''}`,
     companyId: n(rep.company_id) || undefined,

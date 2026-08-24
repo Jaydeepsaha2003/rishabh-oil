@@ -50,6 +50,15 @@ export async function exportLcRegister(lcs: Row[], filename: string): Promise<vo
       open_date: formatDate(l.opened_date),
       payment_received_date: formatDate(l.payment_received_date),
       maturity_date: formatDate(l.expiry_date),
+      // A preclosed LC never reached its maturity: the date it actually closed
+      // on, and the interest for the stretch that never happened.
+      closed_date: l.preclosed_date ? formatDate(l.preclosed_date) : '',
+      premature_interest: n(l.preclose_premature_interest) || '',
+      premature_route: l.preclosed_date
+        ? String(l.preclose_interest_route || '') === 'pay_to_party'
+          ? 'Paid to party'
+          : 'Credited to us'
+        : '',
       days_left: daysLeftValue(l.expiry_date),
       interest_days: n(l.usance_days) || '',
       margin_pct: n(l.margin_pct) || '',
@@ -79,6 +88,9 @@ export async function exportLcRegister(lcs: Row[], filename: string): Promise<vo
       { header: 'Open date', key: 'open_date', headerFill: 'FFDBEEF4', headerTextColor: 'FF1F2937' },
       { header: 'Payment received date', key: 'payment_received_date', width: 18, headerFill: 'FFDBEEF4', headerTextColor: 'FF1F2937' },
       { header: 'Maturity date', key: 'maturity_date', width: 17, headerFill: 'FFDBEEF4', headerTextColor: 'FF1F2937' },
+      { header: 'Closed date', key: 'closed_date', width: 15, headerFill: 'FFDBEEF4', headerTextColor: 'FF1F2937' },
+      { header: 'Premature int. (₹)', key: 'premature_interest', align: 'right', numFmt: '#,##0.00', width: 16 },
+      { header: 'Premature int. to', key: 'premature_route', width: 14 },
       { header: 'Days left', key: 'days_left', align: 'right', numFmt: '0"D"' },
       { header: 'Int. days', key: 'interest_days', align: 'right' },
       { header: 'Margin %', key: 'margin_pct', align: 'right' },

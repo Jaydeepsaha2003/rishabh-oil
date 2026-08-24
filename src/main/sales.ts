@@ -259,7 +259,8 @@ async function postSaleEntry(
     gst,
     roundOff,
     freightAmount,
-    transporterName
+    transporterName,
+    deductFreight: !!v.deduct_freight
   }).catch((e) => console.error('[journal] sale post failed:', (e as Error).message))
 }
 
@@ -730,6 +731,30 @@ export function convertQty(qty: number, from: string, to: string): number {
 // PACKED sales the packaging nesting (boxes × pouches_per_box × base_per_pouch
 // + loose pouches × base_per_pouch) is computed in the packaging's base unit,
 // then converted to the sale unit (e.g. 1000 cases × 15 KG = 15,000 KG = 15 MT).
+// The value of one sale line. A PACKED line is priced on the cases it carries
+// (rate_per_case x cases-equivalent, so a part box counts as its fraction) —
+// never on the MT figure, because converting a case weight to MT is not always
+// exact and the error lands straight on the money. Everything else is
+// rate x quantity as before.
+//
+// Falls back to qty x rate when no per-case rate came in, so a line saved
+// before this existed keeps valuing exactly as it did.
+async function resolveSaleAmount(v: Row, qty: number, rate: number): Promise<number> {
+  const perCase = n(v.rate_per_case)
+  if (String(v.sale_type) !== 'PACKED' || !v.packaging_id || perCase <= 0) return qty * rate
+  const p = await getClient().execute({
+    sql: 'SELECT pouches_per_box, base_per_pouch FROM packagings WHERE id = ?',
+    args: [n(v.packaging_id)]
+  })
+  if (!p.rows.length) return qty * rate
+  const ppb = n(p.rows[0].pouches_per_box)
+  const bpp = n(p.rows[0].base_per_pouch)
+  if (ppb <= 0 || bpp <= 0) return qty * rate
+  // Cases, plus any loose pouches as their fraction of a case.
+  const cases = n(v.boxes) + n(v.pouches) / ppb
+  return round2(cases * perCase)
+}
+
 async function resolveSaleQty(v: Row): Promise<{ qty: number; uom: string }> {
   // The sale's unit follows its bargain (falls back to the entered uom, then MT).
   let target = String(v.uom || '').trim()
@@ -797,6 +822,11 @@ async function postSaleFreight(saleId: number, v: Row, qty: number): Promise<num
   const amount = n(v.transport_rate) > 0 ? round2(qty * n(v.transport_rate)) : n(v.transport_amount)
   if (!transporterId || amount <= 0) return amount > 0 ? amount : 0
   const companyId = getActiveCompanyId()
+  // Deducted from the invoice = the customer settles the truck, so this freight
+  // is NOT ours to pay: no transporter-ledger row, and nothing for it to reach
+  // the Freight Outward Working register with. The sale voucher still carries
+  // the cost (Dr FREIGHT OUTWARD) and the customer's bill is already net of it.
+  if (v.deduct_freight) return amount
   await c.execute({
     // accrued = 1: the sale voucher already carried Dr FREIGHT OUTWARD /
     // Cr FREIGHT PAYABLE for this, so the transporter's bill must debit the
@@ -805,12 +835,9 @@ async function postSaleFreight(saleId: number, v: Row, qty: number): Promise<num
           VALUES (?, ?, ?, 'freight', ?, 'Delivery freight', ?, 1)`,
     args: [transporterId, saleId, v.sale_date, amount, companyId]
   })
-  // Default: freight is recovered from the customer, on top of the goods
-  // value. deduct_freight flips that — the customer is never charged it (the
-  // journal already excludes freight from the customer's Dr line either way,
-  // so this just brings the informal ledger in line with "deducted").
+  // Freight recovered from the customer, on top of the goods value.
   const customerId = v.customer_id ? n(v.customer_id) : null
-  if (customerId && !v.deduct_freight) {
+  if (customerId) {
     await c.execute({
       sql: `INSERT INTO customer_ledger (customer_id, sale_id, entry_date, entry_type, amount, note, company_id)
             VALUES (?, ?, ?, 'freight', ?, 'Delivery freight recovered', ?)`,
@@ -827,7 +854,7 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   if (qty <= 0) throw new Error('Quantity must be greater than zero')
   const rate = n(v.rate)
   if (rate < 0) throw new Error('Rate cannot be negative')
-  const amount = qty * rate
+  const amount = await resolveSaleAmount(v, qty, rate)
   const gstPct = n(v.gst_pct)
   const gstAmount = Math.round(amount * (gstPct / 100) * 100) / 100
   // Invoice-level round off (carried on the first line of the group only).
@@ -883,8 +910,8 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   const res = await getClient().execute({
     sql: `INSERT INTO sales (company_id, sale_date, invoice_no, invoice_group, customer, customer_id, product_id, sales_bargain_id,
             qty, uom, rate, amount, gst_pct, gst_amount, gst_type, round_off, round_off_manual, tds_pct, tds_amount, status, dispatch_stage, track_stock, loaded_date, transit_date, unloaded_date, note, sale_type, packaging_id, boxes, pouches, freight_term,
-            transporter_id, transport_rate, transport_amount, is_trading, affects_stock, deduct_freight)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            transporter_id, transport_rate, transport_amount, is_trading, affects_stock, deduct_freight, rate_per_case)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       v.sale_date,
@@ -922,7 +949,8 @@ export async function createSale(v: Row): Promise<{ id: number }> {
       transportAmount,
       isTrading ? 1 : 0,
       isTrading ? 0 : 1,
-      v.deduct_freight ? 1 : 0
+      v.deduct_freight ? 1 : 0,
+      n(v.rate_per_case) > 0 ? round2(n(v.rate_per_case)) : null
     ]
   })
   const id = Number(res.lastInsertRowid)
@@ -944,7 +972,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   if (qty <= 0) throw new Error('Quantity must be greater than zero')
   const rate = n(v.rate)
   if (rate < 0) throw new Error('Rate cannot be negative')
-  const amount = qty * rate
+  const amount = await resolveSaleAmount(v, qty, rate)
   const gstPct = n(v.gst_pct)
   const gstAmount = Math.round(amount * (gstPct / 100) * 100) / 100
   // Invoice-level round off (carried on the first line of the group only).
@@ -992,7 +1020,8 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   await getClient().execute({
     sql: `UPDATE sales SET sale_date = ?, invoice_no = ?, customer = ?, customer_id = ?, product_id = ?, sales_bargain_id = ?,
           qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, round_off = ?, round_off_manual = ?, tds_pct = ?, tds_amount = ?, status = ?, dispatch_stage = ?, track_stock = ?, loaded_date = ?, transit_date = ?, unloaded_date = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
-          pouches = ?, freight_term = ?, transporter_id = ?, transport_rate = ?, transport_amount = ?, deduct_freight = ? WHERE id = ?`,
+          pouches = ?, freight_term = ?, transporter_id = ?, transport_rate = ?, transport_amount = ?, deduct_freight = ?,
+          rate_per_case = ? WHERE id = ?`,
     args: [
       v.sale_date,
       v.invoice_no || null,
@@ -1027,6 +1056,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       n(v.transport_rate),
       transportAmount,
       v.deduct_freight ? 1 : 0,
+      n(v.rate_per_case) > 0 ? round2(n(v.rate_per_case)) : null,
       id
     ]
   })

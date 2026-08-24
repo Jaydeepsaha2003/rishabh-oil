@@ -146,11 +146,17 @@ function bdCalc(f: Row): {
 export function BillDiscounting({
   companies = [],
   activeCompany = 0,
-  onCompanyChange
+  onCompanyChange,
+  // The lender in view, chosen in the page header. A discounted bill is against
+  // an NBFC, not a bank, which is what that picker names on this tab.
+  nbfcFilter = '',
+  onNbfcsLoaded
 }: {
   companies?: Row[]
   activeCompany?: number
   onCompanyChange?: (id: string) => void
+  nbfcFilter?: string
+  onNbfcsLoaded?: (rows: Row[]) => void
 } = {}): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [kpis, setKpis] = useState<Row>({})
@@ -180,9 +186,11 @@ export function BillDiscounting({
     ])
     setRows(list)
     setKpis(k)
+    onNbfcsLoaded?.(nb)
     setNbfcs(nb)
     setSuppliers(sup.filter((x) => x.active))
     setCustomers(cust.filter((x) => x.active))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -192,6 +200,7 @@ export function BillDiscounting({
 
   const filtered = useMemo(() => {
     let list = rows
+    if (nbfcFilter) list = list.filter((r) => String(r.nbfc_id ?? '') === String(nbfcFilter))
     if (statusFilter !== 'all') list = list.filter((r) => String(r.status) === statusFilter)
     if (typeFilter) list = list.filter((r) => String(r.finance_type) === typeFilter)
     if (duePeriod !== 'all') {
@@ -204,7 +213,7 @@ export function BillDiscounting({
       }
     }
     return list
-  }, [rows, statusFilter, typeFilter, duePeriod])
+  }, [rows, nbfcFilter, statusFilter, typeFilter, duePeriod])
 
   // Only the NBFCs that actually provide the finance type being booked.
   const formNbfcs = useMemo(() => {

@@ -272,6 +272,7 @@ export interface Api {
         release_margin?: boolean
       }
     ) => Promise<{ id: number }>
+    unpreclose: (id: number) => Promise<{ id: number; removed: string[] }>
     getLimit: (bankId?: number, from?: string, to?: string) => Promise<Row>
     bankLimits: () => Promise<Row[]>
     saveLimit: (values: Row) => Promise<{ id: number }>

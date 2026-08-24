@@ -323,7 +323,12 @@ function SalesTab({
       .map(([group, lines]) => {
         const first = lines[0]
         const amount = lines.reduce((s, r) => s + (Number(r.amount) || 0), 0)
-        const net = lines.reduce((s, r) => s + (Number(r.amount) || 0) + (Number(r.gst_amount) || 0) + (Number(r.round_off) || 0), 0)
+        // Freight moves the invoice total: recovered adds it, deducted takes it
+        // off. Same rule the sale voucher's customer leg is posted on.
+        const freight = lines.reduce((s, r) => s + (Number(r.transport_amount) || 0), 0)
+        const net =
+          lines.reduce((s, r) => s + (Number(r.amount) || 0) + (Number(r.gst_amount) || 0) + (Number(r.round_off) || 0), 0) -
+          (Number(first.deduct_freight) === 1 ? freight : 0)
         const qty = lines.reduce((s, r) => s + (Number(r.qty) || 0), 0)
         return { group, lines, first, amount, net, qty }
       })
@@ -527,6 +532,10 @@ function SalesTab({
       pouches: r.pouches ?? '',
       qty: r.qty ?? '',
       rate: r.rate ?? '',
+      // The per-case rate the line was billed on, so reopening an invoice shows
+      // and re-saves the same figure rather than deriving one back through the
+      // MT conversion.
+      rate_case: r.rate_per_case == null ? '' : String(r.rate_per_case),
       gst_pct: r.gst_pct ?? '',
       gst_type: r.gst_type ?? 'CGST_SGST'
     })))
@@ -583,10 +592,15 @@ function SalesTab({
 
   // How much of the sale unit one case holds — the bridge between a case
   // rate and the per-unit rate the invoice actually charges on.
+  // NOT rounded. This factor divides the per-case rate to get the per-MT rate
+  // that is actually stored, so any rounding here lands straight on the money.
+  // A 13.395 KG case is 0.013395 MT — six decimals — and rounding to five gave
+  // 0.0134, a 0.037% error that understated a ₹20 lakh line by ₹760. A 15 KG
+  // case (0.015 MT) survived it, which is why only some lines looked wrong.
   function mtPerCase(c: { selPack: Row | undefined; packBaseUom: string; saleUom: string }): number {
     if (!c.selPack) return 0
     const perCase = (Number(c.selPack.pouches_per_box) || 0) * (Number(c.selPack.base_per_pouch) || 0)
-    return Math.round(convertQty(perCase, c.packBaseUom, c.saleUom) * 100000) / 100000
+    return convertQty(perCase, c.packBaseUom, c.saleUom)
   }
 
   // Per-item computed quantity (packaging → sale unit), amount and GST.
@@ -605,7 +619,24 @@ function SalesTab({
       : 0
     const packQty = selPack ? convertQty(packBaseQty, packBaseUom, saleUom) : 0
     const effQty = isPacked ? packQty : Number(item.qty) || 0
-    const amount = effQty * (Number(item.rate) || 0)
+    // Packed: cases x rate-per-case, the figure the deal was struck on. Loose:
+    // rate x quantity. Converting a case weight to MT is not always exact, so
+    // the money must never be taken through that conversion.
+    const perCaseBase = selPack
+      ? (Number(selPack.pouches_per_box) || 0) * (Number(selPack.base_per_pouch) || 0)
+      : 0
+    const casesEq = selPack && perCaseBase > 0 ? packBaseQty / perCaseBase : 0
+    const typedCase = Number(item.rate_case)
+    const perCaseRate =
+      isPacked && Number.isFinite(typedCase) && typedCase > 0
+        ? typedCase
+        : isPacked && perCaseBase > 0 && Number(item.rate) > 0
+          ? Math.round(Number(item.rate) * convertQty(perCaseBase, packBaseUom, saleUom) * 100) / 100
+          : 0
+    const amount =
+      isPacked && perCaseRate > 0 && casesEq > 0
+        ? Math.round(casesEq * perCaseRate * 100) / 100
+        : effQty * (Number(item.rate) || 0)
     const gstPct = Number(item.gst_pct) || 0
     const gstAmt = Math.round(amount * (gstPct / 100) * 100) / 100
     return { isPacked, selPack, saleUom, packBaseUom, packBaseQty, effQty, amount, gstPct, gstAmt, net: amount + gstAmt }
@@ -642,7 +673,26 @@ function SalesTab({
   // TDS preview, on the customer master's own terms — the same slab the main
   // process applies on save. Below the FY threshold nothing is withheld when
   // the master says "no TDS below the slab"; above it the invoice's rate runs.
-  const invoiceTotal = totals.amount + totals.gst + (Number(header.round_off) || 0)
+  // Freight on this invoice, on the same basis the main process uses: the rate
+  // per case for a packed line, per MT for a loose one.
+  const freightPreview = !isDld
+    ? 0
+    : Math.round(
+        items.reduce((t, it) => {
+          const c = calc(it)
+          const rate = Number(header.transport_rate) || 0
+          if (rate <= 0) return t
+          const units = c.isPacked ? Number(it.boxes) || 0 : c.effQty
+          return t + units * rate
+        }, 0) * 100
+      ) / 100
+  // Only the deduction moves the invoice: it comes off what the customer owes,
+  // because they settle the transporter directly. Left unticked the freight is
+  // ours to carry and the customer's bill is the goods alone, exactly as before.
+  const freightOnInvoice =
+    freightPreview <= 0 || !header.transporter_id || !header.deduct_freight ? 0 : -freightPreview
+  const invoiceTotal =
+    Math.round((totals.amount + totals.gst + (Number(header.round_off) || 0) + freightOnInvoice) * 100) / 100
   const tds = useMemo(() => {
     const pct = Number(header.tds_pct) || 0
     const cust = customers.find((c) => String(c.id) === String(header.customer_id || ''))
@@ -707,7 +757,10 @@ function SalesTab({
   // with nothing on this screen able to catch it.
   function cardRateInUnit(hit: Row, saleUom: string, mtPerCaseValue: number): number | null {
     if (hit.rate_per_case != null && mtPerCaseValue > 0) {
-      return Math.round((Number(hit.rate_per_case) / mtPerCaseValue) * 100) / 100
+      // Six decimals for the same reason the Rate/Case box uses them: the
+      // amount is qty x this rate, so paise-level rounding here cannot
+      // reproduce cases x rate-per-case on a fractional case weight.
+      return Math.round((Number(hit.rate_per_case) / mtPerCaseValue) * 1e6) / 1e6
     }
     const perMt = hit.rate_per_mt == null ? null : Number(hit.rate_per_mt)
     if (perMt == null) return null
@@ -985,6 +1038,18 @@ function SalesTab({
         pouches: it.pouches,
         qty: it.qty,
         rate: it.rate,
+        // A packed line is billed on this, not on rate x MT — the case weight
+        // does not always convert exactly and the error lands on the money.
+        rate_per_case:
+          it.sale_type === 'PACKED'
+            ? (() => {
+                const c = calc(it)
+                const per = mtPerCase(c)
+                const typed = Number(it.rate_case)
+                if (Number.isFinite(typed) && typed > 0) return typed
+                return per > 0 && Number(it.rate) > 0 ? Math.round(Number(it.rate) * per * 100) / 100 : null
+              })()
+            : null,
         gst_pct: it.gst_pct,
         gst_type: it.gst_type
       }))
@@ -1545,18 +1610,11 @@ function SalesTab({
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex flex-col gap-1.5">
-              <label className={cn('flex items-center gap-2 text-[13px]', !!editingGroup && 'opacity-50')}>
-                <input
-                  type="checkbox"
-                  className="h-4 w-4"
-                  checked={!!header.is_trading}
-                  disabled={!!editingGroup}
-                  onChange={(e) => setHeaderField('is_trading', e.target.checked)}
-                />
-                Trading sale — resold from a trading purchase, does not affect stock
-              </label>
-            </div>
+            {/* No trading tick here: a trading sale is booked on the Trading
+                page, which sets the flag itself on both sides of the deal. The
+                header still CARRIES is_trading when an existing invoice is
+                loaded (see openEditInvoice), so editing one cannot silently
+                turn it into an ordinary sale. */}
             <div className="flex flex-col gap-1.5">
               <Label>Freight term</Label>
               <Select value={header.freight_term || 'FREIGHT_ON_GOODS'} onValueChange={(v) => setHeaderField('freight_term', v)}>
@@ -1616,8 +1674,8 @@ function SalesTab({
               </div>
               <p className="col-span-full text-[11px] text-sky-800">
                 {header.deduct_freight
-                  ? 'Freight is posted to the transporter ledger per item (rate × cases, or rate × MT if loose) and deducted from what the customer owes — the invoice total excludes it.'
-                  : 'Freight is posted to the transporter ledger per item (rate × cases, or rate × MT if loose) and recovered from the customer on top of the invoice total.'}
+                  ? 'Deducted: the freight comes OFF the invoice total (rate × cases, or rate × MT if loose) because the customer settles the transporter directly — so it is not booked as ours to pay and will not appear on Fr. Outward Working.'
+                  : 'Not deducted: the invoice total is the goods alone. The freight is ours to carry, posted to the transporter ledger, and shows on Fr. Outward Working until their bill is booked.'}
               </p>
             </div>
           )}
@@ -1820,7 +1878,10 @@ function SalesTab({
                           const v = e.target.value
                           setItem(i, {
                             rate_case: v,
-                            rate: per > 0 && v !== '' ? String(Math.round((Number(v) / per) * 100) / 100) : item.rate,
+                            // Six decimals, not two: the amount is qty(MT) x this
+                            // rate, so a rate rounded to paise cannot reproduce
+                            // cases x rate-per-case on a fractional case weight.
+                            rate: per > 0 && v !== '' ? String(Math.round((Number(v) / per) * 1e6) / 1e6) : item.rate,
                             rate_from_card: false
                           })
                         }}
@@ -1976,6 +2037,15 @@ function SalesTab({
               />
             </span>
           </div>
+          {freightOnInvoice !== 0 && (
+            <div className="flex items-center justify-between py-0.5">
+              <span className="text-muted-foreground">
+                Less freight
+                <span className="ml-1 text-[10px] uppercase tracking-wide">(customer pays the transporter)</span>
+              </span>
+              <span className="tabular-nums text-rose-700">−{formatINR(Math.abs(freightOnInvoice))}</span>
+            </div>
+          )}
           <div className="mt-1 flex items-center justify-between border-t-2 border-[#1a2c56] pt-1.5 text-[15px] font-bold text-[#1a2c56]">
             <span>Invoice total</span>
             <span className="tabular-nums">{formatINR(invoiceTotal)}</span>

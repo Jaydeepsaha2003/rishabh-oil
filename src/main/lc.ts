@@ -701,6 +701,69 @@ export async function precloseLC(
   return { id }
 }
 
+// Undo a preclosure booked by mistake. Everything precloseLC wrote comes back
+// out, in reverse:
+//   * the premature-interest rebate voucher
+//   * the margin-release voucher and the settlement it recorded
+//   * the repayment row it logged (and that row's own voucher)
+//   * usance_days, which preclosing overwrote with the days actually elapsed —
+//     restored to the planned figure it was struck from at Payment Received
+//     (expiry − payment received), the same derivation as the original
+//   * the opening voucher, re-struck on that full planned interest period
+//
+// Bills issued under the LC and any Payment IN are left alone: they are not
+// part of the preclosure, and undoing it must not disturb them.
+export async function unPrecloseLC(id: number): Promise<{ id: number; removed: string[] }> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [id] })
+  if (!res.rows.length) throw new Error('LC not found')
+  const lc = toPlain(res)[0]
+  if (!lc.preclosed_date) throw new Error('This LC is not preclosed, so there is nothing to undo')
+  const removed: string[] = []
+
+  if (lc.preclose_interest_journal_entry_id) {
+    await dropTreasuryEntry(n(lc.preclose_interest_journal_entry_id))
+    removed.push('premature-interest rebate voucher')
+  }
+  if (lc.preclose_journal_entry_id) {
+    await dropTreasuryEntry(n(lc.preclose_journal_entry_id))
+    removed.push('margin-release voucher')
+  }
+
+  // The repayment preclosing logged for itself — matched on the LC, the
+  // preclosure date and the note it was written with, so a repayment the user
+  // entered by hand on the same day is not swept up with it.
+  const reps = await c.execute({
+    sql: `SELECT id, journal_entry_id FROM lc_repayments
+           WHERE lc_id = ? AND substr(repay_date, 1, 10) = ? AND COALESCE(note, '') = 'Preclosure repayment'`,
+    args: [id, String(lc.preclosed_date).slice(0, 10)]
+  })
+  for (const r of reps.rows) {
+    if (r.journal_entry_id) await dropTreasuryEntry(n(r.journal_entry_id))
+    await c.execute({ sql: 'DELETE FROM lc_repayments WHERE id = ?', args: [n(r.id)] })
+  }
+  if (reps.rows.length) removed.push(`${reps.rows.length} preclosure repayment row(s)`)
+
+  // Back to the planned interest period. Same start point precloseLC counted
+  // from, run to the LC's own maturity instead of the preclosure date.
+  const interestStart = lc.payment_received_date || lc.opened_date || lc.open_date
+  const plannedDays =
+    interestStart && lc.expiry_date ? Math.max(0, daysBetween(String(interestStart), String(lc.expiry_date))) : n(lc.usance_days)
+  await c.execute({
+    sql: `UPDATE letters_of_credit
+             SET usance_days = ?, preclosed_date = NULL, preclose_premature_interest = NULL,
+                 preclose_interest_route = NULL, preclose_interest_journal_entry_id = NULL,
+                 preclose_settlement_direction = NULL, preclose_settlement_amount = NULL,
+                 preclose_journal_entry_id = NULL, workflow_status = 'in_progress'
+           WHERE id = ?`,
+    args: [plannedDays, id]
+  })
+  // Re-strikes margin/interest/charges on the restored period.
+  await postLcOpening(id)
+  removed.push(`interest days back to ${plannedDays}`)
+  return { id, removed }
+}
+
 export async function deleteLC(id: number): Promise<{ id: number }> {
   const c = getClient()
   // Reverse everything the LC put into the books before it goes.

@@ -1209,7 +1209,14 @@ const MIGRATIONS = [
   // The clock time the vehicle LEFT, the counterpart to entry_time. out_date
   // alone answers which day it went out; a gate register has to answer when,
   // both to sequence two departures on one day and to settle detention.
-  'ALTER TABLE gate_entries ADD COLUMN out_time TEXT'
+  'ALTER TABLE gate_entries ADD COLUMN out_time TEXT',
+  // A packed sale is negotiated and billed PER CASE, so the per-case rate is
+  // what the line's value has to be struck on. It used to be converted to a
+  // per-MT rate and the amount taken as qty x that — and the conversion cannot
+  // be exact for a case weight like 13.395 KG, which silently understated the
+  // line. The per-MT rate is still stored for reporting; this is the figure the
+  // money now comes from.
+  'ALTER TABLE sales ADD COLUMN rate_per_case REAL'
 ]
 
 

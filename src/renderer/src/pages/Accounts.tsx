@@ -489,6 +489,11 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   const [ledgerLines, setLedgerLines] = useState<Row[]>([])
   const [ledgerSearch, setLedgerSearch] = useState('')
   const ledgerSearchRef = useRef<HTMLInputElement>(null)
+  // Keyboard walk of the ledger list: type to narrow, arrows to move, Enter to
+  // open. The cursor is an INDEX into the filtered list rather than an id, so
+  // narrowing the search always leaves it on a row that exists.
+  const [lgCursor, setLgCursor] = useState(0)
+  const lgItemRefs = useRef<(HTMLDivElement | null)[]>([])
   // Tally's Bills Outstanding for the open ledger: F5 while a party is
   // selected. A sub-view of the ledger rather than a screen of its own, so Esc
   // drops back to the statement it was opened from.
@@ -1456,6 +1461,50 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     const q = ledgerSearch.trim().toLowerCase()
     return q ? accounts.filter((a) => String(a.name).toLowerCase().includes(q)) : accounts
   }, [accounts, ledgerSearch])
+
+  // A narrower search can leave the cursor past the end; pull it back.
+  useEffect(() => {
+    setLgCursor((i) => (filteredAccounts.length === 0 ? 0 : Math.min(i, filteredAccounts.length - 1)))
+  }, [filteredAccounts.length])
+  // Typing is a fresh search, so start at the top of what it left.
+  useEffect(() => {
+    setLgCursor(0)
+  }, [ledgerSearch])
+  useEffect(() => {
+    if (screen !== 'ledger') return
+    lgItemRefs.current[lgCursor]?.scrollIntoView({ block: 'nearest' })
+  }, [lgCursor, screen])
+
+  // Arrows move, Enter opens. Bound to the search box (which this screen
+  // focuses on arrival) so one uninterrupted run of keystrokes gets you from
+  // landing on Ledgers to reading one.
+  function ledgerKeyNav(e: React.KeyboardEvent): void {
+    const n = filteredAccounts.length
+    if (!n) return
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setLgCursor((i) => Math.min(i + 1, n - 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setLgCursor((i) => Math.max(i - 1, 0))
+    } else if (e.key === 'Home') {
+      e.preventDefault()
+      setLgCursor(0)
+    } else if (e.key === 'End') {
+      e.preventDefault()
+      setLgCursor(n - 1)
+    } else if (e.key === 'PageDown') {
+      e.preventDefault()
+      setLgCursor((i) => Math.min(i + 10, n - 1))
+    } else if (e.key === 'PageUp') {
+      e.preventDefault()
+      setLgCursor((i) => Math.max(i - 10, 0))
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      const hit = filteredAccounts[lgCursor]
+      if (hit) setLedgerId(Number(hit.id))
+    }
+  }
 
   const tbGroups = useMemo(() => {
     if (!tb) return []
@@ -3357,13 +3406,14 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
           <Input
             ref={ledgerSearchRef}
             className="h-8 bg-white text-[13px]"
-            placeholder="Search ledger…"
+            placeholder="Search ledger… ↑↓ to move, Enter to open"
             value={ledgerSearch}
             onChange={(e) => setLedgerSearch(e.target.value)}
+            onKeyDown={ledgerKeyNav}
           />
         </div>
         <div className="flex-1 overflow-auto px-2 pb-2">
-          {filteredAccounts.map((a) => {
+          {filteredAccounts.map((a, ai) => {
             // Stranded, not merely quiet: no postings, no allocations, and no
             // master claiming the name. CASH A/C or a transporter not yet
             // billed has none of the first two either, and must stay put.
@@ -3376,13 +3426,26 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
             return (
             <div
               key={String(a.id)}
+              ref={(el) => { lgItemRefs.current[ai] = el }}
               role="button"
               tabIndex={0}
-              onClick={() => setLedgerId(Number(a.id))}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setLedgerId(Number(a.id)) }}
+              onClick={() => { setLgCursor(ai); setLedgerId(Number(a.id)) }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setLedgerId(Number(a.id))
+                } else {
+                  // Arrows work from the list too, not only the search box.
+                  ledgerKeyNav(e)
+                }
+              }}
               className={cn(
                 'flex w-full cursor-pointer items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-[12.5px]',
-                ledgerId === Number(a.id) ? T.select : 'hover:bg-amber-100/60'
+                ledgerId === Number(a.id)
+                  ? T.select
+                  : ai === lgCursor
+                    ? 'bg-amber-100 ring-1 ring-inset ring-amber-400'
+                    : 'hover:bg-amber-100/60'
               )}
             >
               <span className="min-w-0">
