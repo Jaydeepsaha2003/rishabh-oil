@@ -1065,6 +1065,7 @@ export function GateEntry(): React.JSX.Element {
               { header: 'In date', key: 'entry_date', value: (r) => formatDate(r.entry_date) },
               { header: 'In time', key: 'entry_time', width: 10, value: (r) => String(r.entry_time || '').slice(0, 5) },
               { header: 'Out date', key: 'out_date', value: (r) => (r.out_date ? formatDate(r.out_date) : '') },
+              { header: 'Out time', key: 'out_time', width: 10, value: (r) => String(r.out_time || '').slice(0, 5) },
               { header: 'In / Out', key: 'direction', value: (r) => (r.direction === 'out' ? 'OUT' : 'IN') },
               { header: 'Rec type', key: 'rec_type', value: (r) => r.rec_type || 'OIL' },
               { header: 'Product', key: 'product', value: (r) => r.oil_name || r.oil_code || '' },
@@ -1787,6 +1788,9 @@ export function GateEntry(): React.JSX.Element {
                           <div className="whitespace-nowrap">
                             <span className="text-[10px] font-semibold uppercase text-muted-foreground">Out </span>
                             {formatDate(row.out_date)}
+                            {row.out_time && (
+                              <span className="ml-1 text-[11px] tabular-nums text-muted-foreground">{String(row.out_time).slice(0, 5)}</span>
+                            )}
                           </div>
                         )}
                       </TableCell>
@@ -1885,9 +1889,20 @@ export function GateEntry(): React.JSX.Element {
                           </Badge>
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
-                          <div>{formatDate(row.entry_date)}</div>
-                          {row.entry_time && (
-                            <div className="text-[11px] tabular-nums text-muted-foreground">{String(row.entry_time).slice(0, 5)}</div>
+                          <div>
+                            {formatDate(row.entry_date)}
+                            {row.entry_time && (
+                              <span className="ml-1 text-[11px] tabular-nums text-muted-foreground">{String(row.entry_time).slice(0, 5)}</span>
+                            )}
+                          </div>
+                          {/* A visit has two ends; the register shows both when
+                              the vehicle has actually gone. */}
+                          {row.out_date && (
+                            <div className="text-[11px] text-muted-foreground">
+                              <span className="font-semibold uppercase">out </span>
+                              {formatDate(row.out_date)}
+                              {row.out_time && <span className="ml-1 tabular-nums">{String(row.out_time).slice(0, 5)}</span>}
+                            </div>
                           )}
                         </TableCell>
                         <TableCell>

@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils'
 // panel inline (inside the same DOM subtree as the trigger) keeps the input
 // within the dialog's focus scope, so typing always works.
 
-type ItemDef = { value: string; label: React.ReactNode; text: string }
+type ItemDef = { value: string; label: React.ReactNode; text: string; disabled?: boolean; title?: string }
 
 interface Ctx {
   value: string
@@ -47,7 +47,9 @@ function collectItems(node: React.ReactNode, out: ItemDef[]): void {
       out.push({
         value: String(el.props.value),
         label: el.props.children,
-        text: textOf(el.props.children)
+        text: textOf(el.props.children),
+        disabled: !!el.props.disabled,
+        title: el.props.title
       })
     } else if (el.props && el.props.children) {
       collectItems(el.props.children, out)
@@ -210,17 +212,27 @@ function Select({ value, onValueChange, disabled, children, searchable, showChec
     setOpen(false)
   }
 
+  // The arrows step OVER a disabled option and Enter never lands on one, so the
+  // keyboard cannot reach what the mouse cannot click.
+  function nextEnabled(from: number, step: 1 | -1): number {
+    for (let i = from; i >= 0 && i < filtered.length; i += step) {
+      if (!filtered[i]?.disabled) return i
+    }
+    return from
+  }
+
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>): void {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setHighlight((h) => Math.min(h + 1, filtered.length - 1))
+      setHighlight((h) => nextEnabled(Math.min(h + 1, filtered.length - 1), 1))
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
-      setHighlight((h) => Math.max(h - 1, 0))
+      setHighlight((h) => nextEnabled(Math.max(h - 1, 0), -1))
     } else if (e.key === 'Enter') {
       e.preventDefault()
-      const pick = filtered[highlight] || filtered[0]
-      if (pick) choose(pick.value)
+      const at = filtered[highlight]
+      const pick = at && !at.disabled ? at : filtered[nextEnabled(0, 1)]
+      if (pick && !pick.disabled) choose(pick.value)
     } else if (e.key === 'Escape') {
       e.preventDefault()
       setOpen(false)
@@ -278,11 +290,17 @@ function Select({ value, onValueChange, disabled, children, searchable, showChec
             <button
               key={it.value}
               type="button"
-              onClick={() => choose(it.value)}
-              onMouseEnter={() => setHighlight(i)}
+              disabled={it.disabled}
+              title={it.title}
+              onClick={() => !it.disabled && choose(it.value)}
+              onMouseEnter={() => !it.disabled && setHighlight(i)}
               className={cn(
                 'flex w-full items-center rounded-sm px-2 py-1.5 text-left text-sm',
-                i === highlight ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60'
+                it.disabled
+                  ? 'cursor-not-allowed opacity-45'
+                  : i === highlight
+                    ? 'bg-accent text-accent-foreground'
+                    : 'hover:bg-accent/60'
               )}
             >
               {showCheckbox ? (
@@ -368,6 +386,11 @@ function SelectItem(_props: {
   value: string
   children?: React.ReactNode
   className?: string
+  // Listed but not choosable — used where an option exists in a master yet has
+  // nothing behind it to pick, so the reason is on screen rather than the
+  // option silently disappearing.
+  disabled?: boolean
+  title?: string
 }): React.JSX.Element | null {
   return null
 }

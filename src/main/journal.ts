@@ -44,7 +44,19 @@ export async function listAccounts(companyId?: number): Promise<Row[]> {
     SELECT a.*,
       COALESCE((SELECT SUM(jl.dr) - SUM(jl.cr)
                 FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
-                WHERE jl.account_id = a.id AND je.company_id = ?), 0) AS balance
+                WHERE jl.account_id = a.id AND je.company_id = ?), 0) AS balance,
+      -- Postings across EVERY company, not just the one in view.
+      (SELECT COUNT(*) FROM journal_lines jl2 WHERE jl2.account_id = a.id) AS line_count,
+      (SELECT COUNT(*) FROM journal_bill_allocs ba WHERE ba.account_id = a.id) AS alloc_count,
+      -- Whether a master still claims this name. A party or a standing account
+      -- with no postings YET is perfectly normal — CASH A/C, FREIGHT INWARD
+      -- A/C, a transporter not yet billed — and must never be offered for
+      -- deletion. Only a name nothing claims is a genuine leftover, which is
+      -- what a rename used to strand.
+      (SELECT COUNT(*) FROM customers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) +
+      (SELECT COUNT(*) FROM suppliers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) +
+      (SELECT COUNT(*) FROM transporters m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) +
+      (SELECT COUNT(*) FROM brokers m WHERE TRIM(UPPER(m.name)) = TRIM(UPPER(a.name))) AS claimed_by_master
     FROM ledger_accounts a ORDER BY a.name
   `
   })

@@ -4,6 +4,7 @@ import {
   ArrowLeftRight,
   BookOpenText,
   Check,
+  ChevronDown,
   ChevronRight,
   FileText,
   IndianRupee,
@@ -624,6 +625,10 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
 
   // Unbooking a transporter bill, and bills whose voucher was deleted from the
   // Day Book on its own (which used to leave their freight stuck on Booked).
+  // Which bill row is open in the bill-wise view. Keyed by ref + index, since a
+  // duplicate-ref line can legitimately appear twice.
+  const [billOpen, setBillOpen] = useState<string | null>(null)
+
   const [tfUnbook, setTfUnbook] = useState<Row | null>(null)
   const [tfUnbooking, setTfUnbooking] = useState(false)
   const [tfOrphans, setTfOrphans] = useState<Row[]>([])
@@ -2999,12 +3004,19 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                 key={k}
                 type="button"
                 onClick={() => setTfState(k)}
+                title={
+                  k === 'unbilled'
+                    ? 'Freight with no transporter bill booked against it — provisional'
+                    : k === 'billed'
+                      ? 'Freight a booked transporter bill has made final'
+                      : undefined
+                }
                 className={cn(
                   'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide',
                   tfState === k ? 'bg-white text-slate-900' : 'bg-white/15 hover:bg-white/25'
                 )}
               >
-                {k === 'unbilled' ? 'Not booked' : k === 'billed' ? 'Booked' : 'All'}
+                {k === 'unbilled' ? 'Provisional' : k === 'billed' ? 'Booked' : 'All'}
               </button>
             ))}
           </div>
@@ -3065,9 +3077,13 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
           <div className="grid grid-cols-2 gap-px border-b bg-[#e5dfc8] sm:grid-cols-4" style={{ borderColor: '#d9d2b8' }}>
             {([
               { label: 'Freight earned', value: formatINR(tfKpi.total), tone: 'text-[#1a2c56]' },
-              { label: 'Booked to ledger', value: formatINR(tfKpi.billed), tone: 'text-emerald-700' },
-              { label: 'Not booked · firm', value: formatINR(tfKpi.firm), tone: 'text-rose-700' },
-              { label: 'Not booked · provisional', value: formatINR(tfKpi.provisional), tone: 'text-amber-700' }
+              { label: 'Booked to ledger · final', value: formatINR(tfKpi.billed), tone: 'text-emerald-700' },
+              // Both of these are PROVISIONAL: nothing is final until the
+              // transporter's bill is booked, because the rate, the received
+              // quantity and any adjustment on the bill can all still move it.
+              // The split says whether the QUANTITY behind the figure is settled.
+              { label: 'Provisional · qty weighed', value: formatINR(tfKpi.firm), tone: 'text-amber-700' },
+              { label: 'Provisional · qty estimated', value: formatINR(tfKpi.provisional), tone: 'text-rose-700' }
             ] as const).map((k) => (
               <div key={k.label} className="bg-[#fffdf4] px-4 py-2">
                 <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{k.label}</div>
@@ -3128,17 +3144,26 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                       <td className="px-2 py-1.5 text-[12px]">{r.party_name || '—'}</td>
                       <td className="px-2 py-1.5 text-[12px]">{r.product_name || '—'}</td>
                       <td className={cn('px-2 py-1.5 text-right font-semibold tabular-nums', Number(r.amount) < 0 && 'text-rose-700')}>
-                        <span className={cn(Number(r.provisional) === 1 && 'italic text-amber-800')}>{formatINR(r.amount)}</span>
+                        <span
+                          className={cn(!booked && 'italic text-amber-800')}
+                          title={
+                            booked
+                              ? undefined
+                              : 'Provisional until the transporter bill is booked — the rate, the received qty and any adjustment on the bill can still move it.'
+                          }
+                        >
+                          {formatINR(r.amount)}
+                        </span>
                         {Number(r.provisional) === 1 && (
                           <div
-                            className="text-[10px] font-normal uppercase tracking-wide text-amber-700"
+                            className="text-[10px] font-normal uppercase tracking-wide text-rose-700"
                             title={
                               tfSide === 'sales'
                                 ? 'Not unloaded yet — worked out on the dispatched qty. It settles to received qty x rate once the invoice is marked Unloaded.'
                                 : 'Tanker not emptied yet — worked out on the ordered qty until it is weighed in.'
                             }
                           >
-                            provisional
+                            qty not weighed
                           </div>
                         )}
                       </td>
@@ -3153,8 +3178,11 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                             {r.bill_no || 'Booked'}
                           </button>
                         ) : (
-                          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-800">
-                            Pending
+                          <span
+                            className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-800"
+                            title="No transporter bill booked against this freight yet, so the figure is not final"
+                          >
+                            Provisional
                           </span>
                         )}
                       </td>
@@ -3335,25 +3363,48 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
           />
         </div>
         <div className="flex-1 overflow-auto px-2 pb-2">
-          {filteredAccounts.map((a) => (
-            <button
+          {filteredAccounts.map((a) => {
+            // Stranded, not merely quiet: no postings, no allocations, and no
+            // master claiming the name. CASH A/C or a transporter not yet
+            // billed has none of the first two either, and must stay put.
+            const unused =
+              a.line_count != null &&
+              Number(a.line_count) === 0 &&
+              Number(a.alloc_count || 0) === 0 &&
+              Number(a.claimed_by_master || 0) === 0 &&
+              !/\bA\/C$/i.test(String(a.name || ''))
+            return (
+            <div
               key={String(a.id)}
-              type="button"
+              role="button"
+              tabIndex={0}
               onClick={() => setLedgerId(Number(a.id))}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setLedgerId(Number(a.id)) }}
               className={cn(
                 'flex w-full cursor-pointer items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-[12.5px]',
                 ledgerId === Number(a.id) ? T.select : 'hover:bg-amber-100/60'
               )}
             >
               <span className="min-w-0">
-                <span className="block truncate font-medium">{a.name}</span>
+                <span className="flex items-center gap-1.5">
+                  <span className="truncate font-medium">{a.name}</span>
+                  {unused && (
+                    <span
+                      className="shrink-0 rounded bg-slate-200 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-slate-600"
+                      title="Stranded: no postings, no allocations, and no master list claims this name — left behind when a party was renamed after its first voucher. Renaming that party onto this name merges the two."
+                    >
+                      unused
+                    </span>
+                  )}
+                </span>
                 <span className="block text-[10px] uppercase tracking-wide text-muted-foreground">{a.acc_group}</span>
               </span>
               <span className={cn('shrink-0 tabular-nums text-[12px] font-semibold', Number(a.balance) >= 0 ? 'text-sky-800' : 'text-rose-700')}>
                 {formatINR(Math.abs(Number(a.balance) || 0))} {Number(a.balance) >= 0 ? 'Dr' : 'Cr'}
               </span>
-            </button>
-          ))}
+            </div>
+            )
+          })}
         </div>
       </div>
       <div className={cn('min-w-0 flex-1 rounded-md border shadow-lg', T.paperEdge, T.paper)}>
@@ -3423,9 +3474,28 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                             </td>
                           </tr>
                         ) : (
-                          rows.map((b, i) => (
-                            <tr key={`${b.ref}-${i}`} className="border-b border-dotted" style={{ borderColor: '#e5dfc8' }}>
-                              <td className="whitespace-nowrap px-4 py-1.5 tabular-nums">{formatDate(b.bill_date)}</td>
+                          rows.map((b, i) => {
+                            const key = `${b.ref}-${i}`
+                            const open = billOpen === key
+                            const billed = Math.abs(Number(b.opening) || 0)
+                            const paid = Math.abs(Number(b.paid) || 0)
+                            const pend = Math.abs(Number(b.pending) || 0)
+                            const sett = (b.settlements as Row[]) || []
+                            const pct = billed > 0 ? Math.min(100, Math.round((paid / billed) * 100)) : 0
+                            return (
+                            <Fragment key={key}>
+                            <tr
+                              className={cn('cursor-pointer border-b border-dotted', open ? 'bg-amber-100/70' : 'hover:bg-amber-50')}
+                              style={{ borderColor: '#e5dfc8' }}
+                              onClick={() => setBillOpen(open ? null : key)}
+                              title="Show what has been paid against this bill"
+                            >
+                              <td className="whitespace-nowrap px-4 py-1.5 tabular-nums">
+                                <span className="inline-flex items-center gap-1.5">
+                                  {open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                                  {formatDate(b.bill_date)}
+                                </span>
+                              </td>
                               <td className="px-2 py-1.5 font-medium">{b.ref}</td>
                               <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">
                                 {formatINR(Math.abs(Number(b.opening)))} {dc}
@@ -3443,7 +3513,75 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                                 {Number(b.overdue_days) > 0 ? Number(b.overdue_days) : '—'}
                               </td>
                             </tr>
-                          ))
+                            {open && (
+                              <tr className="border-b border-dotted bg-[#fbf7e9]" style={{ borderColor: '#e5dfc8' }}>
+                                <td colSpan={6} className="px-4 py-3">
+                                  {/* Bill amount, paid, pending — the three
+                                      figures the row itself can only imply. */}
+                                  <div className="mb-2 grid max-w-3xl grid-cols-3 gap-px overflow-hidden rounded-md border" style={{ borderColor: '#d9d2b8', background: '#d9d2b8' }}>
+                                    {([
+                                      { label: 'Bill amount', value: billed, tone: 'text-[#1a2c56]' },
+                                      { label: 'Paid', value: paid, tone: paid > 0.004 ? 'text-emerald-700' : 'text-muted-foreground' },
+                                      { label: 'Pending', value: pend, tone: 'text-rose-700' }
+                                    ] as const).map((k) => (
+                                      <div key={k.label} className="bg-[#fffdf4] px-3 py-2">
+                                        <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{k.label}</div>
+                                        <div className={cn('text-[14px] font-bold tabular-nums', k.tone)}>
+                                          {formatINR(k.value)} {dc}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div className="mb-2 flex max-w-3xl items-center gap-2">
+                                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[#e5dfc8]">
+                                      <div className="h-full rounded-full bg-emerald-600" style={{ width: `${pct}%` }} />
+                                    </div>
+                                    <span className="shrink-0 text-[11px] font-semibold tabular-nums text-muted-foreground">
+                                      {pct}% settled
+                                    </span>
+                                  </div>
+                                  {sett.length === 0 ? (
+                                    <p className="text-[11px] text-muted-foreground">
+                                      Nothing has been paid against this bill yet — the whole amount is still open.
+                                    </p>
+                                  ) : (
+                                    <div className="max-w-3xl overflow-hidden rounded-md border" style={{ borderColor: '#d9d2b8' }}>
+                                      <table className="w-full bg-white text-[11px]">
+                                        <thead>
+                                          <tr className="border-b bg-[#f7f2e2] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                                            <th className="px-3 py-1">Date</th>
+                                            <th className="px-3 py-1">Voucher</th>
+                                            <th className="px-3 py-1">Narration</th>
+                                            <th className="px-3 py-1 text-right">Amount</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {sett.map((x, xi) => (
+                                            <tr key={xi} className="border-b last:border-0">
+                                              <td className="whitespace-nowrap px-3 py-1 tabular-nums">{formatDate(x.entry_date)}</td>
+                                              <td className="whitespace-nowrap px-3 py-1 font-medium">
+                                                {String(x.vch_type || '')}{x.vch_no ? ` ${String(x.vch_no)}` : ''}
+                                              </td>
+                                              <td className="px-3 py-1 text-muted-foreground">{String(x.narration || '—')}</td>
+                                              <td className="whitespace-nowrap px-3 py-1 text-right font-semibold tabular-nums text-emerald-700">
+                                                {formatINR(Math.abs(Number(x.amount) || 0))}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                          <tr className="bg-[#f7f2e2] font-bold">
+                                            <td className="px-3 py-1" colSpan={3}>Total paid</td>
+                                            <td className="whitespace-nowrap px-3 py-1 text-right tabular-nums">{formatINR(paid)}</td>
+                                          </tr>
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                            )}
+                            </Fragment>
+                            )
+                          })
                         )}
                       </tbody>
                       <tfoot>
@@ -3455,7 +3593,11 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                           <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">
                             {formatINR(Math.abs(Number(bills?.total_pending) || 0))} {dc}
                           </td>
-                          <td colSpan={2} />
+                          <td className="whitespace-nowrap px-2 py-2 text-[11px] font-normal text-muted-foreground" colSpan={2}>
+                            {Math.abs(Number(bills?.total_paid) || 0) > 0.004 && (
+                              <>paid so far {formatINR(Math.abs(Number(bills?.total_paid) || 0))}</>
+                            )}
+                          </td>
                         </tr>
                         {Math.abs(onAcc) > 0.004 && (
                           <tr className="border-t border-dashed italic" style={{ borderColor: '#d9d2b8' }}>

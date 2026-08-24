@@ -33,6 +33,7 @@ import { NotificationBell } from './components/NotificationBell'
 import { GlobalDateRangeDialog } from './components/GlobalDateRangeDialog'
 import { GlobalDateRangeProvider } from './lib/globalDateRange'
 import { clearUser, loadUser, saveUser, type AppUser } from './lib/session'
+import { useLiveRefresh } from './lib/useLiveRefresh'
 import { MODULES, canAccess } from './lib/modules'
 
 // Full-width bar pinned above the sidebar+page area — visible on every page,
@@ -214,28 +215,72 @@ function App(): React.JSX.Element {
     window.api.session.setUser(Number(user.id), String(user.username)).catch(() => {})
   }, [user])
 
-  // Presence heartbeat — marks this user live and enforces device (IP) blocks.
+  // Presence heartbeat — marks this user live, enforces device (IP) blocks, and
+  // brings back the CURRENT rights for this account. Permissions were read once
+  // at login and cached, so an admin's change (granting the unloading desk, say)
+  // did nothing until the employee logged out and back in. The same beat now
+  // refreshes them in place: localStorage is rewritten so the pages that read
+  // it directly see the new grant, and the state update re-renders the nav.
+  const applyGrant = useCallback(
+    (r: { revoked?: boolean; role?: string; full_name?: string; permissions?: unknown }): void => {
+      if (r.revoked) {
+        clearUser()
+        setUser(null)
+        return
+      }
+      if (r.role == null) return
+      setUser((prev) => {
+        if (!prev) return prev
+        const same =
+          String(prev.role || '') === String(r.role || '') &&
+          JSON.stringify(prev.permissions ?? {}) === JSON.stringify(r.permissions ?? {}) &&
+          String(prev.full_name || '') === String(r.full_name || '')
+        if (same) return prev
+        const next = {
+          ...prev,
+          role: String(r.role || ''),
+          full_name: String(r.full_name || prev.full_name || ''),
+          permissions: r.permissions as AppUser['permissions']
+        }
+        saveUser(next)
+        return next
+      })
+    },
+    []
+  )
+
+  const beat = useCallback(async (): Promise<void> => {
+    const u = loadUser()
+    if (!u) return
+    try {
+      const r = await window.api.access.heartbeat(u.id, u.username)
+      if (r.blocked) {
+        clearUser()
+        setUser(null)
+        return
+      }
+      applyGrant(r)
+    } catch {
+      // ignore transient errors; the next beat retries
+    }
+  }, [applyGrant])
+
   useEffect(() => {
     if (!user) return
-    let stop = false
-    const beat = async (): Promise<void> => {
-      try {
-        const r = await window.api.access.heartbeat(user.id, user.username)
-        if (!stop && r.blocked) {
-          clearUser()
-          setUser(null)
-        }
-      } catch {
-        // ignore transient errors
-      }
-    }
-    beat()
-    const id = setInterval(beat, 30000)
+    void beat()
+    const id = setInterval(() => void beat(), 30000)
+    const onFocus = (): void => void beat()
+    window.addEventListener('focus', onFocus)
     return () => {
-      stop = true
       clearInterval(id)
+      window.removeEventListener('focus', onFocus)
     }
-  }, [user])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!user, beat])
+
+  // A permissions save bumps the DB revision, so this lands within a tick or two
+  // rather than waiting out the 30-second presence beat.
+  useLiveRefresh(beat)
 
   function handleLogin(u: AppUser): void {
     saveUser(u)

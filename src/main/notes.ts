@@ -2,6 +2,7 @@ import type { ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
 import { getActiveCompanyId } from './company'
 import { postJournal } from './journal'
+import { resolveRefIds } from './accounting'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -209,14 +210,23 @@ export async function createNote(v: Row, existingId?: number): Promise<{ id: num
     args: [je.id, partyName.toUpperCase()]
   })
   if (partyLine.rows.length) {
+    // The id of the document the ref names, not just its text: an allocation
+    // with no id can only be matched by string, which is fragile and was how a
+    // credit note against a sales invoice ended up settling nothing.
+    const ids = againstRef
+      ? await resolveRefIds(againstRef, cid, partyType === 'customer' ? 'customer' : 'supplier')
+      : { order_id: null, sale_invoice_group: null }
     await c.execute({
-      sql: 'INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount) VALUES (?, ?, ?, ?, ?)',
+      sql: `INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount, order_id, sale_invoice_group)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
       args: [
         Number(partyLine.rows[0].id),
         Number(partyLine.rows[0].account_id),
         againstRef ? 'agst_ref' : 'on_account',
         againstRef,
-        total
+        total,
+        ids.order_id,
+        ids.sale_invoice_group
       ]
     })
   }

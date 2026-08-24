@@ -183,16 +183,54 @@ export async function create(table: string, values: Row): Promise<{ id: number }
   return { id: Number(res.lastInsertRowid) }
 }
 
+// A party's ledger account is keyed by NAME (getOrCreateAccount), so renaming
+// the master used to strand the old account and start a fresh one on the next
+// voucher — the same party showing twice in Ledgers, its history on one line and
+// its new postings on the other. The rename now follows through:
+//   * no account under the old name  -> nothing to do
+//   * no account under the new name  -> rename it, history intact
+//   * both exist                     -> the old one's lines and allocations are
+//                                       repointed at the new one and the empty
+//                                       shell is dropped
+const LEDGER_MASTERS = new Set(['customers', 'suppliers', 'transporters', 'brokers'])
+
+async function renameLedgerAccount(oldName: string, newName: string): Promise<void> {
+  const c = getClient()
+  const from = String(oldName || '').trim().toUpperCase()
+  const to = String(newName || '').trim().toUpperCase()
+  if (!from || !to || from === to) return
+  const src = await c.execute({ sql: 'SELECT id FROM ledger_accounts WHERE TRIM(UPPER(name)) = ?', args: [from] })
+  if (!src.rows.length) return
+  const srcId = Number(src.rows[0].id)
+  const dst = await c.execute({ sql: 'SELECT id FROM ledger_accounts WHERE TRIM(UPPER(name)) = ?', args: [to] })
+  if (!dst.rows.length) {
+    await c.execute({ sql: 'UPDATE ledger_accounts SET name = ? WHERE id = ?', args: [to, srcId] })
+    return
+  }
+  const dstId = Number(dst.rows[0].id)
+  if (dstId === srcId) return
+  await c.execute({ sql: 'UPDATE journal_lines SET account_id = ? WHERE account_id = ?', args: [dstId, srcId] })
+  await c.execute({ sql: 'UPDATE journal_bill_allocs SET account_id = ? WHERE account_id = ?', args: [dstId, srcId] })
+  await c.execute({ sql: 'DELETE FROM ledger_accounts WHERE id = ?', args: [srcId] })
+}
+
 export async function update(table: string, id: number, values: Row): Promise<{ id: number }> {
   const allowed = assertTable(table)
   await assertUniqueName(table, values, id)
   const keys = pickKeys(values, allowed)
   if (keys.length === 0) return { id }
+  // Read the old name BEFORE the update, so a rename can be detected.
+  let priorName = ''
+  if (LEDGER_MASTERS.has(table) && keys.includes('name')) {
+    const prev = await getClient().execute({ sql: `SELECT name FROM ${table} WHERE id = ?`, args: [id] })
+    priorName = prev.rows.length ? String(prev.rows[0].name || '') : ''
+  }
   const setClause = keys.map((k) => `${k} = ?`).join(', ')
   await getClient().execute({
     sql: `UPDATE ${table} SET ${setClause} WHERE id = ?`,
     args: [...keys.map((k) => toArg(values[k], k)), id]
   })
+  if (priorName) await renameLedgerAccount(priorName, String(values.name || ''))
   return { id }
 }
 

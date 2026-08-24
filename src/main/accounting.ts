@@ -205,6 +205,33 @@ async function validateVoucher(v: VoucherInput): Promise<LineWithAllocs[]> {
   return lines
 }
 
+// A reference name -> the document it actually names, so an allocation carries
+// the id and not only the text. Exported because every writer of an allocation
+// (payments, notes, treasury, bill discounting) needs the same answer, and a
+// row written without ids can only ever be matched by string.
+export async function resolveRefIds(
+  refName: string,
+  companyId: number,
+  side: 'customer' | 'supplier'
+): Promise<{ order_id: number | null; sale_invoice_group: string | null }> {
+  const ref = String(refName || '').trim()
+  if (!ref) return { order_id: null, sale_invoice_group: null }
+  const c = getClient()
+  if (side === 'supplier') {
+    const r = await c.execute({
+      sql: 'SELECT id FROM orders WHERE company_id = ? AND TRIM(UPPER(invoice_no)) = ? LIMIT 1',
+      args: [companyId, ref.toUpperCase()]
+    })
+    return { order_id: r.rows.length ? Number(r.rows[0].id) : null, sale_invoice_group: null }
+  }
+  const r = await c.execute({
+    sql: `SELECT COALESCE(invoice_group, invoice_no) AS grp FROM sales
+           WHERE company_id = ? AND TRIM(UPPER(invoice_no)) = ? LIMIT 1`,
+    args: [companyId, ref.toUpperCase()]
+  })
+  return { order_id: null, sale_invoice_group: r.rows.length ? String(r.rows[0].grp) : null }
+}
+
 // Store bill-wise rows against the freshly written journal lines. The entry's
 // lines are re-read in insert order, which matches the validated array.
 async function writeAllocs(entryId: number, lines: LineWithAllocs[]): Promise<void> {
@@ -213,8 +240,23 @@ async function writeAllocs(entryId: number, lines: LineWithAllocs[]): Promise<vo
     sql: 'SELECT id, account_id FROM journal_lines WHERE entry_id = ? ORDER BY id ASC',
     args: [entryId]
   })
+  const cid = getActiveCompanyId()
   for (let i = 0; i < lines.length && i < saved.rows.length; i++) {
     for (const a of lines[i].allocs) {
+      // The caller may already know which document it is settling. When it
+      // doesn't — it only picked a reference off a dropdown — resolve the name
+      // here rather than storing text alone.
+      let orderId = a.order_id || null
+      let saleGroup = a.sale_invoice_group || null
+      if (a.method === 'agst_ref' && a.ref_name && !orderId && !saleGroup) {
+        const grp = String(lines[i].group || '')
+        const side = grp === 'Sundry Debtors' ? 'customer' : grp === 'Sundry Creditors' ? 'supplier' : null
+        if (side) {
+          const ids = await resolveRefIds(String(a.ref_name), cid, side)
+          orderId = ids.order_id
+          saleGroup = ids.sale_invoice_group
+        }
+      }
       await c.execute({
         sql: `INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount, order_id, sale_invoice_group)
               VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -224,8 +266,8 @@ async function writeAllocs(entryId: number, lines: LineWithAllocs[]): Promise<vo
           a.method,
           a.ref_name || null,
           a.amount,
-          a.order_id || null,
-          a.sale_invoice_group || null
+          orderId,
+          saleGroup
         ]
       })
     }
@@ -539,34 +581,66 @@ export async function listPendingRefs(
   // below by whichever key that bill actually has (id first, name as the
   // fallback for entries with no id, e.g. advances).
   const settled = await c.execute({
-    sql: `SELECT ba.ref_name AS ref, ba.order_id AS order_id, ba.sale_invoice_group AS sale_invoice_group, ba.amount AS amount
+    sql: `SELECT ba.ref_name AS ref, ba.order_id AS order_id, ba.sale_invoice_group AS sale_invoice_group,
+                 ba.amount AS amount, je.entry_date, je.vch_type, je.vch_no, je.narration
           FROM journal_bill_allocs ba
           JOIN journal_lines jl ON jl.id = ba.line_id
           JOIN journal_entries je ON je.id = jl.entry_id
-          WHERE ba.account_id = ? AND je.company_id = ? AND ba.method = 'agst_ref'`,
+          WHERE ba.account_id = ? AND je.company_id = ? AND ba.method = 'agst_ref'
+          ORDER BY je.entry_date, je.id`,
     args: [accountId, cid]
   })
   const settledRows = toPlain(settled)
-  const settledFor = (b: Bill): number => {
-    let total = 0
-    for (const s of settledRows) {
-      const byOrder = b.order_id != null && n(s.order_id) === b.order_id
-      const byGroup = b.sale_invoice_group != null && String(s.sale_invoice_group || '') === b.sale_invoice_group
-      const byNameOnly = b.order_id == null && b.sale_invoice_group == null && !s.order_id && !s.sale_invoice_group && String(s.ref || '') === b.ref
-      if (byOrder || byGroup || byNameOnly) total += n(s.amount)
+  // A settlement carrying an id matches its bill by that id. One carrying NONE
+  // — a credit/debit note booked against an invoice number, an advance, an
+  // opening bill — can only be matched by the name it names. That branch used
+  // to also demand the BILL had no ids, and a sales invoice always has an
+  // invoice_group, so a credit note raised against one never matched it: the
+  // invoice stayed fully pending and the note fell through to On Account.
+  const sameRef = (a: unknown, b: unknown): boolean =>
+    String(a || '').trim().toUpperCase() === String(b || '').trim().toUpperCase()
+  const matches = (s2: Row, b: Bill): boolean => {
+    const hasIds = !!s2.order_id || !!s2.sale_invoice_group
+    if (hasIds) {
+      if (b.order_id != null && n(s2.order_id) === b.order_id) return true
+      if (b.sale_invoice_group != null && String(s2.sale_invoice_group || '') === b.sale_invoice_group) return true
+      return false
     }
-    return total
+    return sameRef(s2.ref, b.ref)
+  }
+  // Every voucher that settled this bill, not just the total — a bill-wise
+  // view has to be able to answer "paid by what" as well as "how much".
+  const settlementsFor = (b: Bill): Row[] => {
+    const out: Row[] = []
+    for (const s of settledRows) {
+      if (matches(s, b)) {
+        out.push({
+          entry_date: s.entry_date,
+          vch_type: s.vch_type,
+          vch_no: s.vch_no,
+          narration: s.narration,
+          amount: round2(n(s.amount))
+        })
+      }
+    }
+    return out
   }
 
   return [...bills, ...madeRows]
-    .map((b) => ({
-      ref: b.ref,
-      bill_date: b.bill_date,
-      amount: n(b.amount),
-      order_id: b.order_id,
-      sale_invoice_group: b.sale_invoice_group,
-      pending: Math.round((n(b.amount) - settledFor(b)) * 100) / 100
-    }))
+    .map((b) => {
+      const settlements = settlementsFor(b)
+      const paid = round2(settlements.reduce((t, x) => t + n(x.amount), 0))
+      return {
+        ref: b.ref,
+        bill_date: b.bill_date,
+        amount: n(b.amount),
+        order_id: b.order_id,
+        sale_invoice_group: b.sale_invoice_group,
+        paid,
+        settlements,
+        pending: round2(n(b.amount) - paid)
+      }
+    })
     .filter((b) => b.pending > 0.005)
     .sort((a, b) => a.bill_date.localeCompare(b.bill_date))
 }
@@ -629,7 +703,9 @@ export async function billsOutstanding(
         bill_date: billDate,
         ref: b.ref,
         opening: round2(n(b.amount)),
+        paid: round2(n(b.paid)),
         pending: round2(n(b.pending)),
+        settlements: Array.isArray(b.settlements) ? b.settlements : [],
         due_on: dueOn,
         overdue_days: overdue,
         order_id: b.order_id,
@@ -660,6 +736,7 @@ export async function billsOutstanding(
     credit_days: creditDays,
     rows,
     total_opening: round2(rows.reduce((t, r) => t + n(r.opening), 0)),
+    total_paid: round2(rows.reduce((t, r) => t + n(r.paid), 0)),
     total_pending: totalPending,
     balance: round2(balance),
     on_account: onAccount

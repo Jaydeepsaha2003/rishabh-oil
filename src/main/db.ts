@@ -1205,7 +1205,11 @@ const MIGRATIONS = [
   // remembers which bargain it credited, and the adjustment log row remembers
   // which note put it there, so altering or deleting the note reverses it.
   'ALTER TABLE notes ADD COLUMN bargain_id INTEGER',
-  'ALTER TABLE bargain_adjustments ADD COLUMN note_id INTEGER'
+  'ALTER TABLE bargain_adjustments ADD COLUMN note_id INTEGER',
+  // The clock time the vehicle LEFT, the counterpart to entry_time. out_date
+  // alone answers which day it went out; a gate register has to answer when,
+  // both to sequence two departures on one day and to settle detention.
+  'ALTER TABLE gate_entries ADD COLUMN out_time TEXT'
 ]
 
 

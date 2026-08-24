@@ -246,7 +246,10 @@ export async function saveGateWeights(
   invoiceGroup?: string | null,
   // The day the vehicle actually left, for an entry that came in and is now
   // going back out. Defaults to today when the caller doesn't say.
-  outDate?: string | null
+  outDate?: string | null,
+  // And the clock time it left, HH:MM. Defaults to now, so the ordinary Gate
+  // Out never has to type it; supplied only when a slip is keyed in later.
+  outTime?: string | null
 ): Promise<{ id: number; status: string; net: number | null; missing: string | null }> {
   const c = getClient()
   const cur = await c.execute({ sql: 'SELECT * FROM gate_entries WHERE id = ?', args: [id] })
@@ -340,15 +343,23 @@ export async function saveGateWeights(
     nowOut || inboundClosed || directOutClosing
       ? String(outDate || '').slice(0, 10) || todayISO()
       : (row.out_date as string | null)
+  // Stamped at the same moment the out DATE is, off the local wall clock, and
+  // only when the departure is being recorded for the first time — correcting a
+  // weight afterwards must not move the time the vehicle actually left. A
+  // caller may pass its own, e.g. when a gate slip is keyed in later.
+  const leftAt =
+    (nowOut || inboundClosed || directOutClosing) && !row.out_time
+      ? (outTime ? String(outTime).slice(0, 5) : nowHHMM())
+      : (row.out_time as string | null)
   await c.execute({
     sql: `UPDATE gate_entries
           SET gross_weight = ?, tare_weight = ?, received_qty = ?, status = ?, awaiting_gross_out = ?,
               dispatch_qty = ?, dispatch_na = ?, invoice_group = ?, sale_id = ?, customer_id = ?,
-              direction = ?, out_date = ?
+              direction = ?, out_date = ?, out_time = ?
           WHERE id = ?`,
     args: [
       g, t, both ? net : 0, both ? 'completed' : 'pending', nowOut ? 0 : flag,
-      dispQty, dispNa ? 1 : 0, group, saleId, customerId, direction, leftOn, id
+      dispQty, dispNa ? 1 : 0, group, saleId, customerId, direction, leftOn, leftAt, id
     ]
   })
   return {

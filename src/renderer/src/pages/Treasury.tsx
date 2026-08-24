@@ -1758,7 +1758,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
           </TabsContent>
 
           <TabsContent value="bd" className="mt-4">
-            <BillDiscounting />
+            <BillDiscounting
+              companies={companies}
+              activeCompany={activeCompany}
+              onCompanyChange={onCompanyChange}
+            />
           </TabsContent>
         </Tabs>
       </div>

@@ -154,7 +154,10 @@ const api = {
       ipcRenderer.invoke('auth:login', { username, password })
   },
   access: {
-    heartbeat: (userId: number, username: string): Promise<{ blocked: boolean }> =>
+    heartbeat: (
+      userId: number,
+      username: string
+    ): Promise<{ blocked: boolean; revoked?: boolean; role?: string; full_name?: string; permissions?: unknown }> =>
       ipcRenderer.invoke('access:heartbeat', { userId, username }),
     liveUsers: (): Promise<Row[]> => ipcRenderer.invoke('access:liveUsers'),
     ips: (): Promise<Row[]> => ipcRenderer.invoke('access:ips'),
@@ -271,6 +274,12 @@ const api = {
       ipcRenderer.invoke('sales:deleteInvoice', { group }),
     rejectInvoice: (group: string, reason: string): Promise<{ group: string }> =>
       ipcRenderer.invoke('sales:rejectInvoice', { group, reason }),
+    cancelDelivery: (
+      group: string,
+      reason: string,
+      freightQty?: Record<string, number | null>
+    ): Promise<{ group: string; lines: number }> =>
+      ipcRenderer.invoke('sales:cancelDelivery', { group, reason, freightQty }),
     unrejectInvoice: (group: string): Promise<{ group: string }> =>
       ipcRenderer.invoke('sales:unrejectInvoice', { group })
   },
@@ -315,9 +324,10 @@ const api = {
       awaitingGrossOut?: boolean | null,
       dispatchQty?: number | string | null,
       invoiceGroup?: string | null,
-      outDate?: string | null
+      outDate?: string | null,
+      outTime?: string | null
     ): Promise<{ id: number; status: string; net: number | null; missing: string | null }> =>
-      ipcRenderer.invoke('gate:weights', { id, gross, tare, awaitingGrossOut, dispatchQty, invoiceGroup, outDate }),
+      ipcRenderer.invoke('gate:weights', { id, gross, tare, awaitingGrossOut, dispatchQty, invoiceGroup, outDate, outTime }),
     skipWeighment: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('gate:skipWeighment', { id }),
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('gate:delete', { id }),
     reject: (id: number, reason: string): Promise<{ id: number }> => ipcRenderer.invoke('gate:reject', { id, reason }),

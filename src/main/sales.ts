@@ -452,6 +452,11 @@ export async function listSalesBargainReturns(companyIds?: number[]): Promise<Ro
   const res = await getClient().execute(`
     SELECT b.id AS bargain_id, nt.id AS note_id, nt.note_no, nt.note_date, nt.against_ref,
            nt.company_id, co.name AS company_name, ni.qty, ni.rate, ni.amount,
+           nt.gst_pct,
+           -- The registers show a dispatch INCLUDING GST (amount + gst_amount),
+           -- so a return has to be stated on the same basis or netting the two
+           -- silently drops the tax. note_items.amount is taxable only.
+           ROUND(ni.amount * (1 + COALESCE(nt.gst_pct, 0) / 100.0), 2) AS amount_incl,
            p.name AS product_name, nt.bargain_id AS explicit_bargain_id
       FROM notes nt
       JOIN note_items ni ON ni.note_id = nt.id
@@ -1255,6 +1260,51 @@ export async function rejectSaleInvoice(group: string, reason: string): Promise<
     args: [trimmed, group]
   })
   return { group }
+}
+
+// The delivery is called off mid-journey: the customer says on the road that
+// they no longer want the load, so nothing is ever unloaded and there is no
+// weighed-in quantity to record.
+//
+// The transporter still carried it, though, and still has to be paid. So the
+// freight is struck on an ASSUMED received quantity — the dispatched figure by
+// default, which the caller can override per line (a part-delivery that was
+// turned away at the gate, say). That is the only reason a received qty is
+// written here; the invoice is marked cancelled, not unloaded, so nothing
+// downstream reads it as delivered.
+//
+// Everything else is left exactly as the existing Reject does it: the invoice
+// stays on record, its credit note remains a separate manual step, and stock and
+// the journal are untouched.
+export async function cancelSaleDelivery(
+  group: string,
+  reason: string,
+  freightQty?: Record<string, number | null>
+): Promise<{ group: string; lines: number }> {
+  const c = getClient()
+  const trimmed = String(reason || '').trim()
+  if (!trimmed) throw new Error('Enter why the delivery was cancelled')
+  const rows = await c.execute({
+    sql: 'SELECT id, qty, received_qty FROM sales WHERE invoice_group = ?',
+    args: [group]
+  })
+  if (!rows.rows.length) throw new Error('That invoice no longer exists')
+  for (const r of rows.rows) {
+    const id = n(r.id)
+    const supplied = freightQty ? freightQty[String(id)] : undefined
+    // No figure given -> assume the whole dispatched quantity travelled.
+    const assumed = supplied == null ? n(r.qty) : n(supplied)
+    if (assumed < 0) throw new Error('The freight quantity cannot be negative')
+    await c.execute({ sql: 'UPDATE sales SET received_qty = ? WHERE id = ?', args: [round2(assumed), id] })
+    // Re-price the FOR freight on what we have just agreed the transporter
+    // carried, so the transporter register and its accrual line agree with it.
+    await recomputeSaleFreight(id)
+  }
+  await c.execute({
+    sql: "UPDATE sales SET rejected_at = datetime('now'), rejected_reason = ? WHERE invoice_group = ?",
+    args: [trimmed, group]
+  })
+  return { group, lines: rows.rows.length }
 }
 
 export async function unrejectSaleInvoice(group: string): Promise<{ group: string }> {

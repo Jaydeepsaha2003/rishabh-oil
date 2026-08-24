@@ -291,7 +291,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
   function openAdd(): void {
     setEditing(null)
     // With a single product category there's nothing to choose — preselect it.
-    const only = productCategories.length === 1 ? productCategories[0] : ''
+    const only = usableCategories.length === 1 ? usableCategories[0] : ''
     setForm({ ...emptyForm(defaultUom), product_category: only })
     setError(null)
     setOpen(true)
@@ -336,10 +336,35 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
 
   // Categories that actually have purchasable products, and the products inside
   // the chosen category (the cascade behind Product category → Product).
+  const { categories: bargainCats } = useCategories(suppliers.map((x) => x.supplier_type), 'purchase')
+  // Every ACTIVE purchase-side category from the master — not only the ones that
+  // already have a product behind them. A category with nothing purchasable
+  // used to just vanish from this dropdown, which reads as the master not
+  // working; it is now listed and disabled with the reason, so the answer is on
+  // screen instead of having to be worked out.
+  //
+  // `oilTypes` is already narrowed to ACTIVE products whose sub-category is
+  // `raw` — that is what a purchase bargain can be struck on.
   const productCategories = useMemo(() => {
-    const set = new Set(oilTypes.map((o) => String(o.material_type || 'OIL')))
-    return MATERIAL_TYPES.filter((t) => set.has(t))
-  }, [oilTypes])
+    const counts = new Map<string, number>()
+    for (const o of oilTypes) {
+      const k = String(o.material_type || 'OIL').trim().toUpperCase()
+      counts.set(k, (counts.get(k) || 0) + 1)
+    }
+    const live = bargainCats.length ? bargainCats : MATERIAL_TYPES
+    const names = [...live]
+    // The value already on the bargain being edited is always kept, whatever
+    // the master now says, so an old entry never becomes unselectable.
+    const cur = String(form.product_category || '').trim().toUpperCase()
+    if (cur && !names.includes(cur)) names.push(cur)
+    return names.map((t) => ({ name: t, products: counts.get(t) || 0 }))
+  }, [oilTypes, bargainCats, form.product_category])
+  // Only the ones that can actually be picked, for the "preselect the only
+  // option" shortcut.
+  const usableCategories = useMemo(
+    () => productCategories.filter((t) => t.products > 0).map((t) => t.name),
+    [productCategories]
+  )
   const categoryProducts = useMemo(
     () => oilTypes.filter((o) => String(o.material_type || 'OIL') === String(form.product_category || '')),
     [oilTypes, form.product_category]
@@ -402,7 +427,6 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
     }
   }
 
-  const { categories: bargainCats } = useCategories(suppliers.map((x) => x.supplier_type), 'purchase')
   const noMasters = suppliers.length === 0 || oilTypes.length === 0
   // Same rule as the purchase invoice: a bargain is a manufacturing rate
   // contract, so Trading suppliers are left out — but the bargain's own
@@ -1439,8 +1463,22 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                 </SelectTrigger>
                 <SelectContent>
                   {productCategories.map((t) => (
-                    <SelectItem key={t} value={t}>
-                      {t}
+                    <SelectItem
+                      key={t.name}
+                      value={t.name}
+                      disabled={t.products === 0}
+                      title={
+                        t.products === 0
+                          ? `No purchasable product is filed under ${t.name} — add one under Products with its sub-category set to Raw`
+                          : undefined
+                      }
+                    >
+                      <span className="flex w-full items-center justify-between gap-3">
+                        <span>{t.name}</span>
+                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          {t.products === 0 ? 'no products' : `${t.products} product${t.products === 1 ? '' : 's'}`}
+                        </span>
+                      </span>
                     </SelectItem>
                   ))}
                 </SelectContent>

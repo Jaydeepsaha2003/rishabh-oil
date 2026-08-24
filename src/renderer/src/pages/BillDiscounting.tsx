@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   Banknote,
+  Building2,
   CalendarRange,
   ChevronRight,
   LayoutGrid,
@@ -138,7 +139,19 @@ function bdCalc(f: Row): {
   return { intDays, marginAmount, openAmount, interestAmount, tdsAmount, netInterest, receiptAmount }
 }
 
-export function BillDiscounting(): React.JSX.Element {
+// The company controls come from Treasury, which already holds them for the LC
+// form. A discounted bill is booked into ONE company's books and draws on that
+// company's invoices, so the company has to be settable without leaving the
+// form — the same way opening an LC does it.
+export function BillDiscounting({
+  companies = [],
+  activeCompany = 0,
+  onCompanyChange
+}: {
+  companies?: Row[]
+  activeCompany?: number
+  onCompanyChange?: (id: string) => void
+} = {}): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [kpis, setKpis] = useState<Row>({})
   const [nbfcs, setNbfcs] = useState<Row[]>([])
@@ -683,9 +696,31 @@ export function BillDiscounting(): React.JSX.Element {
       <Dialog open={!!form} onOpenChange={(o) => !o && setForm(null)}>
         <DialogContent className="max-h-[92vh] w-[calc(100vw-2rem)] max-w-6xl overflow-y-auto border-[#d9d2b8] bg-[#fffdf4]">
           <DialogHeader className="-mx-6 -mt-6 mb-1 rounded-t-lg bg-[#dce6f5] px-6 py-2.5">
-            <DialogTitle className="text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]">
-              {form?.id ? 'Alter discounted bill' : 'Discount a bill'}
-            </DialogTitle>
+            <div className="flex flex-wrap items-center gap-3">
+              <DialogTitle className="text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                {form?.id ? 'Alter discounted bill' : 'Discount a bill'}
+              </DialogTitle>
+              {!!activeCompany && !!onCompanyChange && companies.length > 1 && (
+                <Select value={String(activeCompany)} onValueChange={onCompanyChange}>
+                  <SelectTrigger
+                    title="Switch company — the bill is booked into this company's books and draws on its invoices"
+                    className="ml-auto mr-8 h-auto w-auto shrink-0 gap-1.5 rounded-full border border-[#1a2c56]/20 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-[#1a2c56] shadow-none hover:bg-[#eef3fb] [&>svg]:h-3 [&>svg]:w-3 [&>svg]:opacity-70"
+                  >
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <Building2 className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                      <SelectValue placeholder="Select company" />
+                    </span>
+                  </SelectTrigger>
+                  <SelectContent className="min-w-[14rem]">
+                    {companies
+                      .filter((c) => c.active)
+                      .map((c) => (
+                        <SelectItem key={String(c.id)} value={String(c.id)}>{String(c.name)}</SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
           </DialogHeader>
           {form && (
             <div className="grid gap-3">

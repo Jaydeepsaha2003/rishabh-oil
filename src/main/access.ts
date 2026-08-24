@@ -48,12 +48,46 @@ export async function recordSession(userId: number, username: string, ip: string
   })
 }
 
-export async function heartbeat(userId: number, username: string): Promise<{ blocked: boolean }> {
+// The heartbeat is the one call this device already makes on a timer, so it is
+// also where the signed-in user's CURRENT rights come back from. Permissions
+// used to be read once at login and cached in the renderer, which meant an
+// admin's change did nothing until the employee logged out and back in.
+//
+// `revoked` says the account is gone or switched off — the renderer signs out on
+// it, the same as a device block.
+export async function heartbeat(
+  userId: number,
+  username: string
+): Promise<{
+  blocked: boolean
+  revoked?: boolean
+  role?: string
+  full_name?: string
+  permissions?: unknown
+}> {
   const ip = machineIp()
   const allowed = await isIpAllowed(ip)
   if (!allowed) return { blocked: true }
   await recordSession(userId, username, ip)
-  return { blocked: false }
+  const res = await getClient().execute({
+    sql: 'SELECT role, full_name, permissions, active FROM users WHERE id = ? LIMIT 1',
+    args: [userId]
+  })
+  if (!res.rows.length) return { blocked: false, revoked: true }
+  const r = res.rows[0] as Row
+  if (Number(r.active) === 0) return { blocked: false, revoked: true }
+  let permissions: unknown = {}
+  try {
+    permissions = r.permissions ? JSON.parse(String(r.permissions)) : {}
+  } catch {
+    permissions = {}
+  }
+  return {
+    blocked: false,
+    role: String(r.role || ''),
+    full_name: String(r.full_name || ''),
+    permissions
+  }
 }
 
 // Sessions seen in the last 90 seconds are considered live.

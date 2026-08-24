@@ -179,6 +179,7 @@ import {
 import {
   listSales,
   listSalesForUnloadDesk,
+  cancelSaleDelivery,
   listSalesBargainReturns,
   listUnattributedReturns,
   customerFyTaxable,
@@ -601,6 +602,11 @@ export function registerIpc(): void {
   )
   handle('sales:deleteInvoice', (_e, { group }: { group: string }) => deleteSaleInvoice(group))
   handle('sales:rejectInvoice', (_e, { group, reason }: { group: string; reason: string }) => rejectSaleInvoice(group, reason))
+  handle(
+    'sales:cancelDelivery',
+    (_e, { group, reason, freightQty }: { group: string; reason: string; freightQty?: Record<string, number | null> }) =>
+      cancelSaleDelivery(group, reason, freightQty)
+  )
   handle('sales:unrejectInvoice', (_e, { group }: { group: string }) => unrejectSaleInvoice(group))
   handle('sales:setStatus', (_e, { id, status }: { id: number; status: string }) =>
     setSaleStatus(id, status)
@@ -648,7 +654,8 @@ export function registerIpc(): void {
         awaitingGrossOut,
         dispatchQty,
         invoiceGroup,
-        outDate
+        outDate,
+        outTime
       }: {
         id: number
         gross: number | null
@@ -657,8 +664,9 @@ export function registerIpc(): void {
         dispatchQty?: number | string | null
         invoiceGroup?: string | null
         outDate?: string | null
+        outTime?: string | null
       }
-    ) => saveGateWeights(id, gross, tare, awaitingGrossOut, dispatchQty, invoiceGroup, outDate)
+    ) => saveGateWeights(id, gross, tare, awaitingGrossOut, dispatchQty, invoiceGroup, outDate, outTime)
   )
   handle('gate:skipWeighment', (_e, { id }: { id: number }) => skipGateWeighment(id))
   handle('gate:delete', (_e, { id }: { id: number }) => deleteGateEntry(id))

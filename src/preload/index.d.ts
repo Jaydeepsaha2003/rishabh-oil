@@ -112,7 +112,10 @@ export interface Api {
     login: (username: string, password: string) => Promise<Row>
   }
   access: {
-    heartbeat: (userId: number, username: string) => Promise<{ blocked: boolean }>
+    heartbeat: (
+      userId: number,
+      username: string
+    ) => Promise<{ blocked: boolean; revoked?: boolean; role?: string; full_name?: string; permissions?: unknown }>
     liveUsers: () => Promise<Row[]>
     ips: () => Promise<Row[]>
     setIp: (id: number, active: boolean) => Promise<{ id: number }>
@@ -191,6 +194,11 @@ export interface Api {
     setInvoiceStage: (group: string, stage: string, force?: boolean, date?: string, received?: Record<string, number | null>) => Promise<{ group: string }>
     removeInvoice: (group: string) => Promise<{ group: string }>
     rejectInvoice: (group: string, reason: string) => Promise<{ group: string }>
+    cancelDelivery: (
+      group: string,
+      reason: string,
+      freightQty?: Record<string, number | null>
+    ) => Promise<{ group: string; lines: number }>
     unrejectInvoice: (group: string) => Promise<{ group: string }>
   }
   skuRates: {
@@ -223,7 +231,8 @@ export interface Api {
       awaitingGrossOut?: boolean | null,
       dispatchQty?: number | string | null,
       invoiceGroup?: string | null,
-      outDate?: string | null
+      outDate?: string | null,
+      outTime?: string | null
     ) => Promise<{ id: number; status: string; net: number | null; missing: string | null }>
     skipWeighment: (id: number) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>

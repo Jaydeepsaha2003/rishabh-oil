@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'rea
 import { toast } from 'sonner'
 import { AlertTriangle, ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Download, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Tags, Trash2, Truck, Upload } from 'lucide-react'
 import { moduleScope } from '@/lib/modules'
+import { useCategories } from '@/lib/useCategories'
 import { loadUser } from '@/lib/session'
 
 // The unloading desk: a user granted the 'unload' scope on Sales reaches this
@@ -74,14 +75,62 @@ function stageInfo(row: Row): (typeof DISPATCH_STAGES)[number] {
 }
 
 // Sale-bargain type classification (mirrors the purchase-bargain type tabs).
-const SALE_CATS: { v: string; label: string }[] = [
+// The five below are the codes already stored on existing bargains, so they stay
+// as the base list whatever the master says; the Category master decides which
+// of them are OFFERED, and can add its own on top.
+const SALE_CATS_BASE: { v: string; label: string }[] = [
   { v: 'FINISHED_OIL', label: 'Finished Oil' },
   { v: 'FATTY', label: 'Fatty' },
   { v: 'SCRAP', label: 'Scrap' },
   { v: 'SPENT_EARTH', label: 'Spent Earth' },
   { v: 'MISC', label: 'Misc' }
 ]
-const saleCatLabel = (v: unknown): string => SALE_CATS.find((c) => c.v === String(v))?.label || 'Finished Oil'
+// A category's master NAME does not always spell its stored code: MISC is
+// filed as MISCELLANEOUS. Normalising both ends lets the master switch the
+// right option off without renaming anything.
+const catKey = (v: unknown): string =>
+  String(v ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '_')
+    .replace(/^MISCELLANEOUS$/, 'MISC')
+const saleCatLabel = (v: unknown): string => {
+  const hit = SALE_CATS_BASE.find((c) => c.v === String(v))
+  if (hit) return hit.label
+  const raw = String(v ?? '').trim()
+  if (!raw) return 'Finished Oil'
+  // A master-added category: title-case its own name back out of the code.
+  return raw
+    .split('_')
+    .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
+    .join(' ')
+}
+
+// The sale categories to OFFER: the master's active sales-side rows, plus
+// whatever is already stored on a record so an old bargain never becomes
+// unreadable. `rows` is the Category master.
+function saleCatsFrom(rows: Row[], stored: unknown[]): { v: string; label: string }[] {
+  const live = new Set<string>()
+  let sawMaster = false
+  for (const r of rows) {
+    const side = String(r.applies_to || 'both').toLowerCase()
+    if (side !== 'both' && side !== 'sales') continue
+    sawMaster = true
+    if (Number(r.active) === 0) continue
+    live.add(catKey(r.name))
+  }
+  // No master rows for this side at all (first run, or it failed to load) —
+  // fall back to the built-in list rather than emptying the dropdown.
+  const out = SALE_CATS_BASE.filter((c) => !sawMaster || live.has(c.v))
+  const have = new Set(out.map((c) => c.v))
+  for (const extra of [...live, ...stored.map((x) => catKey(x))]) {
+    if (extra && !have.has(extra)) {
+      have.add(extra)
+      out.push({ v: extra, label: saleCatLabel(extra) })
+    }
+  }
+  return out
+}
 
 // First day of the current month, YYYY-MM-DD.
 function monthStartISO(): string {
@@ -245,9 +294,27 @@ function SalesTab({
   )
 
   // Sales grouped into invoices (line items sharing an invoice_group).
+  const unloadOnly = UNLOAD_DESK()
+  // Columns rendered + the Actions column, for the empty/loading colSpan.
+  const colCount = unloadOnly ? 4 : 8
   const invoices = useMemo(() => {
     const m = new Map<string, Row[]>()
-    for (const r of rows) {
+    // The unloading desk is FOR-only, and only what is still out. The main
+    // process already hands back nothing else (listSalesForUnloadDesk), but the
+    // page decides its own layout from the cached grant while the data is
+    // scoped by the signed-in session — so if those two ever disagree (a
+    // session not yet registered, say) this makes sure an Ex sale or an
+    // already-unloaded one still cannot appear on the desk.
+    const deskRows = !unloadOnly
+      ? rows
+      : rows.filter(
+          (r) =>
+            String(r.freight_term || 'FREIGHT_ON_GOODS') === 'DLD' &&
+            String(r.dispatch_stage || (r.status === 'done' ? 'unloaded' : 'pending')) !== 'unloaded' &&
+            !r.rejected_at &&
+            Number(r.is_trading) !== 1
+        )
+    for (const r of deskRows) {
       const g = String(r.invoice_group || `LEGACY-${r.id}`)
       if (!m.has(g)) m.set(g, [])
       m.get(g)!.push(r)
@@ -261,7 +328,7 @@ function SalesTab({
         return { group, lines, first, amount, net, qty }
       })
       .sort((a, b) => Number(b.first.id) - Number(a.first.id))
-  }, [rows])
+  }, [rows, unloadOnly])
 
   // Invoice list filtered by the sale date range and a free-text search over
   // invoice no, customer and product names.
@@ -318,9 +385,6 @@ function SalesTab({
   // reads its value off a grouped invoice. Money/qty format the same way the
   // cell does, so the dropdown lists exactly what's on screen.
 
-  const unloadOnly = UNLOAD_DESK()
-  // Columns rendered + the Actions column, for the empty/loading colSpan.
-  const colCount = unloadOnly ? 4 : 8
   const INV_COLUMNS: { key: string; label: string; of: (inv: Row) => string }[] = useMemo(() => {
     const all: { key: string; label: string; of: (inv: Row) => string }[] = [
       { key: 'invoice_no', label: 'Date / Invoice', of: (inv) => String(inv.first.invoice_no || '') },
@@ -1059,6 +1123,54 @@ function SalesTab({
       setRejecting(false)
     }
   }
+  // Cancel delivery: the customer calls it off while the load is on the road.
+  // Nothing is ever unloaded, so there is no weighed-in quantity — but the
+  // transporter carried it and still has to be paid, so the freight is struck on
+  // an assumed quantity, pre-filled with what was dispatched and editable.
+  const [cancelInv, setCancelInv] = useState<{ group: string; first: Row; lines: Row[] } | null>(null)
+  const [cancelReason, setCancelReason] = useState('')
+  const [cancelQty, setCancelQty] = useState<Record<string, string>>({})
+  const [cancelling, setCancelling] = useState(false)
+  const cancelFreightQty = (cancelInv?.lines || []).reduce(
+    (t, l) => t + (Number(cancelQty[String(l.id)]) || 0),
+    0
+  )
+
+  function openCancel(inv: { group: string; first: Row; lines: Row[] }): void {
+    setCancelInv(inv)
+    setCancelReason('')
+    // Pre-filled with the dispatched figure: the whole load travelled unless the
+    // user says otherwise. Unlike unloading, a number here is an assumption we
+    // are making on the transporter's behalf, not a weighbridge reading, so it
+    // is offered rather than demanded blank.
+    setCancelQty(Object.fromEntries(inv.lines.map((l) => [String(l.id), String(Number(l.qty) || 0)])))
+  }
+
+  async function confirmCancel(): Promise<void> {
+    if (!cancelInv) return
+    if (!cancelReason.trim()) return void toast.error('Enter why the delivery was cancelled')
+    const freightQty: Record<string, number | null> = {}
+    for (const l of cancelInv.lines) {
+      const raw = cancelQty[String(l.id)]
+      const q = Number(raw)
+      if (raw === '' || raw == null || !Number.isFinite(q) || q < 0) {
+        return void toast.error(`Enter a valid freight qty for ${l.product_name}`)
+      }
+      freightQty[String(l.id)] = q
+    }
+    setCancelling(true)
+    try {
+      await window.api.sales.cancelDelivery(cancelInv.group, cancelReason.trim(), freightQty)
+      toast.success(`Delivery cancelled — freight kept on ${formatNum(cancelFreightQty)} ${cancelInv.first.uom || 'MT'}`)
+      setCancelInv(null)
+      await load()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setCancelling(false)
+    }
+  }
+
   async function restoreInvoice(inv: { group: string; first: Row }): Promise<void> {
     try {
       await window.api.sales.unrejectInvoice(inv.group)
@@ -1323,6 +1435,18 @@ function SalesTab({
                                   ]
                                 : stg.value !== 'unloaded'
                                   ? [
+                                      // Only a FOR delivery has a journey to
+                                      // call off; an Ex sale leaves with the
+                                      // customer at invoicing.
+                                      ...(exTerm
+                                        ? []
+                                        : [
+                                            {
+                                              label: 'Cancel delivery — called off in transit',
+                                              icon: Truck,
+                                              onClick: () => openCancel(inv)
+                                            }
+                                          ]),
                                       {
                                         label: 'Reject — customer refused it',
                                         icon: Ban,
@@ -2046,6 +2170,57 @@ function SalesTab({
 
       {/* Reject — the customer refused the consignment before it was fully delivered */}
       {/* Marking Unloaded: capture what the transporter actually delivered. */}
+      <Dialog open={!!cancelInv} onOpenChange={(o) => !o && !cancelling && setCancelInv(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Cancel delivery {cancelInv?.first.invoice_no || ''}</DialogTitle>
+          </DialogHeader>
+          <p className="text-[12px] text-muted-foreground">
+            The customer called this load off before it was unloaded, so there is no received quantity to record and
+            the invoice is marked <b>Cancelled</b> rather than delivered. The transporter still carried it, so the
+            freight is charged on the quantity below — the dispatched figure, which you can change if only part of the
+            load actually travelled. Stock, the journal and the credit note are untouched, exactly as with a rejection.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Reason</Label>
+            <Input
+              autoFocus
+              placeholder="e.g. customer cancelled the order while in transit"
+              value={cancelReason}
+              onChange={(e) => setCancelReason(e.target.value)}
+            />
+          </div>
+          <div className="overflow-hidden rounded-md border">
+            <div className="grid grid-cols-[minmax(0,1fr)_84px_96px] items-center gap-2 border-b bg-muted/60 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <span>Product</span>
+              <span className="text-right">Dispatched</span>
+              <span className="text-right">Freight on</span>
+            </div>
+            {(cancelInv?.lines || []).map((l) => (
+              <div key={String(l.id)} className="grid grid-cols-[minmax(0,1fr)_84px_96px] items-center gap-2 border-b px-3 py-1.5 last:border-0">
+                <span className="min-w-0 truncate text-[13px]">{l.product_name}</span>
+                <span className="text-right text-[12px] tabular-nums text-muted-foreground">{formatNum(l.qty)}</span>
+                <Input
+                  type="number"
+                  className="h-8 text-right tabular-nums"
+                  value={cancelQty[String(l.id)] ?? ''}
+                  onChange={(e) => setCancelQty((p) => ({ ...p, [String(l.id)]: e.target.value }))}
+                />
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Freight will be billed on <b>{formatNum(cancelFreightQty)} {cancelInv?.first.uom || 'MT'}</b> in total.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelInv(null)} disabled={cancelling}>Keep the delivery</Button>
+            <Button variant="destructive" onClick={() => void confirmCancel()} disabled={cancelling || !cancelReason.trim()}>
+              {cancelling ? 'Cancelling…' : 'Cancel delivery'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!unloadInv} onOpenChange={(o) => !o && !unloadSaving && setUnloadInv(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -2193,6 +2368,12 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
   const [coIds, setCoIds] = useState<number[]>([])
   // The credit-note lines behind each bargain's Return figure.
   const [returns, setReturns] = useState<Row[]>([])
+  // The Category master, so an inactive category drops out of these dropdowns.
+  const { rows: catRows } = useCategories([], 'sales')
+  const saleCats = useMemo(
+    () => saleCatsFrom(catRows, rows.map((r) => r.sale_category)),
+    [catRows, rows]
+  )
   // listSales defaults to the ACTIVE company when given nothing, so "all" has
   // to be spelled out as every id. Known only after the first load; until then
   // the active company's invoices show, and the list fills in on the refresh.
@@ -2482,7 +2663,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
           stage: rl.explicit_bargain_id ? 'return — named on note' : `return vs ${String(rl.against_ref || '—')}`,
           ret: Number(rl.qty) || 0,
           sale_rate: Number(rl.rate) || 0,
-          amount: -(Number(rl.amount) || 0)
+          amount: -(Number(rl.amount_incl ?? rl.amount) || 0)
         })
       }
       for (const g of byInvoice.values()) {
@@ -2691,7 +2872,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
       {rateCard}
       <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-2">
       <div className="inline-flex flex-wrap gap-1 rounded-lg border bg-muted/40 p-1">
-        {[{ v: 'ALL', label: 'All' }, ...SALE_CATS].map((t) => (
+        {[{ v: 'ALL', label: 'All' }, ...saleCats].map((t) => (
           <button
             key={t.v}
             type="button"
@@ -3041,7 +3222,9 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                   date: String(rl.note_date || ''),
                                   qty: -(Number(rl.qty) || 0),
                                   rate: Number(rl.rate) || 0,
-                                  amount: -(Number(rl.amount) || 0),
+                                  // Inclusive of GST, matching the dispatch rows
+                                  // this column already states that way.
+                                  amount: -(Number(rl.amount_incl ?? rl.amount) || 0),
                                   uom: String(row.uom || 'MT')
                                 }))
                               ].sort((x, y) => x.date.localeCompare(y.date) || x.key.localeCompare(y.key))
@@ -3194,7 +3377,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
               <Select value={form.sale_category || 'FINISHED_OIL'} onValueChange={(v) => setField('sale_category', v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {SALE_CATS.map((c) => <SelectItem key={c.v} value={c.v}>{c.label}</SelectItem>)}
+                  {saleCats.map((c) => <SelectItem key={c.v} value={c.v}>{c.label}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
