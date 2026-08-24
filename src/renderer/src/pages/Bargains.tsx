@@ -596,6 +596,14 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
   const multiCo = companies.length > 1
   const coName = (id: unknown): string =>
     String(companies.find((c) => Number(c.id) === Number(id))?.name || '')
+  // A bargain is general: the company is whoever drew on it. Not drawn yet →
+  // there is genuinely no company to name, and saying so beats a blank cell.
+  const drawnCos = (r: Row): string => {
+    const raw = String(r.drawn_companies || '').trim()
+    if (!raw) return 'Not drawn yet'
+    const names = raw.split(',').map((x) => x.trim()).filter(Boolean)
+    return names.length > 1 ? `Both · ${names.join(' + ')}` : names[0]
+  }
 
   function downloadExcel(): void {
     void exportRowsToExcel({
@@ -608,6 +616,9 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
         { header: 'Supplier', key: 'supplier_name', value: (r) => r.supplier_name || '' },
         { header: 'Oil', key: 'oil', value: (r) => oilOf(r) },
         { header: 'Condition', key: 'bargain_type', value: (r) => r.bargain_type || '' },
+        ...(multiCo
+          ? [{ header: 'Company', key: 'drawn_companies', value: (r: Row) => drawnCos(r) }]
+          : []),
         { header: 'Opening', key: '_opening', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r._opening) || 0 },
         { header: 'Addition', key: '_addition', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r._addition) || 0 },
         { header: 'Adjusted', key: '_adjusted', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r._adjusted) || 0 },

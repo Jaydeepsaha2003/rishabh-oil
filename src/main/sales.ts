@@ -417,6 +417,7 @@ export async function listSalesBargains(from?: string, to?: string, companyIds?:
   const res = await getClient().execute({
     sql: `
     SELECT b.*, pr.name AS product_name, pk.name AS packaging_name, cu.name AS customer_master,
+      co.name AS company_name,
       COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id${sCo}), 0) AS sold_qty,
       b.qty - COALESCE((SELECT SUM(qty) FROM sales WHERE sales_bargain_id = b.id${sCo}), 0)
             + ${returnSum('', nCo)} AS balance_qty,
@@ -434,6 +435,7 @@ export async function listSalesBargains(from?: string, to?: string, companyIds?:
     LEFT JOIN products pr ON pr.id = b.product_id
     LEFT JOIN packagings pk ON pk.id = b.packaging_id
     LEFT JOIN customers cu ON cu.id = b.customer_id
+    LEFT JOIN companies co ON co.id = b.company_id
     ORDER BY b.id DESC
   `,
     args: [f, f, t, f, f, t, t, f, f, t, t]

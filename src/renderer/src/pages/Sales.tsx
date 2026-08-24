@@ -2779,6 +2779,9 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
               { header: 'Type', key: 'sale_category', value: (r) => saleCatLabel(r.sale_category) },
               { header: 'Customer', key: 'customer', value: (r) => r.customer || '' },
               { header: 'Product', key: 'product', value: (r) => r.product_name || '' },
+              ...(companies.length > 1
+                ? [{ header: 'Company', key: 'company_name', value: (r: Row) => String(r.company_name || '') }]
+                : []),
               { header: 'Opening', key: 'opening', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).opening },
               { header: 'Addition', key: 'addition', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).addition },
               { header: 'Adjusted', key: 'adjusted', align: 'right', numFmt: '#,##0.000', value: (r) => bargainRegister(r, F, T).adjusted },

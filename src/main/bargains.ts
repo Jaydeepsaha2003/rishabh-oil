@@ -74,7 +74,17 @@ export async function listBargains(from?: string, to?: string, companyIds?: numb
            )) AS last_dispatch_date,
            COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'purchase' AND bargain_id = b.id AND substr(adj_date, 1, 10) < ?), 0) AS adj_before,
            COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'purchase' AND bargain_id = b.id AND substr(adj_date, 1, 10) >= ? AND substr(adj_date, 1, 10) <= ?), 0) AS adj_in,
-           COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'purchase' AND bargain_id = b.id AND substr(adj_date, 1, 10) > ?), 0) AS adj_after
+           COALESCE((SELECT SUM(delta) FROM bargain_adjustments WHERE kind = 'purchase' AND bargain_id = b.id AND substr(adj_date, 1, 10) > ?), 0) AS adj_after,
+      -- A purchase bargain has no company of its own — it is general, and what
+      -- draws on it is what lands in a book. So the company is WHOSE TANKERS
+      -- AND CONSIGNMENT PURCHASES drew on it: one name for most, both when a
+      -- bargain was split across the two books, empty while nothing has been
+      -- drawn yet.
+      (SELECT GROUP_CONCAT(DISTINCT co.name) FROM (
+          SELECT company_id FROM purchase_tankers WHERE bargain_id = b.id${ptCo}
+          UNION SELECT company_id FROM purchase_tankers WHERE extra_bargain_id = b.id AND COALESCE(extra_qty, 0) > 0${ptCo}
+          UNION SELECT o2.company_id FROM order_bargains ob JOIN orders o2 ON o2.id = ob.order_id WHERE ob.bargain_id = b.id${obCo}
+       ) x LEFT JOIN companies co ON co.id = x.company_id) AS drawn_companies
     FROM bargains b
     LEFT JOIN suppliers s ON s.id = b.supplier_id
     LEFT JOIN products o ON o.id = b.oil_type_id
