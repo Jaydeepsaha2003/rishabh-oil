@@ -626,13 +626,13 @@ function SalesTab({
       ? (Number(selPack.pouches_per_box) || 0) * (Number(selPack.base_per_pouch) || 0)
       : 0
     const casesEq = selPack && perCaseBase > 0 ? packBaseQty / perCaseBase : 0
-    const typedCase = Number(item.rate_case)
-    const perCaseRate =
-      isPacked && Number.isFinite(typedCase) && typedCase > 0
-        ? typedCase
-        : isPacked && perCaseBase > 0 && Number(item.rate) > 0
-          ? Math.round(Number(item.rate) * convertQty(perCaseBase, packBaseUom, saleUom) * 100) / 100
-          : 0
+    // The per-case rate is STATED — off the bargain's rate card, or typed. It is
+    // never worked back out of the per-MT rate, because that derivation moves
+    // with the conversion factor. A line with none (saved before the per-case
+    // rate was stored) keeps its original rate x quantity value, exactly as the
+    // main process values it.
+    const statedCase = Number(item.rate_case)
+    const perCaseRate = isPacked && Number.isFinite(statedCase) && statedCase > 0 ? statedCase : 0
     const amount =
       isPacked && perCaseRate > 0 && casesEq > 0
         ? Math.round(casesEq * perCaseRate * 100) / 100
@@ -744,6 +744,22 @@ function SalesTab({
     }
   }, [cards])
 
+  // The card is fetched when a bargain is PICKED — which meant opening an
+  // existing invoice never fetched it, and the caption then told the user the
+  // bargain had no rate card when it plainly did. Load whatever the lines on
+  // the form actually reference, however they got there.
+  const itemBargainKey = items
+    .map((it) => String(it.sales_bargain_id || ''))
+    .filter(Boolean)
+    .sort()
+    .join(',')
+  useEffect(() => {
+    for (const id of new Set(itemBargainKey.split(',').filter(Boolean))) {
+      if (!cards[id]) void loadCard(id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemBargainKey])
+
   // A card row turned into the rate THIS line is priced in. The line always
   // charges rate x quantity in the bargain's unit (MT/KG/L) — even a packed
   // line, whose cases are converted to that unit first.
@@ -792,7 +808,16 @@ function SalesTab({
       if (!hit) return
       const nc = calc({ ...it, sales_bargain_id: v, packaging_id: nextPack, sale_type: b?.sale_type || it.sale_type || 'LOOSE' })
       const rate = cardRateInUnit(hit, nc.saleUom, mtPerCase(nc))
-      if (rate != null) setItem(idx, { rate: String(rate), rate_case: '', rate_from_card: true })
+      // Rate/Case is a STATED figure, never a computed one: it comes off the
+      // card when the card carries it, otherwise from what the user types. The
+      // per-MT rate beside it is the derived one, kept only for reporting.
+      if (rate != null) {
+        setItem(idx, {
+          rate: String(rate),
+          rate_case: hit.rate_per_case != null ? String(hit.rate_per_case) : '',
+          rate_from_card: true
+        })
+      }
     })
     setItem(idx, {
       sales_bargain_id: v,
@@ -1040,15 +1065,12 @@ function SalesTab({
         rate: it.rate,
         // A packed line is billed on this, not on rate x MT — the case weight
         // does not always convert exactly and the error lands on the money.
+        // Only a STATED rate is stored. Never fabricate one for a line that
+        // never had it — the main process then values that line the way it
+        // always did, rather than on a figure nobody agreed.
         rate_per_case:
-          it.sale_type === 'PACKED'
-            ? (() => {
-                const c = calc(it)
-                const per = mtPerCase(c)
-                const typed = Number(it.rate_case)
-                if (Number.isFinite(typed) && typed > 0) return typed
-                return per > 0 && Number(it.rate) > 0 ? Math.round(Number(it.rate) * per * 100) / 100 : null
-              })()
+          it.sale_type === 'PACKED' && Number.isFinite(Number(it.rate_case)) && Number(it.rate_case) > 0
+            ? Number(it.rate_case)
             : null,
         gst_pct: it.gst_pct,
         gst_type: it.gst_type
@@ -1821,7 +1843,13 @@ function SalesTab({
                             if (!hit) return
                             const nc = calc({ ...items[i], packaging_id: v })
                             const rate = cardRateInUnit(hit, nc.saleUom, mtPerCase(nc))
-                            if (rate != null) setItem(i, { rate: String(rate), rate_case: '', rate_from_card: true })
+                            if (rate != null) {
+                              setItem(i, {
+                                rate: String(rate),
+                                rate_case: hit.rate_per_case != null ? String(hit.rate_per_case) : '',
+                                rate_from_card: true
+                              })
+                            }
                           })
                         }
                       }}>
@@ -1874,13 +1902,12 @@ function SalesTab({
                       <Input
                         type="number"
                         placeholder="0.00"
-                        value={
-                          item.rate_case != null && item.rate_case !== ''
-                            ? item.rate_case
-                            : mtPerCase(c) > 0 && Number(item.rate) > 0
-                              ? String(Math.round(Number(item.rate) * mtPerCase(c) * 100) / 100)
-                              : ''
-                        }
+                        // Only what the card gave or the user typed. It used to
+                        // fall back to rate/MT x MT-per-case, which is a DERIVED
+                        // figure — and one that changed with the conversion
+                        // factor, so the same saved line could read 1979.78 on
+                        // one build and 1980.52 on another.
+                        value={item.rate_case ?? ''}
                         onChange={(e) => {
                           const per = mtPerCase(c)
                           const v = e.target.value
@@ -1903,6 +1930,18 @@ function SalesTab({
                             return (
                               <span className={cn(item.rate_from_card ? 'font-medium text-emerald-700' : 'text-amber-700')}>
                                 {item.rate_from_card ? 'from the bargain rate card' : `card rate ${formatINR(hit?.rate_per_case ?? cardRate)} — overridden`}
+                              </span>
+                            )
+                          }
+                          // An older line carries no stated per-case rate, so the
+                          // box is empty. Show what it was actually billed at so
+                          // the figure is not simply missing — labelled as
+                          // history, not offered as the agreed rate.
+                          if (!item.rate_case && mtPerCase(c) > 0 && Number(item.rate) > 0) {
+                            return (
+                              <span className="text-muted-foreground">
+                                billed at {formatINR(Math.round(Number(item.rate) * mtPerCase(c) * 100) / 100)}/
+                                {c.selPack?.box_label || 'case'} — retype to restate it
                               </span>
                             )
                           }

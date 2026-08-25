@@ -188,6 +188,22 @@ export async function customerFyTaxable(
 }
 
 // The TDS on one sale invoice, given its total and who it is billed to.
+// The rate to withhold on a new sale. The invoice form fills this in from the
+// customer master the moment a customer is picked, so it is normally stated on
+// the payload. When a caller states NOTHING at all — a programmatic create, an
+// import — fall back to the master rather than silently billing at 0%.
+// An explicit 0 is respected: that is someone deciding not to withhold.
+async function resolveTdsPct(v: Row, customerId: number | null): Promise<number> {
+  const stated = v.tds_pct
+  if (stated !== undefined && stated !== null && String(stated).trim() !== '') return n(stated)
+  if (!customerId) return 0
+  const cu = await getClient().execute({
+    sql: 'SELECT tds_pct FROM customers WHERE id = ?',
+    args: [customerId]
+  })
+  return cu.rows.length ? n(cu.rows[0].tds_pct) : 0
+}
+
 async function saleTds(
   customerId: number | null,
   tdsPct: number,
@@ -237,7 +253,8 @@ async function postSaleEntry(
   taxable: number,
   gst: number,
   roundOff = 0,
-  freightAmount = 0
+  freightAmount = 0,
+  tds = 0
 ): Promise<void> {
   const prod = await getClient().execute({
     sql: 'SELECT code, name FROM products WHERE id = ?',
@@ -260,7 +277,8 @@ async function postSaleEntry(
     roundOff,
     freightAmount,
     transporterName,
-    deductFreight: !!v.deduct_freight
+    deductFreight: !!v.deduct_freight,
+    tds
   }).catch((e) => console.error('[journal] sale post failed:', (e as Error).message))
 }
 
@@ -863,7 +881,7 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   // TDS the customer withholds, charged on the invoice total like the purchase
   // side and applied on the customer master's slab terms. With no rate set it
   // is 0, so the receivable is unchanged for a sale that carries no TDS.
-  const tdsPct = n(v.tds_pct)
+  const tdsPct = await resolveTdsPct(v, customerId)
   const tdsAmount = await saleTds(customerId, tdsPct, amount + gstAmount + roundOff, String(v.sale_date), 0)
   const net = amount + gstAmount + roundOff - tdsAmount
   // Can't dispatch more than the chosen sales bargain still has open.
@@ -960,7 +978,7 @@ export async function createSale(v: Row): Promise<{ id: number }> {
     await createSaleProduction(id, productId, qty, prodDate, uom)
   }
   await postCustomerReceivable(id, customerId, net, String(v.sale_date))
-  await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount)
+  await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount, tdsAmount)
   await postSaleFreight(id, v, freightQty)
   return { id }
 }
@@ -1069,7 +1087,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
     await deleteSaleProductions(id)
   }
   await postCustomerReceivable(id, customerId, net, String(v.sale_date))
-  await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount)
+  await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount, tdsAmount)
   await postSaleFreight(id, v, freightQty)
   return { id }
 }
@@ -1098,7 +1116,10 @@ async function recomputeSaleFreight(id: number): Promise<void> {
     n(row.amount),
     n(row.gst_amount),
     n(row.round_off),
-    amount
+    amount,
+    // Carried through, or re-striking the freight would silently drop the
+    // TDS leg and put the whole invoice back on the customer.
+    n(row.tds_amount)
   )
 }
 

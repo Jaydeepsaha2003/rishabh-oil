@@ -7,7 +7,10 @@ import { getActiveCompanyId } from './company'
 // is safe — all *values* are passed as bound parameters.
 const TABLES: Record<string, string[]> = {
   banks: ['name', 'branch', 'account_no', 'ifsc', 'note', 'active', 'company_id'],
-  nbfcs: ['name', 'finance_type', 'tds_pct', 'interest_pct', 'interest_days', 'note', 'active', 'company_id'],
+  // days_year belongs here: the Manage NBFCs form offers it, but a column
+  // missing from this list is silently DROPPED by pickKeys — so changing the
+  // year basis from 360 to 365 saved without complaint and changed nothing.
+  nbfcs: ['name', 'finance_type', 'tds_pct', 'interest_pct', 'interest_days', 'days_year', 'note', 'active', 'company_id'],
   categories: ['name', 'applies_to', 'note', 'active'],
   oil_types: ['code', 'name', 'active'],
   products: ['code', 'name', 'category', 'material_type', 'active'],

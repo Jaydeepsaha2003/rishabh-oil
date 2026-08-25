@@ -391,6 +391,10 @@ export async function postSaleJournal(v: {
   // their bill. See the freight legs below for why that changes the posting
   // rather than just the wording.
   deductFreight?: boolean
+  // Withheld by the customer out of what they pay us. It is OUR asset until it
+  // is claimed, so it leaves the customer's debt and sits in TDS RECEIVABLE
+  // rather than simply going missing from the voucher.
+  tds?: number
   companyId?: number
 }): Promise<void> {
   await deleteJournalByRef('sale_id', v.saleId)
@@ -415,13 +419,17 @@ export async function postSaleJournal(v: {
   // also stops showing as ours to pay on the freight register.
   const hasFreight = freight > 0 && !!transporterName
   const deducted = !!v.deductFreight && hasFreight
-  const customerDr = round2(taxable + gst + ro - (deducted ? freight : 0))
+  const tds = round2(n(v.tds))
+  const customerDr = round2(taxable + gst + ro - (deducted ? freight : 0) - tds)
   const lines: JournalLine[] = [
     { account: v.customerName || 'CASH CUSTOMER A/C', group: 'Sundry Debtors', dr: customerDr },
     { account: `${v.productCode} SALE A/C`, group: 'Sales Accounts', cr: taxable },
     { account: 'GST OUTPUT A/C', group: 'Duties & Taxes', cr: gst },
     { account: 'ROUND OFF A/C', group: 'Indirect Expenses', cr: ro > 0 ? ro : 0, dr: ro < 0 ? -ro : 0 }
   ]
+  if (tds > 0.004) {
+    lines.push({ account: 'TDS RECEIVABLE A/C', group: 'Deposits (Asset)', dr: tds })
+  }
   if (hasFreight) {
     lines.push({ account: 'FREIGHT OUTWARD A/C', group: 'Direct Expenses', dr: freight })
     // Not deducted: unchanged from before — we carry the cost and owe the

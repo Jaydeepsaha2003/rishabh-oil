@@ -2,7 +2,7 @@ import { app, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { registerIpc } from './ipc'
 import { registerUpdater } from './updater'
-import { initDb, startRevisionWatcher } from './db'
+import { initDb, runDaily, runOnce, startRevisionWatcher } from './db'
 import { backfillJournal } from './journal'
 import { dailyBackup } from './backup'
 import { backfillOrderStatuses, backfillPurchaseRoundOff } from './orders'
@@ -62,13 +62,19 @@ app.whenReady().then(async () => {
   // First launch of the day: a full portable dump of the cloud database.
   dailyBackup().catch((e) => console.error('[backup] daily backup failed:', e))
   await backfillSalesBargainCustomers().catch((e) => console.error('[sales] bargain-customer link failed:', e))
-  await backfillOrderStatuses().catch((e) => console.error('[orders] status backfill failed:', e))
+  // Re-syncs every order from its tankers. Unlike the other startup tasks it
+  // is not self-limiting — it did that work on every single launch, which is
+  // most of why starting up was slow. Tanker moves already re-sync their own
+  // order, so this only ever needed to run once to catch up old rows.
+  await runOnce('order_status_sync_v1', () => backfillOrderStatuses()).catch((e) =>
+    console.error('[orders] status backfill failed:', e)
+  )
   await backfillPurchaseRoundOff().catch((e) => console.error('[orders] round-off repair failed:', e))
   await seedDefaultAdmin().catch((e) => console.error('[auth] seed failed:', e))
   await seedProducts().catch((e) => console.error('[seed] products failed:', e))
   await seedFormulations().catch((e) => console.error('[seed] formulations failed:', e))
   await seedPackagings().catch((e) => console.error('[seed] packagings failed:', e))
-  await cleanupLogs().catch(() => {})
+  await runDaily('cleanup_logs', () => cleanupLogs()).catch(() => {})
   startRevisionWatcher()
   registerIpc()
   registerUpdater(() => mainWindow)

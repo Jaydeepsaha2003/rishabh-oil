@@ -1216,7 +1216,52 @@ const MIGRATIONS = [
   // be exact for a case weight like 13.395 KG, which silently understated the
   // line. The per-MT rate is still stored for reporting; this is the figure the
   // money now comes from.
-  'ALTER TABLE sales ADD COLUMN rate_per_case REAL'
+  'ALTER TABLE sales ADD COLUMN rate_per_case REAL',
+
+  // ---------------------------------------------------------------------
+  // Indexes on the columns the registers' CORRELATED SUBQUERIES filter on.
+  // Without them every such subquery is a full table scan, and the registers
+  // run one per row: the sales-bargain register alone does ~6 subqueries over
+  // `sales` for each of its bargains, so 27 bargains x 6 x 169 rows is ~27,000
+  // rows read for one refresh — and every open page refetches on every write.
+  // Rows read is what the hosting plan is metered on, so this is the single
+  // biggest lever on the bill. Pure lookup speed: no behaviour changes.
+  // ---------------------------------------------------------------------
+  'CREATE INDEX IF NOT EXISTS idx_sales_bargain ON sales(sales_bargain_id)',
+  'CREATE INDEX IF NOT EXISTS idx_sales_group ON sales(invoice_group)',
+  'CREATE INDEX IF NOT EXISTS idx_sales_company_date ON sales(company_id, sale_date)',
+  'CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id)',
+  'CREATE INDEX IF NOT EXISTS idx_sales_invoice_no ON sales(invoice_no)',
+  'CREATE INDEX IF NOT EXISTS idx_pt_bargain ON purchase_tankers(bargain_id)',
+  'CREATE INDEX IF NOT EXISTS idx_pt_extra_bargain ON purchase_tankers(extra_bargain_id)',
+  'CREATE INDEX IF NOT EXISTS idx_pt_company ON purchase_tankers(company_id)',
+  'CREATE INDEX IF NOT EXISTS idx_orders_company_date ON orders(company_id, order_date)',
+  'CREATE INDEX IF NOT EXISTS idx_orders_invoice_no ON orders(invoice_no)',
+  'CREATE INDEX IF NOT EXISTS idx_je_sale ON journal_entries(sale_id)',
+  'CREATE INDEX IF NOT EXISTS idx_je_order ON journal_entries(order_id)',
+  'CREATE INDEX IF NOT EXISTS idx_je_payment ON journal_entries(payment_id)',
+  'CREATE INDEX IF NOT EXISTS idx_je_company_date ON journal_entries(company_id, entry_date)',
+  'CREATE INDEX IF NOT EXISTS idx_jba_account ON journal_bill_allocs(account_id)',
+  'CREATE INDEX IF NOT EXISTS idx_cl_sale ON customer_ledger(sale_id)',
+  'CREATE INDEX IF NOT EXISTS idx_cl_customer ON customer_ledger(customer_id)',
+  'CREATE INDEX IF NOT EXISTS idx_sl_order ON supplier_ledger(order_id)',
+  'CREATE INDEX IF NOT EXISTS idx_sl_supplier ON supplier_ledger(supplier_id)',
+  'CREATE INDEX IF NOT EXISTS idx_tl_sale ON transporter_ledger(sale_id)',
+  'CREATE INDEX IF NOT EXISTS idx_tl_order ON transporter_ledger(order_id)',
+  'CREATE INDEX IF NOT EXISTS idx_tl_bill ON transporter_ledger(bill_id)',
+  'CREATE INDEX IF NOT EXISTS idx_tl_transporter ON transporter_ledger(transporter_id)',
+  'CREATE INDEX IF NOT EXISTS idx_gate_group ON gate_entries(invoice_group)',
+  'CREATE INDEX IF NOT EXISTS idx_gate_tanker ON gate_entries(tanker_id)',
+  'CREATE INDEX IF NOT EXISTS idx_gate_sale ON gate_entries(sale_id)',
+  'CREATE INDEX IF NOT EXISTS idx_gate_company_date ON gate_entries(company_id, entry_date)',
+  'CREATE INDEX IF NOT EXISTS idx_notes_je ON notes(journal_entry_id)',
+  'CREATE INDEX IF NOT EXISTS idx_notes_company ON notes(company_id)',
+  'CREATE INDEX IF NOT EXISTS idx_note_items_note ON note_items(note_id)',
+  'CREATE INDEX IF NOT EXISTS idx_badj_bargain ON bargain_adjustments(kind, bargain_id)',
+  'CREATE INDEX IF NOT EXISTS idx_badj_note ON bargain_adjustments(note_id)',
+  'CREATE INDEX IF NOT EXISTS idx_production_sale ON production(sale_id)',
+  'CREATE INDEX IF NOT EXISTS idx_bd_company ON bill_discountings(company_id)',
+  'CREATE INDEX IF NOT EXISTS idx_lc_issuances_lc ON lc_issuances(lc_id)'
 ]
 
 
@@ -1270,22 +1315,55 @@ async function rebuildStockCountsForCompanies(c: any): Promise<void> {
   await c.execute('ALTER TABLE stock_counts_new RENAME TO stock_counts')
 }
 
+// How many entries of MIGRATIONS this database has already had run at it.
+// The list is append-only, so the count is a sufficient marker: anything at or
+// past it is new and still has to run.
+const APPLIED_KEY = 'schema_applied_count'
+
 export async function initDb(): Promise<void> {
   // Never crash the app if the token is missing — the UI surfaces the status.
   try {
     const c = getClient()
-    const statements = SCHEMA_SQL.split(';')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0)
-    for (const stmt of statements) {
-      await c.execute(stmt)
+    // The schema statements and the migration list used to be replayed IN FULL
+    // on every single launch — over 200 sequential round trips, which is both
+    // ~30 seconds of startup and 200 metered statements per app, per start,
+    // per device. They are idempotent, so replaying them achieved nothing
+    // beyond the very first time. Now the database records how far it has got.
+    let applied = 0
+    try {
+      const r = await c.execute({ sql: 'SELECT value FROM app_settings WHERE key = ?', args: [APPLIED_KEY] })
+      applied = r.rows.length ? Number(r.rows[0].value) || 0 : 0
+    } catch {
+      applied = 0 // brand-new database: app_settings does not exist yet
     }
-    for (const sql of MIGRATIONS) {
+    // Guard against a marker that outlives its tables (a restored or hand-edited
+    // database): if a core table is gone, start from scratch regardless.
+    if (applied > 0) {
       try {
-        await c.execute(sql)
+        const t = await c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sales' LIMIT 1")
+        if (!t.rows.length) applied = 0
       } catch {
-        // column already exists — expected on databases already migrated
+        applied = 0
       }
+    }
+
+    if (applied === 0) {
+      // One request for the whole schema instead of one per statement.
+      await c.executeMultiple(SCHEMA_SQL)
+    }
+    if (applied < MIGRATIONS.length) {
+      for (let i = applied; i < MIGRATIONS.length; i++) {
+        try {
+          await c.execute(MIGRATIONS[i])
+        } catch {
+          // column already exists — expected on databases already migrated
+        }
+      }
+      await c.execute({
+        sql: `INSERT INTO app_settings (key, value) VALUES (?, ?)
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        args: [APPLIED_KEY, String(MIGRATIONS.length)]
+      })
     }
     await backfillBargainSerials(c).catch(() => {})
     await rebuildStockCountsForCompanies(c).catch((e) =>
@@ -1325,7 +1403,41 @@ async function fetchRevision(): Promise<void> {
 export function startRevisionWatcher(): void {
   if (revisionTimer) return
   fetchRevision()
-  revisionTimer = setInterval(fetchRevision, 4000)
+  // Every open copy of the app polls this forever, so the interval is a
+  // standing cost against the plan's metered reads. 15s instead of 4s is a
+  // ~4x saving; the price is that a change made on ANOTHER machine takes up to
+  // 15 seconds to appear here. This device's own writes are reflected at once
+  // (bumpRevision updates the cache directly), so typing never feels slower.
+  revisionTimer = setInterval(fetchRevision, 15000)
+}
+
+// Run a piece of one-time repair work at most once, ever — recorded in
+// app_settings so it does not re-scan the tables on every single launch. The
+// key carries a version: bump it to make a fixed-up backfill run again.
+export async function runOnce(key: string, fn: () => Promise<void>): Promise<void> {
+  const c = getClient()
+  const flag = `once_${key}`
+  const done = await c.execute({ sql: 'SELECT value FROM app_settings WHERE key = ?', args: [flag] })
+  if (done.rows.length && String(done.rows[0].value) === '1') return
+  await fn()
+  await c.execute({
+    sql: "INSERT INTO app_settings (key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = '1'",
+    args: [flag]
+  })
+}
+
+// Housekeeping that should happen regularly but not on every launch.
+export async function runDaily(key: string, fn: () => Promise<void>): Promise<void> {
+  const c = getClient()
+  const flag = `daily_${key}`
+  const today = todayISO()
+  const done = await c.execute({ sql: 'SELECT value FROM app_settings WHERE key = ?', args: [flag] })
+  if (done.rows.length && String(done.rows[0].value) === today) return
+  await fn()
+  await c.execute({
+    sql: 'INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    args: [flag, today]
+  })
 }
 
 export async function bumpRevision(): Promise<void> {
