@@ -1,5 +1,5 @@
 import { ipcMain, dialog, shell } from 'electron'
-import { ping, bumpRevision, getRevision, initDb, resetClient, getConfiguredUrl } from './db'
+import { ping, bumpRevision, getRevision, initDb, resetClient, getConfiguredUrl, notifyDataChanged } from './db'
 import { saveStoredConfig } from './config'
 import { seedDefaultAdmin } from './auth'
 import { seedProducts, seedFormulations } from './seed'
@@ -156,7 +156,7 @@ import {
   unreconcileBankLine,
   setBankLineSubEntry
 } from './bankRecon'
-import { listBd, createBd, updateBd, deleteBd, repayBd, reopenBd, postBdUpfrontInterest, bdKpis, listBdRepayments, deleteBdRepayment } from './billDiscounting'
+import { listBd, createBd, updateBd, deleteBd, repayBd, reopenBd, postBdUpfrontInterest, bdKpis, listBdRepayments, deleteBdRepayment, markBdPaymentReceived, unmarkBdPaymentReceived, listAllBdRepayments } from './billDiscounting'
 import {
   listTransporterFreight,
   transporterFreightKpis,
@@ -312,7 +312,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^trading:list$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:allRepayments$|^trading:list$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -324,6 +324,11 @@ export function registerIpc(): void {
       if (!READONLY.test(channel)) await assertAllowed(channel, args)
       const result = await fn(e, args)
       if (!READONLY.test(channel)) {
+        // Anything cached off the old data is now wrong. Done here as well as
+        // inside bumpRevision because that call is allowed to fail on a bad
+        // connection, and a failed revision bump must not leave a stale master
+        // list being served from memory after a write that did land.
+        notifyDataChanged()
         await bumpRevision().catch(() => {})
         if (!AUDIT_SKIP.has(channel)) await recordAudit(channel, args, result).catch(() => {})
       }
@@ -773,7 +778,10 @@ export function registerIpc(): void {
     ) => repayBd(id, values)
   )
   handle('bd:repayments', (_e, { id }: { id: number }) => listBdRepayments(id))
+  handle('bd:allRepayments', () => listAllBdRepayments())
   handle('bd:deleteRepayment', (_e, { id }: { id: number }) => deleteBdRepayment(id))
+  handle('bd:markReceived', (_e, { id, date }: { id: number; date?: string }) => markBdPaymentReceived(id, date))
+  handle('bd:unmarkReceived', (_e, { id }: { id: number }) => unmarkBdPaymentReceived(id))
   handle('bd:reopen', (_e, { id }: { id: number }) => reopenBd(id))
   handle('bd:upfrontInterest', (_e, { id, date }: { id: number; date?: string }) => postBdUpfrontInterest(id, date))
   handle('bd:kpis', () => bdKpis())

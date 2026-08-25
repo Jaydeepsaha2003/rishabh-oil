@@ -1,5 +1,5 @@
 import type { InValue } from '@libsql/client'
-import { getClient } from './db'
+import { getClient, onDataChanged } from './db'
 import { getActiveCompanyId } from './company'
 
 // Whitelist of writable columns per table. Table names and column names only
@@ -134,9 +134,38 @@ async function assertUniqueName(table: string, values: Row, excludeId?: number):
   }
 }
 
+// ---------------------------------------------------------------------------
+// Master lists in memory.
+//
+// These tables are the dropdowns -- products, customers, suppliers, tankers,
+// packagings, oil types. Every page reloads its whole dataset whenever the DB
+// revision changes, which is after EVERY write anywhere in the app, and most of
+// those reloads asked for the same master lists again: the Sales page alone
+// fetched seven of them per refresh, and a master cannot have changed because
+// an invoice was raised. On a database this small the hosting bill is made of
+// how often a query runs, not how big the table is, so these were a large share
+// of it for no new information.
+//
+// Held per table per company, thrown away wholesale by notifyDataChanged --
+// which fires on our own writes immediately and within 15s of another machine's
+// -- so a cached list is never staler than anything else on screen. Deliberately
+// coarse: correctness first, and a master edit is rare enough that re-reading
+// every list after one costs nothing.
+const masterCache = new Map<string, Row[]>()
+
+onDataChanged(() => masterCache.clear())
+
+export function clearMasterCache(): void {
+  masterCache.clear()
+}
+
 export async function list(table: string): Promise<Row[]> {
   assertTable(table)
   const scoped = COMPANY_SCOPED_TABLES.has(table)
+  const key = `${table}|${scoped ? getActiveCompanyId() : 0}`
+  const hit = masterCache.get(key)
+  // Copied out, so a caller mutating what it got cannot corrupt the cache.
+  if (hit) return hit.map((r) => ({ ...r }))
   // Every master table has a `name` and feeds dropdowns across the app —
   // always list A→Z. Company-scoped tables only ever show the active
   // company's own rows (a bank with no company set yet — there isn't a way
@@ -147,11 +176,13 @@ export async function list(table: string): Promise<Row[]> {
       ? { sql: `SELECT * FROM ${table} WHERE company_id = ? ORDER BY name COLLATE NOCASE ASC`, args: [getActiveCompanyId()] }
       : `SELECT * FROM ${table} ORDER BY name COLLATE NOCASE ASC`
   )
-  return res.rows.map((r) => {
+  const rows = res.rows.map((r) => {
     const o: Row = {}
     for (const col of res.columns) o[col] = (r as unknown as Row)[col]
     return o
   })
+  masterCache.set(key, rows)
+  return rows.map((r) => ({ ...r }))
 }
 
 export async function get(table: string, id: number): Promise<Row | null> {

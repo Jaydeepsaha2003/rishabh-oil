@@ -154,6 +154,14 @@ export async function postBdOpening(bdId: number): Promise<void> {
   const c = getClient()
   const bd = await loadBd(bdId)
   await dropEntry(n(bd.journal_entry_id) || null)
+  // This voucher IS the disbursement -- it debits the bank with what the NBFC
+  // paid out. Until the payment is actually received there is no money to
+  // debit and no liability to raise, so a bill still awaiting its payment
+  // carries no voucher at all. It gets one the moment the receipt is marked.
+  if (!bd.payment_received_date) {
+    await c.execute({ sql: 'UPDATE bill_discountings SET journal_entry_id = NULL WHERE id = ?', args: [bdId] })
+    return
+  }
   const calc = bdCalc(bd)
   // The voucher is what the face amount split into, either way round:
   //   interest discounted  ->  Dr Bank (open - interest) + Dr Margin + Dr Interest
@@ -245,6 +253,7 @@ const BD_COLS = [
   'party_id',
   'purpose',
   'amount',
+  'invoice_amount',
   'payment_received_date',
   'maturity_date',
   'margin_pct',
@@ -260,6 +269,12 @@ function bdArgs(v: Row): (string | number | null)[] {
     if (k === 'interest_upfront') return v[k] ? 1 : 0
     if (k === 'days_year') return n(v[k]) || 360
     if (['amount', 'margin_pct', 'interest_pct', 'tds_pct'].includes(k)) return n(v[k])
+    // Optional, and left empty by anyone who does not track it — so blank has
+    // to stay blank rather than reading as a zero-value invoice.
+    if (k === 'invoice_amount') {
+      const val = v[k]
+      return val === '' || val === undefined || val === null ? null : n(val)
+    }
     if (k === 'nbfc_id') return v[k] ? n(v[k]) : null
     const val = v[k]
     return val === '' || val === undefined || val === null ? null : String(val)
@@ -268,14 +283,20 @@ function bdArgs(v: Row): (string | number | null)[] {
 
 // Every check a Bill Discounting entry has to pass, on create or edit.
 async function validateBd(v: Row): Promise<void> {
+  // Every voucher a bill posts is numbered with this — the disbursement, each
+  // repayment, the margin release — so a bill without one puts unnumbered
+  // vouchers in the ledger and cannot be found by reference afterwards.
+  if (!String(v.bd_no ?? '').trim()) throw new Error('Enter the BD no')
   if (!['PID', 'SID'].includes(String(v.finance_type))) throw new Error('Choose PID or SID')
   const partyType = String(v.finance_type) === 'PID' ? 'supplier' : 'customer'
   if (String(v.party_type) !== partyType) throw new Error('Party type must follow the finance type')
   if (!n(v.party_id)) throw new Error(partyType === 'supplier' ? 'Choose the supplier' : 'Choose the customer')
-  if (n(v.amount) <= 0) throw new Error('Enter the bill amount')
-  if (!v.payment_received_date) throw new Error('Enter the payment received date')
+  if (n(v.amount) <= 0) throw new Error('Enter the open amount')
   if (!v.maturity_date) throw new Error('Enter the maturity date')
-  if (String(v.maturity_date).slice(0, 10) < String(v.payment_received_date).slice(0, 10)) {
+  // The payment received date is not asked for when the bill is opened -- it is
+  // stamped later, when the NBFC's money actually lands -- so it is only
+  // checked against the maturity when there IS one.
+  if (v.payment_received_date && String(v.maturity_date).slice(0, 10) < String(v.payment_received_date).slice(0, 10)) {
     throw new Error('Maturity date cannot be before the payment received date')
   }
   const table = partyType === 'supplier' ? 'suppliers' : 'customers'
@@ -313,7 +334,7 @@ export async function listBd(filter?: Row): Promise<Row[]> {
           LEFT JOIN (SELECT bd_id, SUM(amount) AS paid, COUNT(*) AS parts
                      FROM bd_repayments GROUP BY bd_id) rp ON rp.bd_id = bd.id
           WHERE ${where.join(' AND ')}
-          ORDER BY bd.payment_received_date DESC, bd.id DESC`,
+          ORDER BY COALESCE(bd.payment_received_date, bd.created_at) DESC, bd.id DESC`,
     args
   })
   // A part-repaid bill stays OPEN — the facility is still live for what is left
@@ -330,7 +351,12 @@ export async function listBd(filter?: Row): Promise<Row[]> {
       ...bdCalc(bd),
       repaid_total: repaidTotal,
       outstanding_amount: round2(Math.max(0, n(bd.amount) - repaidTotal)),
-      repay_parts: parts
+      repay_parts: parts,
+      // Three stages, in the order a bill goes through them: opened and waiting
+      // on the NBFC's money, live once it has landed, wound up once repaid.
+      // Derived rather than stored, so the payment date stays the single fact
+      // that decides it and no row can disagree with its own dates.
+      stage: String(bd.status) === 'repaid' ? 'repaid' : bd.payment_received_date ? 'live' : 'awaiting'
     }
   })
 }
@@ -409,6 +435,9 @@ export async function repayBd(
   const c = getClient()
   const bd = await loadBd(id)
   if (String(bd.status) === 'repaid') throw new Error('This bill is already repaid')
+  if (!bd.payment_received_date) {
+    throw new Error('Mark the payment received first — there is nothing to repay until the NBFC has funded this bill')
+  }
   const face = n(bd.amount)
   const already = await repaidSoFar(bd)
   const due = round2(face - already)
@@ -497,6 +526,27 @@ export async function listBdRepayments(bdId: number): Promise<Row[]> {
   })
 }
 
+// Every repayment in the active company, oldest first, for the Excel export's
+// second sheet. Deliberately ONE query rather than listBdRepayments per bill:
+// the export would otherwise fire a query per row, which is exactly the N+1 the
+// rest of this module was cleaned up to avoid.
+export async function listAllBdRepayments(): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT r.*, bd.bd_no, bd.finance_type, bd.amount AS bill_amount,
+                 nb.name AS nbfc_name, s.name AS supplier_name, cu.name AS customer_name,
+                 bd.party_type
+          FROM bd_repayments r
+          JOIN bill_discountings bd ON bd.id = r.bd_id
+          LEFT JOIN nbfcs nb ON nb.id = bd.nbfc_id
+          LEFT JOIN suppliers s ON bd.party_type = 'supplier' AND s.id = bd.party_id
+          LEFT JOIN customers cu ON bd.party_type = 'customer' AND cu.id = bd.party_id
+          WHERE bd.company_id = ?
+          ORDER BY bd.bd_no, r.repay_date, r.id`,
+    args: [getActiveCompanyId()]
+  })
+  return toPlain(res).map((r) => ({ ...r, party_name: partyName(r) }))
+}
+
 // Undo ONE part repayment — the wrong figure keyed, or a payment that did not
 // clear — without disturbing the others. Its voucher goes with it, and a bill
 // that was closed by this part reopens for the balance, giving back its margin
@@ -530,6 +580,45 @@ export async function deleteBdRepayment(repaymentId: number): Promise<{ id: numb
   return { id: repaymentId, bd_id: bdId }
 }
 
+// Stamp the day the NBFC's money actually landed. This is the point the bill
+// goes live: the disbursement posts here (bank debited, margin held, interest
+// taken, liability raised), and interest starts running from this date, which
+// is why it is asked for when it happens rather than guessed at when the bill
+// is opened. Re-marking simply moves the date and re-posts to match.
+export async function markBdPaymentReceived(id: number, dateIn?: string): Promise<{ id: number; date: string }> {
+  const c = getClient()
+  const bd = await loadBd(id)
+  if (String(bd.status) === 'repaid') throw new Error('This bill is already repaid — reopen it first if the receipt date needs correcting')
+  const date = String(dateIn || todayISO()).slice(0, 10)
+  const maturity = String(bd.maturity_date || '').slice(0, 10)
+  if (maturity && date > maturity) {
+    throw new Error('The payment cannot be received after the maturity date — check the date')
+  }
+  await c.execute({ sql: 'UPDATE bill_discountings SET payment_received_date = ? WHERE id = ?', args: [date, id] })
+  await postBdOpening(id)
+  return { id, date }
+}
+
+// Undo the receipt — marked against the wrong bill, or the credit never landed.
+// The disbursement voucher goes with it and the bill drops back to awaiting.
+// Refused once anything has been repaid: money cannot have gone back on a bill
+// that was never funded, so the repayments have to come off first.
+export async function unmarkBdPaymentReceived(id: number): Promise<{ id: number }> {
+  const c = getClient()
+  const bd = await loadBd(id)
+  if (String(bd.status) === 'repaid') throw new Error('This bill is repaid — reopen it first')
+  const paid = await repaidSoFar(bd)
+  if (paid > 0.004) {
+    throw new Error(`${inr(paid)} has already been repaid on this bill — remove the repayments before undoing the receipt`)
+  }
+  await dropEntry(n(bd.journal_entry_id) || null)
+  await c.execute({
+    sql: 'UPDATE bill_discountings SET payment_received_date = NULL, journal_entry_id = NULL WHERE id = ?',
+    args: [id]
+  })
+  return { id }
+}
+
 export async function reopenBd(id: number): Promise<{ id: number }> {
   const c = getClient()
   const bd = await loadBd(id)
@@ -547,13 +636,22 @@ export async function reopenBd(id: number): Promise<{ id: number }> {
 export async function bdKpis(): Promise<Row> {
   // Outstanding is what is still owed, not the face value — a bill half repaid
   // is half the exposure it was.
-  const rows = await listBd({ status: ['open'] })
+  //
+  // And only a FUNDED bill is exposure at all: one still awaiting its payment
+  // has no disbursement, no liability posted and no interest running, so
+  // counting it here would show money owed that the ledger does not have. Those
+  // are reported on their own line instead of being folded in or hidden.
+  const all = await listBd({ status: ['open'] })
+  const rows = all.filter((r) => String(r.stage) === 'live')
+  const awaiting = all.filter((r) => String(r.stage) === 'awaiting')
   return {
     count: rows.length,
     outstanding_total: round2(rows.reduce((s, r) => s + n(r.outstanding_amount), 0)),
     margin_total: round2(rows.reduce((s, r) => s + n(r.marginAmount), 0)),
     interest_total: round2(rows.reduce((s, r) => s + n(r.interestAmount), 0)),
     tds_total: round2(rows.reduce((s, r) => s + n(r.tdsAmount), 0)),
-    receipt_total: round2(rows.reduce((s, r) => s + n(r.receiptAmount), 0))
+    receipt_total: round2(rows.reduce((s, r) => s + n(r.receiptAmount), 0)),
+    awaiting_count: awaiting.length,
+    awaiting_total: round2(awaiting.reduce((s, r) => s + n(r.amount), 0))
   }
 }

@@ -1281,7 +1281,46 @@ const MIGRATIONS = [
   note TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );`,
-  'CREATE INDEX IF NOT EXISTS idx_bd_repay_bd ON bd_repayments(bd_id)'
+  'CREATE INDEX IF NOT EXISTS idx_bd_repay_bd ON bd_repayments(bd_id)',
+
+  // What a bill is discounted for is not always the whole invoice behind it, so
+  // the invoice's own value is worth recording next to the amount opened
+  // against it — it is what tells you how much of the invoice was financed.
+  // Informational: nothing is priced off it.
+  'ALTER TABLE bill_discountings ADD COLUMN invoice_amount REAL',
+
+  // ---------------------------------------------------------------------
+  // Second pass on rows read, aimed at what the measurements actually show:
+  // this database is small (~7,300 rows), so the bill is driven by how OFTEN
+  // a query runs and how much of a table it has to walk each time -- not by
+  // table size. These cover the tables that were still being walked whole.
+  //
+  // user_logs is the biggest table in the database and had no index at all.
+  // The activity log runs two DISTINCT sweeps over the entire table on every
+  // open, purely to fill its two filter dropdowns -- so opening it read every
+  // row twice over. It also filters by username, entity, action and date, and
+  // the nightly cleanup deletes by date.
+  // ---------------------------------------------------------------------
+  'CREATE INDEX IF NOT EXISTS idx_ulogs_username ON user_logs(username)',
+  'CREATE INDEX IF NOT EXISTS idx_ulogs_entity ON user_logs(entity)',
+  'CREATE INDEX IF NOT EXISTS idx_ulogs_created ON user_logs(created_at)',
+  'CREATE INDEX IF NOT EXISTS idx_ulogs_action ON user_logs(action)',
+  // production_items is joined to its parent on every stock figure and read
+  // per product by the stock registers' correlated subqueries.
+  'CREATE INDEX IF NOT EXISTS idx_pitems_production ON production_items(production_id)',
+  'CREATE INDEX IF NOT EXISTS idx_pitems_kind_product ON production_items(kind, product_id)',
+  // The SKU stock register runs SIX correlated subqueries per SKU -- three over
+  // the adjustments and three over sales -- and each was scanning its whole
+  // table. Both sides filter on the packaging (the SKU) within a company.
+  'CREATE INDEX IF NOT EXISTS idx_skuadj_pkg ON sku_adjustments(company_id, packaging_id)',
+  'CREATE INDEX IF NOT EXISTS idx_sales_pkg_type ON sales(packaging_id, sale_type)',
+  // A stock count is looked up by its date within a company.
+  'CREATE INDEX IF NOT EXISTS idx_scounts_company_date ON stock_counts(company_id, count_date)',
+  'CREATE INDEX IF NOT EXISTS idx_scounts_product ON stock_counts(product_id)',
+  // Bill Discounting: the register filters by NBFC and by finance type, and
+  // every mutation re-reads the bill by id (already the primary key).
+  'CREATE INDEX IF NOT EXISTS idx_bd_nbfc ON bill_discountings(nbfc_id)',
+  'CREATE INDEX IF NOT EXISTS idx_bd_company_status ON bill_discountings(company_id, status)'
 ]
 
 
@@ -1412,7 +1451,10 @@ async function fetchRevision(): Promise<void> {
   revisionInFlight = true
   try {
     const res = await getClient().execute("SELECT value FROM app_settings WHERE key = 'db_revision'")
-    cachedRevision = res.rows.length ? Number(res.rows[0].value) : 0
+    const next = res.rows.length ? Number(res.rows[0].value) : 0
+    // Someone else wrote: anything cached off the old data has to go.
+    if (next !== cachedRevision) notifyDataChanged()
+    cachedRevision = next
   } catch {
     // keep the last known value; next tick retries
   } finally {
@@ -1460,6 +1502,19 @@ export async function runDaily(key: string, fn: () => Promise<void>): Promise<vo
   })
 }
 
+// Anything that wants to throw away derived state when the data underneath it
+// changes registers here. Called on our own writes and on a revision change
+// picked up from another machine.
+const invalidators: (() => void)[] = []
+
+export function onDataChanged(fn: () => void): void {
+  invalidators.push(fn)
+}
+
+export function notifyDataChanged(): void {
+  for (const fn of invalidators) fn()
+}
+
 export async function bumpRevision(): Promise<void> {
   await getClient().execute(
     `INSERT INTO app_settings (key, value) VALUES ('db_revision', '1')
@@ -1467,6 +1522,7 @@ export async function bumpRevision(): Promise<void> {
   )
   // Reflect our own write immediately so this device's pages refresh at once.
   cachedRevision += 1
+  notifyDataChanged()
 }
 
 export function getRevision(): number {

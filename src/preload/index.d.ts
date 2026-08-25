@@ -309,7 +309,10 @@ export interface Api {
       }
     ) => Promise<{ id: number; amount: number; outstanding: number; closed: boolean }>
     repayments: (id: number) => Promise<Row[]>
+    allRepayments: () => Promise<Row[]>
     deleteRepayment: (id: number) => Promise<{ id: number; bd_id: number }>
+    markReceived: (id: number, date?: string) => Promise<{ id: number; date: string }>
+    unmarkReceived: (id: number) => Promise<{ id: number }>
     reopen: (id: number) => Promise<{ id: number }>
     upfrontInterest: (id: number, date?: string) => Promise<{ id: number } | null>
     kpis: () => Promise<Row>

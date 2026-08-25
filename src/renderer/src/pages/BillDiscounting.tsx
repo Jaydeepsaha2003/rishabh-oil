@@ -11,6 +11,7 @@ import {
   Pencil,
   Plus,
   RotateCcw,
+  FileSpreadsheet,
   Settings2,
   Trash2,
   Users
@@ -32,6 +33,7 @@ import { formatDate, formatDateShort, formatINR, todayISO } from '@/lib/format'
 import { isTradingParty } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
+import { exportBdRegister } from '@/lib/bdExcel'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -66,9 +68,12 @@ function DueBadge({ date }: { date: unknown }): React.JSX.Element | null {
   )
 }
 
-// Open = still owed to the NBFC (sky), Repaid = wound up (emerald) — the same
-// left-border-plus-tint coding the LC register uses for its stages.
+// Awaiting = opened, the NBFC's money not in yet (amber), Live = funded and
+// still owed (sky), Repaid = wound up (emerald) — the same left-border-plus-tint
+// coding the LC register uses for its stages.
 const STATUS_TONE: Record<string, { row: string; hover: string }> = {
+  awaiting: { row: 'border-l-4 border-l-amber-400 [border-left-style:solid]', hover: 'hover:bg-amber-100/60' },
+  live: { row: 'border-l-4 border-l-sky-400 [border-left-style:solid]', hover: 'hover:bg-sky-100/60' },
   open: { row: 'border-l-4 border-l-sky-400 [border-left-style:solid]', hover: 'hover:bg-sky-100/60' },
   repaid: { row: 'border-l-4 border-l-emerald-400 [border-left-style:solid]', hover: 'hover:bg-emerald-100/60' }
 }
@@ -159,14 +164,13 @@ export function BillDiscounting({
   onNbfcsLoaded?: (rows: Row[]) => void
 } = {}): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
-  const [kpis, setKpis] = useState<Row>({})
   const [nbfcs, setNbfcs] = useState<Row[]>([])
   const [suppliers, setSuppliers] = useState<Row[]>([])
   const [customers, setCustomers] = useState<Row[]>([])
 
   const [view, setView] = useState<'cards' | 'table'>('table')
   const [duePeriod, setDuePeriod] = useState('all')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'repaid'>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'awaiting' | 'live' | 'repaid'>('all')
   const [typeFilter, setTypeFilter] = useState<string | null>(null)
 
   const [form, setForm] = useState<Row | null>(null)
@@ -178,38 +182,79 @@ export function BillDiscounting({
   // The parts already paid on the bill in the dialog, so it opens showing what
   // has gone back rather than only what is left.
   const [repayParts, setRepayParts] = useState<Row[]>([])
+  // The bill whose receipt is being stamped, and the date being stamped on it.
+  const [receiveRow, setReceiveRow] = useState<Row | null>(null)
+  const [receiveDate, setReceiveDate] = useState('')
+  const [receiveSaving, setReceiveSaving] = useState(false)
 
-  const load = useCallback(async () => {
-    const [list, k, nb, sup, cust] = await Promise.all([
-      window.api.billDiscounting.list(),
-      window.api.billDiscounting.kpis(),
+  // Every write anywhere in the app bumps the revision, which re-runs this
+  // page's reload -- so what it asks for on each of those ticks is what the
+  // hosting bill is actually made of. Two things were wasted on every tick:
+  //
+  //   - the KPI query re-read the same bills the list had just returned, to
+  //     total columns that are plain arithmetic over rows already in hand;
+  //   - the three master lists (NBFCs, suppliers, customers) were refetched
+  //     although a bill being repaid cannot change any of them.
+  //
+  // The masters are now fetched once on mount, and the KPIs are computed from
+  // the list. Five queries per refresh became one.
+  const loadBills = useCallback(async () => {
+    const list = await window.api.billDiscounting.list()
+    setRows(list)
+    // Handed back so a caller that has just posted something can pick its own
+    // row out of the fresh list instead of reading the stale one it held.
+    return list
+  }, [])
+
+  const loadMasters = useCallback(async () => {
+    const [nb, sup, cust] = await Promise.all([
       window.api.data.list('nbfcs'),
       window.api.data.list('suppliers'),
       window.api.data.list('customers')
     ])
-    setRows(list)
-    setKpis(k)
     onNbfcsLoaded?.(nb)
     setNbfcs(nb)
     setSuppliers(sup.filter((x) => x.active))
     setCustomers(cust.filter((x) => x.active))
-    // Handed back so a caller that has just posted something can pick its own
-    // row out of the fresh list instead of reading the stale one it held.
-    return list
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Kept as `load` so every caller in the page is unchanged: after posting
+  // something they want the bills back, never the masters.
+  const load = loadBills
+
   useEffect(() => {
-    load()
-  }, [load])
+    void loadBills()
+    void loadMasters()
+  }, [loadBills, loadMasters])
   useLiveRefresh(() => {
-    void load()
+    void loadBills()
   })
+
+  // The same figures bdKpis returned, off the rows already loaded -- exposure
+  // counts only funded bills, since nothing is disbursed on one still awaiting
+  // its payment, and those are reported separately.
+  const kpis = useMemo(() => {
+    const open = rows.filter((r) => String(r.status) !== 'repaid')
+    const live = open.filter((r) => String(r.stage) === 'live')
+    const awaiting = open.filter((r) => String(r.stage) === 'awaiting')
+    const sum = (list: Row[], key: string): number => round2(list.reduce((t, r) => t + n(r[key]), 0))
+    return {
+      count: live.length,
+      outstanding_total: sum(live, 'outstanding_amount'),
+      margin_total: sum(live, 'marginAmount'),
+      interest_total: sum(live, 'interestAmount'),
+      tds_total: sum(live, 'tdsAmount'),
+      receipt_total: sum(live, 'receiptAmount'),
+      awaiting_count: awaiting.length,
+      awaiting_total: sum(awaiting, 'amount')
+    }
+  }, [rows])
 
   const filtered = useMemo(() => {
     let list = rows
     if (nbfcFilter) list = list.filter((r) => String(r.nbfc_id ?? '') === String(nbfcFilter))
-    if (statusFilter !== 'all') list = list.filter((r) => String(r.status) === statusFilter)
+    if (statusFilter !== 'all') list = list.filter((r) => String(r.stage) === statusFilter)
     if (typeFilter) list = list.filter((r) => String(r.finance_type) === typeFilter)
     if (duePeriod !== 'all') {
       const maxDays = DUE_PERIODS.find((p) => p.key === duePeriod)?.maxDays
@@ -246,8 +291,8 @@ export function BillDiscounting({
       finance_type: 'PID',
       party_type: 'supplier',
       purpose: 'manufacturing',
-      payment_received_date: todayISO(),
       maturity_date: '',
+      invoice_amount: '',
       amount: '',
       margin_pct: '',
       interest_pct: '',
@@ -266,7 +311,10 @@ export function BillDiscounting({
       party_type: r.party_type,
       party_id: r.party_id ? String(r.party_id) : '',
       purpose: r.purpose,
+      invoice_amount: r.invoice_amount ?? '',
       amount: r.amount ?? '',
+      // Not editable on this form any more — it is stamped by Mark payment
+      // received — but carried through so saving other terms cannot clear it.
       payment_received_date: r.payment_received_date || '',
       maturity_date: r.maturity_date || '',
       margin_pct: r.margin_pct ?? '',
@@ -291,22 +339,65 @@ export function BillDiscounting({
     }))
   }
 
-  // Picking an NBFC pulls its default terms in — each still fully editable.
+  // Picking an NBFC applies its terms — always, and every time it is changed.
+  //
+  // Changing the financier is an explicit act, so its rates take effect: the
+  // whole point of holding terms on the NBFC master is that choosing the NBFC
+  // chooses the terms. Anything typed afterwards still wins, because typing
+  // comes after.
+  //
+  // An earlier version tried to be clever and preserve a figure it judged to be
+  // a manual override, by comparing it against the previous NBFC's default.
+  // That failed on exactly the case it mattered: a bill carrying 14% while its
+  // NBFC's master says 14.5% — a rate typed by hand, or a master edited after
+  // the bill was raised — was read as an override on EVERY switch and so never
+  // moved. Guessing which figures the user meant to keep cannot be done
+  // reliably, and guessing wrong is what made the picker look broken.
+  //
+  // Only fields the NBFC actually carries are applied: one with no rate on file
+  // must not blank out a rate that is already there.
   function chooseNbfc(v: string): void {
     const nb = nbfcs.find((x) => String(x.id) === v)
     setForm((p) => {
       const next: Row = { ...p, nbfc_id: v }
-      if (nb) {
-        if (!n(p?.interest_pct)) next.interest_pct = nb.interest_pct ?? ''
-        if (!n(p?.tds_pct)) next.tds_pct = nb.tds_pct ?? ''
-        if (n(nb.days_year) > 0) next.days_year = nb.days_year
-        // A default tenor fills the maturity date forward from the receipt date.
-        if (!p?.maturity_date && n(nb.interest_days) > 0 && p?.payment_received_date) {
-          const d = new Date(`${String(p.payment_received_date).slice(0, 10)}T00:00:00`)
-          d.setDate(d.getDate() + n(nb.interest_days))
-          next.maturity_date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      if (!nb) return next
+      const applied: string[] = []
+      if (n(nb.interest_pct) > 0 && n(nb.interest_pct) !== n(p?.interest_pct)) {
+        next.interest_pct = nb.interest_pct
+        applied.push(`interest ${n(nb.interest_pct)}%`)
+      }
+      if (n(nb.tds_pct) > 0 && n(nb.tds_pct) !== n(p?.tds_pct)) {
+        next.tds_pct = nb.tds_pct
+        applied.push(`TDS ${n(nb.tds_pct)}%`)
+      }
+      if (n(nb.days_year) > 0 && n(nb.days_year) !== n(p?.days_year)) {
+        next.days_year = nb.days_year
+        applied.push(`${n(nb.days_year)}-day year`)
+      }
+      // The tenor is one of the NBFC's terms too, so it applies on a switch like
+      // the rates do — not only into a blank field. This is what moves Int.
+      // days: that figure is not an NBFC term at all, it is the gap between the
+      // receipt date and the maturity date, so nothing about it can change
+      // until one of those two dates does. Leaving an existing maturity alone
+      // was why a 90-day bill stayed at 90 days on an NBFC whose tenor is 60.
+      //
+      // Counted from the payment received date once there is one, else from
+      // today — the day the bill is being opened. A maturity you type after
+      // this still stands; only changing the NBFC again recomputes it.
+      if (n(nb.interest_days) > 0) {
+        const base = String(p?.payment_received_date || todayISO()).slice(0, 10)
+        const d = new Date(`${base}T00:00:00`)
+        d.setDate(d.getDate() + n(nb.interest_days))
+        const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+        if (iso !== String(p?.maturity_date || '').slice(0, 10)) {
+          next.maturity_date = iso
+          applied.push(`${n(nb.interest_days)}-day tenor → ${formatDate(iso)}`)
         }
       }
+      // Said out loud, because most of these NBFCs carry the same TDS and the
+      // same day-count — so a correct switch can change almost nothing on
+      // screen, which is indistinguishable from a switch that did not work.
+      if (applied.length) toast.success(`${nb.name}: ${applied.join(' · ')}`)
       return next
     })
   }
@@ -315,16 +406,21 @@ export function BillDiscounting({
 
   async function save(): Promise<void> {
     if (!form) return
+    if (!String(form.bd_no ?? '').trim()) {
+      toast.error('Enter the BD no — every voucher this bill posts is numbered with it')
+      return
+    }
     setSaving(true)
     try {
       const payload: Row = {
-        bd_no: form.bd_no || null,
+        bd_no: String(form.bd_no).trim(),
         nbfc_id: form.nbfc_id ? Number(form.nbfc_id) : null,
         finance_type: form.finance_type,
         party_type: form.party_type,
         party_id: form.party_id ? Number(form.party_id) : null,
         purpose: form.purpose,
         amount: Number(form.amount) || 0,
+        invoice_amount: String(form.invoice_amount ?? '').trim() === '' ? null : Number(form.invoice_amount),
         payment_received_date: form.payment_received_date || null,
         maturity_date: form.maturity_date || null,
         margin_pct: Number(form.margin_pct) || 0,
@@ -439,6 +535,64 @@ export function BillDiscounting({
     }
   }
 
+  // Same register the LC page downloads, in the same layout — whatever the
+  // filter chips have narrowed the list to is exactly what goes into the file.
+  const [exporting, setExporting] = useState(false)
+  async function downloadRegister(): Promise<void> {
+    setExporting(true)
+    try {
+      // One query for every instalment across the company, rather than one per
+      // bill — the parts go on their own sheet.
+      const parts = await window.api.billDiscounting.allRepayments()
+      await exportBdRegister(filtered, `bd-register-${todayISO()}`, parts)
+      toast.success(`Downloaded ${filtered.length} bill${filtered.length === 1 ? '' : 's'}`)
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  function openReceive(r: Row): void {
+    setReceiveRow(r)
+    setReceiveDate(String(r.payment_received_date || '').slice(0, 10) || todayISO())
+  }
+
+  async function saveReceive(): Promise<void> {
+    if (!receiveRow) return
+    if (!receiveDate) {
+      toast.error('Pick the date the payment landed')
+      return
+    }
+    setReceiveSaving(true)
+    try {
+      await window.api.billDiscounting.markReceived(Number(receiveRow.id), receiveDate)
+      toast.success(
+        receiveRow.payment_received_date
+          ? 'Receipt date changed — its voucher is re-posted'
+          : 'Payment received — the bill is live and its disbursement is posted'
+      )
+      setReceiveRow(null)
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setReceiveSaving(false)
+    }
+  }
+
+  // The credit never landed, or it was marked against the wrong bill.
+  async function undoReceive(r: Row): Promise<void> {
+    if (!window.confirm(`Undo the payment received on ${r.bd_no || 'this bill'}? Its disbursement voucher reverses too.`)) return
+    try {
+      await window.api.billDiscounting.unmarkReceived(Number(r.id))
+      toast.success('Receipt undone — the bill is back to awaiting payment')
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
   async function remove(r: Row): Promise<void> {
     if (!window.confirm(`Delete ${r.bd_no || 'this discounted bill'}? Its vouchers reverse too.`)) return
     try {
@@ -472,10 +626,33 @@ export function BillDiscounting({
           <span className="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold tabular-nums">
             {n(kpis.count)} open
           </span>
+          {/* Awaiting bills are deliberately NOT in the money figures below —
+              nothing has been disbursed on them — so they are counted here
+              rather than being left invisible. */}
+          {n(kpis.awaiting_count) > 0 && (
+            <button
+              type="button"
+              onClick={() => setStatusFilter('awaiting')}
+              className="rounded-full bg-amber-400/90 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-[#1a2c56] transition-colors hover:bg-amber-300"
+              title="Opened, waiting on the NBFC's payment — click to show only these"
+            >
+              {n(kpis.awaiting_count)} awaiting {formatINR(kpis.awaiting_total)}
+            </button>
+          )}
           <Button
             size="sm"
             variant="outline"
             className="ml-auto h-7 gap-1.5 border-white/30 bg-white/10 px-2 text-xs text-white hover:bg-white/20 hover:text-white"
+            disabled={exporting || filtered.length === 0}
+            title={filtered.length === 0 ? 'Nothing in this filter to download' : 'Download this register as Excel'}
+            onClick={() => void downloadRegister()}
+          >
+            <FileSpreadsheet className="h-3.5 w-3.5" /> {exporting ? 'Preparing…' : 'Download Excel'}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 border-white/30 bg-white/10 px-2 text-xs text-white hover:bg-white/20 hover:text-white"
             onClick={() => setNbfcOpen(true)}
           >
             <Settings2 className="h-3.5 w-3.5" /> Manage NBFCs
@@ -544,7 +721,8 @@ export function BillDiscounting({
         {(
           [
             { key: 'all', label: 'All bills' },
-            { key: 'open', label: 'Open' },
+            { key: 'awaiting', label: 'Awaiting payment' },
+            { key: 'live', label: 'Open' },
             { key: 'repaid', label: 'Repaid' }
           ] as const
         ).map((s) => (
@@ -584,7 +762,8 @@ export function BillDiscounting({
           ) : (
             filtered.map((r) => {
               const repaid = String(r.status) === 'repaid'
-              const tone = STATUS_TONE[String(r.status)] || STATUS_TONE.open
+              const awaiting = String(r.stage) === 'awaiting'
+              const tone = STATUS_TONE[String(r.stage)] || STATUS_TONE.open
               return (
                 <Card key={String(r.id)} className={cn('flex flex-col gap-3 overflow-hidden border-l-4 p-0 [border-left-style:solid]', tone.row)}>
                   <div className="flex flex-col gap-3 p-4 pb-0">
@@ -597,6 +776,8 @@ export function BillDiscounting({
                           <Badge variant="muted">{r.finance_type}</Badge>
                           {repaid ? (
                             <Badge variant="success">Repaid {formatDate(r.repaid_date)}</Badge>
+                          ) : awaiting ? (
+                            <Badge variant="warning">Awaiting payment</Badge>
                           ) : n(r.repaid_total) > 0 ? (
                             <Badge variant="warning">Part repaid</Badge>
                           ) : (
@@ -616,7 +797,7 @@ export function BillDiscounting({
                         amount goes underneath it. */}
                     <div className="rounded-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-3 text-center shadow-sm">
                       <div className="text-[10px] font-semibold uppercase tracking-widest text-white/60">
-                        {n(r.repaid_total) > 0 && !repaid ? 'Outstanding' : 'Bill amount'}
+                        {n(r.repaid_total) > 0 && !repaid ? 'Outstanding' : 'Open amount'}
                       </div>
                       <div className="text-2xl font-bold tabular-nums text-white">
                         {formatINR(n(r.repaid_total) > 0 && !repaid ? r.outstanding_amount : r.amount)}
@@ -625,6 +806,11 @@ export function BillDiscounting({
                         <div className="mt-0.5 text-[11px] tabular-nums text-white/70">
                           {formatINR(r.repaid_total)} of {formatINR(r.amount)} repaid
                           {n(r.repay_parts) > 0 && ` · ${n(r.repay_parts)} ${n(r.repay_parts) === 1 ? 'part' : 'parts'}`}
+                        </div>
+                      )}
+                      {n(r.invoice_amount) > 0 && (
+                        <div className="mt-0.5 text-[11px] tabular-nums text-white/70">
+                          against a {formatINR(r.invoice_amount)} invoice
                         </div>
                       )}
                     </div>
@@ -648,15 +834,22 @@ export function BillDiscounting({
                     </div>
                     <div className="flex items-center justify-between text-[11px] text-muted-foreground">
                       <span className="flex items-center gap-1.5">
-                        <CalendarRange className="h-3 w-3 shrink-0" /> {formatDate(r.payment_received_date)} → {formatDate(r.maturity_date)}
+                        <CalendarRange className="h-3 w-3 shrink-0" />{' '}
+                        {awaiting ? 'payment awaited' : formatDate(r.payment_received_date)} → {formatDate(r.maturity_date)}
                       </span>
-                      {!repaid && <DueBadge date={r.maturity_date} />}
+                      {!repaid && !awaiting && <DueBadge date={r.maturity_date} />}
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-1.5 border-t border-dashed border-[#e5dfc8] px-4 py-3">
+                    {/* One button, whichever stage the bill is at: the money
+                        has to come in before it can go back out. */}
                     {repaid ? (
                       <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" onClick={() => void reopen(r)}>
                         <RotateCcw className="h-3.5 w-3.5" /> Reopen
+                      </Button>
+                    ) : awaiting ? (
+                      <Button size="sm" className="h-7 gap-1 bg-amber-600 px-2 text-xs hover:bg-amber-700" onClick={() => openReceive(r)}>
+                        <Banknote className="h-3.5 w-3.5" /> Mark payment received
                       </Button>
                     ) : (
                       <Button size="sm" className="h-7 bg-[#1a2c56] px-2 text-xs hover:bg-[#24407e]" onClick={() => openRepay(r)}>
@@ -671,6 +864,20 @@ export function BillDiscounting({
                           disabled: repaid,
                           disabledReason: 'Already repaid — reopen it first',
                           onClick: () => openEdit(r)
+                        },
+                        {
+                          label: 'Change payment received date',
+                          icon: CalendarRange,
+                          disabled: repaid || awaiting,
+                          disabledReason: repaid ? 'Already repaid — reopen it first' : 'No payment marked on this bill yet',
+                          onClick: () => openReceive(r)
+                        },
+                        {
+                          label: 'Undo payment received',
+                          icon: RotateCcw,
+                          disabled: repaid || awaiting,
+                          disabledReason: repaid ? 'Already repaid — reopen it first' : 'No payment marked on this bill yet',
+                          onClick: () => void undoReceive(r)
                         },
                         {
                           label: 'Delete — reverses its vouchers',
@@ -698,7 +905,7 @@ export function BillDiscounting({
                   <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Days left</TableHead>
                   <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Int. days</TableHead>
                   <TableHead className="h-9 whitespace-nowrap border-l border-[#1a2c56]/15 text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
-                    Bill amount
+                    Open amount
                   </TableHead>
                   <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Margin</TableHead>
                   <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Interest</TableHead>
@@ -755,7 +962,8 @@ export function BillDiscounting({
                 ) : (
                   filtered.map((r) => {
                     const repaid = String(r.status) === 'repaid'
-                    const tone = STATUS_TONE[String(r.status)] || STATUS_TONE.open
+                    const awaiting = String(r.stage) === 'awaiting'
+                    const tone = STATUS_TONE[String(r.stage)] || STATUS_TONE.open
                     return (
                       <TableRow
                         key={String(r.id)}
@@ -786,7 +994,7 @@ export function BillDiscounting({
                             <span className="mr-1 text-[10px] font-semibold uppercase text-muted-foreground" title="Payment received">
                               Rec
                             </span>
-                            {formatDateShort(r.payment_received_date)}
+                            {awaiting ? <span className="text-amber-700">awaited</span> : formatDateShort(r.payment_received_date)}
                           </div>
                           <div>
                             <span className="mr-1 text-[10px] font-semibold uppercase text-muted-foreground" title="Maturity">
@@ -798,6 +1006,8 @@ export function BillDiscounting({
                         <TableCell className="whitespace-nowrap">
                           {repaid ? (
                             <span className="text-muted-foreground">—</span>
+                          ) : awaiting ? (
+                            <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">Awaiting payment</span>
                           ) : (
                             <div className="flex flex-col items-start gap-0.5">
                               <DueBadge date={r.maturity_date} />
@@ -816,6 +1026,11 @@ export function BillDiscounting({
                               <span className="font-semibold text-[#1a2c56]">{formatINR(r.outstanding_amount)}</span>
                             </div>
                           )}
+                          {n(r.invoice_amount) > 0 && (
+                            <div className="text-[10px] font-normal text-muted-foreground" title="Invoice this bill is drawn against">
+                              inv {formatINR(r.invoice_amount)}
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-right tabular-nums">{formatINR(r.marginAmount)}</TableCell>
                         <TableCell className="whitespace-nowrap text-right tabular-nums text-rose-700">{formatINR(r.interestAmount)}</TableCell>
@@ -828,6 +1043,14 @@ export function BillDiscounting({
                             {repaid ? (
                               <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" onClick={() => void reopen(r)}>
                                 <RotateCcw className="h-3.5 w-3.5" /> Reopen
+                              </Button>
+                            ) : awaiting ? (
+                              <Button
+                                size="sm"
+                                className="h-7 gap-1 whitespace-nowrap bg-amber-600 px-2 text-xs hover:bg-amber-700"
+                                onClick={() => openReceive(r)}
+                              >
+                                <Banknote className="h-3.5 w-3.5" /> Mark received
                               </Button>
                             ) : (
                               <Button size="sm" className="h-7 bg-[#1a2c56] px-2 text-xs hover:bg-[#24407e]" onClick={() => openRepay(r)}>
@@ -842,6 +1065,20 @@ export function BillDiscounting({
                                   disabled: repaid,
                                   disabledReason: 'Already repaid — reopen it first',
                                   onClick: () => openEdit(r)
+                                },
+                                {
+                                  label: 'Change payment received date',
+                                  icon: CalendarRange,
+                                  disabled: repaid || awaiting,
+                                  disabledReason: repaid ? 'Already repaid — reopen it first' : 'No payment marked on this bill yet',
+                                  onClick: () => openReceive(r)
+                                },
+                                {
+                                  label: 'Undo payment received',
+                                  icon: RotateCcw,
+                                  disabled: repaid || awaiting,
+                                  disabledReason: repaid ? 'Already repaid — reopen it first' : 'No payment marked on this bill yet',
+                                  onClick: () => void undoReceive(r)
                                 },
                                 {
                                   label: 'Delete — reverses its vouchers',
@@ -962,7 +1199,10 @@ export function BillDiscounting({
                     </Select>
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label>BD no</Label>
+                    <Label className="flex items-center gap-1">
+                      BD no *
+                      <InfoTip text="Your own reference for this bill. Every voucher it posts is numbered with it — the disbursement, each repayment, the margin release — so it is how the bill is found in the ledger." />
+                    </Label>
                     <Input value={form.bd_no ?? ''} placeholder="Your own reference" onChange={(e) => setForm((p) => ({ ...p, bd_no: e.target.value }))} />
                   </div>
                 </div>
@@ -973,17 +1213,40 @@ export function BillDiscounting({
                   Bill &amp; terms
                 </h3>
                 <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-4">
+                  {/* The invoice behind the bill, and the part of it actually
+                      being discounted. They are often not the same figure, and
+                      only the second one is priced — the invoice value is kept
+                      alongside it so the file records what was financed
+                      against what. */}
                   <div className="flex flex-col gap-1.5">
-                    <Label>Bill amount (₹) *</Label>
-                    <Input type="number" value={form.amount ?? ''} onChange={(e) => setForm((p) => ({ ...p, amount: e.target.value }))} />
+                    <Label className="flex items-center gap-1">
+                      Invoice amount (₹)
+                      <InfoTip text="The full value of the invoice this bill is drawn against. Optional, and nothing is priced off it — it is recorded so you can see how much of the invoice was financed." />
+                    </Label>
+                    <Input
+                      type="number"
+                      value={form.invoice_amount ?? ''}
+                      onChange={(e) => setForm((p) => ({ ...p, invoice_amount: e.target.value }))}
+                    />
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label>Payment received date *</Label>
-                    <DatePicker
-                      value={String(form.payment_received_date || '')}
-                      max={form.maturity_date || undefined}
-                      onChange={(v) => setForm((p) => ({ ...p, payment_received_date: v }))}
-                    />
+                    <Label className="flex items-center gap-1">
+                      Open amount (₹) *
+                      <InfoTip text="What is being opened against the invoice — the amount the NBFC discounts, and the figure every term below is calculated on. Often less than the invoice itself." />
+                    </Label>
+                    <Input type="number" value={form.amount ?? ''} onChange={(e) => setForm((p) => ({ ...p, amount: e.target.value }))} />
+                    {n(form.invoice_amount) > 0 && n(form.amount) > 0 && (
+                      <div
+                        className={cn(
+                          'text-[11px]',
+                          n(form.amount) - n(form.invoice_amount) > 0.004 ? 'font-medium text-amber-700' : 'text-muted-foreground'
+                        )}
+                      >
+                        {n(form.amount) - n(form.invoice_amount) > 0.004
+                          ? `More than the ${formatINR(form.invoice_amount)} invoice — check the two figures`
+                          : `${round2((n(form.amount) / n(form.invoice_amount)) * 100)}% of the ${formatINR(form.invoice_amount)} invoice`}
+                      </div>
+                    )}
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Maturity date *</Label>
@@ -1030,12 +1293,33 @@ export function BillDiscounting({
                 </div>
               </section>
 
-              {preview && n(form.amount) > 0 && (
+              {/* Interest runs from the day the payment is received, and that
+                  date is stamped later — so on a bill that has not been funded
+                  yet the interest, TDS and payout are not knowable and are not
+                  shown as zeroes. Margin is, since it is a straight percentage
+                  of the open amount. */}
+              {preview && n(form.amount) > 0 && !form.payment_received_date && (
+                <div className="grid grid-cols-2 gap-px rounded-lg border border-[#e5dfc8] bg-[#e5dfc8] p-px sm:grid-cols-3">
+                  <div className="bg-white px-3 py-2 text-center">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Margin</div>
+                    <div className="text-[13px] font-semibold tabular-nums text-[#1a2c56]">{formatINR(preview.marginAmount)}</div>
+                  </div>
+                  <div className="bg-white px-3 py-2 text-center">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Funded (net margin)</div>
+                    <div className="text-[13px] font-semibold tabular-nums text-[#1a2c56]">{formatINR(preview.openAmount)}</div>
+                  </div>
+                  <div className="bg-amber-50 px-3 py-2 text-center">
+                    <div className="text-[10px] uppercase tracking-wide text-amber-800">Interest · TDS · payout</div>
+                    <div className="text-[11px] font-medium text-amber-800">worked out on Mark payment received</div>
+                  </div>
+                </div>
+              )}
+              {preview && n(form.amount) > 0 && !!form.payment_received_date && (
                 <div className="grid grid-cols-2 gap-px rounded-lg border border-[#e5dfc8] bg-[#e5dfc8] p-px sm:grid-cols-4 md:grid-cols-7">
                   {([
                     { label: 'Int. days', value: String(preview.intDays), tone: 'text-[#1a2c56]' },
                     { label: 'Margin', value: formatINR(preview.marginAmount), tone: 'text-[#1a2c56]' },
-                    { label: 'Open amount', value: formatINR(preview.openAmount), tone: 'text-[#1a2c56]' },
+                    { label: 'Funded (net margin)', value: formatINR(preview.openAmount), tone: 'text-[#1a2c56]' },
                     { label: 'Interest', value: formatINR(preview.interestAmount), tone: 'text-rose-700' },
                     { label: 'TDS', value: formatINR(preview.tdsAmount), tone: 'text-[#1a2c56]' },
                     { label: 'Net int.', value: formatINR(preview.netInterest), tone: 'text-[#1a2c56]' }
@@ -1062,6 +1346,59 @@ export function BillDiscounting({
             <Button variant="outline" onClick={() => setForm(null)} disabled={saving}>Cancel</Button>
             <Button className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => void save()} disabled={saving}>
               {saving ? 'Saving…' : 'Save'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Mark payment received — the middle stage. One question only: the day
+          the NBFC's money landed. That date starts the interest clock and posts
+          the disbursement, so it is asked when it happens rather than guessed
+          at when the bill is opened. */}
+      <Dialog open={!!receiveRow} onOpenChange={(o) => !o && setReceiveRow(null)}>
+        <DialogContent className="border-[#d9d2b8] bg-[#fffdf4] sm:max-w-md">
+          <DialogHeader className="-mx-6 -mt-6 mb-1 rounded-t-lg bg-[#dce6f5] px-6 py-2.5">
+            <DialogTitle className="text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]">
+              {receiveRow?.payment_received_date ? 'Change receipt date' : 'Mark payment received'}
+              {receiveRow?.bd_no ? ` — ${receiveRow.bd_no}` : ''}
+            </DialogTitle>
+          </DialogHeader>
+          {receiveRow && (
+            <div className="grid gap-4">
+              <div className="rounded-md bg-muted px-3 py-2 text-sm">
+                {receiveRow.nbfc_name} · {receiveRow.party_name}
+                <div className="mt-1.5 grid grid-cols-2 gap-2 text-[11px]">
+                  <div>
+                    <div className="text-muted-foreground">Open amount</div>
+                    <div className="font-semibold tabular-nums">{formatINR(receiveRow.amount)}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Maturity</div>
+                    <div className="font-semibold tabular-nums">{formatDate(receiveRow.maturity_date)}</div>
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label className="flex items-center gap-1">
+                  Payment received on
+                  <InfoTip text="The day the NBFC's money actually landed. Interest runs from this date to maturity, and the disbursement — bank debited, margin held, interest taken — posts on it." />
+                </Label>
+                <DatePicker value={receiveDate} max={receiveRow.maturity_date || undefined} onChange={(v) => setReceiveDate(v)} />
+              </div>
+              {receiveDate && receiveRow.maturity_date && (
+                <div className="text-[11px] text-muted-foreground">
+                  Interest would run {Math.max(0, (daysTo(String(receiveRow.maturity_date).slice(0, 10)) ?? 0) - (daysTo(receiveDate) ?? 0))} days
+                  to {formatDate(receiveRow.maturity_date)}.
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReceiveRow(null)} disabled={receiveSaving}>
+              Cancel
+            </Button>
+            <Button className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => void saveReceive()} disabled={receiveSaving}>
+              {receiveSaving ? 'Saving…' : receiveRow?.payment_received_date ? 'Change date' : 'Mark received'}
             </Button>
           </DialogFooter>
         </DialogContent>

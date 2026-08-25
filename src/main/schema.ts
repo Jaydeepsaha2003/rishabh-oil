@@ -346,6 +346,7 @@ CREATE TABLE IF NOT EXISTS bill_discountings (
   party_id INTEGER,
   purpose TEXT NOT NULL DEFAULT 'manufacturing',
   amount REAL NOT NULL DEFAULT 0,
+  invoice_amount REAL,
   payment_received_date TEXT,
   maturity_date TEXT,
   margin_pct REAL NOT NULL DEFAULT 0,
