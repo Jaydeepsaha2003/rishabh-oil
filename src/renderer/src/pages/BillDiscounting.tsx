@@ -175,6 +175,9 @@ export function BillDiscounting({
   const [repayRow, setRepayRow] = useState<Row | null>(null)
   const [repayForm, setRepayForm] = useState<Row>({})
   const [repaySaving, setRepaySaving] = useState(false)
+  // The parts already paid on the bill in the dialog, so it opens showing what
+  // has gone back rather than only what is left.
+  const [repayParts, setRepayParts] = useState<Row[]>([])
 
   const load = useCallback(async () => {
     const [list, k, nb, sup, cust] = await Promise.all([
@@ -190,13 +193,18 @@ export function BillDiscounting({
     setNbfcs(nb)
     setSuppliers(sup.filter((x) => x.active))
     setCustomers(cust.filter((x) => x.active))
+    // Handed back so a caller that has just posted something can pick its own
+    // row out of the fresh list instead of reading the stale one it held.
+    return list
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
     load()
   }, [load])
-  useLiveRefresh(load)
+  useLiveRefresh(() => {
+    void load()
+  })
 
   const filtered = useMemo(() => {
     let list = rows
@@ -338,28 +346,96 @@ export function BillDiscounting({
     }
   }
 
+  // What is still owed on a bill: the face amount less everything already
+  // repaid. A bill with no parts is simply its own amount.
+  const dueOn = (r: Row | null): number => (r ? round2(n(r.amount) - n(r.repaid_total)) : 0)
+
+  async function loadRepayParts(bdId: number): Promise<void> {
+    try {
+      setRepayParts(await window.api.billDiscounting.repayments(bdId))
+    } catch {
+      setRepayParts([])
+    }
+  }
+
   function openRepay(r: Row): void {
     setRepayRow(r)
-    setRepayForm({ repay_date: todayISO(), settle_via: 'bank', ref: '', release_margin: n(r.marginAmount) > 0 })
+    // Defaults to clearing the balance — the ordinary case — and is editable
+    // down to whatever instalment is actually going back.
+    setRepayForm({
+      repay_date: todayISO(),
+      settle_via: 'bank',
+      ref: '',
+      amount: String(dueOn(r)),
+      release_margin: n(r.marginAmount) > 0
+    })
+    setRepayParts([])
+    void loadRepayParts(Number(r.id))
   }
 
   async function saveRepay(): Promise<void> {
     if (!repayRow) return
+    const due = dueOn(repayRow)
+    const amount = round2(n(repayForm.amount))
+    if (amount <= 0) {
+      toast.error('Enter the amount being repaid')
+      return
+    }
+    if (amount - due > 0.004) {
+      toast.error(`Only ${formatINR(due)} is still outstanding on this bill`)
+      return
+    }
     setRepaySaving(true)
     try {
-      await window.api.billDiscounting.repay(Number(repayRow.id), {
+      const res = await window.api.billDiscounting.repay(Number(repayRow.id), {
         repay_date: repayForm.repay_date || undefined,
         settle_via: repayForm.settle_via === 'party' ? 'party' : 'bank',
         ref: repayForm.settle_via === 'party' && repayForm.ref ? String(repayForm.ref) : null,
-        release_margin: !!repayForm.release_margin
+        release_margin: !!repayForm.release_margin,
+        amount
       })
-      toast.success('Bill repaid — posted to the books')
-      setRepayRow(null)
-      await load()
+      toast.success(
+        res.closed
+          ? 'Bill repaid in full — posted to the books'
+          : `${formatINR(res.amount)} repaid — ${formatINR(res.outstanding)} still outstanding`
+      )
+      // Part payments keep the dialog open on the same bill so the next
+      // instalment can go straight in; a full repayment closes it.
+      const fresh = await load()
+      if (res.closed) {
+        setRepayRow(null)
+      } else {
+        const again = fresh.find((x) => Number(x.id) === Number(repayRow.id))
+        if (again) {
+          setRepayRow(again)
+          setRepayForm((prev) => ({ ...prev, amount: String(dueOn(again)), ref: '' }))
+          await loadRepayParts(Number(again.id))
+        }
+      }
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
       setRepaySaving(false)
+    }
+  }
+
+  // Undo one instalment — a wrong figure keyed, or a payment that never
+  // cleared — leaving the rest of the schedule alone.
+  async function removeRepayPart(part: Row): Promise<void> {
+    if (!repayRow) return
+    if (!window.confirm(`Remove the ${formatINR(part.amount)} repaid on ${formatDate(part.repay_date)}? Its voucher reverses too.`)) return
+    try {
+      await window.api.billDiscounting.deleteRepayment(Number(part.id))
+      toast.success('Repayment removed — its voucher is reversed')
+      const fresh = await load()
+      const again = fresh.find((x) => Number(x.id) === Number(repayRow.id))
+      if (again) {
+        setRepayRow(again)
+        setRepayForm((prev) => ({ ...prev, amount: String(dueOn(again)) }))
+      }
+      await loadRepayParts(Number(repayRow.id))
+    } catch (e) {
+      toast.error((e as Error).message)
     }
   }
 
@@ -519,7 +595,13 @@ export function BillDiscounting({
                             {r.bd_no || 'No BD no'}
                           </span>
                           <Badge variant="muted">{r.finance_type}</Badge>
-                          {repaid ? <Badge variant="success">Repaid {formatDate(r.repaid_date)}</Badge> : <Badge variant="default">Open</Badge>}
+                          {repaid ? (
+                            <Badge variant="success">Repaid {formatDate(r.repaid_date)}</Badge>
+                          ) : n(r.repaid_total) > 0 ? (
+                            <Badge variant="warning">Part repaid</Badge>
+                          ) : (
+                            <Badge variant="default">Open</Badge>
+                          )}
                         </div>
                         <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
                           <Landmark className="h-3 w-3 shrink-0" /> {r.nbfc_name || '—'}
@@ -529,9 +611,22 @@ export function BillDiscounting({
                       </div>
                       <Badge variant="muted" className="capitalize">{r.purpose}</Badge>
                     </div>
+                    {/* A part-repaid bill's face value is no longer what it
+                        owes, so the outstanding balance leads and the face
+                        amount goes underneath it. */}
                     <div className="rounded-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-3 text-center shadow-sm">
-                      <div className="text-[10px] font-semibold uppercase tracking-widest text-white/60">Bill amount</div>
-                      <div className="text-2xl font-bold tabular-nums text-white">{formatINR(r.amount)}</div>
+                      <div className="text-[10px] font-semibold uppercase tracking-widest text-white/60">
+                        {n(r.repaid_total) > 0 && !repaid ? 'Outstanding' : 'Bill amount'}
+                      </div>
+                      <div className="text-2xl font-bold tabular-nums text-white">
+                        {formatINR(n(r.repaid_total) > 0 && !repaid ? r.outstanding_amount : r.amount)}
+                      </div>
+                      {n(r.repaid_total) > 0 && !repaid && (
+                        <div className="mt-0.5 text-[11px] tabular-nums text-white/70">
+                          {formatINR(r.repaid_total)} of {formatINR(r.amount)} repaid
+                          {n(r.repay_parts) > 0 && ` · ${n(r.repay_parts)} ${n(r.repay_parts) === 1 ? 'part' : 'parts'}`}
+                        </div>
+                      )}
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-[11px]">
                       <div className="rounded-md border border-[#e5dfc8] bg-white px-2.5 py-1.5">
@@ -701,11 +796,26 @@ export function BillDiscounting({
                           </div>
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
-                          {repaid ? <span className="text-muted-foreground">—</span> : <DueBadge date={r.maturity_date} />}
+                          {repaid ? (
+                            <span className="text-muted-foreground">—</span>
+                          ) : (
+                            <div className="flex flex-col items-start gap-0.5">
+                              <DueBadge date={r.maturity_date} />
+                              {n(r.repaid_total) > 0 && (
+                                <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">Part repaid</span>
+                              )}
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-right tabular-nums text-muted-foreground">{n(r.intDays)}</TableCell>
                         <TableCell className="whitespace-nowrap border-l border-[#1a2c56]/10 text-right font-medium tabular-nums">
                           {formatINR(r.amount)}
+                          {n(r.repaid_total) > 0 && !repaid && (
+                            <div className="text-[10px] font-normal text-muted-foreground">
+                              −{formatINR(r.repaid_total)} · bal{' '}
+                              <span className="font-semibold text-[#1a2c56]">{formatINR(r.outstanding_amount)}</span>
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-right tabular-nums">{formatINR(r.marginAmount)}</TableCell>
                         <TableCell className="whitespace-nowrap text-right tabular-nums text-rose-700">{formatINR(r.interestAmount)}</TableCell>
@@ -968,7 +1078,53 @@ export function BillDiscounting({
           {repayRow && (
             <div className="grid gap-4">
               <div className="rounded-md bg-muted px-3 py-2 text-sm">
-                {repayRow.nbfc_name} · {repayRow.party_name} · bill <b>{formatINR(repayRow.amount)}</b>
+                {repayRow.nbfc_name} · {repayRow.party_name}
+                <div className="mt-1.5 grid grid-cols-3 gap-2 text-[11px]">
+                  <div>
+                    <div className="text-muted-foreground">Bill</div>
+                    <div className="font-semibold tabular-nums">{formatINR(repayRow.amount)}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Repaid</div>
+                    <div className="font-semibold tabular-nums text-emerald-700">{formatINR(repayRow.repaid_total)}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Outstanding</div>
+                    <div className="font-semibold tabular-nums text-[#1a2c56]">{formatINR(dueOn(repayRow))}</div>
+                  </div>
+                </div>
+              </div>
+              {/* A discounted bill is often taken back in instalments, so the
+                  amount is asked for rather than assumed. It opens on the whole
+                  balance — the ordinary case — and Full balance puts it back. */}
+              <div className="flex flex-col gap-1.5">
+                <Label className="flex items-center gap-1">
+                  Amount being repaid
+                  <InfoTip text="Pay the bill off in one go, or a part of it. Anything less than the outstanding balance leaves the bill open for the rest, and each part posts its own dated voucher." />
+                </Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    step="0.01"
+                    className="tabular-nums"
+                    value={repayForm.amount ?? ''}
+                    onChange={(e) => setRepayForm((p) => ({ ...p, amount: e.target.value }))}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-9 shrink-0 px-2 text-xs"
+                    onClick={() => setRepayForm((p) => ({ ...p, amount: String(dueOn(repayRow)) }))}
+                  >
+                    Full balance
+                  </Button>
+                </div>
+                {round2(n(repayForm.amount)) > 0 && round2(n(repayForm.amount)) < dueOn(repayRow) && (
+                  <div className="text-[11px] text-muted-foreground">
+                    Part payment — {formatINR(round2(dueOn(repayRow) - round2(n(repayForm.amount))))} would still be outstanding,
+                    and the bill stays open for it.
+                  </div>
+                )}
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label>Repay date</Label>
@@ -1002,15 +1158,57 @@ export function BillDiscounting({
               {n(repayRow.marginAmount) > 0 && (
                 <label className="flex w-fit cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2">
                   <Switch checked={!!repayForm.release_margin} onCheckedChange={(v) => setRepayForm((p) => ({ ...p, release_margin: v }))} />
-                  <span className="text-sm font-medium">Release the {formatINR(repayRow.marginAmount)} margin back</span>
+                  <span className="text-sm font-medium">
+                    Release the {formatINR(repayRow.marginAmount)} margin back
+                    {round2(n(repayForm.amount)) < dueOn(repayRow) && (
+                      <span className="ml-1 text-[11px] font-normal text-muted-foreground">
+                        — on the payment that clears the bill; the NBFC holds it until then
+                      </span>
+                    )}
+                  </span>
                 </label>
+              )}
+              {/* What has already gone back, so the schedule is visible where
+                  the next instalment is being entered — and correctable there
+                  too, since a wrong figure is only found later. */}
+              {repayParts.length > 0 && (
+                <div className="rounded-lg border border-[#e5dfc8]">
+                  <div className="border-b border-[#e5dfc8] bg-[#f7f4e8] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-[#1a2c56]">
+                    Already repaid · {repayParts.length} {repayParts.length === 1 ? 'part' : 'parts'}
+                  </div>
+                  <div className="max-h-40 overflow-y-auto">
+                    {repayParts.map((part) => (
+                      <div key={String(part.id)} className="flex items-center justify-between gap-2 border-b border-dashed border-[#e5dfc8] px-3 py-1.5 text-xs last:border-b-0">
+                        <span className="tabular-nums text-muted-foreground">{formatDate(part.repay_date)}</span>
+                        <span className="font-semibold tabular-nums">{formatINR(part.amount)}</span>
+                        <span className="text-[10px] text-muted-foreground">
+                          {String(part.settle_via) === 'party' ? `vs ${part.ref || 'On Account'}` : 'Bank'}
+                        </span>
+                        <span className="ml-auto tabular-nums text-muted-foreground">bal {formatINR(part.balance_after)}</span>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 w-6 shrink-0 p-0 text-rose-700 hover:bg-rose-50"
+                          title="Remove this repayment — its voucher reverses too"
+                          onClick={() => void removeRepayPart(part)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setRepayRow(null)} disabled={repaySaving}>Cancel</Button>
             <Button className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => void saveRepay()} disabled={repaySaving}>
-              {repaySaving ? 'Saving…' : 'Repay'}
+              {repaySaving
+                ? 'Saving…'
+                : repayRow && round2(n(repayForm.amount)) > 0 && round2(n(repayForm.amount)) < dueOn(repayRow)
+                  ? `Repay ${formatINR(round2(n(repayForm.amount)))}`
+                  : 'Repay in full'}
             </Button>
           </DialogFooter>
         </DialogContent>

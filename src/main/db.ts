@@ -1261,7 +1261,27 @@ const MIGRATIONS = [
   'CREATE INDEX IF NOT EXISTS idx_badj_note ON bargain_adjustments(note_id)',
   'CREATE INDEX IF NOT EXISTS idx_production_sale ON production(sale_id)',
   'CREATE INDEX IF NOT EXISTS idx_bd_company ON bill_discountings(company_id)',
-  'CREATE INDEX IF NOT EXISTS idx_lc_issuances_lc ON lc_issuances(lc_id)'
+  'CREATE INDEX IF NOT EXISTS idx_lc_issuances_lc ON lc_issuances(lc_id)',
+
+  // A discounted bill is not always cleared in one go: an NBFC will take it
+  // back in instalments, and until now the only way to record that was to wait
+  // and post the whole thing at the end, which left the facility reading as
+  // fully outstanding money that had already gone back. Each part now gets its
+  // own dated row and its own voucher, and the bill closes when the parts add
+  // up to it. Bills repaid in full before this keep their single figure on the
+  // parent row and are read from there, so nothing already posted moves.
+  `CREATE TABLE IF NOT EXISTS bd_repayments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bd_id INTEGER NOT NULL REFERENCES bill_discountings(id),
+  repay_date TEXT NOT NULL,
+  amount REAL NOT NULL DEFAULT 0,
+  settle_via TEXT NOT NULL DEFAULT 'bank',
+  ref TEXT,
+  journal_entry_id INTEGER,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);`,
+  'CREATE INDEX IF NOT EXISTS idx_bd_repay_bd ON bd_repayments(bd_id)'
 ]
 
 

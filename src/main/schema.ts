@@ -362,6 +362,18 @@ CREATE TABLE IF NOT EXISTS bill_discountings (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS bd_repayments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bd_id INTEGER NOT NULL REFERENCES bill_discountings(id),
+  repay_date TEXT NOT NULL,
+  amount REAL NOT NULL DEFAULT 0,
+  settle_via TEXT NOT NULL DEFAULT 'bank',
+  ref TEXT,
+  journal_entry_id INTEGER,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS lc_issuances (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   lc_id INTEGER NOT NULL REFERENCES letters_of_credit(id),

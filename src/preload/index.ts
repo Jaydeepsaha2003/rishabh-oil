@@ -405,8 +405,19 @@ const api = {
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:delete', { id }),
     repay: (
       id: number,
-      values: { repay_date?: string; settle_via?: 'bank' | 'party'; ref?: string | null; release_margin?: boolean }
-    ): Promise<{ id: number }> => ipcRenderer.invoke('bd:repay', { id, values }),
+      values: {
+        repay_date?: string
+        settle_via?: 'bank' | 'party'
+        ref?: string | null
+        release_margin?: boolean
+        amount?: number | string | null
+        note?: string | null
+      }
+    ): Promise<{ id: number; amount: number; outstanding: number; closed: boolean }> =>
+      ipcRenderer.invoke('bd:repay', { id, values }),
+    repayments: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:repayments', { id }),
+    deleteRepayment: (id: number): Promise<{ id: number; bd_id: number }> =>
+      ipcRenderer.invoke('bd:deleteRepayment', { id }),
     reopen: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:reopen', { id }),
     upfrontInterest: (id: number, date?: string): Promise<{ id: number } | null> =>
       ipcRenderer.invoke('bd:upfrontInterest', { id, date }),

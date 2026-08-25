@@ -156,7 +156,7 @@ import {
   unreconcileBankLine,
   setBankLineSubEntry
 } from './bankRecon'
-import { listBd, createBd, updateBd, deleteBd, repayBd, reopenBd, postBdUpfrontInterest, bdKpis } from './billDiscounting'
+import { listBd, createBd, updateBd, deleteBd, repayBd, reopenBd, postBdUpfrontInterest, bdKpis, listBdRepayments, deleteBdRepayment } from './billDiscounting'
 import {
   listTransporterFreight,
   transporterFreightKpis,
@@ -754,9 +754,26 @@ export function registerIpc(): void {
   handle('bd:delete', (_e, { id }: { id: number }) => deleteBd(id))
   handle(
     'bd:repay',
-    (_e, { id, values }: { id: number; values: { repay_date?: string; settle_via?: 'bank' | 'party'; ref?: string | null; release_margin?: boolean } }) =>
-      repayBd(id, values)
+    (
+      _e,
+      {
+        id,
+        values
+      }: {
+        id: number
+        values: {
+          repay_date?: string
+          settle_via?: 'bank' | 'party'
+          ref?: string | null
+          release_margin?: boolean
+          amount?: number | string | null
+          note?: string | null
+        }
+      }
+    ) => repayBd(id, values)
   )
+  handle('bd:repayments', (_e, { id }: { id: number }) => listBdRepayments(id))
+  handle('bd:deleteRepayment', (_e, { id }: { id: number }) => deleteBdRepayment(id))
   handle('bd:reopen', (_e, { id }: { id: number }) => reopenBd(id))
   handle('bd:upfrontInterest', (_e, { id, date }: { id: number; date?: string }) => postBdUpfrontInterest(id, date))
   handle('bd:kpis', () => bdKpis())

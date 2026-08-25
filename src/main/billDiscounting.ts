@@ -120,6 +120,28 @@ async function loadBd(id: number): Promise<Row> {
   return toPlain(res)[0]
 }
 
+// How much of a bill has already gone back to the NBFC. Parts are the record
+// when there are any; a bill settled in one go before part repayment existed
+// has no part rows and keeps its single figure on the parent row, so it is read
+// from there rather than being rewritten into the new shape.
+async function repaidSoFar(bd: Row): Promise<number> {
+  const r = await getClient().execute({
+    sql: 'SELECT COALESCE(SUM(amount), 0) AS paid, COUNT(*) AS parts FROM bd_repayments WHERE bd_id = ?',
+    args: [Number(bd.id)]
+  })
+  if (n(r.rows[0].parts) > 0) return round2(n(r.rows[0].paid))
+  return String(bd.status) === 'repaid' ? round2(n(bd.repaid_amount)) : 0
+}
+
+// Drop every voucher a bill's repayments posted, parts and legacy alike.
+async function dropRepayEntries(bd: Row): Promise<void> {
+  const c = getClient()
+  const parts = await c.execute({ sql: 'SELECT journal_entry_id FROM bd_repayments WHERE bd_id = ?', args: [Number(bd.id)] })
+  for (const r of parts.rows) await dropEntry(n(r.journal_entry_id) || null)
+  await c.execute({ sql: 'DELETE FROM bd_repayments WHERE bd_id = ?', args: [Number(bd.id)] })
+  await dropEntry(n(bd.repay_journal_entry_id) || null)
+}
+
 function partyName(bd: Row): string {
   return String(bd.party_type === 'supplier' ? bd.supplier_name : bd.customer_name || '').trim()
 }
@@ -282,16 +304,35 @@ export async function listBd(filter?: Row): Promise<Row[]> {
   }
   const res = await getClient().execute({
     sql: `SELECT bd.*, nb.name AS nbfc_name, nb.finance_type AS nbfc_finance_type,
-                 s.name AS supplier_name, cu.name AS customer_name
+                 s.name AS supplier_name, cu.name AS customer_name,
+                 COALESCE(rp.paid, 0) AS parts_paid, COALESCE(rp.parts, 0) AS repay_parts
           FROM bill_discountings bd
           LEFT JOIN nbfcs nb ON nb.id = bd.nbfc_id
           LEFT JOIN suppliers s ON bd.party_type = 'supplier' AND s.id = bd.party_id
           LEFT JOIN customers cu ON bd.party_type = 'customer' AND cu.id = bd.party_id
+          LEFT JOIN (SELECT bd_id, SUM(amount) AS paid, COUNT(*) AS parts
+                     FROM bd_repayments GROUP BY bd_id) rp ON rp.bd_id = bd.id
           WHERE ${where.join(' AND ')}
           ORDER BY bd.payment_received_date DESC, bd.id DESC`,
     args
   })
-  return toPlain(res).map((bd) => ({ ...bd, party_name: partyName(bd), ...bdCalc(bd) }))
+  // A part-repaid bill stays OPEN — the facility is still live for what is left
+  // — so the screen needs the two figures the status word cannot carry: what
+  // has gone back and what is still outstanding.
+  return toPlain(res).map((bd) => {
+    const parts = n(bd.repay_parts)
+    const repaidTotal = round2(
+      parts > 0 ? n(bd.parts_paid) : String(bd.status) === 'repaid' ? n(bd.repaid_amount) : 0
+    )
+    return {
+      ...bd,
+      party_name: partyName(bd),
+      ...bdCalc(bd),
+      repaid_total: repaidTotal,
+      outstanding_amount: round2(Math.max(0, n(bd.amount) - repaidTotal)),
+      repay_parts: parts
+    }
+  })
 }
 
 export async function createBd(v: Row): Promise<{ id: number }> {
@@ -310,6 +351,13 @@ export async function updateBd(id: number, v: Row): Promise<{ id: number }> {
   const cur = await loadBd(id)
   if (String(cur.status) === 'repaid') throw new Error('This bill is already repaid — reopen it first if it needs correcting')
   await validateBd(v)
+  // Part of this bill may already have gone back. Cutting the face amount below
+  // what has been repaid would leave the facility owing a negative balance, so
+  // the repayments have to be undone first.
+  const paid = await repaidSoFar(cur)
+  if (paid > 0 && n(v.amount) - paid < -0.004) {
+    throw new Error(`${inr(paid)} has already been repaid on this bill — the amount cannot be set below that`)
+  }
   await getClient().execute({
     sql: `UPDATE bill_discountings SET ${BD_COLS.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`,
     args: [...bdArgs(v), id]
@@ -322,62 +370,170 @@ export async function deleteBd(id: number): Promise<{ id: number }> {
   const c = getClient()
   const bd = await loadBd(id)
   await dropEntry(n(bd.journal_entry_id) || null)
-  await dropEntry(n(bd.repay_journal_entry_id) || null)
+  await dropRepayEntries(bd)
   await dropEntry(n(bd.margin_release_journal_entry_id) || null)
   await c.execute({ sql: 'DELETE FROM bill_discountings WHERE id = ?', args: [id] })
   return { id }
 }
 
-// Repay/settle the bill at (or before) maturity. `settleVia: 'bank'` posts the
-// payment straight from our own bank; `'party'` posts it against the
-// supplier/customer ledger instead — bill-wise (a ref) or on account (blank),
-// the same allocation choice LC/orders/sales already use.
+// A rupee figure for a message, so an error reads the way the screen does.
+function inr(v: number): string {
+  return `Rs ${round2(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+// Repay/settle the bill at (or before) maturity, in full or in parts.
+//
+// An NBFC rarely insists a discounted bill comes back in one payment — it is
+// commonly cleared in instalments over the tenure — so a repayment records the
+// amount actually going back rather than assuming the whole face value. Leave
+// the amount out and it settles the balance, which is the old behaviour and
+// still the ordinary case. Each part is its own dated row with its own
+// voucher, so the ledger shows the money leaving when it left rather than in
+// one lump at the end, and the bill closes only when the parts add up to it.
+//
+// `settleVia: 'bank'` posts the payment straight from our own bank; `'party'`
+// posts it against the supplier/customer ledger instead — bill-wise (a ref) or
+// on account (blank), the same allocation choice LC/orders/sales already use.
 export async function repayBd(
   id: number,
-  v: { repay_date?: string; settle_via?: 'bank' | 'party'; ref?: string | null; release_margin?: boolean }
-): Promise<{ id: number }> {
+  v: {
+    repay_date?: string
+    settle_via?: 'bank' | 'party'
+    ref?: string | null
+    release_margin?: boolean
+    // What is going back now. Omitted (or blank) means the whole balance.
+    amount?: number | string | null
+    note?: string | null
+  }
+): Promise<{ id: number; amount: number; outstanding: number; closed: boolean }> {
   const c = getClient()
   const bd = await loadBd(id)
   if (String(bd.status) === 'repaid') throw new Error('This bill is already repaid')
-  const amount = n(bd.amount)
+  const face = n(bd.amount)
+  const already = await repaidSoFar(bd)
+  const due = round2(face - already)
+  if (due <= 0.004) throw new Error('There is nothing left to repay on this bill')
+  const asked = v.amount === undefined || v.amount === null || String(v.amount).trim() === '' ? due : round2(n(v.amount))
+  if (asked <= 0) throw new Error('Enter the amount being repaid')
+  if (asked - due > 0.004) {
+    throw new Error(
+      already > 0
+        ? `Only ${inr(due)} is still outstanding on this bill — ${inr(already)} has already been repaid`
+        : `That is more than the ${inr(due)} this bill is for`
+    )
+  }
   const date = String(v.repay_date || todayISO()).slice(0, 10)
   const settleVia = v.settle_via === 'party' ? 'party' : 'bank'
   const party = partyName(bd)
   if (settleVia === 'party' && !party) throw new Error('This bill has no linked party to settle against')
-  const lines: JournalLine[] = [{ account: 'BILLS DISCOUNTED A/C', group: 'Loans (Liability)', dr: amount }]
+  // What is left AFTER this payment decides whether the bill closes, and it is
+  // also what the narration has to say, so the voucher reads as a running
+  // balance rather than an unexplained part figure.
+  const left = round2(due - asked)
+  const closed = left <= 0.004
+  const lines: JournalLine[] = [{ account: 'BILLS DISCOUNTED A/C', group: 'Loans (Liability)', dr: asked }]
   if (settleVia === 'party') {
     lines.push({
       account: party,
       group: bd.party_type === 'supplier' ? 'Sundry Creditors' : 'Sundry Debtors',
-      cr: amount
+      cr: asked
     })
   } else {
-    lines.push({ account: 'BANK A/C', group: 'Bank Accounts', cr: amount })
+    lines.push({ account: 'BANK A/C', group: 'Bank Accounts', cr: asked })
   }
   const je = await postJournal({
     date,
     vchType: 'PAYMENT',
     vchNo: String(bd.bd_no || ''),
-    narration: `Bill Discounting ${bd.bd_no} repaid to ${bd.nbfc_name || 'the NBFC'}${settleVia === 'party' ? ` — settled against ${party}` : ''}`,
+    narration:
+      `Bill Discounting ${bd.bd_no} ${closed && already <= 0.004 ? 'repaid' : closed ? 'closed — final part repayment' : 'part repayment'}` +
+      ` to ${bd.nbfc_name || 'the NBFC'}` +
+      (closed ? '' : ` — ${inr(left)} still outstanding`) +
+      (settleVia === 'party' ? ` — settled against ${party}` : ''),
     companyId: n(bd.company_id) || undefined,
     lines
   })
-  if (settleVia === 'party') await allocAgainst(je.id, party, v.ref || null, amount)
+  if (settleVia === 'party') await allocAgainst(je.id, party, v.ref || null, asked)
   await c.execute({
-    sql: "UPDATE bill_discountings SET status = 'repaid', repaid_date = ?, repaid_amount = ?, repay_journal_entry_id = ? WHERE id = ?",
-    args: [date, amount, je.id, id]
+    sql: `INSERT INTO bd_repayments (bd_id, repay_date, amount, settle_via, ref, journal_entry_id, note)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    args: [id, date, asked, settleVia, v.ref ? String(v.ref) : null, je.id, v.note ? String(v.note) : null]
   })
-  if (v.release_margin) {
+  const paid = round2(already + asked)
+  // The bill stays OPEN while anything is outstanding: the facility is still
+  // live for the balance, and closing it early would hide it from every open
+  // exposure figure on the page.
+  await c.execute({
+    sql: `UPDATE bill_discountings
+          SET status = ?, repaid_date = ?, repaid_amount = ?, repay_journal_entry_id = NULL
+          WHERE id = ?`,
+    args: [closed ? 'repaid' : 'open', closed ? date : null, paid, id]
+  })
+  // The margin is held against the whole bill, so it only comes back when the
+  // bill is actually cleared — releasing it against a part payment would return
+  // money the NBFC is still holding.
+  if (v.release_margin && closed) {
     const fresh = await loadBd(id)
     await postBdMarginRelease(fresh)
   }
-  return { id }
+  return { id, amount: asked, outstanding: left, closed }
+}
+
+// The repayments made against one bill, oldest first, with a running balance
+// so the screen can show the bill being worked down.
+export async function listBdRepayments(bdId: number): Promise<Row[]> {
+  const bd = await loadBd(bdId)
+  const res = await getClient().execute({
+    sql: `SELECT r.*, je.vch_no, je.entry_date AS voucher_date
+          FROM bd_repayments r
+          LEFT JOIN journal_entries je ON je.id = r.journal_entry_id
+          WHERE r.bd_id = ? ORDER BY r.repay_date, r.id`,
+    args: [bdId]
+  })
+  let left = n(bd.amount)
+  return toPlain(res).map((r) => {
+    left = round2(left - n(r.amount))
+    return { ...r, balance_after: left }
+  })
+}
+
+// Undo ONE part repayment — the wrong figure keyed, or a payment that did not
+// clear — without disturbing the others. Its voucher goes with it, and a bill
+// that was closed by this part reopens for the balance, giving back its margin
+// release along with it since the margin is only released on closure.
+export async function deleteBdRepayment(repaymentId: number): Promise<{ id: number; bd_id: number }> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT * FROM bd_repayments WHERE id = ?', args: [repaymentId] })
+  if (!res.rows.length) throw new Error('That repayment no longer exists')
+  const part = toPlain(res)[0]
+  const bdId = Number(part.bd_id)
+  await dropEntry(n(part.journal_entry_id) || null)
+  await c.execute({ sql: 'DELETE FROM bd_repayments WHERE id = ?', args: [repaymentId] })
+  const bd = await loadBd(bdId)
+  const paid = await repaidSoFar({ ...bd, status: 'open' })
+  const closed = n(bd.amount) - paid <= 0.004
+  if (!closed && n(bd.margin_release_journal_entry_id)) {
+    await dropEntry(n(bd.margin_release_journal_entry_id))
+  }
+  await c.execute({
+    sql: `UPDATE bill_discountings
+          SET status = ?, repaid_date = ?, repaid_amount = ?, margin_release_journal_entry_id = ?
+          WHERE id = ?`,
+    args: [
+      closed ? 'repaid' : 'open',
+      closed ? String(bd.repaid_date || '').slice(0, 10) || null : null,
+      paid > 0 ? paid : null,
+      closed ? n(bd.margin_release_journal_entry_id) || null : null,
+      bdId
+    ]
+  })
+  return { id: repaymentId, bd_id: bdId }
 }
 
 export async function reopenBd(id: number): Promise<{ id: number }> {
   const c = getClient()
   const bd = await loadBd(id)
-  await dropEntry(n(bd.repay_journal_entry_id) || null)
+  await dropRepayEntries(bd)
   await dropEntry(n(bd.margin_release_journal_entry_id) || null)
   await c.execute({
     sql: "UPDATE bill_discountings SET status = 'open', repaid_date = NULL, repaid_amount = NULL, repay_journal_entry_id = NULL, margin_release_journal_entry_id = NULL WHERE id = ?",
@@ -389,10 +545,12 @@ export async function reopenBd(id: number): Promise<{ id: number }> {
 // KPI rollup for the page header, mirroring getLcLimit's shape — outstanding
 // exposure, margin held, interest and TDS, across every open bill.
 export async function bdKpis(): Promise<Row> {
+  // Outstanding is what is still owed, not the face value — a bill half repaid
+  // is half the exposure it was.
   const rows = await listBd({ status: ['open'] })
   return {
     count: rows.length,
-    outstanding_total: round2(rows.reduce((s, r) => s + n(r.amount), 0)),
+    outstanding_total: round2(rows.reduce((s, r) => s + n(r.outstanding_amount), 0)),
     margin_total: round2(rows.reduce((s, r) => s + n(r.marginAmount), 0)),
     interest_total: round2(rows.reduce((s, r) => s + n(r.interestAmount), 0)),
     tds_total: round2(rows.reduce((s, r) => s + n(r.tdsAmount), 0)),

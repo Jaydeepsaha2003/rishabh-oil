@@ -299,8 +299,17 @@ export interface Api {
     remove: (id: number) => Promise<{ id: number }>
     repay: (
       id: number,
-      values: { repay_date?: string; settle_via?: 'bank' | 'party'; ref?: string | null; release_margin?: boolean }
-    ) => Promise<{ id: number }>
+      values: {
+        repay_date?: string
+        settle_via?: 'bank' | 'party'
+        ref?: string | null
+        release_margin?: boolean
+        amount?: number | string | null
+        note?: string | null
+      }
+    ) => Promise<{ id: number; amount: number; outstanding: number; closed: boolean }>
+    repayments: (id: number) => Promise<Row[]>
+    deleteRepayment: (id: number) => Promise<{ id: number; bd_id: number }>
     reopen: (id: number) => Promise<{ id: number }>
     upfrontInterest: (id: number, date?: string) => Promise<{ id: number } | null>
     kpis: () => Promise<Row>
