@@ -541,9 +541,14 @@ export function BillDiscounting({
   async function downloadRegister(): Promise<void> {
     setExporting(true)
     try {
-      // One query for every instalment across the company, rather than one per
-      // bill — the parts go on their own sheet.
-      const parts = await window.api.billDiscounting.allRepayments()
+      // The bills come straight off the screen, so the download reads nothing
+      // for them. The instalments are not on screen, so they need one query --
+      // but only if any bill in this list actually has instalments, which the
+      // rows already say. A register of bills each settled in one payment
+      // therefore downloads without touching the database at all.
+      const parts = filtered.some((r) => n(r.repay_parts) > 0)
+        ? await window.api.billDiscounting.allRepayments()
+        : []
       await exportBdRegister(filtered, `bd-register-${todayISO()}`, parts)
       toast.success(`Downloaded ${filtered.length} bill${filtered.length === 1 ? '' : 's'}`)
     } catch (e) {

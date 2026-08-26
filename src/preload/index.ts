@@ -154,6 +154,8 @@ const api = {
       ipcRenderer.invoke('auth:login', { username, password })
   },
   access: {
+    entityHistory: (entity: string, entityId: number, limit?: number): Promise<Row[]> =>
+      ipcRenderer.invoke('access:entityHistory', { entity, entityId, limit }),
     heartbeat: (
       userId: number,
       username: string

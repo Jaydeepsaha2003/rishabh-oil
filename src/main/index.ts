@@ -2,7 +2,7 @@ import { app, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { registerIpc } from './ipc'
 import { registerUpdater } from './updater'
-import { initDb, runDaily, runOnce, startRevisionWatcher } from './db'
+import { getClient, initDb, runDaily, runOnce, startRevisionWatcher } from './db'
 import { backfillJournal } from './journal'
 import { dailyBackup } from './backup'
 import { backfillOrderStatuses, backfillPurchaseRoundOff } from './orders'
@@ -75,6 +75,27 @@ app.whenReady().then(async () => {
   await seedFormulations().catch((e) => console.error('[seed] formulations failed:', e))
   await seedPackagings().catch((e) => console.error('[seed] packagings failed:', e))
   await runDaily('cleanup_logs', () => cleanupLogs()).catch(() => {})
+  // Index work for installs that are already past the migration-count mark, so
+  // it cannot be added to that list and be run. Keyed by name, so it happens
+  // exactly once per database and costs nothing on every launch after.
+  await runOnce('ulogs_entity_index_v1', async () => {
+    const c = getClient()
+    // One record's own history -- who did what to THIS letter of credit --
+    // filters on the module and the record id together.
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_ulogs_entity_id ON user_logs(entity, entity_id)')
+    // Which makes the plain entity index redundant: the composite covers
+    // everything it did, entity being its leading column. Left in place it only
+    // gave the planner a worse option that it kept choosing -- matching a
+    // record's history on the module alone and then filtering, walking every
+    // row belonging to that module instead of the few belonging to the record.
+    await c.execute('DROP INDEX IF EXISTS idx_ulogs_entity')
+    // stock_transfers is empty today, so scanning it costs nothing -- but the
+    // stock registers sum it PER PRODUCT, twice each way, so the day it starts
+    // filling those scans multiply by the product count. Indexed now, while it
+    // is free to do.
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_stransfers_to ON stock_transfers(to_company_id, product_id)')
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_stransfers_from ON stock_transfers(from_company_id, product_id)')
+  }).catch((e) => console.error('[logs] history index failed:', e))
   startRevisionWatcher()
   registerIpc()
   registerUpdater(() => mainWindow)

@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   FileSpreadsheet,
+  History,
   FileText,
   LayoutGrid,
   Landmark,
@@ -44,6 +45,38 @@ import { BillDiscounting } from './BillDiscounting'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
+
+// The audit trail stores whatever verb the channel had at the time, so older
+// rows carry the raw channel word. Mapped here as well as at the point of
+// writing, so history recorded before those words were given proper names still
+// reads as English.
+const AUDIT_LABEL: Record<string, string> = {
+  preclose: 'Preclosed',
+  unpreclose: 'Undid preclosure',
+  saveLimit: 'Changed the facility limit',
+  upfrontInterest: 'Posted upfront interest',
+  repay: 'Repaid',
+  advance: 'Advanced a stage',
+  issue: 'Issued a bill',
+  deleteIssuance: 'Removed a bill',
+  paymentIn: 'Logged a payment in'
+}
+
+function auditLabel(action: unknown): string {
+  const a = String(action || '')
+  return AUDIT_LABEL[a] || a || 'Changed'
+}
+
+const AUDIT_TONE: Record<string, 'default' | 'muted' | 'success' | 'warning' | 'destructive'> = {
+  Created: 'success',
+  Updated: 'default',
+  Deleted: 'destructive',
+  preclose: 'warning',
+  unpreclose: 'warning',
+  Preclosed: 'warning',
+  repay: 'success',
+  Repaid: 'success'
+}
 
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
 const round2 = (v: number): number => Math.round(v * 100) / 100
@@ -875,6 +908,23 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     return rows.filter((l) => l.days_left_effective != null && l.days_left_effective <= maxDays)
   }, [lcsWithDue, lcDuePeriod, lcStageFilter, lcPurposeFilter, lcStatusFilter, activeBank, lcKpiFrom, lcKpiTo])
 
+  // Who did what to one LC. The audit trail has always recorded it -- every
+  // write channel logs its entity and id -- it was just only readable as one
+  // undivided list under Settings, which cannot answer "who touched THIS LC".
+  const [historyFor, setHistoryFor] = useState<Row | null>(null)
+  const [history, setHistory] = useState<Row[] | null>(null)
+
+  async function openHistory(l: Row): Promise<void> {
+    setHistoryFor(l)
+    setHistory(null)
+    try {
+      setHistory(await window.api.access.entityHistory('Letter of credit', Number(l.id)))
+    } catch (e) {
+      toast.error((e as Error).message)
+      setHistory([])
+    }
+  }
+
   const [lcExporting, setLcExporting] = useState(false)
   async function downloadLcRegister(): Promise<void> {
     setLcExporting(true)
@@ -1618,6 +1668,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           <RowActions
                             actions={[
                               { label: 'Edit LC', icon: Pencil, onClick: () => setLcForm({ ...l }) },
+                              { label: 'History — who did what', icon: History, onClick: () => void openHistory(l) },
                               {
                                 label: 'Delete LC — reverses its vouchers',
                                 icon: Trash2,
@@ -1838,6 +1889,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                         ]
                                       : []),
                                     { label: 'Edit LC', icon: Pencil, onClick: () => setLcForm({ ...l }) },
+                                    { label: 'History — who did what', icon: History, onClick: () => void openHistory(l) },
                                     {
                                       label: 'Delete LC — reverses its vouchers',
                                       icon: Trash2,
@@ -3106,6 +3158,85 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               </>
             )
           })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* Who did what to this LC. Read straight off the audit trail, so it is
+          the record of what happened rather than a second copy of it that
+          could disagree. Oldest first: the story reads forwards. */}
+      <Dialog open={!!historyFor} onOpenChange={(o) => !o && setHistoryFor(null)}>
+        <DialogContent className="max-h-[85vh] w-[calc(100vw-2rem)] max-w-2xl overflow-y-auto border-[#d9d2b8] bg-[#fffdf4]">
+          <DialogHeader className="-mx-6 -mt-6 mb-1 rounded-t-lg bg-[#dce6f5] px-6 py-2.5">
+            <DialogTitle className="text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]">
+              History — {historyFor?.lc_no || 'this LC'}
+            </DialogTitle>
+          </DialogHeader>
+          {historyFor && (
+            <div className="grid gap-3">
+              <div className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                {historyFor.bank_name || historyFor.bank || '—'} · {historyFor.supplier_name || '—'} ·{' '}
+                <b className="text-foreground">{formatINR(historyFor.amount)}</b>
+              </div>
+              {history === null ? (
+                <div className="py-8 text-center text-sm text-muted-foreground">Loading…</div>
+              ) : history.length === 0 ? (
+                <div className="rounded-md border border-dashed border-[#d9d2b8] py-8 text-center text-sm text-muted-foreground">
+                  Nothing recorded against this LC yet. Entries made before the audit trail started carrying
+                  record ids will not appear here.
+                </div>
+              ) : (
+                <div className="overflow-hidden rounded-lg border border-[#e5dfc8]">
+                  <Table className="text-[13px]">
+                    <TableHeader>
+                      <TableRow className="bg-[#f7f4e8] hover:bg-[#f7f4e8]">
+                        <TableHead className="h-8 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                          When
+                        </TableHead>
+                        <TableHead className="h-8 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                          Who
+                        </TableHead>
+                        <TableHead className="h-8 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                          Did what
+                        </TableHead>
+                        <TableHead className="h-8 text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                          Details
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {history.map((h) => (
+                        <TableRow key={String(h.id)} className="hover:bg-amber-50/60">
+                          <TableCell className="whitespace-nowrap tabular-nums text-muted-foreground">
+                            {String(h.created_at || '').slice(8, 10)}-{String(h.created_at || '').slice(5, 7)}-
+                            {String(h.created_at || '').slice(0, 4)}
+                            <span className="ml-1 text-[11px]">{String(h.created_at || '').slice(11, 16)}</span>
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap font-medium">
+                            {h.username || 'Unknown'}
+                            {h.ip ? <div className="text-[10px] font-normal text-muted-foreground">{h.ip}</div> : null}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap">
+                            <Badge variant={AUDIT_TONE[String(h.action)] || 'muted'}>{auditLabel(h.action)}</Badge>
+                          </TableCell>
+                          <TableCell className="text-[12px] text-muted-foreground">{h.detail || '—'}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+              <div className="text-[11px] text-muted-foreground">
+                {history?.length
+                  ? `${history.length} event${history.length === 1 ? '' : 's'}, oldest first.`
+                  : ''}
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setHistoryFor(null)}>
+              Close
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

@@ -112,6 +112,7 @@ export interface Api {
     login: (username: string, password: string) => Promise<Row>
   }
   access: {
+    entityHistory: (entity: string, entityId: number, limit?: number) => Promise<Row[]>
     heartbeat: (
       userId: number,
       username: string

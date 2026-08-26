@@ -137,6 +137,30 @@ export interface LogFilter {
   limit?: number
 }
 
+// Everything that has been done to ONE record, oldest first -- who, when, from
+// which machine, and what changed. The audit trail has been recording this all
+// along (every write channel logs its entity and id); it was only ever readable
+// as one undivided list under Settings, which is no use when the question is
+// "who touched THIS letter of credit".
+//
+// Generic on purpose: the same call serves any module that logs an entity id.
+export async function entityHistory(
+  entity: string,
+  entityId: number,
+  limit = 200
+): Promise<Row[]> {
+  if (!entity || !entityId) return []
+  const res = await getClient().execute({
+    sql: `SELECT id, created_at, username, ip, action, detail
+          FROM user_logs
+          WHERE entity = ? AND entity_id = ?
+          ORDER BY id ASC
+          LIMIT ?`,
+    args: [entity, entityId, Math.min(Math.max(limit, 1), 500)]
+  })
+  return toPlain(res)
+}
+
 // Activity log with optional filters (newest first). Also returns the distinct
 // users/sections present, so the UI can populate its filter dropdowns.
 export async function listLogs(

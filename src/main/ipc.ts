@@ -50,7 +50,7 @@ import {
   updateConsignment,
   deleteConsignment, saveOpeningStock, listOpeningLog } from './consignment'
 import { login, listUsers, createUser, updateUser, deleteUser } from './auth'
-import { heartbeat, liveUsers, listIps, setIpActive, listLogs, logEvent, machineIp, type LogFilter } from './access'
+import { heartbeat, liveUsers, listIps, setIpActive, listLogs, logEvent, machineIp, type LogFilter, entityHistory } from './access'
 import { getCurrentUser, setCurrentUser } from './currentUser'
 import {
   listFormulations,
@@ -237,6 +237,17 @@ const NS_ENTITY: Record<string, string> = {
 const OP_VERB: Record<string, string> = {
   create: 'Created',
   update: 'Updated',
+  // These were falling through and being stored as the raw channel word
+  // ('preclose', 'unpreclose'), which read like code in the trail.
+  preclose: 'Preclosed',
+  unpreclose: 'Undid preclosure',
+  markReceived: 'Marked payment received',
+  unmarkReceived: 'Undid payment received',
+  repay: 'Repaid',
+  deleteRepayment: 'Removed a repayment',
+  reopen: 'Reopened',
+  saveLimit: 'Changed the facility limit',
+  upfrontInterest: 'Posted upfront interest',
   delete: 'Deleted',
   advance: 'Advanced',
   record: 'Recorded',
@@ -312,7 +323,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:allRepayments$|^trading:list$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:allRepayments$|^access:entityHistory$|^trading:list$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -785,6 +796,12 @@ export function registerIpc(): void {
   handle('bd:reopen', (_e, { id }: { id: number }) => reopenBd(id))
   handle('bd:upfrontInterest', (_e, { id, date }: { id: number; date?: string }) => postBdUpfrontInterest(id, date))
   handle('bd:kpis', () => bdKpis())
+
+  handle(
+    'access:entityHistory',
+    (_e, { entity, entityId, limit }: { entity: string; entityId: number; limit?: number }) =>
+      entityHistory(entity, entityId, limit)
+  )
 
   handle('trading:list', () => listTradingDeals())
   handle('trading:create', (_e, { values }: { values: Row }) => createTradingDeal(values))

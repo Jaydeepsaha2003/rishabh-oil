@@ -1321,6 +1321,19 @@ const MIGRATIONS = [
   // every mutation re-reads the bill by id (already the primary key).
   'CREATE INDEX IF NOT EXISTS idx_bd_nbfc ON bill_discountings(nbfc_id)',
   'CREATE INDEX IF NOT EXISTS idx_bd_company_status ON bill_discountings(company_id, status)'
+
+  // ---------------------------------------------------------------------
+  // NOTE FOR LATER, learned the hard way: this list is applied BY COUNT.
+  // Startup stores how many entries it has run and executes only the ones
+  // past that mark, so
+  //   - a statement inserted into the middle sits below the mark and never
+  //     runs at all, silently, on every existing install; and
+  //   - swapping entries around does not help either, because the count is
+  //     unchanged and the mark still covers them.
+  // Only APPENDING works. Anything that must run on installs already past
+  // the mark belongs in a runOnce() instead, keyed by name -- see
+  // 'ulogs_entity_index_v1' in index.ts.
+  // ---------------------------------------------------------------------
 ]
 
 
@@ -1444,7 +1457,30 @@ export async function initDb(): Promise<void> {
 // memory and only the single watcher touches the network (never overlapping).
 let cachedRevision = 0
 let revisionInFlight = false
-let revisionTimer: ReturnType<typeof setInterval> | null = null
+let revisionTimer: ReturnType<typeof setTimeout> | null = null
+
+// How often the watcher asks the cloud "has anything changed?". Every running
+// copy of the app does this forever, so it is a standing charge that continues
+// through nights and weekends when nobody is touching the data: at a flat 15
+// seconds it is 5,760 questions a day per machine, almost all answered "no".
+//
+// So it backs off while nothing is happening -- 15s, stretching towards two
+// minutes once several polls in a row have come back unchanged -- and snaps
+// straight back to 15s the moment anything actually changes, here or on another
+// machine. The cost of the backoff is that a change made elsewhere can take up
+// to two minutes to appear on a machine that has been sitting idle; the instant
+// that machine's own user does anything, it is back to 15 seconds.
+const POLL_MIN_MS = 15000
+const POLL_MAX_MS = 120000
+// Polls that must come back unchanged before the interval starts stretching.
+const QUIET_BEFORE_BACKOFF = 8
+let pollMs = POLL_MIN_MS
+let quietPolls = 0
+
+function resetPollInterval(): void {
+  pollMs = POLL_MIN_MS
+  quietPolls = 0
+}
 
 async function fetchRevision(): Promise<void> {
   if (revisionInFlight) return // a slow request never stacks another behind it
@@ -1452,8 +1488,14 @@ async function fetchRevision(): Promise<void> {
   try {
     const res = await getClient().execute("SELECT value FROM app_settings WHERE key = 'db_revision'")
     const next = res.rows.length ? Number(res.rows[0].value) : 0
-    // Someone else wrote: anything cached off the old data has to go.
-    if (next !== cachedRevision) notifyDataChanged()
+    if (next !== cachedRevision) {
+      // Someone else wrote: anything cached off the old data has to go, and the
+      // data is clearly live, so go back to watching closely.
+      notifyDataChanged()
+      resetPollInterval()
+    } else if (++quietPolls > QUIET_BEFORE_BACKOFF) {
+      pollMs = Math.min(pollMs * 2, POLL_MAX_MS)
+    }
     cachedRevision = next
   } catch {
     // keep the last known value; next tick retries
@@ -1465,12 +1507,13 @@ async function fetchRevision(): Promise<void> {
 export function startRevisionWatcher(): void {
   if (revisionTimer) return
   fetchRevision()
-  // Every open copy of the app polls this forever, so the interval is a
-  // standing cost against the plan's metered reads. 15s instead of 4s is a
-  // ~4x saving; the price is that a change made on ANOTHER machine takes up to
-  // 15 seconds to appear here. This device's own writes are reflected at once
-  // (bumpRevision updates the cache directly), so typing never feels slower.
-  revisionTimer = setInterval(fetchRevision, 15000)
+  // Chained timeouts rather than a fixed interval, so the gap can change
+  // between ticks.
+  const tick = async (): Promise<void> => {
+    await fetchRevision()
+    revisionTimer = setTimeout(tick, pollMs)
+  }
+  revisionTimer = setTimeout(tick, pollMs)
 }
 
 // Run a piece of one-time repair work at most once, ever — recorded in
@@ -1523,6 +1566,8 @@ export async function bumpRevision(): Promise<void> {
   // Reflect our own write immediately so this device's pages refresh at once.
   cachedRevision += 1
   notifyDataChanged()
+  // Somebody is working, so others may be too — watch closely again.
+  resetPollInterval()
 }
 
 export function getRevision(): number {
