@@ -12,6 +12,7 @@ import {
   Plus,
   RotateCcw,
   FileSpreadsheet,
+  History,
   Settings2,
   Trash2,
   Users
@@ -34,6 +35,7 @@ import { isTradingParty } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { exportBdRegister } from '@/lib/bdExcel'
+import { HistoryDialog, useHistoryDialog } from '@/components/HistoryDialog'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -558,6 +560,18 @@ export function BillDiscounting({
     }
   }
 
+  // Bill Discounting's channels were logged under the raw namespace 'bd' before
+  // it was given a proper label, so both spellings are asked for and the older
+  // history stays visible.
+  const hist = useHistoryDialog()
+  const openHistory = (r: Row): void =>
+    hist.open({
+      entity: ['Bill discount', 'bd'],
+      id: Number(r.id),
+      title: String(r.bd_no || 'this bill'),
+      subtitle: `${r.nbfc_name || '—'} · ${r.party_name || '—'} · ${formatINR(r.amount)}`
+    })
+
   function openReceive(r: Row): void {
     setReceiveRow(r)
     setReceiveDate(String(r.payment_received_date || '').slice(0, 10) || todayISO())
@@ -870,6 +884,7 @@ export function BillDiscounting({
                           disabledReason: 'Already repaid — reopen it first',
                           onClick: () => openEdit(r)
                         },
+                        { label: 'History — who did what', icon: History, onClick: () => openHistory(r) },
                         {
                           label: 'Change payment received date',
                           icon: CalendarRange,
@@ -1071,6 +1086,7 @@ export function BillDiscounting({
                                   disabledReason: 'Already repaid — reopen it first',
                                   onClick: () => openEdit(r)
                                 },
+                                { label: 'History — who did what', icon: History, onClick: () => openHistory(r) },
                                 {
                                   label: 'Change payment received date',
                                   icon: CalendarRange,
@@ -1355,6 +1371,8 @@ export function BillDiscounting({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <HistoryDialog target={hist.target} onClose={hist.close} />
 
       {/* Mark payment received — the middle stage. One question only: the day
           the NBFC's money landed. That date starts the interest clock and posts

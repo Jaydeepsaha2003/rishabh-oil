@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowRightLeft, Building2, Check, ChevronDown, ChevronRight, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
+import { ArrowRightLeft, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -28,7 +28,7 @@ import {
 } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { PageHeader } from '@/components/PageHeader'
-import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
+import { formatDate, formatDateShort, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
@@ -40,6 +40,82 @@ import { FyPicker } from '@/components/FyPicker'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
+
+// A figure on the register with its workings behind it. The register showed a
+// number per SKU per day and nothing about how it got there -- a despatch of
+// 34,000 was unarguable and unexplainable at the same time -- so hovering the
+// number now says which parties took it, or which entries built it.
+//
+// The dashed underline is the only hint of it, so the table stays a table.
+function CellWithWorkings({
+  value,
+  className,
+  title,
+  lines,
+  footer
+}: {
+  value: string
+  className?: string
+  title: string
+  lines: { left: string; mid?: string; right: string }[]
+  footer?: string
+}): React.JSX.Element {
+  if (!lines.length) return <span className={className}>{value}</span>
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className={cn(
+            'cursor-help underline decoration-dotted decoration-slate-400 underline-offset-4',
+            className
+          )}
+        >
+          {value}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-md">
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-white/60">{title}</div>
+        <div className="space-y-0.5">
+          {lines.slice(0, 12).map((l, i) => (
+            <div key={i} className="flex items-baseline gap-2 whitespace-nowrap text-[11px]">
+              <span className="shrink-0 text-white/60">{l.left}</span>
+              {l.mid && <span className="min-w-0 truncate">{l.mid}</span>}
+              <span className="ml-auto shrink-0 font-semibold tabular-nums">{l.right}</span>
+            </div>
+          ))}
+          {lines.length > 12 && <div className="text-[10px] text-white/50">… {lines.length - 12} more</div>}
+        </div>
+        {footer && <div className="mt-1 border-t border-white/20 pt-1 text-[10px] text-white/70">{footer}</div>}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+// How a packed SKU is counted. The register stores and shows PIECES (pouches,
+// jars, tins); a case holds `pouches_per_box` of them, which is 1 for a SKU sold
+// by the tin and 40 for a pouch case -- so the two are the same number for most
+// SKUs and wildly different for a few, which is exactly how the mix-up hid.
+function perCase(row: Row | null): number {
+  const v = Number(row?.pouches_per_box)
+  return Number.isFinite(v) && v > 0 ? v : 1
+}
+
+function caseLabel(row: Row | null): string {
+  return String(row?.box_label || 'Case')
+}
+
+function pieceLabel(row: Row | null): string {
+  return String(row?.pouch_label || 'Piece')
+}
+
+// Step an ISO date by whole days, for the day-wise registers' arrows.
+function shiftDate(iso: string, days: number): string {
+  const s = String(iso || '').slice(0, 10)
+  const d = new Date(`${s || new Date().toISOString().slice(0, 10)}T00:00:00`)
+  d.setDate(d.getDate() + days)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 
 // Every export is stamped to the minute, so two downloads of the same register
 // taken an hour apart never overwrite each other in the Downloads folder.
@@ -1168,12 +1244,23 @@ function SkuMultiSelect({
 function SkuStock(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
+  // The parts behind each figure, for the hover. One pair of queries for every
+  // SKU on the page rather than one per tooltip.
+  const [parts, setParts] = useState<Map<number, Row>>(new Map())
   const [adjustRow, setAdjustRow] = useState<Row | null>(null)
-  const [adjustForm, setAdjustForm] = useState<{ mode: 'add' | 'remove'; amount: string; note: string; date: string }>({
+  const [adjustForm, setAdjustForm] = useState<{
+    mode: 'add' | 'remove'
+    amount: string
+    note: string
+    date: string
+    // Which unit the typed figure is in. Stored stock is always pieces.
+    unit: 'case' | 'piece'
+  }>({
     mode: 'add',
     amount: '',
     note: '',
-    date: todayISO()
+    date: todayISO(),
+    unit: 'case'
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1185,7 +1272,15 @@ function SkuStock(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    setRows(await window.api.skuStock.list(dayMode ? date : undefined))
+    const when = dayMode ? date : undefined
+    const [list, breakdown] = await Promise.all([
+      window.api.skuStock.list(when),
+      // The workings behind the figures, for the hover. Asked for once for the
+      // whole page, so a tooltip costs nothing when it opens.
+      window.api.skuStock.breakdown(when).catch(() => [] as Row[])
+    ])
+    setRows(list)
+    setParts(new Map(breakdown.map((b) => [Number(b.sku), b])))
     setLoading(false)
   }, [dayMode, date])
   useEffect(() => { load() }, [load])
@@ -1212,7 +1307,9 @@ function SkuStock(): React.JSX.Element {
   function openAdjust(row: Row): void {
     setAdjustRow(row)
     // Default the entry to the day being viewed, so day-wise updates land there.
-    setAdjustForm({ mode: 'add', amount: '', note: '', date: dayMode ? date : todayISO() })
+    // Counted in cases by default: that is how packed output comes off the line,
+    // and it is what was being typed into a field that meant pieces.
+    setAdjustForm({ mode: 'add', amount: '', note: '', date: dayMode ? date : todayISO(), unit: 'case' })
     setError(null)
   }
 
@@ -1220,12 +1317,19 @@ function SkuStock(): React.JSX.Element {
     if (!adjustRow) return
     const amt = Number(adjustForm.amount)
     if (!amt || amt <= 0) { setError('Enter a quantity greater than zero'); return }
-    const delta = adjustForm.mode === 'add' ? amt : -amt
+    // The register counts, and this column stores, PIECES. A case of 40 pouches
+    // is 40 of them, so an entry made in cases is converted here rather than
+    // being stored as if 40 pouches were 40 cases.
+    const pieces = amt * (adjustForm.unit === 'case' ? perCase(adjustRow) : 1)
+    const delta = adjustForm.mode === 'add' ? pieces : -pieces
     setSaving(true)
     setError(null)
     try {
       await window.api.skuStock.adjust(Number(adjustRow.id), delta, adjustForm.note || undefined, adjustForm.date || undefined)
-      toast.success(`${adjustForm.mode === 'add' ? 'Added' : 'Removed'} ${amt} × ${adjustRow.name}`)
+      toast.success(
+        `${adjustForm.mode === 'add' ? 'Added' : 'Removed'} ${formatNum(Math.abs(pieces))} ${pieceLabel(adjustRow)}` +
+          `${adjustForm.unit === 'case' && perCase(adjustRow) > 1 ? ` (${formatNum(amt)} × ${caseLabel(adjustRow)})` : ''} — ${adjustRow.name}`
+      )
       setAdjustRow(null)
       await load()
     } catch (e) {
@@ -1371,8 +1475,36 @@ function SkuStock(): React.JSX.Element {
         {dayMode && (
           <div className="flex items-center gap-1.5 text-[13px]">
             <span className="text-muted-foreground">Date</span>
+            {/* Reading a day-wise register means walking day by day, and going
+                through the calendar for each step is the slow way round.
+                Forward stops at today, since there is no stock after it. */}
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              title="Previous day"
+              onClick={() => setDate(shiftDate(date, -1))}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
             <DatePicker max={todayISO()} value={date} onChange={(v) => setDate(v || todayISO())} className="w-36" />
-            <Button variant="ghost" size="sm" className="h-8 px-2 text-muted-foreground" onClick={() => setDate(todayISO())}>
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              title={date >= todayISO() ? 'Already on today' : 'Next day'}
+              disabled={date >= todayISO()}
+              onClick={() => setDate(shiftDate(date, 1))}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2 text-muted-foreground"
+              disabled={date >= todayISO()}
+              onClick={() => setDate(todayISO())}
+            >
               Today
             </Button>
           </div>
@@ -1509,6 +1641,35 @@ function SkuStock(): React.JSX.Element {
                   const inQty = dayMode ? Number(r.added_on) || 0 : Number(r.added) || 0
                   const outQty = dayMode ? Number(r.sold_on) || 0 : Number(r.sold) || 0
                   const touched = inQty > 1e-6 || outQty > 1e-6
+                  const part = parts.get(Number(r.id))
+                  const per = perCase(r)
+                  // Pieces, and the same figure in the unit the shop floor
+                  // counts in, since that is the number people recognise.
+                  const asCases = (pieces: number): string =>
+                    per > 1 ? `${formatNum(pieces)} (${formatNum(pieces / per)} ${caseLabel(r).toLowerCase()})` : formatNum(pieces)
+                  // Who took it. One line per invoice, so a party appearing on
+                  // two invoices shows as two lines rather than one lump.
+                  const outLines = ((part?.despatch || []) as Row[]).map((dr) => ({
+                    left: formatDateShort(dr.sale_date),
+                    mid: `${dr.customer || 'Unknown'} · ${dr.invoice_no || 'no invoice no'}`,
+                    right: asCases(Number(dr.pieces) || 0)
+                  }))
+                  const inLines = ((part?.packed_in || []) as Row[])
+                    .filter((a) => Number(a.delta) > 0)
+                    .map((a) => ({
+                      left: formatDateShort(a.adj_date),
+                      mid: String(a.note || 'Packed'),
+                      right: asCases(Number(a.delta) || 0)
+                    }))
+                  // A correction is not packing, and lumping the two together is
+                  // how a hand-typed fix passes for production.
+                  const fixLines = ((part?.packed_in || []) as Row[])
+                    .filter((a) => Number(a.delta) < 0)
+                    .map((a) => ({
+                      left: formatDateShort(a.adj_date),
+                      mid: String(a.note || 'Correction'),
+                      right: asCases(Number(a.delta) || 0)
+                    }))
                   return (
                     <TableRow
                       key={r.id as number}
@@ -1518,17 +1679,74 @@ function SkuStock(): React.JSX.Element {
                       <TableCell className="whitespace-nowrap text-muted-foreground">{unitLabel(r)}</TableCell>
                       {dayMode && (
                         <TableCell className="text-right tabular-nums text-muted-foreground">
-                          {Number(r.opening) ? formatNum(r.opening) : '—'}
+                          {Number(r.opening) ? (
+                            <CellWithWorkings
+                              value={formatNum(r.opening)}
+                              title={`Brought forward into ${formatDate(date)}`}
+                              lines={[
+                                { left: 'Packed in', mid: 'everything before this date', right: asCases(Number(r.added_before) || 0) },
+                                { left: 'Despatched', mid: 'everything before this date', right: `−${asCases(Number(r.sold_before) || 0)}` }
+                              ]}
+                              footer={`= ${asCases(Number(r.opening) || 0)} on hand at the start of the day`}
+                            />
+                          ) : (
+                            '—'
+                          )}
                         </TableCell>
                       )}
                       <TableCell className="text-right font-medium tabular-nums text-emerald-700">
-                        {inQty ? formatNum(inQty) : '—'}
+                        {inQty ? (
+                          <CellWithWorkings
+                            value={formatNum(inQty)}
+                            className="text-emerald-700"
+                            title={dayMode ? `Packed in on ${formatDate(date)}` : 'Packed in — all time'}
+                            lines={[...inLines, ...fixLines]}
+                            footer={
+                              fixLines.length
+                                ? `${inLines.length} packing entr${inLines.length === 1 ? 'y' : 'ies'}, ${fixLines.length} correction${fixLines.length === 1 ? '' : 's'}`
+                                : undefined
+                            }
+                          />
+                        ) : (
+                          '—'
+                        )}
                       </TableCell>
                       <TableCell className="text-right font-medium tabular-nums text-red-600">
-                        {outQty ? formatNum(outQty) : '—'}
+                        {outQty ? (
+                          <CellWithWorkings
+                            value={formatNum(outQty)}
+                            className="text-red-600"
+                            title={dayMode ? `Despatched on ${formatDate(date)} — by party` : 'Despatched — by party'}
+                            lines={outLines}
+                            footer={`${outLines.length} invoice${outLines.length === 1 ? '' : 's'} · ${formatNum((outQty * Number(r.base_per_pouch || 0)) / 1000)} MT`}
+                          />
+                        ) : (
+                          '—'
+                        )}
                       </TableCell>
                       <TableCell className={cn('text-right font-bold tabular-nums', onHand < -1e-6 ? 'text-red-600' : 'text-slate-900')}>
-                        {formatNum(onHand)}
+                        <CellWithWorkings
+                          value={formatNum(onHand)}
+                          className={onHand < -1e-6 ? 'text-red-600' : 'text-slate-900'}
+                          title={dayMode ? `How ${formatDate(date)} closed` : 'How the balance stands'}
+                          lines={
+                            dayMode
+                              ? [
+                                  { left: 'Opening', right: asCases(Number(r.opening) || 0) },
+                                  { left: 'Packed in', right: `+${asCases(inQty)}` },
+                                  { left: 'Despatched', right: `−${asCases(outQty)}` }
+                                ]
+                              : [
+                                  { left: 'Packed in', right: asCases(Number(r.added) || 0) },
+                                  { left: 'Despatched', right: `−${asCases(Number(r.sold) || 0)}` }
+                                ]
+                          }
+                          footer={
+                            onHand < -1e-6
+                              ? `= ${asCases(onHand)} — below zero, so more has gone out than was ever packed in`
+                              : `= ${asCases(onHand)} · ${formatNum(skuMT(r))} MT`
+                          }
+                        />
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-violet-700">{formatNum(skuMT(r))}</TableCell>
                       <TableCell className="text-right">
@@ -1580,7 +1798,8 @@ function SkuStock(): React.JSX.Element {
           {adjustRow && (() => {
             const onHand = Number(adjustRow.on_hand) || 0
             const amt = Number(adjustForm.amount) || 0
-            const delta = adjustForm.mode === 'add' ? amt : -amt
+            const pieces = amt * (adjustForm.unit === 'case' ? perCase(adjustRow) : 1)
+            const delta = adjustForm.mode === 'add' ? pieces : -pieces
             const newHand = onHand + delta
             return (
               <div className="space-y-3">
@@ -1588,9 +1807,51 @@ function SkuStock(): React.JSX.Element {
                   <button type="button" onClick={() => setAdjustForm((p) => ({ ...p, mode: 'add' }))} className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'add' ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'hover:bg-muted/40')}>+ Add packs</button>
                   <button type="button" onClick={() => setAdjustForm((p) => ({ ...p, mode: 'remove' }))} className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'remove' ? 'border-red-500 bg-red-50 text-red-700' : 'hover:bg-muted/40')}>− Remove packs</button>
                 </div>
+                {/* The unit has to be stated. This field used to say "Packs",
+                    which on a 40-pouch case means either 1 or 40 depending on
+                    who is reading it -- and the register counts pieces, so cases
+                    typed in here were being read as pieces and the SKU went
+                    tens of thousands negative. */}
                 <div className="flex flex-col gap-1.5">
-                  <Label>Packs to {adjustForm.mode === 'add' ? 'add' : 'remove'}</Label>
-                  <Input type="number" autoFocus value={adjustForm.amount} onChange={(e) => setAdjustForm((p) => ({ ...p, amount: e.target.value }))} />
+                  <Label>Quantity to {adjustForm.mode === 'add' ? 'add' : 'remove'}</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      type="number"
+                      autoFocus
+                      className="flex-1"
+                      value={adjustForm.amount}
+                      onChange={(e) => setAdjustForm((p) => ({ ...p, amount: e.target.value }))}
+                    />
+                    {perCase(adjustRow) > 1 ? (
+                      <div className="inline-flex shrink-0 rounded-lg border p-0.5">
+                        {(['case', 'piece'] as const).map((u) => (
+                          <button
+                            key={u}
+                            type="button"
+                            onClick={() => setAdjustForm((p) => ({ ...p, unit: u }))}
+                            className={cn(
+                              'rounded-md px-3 py-1 text-[13px] font-medium transition',
+                              adjustForm.unit === u
+                                ? 'bg-primary text-primary-foreground'
+                                : 'text-muted-foreground hover:text-foreground'
+                            )}
+                          >
+                            {u === 'case' ? caseLabel(adjustRow) : pieceLabel(adjustRow)}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="flex h-9 shrink-0 items-center rounded-md bg-muted px-3 text-[13px] text-muted-foreground">
+                        {pieceLabel(adjustRow)}
+                      </div>
+                    )}
+                  </div>
+                  {amt > 0 && perCase(adjustRow) > 1 && adjustForm.unit === 'case' && (
+                    <div className="text-[11px] text-muted-foreground">
+                      {formatNum(amt)} × {perCase(adjustRow)} = <b>{formatNum(amt * perCase(adjustRow))}</b>{' '}
+                      {pieceLabel(adjustRow)} · {formatNum((amt * perCase(adjustRow) * Number(adjustRow.base_per_pouch || 0)) / 1000)} MT
+                    </div>
+                  )}
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label>Date</Label>
@@ -1601,7 +1862,15 @@ function SkuStock(): React.JSX.Element {
                   <Input value={adjustForm.note} onChange={(e) => setAdjustForm((p) => ({ ...p, note: e.target.value }))} placeholder="e.g. packed today / stock correction" />
                 </div>
                 <div className="rounded-md bg-muted px-3 py-2 text-sm">
-                  On hand: <span className="tabular-nums">{formatNum(onHand)}</span> → <span className={cn('font-semibold tabular-nums', newHand < -1e-9 && 'text-red-600')}>{formatNum(newHand)}</span>
+                  On hand: <span className="tabular-nums">{formatNum(onHand)}</span> →{' '}
+                  <span className={cn('font-semibold tabular-nums', newHand < -1e-9 && 'text-red-600')}>{formatNum(newHand)}</span>{' '}
+                  <span className="text-[11px] text-muted-foreground">{pieceLabel(adjustRow)}</span>
+                  {newHand < -1e-9 && (
+                    <div className="mt-1 text-[11px] font-medium text-red-600">
+                      That would take this SKU below zero — check whether the figure is in{' '}
+                      {caseLabel(adjustRow).toLowerCase()}s or {pieceLabel(adjustRow).toLowerCase()}s.
+                    </div>
+                  )}
                 </div>
                 {error && <p className="text-sm text-red-600">{error}</p>}
               </div>

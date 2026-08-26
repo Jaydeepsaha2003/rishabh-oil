@@ -378,6 +378,49 @@ export async function listOrders(): Promise<Row[]> {
   return toPlain(res)
 }
 
+// The bargains an invoice was drawn against, with everything written against
+// them: the bargain's own remarks, and every quantity adjustment made to it.
+//
+// A note put on a bargain is the reason the purchase looks the way it does --
+// why the quantity moved, what was agreed on the phone -- and it was only
+// readable from the bargain register, so anyone looking at the invoice could not
+// see it. It belongs on the invoice too, since that is where the bargain is
+// being used.
+//
+// Two queries whatever the invoice's size: one for the bargains reached through
+// its tankers (primary and excess both), one for every adjustment against them.
+export async function purchaseBargainNotes(orderId: number): Promise<Row[]> {
+  const c = getClient()
+  const bg = await c.execute({
+    sql: `SELECT DISTINCT b.id, b.bargain_no, b.bargain_date, b.qty, b.uom, b.rate_per_uom,
+                 b.rate_expiry_date, b.remarks, s.name AS supplier_name
+          FROM purchase_tankers pt
+          JOIN bargains b ON b.id = pt.bargain_id OR b.id = pt.extra_bargain_id
+          LEFT JOIN suppliers s ON s.id = b.supplier_id
+          WHERE pt.order_id = ?
+          ORDER BY b.bargain_date, b.id`,
+    args: [orderId]
+  })
+  const bargains = toPlain(bg)
+  if (!bargains.length) return []
+  const ids = bargains.map((b) => n(b.id))
+  const adj = await c.execute({
+    sql: `SELECT bargain_id, delta, adj_date, note
+          FROM bargain_adjustments
+          WHERE kind = 'purchase' AND bargain_id IN (${ids.map(() => '?').join(',')})
+          ORDER BY adj_date, id`,
+    args: ids
+  })
+  const byBargain = new Map<number, Row[]>()
+  for (const a of toPlain(adj)) {
+    const k = n(a.bargain_id)
+    const list = byBargain.get(k) || []
+    list.push(a)
+    byBargain.set(k, list)
+  }
+  return bargains.map((b) => ({ ...b, adjustments: byBargain.get(n(b.id)) || [] }))
+}
+
 // Per-bargain rate/qty shares for the tankers on an invoice. A split tanker
 // contributes to BOTH its primary and its excess bargain, so an invoice spanning
 // two bargains is priced line-wise (each at its own rate) like the supplier does.

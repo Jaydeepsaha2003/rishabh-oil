@@ -118,12 +118,18 @@ export async function logEvent(
   detail?: string | null,
   companyId?: number | null,
   entity?: string | null,
-  entityId?: number | null
+  entityId?: number | null,
+  // For records addressed by something other than a number -- a sales invoice
+  // is a group of rows named by its group string.
+  entityKey?: string | null
 ): Promise<void> {
   await getClient().execute({
-    sql: `INSERT INTO user_logs (user_id, username, ip, action, detail, company_id, entity, entity_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    args: [userId, username, ip, action, detail || null, companyId ?? null, entity || null, entityId ?? null]
+    sql: `INSERT INTO user_logs (user_id, username, ip, action, detail, company_id, entity, entity_id, entity_key)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      userId, username, ip, action, detail || null, companyId ?? null,
+      entity || null, entityId ?? null, entityKey || null
+    ]
   })
 }
 
@@ -145,18 +151,43 @@ export interface LogFilter {
 //
 // Generic on purpose: the same call serves any module that logs an entity id.
 export async function entityHistory(
-  entity: string,
-  entityId: number,
-  limit = 200
+  // One or more names the module has been logged under. More than one because a
+  // namespace that later gained a friendly label has history under both -- Bill
+  // Discounting's older entries say 'bd', its newer ones 'Bill discount'.
+  entity: string | string[],
+  opts: {
+    // Records addressed by a number.
+    id?: number | null
+    // ...or by a string, e.g. a sales invoice group.
+    key?: string | null
+    // Last resort for rows written before the key column existed: their only
+    // trace of which record they touched is the summary line. Read-only, and
+    // exact rather than a wildcard, so it cannot pull in a different record.
+    detail?: string | null
+    limit?: number
+  } = {}
 ): Promise<Row[]> {
-  if (!entity || !entityId) return []
+  const names = (Array.isArray(entity) ? entity : [entity]).filter(Boolean)
+  const id = Number(opts.id) || null
+  const key = opts.key ? String(opts.key) : null
+  const detail = opts.detail ? String(opts.detail) : null
+  if (!names.length || (!id && !key && !detail)) return []
+
+  const match: string[] = []
+  const args: (string | number)[] = [...names]
+  if (id) { match.push('entity_id = ?'); args.push(id) }
+  if (key) { match.push('entity_key = ?'); args.push(key) }
+  if (detail) { match.push('(entity_id IS NULL AND entity_key IS NULL AND detail = ?)'); args.push(detail) }
+  args.push(Math.min(Math.max(Number(opts.limit) || 200, 1), 500))
+
   const res = await getClient().execute({
     sql: `SELECT id, created_at, username, ip, action, detail
           FROM user_logs
-          WHERE entity = ? AND entity_id = ?
+          WHERE entity IN (${names.map(() => '?').join(',')})
+            AND (${match.join(' OR ')})
           ORDER BY id ASC
           LIMIT ?`,
-    args: [entity, entityId, Math.min(Math.max(limit, 1), 500)]
+    args
   })
   return toPlain(res)
 }

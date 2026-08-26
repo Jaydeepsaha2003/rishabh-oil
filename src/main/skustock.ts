@@ -78,6 +78,52 @@ export async function listSkuStock(date?: string): Promise<Row[]> {
   })
 }
 
+// Where each figure on the packed-SKU register comes from.
+//
+// The register shows a number per SKU per day and nothing about how it got
+// there, so a despatch of 34,000 is unarguable and unexplainable at the same
+// time. This returns the parts: despatches split by the customer who took them,
+// and packing entries with their dates and notes.
+//
+// Fetched for EVERY SKU in one pair of queries rather than per SKU on hover --
+// a tooltip must not cost a round trip, and forty of them must not cost forty.
+export async function skuMovementBreakdown(date?: string): Promise<Row[]> {
+  const c = getClient()
+  const cid = getActiveCompanyId()
+  const d = date ? String(date).slice(0, 10) : null
+
+  // Despatches, by SKU and by customer. Pieces are boxes x per-box + loose.
+  const disp = await c.execute({
+    sql: `SELECT s.packaging_id AS sku, s.invoice_no, s.sale_date, s.customer,
+                 SUM(s.boxes * pk.pouches_per_box + s.pouches) AS pieces, SUM(s.boxes) AS boxes
+          FROM sales s JOIN packagings pk ON pk.id = s.packaging_id
+          WHERE s.sale_type = 'PACKED' AND s.status = 'done' AND s.company_id = ?
+            AND (? IS NULL OR substr(s.sale_date, 1, 10) = ?)
+          GROUP BY s.packaging_id, s.invoice_group, s.customer
+          ORDER BY s.sale_date, s.invoice_no`,
+    args: [cid, d, d]
+  })
+
+  // Packing/correction entries, by SKU.
+  const packed = await c.execute({
+    sql: `SELECT packaging_id AS sku, adj_date, delta, note
+          FROM sku_adjustments
+          WHERE company_id = ? AND (? IS NULL OR substr(adj_date, 1, 10) = ?)
+          ORDER BY adj_date, id`,
+    args: [cid, d, d]
+  })
+
+  const bySku = new Map<number, Row>()
+  const slot = (id: number): Row => {
+    const cur = bySku.get(id) || { sku: id, despatch: [] as Row[], packed_in: [] as Row[] }
+    bySku.set(id, cur)
+    return cur
+  }
+  for (const r of toPlain(disp)) slot(n(r.sku)).despatch.push(r)
+  for (const r of toPlain(packed)) slot(n(r.sku)).packed_in.push(r)
+  return Array.from(bySku.values())
+}
+
 // Add (delta > 0) or remove (delta < 0) packed units for one SKU, logged by
 // date so the on-hand reflects when packing/shrinkage happened.
 export async function adjustSkuStock(

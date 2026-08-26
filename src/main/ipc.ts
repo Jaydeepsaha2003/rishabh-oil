@@ -34,12 +34,11 @@ import {
   listSupplierLedger,
   listTransporterLedger,
   addLedgerEntry,
-  deleteLedgerEntry
-} from './orders'
+  deleteLedgerEntry, purchaseBargainNotes } from './orders'
 import { listUnmappedOrders, unmappedCount, mapOrderToBargains } from './unmapped'
 import { listTradingDeals, createTradingDeal, updateTradingDeal, deleteTradingDeal } from './trading'
 import { assertAllowed, clearAccessCache, currentScope } from './access-gate'
-import { listSkuRates, saveSkuRates, listPackagingParties, setPackagingParties } from './skurates'
+import { listSkuRates, saveSkuRates, listPackagingParties, setPackagingParties, packagingPartyCounts } from './skurates'
 import {
   listConsignment,
   consignmentSummary,
@@ -69,7 +68,7 @@ import {
   deleteStockTransfer
 } from './stock'
 import { stockCountSheet, listStockCounts, saveStockCounts } from './stockcount'
-import { listSkuStock, adjustSkuStock } from './skustock'
+import { listSkuStock, adjustSkuStock, skuMovementBreakdown } from './skustock'
 import { listNotes, listNoteItems, createNote, updateNote, deleteNote } from './notes'
 import { daybook } from './daybook'
 import { dashboardStats } from './dashboard'
@@ -218,6 +217,7 @@ const NS_ENTITY: Record<string, string> = {
   sales: 'Sale',
   salesBargains: 'Sales bargain',
   billDiscount: 'Bill discount',
+  bd: 'Bill discount',
   lc: 'Letter of credit',
   journal: 'Journal',
   ledger: 'Ledger',
@@ -248,6 +248,14 @@ const OP_VERB: Record<string, string> = {
   reopen: 'Reopened',
   saveLimit: 'Changed the facility limit',
   upfrontInterest: 'Posted upfront interest',
+  createInvoice: 'Created',
+  updateInvoice: 'Updated',
+  deleteInvoice: 'Deleted',
+  rejectInvoice: 'Rejected',
+  unrejectInvoice: 'Un-rejected',
+  setInvoiceStage: 'Moved the dispatch stage',
+  setStage: 'Moved the dispatch stage',
+  cancelDelivery: 'Cancelled the delivery',
   delete: 'Deleted',
   advance: 'Advanced',
   record: 'Recorded',
@@ -303,6 +311,12 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
   const entity = ns === 'data' ? tableLabel(String(args?.table || '')) : NS_ENTITY[ns] || ns
   const action = OP_VERB[op] || op
   const entityId = Number(result?.id ?? args?.id) || null
+  // Not every record has a numeric id to be logged against. A sales invoice is
+  // a GROUP of line rows addressed by its group string, so every sales event
+  // used to land with no record key at all and the trail could not say which
+  // invoice it belonged to. Whatever names the record gets recorded too.
+  const key = args?.group ?? args?.invoice_group ?? result?.group ?? result?.invoice_group ?? null
+  const entityKey = key == null || key === '' ? null : String(key)
   const detail = summarizeArgs(args)
   const user = getCurrentUser()
   await logEvent(
@@ -313,7 +327,8 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
     detail,
     getActiveCompanyId(),
     entity,
-    entityId
+    entityId,
+    entityKey
   )
 }
 
@@ -323,7 +338,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:allRepayments$|^access:entityHistory$|^trading:list$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:allRepayments$|^access:entityHistory$|^trading:list$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -406,8 +421,10 @@ export function registerIpc(): void {
     adjustBargainQty(id, delta, note, date)
   )
 
+  handle('orders:bargainNotes', (_e, { id }: { id: number }) => purchaseBargainNotes(id))
   handle('orders:list', () => listOrders())
   handle('skuRates:list', (_e, { id }: { id: number }) => listSkuRates(id))
+  handle('skuRates:partyCounts', () => packagingPartyCounts())
   handle('skuRates:parties', (_e, { packagingId }: { packagingId: number }) => listPackagingParties(packagingId))
   handle('skuRates:setParties', (_e, { packagingId, customerIds }: { packagingId: number; customerIds: number[] }) => setPackagingParties(packagingId, customerIds))
   handle('skuRates:save', (_e, { id, rows }: { id: number; rows: Row[] }) => saveSkuRates(id, rows))
@@ -567,6 +584,7 @@ export function registerIpc(): void {
     saveStockCounts(date, items)
   )
 
+  handle('skuStock:breakdown', (_e, { date }: { date?: string } = {}) => skuMovementBreakdown(date))
   handle('skuStock:list', (_e, args?: { date?: string }) => listSkuStock(args?.date))
   handle('skuStock:adjust', (_e, { id, delta, note, date }: { id: number; delta: number; note?: string; date?: string }) =>
     adjustSkuStock(id, delta, note, date)
@@ -799,8 +817,16 @@ export function registerIpc(): void {
 
   handle(
     'access:entityHistory',
-    (_e, { entity, entityId, limit }: { entity: string; entityId: number; limit?: number }) =>
-      entityHistory(entity, entityId, limit)
+    (
+      _e,
+      {
+        entity,
+        id,
+        key,
+        detail,
+        limit
+      }: { entity: string | string[]; id?: number | null; key?: string | null; detail?: string | null; limit?: number }
+    ) => entityHistory(entity, { id, key, detail, limit })
   )
 
   handle('trading:list', () => listTradingDeals())

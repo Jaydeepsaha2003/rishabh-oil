@@ -80,7 +80,14 @@ interface Props {
   // When a field changes, optionally return other fields to auto-fill.
   onFieldChange?: (key: string, value: unknown, form: Row) => Row | undefined
   // An extra per-row button (e.g. linking related records), before edit/delete.
-  rowAction?: { title: string; icon: React.ComponentType<{ className?: string }>; onClick: (row: Row) => void }
+  rowAction?: {
+    title: string | ((row: Row) => string)
+    icon: React.ComponentType<{ className?: string }>
+    onClick: (row: Row) => void
+    // A small dot on the button when the row already has something behind it,
+    // so the list says which rows are linked without opening each one.
+    marked?: (row: Row) => boolean
+  }
 }
 
 export function EntityManager({
@@ -398,11 +405,14 @@ export function EntityManager({
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="h-8 w-8"
-                            title={rowAction.title}
+                            className="relative h-8 w-8"
+                            title={typeof rowAction.title === 'function' ? rowAction.title(row) : rowAction.title}
                             onClick={() => rowAction.onClick(row)}
                           >
                             <rowAction.icon className="h-4 w-4" />
+                            {rowAction.marked?.(row) && (
+                              <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-white" />
+                            )}
                           </Button>
                         )}
                         <Button

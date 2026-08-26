@@ -35,6 +35,7 @@ export interface Api {
     adjust: (id: number, delta: number, note?: string, date?: string) => Promise<{ id: number; qty: number }>
   }
   orders: {
+    bargainNotes: (id: number) => Promise<Row[]>
     list: () => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
@@ -112,7 +113,10 @@ export interface Api {
     login: (username: string, password: string) => Promise<Row>
   }
   access: {
-    entityHistory: (entity: string, entityId: number, limit?: number) => Promise<Row[]>
+    entityHistory: (
+      entity: string | string[],
+      selector: { id?: number | null; key?: string | null; detail?: string | null; limit?: number }
+    ) => Promise<Row[]>
     heartbeat: (
       userId: number,
       username: string
@@ -154,6 +158,7 @@ export interface Api {
     save: (date: string, items: Row[]) => Promise<{ count: number }>
   }
   skuStock: {
+    breakdown: (date?: string) => Promise<Row[]>
     list: (date?: string) => Promise<Row[]>
     adjust: (id: number, delta: number, note?: string, date?: string) => Promise<{ id: number; on_hand: number }>
   }
@@ -203,6 +208,7 @@ export interface Api {
     unrejectInvoice: (group: string) => Promise<{ group: string }>
   }
   skuRates: {
+    partyCounts: () => Promise<Row[]>
     parties: (packagingId: number) => Promise<number[]>
     setParties: (packagingId: number, customerIds: number[]) => Promise<{ count: number }>
     list: (id: number) => Promise<Row[]>

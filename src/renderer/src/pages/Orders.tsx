@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   Undo2, ArrowLeft, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, DoorOpen, Eye,
-  FileText, IndianRupee, Pencil, Plus, ScrollText, Search, Trash2, Truck, type LucideIcon } from 'lucide-react'
+  FileText, History, IndianRupee, Pencil, Plus, ScrollText, Search, Trash2, Truck, type LucideIcon } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { FyPicker } from '@/components/FyPicker'
 import { ExcelButton } from '@/components/ExcelButton'
@@ -20,6 +20,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { ColumnFilter } from '@/components/ui/column-filter'
 import { RowActions } from '@/components/ui/row-actions'
+import { HistoryDialog, useHistoryDialog } from '@/components/HistoryDialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
@@ -1334,6 +1335,35 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     setFormPage(true)
     setTab('purchases')
   }
+
+  // Whatever has been written against the bargains this invoice was drawn
+  // against -- the bargain's own remarks and every quantity adjustment note.
+  // Fetched when the details dialog opens, not with the register, so a page
+  // refresh does not pay for notes nobody has asked to see.
+  const [bargainNotes, setBargainNotes] = useState<Row[] | null>(null)
+  useEffect(() => {
+    if (!detailRow?.id) {
+      setBargainNotes(null)
+      return
+    }
+    let live = true
+    setBargainNotes(null)
+    window.api.orders
+      .bargainNotes(Number(detailRow.id))
+      .then((r) => { if (live) setBargainNotes(r) })
+      .catch(() => { if (live) setBargainNotes([]) })
+    return () => { live = false }
+  }, [detailRow?.id])
+
+  // Who did what to one purchase invoice.
+  const hist = useHistoryDialog()
+  const openHistory = (row: Row): void =>
+    hist.open({
+      entity: 'Purchase',
+      id: Number(row.id),
+      title: String(row.invoice_no || 'this purchase'),
+      subtitle: `${row.supplier_name || '—'} · ${formatDate(row.invoice_date || row.order_date)} · ${formatINR(row.total_amount ?? row.amount)}`
+    })
 
   function openEditPurchase(row: Row): void {
     const supplier = suppliers.find((x) => x.id === row.supplier_id)
@@ -3391,6 +3421,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                               actions={[
                                 { label: 'View details', icon: Eye, onClick: () => setDetailRow(row) },
                                 { label: 'Edit purchase', icon: Pencil, onClick: () => openEditPurchase(row) },
+                                { label: 'History — who did what', icon: History, onClick: () => openHistory(row) },
                                 { label: 'Delete purchase', icon: Trash2, danger: true, onClick: () => deletePurchase(row) }
                               ]}
                             />
@@ -4178,6 +4209,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         </DialogContent>
       </Dialog>
 
+      <HistoryDialog target={hist.target} onClose={hist.close} />
+
       {/* Edit all stage entries of a tanker */}
       <Dialog open={!!editTanker} onOpenChange={(open) => !open && setEditTanker(null)}>
         <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
@@ -4597,6 +4630,74 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             </DialogTitle>
           </DialogHeader>
           {detailRow && <div className="grid min-w-0 gap-3">
+            {/* The bargain this invoice was drawn against, and everything
+                written against it. A note explaining why a bargain's quantity
+                moved is the reason the invoice looks the way it does, and it
+                used to be readable only from the bargain register. */}
+            {!!bargainNotes?.length && (
+              <div className="rounded-xl border">
+                <div className="flex items-center gap-1.5 border-b bg-amber-50 px-3 py-2">
+                  <ScrollText className="h-3.5 w-3.5 text-amber-700" />
+                  <span className="text-xs font-semibold text-amber-900">
+                    Bargain{bargainNotes.length > 1 ? 's' : ''} &amp; notes
+                  </span>
+                </div>
+                <div className="divide-y">
+                  {bargainNotes.map((b) => {
+                    const adj = (b.adjustments || []) as Row[]
+                    // The bargain's remarks accumulate each adjustment note as
+                    // it is made, so showing both would print every note twice.
+                    // The adjustments below are the dated, signed record, so the
+                    // remarks line keeps only what is not already in one.
+                    const noteTexts = new Set(adj.map((a) => String(a.note || '').trim()).filter(Boolean))
+                    const extra = String(b.remarks || '')
+                      .split('\n')
+                      .map((l) => l.trim())
+                      .filter((l) => l && !noteTexts.has(l))
+                    return (
+                      <div key={String(b.id)} className="px-3 py-2 text-[13px]">
+                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                          <span className="font-medium">{b.bargain_no || 'No bargain no'}</span>
+                          <span className="text-[11px] text-muted-foreground">
+                            {formatDate(b.bargain_date)} · {formatNum(b.qty)} {b.uom || 'MT'} @ {formatINR(b.rate_per_uom)}
+                          </span>
+                          {b.rate_expiry_date && (
+                            <span className="text-[11px] text-muted-foreground">
+                              expires {formatDate(b.rate_expiry_date)}
+                            </span>
+                          )}
+                        </div>
+                        {extra.length > 0 && (
+                          <div className="mt-1 text-[12px] text-muted-foreground">{extra.join(' · ')}</div>
+                        )}
+                        {adj.length > 0 && (
+                          <div className="mt-1.5 space-y-1">
+                            {adj.map((a, i) => (
+                              <div key={i} className="flex flex-wrap items-baseline gap-x-2 text-[12px]">
+                                <span className="shrink-0 tabular-nums text-muted-foreground">{formatDate(a.adj_date)}</span>
+                                <span
+                                  className={cn(
+                                    'shrink-0 font-semibold tabular-nums',
+                                    Number(a.delta) < 0 ? 'text-rose-700' : 'text-emerald-700'
+                                  )}
+                                >
+                                  {Number(a.delta) > 0 ? '+' : ''}
+                                  {formatNum(a.delta)} {b.uom || 'MT'}
+                                </span>
+                                <span className="min-w-0 text-muted-foreground">{a.note || 'No reason given'}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {!extra.length && !adj.length && (
+                          <div className="mt-1 text-[12px] text-muted-foreground">Nothing written against this bargain.</div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
             {(() => {
               // Who carried it and at what rate — nothing else. The amounts live
               // on each tanker's own Transport panel further down.

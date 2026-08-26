@@ -50,6 +50,7 @@ const api = {
       ipcRenderer.invoke('bargains:adjust', { id, delta, note, date })
   },
   orders: {
+    bargainNotes: (id: number): Promise<Row[]> => ipcRenderer.invoke('orders:bargainNotes', { id }),
     list: (): Promise<Row[]> => ipcRenderer.invoke('orders:list'),
     create: (values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('orders:create', { values }),
@@ -154,8 +155,10 @@ const api = {
       ipcRenderer.invoke('auth:login', { username, password })
   },
   access: {
-    entityHistory: (entity: string, entityId: number, limit?: number): Promise<Row[]> =>
-      ipcRenderer.invoke('access:entityHistory', { entity, entityId, limit }),
+    entityHistory: (
+      entity: string | string[],
+      selector: { id?: number | null; key?: string | null; detail?: string | null; limit?: number }
+    ): Promise<Row[]> => ipcRenderer.invoke('access:entityHistory', { entity, ...selector }),
     heartbeat: (
       userId: number,
       username: string
@@ -211,6 +214,7 @@ const api = {
       ipcRenderer.invoke('stockCount:save', { date, items })
   },
   skuStock: {
+    breakdown: (date?: string): Promise<Row[]> => ipcRenderer.invoke('skuStock:breakdown', { date }),
     list: (date?: string): Promise<Row[]> => ipcRenderer.invoke('skuStock:list', { date }),
     adjust: (id: number, delta: number, note?: string, date?: string): Promise<{ id: number; on_hand: number }> =>
       ipcRenderer.invoke('skuStock:adjust', { id, delta, note, date })
@@ -286,6 +290,7 @@ const api = {
       ipcRenderer.invoke('sales:unrejectInvoice', { group })
   },
   skuRates: {
+    partyCounts: (): Promise<Row[]> => ipcRenderer.invoke('skuRates:partyCounts'),
     parties: (packagingId: number): Promise<number[]> => ipcRenderer.invoke('skuRates:parties', { packagingId }),
     setParties: (packagingId: number, customerIds: number[]): Promise<{ count: number }> =>
       ipcRenderer.invoke('skuRates:setParties', { packagingId, customerIds }),

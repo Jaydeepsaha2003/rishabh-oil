@@ -164,6 +164,18 @@ function validateBargainInput(v: Row): { qty: number; rate: number } {
   if (qty <= 0) throw new Error('Quantity must be greater than zero')
   const rate = landedRate(v)
   if (rate <= 0) throw new Error('Bargain rate (base + duty) must be greater than zero')
+  // A contract cannot expire on or before the day it was struck -- a rate that
+  // expires the same day was never valid for anything, and one expiring earlier
+  // is a typo. Strictly after, so same-day is refused too.
+  const struck = String(v.bargain_date || '').slice(0, 10)
+  const expires = String(v.rate_expiry_date || '').slice(0, 10)
+  if (struck && expires && expires <= struck) {
+    throw new Error(
+      expires === struck
+        ? 'Contract expiry cannot be the same day as the bargain — it has to be after it'
+        : 'Contract expiry cannot be before the bargain date'
+    )
+  }
   return { qty, rate }
 }
 

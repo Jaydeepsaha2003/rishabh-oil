@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Download, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Tags, Trash2, Truck, Upload } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Download, History, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Tags, Trash2, Truck, Upload } from 'lucide-react'
 import { moduleScope } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
 import { loadUser } from '@/lib/session'
@@ -27,6 +27,7 @@ import {
 import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { ColumnFilter } from '@/components/ui/column-filter'
 import { RowActions } from '@/components/ui/row-actions'
+import { HistoryDialog, useHistoryDialog } from '@/components/HistoryDialog'
 import {
   Table,
   TableBody,
@@ -292,6 +293,23 @@ function SalesTab({
       ),
     [customers, header.customer_id]
   )
+
+  // Who did what to one invoice. An invoice is a GROUP of line rows, so its
+  // history is keyed by the group string rather than a row id. Events written
+  // before that key existed carry only their summary line, so those are matched
+  // on it as a fallback -- which is why an older invoice still shows who raised
+  // it even though nothing pointed at it at the time.
+  const hist = useHistoryDialog()
+  const openHistory = (inv: { first: Row; lines: Row[] }): void => {
+    const first = inv.first
+    hist.open({
+      entity: 'Sale',
+      key: String(first.invoice_group || `LEGACY-${first.id}`),
+      detail: first.invoice_no ? `Inv ${first.invoice_no}` : null,
+      title: String(first.invoice_no || 'this invoice'),
+      subtitle: `${first.customer || '—'} · ${formatDate(first.sale_date)} · ${inv.lines.length} line${inv.lines.length === 1 ? '' : 's'}`
+    })
+  }
 
   // Sales grouped into invoices (line items sharing an invoice_group).
   const unloadOnly = UNLOAD_DESK()
@@ -1550,6 +1568,7 @@ function SalesTab({
                                     ]
                                   : []),
                               { label: 'Edit invoice', icon: Pencil, onClick: () => openEditInvoice(inv) },
+                              { label: 'History — who did what', icon: History, onClick: () => openHistory(inv) },
                               { label: 'Delete invoice', icon: Trash2, danger: true, onClick: () => delInvoice(inv) }
                             ]}
                           />
@@ -2285,6 +2304,8 @@ function SalesTab({
       </div>
       )}
 
+      <HistoryDialog target={hist.target} onClose={hist.close} />
+
       {/* Reject — the customer refused the consignment before it was fully delivered */}
       {/* Marking Unloaded: capture what the transporter actually delivered. */}
       <Dialog open={!!cancelInv} onOpenChange={(o) => !o && !cancelling && setCancelInv(null)}>
@@ -2934,11 +2955,33 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
               SKUs priced
             </span>
           </div>
+          {/* Why these SKUs and not others. A party with its own linked SKUs
+              gets those; a party with none gets the FREE ones — the SKUs no
+              party has claimed — rather than being offered somebody else's
+              exclusive packs. Saying so stops the shorter list looking like
+              SKUs have gone missing. */}
+          <div className="text-[11px] text-muted-foreground">
+            {rateRows.some((r) => Number(r.party_linked) === 1) ? (
+              <>
+                Showing the SKUs linked to this party.{' '}
+                <span className="text-muted-foreground/70">Link more under Masters → Packed SKU.</span>
+              </>
+            ) : rateRows.length && rateRows.every((r) => Number(r.free) === 1) ? (
+              <>
+                No SKU is linked to this party yet, so these are the{' '}
+                <b className="font-semibold text-emerald-700">free SKUs</b> — not claimed by any party, so anyone can
+                be sold them.
+              </>
+            ) : (
+              <>Every SKU for this bargain&apos;s product.</>
+            )}
+          </div>
           <div className="max-h-[45vh] overflow-auto rounded-lg border">
             <table className="w-full text-[12px]">
               <thead className="sticky top-0 bg-muted/70">
                 <tr className="text-left">
                   <th className="px-3 py-1.5 font-semibold">SKU</th>
+                  <th className="px-3 py-1.5 font-semibold">Party</th>
                   <th className="px-3 py-1.5 text-right font-semibold">MT / case</th>
                   <th className="px-3 py-1.5 text-right font-semibold">Rate / case</th>
                   <th className="px-3 py-1.5 text-right font-semibold">Rate / MT</th>
@@ -2947,7 +2990,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
               <tbody>
                 {rateRows.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="px-3 py-8 text-center text-muted-foreground">
+                    <td colSpan={5} className="px-3 py-8 text-center text-muted-foreground">
                       No packed SKUs for this bargain&apos;s product. Add them under Masters → Packed SKU.
                     </td>
                   </tr>
@@ -2960,6 +3003,22 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                         className={cn('border-b last:border-0', i % 2 === 1 && 'bg-muted/30', priced && 'bg-emerald-50/60')}
                       >
                         <td className="px-3 py-1.5 font-medium">{r.name}</td>
+                        <td className="px-3 py-1.5">
+                          {Number(r.party_linked) === 1 ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700">
+                              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Linked
+                            </span>
+                          ) : Number(r.free) === 1 ? (
+                            <span className="text-[11px] text-muted-foreground">Free</span>
+                          ) : (
+                            <span
+                              className="text-[11px] text-amber-700"
+                              title={`Claimed by ${Number(r.claimed_by)} other part${Number(r.claimed_by) === 1 ? 'y' : 'ies'}`}
+                            >
+                              Other party
+                            </span>
+                          )}
+                        </td>
                         <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">
                           {caseMT(r).toFixed(5)}
                         </td>

@@ -1,5 +1,5 @@
 import { PageHeader } from '@/components/PageHeader'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Check, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -119,6 +119,19 @@ export function Packaging(): React.JSX.Element {
       : c
   )
 
+  // Which SKUs already have parties behind them, so the list can say so without
+  // opening each one. One query, refreshed after a save.
+  const [linked, setLinked] = useState<Map<number, { parties: number; names: string }>>(new Map())
+  const loadLinked = useCallback(async () => {
+    try {
+      const rows = await window.api.skuRates.partyCounts()
+      setLinked(new Map(rows.map((r) => [Number(r.packaging_id), { parties: Number(r.parties), names: String(r.names || '') }])))
+    } catch {
+      setLinked(new Map())
+    }
+  }, [])
+  useEffect(() => { void loadLinked() }, [loadLinked])
+
   async function openLinks(row: Row): Promise<void> {
     setLinkRow(row)
     setCustSearch('')
@@ -140,6 +153,7 @@ export function Packaging(): React.JSX.Element {
           : `${linkRow.name} now offered to every party`
       )
       setLinkRow(null)
+      await loadLinked()
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -172,7 +186,20 @@ export function Packaging(): React.JSX.Element {
             if (key === 'product_id' && value) return { product_label: '' }
             return undefined
           }}
-          rowAction={{ title: 'Link buyer parties (narrows the rate card)', icon: Users, onClick: (row) => void openLinks(row) }}
+          rowAction={{
+            // The tooltip names them, so the dot is a prompt rather than a
+            // riddle — a SKU with no link is offered to every party, which is a
+            // different thing from being linked to none.
+            title: (row) => {
+              const hit = linked.get(Number(row.id))
+              return hit
+                ? `Linked to ${hit.parties} part${hit.parties === 1 ? 'y' : 'ies'}: ${hit.names}`
+                : 'Not linked to any party — offered to every party. Click to narrow it.'
+            },
+            icon: Users,
+            marked: (row) => (linked.get(Number(row.id))?.parties || 0) > 0,
+            onClick: (row) => void openLinks(row)
+          }}
         />
       </div>
 

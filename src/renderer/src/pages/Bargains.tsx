@@ -58,6 +58,16 @@ import { isManufacturingParty } from '@/lib/constants'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
 
+// The first day a contract struck on `date` may expire -- the day after it. A
+// contract cannot expire on the day it was struck, so same-day is out too.
+function dayAfter(date: unknown): string | undefined {
+  const s = String(date || '').slice(0, 10)
+  if (!s) return undefined
+  const d = new Date(`${s}T00:00:00`)
+  d.setDate(d.getDate() + 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 type SortState = { key: string; dir: 'asc' | 'desc' } | null
 
 // Per-column sort accessors. Anything not listed here isn't sortable.
@@ -373,12 +383,25 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
   const bgRate = (Number(form.base_rate) || 0) + (Number(form.duty) || 0)
   const total = (Number(form.qty) || 0) * bgRate
 
+  // Shown under the expiry field the moment the pair stops making sense --
+  // which happens when the bargain date is moved forward past an expiry that
+  // was already set, not only when the expiry itself is picked.
+  const expiryProblem = ((): string | null => {
+    const struck = String(form.bargain_date || '').slice(0, 10)
+    const expires = String(form.rate_expiry_date || '').slice(0, 10)
+    if (!struck || !expires || expires > struck) return null
+    return expires === struck
+      ? 'Expiry cannot be the same day as the bargain'
+      : `Expiry is before the bargain date (${formatDate(struck)})`
+  })()
+
   async function save(): Promise<void> {
     if (!form.supplier_id) return setError('Supplier is required')
     if (!form.product_category) return setError('Product category is required')
     if (!form.oil_type_id) return setError('Product is required')
     if (!form.qty || Number(form.qty) <= 0) return setError('Quantity must be greater than 0')
     if (bgRate <= 0) return setError('Base rate must be greater than 0')
+    if (expiryProblem) return setError(`Contract expiry must be after the bargain date — ${expiryProblem.toLowerCase()}`)
     if (editLocked && Number(form.qty) < editConsumed - 1e-4) {
       return setError(`Quantity cannot be below the ${formatNum(editConsumed)} already loaded/consumed`)
     }
@@ -1563,10 +1586,17 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
 
             <div className="flex flex-col gap-1.5">
               <Label>Contract expiry</Label>
+              {/* Nothing on or before the bargain date is selectable: a contract
+                  cannot expire the day it was struck, let alone earlier. An
+                  expiry already on the record that a later change to the
+                  bargain date has invalidated is called out rather than
+                  silently discarded -- both dates are the user's to fix. */}
               <DatePicker
                 value={form.rate_expiry_date ?? ''}
+                min={dayAfter(form.bargain_date)}
                 onChange={(v) => setField('rate_expiry_date', v)}
               />
+              {expiryProblem && <div className="text-[11px] font-medium text-destructive">{expiryProblem}</div>}
             </div>
 
             <div className="flex content-end flex-col gap-1.5">

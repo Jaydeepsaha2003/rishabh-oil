@@ -96,6 +96,19 @@ app.whenReady().then(async () => {
     await c.execute('CREATE INDEX IF NOT EXISTS idx_stransfers_to ON stock_transfers(to_company_id, product_id)')
     await c.execute('CREATE INDEX IF NOT EXISTS idx_stransfers_from ON stock_transfers(from_company_id, product_id)')
   }).catch((e) => console.error('[logs] history index failed:', e))
+  // Not every record is identified by a number: a sales invoice is a GROUP of
+  // line rows addressed by its group string, so every sales event landed with
+  // no record key at all and the trail could not say which invoice it belonged
+  // to -- 246 events, none of them attributable. This is that key.
+  //
+  // Here rather than in the migration list for the reason written at the foot
+  // of that list: it is applied by COUNT, and an install already past the mark
+  // silently skips anything added to it. A named runOnce cannot be skipped.
+  await runOnce('ulogs_entity_key_v1', async () => {
+    const c = getClient()
+    await c.execute('ALTER TABLE user_logs ADD COLUMN entity_key TEXT')
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_ulogs_entity_key ON user_logs(entity, entity_key)')
+  }).catch((e) => console.error('[logs] entity key failed:', e))
   startRevisionWatcher()
   registerIpc()
   registerUpdater(() => mainWindow)

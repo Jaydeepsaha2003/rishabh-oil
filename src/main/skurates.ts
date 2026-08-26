@@ -39,26 +39,79 @@ export async function listSkuRates(salesBargainId: number): Promise<Row[]> {
     args: [salesBargainId, productId, productId]
   })
   let rows = toPlain(res)
-  // When the bargain's customer has SKUs linked to them, the rate card narrows
-  // to those — that is the point of the linking. No links (or no overlap with
-  // the product's SKUs) falls back to the full list so nothing ever vanishes.
+  // Narrowing the card to the party it is for. Two cases, and the second one is
+  // the reason this is not just a filter on the party's own links:
+  //
+  //   - the party HAS linked SKUs -> the card is those, which is the whole point
+  //     of linking them;
+  //   - the party has NONE -> the card is the FREE SKUs, the ones no party has
+  //     claimed. It used to fall back to every SKU, which offered a new party
+  //     someone else's exclusive packs -- CITY VANASPATI being shown SKUs that
+  //     belong to DCM AGROTECH. Unclaimed is the honest answer to "what could
+  //     this party be sold?".
+  //
+  // In both cases a SKU that already carries a rate on THIS bargain always
+  // stays: the sale line's auto-fill reads this same list, and dropping a rate
+  // that was properly fed in would silently stop it pricing.
+  // And if narrowing would empty the card, the full list stands — nothing is
+  // ever made unreachable.
+  const keepsRate = (r: Row): boolean => r.rate_per_case != null || r.rate_per_mt != null
+  const claimedRes = await c.execute('SELECT packaging_id, customer_id FROM packaging_parties')
+  const claimedBy = new Map<number, Set<number>>()
+  for (const r of claimedRes.rows) {
+    const pid = Number(r.packaging_id)
+    const set = claimedBy.get(pid) || new Set<number>()
+    set.add(Number(r.customer_id))
+    claimedBy.set(pid, set)
+  }
+  const linked = new Set<number>()
   if (customerId) {
-    const links = await c.execute({
-      sql: 'SELECT packaging_id FROM packaging_parties WHERE customer_id = ?',
-      args: [customerId]
-    })
-    const linked = new Set(links.rows.map((r) => Number(r.packaging_id)))
+    for (const [pid, set] of claimedBy) if (set.has(customerId)) linked.add(pid)
+  }
+
+  // Tag every row so the card can say why a SKU is on it.
+  rows = rows.map((r) => {
+    const pid = Number(r.packaging_id)
+    const owners = claimedBy.get(pid)
+    return {
+      ...r,
+      party_linked: linked.has(pid) ? 1 : 0,
+      // Nobody's exclusive — offered to anyone.
+      free: owners && owners.size ? 0 : 1,
+      claimed_by: owners ? owners.size : 0
+    }
+  })
+
+  if (customerId) {
     if (linked.size) {
-      // The party's linked SKUs — but an SKU that already carries a rate on
-      // THIS bargain always stays, or the sale line's auto-fill (which uses
-      // this same list) would stop seeing rates that were properly fed in.
-      const own = rows.filter(
-        (r) => linked.has(Number(r.packaging_id)) || r.rate_per_case != null || r.rate_per_mt != null
-      )
+      const own = rows.filter((r) => n(r.party_linked) === 1 || keepsRate(r))
       if (own.length) rows = own
+    } else {
+      const free = rows.filter((r) => n(r.free) === 1 || keepsRate(r))
+      if (free.length) rows = free
     }
   }
   return rows
+}
+
+// How many parties each SKU is linked to -- one row per SKU that has any.
+//
+// One query for the whole master list. The per-SKU call below answers for a
+// single SKU and is what the link dialog uses; asking it once per row to draw a
+// dot would be one query per row.
+export async function packagingPartyCounts(): Promise<Row[]> {
+  const res = await getClient().execute(
+    `SELECT pp.packaging_id, COUNT(*) AS parties,
+            GROUP_CONCAT(cu.name, ', ') AS names
+     FROM packaging_parties pp
+     LEFT JOIN customers cu ON cu.id = pp.customer_id
+     GROUP BY pp.packaging_id`
+  )
+  return res.rows.map((r) => ({
+    packaging_id: Number(r.packaging_id),
+    parties: Number(r.parties),
+    names: String(r.names || '')
+  }))
 }
 
 // The customers linked to one packed SKU.
