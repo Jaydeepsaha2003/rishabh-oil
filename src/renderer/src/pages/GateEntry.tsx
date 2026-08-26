@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { errText, formatDate, formatNum, todayISO } from '@/lib/format'
 import { ExcelButton } from '@/components/ExcelButton'
+import { RowActions } from '@/components/ui/row-actions'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { useCategories } from '@/lib/useCategories'
@@ -1902,12 +1903,27 @@ export function GateEntry(): React.JSX.Element {
                           </div>
                         )}
                       </TableCell>
-                      <TableCell><div className="flex justify-end gap-1">
-                        <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEdit(row)}><Pencil className="h-4 w-4" /></Button>
-                        {!done && (
-                          <Button size="icon" variant="ghost" className="h-8 w-8 text-rose-600" title="Reject — this tanker will never be completed" onClick={() => openReject(row)}><Ban className="h-4 w-4" /></Button>
-                        )}
-                        <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => remove(row)}><Trash2 className="h-4 w-4" /></Button>
+                      {/* All of the row's actions behind the one menu, so the
+                          column is a fixed width whatever state the row is in —
+                          a completed entry has no Reject, and three icons on one
+                          row against two on the next read as a missing button
+                          rather than an action that does not apply. Reject stays
+                          listed but disabled, with the reason, so it is never
+                          silently absent. */}
+                      <TableCell><div className="flex justify-end">
+                        <RowActions
+                          actions={[
+                            { label: 'Edit entry', icon: Pencil, onClick: () => openEdit(row) },
+                            {
+                              label: 'Reject — this tanker will never be completed',
+                              icon: Ban,
+                              disabled: done,
+                              disabledReason: 'Already completed — reject only applies to an entry still pending',
+                              onClick: () => openReject(row)
+                            },
+                            { label: 'Delete entry', icon: Trash2, danger: true, onClick: () => remove(row) }
+                          ]}
+                        />
                       </div></TableCell>
                     </TableRow>
                   )
