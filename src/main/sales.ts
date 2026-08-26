@@ -319,7 +319,9 @@ export async function listSalesForUnloadDesk(companyIds?: number[]): Promise<Row
            pr.category AS product_sub_category, pk.name AS packaging_name,
            cu.name AS customer_master, co.name AS company_name,
            (SELECT ge.tanker_no FROM gate_entries ge
-             WHERE ge.direction = 'out' AND ge.invoice_group = s.invoice_group AND s.invoice_group IS NOT NULL
+             WHERE ge.direction = 'out' AND (ge.invoice_group = s.invoice_group
+                    OR EXISTS (SELECT 1 FROM gate_entry_sales gs
+                               WHERE gs.gate_entry_id = ge.id AND gs.invoice_group = s.invoice_group)) AND s.invoice_group IS NOT NULL
              ORDER BY ge.id DESC LIMIT 1) AS gate_vehicle_no
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id
@@ -356,13 +358,19 @@ export async function listSales(companyIds?: number[]): Promise<Row[]> {
            -- gate register — Gate Out already links to a sale by invoice
            -- group; this is that link read back onto the invoice itself.
            (SELECT ge.tanker_no FROM gate_entries ge
-             WHERE ge.direction = 'out' AND ge.invoice_group = s.invoice_group AND s.invoice_group IS NOT NULL
+             WHERE ge.direction = 'out' AND (ge.invoice_group = s.invoice_group
+                    OR EXISTS (SELECT 1 FROM gate_entry_sales gs
+                               WHERE gs.gate_entry_id = ge.id AND gs.invoice_group = s.invoice_group)) AND s.invoice_group IS NOT NULL
              ORDER BY ge.id DESC LIMIT 1) AS gate_vehicle_no,
            (SELECT ge.gate_entry_no FROM gate_entries ge
-             WHERE ge.direction = 'out' AND ge.invoice_group = s.invoice_group AND s.invoice_group IS NOT NULL
+             WHERE ge.direction = 'out' AND (ge.invoice_group = s.invoice_group
+                    OR EXISTS (SELECT 1 FROM gate_entry_sales gs
+                               WHERE gs.gate_entry_id = ge.id AND gs.invoice_group = s.invoice_group)) AND s.invoice_group IS NOT NULL
              ORDER BY ge.id DESC LIMIT 1) AS gate_entry_no,
            (SELECT ge.status FROM gate_entries ge
-             WHERE ge.direction = 'out' AND ge.invoice_group = s.invoice_group AND s.invoice_group IS NOT NULL
+             WHERE ge.direction = 'out' AND (ge.invoice_group = s.invoice_group
+                    OR EXISTS (SELECT 1 FROM gate_entry_sales gs
+                               WHERE gs.gate_entry_id = ge.id AND gs.invoice_group = s.invoice_group)) AND s.invoice_group IS NOT NULL
              ORDER BY ge.id DESC LIMIT 1) AS gate_status
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id

@@ -29,7 +29,12 @@ export async function listGateEntries(): Promise<Row[]> {
            b.bargain_no, COALESCE(ds.name, s.name, dc.name) AS supplier_name,
            dc.name AS gate_customer_name,
            COALESCE(sl.invoice_no, (SELECT invoice_no FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_invoice,
-           COALESCE(sl.customer,  (SELECT customer  FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer
+           COALESCE(sl.customer,  (SELECT customer  FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer,
+           -- A vehicle can carry several invoices out; the register names them
+           -- all rather than only the one written on the entry.
+           (SELECT COUNT(*) FROM gate_entry_sales gs WHERE gs.gate_entry_id = g.id) AS sale_count,
+           (SELECT GROUP_CONCAT(x.invoice_no, ', ') FROM gate_entry_sales gs
+              JOIN sales x ON x.id = gs.sale_id WHERE gs.gate_entry_id = g.id) AS sale_invoices
     FROM gate_entries g
     LEFT JOIN products p ON p.id = g.oil_type_id
     LEFT JOIN purchase_tankers pt ON pt.id = g.tanker_id
@@ -74,7 +79,11 @@ export async function listDispatchableSales(): Promise<Row[]> {
            COUNT(*) AS item_count,
            GROUP_CONCAT(pr.name, ', ') AS product_name,
            MAX(pr.material_type) AS product_category,
-           (SELECT COUNT(*) FROM gate_entries g WHERE g.invoice_group = s.invoice_group AND g.direction = 'out') AS gate_outs
+           (SELECT COUNT(*) FROM gate_entries g
+              WHERE g.direction = 'out'
+                AND (g.invoice_group = s.invoice_group
+                     OR EXISTS (SELECT 1 FROM gate_entry_sales gs
+                                WHERE gs.gate_entry_id = g.id AND gs.invoice_group = s.invoice_group))) AS gate_outs
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id
     -- A trading sale is a pass-through on paper: the goods never come to our
@@ -151,6 +160,12 @@ export async function createGateEntry(v: Row): Promise<{ id: number }> {
   // A sale invoice is the normal case but not compulsory — empty vehicles,
   // returns and weighment runs leave too. What such an exit must carry is the
   // reason, so the register never holds an unexplained departure.
+  // A list is accepted here too, for a loaded vehicle weighed straight at the
+  // gate rather than coming in empty first.
+  const outGroups: string[] = Array.isArray(v.invoice_groups)
+    ? (v.invoice_groups as unknown[]).map((g) => String(g || '').trim()).filter(Boolean)
+    : []
+  if (outGroups.length && !v.invoice_group) v.invoice_group = outGroups[0]
   if (kind === 'standard' && direction === 'out' && !v.invoice_group && !v.sale_id && !String(v.note || '').trim()) {
     throw new Error('Pick the sale invoice being dispatched, or write why the vehicle is leaving without one')
   }
@@ -203,7 +218,13 @@ export async function createGateEntry(v: Row): Promise<{ id: number }> {
       kind
     ]
   })
-  return { id: Number(res.lastInsertRowid) }
+  const newId = Number(res.lastInsertRowid)
+  // Every invoice on the vehicle, the primary one included, so the registers
+  // see them all. A single-invoice entry gets one row, which keeps this and the
+  // Gate Out path identical from here on.
+  const linkGroups = outGroups.length ? outGroups : v.invoice_group ? [String(v.invoice_group)] : []
+  if (linkGroups.length) await setGateEntrySales(newId, linkGroups)
+  return { id: newId }
 }
 
 // Step 2 for the gateman: enter gross & tare from the weighbridge; the net
@@ -242,8 +263,9 @@ export async function saveGateWeights(
   dispatchQty?: number | string | null,
   // A vehicle weighed Tare-only at Gate In and flagged for sale gets its sale
   // invoice named here, at Gate Out, when its Gross is taken — that is the
-  // first point the invoice actually exists.
-  invoiceGroup?: string | null,
+  // first point the invoice actually exists. More than one may be named: a
+  // tanker can carry several bills out on the same trip.
+  invoiceGroup?: string | string[] | null,
   // The day the vehicle actually left, for an entry that came in and is now
   // going back out. Defaults to today when the caller doesn't say.
   outDate?: string | null,
@@ -284,15 +306,18 @@ export async function saveGateWeights(
   let group = row.invoice_group as string | null
   let saleId = row.sale_id as number | null
   let customerId = row.customer_id as number | null
-  if (invoiceGroup != null && String(invoiceGroup).trim() !== '') {
-    group = String(invoiceGroup).trim()
-    const sale = await c.execute({
-      sql: 'SELECT id, customer_id FROM sales WHERE invoice_group = ? ORDER BY id LIMIT 1',
-      args: [group]
-    })
-    if (!sale.rows.length) throw new Error('That sale invoice no longer exists')
-    saleId = Number(sale.rows[0].id)
-    customerId = sale.rows[0].customer_id == null ? customerId : Number(sale.rows[0].customer_id)
+  // Naming invoices REPLACES whatever was linked — the caller sends the whole
+  // list, so unticking one removes it. Saying nothing leaves the links alone.
+  const namedGroups = Array.isArray(invoiceGroup)
+    ? invoiceGroup.map((g) => String(g || '').trim()).filter(Boolean)
+    : invoiceGroup != null && String(invoiceGroup).trim() !== ''
+      ? [String(invoiceGroup).trim()]
+      : []
+  if (namedGroups.length) {
+    const primary = await setGateEntrySales(id, namedGroups)
+    group = primary.group
+    saleId = primary.saleId
+    customerId = primary.customerId ?? customerId
   }
   // A vehicle taken in empty, flagged for sale and now weighed out against an
   // invoice has made a DISPATCH — file it as one. It arrived through Gate In,
@@ -362,6 +387,51 @@ export async function saveGateWeights(
   }
 }
 
+// Replace the invoices linked to one gate entry. The FIRST is the primary and
+// is also written onto the entry itself, so every existing register keeps
+// working unchanged; all of them, primary included, land in the link table.
+async function setGateEntrySales(
+  entryId: number,
+  groups: string[]
+): Promise<{ group: string | null; saleId: number | null; customerId: number | null }> {
+  const c = getClient()
+  const clean = Array.from(new Set(groups.map((g) => String(g || '').trim()).filter(Boolean)))
+  await c.execute({ sql: 'DELETE FROM gate_entry_sales WHERE gate_entry_id = ?', args: [entryId] })
+  let first: { group: string; saleId: number | null; customerId: number | null } | null = null
+  for (const g of clean) {
+    const sale = await c.execute({
+      sql: 'SELECT id, customer_id FROM sales WHERE invoice_group = ? ORDER BY id LIMIT 1',
+      args: [g]
+    })
+    if (!sale.rows.length) throw new Error(`Sale invoice ${g} no longer exists`)
+    const saleId = Number(sale.rows[0].id)
+    const customerId = sale.rows[0].customer_id == null ? null : Number(sale.rows[0].customer_id)
+    await c.execute({
+      sql: 'INSERT OR IGNORE INTO gate_entry_sales (gate_entry_id, invoice_group, sale_id) VALUES (?, ?, ?)',
+      args: [entryId, g, saleId]
+    })
+    if (!first) first = { group: g, saleId, customerId }
+  }
+  return first
+    ? { group: first.group, saleId: first.saleId, customerId: first.customerId }
+    : { group: null, saleId: null, customerId: null }
+}
+
+// Every invoice on one gate entry, for the register and the slip.
+export async function gateEntrySales(entryId: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT gs.invoice_group, gs.sale_id, s.invoice_no, s.customer,
+                 (SELECT ROUND(SUM(x.qty), 3) FROM sales x WHERE x.invoice_group = gs.invoice_group) AS qty,
+                 (SELECT x.uom FROM sales x WHERE x.invoice_group = gs.invoice_group LIMIT 1) AS uom
+          FROM gate_entry_sales gs
+          LEFT JOIN sales s ON s.id = gs.sale_id
+          WHERE gs.gate_entry_id = ?
+          ORDER BY gs.id`,
+    args: [entryId]
+  })
+  return toPlain(res)
+}
+
 // Finish an entry with no weighment at all. Oil is always weighed — the whole
 // purchase and stock chain is built on that figure — so only other categories
 // (packaging, miscellaneous, scrap and the like) may skip it.
@@ -429,6 +499,8 @@ export async function updateGateEntry(id: number, v: Row): Promise<{ id: number 
 }
 
 export async function deleteGateEntry(id: number): Promise<{ id: number }> {
+  // The invoice links go with the entry — they are meaningless without it.
+  await getClient().execute({ sql: 'DELETE FROM gate_entry_sales WHERE gate_entry_id = ?', args: [id] })
   await getClient().execute({ sql: 'DELETE FROM gate_entries WHERE id = ?', args: [id] })
   return { id }
 }

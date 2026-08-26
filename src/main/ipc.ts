@@ -697,7 +697,8 @@ export function registerIpc(): void {
         tare: number | null
         awaitingGrossOut?: boolean | null
         dispatchQty?: number | string | null
-        invoiceGroup?: string | null
+        // One or more: a tanker can carry several bills out on one trip.
+        invoiceGroup?: string | string[] | null
         outDate?: string | null
         outTime?: string | null
       }

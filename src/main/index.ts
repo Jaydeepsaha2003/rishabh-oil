@@ -109,6 +109,34 @@ app.whenReady().then(async () => {
     await c.execute('ALTER TABLE user_logs ADD COLUMN entity_key TEXT')
     await c.execute('CREATE INDEX IF NOT EXISTS idx_ulogs_entity_key ON user_logs(entity, entity_key)')
   }).catch((e) => console.error('[logs] entity key failed:', e))
+  // One vehicle can carry more than one sale out of the gate. The entry keeps
+  // its primary invoice -- every register that asks "has this invoice gone out"
+  // still reads that column -- and this table holds every invoice on the
+  // vehicle, the primary included, so a second bill on the same tanker is
+  // recognised as dispatched instead of looking as though it never left.
+  //
+  // A named runOnce, not the migration list, for the reason written at the foot
+  // of that list: it is applied by COUNT, and an install already at the mark
+  // silently skips whatever is added to it.
+  await runOnce('gate_entry_sales_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS gate_entry_sales (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      gate_entry_id INTEGER NOT NULL REFERENCES gate_entries(id),
+      invoice_group TEXT NOT NULL,
+      sale_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(gate_entry_id, invoice_group)
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_ges_entry ON gate_entry_sales(gate_entry_id)')
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_ges_group ON gate_entry_sales(invoice_group)')
+    // Every gate-out already on file gets its existing single invoice as a
+    // link, so the two paths read the same from here on and no past dispatch
+    // has to be re-keyed.
+    await c.execute(`INSERT OR IGNORE INTO gate_entry_sales (gate_entry_id, invoice_group, sale_id)
+      SELECT g.id, g.invoice_group, g.sale_id FROM gate_entries g
+      WHERE g.invoice_group IS NOT NULL AND g.invoice_group <> ''`)
+  }).catch((e) => console.error('[gate] invoice links failed:', e))
   startRevisionWatcher()
   registerIpc()
   registerUpdater(() => mainWindow)

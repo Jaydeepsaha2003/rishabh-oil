@@ -712,7 +712,9 @@ export async function stockRegisters(
                  -- matched nothing at all (it is null on every gate row), which
                  -- is why this column came out empty in the register.
                  (SELECT ge.tanker_no FROM gate_entries ge
-                   WHERE ge.direction = 'out' AND ge.invoice_group = s.invoice_group
+                   WHERE ge.direction = 'out' AND (ge.invoice_group = s.invoice_group
+                    OR EXISTS (SELECT 1 FROM gate_entry_sales gs
+                               WHERE gs.gate_entry_id = ge.id AND gs.invoice_group = s.invoice_group))
                      AND s.invoice_group IS NOT NULL
                    ORDER BY ge.id DESC LIMIT 1) AS vehicle_no,
                  p.name AS oil_type,
@@ -723,7 +725,9 @@ export async function stockRegisters(
                  COALESCE(
                    s.received_qty,
                    (SELECT ge.received_qty FROM gate_entries ge
-                     WHERE ge.direction = 'out' AND ge.invoice_group = s.invoice_group
+                     WHERE ge.direction = 'out' AND (ge.invoice_group = s.invoice_group
+                    OR EXISTS (SELECT 1 FROM gate_entry_sales gs
+                               WHERE gs.gate_entry_id = ge.id AND gs.invoice_group = s.invoice_group))
                        AND s.invoice_group IS NOT NULL AND ge.received_qty > 0
                      ORDER BY ge.id DESC LIMIT 1)
                  ) AS received_qty,

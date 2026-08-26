@@ -154,7 +154,7 @@ export function GateEntry(): React.JSX.Element {
       }
       if (gStatus.length && !gStatus.includes(String(r.status) === 'pending' ? 'pending' : 'done')) return false
       if (!q) return true
-      return [r.gate_entry_no, r.ref_no, r.tanker_no, r.supplier_name, r.sale_customer, r.sale_invoice, r.person, r.note]
+      return [r.gate_entry_no, r.ref_no, r.tanker_no, r.supplier_name, r.sale_customer, r.sale_invoice, r.sale_invoices, r.person, r.note]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
@@ -233,7 +233,10 @@ export function GateEntry(): React.JSX.Element {
   const [grossPickValue, setGrossPickValue] = useState('')
   // The sale this vehicle turned out to be for. It was flagged at Gate In
   // before any invoice existed, so it is named here, as the Gross is taken.
-  const [grossPickInvoice, setGrossPickInvoice] = useState('')
+  // A tanker can carry more than one bill out on the same trip, so this is a
+  // list. The first one picked is the entry's primary invoice — the one every
+  // existing register reads — and all of them are linked to the entry.
+  const [grossPickInvoices, setGrossPickInvoices] = useState<string[]>([])
   // The day the vehicle actually left — asked here because this is the only
   // point this flow ever gets a date typed into it; without it every such
   // dispatch would silently default to whatever day the Gross happened to be
@@ -296,22 +299,24 @@ export function GateEntry(): React.JSX.Element {
     if (!row) return
     const gross = Number(grossPickValue)
     if (!grossPickValue || !Number.isFinite(gross) || gross <= 0) return void toast.error('Enter the gross weight')
-    if (!grossPickInvoice) return void toast.error('Link the sale invoice this vehicle is carrying')
+    if (!grossPickInvoices.length) return void toast.error('Link the sale invoice this vehicle is carrying')
     if (!grossPickOutDate) return void toast.error('Enter the date the vehicle left')
     if (grossPickOutDate < String(row.entry_date || '').slice(0, 10)) {
       return void toast.error('The vehicle cannot leave before the day it came in')
     }
     setGrossPickSaving(true)
     try {
-      const r = await window.api.gate.weights(row.id, gross, null, null, null, grossPickInvoice, grossPickOutDate)
-      const inv = outgoable.find((x) => String(x.invoice_group) === grossPickInvoice)
+      const r = await window.api.gate.weights(row.id, gross, null, null, null, grossPickInvoices, grossPickOutDate)
+      const names = grossPickInvoices
+        .map((g) => outgoable.find((x) => String(x.invoice_group) === g)?.invoice_no)
+        .filter(Boolean)
       toast.success(
         `${row.tanker_no} completed — net ${formatNum(r.net || 0)} ${row.uom}` +
-          (inv?.invoice_no ? ` · ${inv.invoice_no}` : '')
+          (names.length ? ` · ${names.join(', ')}` : '')
       )
       setGrossPickId('')
       setGrossPickValue('')
-      setGrossPickInvoice('')
+      setGrossPickInvoices([])
       setGrossPickOutDate(todayISO())
       await load()
     } catch (e) {
@@ -1079,7 +1084,12 @@ export function GateEntry(): React.JSX.Element {
                     : r.supplier_name || r.gate_customer_name || ''
               },
               { header: 'Bargain', key: 'bargain_no', value: (r) => r.bargain_no || '' },
-              { header: 'Sale invoice', key: 'sale_invoice', value: (r) => r.sale_invoice || '' },
+              {
+                header: 'Sale invoice',
+                key: 'sale_invoice',
+                // Every bill the vehicle carried, so the sheet does not under-report a multi-bill trip.
+                value: (r) => (Number(r.sale_count) > 1 ? String(r.sale_invoices || r.sale_invoice || '') : r.sale_invoice || '')
+              },
               { header: 'UOM', key: 'uom', value: (r) => r.uom || 'MT' },
               {
                 header: 'Dispatch qty',
@@ -1667,10 +1677,28 @@ export function GateEntry(): React.JSX.Element {
                 </Select>
               </div>
               <div className="flex min-w-0 flex-col gap-1">
-                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Sale invoice *</Label>
-                <Select searchable value={grossPickInvoice} onValueChange={setGrossPickInvoice}>
+                <Label className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                  Sale invoice{grossPickInvoices.length > 1 ? 's' : ''} *
+                  <InfoTip text="One vehicle can carry several bills out on the same trip. Pick each invoice on board — the picker stays open so you can add more, and picking one again takes it off. Every invoice linked here is marked as gone out." />
+                </Label>
+                {/* Picking adds rather than replaces, so a second bill on the
+                    same tanker no longer means overwriting the first. */}
+                <Select
+                  searchable
+                  value=""
+                  onValueChange={(v) =>
+                    setGrossPickInvoices((prev) => (prev.includes(v) ? prev.filter((x) => x !== v) : [...prev, v]))
+                  }
+                >
                   <SelectTrigger className="h-8 bg-white text-[13px]">
-                    <SelectValue placeholder="Link the invoice" />
+                    <span className={cn('truncate', !grossPickInvoices.length && 'text-muted-foreground')}>
+                      {grossPickInvoices.length === 0
+                        ? 'Link the invoice'
+                        : grossPickInvoices.length === 1
+                          ? outgoable.find((x) => String(x.invoice_group) === grossPickInvoices[0])?.invoice_no ||
+                            '1 invoice'
+                          : `${grossPickInvoices.length} invoices linked`}
+                    </span>
                   </SelectTrigger>
                   <SelectContent>
                     {outgoable.length === 0 ? (
@@ -1680,12 +1708,41 @@ export function GateEntry(): React.JSX.Element {
                     ) : (
                       outgoable.map((x) => (
                         <SelectItem key={x.invoice_group} value={String(x.invoice_group)}>
+                          {grossPickInvoices.includes(String(x.invoice_group)) ? '✓ ' : ''}
                           {x.invoice_no || 'No invoice no'} · {x.customer || '—'} · {formatNum(x.qty)} {x.uom}
                         </SelectItem>
                       ))
                     )}
                   </SelectContent>
                 </Select>
+                {grossPickInvoices.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {grossPickInvoices.map((g) => {
+                      const inv = outgoable.find((x) => String(x.invoice_group) === g)
+                      return (
+                        <button
+                          key={g}
+                          type="button"
+                          title="Remove this invoice"
+                          onClick={() => setGrossPickInvoices((prev) => prev.filter((x) => x !== g))}
+                          className="inline-flex items-center gap-1 rounded-full bg-amber-200/70 px-2 py-0.5 text-[11px] font-medium text-amber-900 hover:bg-amber-300"
+                        >
+                          {inv?.invoice_no || g}
+                          <span className="text-amber-700">×</span>
+                        </button>
+                      )
+                    })}
+                    <span className="self-center text-[11px] text-muted-foreground">
+                      {formatNum(
+                        grossPickInvoices.reduce(
+                          (t, g) => t + Number(outgoable.find((x) => String(x.invoice_group) === g)?.qty || 0),
+                          0
+                        )
+                      )}{' '}
+                      total
+                    </span>
+                  </div>
+                )}
               </div>
               <div className="flex min-w-0 flex-col gap-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Vehicle out date *</Label>
@@ -1711,7 +1768,7 @@ export function GateEntry(): React.JSX.Element {
                   />
                   <Button
                     className="h-8 shrink-0 bg-amber-600 px-3 text-[12px] hover:bg-amber-700"
-                    disabled={!grossPickId || !grossPickInvoice || !grossPickOutDate || grossPickSaving}
+                    disabled={!grossPickId || !grossPickInvoices.length || !grossPickOutDate || grossPickSaving}
                     onClick={() => void saveAwaitingGross()}
                   >
                     {grossPickSaving ? 'Saving…' : 'Complete'}
@@ -1804,7 +1861,13 @@ export function GateEntry(): React.JSX.Element {
                         ) : isOut ? (
                           <div className="text-xs text-muted-foreground">
                             {row.sale_invoice || row.sale_customer
-                              ? <>{row.sale_customer || '—'}{row.sale_invoice ? ` · ${row.sale_invoice}` : ''}{row.sale_product ? ` · ${row.sale_product}` : ''}</>
+                              ? <>{row.sale_customer || '—'}{
+                                  // A vehicle carrying several bills names them
+                                  // all; one bill reads as it always did.
+                                  Number(row.sale_count) > 1
+                                    ? ` · ${row.sale_invoices || row.sale_invoice} (${row.sale_count} bills)`
+                                    : row.sale_invoice ? ` · ${row.sale_invoice}` : ''
+                                }{row.sale_product ? ` · ${row.sale_product}` : ''}</>
                               : <span className="font-medium text-amber-700">No bill{row.note ? ` — ${row.note}` : ''}</span>}
                           </div>
                         ) : (

@@ -237,7 +237,7 @@ export interface Api {
       tare: number | null,
       awaitingGrossOut?: boolean | null,
       dispatchQty?: number | string | null,
-      invoiceGroup?: string | null,
+      invoiceGroup?: string | string[] | null,
       outDate?: string | null,
       outTime?: string | null
     ) => Promise<{ id: number; status: string; net: number | null; missing: string | null }>
