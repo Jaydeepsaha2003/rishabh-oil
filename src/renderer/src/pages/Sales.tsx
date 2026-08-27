@@ -51,7 +51,7 @@ import { convertQty, errText, formatDate, formatINR, formatNum, todayISO } from 
 import { ExcelButton } from '@/components/ExcelButton'
 import { downloadSkuRateExcel, parseSkuRateExcel, caseMT } from '@/lib/skuRateExcel'
 import { BASIS_LABEL, saleShortage } from '@/lib/saleShortage'
-import { ShortageWorkings } from '@/components/ShortageWorkings'
+import { ShortageWorkings, type ShortageLine } from '@/components/ShortageWorkings'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { isManufacturingParty } from '@/lib/constants'
@@ -1460,13 +1460,18 @@ function SalesTab({
                 const nextStage = idx < DISPATCH_STAGES.length - 1 ? DISPATCH_STAGES[idx + 1] : null
                 const untracked = Number(inv.first.track_stock) === 0
                 const isOpen = !!expanded[inv.group]
-                // The excess across every line of the invoice. Shown on the
-                // closed row because a claim that only appears once somebody
-                // thinks to expand the invoice is a claim that goes unmade.
-                const invShort = inv.lines
-                  .map((r) => saleShortage(r, defaultShortagePct))
-                  .filter((x) => x.applies && !x.within)
-                const invDue = invShort.reduce((t, x) => t + x.deductible, 0)
+                // Every unloaded line of this invoice that has something to
+                // say about its delivery. It hangs off the FOR tag — one place
+                // to look, rather than a figure on the invoice row repeated on
+                // each line beneath it.
+                const shortLines: ShortageLine[] = inv.lines
+                  .map((r) => ({
+                    product: String(r.product_name || 'Item'),
+                    uom: String(r.uom || ''),
+                    s: saleShortage(r, defaultShortagePct)
+                  }))
+                  .filter((l) => l.s.applies && l.s.shortage > 0.0000005)
+                const invDue = shortLines.reduce((t, l) => t + (l.s.within ? 0 : l.s.deductible), 0)
                 return (
                   <Fragment key={inv.group}>
                     <TableRow
@@ -1508,24 +1513,56 @@ function SalesTab({
                       <TableCell className="align-top text-right tabular-nums">{formatNum(inv.qty)}</TableCell>
                       <TableCell className="align-top text-right tabular-nums">{formatINR(inv.net)}</TableCell>
                       <TableCell className="align-top">
-                        <span
-                          className={cn(
-                            'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
-                            exTerm ? 'bg-slate-200 text-slate-700' : 'bg-sky-100 text-sky-800'
-                          )}
-                          title={exTerm ? 'Ex — the customer lifts, no freight of ours' : 'FOR — we deliver and pay the transporter'}
-                        >
-                          {exTerm ? 'Ex' : 'FOR'}
-                        </span>
-                        {invDue > 0 && (
-                          <div
-                            className="mt-1 flex items-center gap-1 whitespace-nowrap text-[10px] font-semibold text-rose-700"
-                            title={`Shortage beyond the agreed tolerance on ${invShort.length} line${invShort.length === 1 ? '' : 's'} — open the invoice for the workings`}
-                          >
-                            <AlertTriangle className="h-3 w-3 shrink-0" />
-                            {formatINR(invDue)} short
-                          </div>
-                        )}
+                        {(() => {
+                          // The tag itself, in three states: an Ex sale, a
+                          // delivered one with nothing to answer for, and a
+                          // delivered one carrying a claim. The last is tinted
+                          // and marked, but it stays a tag — the amount lives
+                          // behind it rather than beside it, so the column does
+                          // not grow a second line and wrap.
+                          const tag = (
+                            <span
+                              className={cn(
+                                'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                                exTerm
+                                  ? 'bg-slate-200 text-slate-700'
+                                  : invDue > 0
+                                    ? 'bg-rose-100 text-rose-800 ring-1 ring-inset ring-rose-300'
+                                    : 'bg-sky-100 text-sky-800',
+                                !exTerm && shortLines.length > 0 && 'underline decoration-dotted underline-offset-2'
+                              )}
+                            >
+                              {exTerm ? 'Ex' : 'FOR'}
+                              {invDue > 0 && <AlertTriangle className="h-2.5 w-2.5" />}
+                            </span>
+                          )
+                          if (exTerm || !shortLines.length) {
+                            return (
+                              <span
+                                title={
+                                  exTerm
+                                    ? 'Ex — the customer lifts, no freight of ours'
+                                    : 'FOR — we deliver and pay the transporter'
+                                }
+                              >
+                                {tag}
+                              </span>
+                            )
+                          }
+                          return (
+                            <ShortageWorkings lines={shortLines}>
+                              <span
+                                title={
+                                  invDue > 0
+                                    ? `Short beyond the agreed tolerance — ${formatINR(invDue)} deductible. Hover or click for the workings.`
+                                    : 'Delivered short but within tolerance — hover or click for the workings'
+                                }
+                              >
+                                {tag}
+                              </span>
+                            </ShortageWorkings>
+                          )
+                        })()}
                       </TableCell>
                         </>
                       )}
@@ -1638,43 +1675,35 @@ function SalesTab({
                           <TableCell className="align-top text-right tabular-nums">
                             <div>{formatNum(r.qty)} {r.uom}</div>
                             {r.received_qty != null ? (
-                              // A shortage on a delivered sale is a claim or it
-                              // is nothing, and which of the two cannot be read
-                              // off the number alone — so on FOR the figure
-                              // carries its workings, and only there. An Ex sale
-                              // is lifted by the customer at our weighbridge:
-                              // there is no second weighment and no tolerance to
-                              // judge it against.
-                              sh.applies && sh.shortage > 0.0000005 ? (
-                                <ShortageWorkings
-                                  s={sh}
-                                  uom={String(r.uom || '')}
-                                  className={cn(
-                                    'block text-[11px] font-medium',
-                                    sh.within ? 'text-amber-700' : 'text-rose-600'
-                                  )}
-                                >
-                                  rec {formatNum(r.received_qty)} · short {formatNum(sh.shortage)}
-                                  {!sh.within && (
-                                    <span className="ml-1 rounded bg-rose-100 px-1 py-px text-[9.5px] font-bold uppercase tracking-wide text-rose-700">
-                                      {formatINR(sh.deductible)} due
-                                    </span>
-                                  )}
-                                </ShortageWorkings>
-                              ) : (
-                                <div
-                                  className={cn(
-                                    'text-[11px]',
-                                    Number(r.qty) - Number(r.received_qty) > 0.0005 ? 'text-rose-600' : 'text-emerald-700'
-                                  )}
-                                  title="Weighed in by the transporter at the customer's end"
-                                >
-                                  rec {formatNum(r.received_qty)}
-                                  {Number(r.qty) - Number(r.received_qty) > 0.0005 && (
-                                    <> · short {formatNum(Number(r.qty) - Number(r.received_qty))}</>
-                                  )}
-                                </div>
-                              )
+                              // Just the weighbridge figures. The judgement on
+                              // them — tolerance, excess, what it is worth —
+                              // lives behind the FOR tag on the invoice row,
+                              // because a numeric column is no place for a
+                              // sentence and this one was wrapping four deep.
+                              <div
+                                className={cn(
+                                  'whitespace-nowrap text-[11px]',
+                                  sh.applies && !sh.within
+                                    ? 'font-medium text-rose-600'
+                                    : Number(r.qty) - Number(r.received_qty) > 0.0005
+                                      ? 'text-rose-600'
+                                      : 'text-emerald-700'
+                                )}
+                                title={
+                                  sh.applies && sh.shortage > 0.0000005
+                                    ? `Weighed in at the customer's end. ${
+                                        sh.within
+                                          ? 'Within the agreed tolerance.'
+                                          : `${formatNum(sh.excessQty)} ${r.uom} beyond tolerance.`
+                                      } See the FOR tag above for the workings.`
+                                    : "Weighed in by the transporter at the customer's end"
+                                }
+                              >
+                                rec {formatNum(r.received_qty)}
+                                {Number(r.qty) - Number(r.received_qty) > 0.0005 && (
+                                  <> · short {formatNum(Number(r.qty) - Number(r.received_qty))}</>
+                                )}
+                              </div>
                             ) : null}
                             <div className="text-[11px] text-muted-foreground" title="Finished stock in hand">stk {formatNum(inStock)}</div>
                           </TableCell>

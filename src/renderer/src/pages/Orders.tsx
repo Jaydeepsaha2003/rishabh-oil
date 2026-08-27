@@ -1325,7 +1325,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
 
   function openNewPurchase(): void {
     setEditing(null)
-    setForm({ company_id: String(activeCompany || ''), invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '', round_off: '', round_off_manual: false, charge_interest: false, interest_touched: false, remarks: '', freight_paid_to_supplier: false, bargain_interest: {} })
+    setForm({ company_id: String(activeCompany || ''), invoice_no: '', order_date: todayISO(), is_registered_transporter: true, transporter_id: '', gst_type: 'CGST_SGST', allowed_shortage_pct: '', round_off: '', round_off_manual: false, rate_round_off: '0', charge_interest: false, interest_touched: false, remarks: '', freight_paid_to_supplier: false, bargain_interest: {} })
     setSelected([])
     setLotIds([])
     setLotBargains({})
@@ -1400,6 +1400,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       transporter_id: row.transporter_id || '',
       is_registered_transporter: !!row.is_registered_transporter,
       allowed_shortage_pct: row.allowed_shortage_pct ?? '',
+      // Blank when the row predates the field — that reproduces the whole-rupee
+      // ceiling it was actually struck on, so opening an old purchase to look
+      // at it cannot re-price it.
+      rate_round_off: row.rate_round_off ?? '',
       round_off: row.round_off ?? '',
       // Whether it was typed by hand is RECORDED on the invoice, not guessed
       // from "the value isn't zero" — that old guess froze a figure correct
@@ -1899,9 +1903,19 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     const d = Math.round(((Number(form.invoice_rate) || 0) - blendedRate) * 100) / 100
     return Math.abs(d) < 0.01 ? 0 : d
   }, [rateAlloc.length, blendedRate, form.invoice_rate])
+  // Blank means the figure was never stated, which is the old always-round-up
+  // rule — every purchase entered before this was struck that way, so they
+  // reproduce exactly. A typed 0 is the new default: bill the exact rate.
+  const rateRoundOff =
+    form.rate_round_off != null && form.rate_round_off !== '' ? Number(form.rate_round_off) : null
+  const billedRate = useCallback(
+    (raw: number): number =>
+      rateRoundOff == null ? Math.ceil(raw) : Math.round((raw + rateRoundOff) * 100) / 100,
+    [rateRoundOff]
+  )
   // What one bargain's line actually prices at, per unit: its own rate, its own
   // interest (shared %, its own days), its own additional interest and any
-  // freight premium, rounded up to the whole rupee the supplier bills at.
+  // freight premium, at whatever the rate is billed at.
   // Shared by the form panel and the summary so the two can never disagree.
   const lineFiguresOf = useCallback(
     (bargainId: number, rate: number): { perUnitInterest: number; additionalInterest: number; lineRate: number } => {
@@ -1912,13 +1926,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       return {
         perUnitInterest,
         additionalInterest: eff.additionalInterest,
-        lineRate: Math.ceil(rate + perUnitInterest + eff.additionalInterest + ratePremium)
+        lineRate: billedRate(rate + perUnitInterest + eff.additionalInterest + ratePremium)
       }
     },
-    [lineInterestOf, form.charge_interest, form.gst_pct, form.interest_pct, ratePremium]
+    [lineInterestOf, form.charge_interest, form.gst_pct, form.interest_pct, ratePremium, billedRate]
   )
   const calc = useMemo(() => computeMoney({
     orderedQty: totalQty,
+    rateRoundOff,
     invoiceRate: Number(form.invoice_rate) || 0,
     bargainRate: Number(form.bargain_rate) || 0,
     gstPct: Number(form.gst_pct) || 0,
@@ -2048,6 +2063,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           ? null
           : Number(form.allowed_shortage_pct),
       round_off: Number(form.round_off) || 0,
+      // Sent through as-is: '' keeps the legacy whole-rupee ceiling on a record
+      // that was struck that way, a number states the adjustment.
+      rate_round_off: form.rate_round_off ?? '',
       round_off_manual: form.round_off_manual ? 1 : 0,
       financed_by_party: !directMode && !isTrading && selected.length > 0 && financedCount === selected.length,
       payment_date: form.order_date
@@ -2963,6 +2981,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   829.14 read as 1,28,930.00, with the 86 paise nowhere. The
                   rounding now has its own line, so the arithmetic on screen is
                   the arithmetic that was done. */}
+              {/* The rate used to be rounded UP to the whole rupee, always,
+                  because that is how the supplier bills — but not every
+                  supplier does, and it moved the invoice by a few rupees with
+                  nothing to argue with. It is a figure now: nil unless somebody
+                  says otherwise, typed if the supplier billed some other
+                  adjustment, and one click away if they did round up. */}
               {(() => {
                 const r2 = (v: number): number => Math.round(v * 100) / 100
                 const exact = r2(
@@ -2971,14 +2995,44 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     (Number(form.additional_interest) || 0) +
                     ratePremium
                 )
-                const up = r2((Number(calc.adjustedRate) || 0) - exact)
-                if (rateAlloc.length > 1 || Math.abs(up) < 0.005) return null
+                if (exact <= 0) return null
+                const toWhole = r2(Math.ceil(exact) - exact)
+                const applied = r2((Number(calc.adjustedRate) || 0) - exact)
+                const legacy = rateRoundOff == null
                 return (
-                  <MoneyRow
-                    label="Rounded up to the rupee"
-                    title={`Exact ${formatINR(exact)} per ${form.uom || 'MT'} — the supplier bills at the whole rupee, and the taxable value is struck on the rounded rate`}
-                    value={`+${formatINR(up)}`}
-                  />
+                  <div className="flex items-center justify-between gap-2 py-1.5 text-sm">
+                    <span
+                      className="min-w-0 text-muted-foreground"
+                      title={`Exact ${formatINR(exact)} per ${form.uom || 'MT'}. Nil bills that rate as it stands. Type an amount, or use ↑ to round up to the whole rupee the way the supplier does.`}
+                    >
+                      Rate adjustment{' '}
+                      <span className="text-[11px]">
+                        {legacy
+                          ? `(rounded up, +${formatINR(applied)})`
+                          : `per ${form.uom || 'MT'}`}
+                      </span>
+                    </span>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {toWhole > 0.004 && r2(rateRoundOff ?? -1) !== toWhole && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-7 bg-white px-1.5 text-[11px]"
+                          title={`Round up to ${formatINR(Math.ceil(exact))} — the whole rupee`}
+                          onClick={() => setForm((p) => ({ ...p, rate_round_off: String(toWhole) }))}
+                        >
+                          ↑ {formatINR(toWhole)}
+                        </Button>
+                      )}
+                      <Input
+                        type="number"
+                        className="h-7 w-24 text-right"
+                        placeholder="0.00"
+                        value={form.rate_round_off ?? ''}
+                        onChange={(e) => setForm((p) => ({ ...p, rate_round_off: e.target.value }))}
+                      />
+                    </div>
+                  </div>
                 )
               })()}
               <MoneyRow
@@ -2986,7 +3040,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 title={
                   rateAlloc.length > 1
                     ? `Quantity-weighted average across ${rateAlloc.length} bargains`
-                    : `Billed at the whole rupee · x ${formatNum(totalQty)} ${form.uom || 'MT'} = ${formatINR(calc.taxableValue)}`
+                    : `x ${formatNum(totalQty)} ${form.uom || 'MT'} = ${formatINR(calc.taxableValue)}`
                 }
                 value={formatINR(calc.adjustedRate)}
                 strong

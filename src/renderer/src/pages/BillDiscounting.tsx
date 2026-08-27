@@ -421,7 +421,9 @@ export function BillDiscounting({
           .filter(Boolean)
           .map((pair) => {
             const [pid, amt] = pair.split(':')
-            return [String(pid), amt]
+            // A zero share was never allocated, so the box shows empty and
+            // prompts for it rather than displaying "0.0" as an answer.
+            return [String(pid), Number(amt) === 0 ? '' : amt]
           })
       ),
       purpose: r.purpose,
@@ -533,9 +535,15 @@ export function BillDiscounting({
   // in the margin box.
   useEffect(() => {
     if (!form || form.amount_touched) return
+    // BOTH figures have to be answered first. A blank margin is not 0% — it is
+    // a question nobody has reached yet, and treating it as zero filled the
+    // open amount with the whole invoice the moment the invoice was typed,
+    // which is a number the user never agreed to. A typed 0 IS an answer, so
+    // the test is that the box is not empty, not that it is above zero.
+    const marginAnswered = form.margin_pct != null && String(form.margin_pct).trim() !== ''
+    if (!marginAnswered || !(n(form.invoice_amount) > 0)) return
     const target = round2(bdCalc({ ...form, amount: 0 }).sanctionedAmount)
-    if (!(n(form.invoice_amount) > 0) || target <= 0) return
-    if (round2(n(form.amount)) === target) return
+    if (target <= 0 || round2(n(form.amount)) === target) return
     setForm((prev) => (prev && !prev.amount_touched ? { ...prev, amount: String(target) } : prev))
   }, [form?.invoice_amount, form?.margin_pct, form?.amount_touched])
 
@@ -1747,18 +1755,24 @@ export function BillDiscounting({
                               )}
                             >
                               <span className="font-medium">
-                                Sanctioned {formatINR(sum)} of {formatINR(total)}
+                                {total <= 0
+                                  ? 'Nothing to divide yet'
+                                  : sum <= 0
+                                    ? `${formatINR(total)} to divide between ${ids.length} parties`
+                                    : `Sanctioned ${formatINR(sum)} of ${formatINR(total)}`}
                               </span>
                               <span>
                                 {total <= 0
                                   ? '· enter the invoice amount first'
-                                  : Math.abs(gap) < 0.05
-                                    ? '· adds up'
-                                    : gap > 0
-                                      ? `· ${formatINR(gap)} still to allocate`
-                                      : `· ${formatINR(-gap)} over the sanctioned amount`}
+                                  : sum <= 0
+                                    ? '· none allocated'
+                                    : Math.abs(gap) < 0.05
+                                      ? '· adds up'
+                                      : gap > 0
+                                        ? `· ${formatINR(gap)} still to allocate`
+                                        : `· ${formatINR(-gap)} over`}
                               </span>
-                              {Math.abs(gap) >= 0.05 && total > 0 && (
+                              {total > 0 && Math.abs(gap) >= 0.05 && (
                                 <Button
                                   type="button"
                                   variant="outline"
@@ -1823,48 +1837,28 @@ export function BillDiscounting({
                       Open amount (₹) *
                       <InfoTip text="What is actually drawn. It defaults to the sanctioned amount — invoice less the margin — and can be lowered if less was taken; the shortfall then shows as the balance still available on this bill." />
                     </Label>
-                    <div className="flex items-center gap-2">
-                      <Input
-                        type="number"
-                        className="flex-1"
-                        value={form.amount ?? ''}
-                        onChange={(e) => setForm((p) => ({ ...p, amount: e.target.value, amount_touched: true }))}
-                      />
-                      {preview && preview.sanctionedAmount > 0 && round2(n(form.amount)) !== preview.sanctionedAmount && (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="h-9 shrink-0 px-2 text-xs"
-                          title="Draw the whole sanctioned amount"
-                          onClick={() => setForm((p) => ({ ...p, amount: String(preview.sanctionedAmount), amount_touched: true }))}
-                        >
-                          Full
-                        </Button>
-                      )}
-                    </div>
-                    {preview && preview.undrawnAmount > 0.004 && n(form.invoice_amount) > 0 && (
-                      <div className="text-[11px] text-muted-foreground">
-                        Balance still available on this bill:{' '}
-                        <b className="font-semibold text-[#1a2c56]">{formatINR(preview.undrawnAmount)}</b> of the{' '}
-                        {formatINR(preview.sanctionedAmount)} sanctioned
-                      </div>
-                    )}
-                    {preview && preview.undrawnAmount < -0.004 && n(form.invoice_amount) > 0 && (
-                      <div className="text-[11px] font-medium text-amber-700">
-                        {formatINR(Math.abs(preview.undrawnAmount))} more than the {formatINR(preview.sanctionedAmount)}{' '}
-                        sanctioned — check the invoice amount and margin
-                      </div>
-                    )}
+                    <Input
+                      type="number"
+                      value={form.amount ?? ''}
+                      onChange={(e) => setForm((p) => ({ ...p, amount: e.target.value, amount_touched: true }))}
+                    />
+                    {/* The balance available and the sanctioned figure are
+                        spelled out in the strip below, so repeating them here
+                        stacked three deep only crowded the field. What is left
+                        is the one thing the strip does not say: how much of the
+                        INVOICE is being drawn, and whether it exceeds it. */}
                     {n(form.invoice_amount) > 0 && n(form.amount) > 0 && (
                       <div
                         className={cn(
                           'text-[11px]',
-                          n(form.amount) - n(form.invoice_amount) > 0.004 ? 'font-medium text-amber-700' : 'text-muted-foreground'
+                          n(form.amount) - n(form.invoice_amount) > 0.004
+                            ? 'font-medium text-amber-700'
+                            : 'text-muted-foreground'
                         )}
                       >
                         {n(form.amount) - n(form.invoice_amount) > 0.004
                           ? `More than the ${formatINR(form.invoice_amount)} invoice — check the two figures`
-                          : `${round2((n(form.amount) / n(form.invoice_amount)) * 100)}% of the ${formatINR(form.invoice_amount)} invoice`}
+                          : `${round2((n(form.amount) / n(form.invoice_amount)) * 100)}% of the invoice`}
                       </div>
                     )}
                   </div>
@@ -1920,6 +1914,26 @@ export function BillDiscounting({
                           }
                           tone={preview.undrawnAmount < -0.004 ? 'bad' : undefined}
                         />
+                        {/* The action belongs beside the figure it changes, not
+                            wedged into the field as a button that narrowed it. */}
+                        {preview.sanctionedAmount > 0 &&
+                          round2(n(form.amount)) !== round2(preview.sanctionedAmount) && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="ml-auto h-7 self-center bg-white px-2 text-[11px]"
+                              title={`Draw the whole ${formatINR(preview.sanctionedAmount)} sanctioned`}
+                              onClick={() =>
+                                setForm((p) => ({
+                                  ...p,
+                                  amount: String(preview.sanctionedAmount),
+                                  amount_touched: true
+                                }))
+                              }
+                            >
+                              Draw it all
+                            </Button>
+                          )}
                       </div>
                     </div>
                   )}
@@ -2067,27 +2081,19 @@ export function BillDiscounting({
                   shown as zeroes. Margin is, since it is a straight percentage
                   of the open amount. */}
               {preview && n(form.amount) > 0 && !form.payment_received_date && (
-                <div className="grid grid-cols-2 gap-px rounded-lg border border-[#e5dfc8] bg-[#e5dfc8] p-px sm:grid-cols-3">
-                  <div className="bg-white px-3 py-2 text-center">
-                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Margin</div>
-                    <div className="text-[13px] font-semibold tabular-nums text-[#1a2c56]">{formatINR(preview.marginAmount)}</div>
-                  </div>
-                  <div className="bg-white px-3 py-2 text-center">
-                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Sanctioned amt</div>
-                    <div className="text-[13px] font-semibold tabular-nums text-[#1a2c56]">{formatINR(preview.sanctionedAmount)}</div>
-                  </div>
-                  <div className="bg-amber-50 px-3 py-2 text-center">
-                    <div className="text-[10px] uppercase tracking-wide text-amber-800">Interest · TDS · payout</div>
-                    <div className="text-[11px] font-medium text-amber-800">worked out on Mark payment received</div>
-                  </div>
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] font-medium text-amber-800">
+                  Interest, TDS and payout are worked out on{' '}
+                  <b className="font-semibold">Mark payment received</b> — interest runs from the day the money
+                  lands, and that date is not known yet.
                 </div>
               )}
               {preview && n(form.amount) > 0 && !!form.payment_received_date && (
-                <div className="grid grid-cols-2 gap-px rounded-lg border border-[#e5dfc8] bg-[#e5dfc8] p-px sm:grid-cols-4 md:grid-cols-7">
+                <div className="grid grid-cols-2 gap-px rounded-lg border border-[#e5dfc8] bg-[#e5dfc8] p-px sm:grid-cols-4 md:grid-cols-8">
                   {([
                     { label: 'Int. days', value: String(preview.intDays), tone: 'text-[#1a2c56]' },
                     { label: 'Margin', value: formatINR(preview.marginAmount), tone: 'text-[#1a2c56]' },
-                    { label: 'Sanctioned amt', value: formatINR(preview.sanctionedAmount), tone: 'text-[#1a2c56]' },
+                    { label: 'Sanctioned', value: formatINR(preview.sanctionedAmount), tone: 'text-[#1a2c56]' },
+                    { label: 'Drawn', value: formatINR(preview.openAmount), tone: 'text-[#1a2c56]' },
                     { label: 'Interest', value: formatINR(preview.interestAmount), tone: 'text-rose-700' },
                     { label: 'TDS', value: formatINR(preview.tdsAmount), tone: 'text-[#1a2c56]' },
                     { label: 'Net int.', value: formatINR(preview.netInterest), tone: 'text-[#1a2c56]' }

@@ -20,6 +20,9 @@ export interface MoneyInput {
   lines?: { rate: number; qty: number; additionalInterest?: number; interestDays?: number }[]
   // Applied to the total excluding TDS, which then becomes the TDS base.
   roundOff?: number
+  // Per-unit adjustment on the billed rate. `null`/absent = the legacy
+  // round-up-to-the-rupee; a number = exactly that much (0 = nothing).
+  rateRoundOff?: number | null
 }
 
 function tierTds(
@@ -76,16 +79,21 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   const blended = lineQty > 0 ? r2(lines.reduce((s, l) => s + num(l.rate) * num(l.qty), 0) / lineQty) : 0
   const rawPremium = r2(i.invoiceRate - blended)
   const ratePremium = Math.abs(rawPremium) < 0.01 ? 0 : rawPremium
+  // Mirrors main exactly: NULL keeps the old whole-rupee ceiling (what every
+  // existing purchase was struck on), a number is the agreed per-unit
+  // adjustment, and 0 is none at all.
+  const billedRate = (raw: number): number =>
+    i.rateRoundOff == null ? Math.ceil(raw) : r2(raw + num(i.rateRoundOff))
   const taxableValue =
     lines.length > 1 && lineQty > 0
       ? lines.reduce((s, l) => {
           const days = l.interestDays != null ? num(l.interestDays) : interestDays
           const addl = l.additionalInterest != null ? num(l.additionalInterest) : i.additionalInterest || 0
           const kF = (1 + (i.gstPct || 0) / 100) * (interestPct / 100) * (days / 365)
-          return s + Math.ceil(num(l.rate) + num(l.rate) * kF + addl + ratePremium) * num(l.qty)
+          return s + billedRate(num(l.rate) + num(l.rate) * kF + addl + ratePremium) * num(l.qty)
         }, 0)
-      : Math.ceil(rawAdjustedRate) * i.orderedQty
-  const adjustedRate = i.orderedQty > 0 ? taxableValue / i.orderedQty : Math.ceil(rawAdjustedRate)
+      : billedRate(rawAdjustedRate) * i.orderedQty
+  const adjustedRate = i.orderedQty > 0 ? taxableValue / i.orderedQty : billedRate(rawAdjustedRate)
   const gstAmount = (taxableValue * i.gstPct) / 100
   // The round off lands on the total excluding TDS, and that rounded figure is
   // what TDS is deducted on — so the rounding flows through to TDS and the net.

@@ -240,6 +240,20 @@ app.whenReady().then(async () => {
       })
     }
   }).catch((e) => console.error('[sku] adjustment kind failed:', e))
+  // The purchase rate used to be rounded UP to the whole rupee, always and
+  // invisibly, because that is how the supplier bills. It is not how every
+  // supplier bills, so it is a figure now rather than a rule: a per-unit
+  // adjustment the user sets, nil by default.
+  //
+  // NULL is left meaning "the old ceiling", so not one existing purchase moves
+  // by a paisa and none of them need writing to. New entries always state it.
+  await runOnce('order_rate_round_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE orders ADD COLUMN rate_round_off REAL')
+      .catch((e) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+  }).catch((e) => console.error('[orders] rate rounding failed:', e))
   startRevisionWatcher()
   registerIpc()
   registerUpdater(() => mainWindow)

@@ -95,6 +95,9 @@ export interface MoneyInput {
   lines?: { rate: number; qty: number; bargainId?: number; additionalInterest?: number; interestDays?: number }[]
   // Applied to the total excluding TDS, which then becomes the TDS base.
   roundOff?: number
+  // Per-unit adjustment on the billed rate. `null`/absent = the legacy
+  // round-up-to-the-rupee; a number = exactly that much (0 = nothing).
+  rateRoundOff?: number | null
 }
 
 // Tiered TDS: the part of `taxable` still under the threshold (given `prior`
@@ -178,6 +181,12 @@ export interface MoneyResult {
   final_net_amount: number
 }
 
+// Blank means "not stated" and keeps the legacy ceiling; a typed 0 means no
+// adjustment at all. They are different answers and must not collapse.
+function rateRoundOff(v: Row): number | null {
+  return v.rate_round_off != null && v.rate_round_off !== '' ? Number(v.rate_round_off) : null
+}
+
 export function computeMoney(i: MoneyInput): MoneyResult {
   const interestPct = i.addsInterest ? i.interestPct : 0
   const interestDays = i.addsInterest ? i.interestDays : 0
@@ -212,17 +221,23 @@ export function computeMoney(i: MoneyInput): MoneyResult {
   const blendedRate = lineQty > 0 ? round2(lines.reduce((s, l) => s + n(l.rate) * n(l.qty), 0) / lineQty) : 0
   const rawPremium = round2(i.invoiceRate - blendedRate)
   const ratePremium = Math.abs(rawPremium) < 0.01 ? 0 : rawPremium
+  // What the supplier actually bills per unit. Left unstated (NULL) this is the
+  // old rule -- round up to the whole rupee -- which is what every purchase
+  // entered before this was struck on, so those reproduce exactly. Stated, it
+  // is the exact rate plus whatever adjustment was agreed, and 0 means none.
+  const billedRate = (raw: number): number =>
+    i.rateRoundOff == null ? Math.ceil(raw) : round2(raw + n(i.rateRoundOff))
   const taxableValue =
     lines.length > 1 && lineQty > 0
       ? lines.reduce((s, l) => {
           const days = l.interestDays != null ? n(l.interestDays) : interestDays
           const addl = l.additionalInterest != null ? n(l.additionalInterest) : i.additionalInterest || 0
           const kF = (1 + (i.gstPct || 0) / 100) * (interestPct / 100) * (days / 365)
-          return s + Math.ceil(n(l.rate) + n(l.rate) * kF + addl + ratePremium) * n(l.qty)
+          return s + billedRate(n(l.rate) + n(l.rate) * kF + addl + ratePremium) * n(l.qty)
         }, 0)
-      : Math.ceil(rawAdjustedRate) * i.orderedQty
+      : billedRate(rawAdjustedRate) * i.orderedQty
   // The rate actually charged (taxable ÷ qty) — what the invoice shows per unit.
-  const adjustedRate = i.orderedQty > 0 ? taxableValue / i.orderedQty : Math.ceil(rawAdjustedRate)
+  const adjustedRate = i.orderedQty > 0 ? taxableValue / i.orderedQty : billedRate(rawAdjustedRate)
   const gstAmount = (taxableValue * i.gstPct) / 100
   // The round off lands on the total excluding TDS, and that rounded figure is
   // the base TDS is deducted on — so the rounding flows into TDS and the net.
@@ -689,6 +704,7 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
     interestDays:
       v.interest_days !== undefined && v.interest_days !== '' ? n(v.interest_days) : n(supplier?.interest_days),
     additionalInterest: n(v.additional_interest),
+    rateRoundOff: rateRoundOff(v),
     tdsThreshold: n(supplier?.tds_threshold),
     tdsPctAbove: n(v.tds_pct),
     tdsPrior: prior,
@@ -703,8 +719,8 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
        final_taxable_value, final_gst_amount, final_tds_amount, final_net_amount,
        tanker_no, transporter_id, allowed_shortage_pct, is_registered_transporter, posting, financed_by_party,
        payment_cleared_date, remarks, freight_paid_to_supplier, is_consignment, received_qty, received_date, status,
-       is_trading, affects_stock)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       is_trading, affects_stock, rate_round_off)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       bookInCompany,
       v.invoice_no,
@@ -749,7 +765,8 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
       isConsignment ? v.order_date : null,
       isConsignment ? 'received' : 'loaded',
       isTrading ? 1 : 0,
-      isTrading ? 0 : 1
+      isTrading ? 0 : 1,
+      rateRoundOff(v)
     ]
   })
   const id = Number(res.lastInsertRowid)
@@ -879,6 +896,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
     interestDays:
       v.interest_days !== undefined && v.interest_days !== '' ? n(v.interest_days) : n(supplier?.interest_days),
     additionalInterest: n(v.additional_interest),
+    rateRoundOff: rateRoundOff(v),
     tdsThreshold: n(supplier?.tds_threshold),
     tdsPctAbove: n(v.tds_pct),
     tdsPrior: prior,
@@ -893,7 +911,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       adjusted_rate = ?, taxable_value = ?, gst_pct = ?, gst_type = ?, gst_amount = ?, tds_pct = ?, tds_amount = ?, round_off = ?, round_off_manual = ?, net_amount = ?,
       final_taxable_value = ?, final_gst_amount = ?, final_tds_amount = ?, final_net_amount = ?,
       tanker_no = ?, transporter_id = ?, allowed_shortage_pct = ?, is_registered_transporter = ?, posting = 1, financed_by_party = ?,
-      payment_cleared_date = ?, remarks = ?, freight_paid_to_supplier = ?
+      payment_cleared_date = ?, remarks = ?, freight_paid_to_supplier = ?, rate_round_off = ?
       WHERE id = ?`,
     args: [
       v.invoice_no,
@@ -931,6 +949,7 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
       v.payment_date || v.order_date,
       v.remarks ? String(v.remarks).trim() : null,
       v.freight_paid_to_supplier ? 1 : 0,
+      rateRoundOff(v),
       id
     ]
   })
