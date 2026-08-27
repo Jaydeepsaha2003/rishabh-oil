@@ -530,6 +530,199 @@ export async function postLcPaymentIn(
   return { id: je.id, date }
 }
 
+// ---------------------------------------------------------------------------
+// Bill Discounting: the payment coming back IN on a trading deal.
+//
+// A trading discounted bill is the same round trip as a Trading LC: we discount
+// the purchase, resell the goods, and the customer's money comes back to us.
+// Repaying the NBFC was already tracked; this is the other leg, and it is built
+// on the same three links the LC side uses -- the receivable party on the bill,
+// the purchase invoices the bill funded, and through those the trading deal's
+// resale invoices. Without them nothing says WHICH invoices the money is
+// expected through, which is why a bill could not be settled bill-wise before.
+// ---------------------------------------------------------------------------
+
+async function outstandingSaleRefsForBd(
+  bdId: number
+): Promise<{ bd: Row; customerName: string; refs: { key: string; invoice_no: string; sale_date: string; due: number }[] }> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT * FROM bill_discountings WHERE id = ?', args: [bdId] })
+  if (!res.rows.length) throw new Error('Discounted bill not found')
+  const bd = toPlain(res)[0]
+  if (String(bd.purpose || '') !== 'trading') throw new Error('Payment IN only applies to a Trading bill')
+  if (!bd.receivable_party_id) throw new Error('Set the party payment will be received from on this bill first')
+  const custRes = await c.execute({ sql: 'SELECT name FROM customers WHERE id = ?', args: [Number(bd.receivable_party_id)] })
+  const customerName = String(custRes.rows[0]?.name || '').trim()
+  if (!customerName) throw new Error('The receivable party could not be found')
+
+  // A deal belongs to this bill once one of its own purchase invoices is
+  // linked to it — the same per-invoice rule the LC side uses, since a deal's
+  // several invoices can each be financed differently.
+  const dealsRes = await c.execute({
+    sql: `SELECT DISTINCT td.id, td.sale_id
+          FROM trading_deals td
+          WHERE EXISTS (
+            SELECT 1 FROM bd_linked_orders bo
+            WHERE bo.bd_id = ?
+              AND bo.order_id IN (
+                SELECT order_id FROM trading_deal_orders WHERE deal_id = td.id
+                UNION SELECT td.order_id
+              )
+          )`,
+    args: [bdId]
+  })
+  const dealRows = toPlain(dealsRes)
+  if (!dealRows.length) throw new Error('This bill has no linked Trading deal to receive payment against')
+  const dealIds = dealRows.map((d) => n(d.id))
+
+  const linksRes = await c.execute({
+    sql: `SELECT deal_id, sale_id FROM trading_deal_sales WHERE deal_id IN (${dealIds.join(',')})`,
+    args: []
+  })
+  const saleIdsByDeal = new Map<number, number[]>()
+  for (const r of toPlain(linksRes)) {
+    const k = n(r.deal_id)
+    saleIdsByDeal.set(k, [...(saleIdsByDeal.get(k) ?? []), n(r.sale_id)])
+  }
+  // A deal booked before multi-invoice sales existed has no link rows — its own
+  // sale_id is every bit as real.
+  const saleIds = Array.from(
+    new Set(dealRows.flatMap((d) => saleIdsByDeal.get(n(d.id)) ?? (n(d.sale_id) ? [n(d.sale_id)] : [])))
+  )
+  if (!saleIds.length) throw new Error("This bill's linked Trading deal has no sale invoice yet")
+
+  const salesRes = await c.execute({
+    sql: `SELECT COALESCE(invoice_group, invoice_no) AS key, MIN(invoice_no) AS invoice_no, MIN(sale_date) AS sale_date,
+                 SUM(amount + gst_amount + round_off - tds_amount) AS due
+          FROM sales WHERE id IN (${saleIds.join(',')}) GROUP BY key`,
+    args: []
+  })
+  const bills = toPlain(salesRes)
+    .map((x) => ({
+      key: String(x.key || '').trim(),
+      invoice_no: String(x.invoice_no || ''),
+      sale_date: String(x.sale_date || ''),
+      due: round2(n(x.due))
+    }))
+    .filter((x) => x.key)
+  if (!bills.length) throw new Error("This bill's linked Trading deal has no sale invoice yet")
+
+  // Whatever has already been received against these refs comes off what is
+  // still due, so a bill partly settled elsewhere is never double-booked.
+  const keys = bills.map((b) => b.key)
+  const settledRes = await c.execute({
+    sql: `SELECT COALESCE(ba.sale_invoice_group, ba.ref_name) AS key, SUM(ba.amount) AS amt
+          FROM journal_bill_allocs ba
+          JOIN journal_lines jl ON jl.id = ba.line_id
+          JOIN journal_entries je ON je.id = jl.entry_id
+          WHERE ba.method = 'agst_ref' AND je.company_id = ?
+            AND COALESCE(ba.sale_invoice_group, ba.ref_name) IN (${keys.map(() => '?').join(',')})
+          GROUP BY key`,
+    args: [n(bd.company_id) || getActiveCompanyId(), ...keys]
+  })
+  const settled = new Map<string, number>()
+  for (const r of toPlain(settledRes)) settled.set(String(r.key), n(r.amt))
+
+  const refs = bills
+    .map((b) => ({ ...b, due: round2(b.due - (settled.get(b.key) || 0)) }))
+    .filter((b) => b.due > 0.005)
+  return { bd, customerName, refs }
+}
+
+// The open resale invoices behind a trading bill — the Payment IN dialog lists
+// these so the receipt lands on the invoice it is actually for.
+export async function listBdOpenTradingInvoices(bdId: number): Promise<Row[]> {
+  try {
+    const { refs } = await outstandingSaleRefsForBd(bdId)
+    return refs
+  } catch {
+    // The dialog asks before the links are necessarily in place; an empty list
+    // is the honest answer there, and saving still reports the real reason.
+    return []
+  }
+}
+
+// Record what the customer paid back. Posts Dr bank / Cr customer and settles
+// it against the outstanding resale invoices, biggest first — the way one lump
+// receipt naturally clears the largest dues before spilling onto the next. Each
+// call posts its own voucher rather than replacing the last, so part-payments
+// and one-per-invoice both work.
+export async function postBdPaymentIn(
+  bdId: number,
+  amount: number,
+  dateIn?: string,
+  selectedKeys?: string[]
+): Promise<{ id: number; date: string }> {
+  const { bd, customerName, refs } = await outstandingSaleRefsForBd(bdId)
+  const wanted = Array.isArray(selectedKeys) && selectedKeys.length ? new Set(selectedKeys.map(String)) : null
+  const outstanding = wanted ? refs.filter((r) => wanted.has(r.key)) : refs
+  if (!outstanding.length) throw new Error('Every sale invoice on this deal is already fully paid')
+  const totalDue = round2(outstanding.reduce((t, o) => t + o.due, 0))
+
+  const value = round2(n(amount))
+  if (value < 0.005) throw new Error('Enter the amount received')
+  if (value > totalDue + 0.005) {
+    throw new Error(
+      `Only ${totalDue.toFixed(2)} is still receivable on the ${wanted ? 'selected invoice(s)' : "bill's deal(s)"}`
+    )
+  }
+
+  const c = getClient()
+  const date = String(dateIn || todayISO()).slice(0, 10)
+  const je = await postJournal({
+    date,
+    vchType: 'RECEIPT',
+    vchNo: String(bd.bd_no || ''),
+    narration: `Bill Discounting ${bd.bd_no} — payment IN of ${value.toFixed(2)} received from ${customerName}`,
+    companyId: n(bd.company_id) || undefined,
+    lines: [
+      { account: 'BANK A/C', group: 'Bank Accounts', dr: value },
+      { account: customerName, group: 'Sundry Debtors', cr: value }
+    ]
+  })
+  let remaining = value
+  for (const o of [...outstanding].sort((a, b) => b.due - a.due)) {
+    if (remaining <= 0.005) break
+    const take = round2(Math.min(remaining, o.due))
+    await allocAgainst(je.id, customerName, o.key, take)
+    remaining -= take
+  }
+  await c.execute({
+    sql: 'INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, ?)',
+    args: [bdId, date, value, je.id]
+  })
+  return { id: je.id, date }
+}
+
+export async function listBdPaymentIns(bdId: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: 'SELECT * FROM bd_payment_ins WHERE bd_id = ? ORDER BY id DESC',
+    args: [bdId]
+  })
+  return toPlain(res)
+}
+
+// Undo one receipt — logged twice, or against the wrong bill. Its voucher and
+// the allocations under it go with it, exactly as removing a repayment does.
+export async function deleteBdPaymentIn(paymentInId: number): Promise<{ id: number }> {
+  const c = getClient()
+  const res = await c.execute({ sql: 'SELECT journal_entry_id FROM bd_payment_ins WHERE id = ?', args: [paymentInId] })
+  if (!res.rows.length) throw new Error('That receipt no longer exists')
+  const je = n(res.rows[0].journal_entry_id)
+  if (je) {
+    // Voucher, its lines, and the bill allocations under them — the same
+    // teardown a removed repayment does.
+    await c.execute({
+      sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
+      args: [je]
+    })
+    await c.execute({ sql: 'DELETE FROM journal_lines WHERE entry_id = ?', args: [je] })
+    await c.execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [je] })
+  }
+  await c.execute({ sql: 'DELETE FROM bd_payment_ins WHERE id = ?', args: [paymentInId] })
+  return { id: paymentInId }
+}
+
 export async function listLcPaymentIns(lcId: number): Promise<Row[]> {
   const res = await getClient().execute({
     sql: 'SELECT * FROM lc_payment_ins WHERE lc_id = ? ORDER BY id DESC',

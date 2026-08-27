@@ -424,6 +424,12 @@ const api = {
       ipcRenderer.invoke('bd:repay', { id, values }),
     repayments: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:repayments', { id }),
     allRepayments: (): Promise<Row[]> => ipcRenderer.invoke('bd:allRepayments'),
+    linkedOrders: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:linkedOrders', { id }),
+    openTradingInvoices: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:openTradingInvoices', { id }),
+    paymentIns: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:paymentIns', { id }),
+    paymentIn: (id: number, amount: number, date?: string, keys?: string[]): Promise<{ id: number; date: string }> =>
+      ipcRenderer.invoke('bd:paymentIn', { id, amount, date, keys }),
+    deletePaymentIn: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:deletePaymentIn', { id }),
     deleteRepayment: (id: number): Promise<{ id: number; bd_id: number }> =>
       ipcRenderer.invoke('bd:deleteRepayment', { id }),
     markReceived: (id: number, date?: string): Promise<{ id: number; date: string }> =>
@@ -432,7 +438,10 @@ const api = {
     reopen: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('bd:reopen', { id }),
     upfrontInterest: (id: number, date?: string): Promise<{ id: number } | null> =>
       ipcRenderer.invoke('bd:upfrontInterest', { id, date }),
-    kpis: (): Promise<Row> => ipcRenderer.invoke('bd:kpis')
+    kpis: (): Promise<Row> => ipcRenderer.invoke('bd:kpis'),
+    limits: (): Promise<Row> => ipcRenderer.invoke('bd:limits'),
+    setCombinedLimit: (value: number | string | null): Promise<{ value: number | null }> =>
+      ipcRenderer.invoke('bd:setCombinedLimit', { value })
   },
   trading: {
     list: (): Promise<Row[]> => ipcRenderer.invoke('trading:list'),

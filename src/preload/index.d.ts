@@ -317,12 +317,19 @@ export interface Api {
     ) => Promise<{ id: number; amount: number; outstanding: number; closed: boolean }>
     repayments: (id: number) => Promise<Row[]>
     allRepayments: () => Promise<Row[]>
+    linkedOrders: (id: number) => Promise<Row[]>
+    openTradingInvoices: (id: number) => Promise<Row[]>
+    paymentIns: (id: number) => Promise<Row[]>
+    paymentIn: (id: number, amount: number, date?: string, keys?: string[]) => Promise<{ id: number; date: string }>
+    deletePaymentIn: (id: number) => Promise<{ id: number }>
     deleteRepayment: (id: number) => Promise<{ id: number; bd_id: number }>
     markReceived: (id: number, date?: string) => Promise<{ id: number; date: string }>
     unmarkReceived: (id: number) => Promise<{ id: number }>
     reopen: (id: number) => Promise<{ id: number }>
     upfrontInterest: (id: number, date?: string) => Promise<{ id: number } | null>
     kpis: () => Promise<Row>
+    limits: () => Promise<Row>
+    setCombinedLimit: (value: number | string | null) => Promise<{ value: number | null }>
   }
   trading: {
     list: () => Promise<Row[]>

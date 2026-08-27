@@ -137,6 +137,49 @@ app.whenReady().then(async () => {
       SELECT g.id, g.invoice_group, g.sale_id FROM gate_entries g
       WHERE g.invoice_group IS NOT NULL AND g.invoice_group <> ''`)
   }).catch((e) => console.error('[gate] invoice links failed:', e))
+  // A TRADING discounted bill has a round trip like a Trading LC: we discount
+  // the purchase, resell the goods, and the customer's money comes back. Only
+  // the first half was tracked — the repayment to the NBFC — because nothing
+  // said which resale invoices the money was expected through. These three
+  // mirror the LC side exactly: who pays us back, which purchase invoices the
+  // bill funded (the route to the trading deal, and so to the resale
+  // invoices), and each receipt as it lands.
+  await runOnce('bd_payment_in_v1', async () => {
+    const c = getClient()
+    await c.execute('ALTER TABLE bill_discountings ADD COLUMN receivable_party_id INTEGER')
+    await c.execute(`CREATE TABLE IF NOT EXISTS bd_linked_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bd_id INTEGER NOT NULL REFERENCES bill_discountings(id),
+      order_id INTEGER NOT NULL REFERENCES orders(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(bd_id, order_id)
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_bd_linked_orders_bd ON bd_linked_orders(bd_id)')
+    await c.execute(`CREATE TABLE IF NOT EXISTS bd_payment_ins (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bd_id INTEGER NOT NULL REFERENCES bill_discountings(id),
+      pay_date TEXT NOT NULL,
+      amount REAL NOT NULL DEFAULT 0,
+      journal_entry_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_bd_payment_ins_bd ON bd_payment_ins(bd_id)')
+  }).catch((e) => console.error('[bd] payment-in schema failed:', e))
+  // A discounted bill draws on a limit the NBFC has sanctioned, and there was
+  // nowhere to record it -- the page could show utilisation with nothing to
+  // measure it against. The limit belongs on the NBFC because that is who
+  // sanctions it; the combined ceiling across all of them is a company setting.
+  //
+  // The unique index is the belt to assertUniqueName's braces: a name is
+  // already refused per company in the application, and this makes it
+  // impossible from any path at all. It is per COMPANY on purpose -- two
+  // companies each keeping their own INFOTEL master is correct, not a
+  // duplicate, and pooling them would merge two separate facilities.
+  await runOnce('bd_limits_v1', async () => {
+    const c = getClient()
+    await c.execute('ALTER TABLE nbfcs ADD COLUMN sanctioned_limit REAL NOT NULL DEFAULT 0')
+    await c.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_nbfcs_company_name ON nbfcs(company_id, TRIM(LOWER(name)))')
+  }).catch((e) => console.error('[bd] limits schema failed:', e))
   startRevisionWatcher()
   registerIpc()
   registerUpdater(() => mainWindow)

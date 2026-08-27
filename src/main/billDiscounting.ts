@@ -1,6 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
+import { getSetting, setSetting } from './repos'
 import { postJournal, type JournalLine } from './journal'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -252,6 +253,8 @@ const BD_COLS = [
   'party_type',
   'party_id',
   'purpose',
+  // Who pays US back on a trading bill — the other half of the round trip.
+  'receivable_party_id',
   'amount',
   'invoice_amount',
   'payment_received_date',
@@ -275,10 +278,54 @@ function bdArgs(v: Row): (string | number | null)[] {
       const val = v[k]
       return val === '' || val === undefined || val === null ? null : n(val)
     }
-    if (k === 'nbfc_id') return v[k] ? n(v[k]) : null
+    if (k === 'nbfc_id' || k === 'receivable_party_id') return v[k] ? n(v[k]) : null
     const val = v[k]
     return val === '' || val === undefined || val === null ? null : String(val)
   })
+}
+
+// A purchase invoice belongs to at most one discounted bill at a time — the
+// same exclusivity the LC side enforces. Refused rather than silently taken
+// away from the bill that already has it.
+async function syncBdLinkedOrders(bdId: number, orderIds: unknown): Promise<void> {
+  const c = getClient()
+  const ids = Array.isArray(orderIds) ? orderIds.map((x) => n(x)).filter((x) => x > 0) : []
+  if (ids.length) {
+    const taken = await c.execute({
+      sql: `SELECT bo.order_id, o.invoice_no, b.bd_no
+            FROM bd_linked_orders bo
+            JOIN orders o ON o.id = bo.order_id
+            LEFT JOIN bill_discountings b ON b.id = bo.bd_id
+            WHERE bo.order_id IN (${ids.join(',')}) AND bo.bd_id != ?`,
+      args: [bdId]
+    })
+    if (taken.rows.length) {
+      const t = taken.rows[0] as Row
+      throw new Error(
+        `Invoice ${t.invoice_no || `#${t.order_id}`} is already linked to ${t.bd_no ? `bill ${t.bd_no}` : 'another discounted bill'}`
+      )
+    }
+  }
+  await c.execute({ sql: 'DELETE FROM bd_linked_orders WHERE bd_id = ?', args: [bdId] })
+  for (const oid of ids) {
+    await c.execute({
+      sql: 'INSERT OR IGNORE INTO bd_linked_orders (bd_id, order_id) VALUES (?, ?)',
+      args: [bdId, oid]
+    })
+  }
+}
+
+// The purchase invoices linked to one bill, for the form.
+export async function listBdLinkedOrders(bdId: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT bo.order_id, o.invoice_no, o.order_date, o.net_amount, s.name AS supplier_name
+          FROM bd_linked_orders bo
+          JOIN orders o ON o.id = bo.order_id
+          LEFT JOIN suppliers s ON s.id = o.supplier_id
+          WHERE bo.bd_id = ? ORDER BY o.order_date, o.id`,
+    args: [bdId]
+  })
+  return toPlain(res)
 }
 
 // Every check a Bill Discounting entry has to pass, on create or edit.
@@ -326,11 +373,22 @@ export async function listBd(filter?: Row): Promise<Row[]> {
   const res = await getClient().execute({
     sql: `SELECT bd.*, nb.name AS nbfc_name, nb.finance_type AS nbfc_finance_type,
                  s.name AS supplier_name, cu.name AS customer_name,
-                 COALESCE(rp.paid, 0) AS parts_paid, COALESCE(rp.parts, 0) AS repay_parts
+                 COALESCE(rp.paid, 0) AS parts_paid, COALESCE(rp.parts, 0) AS repay_parts,
+                 rc.name AS receivable_party_name,
+                 -- The purchase invoices this bill funded: the route to the
+                 -- trading deal, and through it to the resale invoices.
+                 (SELECT COUNT(*) FROM bd_linked_orders bo WHERE bo.bd_id = bd.id) AS linked_invoice_count,
+                 (SELECT GROUP_CONCAT(o.invoice_no, ', ') FROM bd_linked_orders bo
+                    JOIN orders o ON o.id = bo.order_id WHERE bo.bd_id = bd.id) AS linked_invoice_nos,
+                 (SELECT GROUP_CONCAT(bo.order_id) FROM bd_linked_orders bo WHERE bo.bd_id = bd.id) AS linked_order_ids_csv,
+                 -- What the customer has already paid back on the resale.
+                 COALESCE((SELECT SUM(pi.amount) FROM bd_payment_ins pi WHERE pi.bd_id = bd.id), 0) AS payment_in_total,
+                 (SELECT COUNT(*) FROM bd_payment_ins pi WHERE pi.bd_id = bd.id) AS payment_in_count
           FROM bill_discountings bd
           LEFT JOIN nbfcs nb ON nb.id = bd.nbfc_id
           LEFT JOIN suppliers s ON bd.party_type = 'supplier' AND s.id = bd.party_id
           LEFT JOIN customers cu ON bd.party_type = 'customer' AND cu.id = bd.party_id
+          LEFT JOIN customers rc ON rc.id = bd.receivable_party_id
           LEFT JOIN (SELECT bd_id, SUM(amount) AS paid, COUNT(*) AS parts
                      FROM bd_repayments GROUP BY bd_id) rp ON rp.bd_id = bd.id
           WHERE ${where.join(' AND ')}
@@ -369,6 +427,8 @@ export async function createBd(v: Row): Promise<{ id: number }> {
     args: [getActiveCompanyId(), ...bdArgs(v)]
   })
   const id = Number(res.lastInsertRowid)
+  // Only when the caller names them — an untouched form must not clear links.
+  if (Array.isArray(v.linked_order_ids)) await syncBdLinkedOrders(id, v.linked_order_ids)
   await postBdOpening(id)
   return { id }
 }
@@ -388,6 +448,7 @@ export async function updateBd(id: number, v: Row): Promise<{ id: number }> {
     sql: `UPDATE bill_discountings SET ${BD_COLS.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`,
     args: [...bdArgs(v), id]
   })
+  if (Array.isArray(v.linked_order_ids)) await syncBdLinkedOrders(id, v.linked_order_ids)
   await postBdOpening(id)
   return { id }
 }
@@ -398,6 +459,12 @@ export async function deleteBd(id: number): Promise<{ id: number }> {
   await dropEntry(n(bd.journal_entry_id) || null)
   await dropRepayEntries(bd)
   await dropEntry(n(bd.margin_release_journal_entry_id) || null)
+  // The customer's payments back, and the purchase-invoice links, are part of
+  // this bill and mean nothing without it.
+  const ins = await c.execute({ sql: 'SELECT journal_entry_id FROM bd_payment_ins WHERE bd_id = ?', args: [id] })
+  for (const r of ins.rows) await dropEntry(n(r.journal_entry_id) || null)
+  await c.execute({ sql: 'DELETE FROM bd_payment_ins WHERE bd_id = ?', args: [id] })
+  await c.execute({ sql: 'DELETE FROM bd_linked_orders WHERE bd_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM bill_discountings WHERE id = ?', args: [id] })
   return { id }
 }
@@ -629,6 +696,84 @@ export async function reopenBd(id: number): Promise<{ id: number }> {
     args: [id]
   })
   return { id }
+}
+
+// What each NBFC has sanctioned against what is drawn on it, and the same
+// combined across all of them.
+//
+//   utilised  = the outstanding on FUNDED bills (face less what has gone back)
+//   available = sanctioned - utilised
+//
+// Only funded bills count as drawn: a bill still awaiting the NBFC's payment
+// has had nothing disbursed, so counting it would show a limit consumed by
+// money that has not moved. It is reported separately as `committed` instead,
+// because it is money the NBFC has agreed to and will consume the limit the
+// moment it lands.
+//
+// The combined ceiling is a company setting, since it is not any one NBFC's to
+// state; when it is unset there is no combined figure to report rather than a
+// misleading zero.
+export async function bdLimits(): Promise<Row> {
+  const c = getClient()
+  const cid = getActiveCompanyId()
+  const res = await c.execute({
+    sql: `SELECT nb.id, nb.name, nb.finance_type, nb.active,
+                 COALESCE(nb.sanctioned_limit, 0) AS sanctioned,
+                 COALESCE((SELECT SUM(bd.amount - COALESCE((SELECT SUM(r.amount) FROM bd_repayments r
+                            WHERE r.bd_id = bd.id), 0))
+                           FROM bill_discountings bd
+                           WHERE bd.nbfc_id = nb.id AND bd.company_id = ?
+                             AND bd.status <> 'repaid' AND bd.payment_received_date IS NOT NULL), 0) AS utilised,
+                 COALESCE((SELECT SUM(bd.amount) FROM bill_discountings bd
+                           WHERE bd.nbfc_id = nb.id AND bd.company_id = ?
+                             AND bd.status <> 'repaid' AND bd.payment_received_date IS NULL), 0) AS committed,
+                 COALESCE((SELECT COUNT(*) FROM bill_discountings bd
+                           WHERE bd.nbfc_id = nb.id AND bd.company_id = ? AND bd.status <> 'repaid'), 0) AS open_bills
+          FROM nbfcs nb
+          WHERE nb.company_id = ?
+          ORDER BY nb.active DESC, nb.name COLLATE NOCASE`,
+    args: [cid, cid, cid, cid]
+  })
+  const perNbfc = toPlain(res).map((r) => {
+    const sanctioned = round2(n(r.sanctioned))
+    const utilised = round2(n(r.utilised))
+    return {
+      ...r,
+      sanctioned,
+      utilised,
+      committed: round2(n(r.committed)),
+      // No sanctioned figure means nothing to be available OUT of — reported as
+      // null so the screen can say "not set" rather than showing a negative.
+      available: sanctioned > 0 ? round2(sanctioned - utilised) : null,
+      used_pct: sanctioned > 0 ? Math.round((utilised / sanctioned) * 1000) / 10 : null
+    }
+  })
+  const combinedRaw = await getSetting(`bd_combined_limit_${cid}`)
+  const combined = combinedRaw == null || String(combinedRaw).trim() === '' ? null : round2(n(combinedRaw))
+  const utilisedTotal = round2(perNbfc.reduce((t, r) => t + n(r.utilised), 0))
+  const sanctionedTotal = round2(perNbfc.reduce((t, r) => t + n(r.sanctioned), 0))
+  return {
+    per_nbfc: perNbfc,
+    // The sum of what each NBFC has sanctioned. Not the same thing as the
+    // combined ceiling: a group limit can sit below the sum of its lines.
+    sanctioned_sum: sanctionedTotal,
+    utilised_total: utilisedTotal,
+    committed_total: round2(perNbfc.reduce((t, r) => t + n(r.committed), 0)),
+    combined_limit: combined,
+    combined_available: combined == null ? null : round2(combined - utilisedTotal),
+    combined_used_pct: combined && combined > 0 ? Math.round((utilisedTotal / combined) * 1000) / 10 : null,
+    // Worth saying out loud: a group ceiling under the sum of the lines means
+    // the lines cannot all be drawn at once.
+    lines_exceed_combined: combined != null && sanctionedTotal > combined
+  }
+}
+
+// The combined ceiling for the active company. Blank clears it.
+export async function setBdCombinedLimit(value: number | string | null): Promise<{ value: number | null }> {
+  const cid = getActiveCompanyId()
+  const raw = value == null || String(value).trim() === '' ? '' : String(round2(n(value)))
+  await setSetting(`bd_combined_limit_${cid}`, raw)
+  return { value: raw === '' ? null : Number(raw) }
 }
 
 // KPI rollup for the page header, mirroring getLcLimit's shape — outstanding

@@ -83,7 +83,11 @@ import {
   postLcPaymentIn,
   listLcPaymentIns,
   deleteLcPaymentIn,
-  listLcOpenTradingInvoices
+  listLcOpenTradingInvoices,
+  postBdPaymentIn,
+  listBdPaymentIns,
+  deleteBdPaymentIn,
+  listBdOpenTradingInvoices
 } from './treasury'
 import {
   createVoucher,
@@ -155,7 +159,7 @@ import {
   unreconcileBankLine,
   setBankLineSubEntry
 } from './bankRecon'
-import { listBd, createBd, updateBd, deleteBd, repayBd, reopenBd, postBdUpfrontInterest, bdKpis, listBdRepayments, deleteBdRepayment, markBdPaymentReceived, unmarkBdPaymentReceived, listAllBdRepayments } from './billDiscounting'
+import { listBd, createBd, updateBd, deleteBd, repayBd, reopenBd, postBdUpfrontInterest, bdKpis, listBdRepayments, deleteBdRepayment, markBdPaymentReceived, unmarkBdPaymentReceived, listAllBdRepayments, listBdLinkedOrders, bdLimits, setBdCombinedLimit } from './billDiscounting'
 import {
   listTransporterFreight,
   transporterFreightKpis,
@@ -338,7 +342,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:allRepayments$|^access:entityHistory$|^trading:list$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^bd:allRepayments$|^bd:linkedOrders$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entityHistory$|^trading:list$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -809,12 +813,25 @@ export function registerIpc(): void {
   )
   handle('bd:repayments', (_e, { id }: { id: number }) => listBdRepayments(id))
   handle('bd:allRepayments', () => listAllBdRepayments())
+  handle('bd:linkedOrders', (_e, { id }: { id: number }) => listBdLinkedOrders(id))
+  handle('bd:openTradingInvoices', (_e, { id }: { id: number }) => listBdOpenTradingInvoices(id))
+  handle('bd:paymentIns', (_e, { id }: { id: number }) => listBdPaymentIns(id))
+  handle(
+    'bd:paymentIn',
+    (
+      _e,
+      { id, amount, date, keys }: { id: number; amount: number; date?: string; keys?: string[] }
+    ) => postBdPaymentIn(id, amount, date, keys)
+  )
+  handle('bd:deletePaymentIn', (_e, { id }: { id: number }) => deleteBdPaymentIn(id))
   handle('bd:deleteRepayment', (_e, { id }: { id: number }) => deleteBdRepayment(id))
   handle('bd:markReceived', (_e, { id, date }: { id: number; date?: string }) => markBdPaymentReceived(id, date))
   handle('bd:unmarkReceived', (_e, { id }: { id: number }) => unmarkBdPaymentReceived(id))
   handle('bd:reopen', (_e, { id }: { id: number }) => reopenBd(id))
   handle('bd:upfrontInterest', (_e, { id, date }: { id: number; date?: string }) => postBdUpfrontInterest(id, date))
   handle('bd:kpis', () => bdKpis())
+  handle('bd:limits', () => bdLimits())
+  handle('bd:setCombinedLimit', (_e, { value }: { value: number | string | null }) => setBdCombinedLimit(value))
 
   handle(
     'access:entityHistory',

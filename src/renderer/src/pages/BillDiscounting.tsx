@@ -100,6 +100,9 @@ const NBFC_FIELDS: FieldDef[] = [
   { key: 'interest_days', label: 'Interest days (default tenor)', type: 'number', default: 0 },
   { key: 'tds_pct', label: 'TDS % on interest', type: 'number', default: 0 },
   { key: 'days_year', label: 'Days in year (360 / 365)', type: 'number', default: 360 },
+  // What this NBFC has sanctioned. The limit lives here because this is who
+  // sanctions it; the combined ceiling across every NBFC is set on the page.
+  { key: 'sanctioned_limit', label: 'Sanctioned limit (₹)', type: 'number', default: 0 },
   { key: 'note', label: 'Note', type: 'text' },
   { key: 'active', label: 'Active', type: 'switch', default: true }
 ]
@@ -184,6 +187,11 @@ export function BillDiscounting({
   // The parts already paid on the bill in the dialog, so it opens showing what
   // has gone back rather than only what is left.
   const [repayParts, setRepayParts] = useState<Row[]>([])
+  // The trading side, loaded ONLY while a trading bill's form is open. It is
+  // not part of the register, so the page's normal refresh never pays for it.
+  const [tradingDeals, setTradingDeals] = useState<Row[]>([])
+  const [tradingOrders, setTradingOrders] = useState<Row[]>([])
+  const [tradingLoaded, setTradingLoaded] = useState(false)
   // The bill whose receipt is being stamped, and the date being stamped on it.
   const [receiveRow, setReceiveRow] = useState<Row | null>(null)
   const [receiveDate, setReceiveDate] = useState('')
@@ -200,6 +208,22 @@ export function BillDiscounting({
   //
   // The masters are now fetched once on mount, and the KPIs are computed from
   // the list. Five queries per refresh became one.
+  // The facility limits live behind a button on Manage NBFCs — the limit is a
+  // property of the NBFC, so it belongs with the NBFCs rather than taking up
+  // the register, and it is only read when someone asks for it.
+  const [limits, setLimits] = useState<Row | null>(null)
+  const [limitsOpen, setLimitsOpen] = useState(false)
+  const [limitEdit, setLimitEdit] = useState<string | null>(null)
+  const [limitSaving, setLimitSaving] = useState(false)
+
+  const loadLimits = useCallback(async () => {
+    try {
+      setLimits(await window.api.billDiscounting.limits())
+    } catch {
+      setLimits(null)
+    }
+  }, [])
+
   const loadBills = useCallback(async () => {
     const list = await window.api.billDiscounting.list()
     setRows(list)
@@ -228,7 +252,13 @@ export function BillDiscounting({
   useEffect(() => {
     void loadBills()
     void loadMasters()
-  }, [loadBills, loadMasters])
+    // The sanctioned figures change when someone edits a limit, not when a bill
+    // is raised — so they are read once here, and again only after a limit is
+    // actually touched. What is DRAWN against them is the outstanding the
+    // header already computes from the rows in hand, so the available figure
+    // stays live without re-reading anything.
+    void loadLimits()
+  }, [loadBills, loadMasters, loadLimits])
   useLiveRefresh(() => {
     void loadBills()
   })
@@ -252,6 +282,15 @@ export function BillDiscounting({
       awaiting_total: sum(awaiting, 'amount')
     }
   }, [rows])
+
+  // Sanctioned combined, less what is drawn on it. The drawn half is the
+  // outstanding just computed above — the same figure the limits view derives
+  // server-side, so the two cannot disagree and nothing is read twice.
+  const availableLimit = useMemo(() => {
+    const combined = limits?.combined_limit
+    if (combined == null) return null
+    return round2(n(combined) - n(kpis.outstanding_total))
+  }, [limits, kpis.outstanding_total])
 
   const filtered = useMemo(() => {
     let list = rows
@@ -300,7 +339,9 @@ export function BillDiscounting({
       interest_pct: '',
       tds_pct: '',
       days_year: 360,
-      interest_upfront: false
+      interest_upfront: false,
+      receivable_party_id: '',
+      linked_order_ids: []
     })
   }
 
@@ -324,6 +365,8 @@ export function BillDiscounting({
       tds_pct: r.tds_pct ?? '',
       days_year: r.days_year ?? 360,
       interest_upfront: !!r.interest_upfront,
+      receivable_party_id: r.receivable_party_id ? String(r.receivable_party_id) : '',
+      linked_order_ids: String(r.linked_order_ids_csv || '').split(',').filter(Boolean).map(Number),
       note: r.note || ''
     })
   }
@@ -430,6 +473,10 @@ export function BillDiscounting({
         tds_pct: Number(form.tds_pct) || 0,
         days_year: Number(form.days_year) || 360,
         interest_upfront: !!form.interest_upfront,
+        // Only sent on a trading bill; a manufacturing bill has no round trip.
+        receivable_party_id:
+          String(form.purpose) === 'trading' && form.receivable_party_id ? Number(form.receivable_party_id) : null,
+        linked_order_ids: String(form.purpose) === 'trading' ? form.linked_order_ids || [] : [],
         note: form.note || null
       }
       if (form.id) await window.api.billDiscounting.update(Number(form.id), payload)
@@ -537,6 +584,62 @@ export function BillDiscounting({
     }
   }
 
+  // Fetched the first time a trading bill's form needs it, then kept.
+  useEffect(() => {
+    if (!form || String(form.purpose || '') !== 'trading' || tradingLoaded) return
+    let live = true
+    void Promise.all([window.api.trading.list(), window.api.orders.list()])
+      .then(([deals, ords]) => {
+        if (!live) return
+        setTradingDeals(deals)
+        setTradingOrders(ords)
+        setTradingLoaded(true)
+      })
+      .catch(() => { if (live) setTradingLoaded(true) })
+    return () => { live = false }
+  }, [form?.purpose, tradingLoaded]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // One row per purchase invoice on this party's open trading deals — each
+  // invoice is its own pick, the way the LC side works, because a deal's
+  // invoices can each be financed differently.
+  const formTradingInvoices = useMemo(() => {
+    if (!form || String(form.purpose || '') !== 'trading') return [] as Row[]
+    const rows: Row[] = []
+    for (const d of tradingDeals) {
+      if (form.party_id && Number(d.supplier_id) !== Number(form.party_id)) continue
+      const lines: Row[] =
+        Array.isArray(d.purchase_lines) && d.purchase_lines.length
+          ? d.purchase_lines
+          : [{ order_id: d.order_id, invoice_no: d.purchase_invoice_no }]
+      for (const pl of lines) {
+        const orderId = Number(pl.order_id)
+        if (!orderId) continue
+        const o = tradingOrders.find((x) => Number(x.id) === orderId)
+        rows.push({
+          deal_id: Number(d.id),
+          order_id: orderId,
+          invoice_no: pl.invoice_no || o?.invoice_no || '',
+          deal_date: d.deal_date,
+          customer_id: d.customer_id,
+          customer_name: d.customer_name,
+          net_amount: n(o?.net_amount)
+        })
+      }
+    }
+    return rows
+  }, [form?.purpose, form?.party_id, tradingDeals, tradingOrders]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Which OTHER bill already holds each purchase invoice — one invoice funds
+  // one bill, so a taken one is shown and disabled rather than quietly moved.
+  const invoiceClaims = useMemo(() => {
+    const m = new Map<number, Row>()
+    for (const b of rows) {
+      if (form?.id && Number(b.id) === Number(form.id)) continue
+      for (const oid of String(b.linked_order_ids_csv || '').split(',').filter(Boolean)) m.set(Number(oid), b)
+    }
+    return m
+  }, [rows, form?.id])
+
   // Same register the LC page downloads, in the same layout — whatever the
   // filter chips have narrowed the list to is exactly what goes into the file.
   const [exporting, setExporting] = useState(false)
@@ -560,6 +663,82 @@ export function BillDiscounting({
     }
   }
 
+  // The customer's money coming back on a trading bill — the other half of the
+  // round trip, the first being the repayment to the NBFC.
+  const [payInRow, setPayInRow] = useState<Row | null>(null)
+  const [payInDate, setPayInDate] = useState(todayISO())
+  const [payInAmount, setPayInAmount] = useState('')
+  const [payInOpen, setPayInOpen] = useState<Row[]>([])
+  const [payInKeys, setPayInKeys] = useState<string[]>([])
+  const [payInDone, setPayInDone] = useState<Row[]>([])
+  const [payInSaving, setPayInSaving] = useState(false)
+
+  const payInDue = useMemo(
+    () => round2(payInOpen.filter((o) => payInKeys.includes(String(o.key))).reduce((t, o) => t + n(o.due), 0)),
+    [payInOpen, payInKeys]
+  )
+
+  async function openPayIn(r: Row): Promise<void> {
+    setPayInRow(r)
+    setPayInDate(todayISO())
+    setPayInAmount('')
+    setPayInOpen([])
+    setPayInKeys([])
+    setPayInDone([])
+    try {
+      const [open, done] = await Promise.all([
+        window.api.billDiscounting.openTradingInvoices(Number(r.id)),
+        window.api.billDiscounting.paymentIns(Number(r.id))
+      ])
+      setPayInOpen(open)
+      // Everything still owing is ticked to begin with: a lump receipt clearing
+      // the lot is the common case, and unticking is the exception.
+      setPayInKeys(open.map((o) => String(o.key)))
+      setPayInAmount(String(round2(open.reduce((t, o) => t + n(o.due), 0)) || ''))
+      setPayInDone(done)
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  async function savePayIn(): Promise<void> {
+    if (!payInRow) return
+    const amount = round2(n(payInAmount))
+    if (amount <= 0) return void toast.error('Enter the amount received')
+    if (!payInKeys.length) return void toast.error('Tick the invoice(s) this receipt is for')
+    if (amount - payInDue > 0.004) {
+      return void toast.error(`Only ${formatINR(payInDue)} is receivable on the ticked invoice(s)`)
+    }
+    setPayInSaving(true)
+    try {
+      await window.api.billDiscounting.paymentIn(Number(payInRow.id), amount, payInDate, payInKeys)
+      toast.success(`${formatINR(amount)} received from ${payInRow.receivable_party_name || 'the customer'}`)
+      // Stay on the bill: a part receipt is usually followed by the next one.
+      const fresh = await load()
+      const again = fresh.find((x) => Number(x.id) === Number(payInRow.id))
+      if (again) await openPayIn(again)
+      else setPayInRow(null)
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setPayInSaving(false)
+    }
+  }
+
+  async function removePayIn(rec: Row): Promise<void> {
+    if (!payInRow) return
+    if (!window.confirm(`Remove the ${formatINR(rec.amount)} received on ${formatDate(rec.pay_date)}? Its voucher reverses too.`)) return
+    try {
+      await window.api.billDiscounting.deletePaymentIn(Number(rec.id))
+      toast.success('Receipt removed — its voucher is reversed')
+      const fresh = await load()
+      const again = fresh.find((x) => Number(x.id) === Number(payInRow.id))
+      if (again) await openPayIn(again)
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
   // Bill Discounting's channels were logged under the raw namespace 'bd' before
   // it was given a proper label, so both spellings are asked for and the older
   // history stays visible.
@@ -571,6 +750,20 @@ export function BillDiscounting({
       title: String(r.bd_no || 'this bill'),
       subtitle: `${r.nbfc_name || '—'} · ${r.party_name || '—'} · ${formatINR(r.amount)}`
     })
+
+  async function saveCombinedLimit(): Promise<void> {
+    setLimitSaving(true)
+    try {
+      const res = await window.api.billDiscounting.setCombinedLimit(limitEdit ?? '')
+      toast.success(res.value == null ? 'Combined limit cleared' : `Combined limit set to ${formatINR(res.value)}`)
+      setLimitEdit(null)
+      await loadLimits()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setLimitSaving(false)
+    }
+  }
 
   function openReceive(r: Row): void {
     setReceiveRow(r)
@@ -682,7 +875,7 @@ export function BillDiscounting({
             <Plus className="h-4 w-4" /> Discount a bill
           </Button>
         </div>
-        <div className="grid grid-cols-2 gap-px bg-[#e5dfc8] p-px sm:grid-cols-3 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-px bg-[#e5dfc8] p-px sm:grid-cols-3 lg:grid-cols-6">
           <div className="bg-[#1a2c56] px-3 py-2.5 text-center">
             <div className="text-[10px] font-semibold uppercase tracking-wide text-white/70">Outstanding</div>
             <div className="text-[15px] font-bold tabular-nums text-white">{formatINR(kpis.outstanding_total)}</div>
@@ -702,6 +895,42 @@ export function BillDiscounting({
           <div className="bg-emerald-50 px-3 py-2.5 text-center">
             <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800">Received</div>
             <div className="text-[15px] font-bold tabular-nums text-emerald-900">{formatINR(kpis.receipt_total)}</div>
+          </div>
+          {/* Sanctioned less what is drawn. The drawn half is the outstanding
+              already on this strip, so this stays current as bills are raised
+              and repaid without asking the database again — only the sanctioned
+              half is fetched, and only when a limit is edited.
+              Nothing sanctioned means there is no headroom to state: it says so
+              and points at where to set it, rather than showing a figure. */}
+          <div className={cn('px-3 py-2.5 text-center', availableLimit == null ? 'bg-[#fffdf4]' : availableLimit < 0 ? 'bg-red-50' : 'bg-sky-50')}>
+            <div
+              className={cn(
+                'text-[10px] font-semibold uppercase tracking-wide',
+                availableLimit == null ? 'text-muted-foreground' : availableLimit < 0 ? 'text-red-800' : 'text-sky-800'
+              )}
+            >
+              Available limit
+            </div>
+            {availableLimit == null ? (
+              <button
+                type="button"
+                className="text-[12px] font-medium text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground"
+                title="Set a combined limit under Manage NBFCs → Facility limits"
+                onClick={() => setNbfcOpen(true)}
+              >
+                not set
+              </button>
+            ) : (
+              <>
+                <div className={cn('text-[15px] font-bold tabular-nums', availableLimit < 0 ? 'text-red-700' : 'text-sky-900')}>
+                  {formatINR(availableLimit)}
+                </div>
+                <div className={cn('text-[10px]', availableLimit < 0 ? 'text-red-700' : 'text-sky-800')}>
+                  of {formatINR(limits?.combined_limit)}
+                  {availableLimit < 0 ? ' · over the limit' : ''}
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -832,6 +1061,11 @@ export function BillDiscounting({
                           against a {formatINR(r.invoice_amount)} invoice
                         </div>
                       )}
+                      {String(r.purpose) === 'trading' && n(r.payment_in_total) > 0 && (
+                        <div className="mt-0.5 text-[11px] tabular-nums text-emerald-200">
+                          {formatINR(r.payment_in_total)} back from {r.receivable_party_name || 'the customer'}
+                        </div>
+                      )}
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-[11px]">
                       <div className="rounded-md border border-[#e5dfc8] bg-white px-2.5 py-1.5">
@@ -883,6 +1117,16 @@ export function BillDiscounting({
                           disabled: repaid,
                           disabledReason: 'Already repaid — reopen it first',
                           onClick: () => openEdit(r)
+                        },
+                        {
+                          label: 'Payment IN — money back from the customer',
+                          icon: Banknote,
+                          disabled: String(r.purpose) !== 'trading' || !r.receivable_party_id,
+                          disabledReason:
+                            String(r.purpose) !== 'trading'
+                              ? 'Only a trading bill has money coming back'
+                              : 'Set who pays back, and link the purchase invoices, on the bill first',
+                          onClick: () => void openPayIn(r)
                         },
                         { label: 'History — who did what', icon: History, onClick: () => openHistory(r) },
                         {
@@ -1085,6 +1329,16 @@ export function BillDiscounting({
                                   disabled: repaid,
                                   disabledReason: 'Already repaid — reopen it first',
                                   onClick: () => openEdit(r)
+                                },
+                                {
+                                  label: 'Payment IN — money back from the customer',
+                                  icon: Banknote,
+                                  disabled: String(r.purpose) !== 'trading' || !r.receivable_party_id,
+                                  disabledReason:
+                                    String(r.purpose) !== 'trading'
+                                      ? 'Only a trading bill has money coming back'
+                                      : 'Set who pays back, and link the purchase invoices, on the bill first',
+                                  onClick: () => void openPayIn(r)
                                 },
                                 { label: 'History — who did what', icon: History, onClick: () => openHistory(r) },
                                 {
@@ -1314,6 +1568,113 @@ export function BillDiscounting({
                 </div>
               </section>
 
+              {/* The trading round trip. A trading bill discounts a purchase
+                  and the goods are resold, so the customer's money comes back
+                  — but nothing can say WHICH resale invoices it is expected
+                  through unless the bill is tied to the purchase invoices it
+                  funded. These two are that tie, and they are what Payment IN
+                  needs. Only shown for a trading bill; a manufacturing one has
+                  no second leg. */}
+              {String(form.purpose) === 'trading' && (
+                <section className="rounded border border-teal-200 bg-teal-50/50 p-4">
+                  <h3 className="mb-3 border-b border-dotted border-teal-300 pb-1.5 text-[11px] font-bold uppercase tracking-widest text-teal-900">
+                    Trading round trip
+                  </h3>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="flex flex-col gap-1.5">
+                      <Label className="flex items-center gap-1">
+                        Payment received back from
+                        <InfoTip text="The customer the goods are resold to — who pays us back. Payment IN posts against this party's ledger and settles their resale invoices." />
+                      </Label>
+                      <Select
+                        searchable
+                        value={String(form.receivable_party_id || '')}
+                        onValueChange={(v) => setForm((p) => ({ ...p, receivable_party_id: v }))}
+                      >
+                        <SelectTrigger><SelectValue placeholder="Select the customer" /></SelectTrigger>
+                        <SelectContent>
+                          {customers.map((cu) => (
+                            <SelectItem key={String(cu.id)} value={String(cu.id)}>{cu.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label className="flex items-center gap-1">
+                        Purchase invoices this bill funds
+                        <InfoTip text="Each invoice is its own pick. One invoice funds one bill, so an invoice already on another bill is shown but cannot be taken. Picking one also fills in who pays back, from that deal's customer." />
+                      </Label>
+                      {!form.party_id ? (
+                        <p className="text-[11px] text-muted-foreground">Choose the party above first.</p>
+                      ) : !tradingLoaded ? (
+                        <p className="text-[11px] text-muted-foreground">Loading trading deals…</p>
+                      ) : formTradingInvoices.length === 0 ? (
+                        <p className="text-[11px] text-muted-foreground">No open trading invoices for this party.</p>
+                      ) : (
+                        <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border bg-white p-1.5">
+                          {formTradingInvoices.map((r) => {
+                            const ids: number[] = Array.isArray(form.linked_order_ids) ? form.linked_order_ids : []
+                            const checked = ids.map(Number).includes(Number(r.order_id))
+                            const claim = invoiceClaims.get(Number(r.order_id))
+                            return (
+                              <label
+                                key={String(r.order_id)}
+                                className={cn(
+                                  'flex items-center gap-2 rounded px-2 py-1.5 text-[12px]',
+                                  claim ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
+                                  checked ? 'bg-teal-100' : !claim && 'hover:bg-muted/40'
+                                )}
+                              >
+                                <input
+                                  type="checkbox"
+                                  className="h-3.5 w-3.5"
+                                  checked={checked}
+                                  disabled={!!claim}
+                                  onChange={(e) => {
+                                    const next = e.target.checked
+                                      ? [...ids, Number(r.order_id)]
+                                      : ids.filter((x) => Number(x) !== Number(r.order_id))
+                                    setForm((prev) => ({
+                                      ...prev,
+                                      linked_order_ids: next,
+                                      // Who the goods are resold to is who pays us
+                                      // back — pre-filled, never forced.
+                                      receivable_party_id:
+                                        prev?.receivable_party_id ||
+                                        (e.target.checked && r.customer_id ? String(r.customer_id) : prev?.receivable_party_id)
+                                    }))
+                                  }}
+                                />
+                                <span className="flex-1 truncate">
+                                  {r.invoice_no || `Order #${r.order_id}`} · {formatDate(r.deal_date)}
+                                  <span className="ml-1.5 text-muted-foreground">→ {r.customer_name || 'no customer yet'}</span>
+                                  {claim && <span className="ml-1.5 text-rose-700">· on bill {claim.bd_no || 'pending'}</span>}
+                                </span>
+                                <span className="shrink-0 font-medium tabular-nums">{formatINR(r.net_amount)}</span>
+                              </label>
+                            )
+                          })}
+                        </div>
+                      )}
+                      {(() => {
+                        const ids: number[] = Array.isArray(form.linked_order_ids) ? form.linked_order_ids : []
+                        if (!ids.length) return null
+                        const total = round2(
+                          tradingOrders
+                            .filter((o) => ids.map(Number).includes(Number(o.id)))
+                            .reduce((t, o) => t + n(o.net_amount), 0)
+                        )
+                        return (
+                          <div className="text-[11px] text-muted-foreground">
+                            {ids.length} invoice{ids.length === 1 ? '' : 's'} · {formatINR(total)} funded
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  </div>
+                </section>
+              )}
+
               {/* Interest runs from the day the payment is received, and that
                   date is stamped later — so on a bill that has not been funded
                   yet the interest, TDS and payout are not knowable and are not
@@ -1367,6 +1728,168 @@ export function BillDiscounting({
             <Button variant="outline" onClick={() => setForm(null)} disabled={saving}>Cancel</Button>
             <Button className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => void save()} disabled={saving}>
               {saving ? 'Saving…' : 'Save'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Payment IN — the customer's money coming back on a trading bill.
+          Mirrors the LC dialog: the receipt is settled against the resale
+          invoices it is actually for, biggest first, rather than landing on the
+          party's account and leaving the bills open. */}
+      <Dialog open={!!payInRow} onOpenChange={(o) => !o && setPayInRow(null)}>
+        <DialogContent className="max-h-[88vh] w-[calc(100vw-2rem)] max-w-lg overflow-y-auto border-[#d9d2b8] bg-[#fffdf4]">
+          <DialogHeader className="-mx-6 -mt-6 mb-1 rounded-t-lg bg-[#dce6f5] px-6 py-2.5">
+            <DialogTitle className="text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]">
+              Payment IN — {payInRow?.bd_no || 'bill'}
+            </DialogTitle>
+          </DialogHeader>
+          {payInRow && (
+            <div className="grid gap-4">
+              <div className="rounded-md bg-muted px-3 py-2 text-sm">
+                {payInRow.nbfc_name} · funded against {payInRow.party_name}
+                <div className="mt-1.5 grid grid-cols-3 gap-2 text-[11px]">
+                  <div>
+                    <div className="text-muted-foreground">Open amount</div>
+                    <div className="font-semibold tabular-nums">{formatINR(payInRow.amount)}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Back from customer</div>
+                    <div className="font-semibold tabular-nums text-emerald-700">{formatINR(payInRow.payment_in_total)}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Receivable from</div>
+                    <div className="truncate font-semibold">{payInRow.receivable_party_name || '—'}</div>
+                  </div>
+                </div>
+              </div>
+
+              {payInOpen.length === 0 ? (
+                <div className="rounded-md border border-dashed border-[#d9d2b8] px-4 py-6 text-center text-sm text-muted-foreground">
+                  Nothing receivable on this bill&apos;s deal. Either every resale invoice is already settled, or the
+                  bill has no purchase invoices linked yet — link them on the bill and the resale invoices appear here.
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  <Label className="flex items-center gap-1">
+                    Which invoices this receipt is for
+                    <InfoTip text="The resale invoices behind this bill's trading deal, with what is still owing on each. A receipt is spread across the ticked ones, biggest first." />
+                  </Label>
+                  <div className="max-h-44 space-y-1 overflow-y-auto rounded-md border bg-white p-1.5">
+                    {payInOpen.map((o) => {
+                      const key = String(o.key)
+                      const on = payInKeys.includes(key)
+                      return (
+                        <label
+                          key={key}
+                          className={cn(
+                            'flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px]',
+                            on ? 'bg-emerald-50' : 'hover:bg-muted/40'
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            className="h-3.5 w-3.5"
+                            checked={on}
+                            onChange={(e) => {
+                              const next = e.target.checked ? [...payInKeys, key] : payInKeys.filter((x) => x !== key)
+                              setPayInKeys(next)
+                              // The amount follows the ticks unless it has been
+                              // typed over, which is the usual case for a part
+                              // receipt against one bill.
+                              setPayInAmount(
+                                String(round2(payInOpen.filter((x) => next.includes(String(x.key))).reduce((t, x) => t + n(x.due), 0)) || '')
+                              )
+                            }}
+                          />
+                          <span className="flex-1 truncate">
+                            {o.invoice_no || key}
+                            <span className="ml-1.5 text-muted-foreground">{formatDate(o.sale_date)}</span>
+                          </span>
+                          <span className="shrink-0 font-medium tabular-nums">{formatINR(o.due)}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {payInKeys.length} of {payInOpen.length} ticked · {formatINR(payInDue)} receivable
+                  </div>
+                </div>
+              )}
+
+              {payInOpen.length > 0 && (
+                <>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Amount received</Label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        step="0.01"
+                        className="tabular-nums"
+                        value={payInAmount}
+                        onChange={(e) => setPayInAmount(e.target.value)}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-9 shrink-0 px-2 text-xs"
+                        onClick={() => setPayInAmount(String(payInDue))}
+                      >
+                        Full
+                      </Button>
+                    </div>
+                    {round2(n(payInAmount)) > 0 && round2(n(payInAmount)) < payInDue && (
+                      <div className="text-[11px] text-muted-foreground">
+                        Part receipt — {formatINR(round2(payInDue - round2(n(payInAmount))))} would still be receivable.
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Received on</Label>
+                    <DatePicker value={payInDate} onChange={(v) => setPayInDate(v || todayISO())} />
+                  </div>
+                </>
+              )}
+
+              {payInDone.length > 0 && (
+                <div className="rounded-lg border border-[#e5dfc8]">
+                  <div className="border-b border-[#e5dfc8] bg-[#f7f4e8] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-[#1a2c56]">
+                    Already received · {payInDone.length}
+                  </div>
+                  <div className="max-h-36 overflow-y-auto">
+                    {payInDone.map((rec) => (
+                      <div
+                        key={String(rec.id)}
+                        className="flex items-center gap-2 border-b border-dashed border-[#e5dfc8] px-3 py-1.5 text-xs last:border-b-0"
+                      >
+                        <span className="tabular-nums text-muted-foreground">{formatDate(rec.pay_date)}</span>
+                        <span className="font-semibold tabular-nums">{formatINR(rec.amount)}</span>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="ml-auto h-6 w-6 shrink-0 p-0 text-rose-700 hover:bg-rose-50"
+                          title="Remove this receipt — its voucher reverses too"
+                          onClick={() => void removePayIn(rec)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPayInRow(null)} disabled={payInSaving}>
+              Close
+            </Button>
+            <Button
+              className="bg-emerald-600 hover:bg-emerald-700"
+              disabled={payInSaving || !payInOpen.length}
+              onClick={() => void savePayIn()}
+            >
+              {payInSaving ? 'Saving…' : 'Record receipt'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1575,15 +2098,174 @@ export function BillDiscounting({
       </Dialog>
 
       {/* NBFC master — the same EntityManager the Banks page uses. */}
-      <Dialog open={nbfcOpen} onOpenChange={(o) => { setNbfcOpen(o); if (!o) void load() }}>
+      <Dialog
+        open={nbfcOpen}
+        onOpenChange={(o) => {
+          setNbfcOpen(o)
+          if (!o) {
+            void load()
+            // A sanctioned limit may have been edited in there.
+            void loadLimits()
+          }
+        }}
+      >
         <DialogContent className="max-h-[90vh] w-[calc(100vw-2rem)] max-w-4xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Manage NBFCs</DialogTitle>
           </DialogHeader>
           <p className="text-xs text-muted-foreground">
             Each NBFC carries its own default interest, interest days and TDS — filled in automatically when you pick it
-            on a bill, and still fully editable there. &quot;Provides&quot; decides which finance types offer it.
+            on a bill, and still fully editable there. &quot;Provides&quot; decides which finance types offer it. The
+            sanctioned limit is per NBFC; the combined ceiling across all of them is set on the limits view below.
           </p>
+          <div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              onClick={() => {
+                const next = !limitsOpen
+                setLimitsOpen(next)
+                if (next) void loadLimits()
+              }}
+            >
+              <Landmark className="h-3.5 w-3.5" /> {limitsOpen ? 'Hide facility limits' : 'Facility limits — sanctioned vs drawn'}
+            </Button>
+          </div>
+          {limitsOpen && limits && (
+            <div className="mb-1">
+              <div className="overflow-hidden rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-sm">
+                <div className="flex flex-wrap items-center gap-2 bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2 text-white">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/15">
+                    <Landmark className="h-3.5 w-3.5" />
+                  </span>
+                  <span className="text-[13px] font-bold uppercase tracking-widest">BD Facility Limit</span>
+                  <span className="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold tabular-nums">
+                    {(limits.per_nbfc as Row[]).filter((r) => n(r.sanctioned) > 0).length} of{' '}
+                    {(limits.per_nbfc as Row[]).length} NBFCs with a limit set
+                  </span>
+                  {limitEdit === null ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="ml-auto h-7 gap-1.5 border-white/30 bg-white/10 px-2 text-xs text-white hover:bg-white/20 hover:text-white"
+                      onClick={() => setLimitEdit(limits.combined_limit == null ? '' : String(limits.combined_limit))}
+                    >
+                      <Settings2 className="h-3.5 w-3.5" /> {limits.combined_limit == null ? 'Set combined limit' : 'Edit combined limit'}
+                    </Button>
+                  ) : (
+                    <div className="ml-auto flex items-center gap-1.5">
+                      <Input
+                        type="number"
+                        autoFocus
+                        placeholder="Blank to clear"
+                        className="h-7 w-40 bg-white text-[12px] tabular-nums text-foreground"
+                        value={limitEdit}
+                        onChange={(e) => setLimitEdit(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && void saveCombinedLimit()}
+                      />
+                      <Button size="sm" className="h-7 bg-amber-400 px-2 text-xs font-semibold text-[#1a2c56] hover:bg-amber-300" disabled={limitSaving} onClick={() => void saveCombinedLimit()}>
+                        {limitSaving ? 'Saving…' : 'Save'}
+                      </Button>
+                      <Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-white hover:bg-white/20 hover:text-white" onClick={() => setLimitEdit(null)}>
+                        Cancel
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-px bg-[#e5dfc8] p-px sm:grid-cols-4">
+                  <div className="bg-[#1a2c56] px-3 py-2.5 text-center">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-white/70">Combined limit</div>
+                    <div className="text-[15px] font-bold tabular-nums text-white">
+                      {limits.combined_limit == null ? '— not set —' : formatINR(limits.combined_limit)}
+                    </div>
+                  </div>
+                  <div className="bg-[#fffdf4] px-3 py-2.5 text-center">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Sum of NBFC lines</div>
+                    <div className="text-[15px] font-bold tabular-nums text-[#1a2c56]">{formatINR(limits.sanctioned_sum)}</div>
+                  </div>
+                  <div className="bg-[#fffdf4] px-3 py-2.5 text-center">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Utilised</div>
+                    <div className="text-[15px] font-bold tabular-nums text-rose-700">{formatINR(limits.utilised_total)}</div>
+                    {n(limits.committed_total) > 0 && (
+                      <div className="text-[10px] text-amber-700">+ {formatINR(limits.committed_total)} committed</div>
+                    )}
+                  </div>
+                  <div className="bg-emerald-50 px-3 py-2.5 text-center">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800">Available</div>
+                    <div className={cn('text-[15px] font-bold tabular-nums', n(limits.combined_available) < 0 ? 'text-red-600' : 'text-emerald-900')}>
+                      {limits.combined_available == null ? '—' : formatINR(limits.combined_available)}
+                    </div>
+                    {limits.combined_used_pct != null && (
+                      <div className="text-[10px] text-emerald-800">{limits.combined_used_pct}% used</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* A group ceiling below the sum of the lines means the lines cannot
+                    all be drawn at once — worth saying rather than leaving to be
+                    discovered when a draw is refused. */}
+                {limits.lines_exceed_combined === true && (
+                  <div className="border-t border-[#e5dfc8] bg-amber-50 px-4 py-1.5 text-[11px] font-medium text-amber-800">
+                    The NBFC lines add up to {formatINR(limits.sanctioned_sum)}, more than the {formatINR(limits.combined_limit)}{' '}
+                    combined ceiling — they cannot all be drawn at once.
+                  </div>
+                )}
+
+                <div className="overflow-x-auto border-t border-[#e5dfc8]">
+                  <Table className="text-[12px]">
+                    <TableHeader>
+                      <TableRow className="bg-[#f7f4e8] hover:bg-[#f7f4e8]">
+                        <TableHead className="h-8 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">NBFC</TableHead>
+                        <TableHead className="h-8 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Sanctioned</TableHead>
+                        <TableHead className="h-8 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Utilised</TableHead>
+                        <TableHead className="h-8 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Available</TableHead>
+                        <TableHead className="h-8 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Open bills</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {(limits.per_nbfc as Row[])
+                        .filter((r) => n(r.sanctioned) > 0 || n(r.utilised) > 0 || n(r.committed) > 0)
+                        .map((r) => (
+                          <TableRow key={String(r.id)} className="hover:bg-amber-50/60">
+                            <TableCell className="font-medium">
+                              {r.name}
+                              {!n(r.active) && <span className="ml-1.5 text-[10px] text-muted-foreground">inactive</span>}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap text-right tabular-nums">
+                              {n(r.sanctioned) > 0 ? (
+                                formatINR(r.sanctioned)
+                              ) : (
+                                <span className="text-[11px] text-muted-foreground" title="Set it on the NBFC under Manage NBFCs">
+                                  not set
+                                </span>
+                              )}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap text-right tabular-nums text-rose-700">
+                              {formatINR(r.utilised)}
+                              {n(r.committed) > 0 && (
+                                <div className="text-[10px] font-normal text-amber-700">+{formatINR(r.committed)} committed</div>
+                              )}
+                            </TableCell>
+                            <TableCell
+                              className={cn(
+                                'whitespace-nowrap text-right font-semibold tabular-nums',
+                                r.available == null ? 'text-muted-foreground' : n(r.available) < 0 ? 'text-red-600' : 'text-emerald-700'
+                              )}
+                            >
+                              {r.available == null ? '—' : formatINR(r.available)}
+                              {r.used_pct != null && <div className="text-[10px] font-normal text-muted-foreground">{r.used_pct}% used</div>}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap text-right tabular-nums text-muted-foreground">{n(r.open_bills)}</TableCell>
+                          </TableRow>
+                        ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            </div>
+          )}
           <EntityManager table="nbfcs" title="NBFC" fields={NBFC_FIELDS} columns={NBFC_COLUMNS} />
         </DialogContent>
       </Dialog>
