@@ -169,6 +169,8 @@ import {
   createTransporterBill,
   updateTransporterBill,
   deleteTransporterBill,
+  raiseFreightShortageNote,
+  unraiseFreightShortageNote,
   type FreightSide
 } from './transporterBilling'
 import {
@@ -610,6 +612,14 @@ export function registerIpc(): void {
   )
   handle('tbill:list', (_e, a: { companyId?: number } = {}) => listTransporterBills(a?.companyId))
   handle('tbill:create', (_e, { values }: { values: Row }) => createTransporterBill(values))
+  handle(
+    'tfreight:raiseNote',
+    (_e, { lineId, date, companyId }: { lineId: number; date?: string; companyId?: number }) =>
+      raiseFreightShortageNote(lineId, { date, companyId })
+  )
+  handle('tfreight:unraiseNote', (_e, { lineId, companyId }: { lineId: number; companyId?: number }) =>
+    unraiseFreightShortageNote(lineId, companyId)
+  )
   handle('tbill:update', (_e, { id, values }: { id: number; values: Row }) => updateTransporterBill(id, values))
   handle('tbill:delete', (_e, { id, companyId }: { id: number; companyId?: number }) =>
     deleteTransporterBill(id, companyId)

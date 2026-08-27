@@ -582,9 +582,10 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   useEffect(() => {
     if (screen === 'purchreg' || screen === 'salesreg') void loadRegisters()
   }, [screen, loadRegisters])
-  useLiveRefresh(() => {
-    if (screen === 'purchreg' || screen === 'salesreg') void loadRegisters()
-  })
+  const refreshRegisters = useCallback(async () => {
+    if (screen === 'purchreg' || screen === 'salesreg') await loadRegisters()
+  }, [screen, loadRegisters])
+  useLiveRefresh(refreshRegisters)
 
   const loadLedger = useCallback(async () => {
     if (screen !== 'ledger' || !ledgerId || !cid) return
@@ -3024,6 +3025,40 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   // Delete a booked bill: its voucher is reversed and every freight line on it
   // goes back to Pending. The freight itself is untouched — it was still
   // earned, it simply stops being billed.
+  // A shortage can be recovered two ways and only ever one of them: netted off
+  // the transporter's freight bill, or claimed on its own debit note. Raising
+  // the note takes the line off the bill for good — the backend refuses to book
+  // a claimed line — so the freight then goes on in full and the note stands
+  // beside it, which is what a debit note actually means.
+  const [tfNoting, setTfNoting] = useState<number | null>(null)
+  async function tfRaiseNote(row: Row): Promise<void> {
+    setTfNoting(Number(row.id))
+    try {
+      const res = await window.api.transporterFreight.raiseShortageNote(Number(row.id), undefined, cid)
+      toast.success(`Debit note ${res.note_no} raised on ${row.transporter_name}`)
+      await loadTFreight()
+      loadAccounts()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setTfNoting(null)
+    }
+  }
+  async function tfUnraiseNote(row: Row): Promise<void> {
+    if (!window.confirm(`Delete debit note ${row.note_no}? Its voucher is reversed and the shortage goes back to being a deduction on the freight bill.`)) return
+    setTfNoting(Number(row.id))
+    try {
+      await window.api.transporterFreight.unraiseShortageNote(Number(row.id), cid)
+      toast.success(`Debit note ${row.note_no} deleted`)
+      await loadTFreight()
+      loadAccounts()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setTfNoting(null)
+    }
+  }
+
   async function tfConfirmUnbook(): Promise<void> {
     const bill = tfUnbook
     if (!bill) return
@@ -3169,15 +3204,20 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                   const id = Number(r.id)
                   const picked = tfPicked.includes(id)
                   const booked = r.bill_id != null
+                  const isShortage = String(r.entry_type) === 'shortage_penalty'
+                  // Claimed on its own note: it has already come off what the
+                  // transporter is owed, so it must not be tickable onto a bill
+                  // as well.
+                  const noted = r.note_id != null
                   return (
                     <tr
                       key={id}
-                      className={cn('border-b border-dotted', picked ? 'bg-amber-100/70' : 'hover:bg-amber-50', !booked && 'cursor-pointer')}
+                      className={cn('border-b border-dotted', picked ? 'bg-amber-100/70' : 'hover:bg-amber-50', !booked && !noted && 'cursor-pointer')}
                       style={{ borderColor: '#e5dfc8' }}
-                      onClick={() => !booked && tfToggle(r)}
+                      onClick={() => !booked && !noted && tfToggle(r)}
                     >
                       <td className="py-1.5 pl-4">
-                        {!booked && (
+                        {!booked && !noted && (
                           <input
                             type="checkbox"
                             className="h-3.5 w-3.5 cursor-pointer accent-[#1a2c56]"
@@ -3196,13 +3236,27 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                         <span
                           className={cn(!booked && 'italic text-amber-800')}
                           title={
-                            booked
-                              ? undefined
-                              : 'Provisional until the transporter bill is booked — the rate, the received qty and any adjustment on the bill can still move it.'
+                            String(r.entry_type) === 'shortage_penalty'
+                              ? String(r.note || 'Shortage beyond the agreed tolerance')
+                              : booked
+                                ? undefined
+                                : 'Provisional until the transporter bill is booked — the rate, the received qty and any adjustment on the bill can still move it.'
                           }
                         >
                           {formatINR(r.amount)}
                         </span>
+                        {/* A debit note is not freight and must not read as a
+                            negative freight line — it is money coming back off
+                            what the transporter is owed, and the bill it goes
+                            on nets the two. */}
+                        {isShortage && (
+                          <div
+                            className="text-[10px] font-semibold uppercase tracking-wide text-rose-700"
+                            title={String(r.note || '')}
+                          >
+                            {noted ? 'Claimed · debit note' : 'Shortage · to claim'}
+                          </div>
+                        )}
                         {Number(r.provisional) === 1 && (
                           <div
                             className="text-[10px] font-normal uppercase tracking-wide text-rose-700"
@@ -3225,6 +3279,26 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                             onClick={(e) => { e.stopPropagation(); setTfUnbook(r) }}
                           >
                             {r.bill_no || 'Booked'}
+                          </button>
+                        ) : noted ? (
+                          <button
+                            type="button"
+                            className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-800 hover:bg-rose-200"
+                            title={`Debit note ${r.note_no} raised on the transporter — Dr ${r.transporter_name}, Cr Freight Outward. Click to delete it and put the shortage back on the freight bill.`}
+                            disabled={tfNoting === id}
+                            onClick={(e) => { e.stopPropagation(); void tfUnraiseNote(r) }}
+                          >
+                            {r.note_no || 'Dr note'}
+                          </button>
+                        ) : isShortage ? (
+                          <button
+                            type="button"
+                            className="rounded border border-rose-300 bg-white px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+                            title={`Raise a debit note on ${r.transporter_name} for this shortage — Dr ${r.transporter_name}, Cr Freight Outward, no GST. The freight then bills in full and the note stands on its own.`}
+                            disabled={tfNoting === id}
+                            onClick={(e) => { e.stopPropagation(); void tfRaiseNote(r) }}
+                          >
+                            {tfNoting === id ? 'Raising…' : 'Raise Dr note'}
                           </button>
                         ) : (
                           <span

@@ -1652,6 +1652,21 @@ function SalesTab({
                                       }
                                     ]
                                   : []),
+                              // Only on a delivered load that has actually left:
+                              // there is nothing weighed in at the far end of an
+                              // Ex sale, and nothing at all on one still pending.
+                              ...(!exTerm && stg.value !== 'pending'
+                                ? [
+                                    {
+                                      label:
+                                        stg.value === 'unloaded'
+                                          ? 'Received qty — correct what was weighed in'
+                                          : 'Record received — mark it unloaded',
+                                      icon: Truck,
+                                      onClick: () => openUnload(inv)
+                                    }
+                                  ]
+                                : []),
                               { label: 'Edit invoice', icon: Pencil, onClick: () => openEditInvoice(inv) },
                               { label: 'History — who did what', icon: History, onClick: () => openHistory(inv) },
                               { label: 'Delete invoice', icon: Trash2, danger: true, onClick: () => delInvoice(inv) }
@@ -2488,7 +2503,10 @@ function SalesTab({
       <Dialog open={!!unloadInv} onOpenChange={(o) => !o && !unloadSaving && setUnloadInv(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Unload {unloadInv?.first.invoice_no || 'this invoice'}</DialogTitle>
+            <DialogTitle>
+              {String(unloadInv?.first.dispatch_stage) === 'unloaded' ? 'Received qty — ' : 'Unload '}
+              {unloadInv?.first.invoice_no || 'this invoice'}
+            </DialogTitle>
           </DialogHeader>
           <p className="text-[12px] text-muted-foreground">
             Enter the quantity the transporter actually delivered. It is recorded against the invoice, shown in its details,

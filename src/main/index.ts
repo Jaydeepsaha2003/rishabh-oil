@@ -254,6 +254,17 @@ app.whenReady().then(async () => {
         if (!/duplicate column/i.test(String((e as Error).message))) throw e
       })
   }).catch((e) => console.error('[orders] rate rounding failed:', e))
+  // A shortage can be settled two ways and must never be settled both: netted
+  // off the transporter's freight bill, or claimed on its own debit note. This
+  // records which note claimed it, and NULL means it is still just a deduction
+  // waiting on the bill.
+  await runOnce('tledger_note_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE transporter_ledger ADD COLUMN note_id INTEGER')
+      .catch((e) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+  }).catch((e) => console.error('[freight] penalty note link failed:', e))
   startRevisionWatcher()
   registerIpc()
   registerUpdater(() => mainWindow)

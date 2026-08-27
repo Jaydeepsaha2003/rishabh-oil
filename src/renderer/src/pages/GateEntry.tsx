@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  Ban, ClipboardList, RotateCcw,
+  Ban, ChevronLeft, ChevronRight, ClipboardList, RotateCcw,
   LogIn, LogOut, Pencil, Scale, Trash2, Truck } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Badge } from '@/components/ui/badge'
@@ -111,18 +111,58 @@ const blankGateOut = (): Row => ({
   party: ''
 })
 
+// One day either side, on the local calendar.
+function shiftDate(iso: string, days: number): string {
+  const base = String(iso || '').slice(0, 10)
+  const d = new Date(`${base || todayISO()}T00:00:00`)
+  d.setDate(d.getDate() + days)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 export function GateEntry(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   // Register filters: date range on the entry date, receipt category, free text.
   const [gFrom, setGFrom] = useState('')
   const [gTo, setGTo] = useState('')
+  // How the period is being asked for. The gate is worked a day at a time —
+  // "what came in today" is the question the desk actually asks — but the only
+  // way to get one day was to set both ends of a range to it, and the only way
+  // to see everything was to clear two boxes and hope that was what empty
+  // meant. Both are now something you can just pick.
+  const [gMode, setGMode] = useState<'day' | 'range' | 'all'>('all')
+  // Stepping through days keeps its own cursor, so switching to Range and back
+  // returns to the day you were on rather than to today.
+  const [gDay, setGDay] = useState(todayISO())
+  const setDay = (d: string): void => {
+    setGDay(d)
+    setGFrom(d)
+    setGTo(d)
+  }
+  const pickMode = (m: 'day' | 'range' | 'all'): void => {
+    setGMode(m)
+    if (m === 'all') {
+      setGFrom('')
+      setGTo('')
+    } else if (m === 'day') {
+      setDay(gDay || todayISO())
+    }
+  }
   // Empty = no filter (every category shows) — checked, not radio, so more
   // than one category can be picked at once.
   const [gCats, setGCats] = useState<string[]>([])
   // Alt+F2 broadcasts a period from anywhere.
   const globalRange = useGlobalDateRange()
   useEffect(() => {
-    if (globalRangeAppliesTo(globalRange, 'gateEntry')) { setGFrom(globalRange.from); setGTo(globalRange.to) }
+    if (globalRangeAppliesTo(globalRange, 'gateEntry')) {
+      setGFrom(globalRange.from)
+      setGTo(globalRange.to)
+      if (globalRange.from && globalRange.from === globalRange.to) {
+        setGDay(globalRange.from)
+        setGMode('day')
+      } else {
+        setGMode(globalRange.from || globalRange.to ? 'range' : 'all')
+      }
+    }
   }, [globalRange.version]) // eslint-disable-line react-hooks/exhaustive-deps
   const [gSearch, setGSearch] = useState('')
   const [gDir, setGDir] = useState<'ALL' | 'in' | 'out'>('ALL')
@@ -1226,12 +1266,78 @@ export function GateEntry(): React.JSX.Element {
                 </div>
                 <div className="h-5 shrink-0 border-l border-[#d9d2b8]" />
                 <div className="flex shrink-0 items-center gap-1.5">
-                  <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-[#1a2c56]/70">
-                    Date
-                  </span>
-                  <DatePicker value={gFrom} onChange={(v) => setGFrom(v || '')} max={gTo || undefined} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
-                  <span className="shrink-0 text-[10px] text-muted-foreground">to</span>
-                  <DatePicker value={gTo} onChange={(v) => setGTo(v || '')} min={gFrom || undefined} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
+                  <div className="inline-flex shrink-0 overflow-hidden rounded-md border border-[#d9d2b8]">
+                    {(
+                      [
+                        ['day', 'Day'],
+                        ['range', 'Range'],
+                        ['all', 'All time']
+                      ] as const
+                    ).map(([m, label]) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => pickMode(m)}
+                        className={cn(
+                          'px-2 py-1 text-[10px] font-semibold uppercase tracking-wide transition',
+                          gMode === m
+                            ? 'bg-[#1a2c56] text-white'
+                            : 'bg-white text-[#1a2c56]/70 hover:bg-[#f1ecd9]'
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  {gMode === 'day' && (
+                    <div className="flex shrink-0 items-center gap-1">
+                      {/* Arrows, because the gate is read one day after another
+                          and re-picking the date from a calendar every time is
+                          the slow way to do that. */}
+                      <button
+                        type="button"
+                        title="Previous day"
+                        onClick={() => setDay(shiftDate(gDay, -1))}
+                        className="flex h-7 w-6 items-center justify-center rounded border border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-[#f1ecd9]"
+                      >
+                        <ChevronLeft className="h-3.5 w-3.5" />
+                      </button>
+                      <DatePicker
+                        value={gDay}
+                        onChange={(v) => setDay(v || todayISO())}
+                        className="h-7 w-[9.5rem] shrink-0 text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        title="Next day"
+                        onClick={() => setDay(shiftDate(gDay, 1))}
+                        className="flex h-7 w-6 items-center justify-center rounded border border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-[#f1ecd9]"
+                      >
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      </button>
+                      {gDay !== todayISO() && (
+                        <button
+                          type="button"
+                          onClick={() => setDay(todayISO())}
+                          className="h-7 rounded border border-[#d9d2b8] bg-white px-2 text-[10px] font-semibold uppercase tracking-wide text-[#1a2c56] hover:bg-[#f1ecd9]"
+                        >
+                          Today
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {gMode === 'range' && (
+                    <>
+                      <DatePicker value={gFrom} onChange={(v) => setGFrom(v || '')} max={gTo || undefined} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
+                      <span className="shrink-0 text-[10px] text-muted-foreground">to</span>
+                      <DatePicker value={gTo} onChange={(v) => setGTo(v || '')} min={gFrom || undefined} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
+                    </>
+                  )}
+                  {gMode === 'all' && (
+                    <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground">
+                      every entry ever recorded
+                    </span>
+                  )}
                 </div>
                 <div className="h-5 shrink-0 border-l border-[#d9d2b8]" />
                 <div className="flex shrink-0 items-center gap-1.5">
@@ -1252,7 +1358,9 @@ export function GateEntry(): React.JSX.Element {
                     <button
                       type="button"
                       className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-rose-700 hover:text-rose-900"
-                      onClick={() => { setGFrom(''); setGTo(''); setGCats([]); setGDir('ALL'); setGKind('ALL'); setGStatus([]); setGSearch('') }}
+                      // Clearing the dates has to put the mode back too, or the
+                      // control would still read "Day" over an unfiltered list.
+                      onClick={() => { setGMode('all'); setGFrom(''); setGTo(''); setGCats([]); setGDir('ALL'); setGKind('ALL'); setGStatus([]); setGSearch('') }}
                     >
                       Clear
                     </button>

@@ -220,11 +220,24 @@ const STAT_TONES: Record<string, string> = {
   amber: 'border-amber-200 bg-amber-50 text-amber-900',
   violet: 'border-violet-200 bg-violet-50 text-violet-800'
 }
-function MiniStat({ label, value, tone = 'slate' }: { label: string; value: string; tone?: string }): React.JSX.Element {
+function MiniStat({
+  label,
+  value,
+  hint,
+  tone = 'slate'
+}: {
+  label: string
+  value: string
+  // What the unfiltered register comes to, shown only while the figure above
+  // is a subtotal — so narrowing to one product never hides the mill total.
+  hint?: string
+  tone?: string
+}): React.JSX.Element {
   return (
     <div className={cn('rounded-lg border px-3 py-2', STAT_TONES[tone] || STAT_TONES.slate)}>
       <div className="text-[10px] font-medium uppercase tracking-wide opacity-70">{label}</div>
       <div className="mt-0.5 text-[15px] font-semibold tabular-nums">{value}</div>
+      {hint && <div className="text-[10px] tabular-nums opacity-60">{hint}</div>}
     </div>
   )
 }
@@ -1677,13 +1690,54 @@ function SkuStock(): React.JSX.Element {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-5">
-        <MiniStat label="SKUs" value={`${shown.length}${shown.length !== rows.length ? ` / ${rows.length}` : ''}`} tone="slate" />
-        <MiniStat label={dayMode ? 'Packed in' : 'Packed (total)'} value={formatNum(rows.reduce((s, r) => s + (dayMode ? Number(r.added_on) || 0 : Number(r.added) || 0), 0))} tone="emerald" />
-        <MiniStat label={dayMode ? 'Despatched' : 'Sold (packed)'} value={formatNum(rows.reduce((s, r) => s + (dayMode ? Number(r.sold_on) || 0 : Number(r.sold) || 0), 0))} tone="rose" />
-        <MiniStat label={dayMode ? 'Closing (pcs)' : 'On hand (pcs)'} value={formatNum(totalOnHand)} tone="sky" />
-        <MiniStat label={dayMode ? 'Closing (MT)' : 'On hand (MT)'} value={`${formatNum(totalMT)} MT`} tone="violet" />
-      </div>
+      {/* The band totals WHAT IS ON SCREEN. It used to total every SKU in the
+          mill regardless of the filters right above it, so narrowing to one
+          product left a closing figure that belonged to everything — a subtotal
+          and a grand total looking identical, which is the one thing a total
+          must never do. Whenever a filter is on, the full figure is kept on the
+          second line rather than lost. */}
+      {(() => {
+        const sum = (list: Row[], get: (r: Row) => number): number => list.reduce((t, r) => t + get(r), 0)
+        const inOf = (r: Row): number => (dayMode ? Number(r.added_on) || 0 : Number(r.added) || 0)
+        const outOf = (r: Row): number => (dayMode ? Number(r.sold_on) || 0 : Number(r.sold) || 0)
+        const handOf = (r: Row): number => Number(r.on_hand) || 0
+        const part = shown.length !== rows.length
+        const all = (v: string): string | undefined => (part ? `of ${v}` : undefined)
+        return (
+          <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-5">
+            <MiniStat
+              label="SKUs"
+              value={`${shown.length}${part ? ` / ${rows.length}` : ''}`}
+              hint={part ? 'filtered' : undefined}
+              tone="slate"
+            />
+            <MiniStat
+              label={dayMode ? 'Packed in' : 'Packed (total)'}
+              value={formatNum(sum(shown, inOf))}
+              hint={all(formatNum(sum(rows, inOf)))}
+              tone="emerald"
+            />
+            <MiniStat
+              label={dayMode ? 'Despatched' : 'Sold (packed)'}
+              value={formatNum(sum(shown, outOf))}
+              hint={all(formatNum(sum(rows, outOf)))}
+              tone="rose"
+            />
+            <MiniStat
+              label={dayMode ? 'Closing (pcs)' : 'On hand (pcs)'}
+              value={formatNum(sum(shown, handOf))}
+              hint={all(formatNum(totalOnHand))}
+              tone="sky"
+            />
+            <MiniStat
+              label={dayMode ? 'Closing (MT)' : 'On hand (MT)'}
+              value={`${formatNum(shownMT)} MT`}
+              hint={all(`${formatNum(totalMT)} MT`)}
+              tone="violet"
+            />
+          </div>
+        )
+      })()}
 
       {negatives > 0 && (
         <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800">

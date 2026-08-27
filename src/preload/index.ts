@@ -239,7 +239,11 @@ const api = {
     updateBill: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('tbill:update', { id, values }),
     deleteBill: (id: number, companyId?: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('tbill:delete', { id, companyId }),
-    orphanBills: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('tbill:orphans', { companyId })
+    orphanBills: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('tbill:orphans', { companyId }),
+    raiseShortageNote: (lineId: number, date?: string, companyId?: number): Promise<{ note_id: number; note_no: string }> =>
+      ipcRenderer.invoke('tfreight:raiseNote', { lineId, date, companyId }),
+    unraiseShortageNote: (lineId: number, companyId?: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('tfreight:unraiseNote', { lineId, companyId })
   },
   notes: {
     list: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('notes:list', { companyId }),

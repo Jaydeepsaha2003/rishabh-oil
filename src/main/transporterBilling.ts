@@ -1,7 +1,8 @@
 import type { ResultSet } from '@libsql/client'
-import { getClient } from './db'
+import { getClient, bumpRevision } from './db'
 import { getActiveCompanyId } from './company'
 import { postJournal } from './journal'
+import { createNote, deleteNote } from './notes'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -99,11 +100,13 @@ export async function listTransporterFreight(
 
   const res = await c.execute({
     sql: `SELECT l.id, l.transporter_id, l.entry_date, l.entry_type, l.amount, l.note,
-                 l.accrued, l.bill_id, t.name AS transporter_name,
+                 l.accrued, l.bill_id, l.note_id, nt.note_no, nt.note_date,
+                 t.name AS transporter_name,
                  b.bill_no, b.bill_date, ${doc}
           FROM transporter_ledger l
           LEFT JOIN transporters t ON t.id = l.transporter_id
           LEFT JOIN transporter_bills b ON b.id = l.bill_id
+          LEFT JOIN notes nt ON nt.id = l.note_id
           ${joins}
           WHERE ${where.join(' AND ')}
           ORDER BY COALESCE(l.entry_date, '') DESC, l.id DESC`,
@@ -196,6 +199,12 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
   for (const l of picked) {
     if (n(l.transporter_id) !== transporterId) throw new Error('Every line on one bill must belong to the same transporter')
     if (l.bill_id != null && n(l.bill_id) !== n(existingId)) throw new Error('One of those lines is already on another bill')
+    // Claimed on its own debit note, so it has already come off what the
+    // transporter is owed. Netting it into the bill as well would recover the
+    // same shortage twice.
+    if (l.note_id != null) {
+      throw new Error('That shortage is already on a debit note — leave it off the bill, which books the freight in full')
+    }
   }
 
   const accrued = round2(picked.filter((l) => n(l.accrued) === 1).reduce((t, l) => t + n(l.amount), 0))
@@ -289,6 +298,83 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
   }
   await c.execute({ sql: `UPDATE transporter_ledger SET bill_id = ? WHERE id IN (${ph})`, args: [billId, ...lineIds] })
   return { id: billId }
+}
+
+// Raise a debit note on the transporter for one shortage line.
+//
+// The alternative is to let it net into their freight bill, which is what
+// happens if this is never called — the register line is a deduction either
+// way. This makes it a document: the transporter's own ledger shows the debit,
+// and there is something to send them.
+//
+// Credit goes to FREIGHT OUTWARD, because the recovery reduces what the
+// delivery cost rather than earning anything, and no GST: a shortage recovery
+// is not a supply.
+export async function raiseFreightShortageNote(
+  lineId: number,
+  v: { date?: string; companyId?: number } = {}
+): Promise<{ note_id: number; note_no: string }> {
+  const c = getClient()
+  const cid = v.companyId ? n(v.companyId) : getActiveCompanyId()
+  const r = await c.execute({
+    sql: `SELECT l.*, s.invoice_no AS sale_invoice, o.invoice_no AS order_invoice
+            FROM transporter_ledger l
+            LEFT JOIN sales s ON s.id = l.sale_id
+            LEFT JOIN orders o ON o.id = l.order_id
+           WHERE l.id = ? AND l.company_id = ?`,
+    args: [n(lineId), cid]
+  })
+  if (!r.rows.length) throw new Error('That freight line no longer exists')
+  const line = toPlain(r)[0]
+  if (String(line.entry_type) !== 'shortage_penalty') {
+    throw new Error('Only a shortage line can be raised as a debit note')
+  }
+  if (line.note_id != null) throw new Error('A debit note has already been raised on this shortage')
+  if (line.bill_id != null) {
+    throw new Error('That shortage is already netted into a booked bill — delete the bill first if it should be claimed separately')
+  }
+  const amount = round2(Math.abs(n(line.amount)))
+  if (amount <= 0) throw new Error('Nothing to claim on this line')
+  if (!line.transporter_id) throw new Error('This line has no transporter to raise a note against')
+
+  const inv = String(line.sale_invoice || line.order_invoice || '')
+  const note = await createNote({
+    company_id: cid,
+    note_type: 'debit',
+    party_type: 'transporter',
+    party_id: n(line.transporter_id),
+    note_date: String(v.date || line.entry_date || todayISO()).slice(0, 10),
+    against_account: 'FREIGHT OUTWARD A/C',
+    base_amount: amount,
+    gst_pct: 0,
+    against_invoice: inv || null,
+    narration: `Shortage recovery${inv ? ` on ${inv}` : ''}${line.note ? ` — ${String(line.note)}` : ''}`
+  })
+  await c.execute({
+    sql: 'UPDATE transporter_ledger SET note_id = ? WHERE id = ?',
+    args: [note.id, n(lineId)]
+  })
+  await bumpRevision()
+  return { note_id: note.id, note_no: note.note_no }
+}
+
+// Undo it: the note is deleted (reversing its voucher and its ledger row) and
+// the shortage goes back to being a deduction on the freight bill.
+export async function unraiseFreightShortageNote(lineId: number, companyId?: number): Promise<{ id: number }> {
+  const c = getClient()
+  const cid = companyId ? n(companyId) : getActiveCompanyId()
+  const r = await c.execute({
+    sql: 'SELECT note_id FROM transporter_ledger WHERE id = ? AND company_id = ?',
+    args: [n(lineId), cid]
+  })
+  if (!r.rows.length) throw new Error('That freight line no longer exists')
+  const noteId = r.rows[0].note_id
+  // Cleared FIRST: if deleting the note fails the line must not be left
+  // pointing at a note that is half gone.
+  await c.execute({ sql: 'UPDATE transporter_ledger SET note_id = NULL WHERE id = ?', args: [n(lineId)] })
+  if (noteId != null) await deleteNote(n(noteId), cid)
+  await bumpRevision()
+  return { id: n(lineId) }
 }
 
 export async function updateTransporterBill(id: number, v: Row): Promise<{ id: number }> {

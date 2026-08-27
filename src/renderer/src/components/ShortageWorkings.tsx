@@ -123,18 +123,21 @@ function Detail({ line, showName }: { line: ShortageLine; showName: boolean }): 
         <>
           <Row label="Deductible excess" sub="short less what the tolerance allows" value={q(s.excessQty)} tone="bad" />
           <Row
-            label="Worth"
-            sub={`${formatNum(s.excessQty)} × ${formatINR(s.rate)}/${uom}`}
+            label="Worth of the excess"
+            sub={`${formatNum(s.excessQty)} ${uom} × ${formatINR(s.rate)}/${uom}`}
             value={formatINR(s.deductible)}
             tone="bad"
             strong
           />
         </>
       )}
+      {/* "Already forgone" read as though it were part of the deduction. It is
+          not — it is a second, separate loss the transporter takes, and it has
+          happened by itself without anyone claiming anything. */}
       {s.freightRate > 0 && s.shortage > 0 && (
         <Row
-          label="Freight already forgone"
-          sub={`paid on the ${formatNum(s.received)} that arrived, not the ${formatNum(s.dispatched)} sent`}
+          label="Freight also forgone"
+          sub={`on top of the above — freight is paid on the ${formatNum(s.received)} ${uom} that arrived, not the ${formatNum(s.dispatched)} sent`}
           value={formatINR(s.freightForgone)}
         />
       )}

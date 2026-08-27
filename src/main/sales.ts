@@ -2,6 +2,7 @@ import type { ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
 import { deleteJournalByRef, postSaleJournal } from './journal'
 import { getActiveCompanyId } from './company'
+import { getSetting } from './repos'
 import { productStockAvailable, stockMap } from './stock'
 import {
   productHasFormulation,
@@ -862,6 +863,76 @@ function shortagePct(v: Row): number | null {
     : null
 }
 
+// A shortage beyond the agreed tolerance on a delivered load, as a debit note
+// against the transporter.
+//
+// Mirrors advancePurchaseTanker on the buying side down to the entry type, so
+// one rule produces one kind of row whichever direction the tanker was
+// travelling — and the Freight Working register, which already reads
+// 'shortage_penalty' rows, picks it up on the outward side with no change.
+//
+// Negative, because it is money coming BACK off what the transporter is owed:
+// their freight line and this debit note sit under the same bill, and the bill
+// nets to what is actually payable.
+async function postSaleShortageDebit(saleId: number): Promise<number> {
+  const c = getClient()
+  await c.execute({
+    sql: "DELETE FROM transporter_ledger WHERE sale_id = ? AND entry_type = 'shortage_penalty'",
+    args: [saleId]
+  })
+  const r = await c.execute({
+    sql: `SELECT s.*, sb.allowed_shortage_pct AS bargain_allowed_shortage_pct
+            FROM sales s LEFT JOIN sales_bargains sb ON sb.id = s.sales_bargain_id
+           WHERE s.id = ?`,
+    args: [saleId]
+  })
+  if (!r.rows.length) return 0
+  const row = r.rows[0] as unknown as Row
+
+  // Only a delivered load that we carried and have actually weighed in.
+  if (String(row.freight_term) !== 'DLD') return 0
+  if (row.received_qty == null) return 0
+  if (n(row.is_trading) === 1) return 0
+  const transporterId = row.transporter_id ? n(row.transporter_id) : null
+  if (!transporterId) return 0
+  // The customer settling the truck directly means we hold no transporter
+  // ledger for this delivery, so there is nothing to debit — the same reason
+  // the freight itself is not posted.
+  if (n(row.deduct_freight) === 1) return 0
+
+  const dispatched = n(row.qty)
+  if (dispatched <= 0) return 0
+  const pct = await allowedShortagePct(row)
+  const shortage = Math.max(0, dispatched - n(row.received_qty))
+  const excess = Math.max(0, shortage - (dispatched * pct) / 100)
+  const charge = round2(excess * n(row.rate))
+  if (charge <= 0.004) return 0
+
+  await c.execute({
+    sql: `INSERT INTO transporter_ledger (transporter_id, sale_id, entry_date, entry_type, amount, note, company_id)
+          VALUES (?, ?, ?, 'shortage_penalty', ?, ?, ?)`,
+    args: [
+      transporterId,
+      saleId,
+      row.unloaded_date || row.sale_date || null,
+      -charge,
+      `Shortage ${excess.toFixed(3)} ${String(row.uom || '')} beyond ${pct}% tolerance`,
+      n(row.company_id) || getActiveCompanyId()
+    ]
+  })
+  return charge
+}
+
+// Invoice first, then its rate contract, then the mill-wide default. A blank
+// is "not answered here" and passes the question up; a stored 0 is an answer.
+async function allowedShortagePct(row: Row): Promise<number> {
+  if (row.allowed_shortage_pct != null && row.allowed_shortage_pct !== '') return n(row.allowed_shortage_pct)
+  if (row.bargain_allowed_shortage_pct != null && row.bargain_allowed_shortage_pct !== '') {
+    return n(row.bargain_allowed_shortage_pct)
+  }
+  return n((await getSetting('allowed_shortage_pct')) ?? '0')
+}
+
 // DLD deliveries: we manage the transporter, so post the freight to the
 // transporter ledger (we owe them) and recover it from the customer (they owe
 // us). Freight-on-goods deliveries post nothing. Replaces any prior entries.
@@ -1018,6 +1089,7 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   await postCustomerReceivable(id, customerId, net, String(v.sale_date))
   await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount, tdsAmount)
   await postSaleFreight(id, v, freightQty)
+  await postSaleShortageDebit(id)
   return { id }
 }
 
@@ -1128,6 +1200,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   await postCustomerReceivable(id, customerId, net, String(v.sale_date))
   await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount, tdsAmount)
   await postSaleFreight(id, v, freightQty)
+  await postSaleShortageDebit(id)
   return { id }
 }
 
@@ -1141,6 +1214,11 @@ async function recomputeSaleFreight(id: number): Promise<void> {
   const r = await c.execute({ sql: 'SELECT * FROM sales WHERE id = ?', args: [id] })
   if (!r.rows.length) return
   const row = r.rows[0] as unknown as Row
+  // First, and unconditionally: this runs when the weighed-in quantity has just
+  // changed, which moves the shortage whether or not it moves the freight —
+  // and on a delivery with no freight rate at all it moves ONLY the shortage,
+  // which the early return below would otherwise skip entirely.
+  await postSaleShortageDebit(id)
   if (String(row.freight_term) !== 'DLD' || n(row.transport_rate) <= 0) return
   const qty = await resolveFreightQty(row, n(row.qty))
   const amount = round2(qty * n(row.transport_rate))
@@ -1296,14 +1374,40 @@ export async function updateSaleInvoice(group: string, v: Row): Promise<{ group:
   const items: Row[] = Array.isArray(v.items) ? v.items : []
   if (!items.length) throw new Error('Add at least one item to the invoice')
   const existing = await getClient().execute({
-    sql: 'SELECT id FROM sales WHERE invoice_group = ?',
+    sql: 'SELECT id, product_id, packaging_id, received_qty FROM sales WHERE invoice_group = ? ORDER BY id',
     args: [group]
   })
+  // What the customer's weighbridge said is a MEASUREMENT, not something the
+  // invoice form holds — and this function works by deleting every line and
+  // building it again, so without carrying it across, editing a delivered
+  // invoice threw it away. The freight then silently went back to being priced
+  // on the dispatched quantity and any shortage with it.
+  //
+  // Matched back by product (and packaging, since one product can go out in two
+  // pack sizes), first-come, so re-ordering the lines cannot cross the figures
+  // over. A line that has been removed simply takes its measurement with it.
+  const weighed = toPlain(existing)
+    .filter((r) => r.received_qty != null)
+    .map((r) => ({ product_id: n(r.product_id), packaging_id: n(r.packaging_id), qty: n(r.received_qty), used: false }))
+
   for (const r of existing.rows) await deleteSale(Number(r.id))
   const ids: number[] = []
   for (let i = 0; i < items.length; i++) {
     const res = await createSale({ ...mergeInvoiceItem(v, items[i], group), round_off: i === 0 ? v.round_off : 0, round_off_manual: i === 0 ? v.round_off_manual : 0 })
     ids.push(res.id)
+    const match = weighed.find(
+      (w) => !w.used && w.product_id === n(items[i].product_id) && w.packaging_id === n(items[i].packaging_id)
+    )
+    if (match) {
+      match.used = true
+      await getClient().execute({
+        sql: 'UPDATE sales SET received_qty = ? WHERE id = ?',
+        args: [match.qty, res.id]
+      })
+      // The freight and the shortage are both priced off it, so both are
+      // re-struck now that it is back.
+      await recomputeSaleFreight(res.id)
+    }
   }
   return { group, ids }
 }

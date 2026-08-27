@@ -180,6 +180,8 @@ export interface Api {
     updateBill: (id: number, values: Row) => Promise<{ id: number }>
     deleteBill: (id: number, companyId?: number) => Promise<{ id: number }>
     orphanBills: (companyId?: number) => Promise<Row[]>
+    raiseShortageNote: (lineId: number, date?: string, companyId?: number) => Promise<{ note_id: number; note_no: string }>
+    unraiseShortageNote: (lineId: number, companyId?: number) => Promise<{ id: number }>
   }
   notes: {
     list: (companyId?: number) => Promise<Row[]>

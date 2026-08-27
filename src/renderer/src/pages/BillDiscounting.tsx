@@ -316,9 +316,11 @@ export function BillDiscounting({
     // stays live without re-reading anything.
     void loadLimits()
   }, [loadBills, loadMasters, loadLimits])
-  useLiveRefresh(() => {
-    void loadBills()
-  })
+  // A wrapper rather than loadBills itself, which hands back the list it read.
+  const refresh = useCallback(async () => {
+    await loadBills()
+  }, [loadBills])
+  useLiveRefresh(refresh)
 
   // The same figures bdKpis returned, off the rows already loaded -- exposure
   // counts only funded bills, since nothing is disbursed on one still awaiting
@@ -1285,7 +1287,13 @@ export function BillDiscounting({
       ) : (
         <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
           <div className="overflow-x-auto">
-            <Table className="text-[13px]">
+            {/* Faint column rules. Fifteen numeric columns with nothing between
+                them made it easy to read a figure off the wrong one — the eye
+                has only the gaps to go on, and on a wide row the gaps are
+                large. Kept very light (the ink at 8%) so they guide the eye
+                without turning the register into a grid; the heavier rule
+                before Sanctioned still marks the money section. */}
+            <Table className="text-[13px] [&_td]:border-r [&_td]:border-[#1a2c56]/[0.08] [&_td:last-child]:border-r-0 [&_th]:border-r [&_th]:border-[#1a2c56]/[0.12] [&_th:last-child]:border-r-0">
               <TableHeader className="sticky top-0 z-10">
                 <TableRow className="border-b-2 border-[#1a2c56]/20 bg-[#dce6f5] hover:bg-[#dce6f5]">
                   <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">BD no · NBFC</TableHead>
@@ -1377,24 +1385,36 @@ export function BillDiscounting({
                         <TableCell className="whitespace-nowrap">
                           {/* Several parties on one bill: named in full, with
                               the count, rather than showing only the first. */}
-                          {n(r.party_count) > 1 ? (
-                            <span title={String(r.party_names)}>
-                              {r.party_name} <span className="text-[11px] text-muted-foreground">+{n(r.party_count) - 1} more</span>
-                            </span>
-                          ) : (
-                            r.party_name || '—'
-                          )}
-                          {/* Trading picked out in green: it is the bill with a
-                              round trip behind it — money going out to the NBFC
-                              and coming back from a customer — so it reads
-                              differently from a manufacturing bill at a glance. */}
-                          <div
-                            className={cn(
-                              'text-[11px] capitalize',
-                              String(r.purpose) === 'trading' ? 'font-semibold text-emerald-700' : 'text-muted-foreground'
+                          <div>
+                            {n(r.party_count) > 1 ? (
+                              <span title={String(r.party_names)}>
+                                {r.party_name} <span className="text-[11px] text-muted-foreground">+{n(r.party_count) - 1} more</span>
+                              </span>
+                            ) : (
+                              r.party_name || '—'
                             )}
-                          >
-                            {r.purpose}
+                          </div>
+                          {/* On its own line UNDER the party, the way the NBFC
+                              sits under the BD no in the column before it. Set
+                              beside the name it ran into it on the long ones,
+                              which is most of them.
+                              A pill rather than coloured text, so it registers
+                              as a label on the row instead of as emphasis on a
+                              word — trading being the bill with a round trip
+                              behind it, money going out to the NBFC and coming
+                              back from a customer. */}
+                          <div className="mt-0.5">
+                            {String(r.purpose) === 'trading' ? (
+                              <span
+                                className="inline-flex items-center rounded-full bg-[#1a2c56] py-0.5 pl-1.5 pr-2 text-[10px] font-bold uppercase tracking-wide text-white"
+                                title="Trading — bought and sold on, with the money coming back from a customer"
+                              >
+                                <span className="mr-1 h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                                Trading
+                              </span>
+                            ) : (
+                              <span className="text-[11px] capitalize text-muted-foreground">{r.purpose}</span>
+                            )}
                           </div>
                         </TableCell>
                         <TableCell className="whitespace-nowrap tabular-nums">
