@@ -1515,6 +1515,7 @@ export function BillDiscounting({
                     <Select
                       searchable
                       value=""
+                      selected={(Array.isArray(form.party_ids) ? form.party_ids : []).map(String)}
                       onValueChange={(v) =>
                         setForm((prev) => {
                           const ids: number[] = Array.isArray(prev?.party_ids) ? prev!.party_ids : []
@@ -1543,10 +1544,7 @@ export function BillDiscounting({
                       </SelectTrigger>
                       <SelectContent>
                         {formParties.map((p) => (
-                          <SelectItem key={String(p.id)} value={String(p.id)}>
-                            {(Array.isArray(form.party_ids) ? form.party_ids : []).map(Number).includes(Number(p.id)) ? '✓ ' : ''}
-                            {p.name}
-                          </SelectItem>
+                          <SelectItem key={String(p.id)} value={String(p.id)}>{p.name}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>

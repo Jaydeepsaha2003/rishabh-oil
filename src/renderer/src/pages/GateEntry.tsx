@@ -1687,6 +1687,7 @@ export function GateEntry(): React.JSX.Element {
                 <Select
                   searchable
                   value=""
+                  selected={grossPickInvoices}
                   onValueChange={(v) =>
                     setGrossPickInvoices((prev) => (prev.includes(v) ? prev.filter((x) => x !== v) : [...prev, v]))
                   }
@@ -1709,7 +1710,6 @@ export function GateEntry(): React.JSX.Element {
                     ) : (
                       outgoable.map((x) => (
                         <SelectItem key={x.invoice_group} value={String(x.invoice_group)}>
-                          {grossPickInvoices.includes(String(x.invoice_group)) ? '✓ ' : ''}
                           {x.invoice_no || 'No invoice no'} · {x.customer || '—'} · {formatNum(x.qty)} {x.uom}
                         </SelectItem>
                       ))

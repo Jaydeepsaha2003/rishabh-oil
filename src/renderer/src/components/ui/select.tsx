@@ -71,9 +71,14 @@ interface SelectProps {
   // of genuine list-narrowing FILTER dropdowns opt in — everything else falls
   // back to a plain checkmark that only shows on the selected row.
   showCheckbox?: boolean
+  // Multi-select: the values currently ticked. Supplying this turns the list
+  // into checkboxes that reflect membership, and the panel STAYS OPEN as each
+  // one is picked — closing after every tick would make choosing three
+  // invoices three separate trips through the dropdown.
+  selected?: string[]
 }
 
-function Select({ value, onValueChange, disabled, children, searchable, showCheckbox = false }: SelectProps): React.JSX.Element {
+function Select({ value, onValueChange, disabled, children, searchable, showCheckbox = false, selected }: SelectProps): React.JSX.Element {
   const [open, setOpen] = React.useState(false)
   const [query, setQuery] = React.useState('')
   const [highlight, setHighlight] = React.useState(0)
@@ -212,10 +217,14 @@ function Select({ value, onValueChange, disabled, children, searchable, showChec
     ? items.filter((it) => `${it.text} ${it.value}`.toLowerCase().includes(q))
     : items
 
+  // In multi-select the tick is a toggle, so the panel stays put; a single
+  // select closes as it always did.
+  const multi = Array.isArray(selected)
   function choose(v: string): void {
     onValueChange?.(v)
-    setOpen(false)
+    if (!multi) setOpen(false)
   }
+  const isOn = (v: string): boolean => (multi ? (selected as string[]).includes(v) : current === v)
 
   // The arrows step OVER a disabled option and Enter never lands on one, so the
   // keyboard cannot reach what the mouse cannot click.
@@ -308,17 +317,17 @@ function Select({ value, onValueChange, disabled, children, searchable, showChec
                     : 'hover:bg-accent/60'
               )}
             >
-              {showCheckbox ? (
+              {showCheckbox || multi ? (
                 <span
                   className={cn(
                     'mr-2 flex h-4 w-4 shrink-0 items-center justify-center rounded border',
-                    current === it.value ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40'
+                    isOn(it.value) ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40'
                   )}
                 >
-                  {current === it.value && <Check className="h-3 w-3" />}
+                  {isOn(it.value) && <Check className="h-3 w-3" />}
                 </span>
               ) : (
-                <Check className={cn('mr-2 h-4 w-4 shrink-0', current === it.value ? 'opacity-100' : 'opacity-0')} />
+                <Check className={cn('mr-2 h-4 w-4 shrink-0', isOn(it.value) ? 'opacity-100' : 'opacity-0')} />
               )}
               <span className="min-w-0 flex-1 truncate" title={it.text || undefined}>{it.label}</span>
             </button>
