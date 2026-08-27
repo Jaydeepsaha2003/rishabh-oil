@@ -43,6 +43,8 @@ function daysBetween(a: string, b: string): number {
 export function bdCalc(bd: Row): {
   intDays: number
   marginAmount: number
+  sanctionedAmount: number
+  undrawnAmount: number
   openAmount: number
   interestAmount: number
   tdsAmount: number
@@ -50,16 +52,35 @@ export function bdCalc(bd: Row): {
   receiptAmount: number
 } {
   const amount = n(bd.amount)
+  const invoice = n(bd.invoice_amount)
   const from = String(bd.payment_received_date || '').slice(0, 10)
   const to = String(bd.maturity_date || '').slice(0, 10)
   const intDays = from && to ? Math.max(0, daysBetween(from, to)) : 0
-  const marginAmount = round2((amount * n(bd.margin_pct)) / 100)
-  // What the NBFC actually funds once its margin is held back. Interest runs on
-  // THIS, not on the face value of the bills — the margin never left the NBFC,
-  // so there is nothing to charge interest on.
-  const openAmount = round2(amount - marginAmount)
+
+  // The margin is the NBFC's hold-back on the INVOICE it is discounting, so it
+  // is struck on the invoice value and what is left is the sanctioned amount:
+  //
+  //   invoice - margin% of invoice = SANCTIONED
+  //
+  // A bill recorded before the invoice value was captured has no invoice to
+  // strike it on, so it falls back to the amount itself -- which is exactly the
+  // old behaviour, and is why no figure on an existing bill moves.
+  const marginBase = invoice > 0 ? invoice : amount
+  const marginAmount = round2((marginBase * n(bd.margin_pct)) / 100)
+  const sanctionedAmount = round2(marginBase - marginAmount)
+
+  // What is actually DRAWN. With an invoice on record that is the open amount as
+  // typed -- normally the sanctioned figure, but the user may draw less, and the
+  // shortfall is undrawn headroom rather than a mistake. Without one there is
+  // nothing to draw against but the sanctioned figure itself.
+  const drawn = invoice > 0 ? amount : sanctionedAmount
+  const undrawnAmount = round2(sanctionedAmount - drawn)
+
   // A 360-day year by convention, overridable per record.
   const daysYear = n(bd.days_year) || 360
+  // Interest runs on what was drawn: the margin never left the NBFC, and
+  // undrawn headroom was never lent.
+  const openAmount = drawn
   const interestAmount = round2((openAmount * n(bd.interest_pct) * intDays) / (100 * daysYear))
   const tdsAmount = round2((interestAmount * n(bd.tds_pct)) / 100)
   // TDS is withheld out of the interest and paid to the department, so it does
@@ -72,7 +93,17 @@ export function bdCalc(bd: Row): {
   // interest is settled separately instead, so the whole funded amount lands
   // and the interest posts on its own voucher when it is reconciled.
   const receiptAmount = bd.interest_upfront ? openAmount : round2(openAmount - interestAmount)
-  return { intDays, marginAmount, openAmount, interestAmount, tdsAmount, netInterest, receiptAmount }
+  return {
+    intDays,
+    marginAmount,
+    sanctionedAmount,
+    undrawnAmount,
+    openAmount,
+    interestAmount,
+    tdsAmount,
+    netInterest,
+    receiptAmount
+  }
 }
 
 // Remove one manual journal entry (with its bill-wise rows) — used to
@@ -181,8 +212,18 @@ export async function postBdOpening(bdId: number): Promise<void> {
     await c.execute({ sql: 'UPDATE bill_discountings SET journal_entry_id = NULL WHERE id = ?', args: [bdId] })
     return
   }
+  // The margin is a DEPOSIT only to the extent it was withheld from what we
+  // drew. On the old basis it was — the drawn amount was the face value less the
+  // margin, so bank + margin + interest came to exactly what we owed.
+  //
+  // Struck on the INVOICE instead, it is the NBFC's retention against a bill it
+  // will collect from the customer; nothing of ours is held back out of the
+  // draw, so recognising it as our asset here would put the voucher out by the
+  // whole margin. The drawn amount is what we owe and what we received, and the
+  // retention is reported on the register rather than posted.
+  const marginWithheld = n(bd.invoice_amount) > 0 ? 0 : calc.marginAmount
   const lines: JournalLine[] = [{ account: 'BANK A/C', group: 'Bank Accounts', dr: calc.receiptAmount }]
-  if (calc.marginAmount > 0.005) lines.push({ account: 'BD MARGIN A/C', group: 'Deposits (Asset)', dr: calc.marginAmount })
+  if (marginWithheld > 0.005) lines.push({ account: 'BD MARGIN A/C', group: 'Deposits (Asset)', dr: marginWithheld })
   if (interest > 0.005) lines.push({ account: 'INTEREST ON BILL DISCOUNTING A/C', group: 'Indirect Expenses', dr: interest })
   lines.push({ account: 'BILLS DISCOUNTED A/C', group: 'Loans (Liability)', cr: amount })
   const je = await postJournal({
@@ -227,6 +268,10 @@ export async function postBdUpfrontInterest(bdId: number, dateIn?: string): Prom
 // repaid and the NBFC no longer needs it held — mirrors postLcMarginRelease.
 async function postBdMarginRelease(bd: Row): Promise<{ id: number } | null> {
   const calc = bdCalc(bd)
+  // Only a margin that was actually recognised as our deposit can come back —
+  // see postBdOpening. A retention struck on the invoice was never posted, so
+  // there is nothing to release.
+  if (n(bd.invoice_amount) > 0) return null
   if (calc.marginAmount < 0.005) return null
   const je = await postJournal({
     date: String(bd.repaid_date || todayISO()).slice(0, 10),
@@ -296,14 +341,21 @@ function withPrimaryParty(v: Row): Row {
 // Replace the parties on one bill. The FIRST is the primary and is written onto
 // the bill itself, so everything that reads `party_id` keeps working; all of
 // them, primary included, land in the link table.
-async function syncBdParties(bdId: number, partyType: string, partyIds: unknown): Promise<number | null> {
+async function syncBdParties(
+  bdId: number,
+  partyType: string,
+  partyIds: unknown,
+  // How much of the open amount each party accounts for, keyed by party id.
+  // Absent means "not divided", and a single-party bill never needs it.
+  split?: Record<string, unknown> | null
+): Promise<number | null> {
   const c = getClient()
   const ids = Array.isArray(partyIds) ? Array.from(new Set(partyIds.map((x) => n(x)).filter((x) => x > 0))) : []
   await c.execute({ sql: 'DELETE FROM bd_parties WHERE bd_id = ?', args: [bdId] })
   for (const pid of ids) {
     await c.execute({
-      sql: 'INSERT OR IGNORE INTO bd_parties (bd_id, party_type, party_id) VALUES (?, ?, ?)',
-      args: [bdId, partyType, pid]
+      sql: 'INSERT OR IGNORE INTO bd_parties (bd_id, party_type, party_id, amount) VALUES (?, ?, ?, ?)',
+      args: [bdId, partyType, pid, split ? n(split[String(pid)]) : 0]
     })
   }
   return ids.length ? ids[0] : null
@@ -313,7 +365,7 @@ async function syncBdParties(bdId: number, partyType: string, partyIds: unknown)
 // repayment settles against.
 export async function listBdParties(bdId: number): Promise<Row[]> {
   const res = await getClient().execute({
-    sql: `SELECT bp.party_id, bp.party_type,
+    sql: `SELECT bp.party_id, bp.party_type, COALESCE(bp.amount, 0) AS amount,
                  COALESCE(s.name, cu.name) AS name
           FROM bd_parties bp
           LEFT JOIN suppliers s ON bp.party_type = 'supplier' AND s.id = bp.party_id
@@ -402,6 +454,24 @@ async function validateBd(v: Row): Promise<void> {
   if (found.rows.length !== partyIds.length) throw new Error('One of the parties no longer exists')
   const inactive = found.rows.find((r) => !n(r.active))
   if (inactive) throw new Error(`${String(inactive.name)} is marked inactive`)
+
+  // With more than one party the open amount has to be divided between them, and
+  // the parts have to come to the whole — a split that does not add up is worse
+  // than none, because each party's share would be quietly wrong.
+  if (partyIds.length > 1) {
+    const split = (v.party_amounts || {}) as Record<string, unknown>
+    const given = partyIds.map((pid) => round2(n(split[String(pid)])))
+    if (given.some((x) => x <= 0)) {
+      throw new Error('Give each party its share of the open amount')
+    }
+    const sum = round2(given.reduce((t, x) => t + x, 0))
+    const total = round2(n(v.amount))
+    if (Math.abs(sum - total) > 0.05) {
+      throw new Error(
+        `The parties' shares come to ${inr(sum)}, but the open amount is ${inr(total)} — they have to match`
+      )
+    }
+  }
 }
 
 export async function listBd(filter?: Row): Promise<Row[]> {
@@ -435,6 +505,8 @@ export async function listBd(filter?: Row): Promise<Row[]> {
                     LEFT JOIN customers cu2 ON bp.party_type = 'customer' AND cu2.id = bp.party_id
                     WHERE bp.bd_id = bd.id) AS party_names,
                  (SELECT GROUP_CONCAT(bp.party_id) FROM bd_parties bp WHERE bp.bd_id = bd.id) AS party_ids_csv,
+                 (SELECT GROUP_CONCAT(bp.party_id || ':' || COALESCE(bp.amount, 0)) FROM bd_parties bp
+                    WHERE bp.bd_id = bd.id) AS party_split_csv,
                  -- The purchase invoices this bill funded: the route to the
                  -- trading deal, and through it to the resale invoices.
                  (SELECT COUNT(*) FROM bd_linked_orders bo WHERE bo.bd_id = bd.id) AS linked_invoice_count,
@@ -489,7 +561,7 @@ export async function createBd(v: Row): Promise<{ id: number }> {
   })
   const id = Number(res.lastInsertRowid)
   const partyIds = Array.isArray(v.party_ids) ? v.party_ids : n(v.party_id) ? [n(v.party_id)] : []
-  await syncBdParties(id, String(v.party_type), partyIds)
+  await syncBdParties(id, String(v.party_type), partyIds, v.party_amounts as Record<string, unknown> | null)
   // Only when the caller names them — an untouched form must not clear links.
   if (Array.isArray(v.linked_order_ids)) await syncBdLinkedOrders(id, v.linked_order_ids)
   await postBdOpening(id)
@@ -513,7 +585,12 @@ export async function updateBd(id: number, v: Row): Promise<{ id: number }> {
     args: [...bdArgs(v), id]
   })
   if (Array.isArray(v.party_ids) || n(v.party_id)) {
-    await syncBdParties(id, String(v.party_type), Array.isArray(v.party_ids) ? v.party_ids : [n(v.party_id)])
+    await syncBdParties(
+      id,
+      String(v.party_type),
+      Array.isArray(v.party_ids) ? v.party_ids : [n(v.party_id)],
+      v.party_amounts as Record<string, unknown> | null
+    )
   }
   if (Array.isArray(v.linked_order_ids)) await syncBdLinkedOrders(id, v.linked_order_ids)
   await postBdOpening(id)
@@ -600,6 +677,16 @@ export async function repayBd(
   }
   const date = String(v.repay_date || todayISO()).slice(0, 10)
   assertNotFuture(date, 'The repayment date')
+  // On a SID the sales bill itself is assigned to the financier: they pay us and
+  // we repay them, so the customer's ledger is not part of the transaction at
+  // all. Settling one against a party would credit a customer who never owed us
+  // this money. Refused rather than quietly redirected to the bank, so nobody is
+  // left thinking a party ledger was touched.
+  if (v.settle_via === 'party' && String(bd.finance_type) === 'SID') {
+    throw new Error(
+      'A SID bill is repaid to the financier, not settled against the customer — the customer’s ledger is not involved'
+    )
+  }
   const settleVia = v.settle_via === 'party' ? 'party' : 'bank'
   // A bill raised against several parties has to name the one being settled —
   // crediting the primary for a payment that cleared another party's invoices
@@ -701,6 +788,23 @@ export async function listAllBdRepayments(): Promise<Row[]> {
     args: [getActiveCompanyId()]
   })
   return toPlain(res).map((r) => ({ ...r, party_name: partyName(r) }))
+}
+
+// Every party on every bill in the active company, for the Excel export's
+// grouped rows. One query, not one per bill.
+export async function listAllBdParties(): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT bd.bd_no, bp.party_id, bp.party_type, COALESCE(bp.amount, 0) AS amount,
+                 COALESCE(s.name, cu.name) AS name
+          FROM bd_parties bp
+          JOIN bill_discountings bd ON bd.id = bp.bd_id
+          LEFT JOIN suppliers s ON bp.party_type = 'supplier' AND s.id = bp.party_id
+          LEFT JOIN customers cu ON bp.party_type = 'customer' AND cu.id = bp.party_id
+          WHERE bd.company_id = ?
+          ORDER BY bd.bd_no, bp.id`,
+    args: [getActiveCompanyId()]
+  })
+  return toPlain(res)
 }
 
 // Undo ONE part repayment — the wrong figure keyed, or a payment that did not

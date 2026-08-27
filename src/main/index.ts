@@ -201,6 +201,13 @@ app.whenReady().then(async () => {
     await c.execute(`INSERT OR IGNORE INTO bd_parties (bd_id, party_type, party_id)
       SELECT id, party_type, party_id FROM bill_discountings WHERE party_id IS NOT NULL`)
   }).catch((e) => console.error('[bd] parties schema failed:', e))
+  // How the open amount is divided between the parties on one bill. A facility
+  // drawn on invoices from three suppliers is not three equal shares, so the
+  // split is recorded rather than assumed.
+  await runOnce('bd_party_amount_v1', async () => {
+    const c = getClient()
+    await c.execute('ALTER TABLE bd_parties ADD COLUMN amount REAL NOT NULL DEFAULT 0')
+  }).catch((e) => console.error('[bd] party split failed:', e))
   startRevisionWatcher()
   registerIpc()
   registerUpdater(() => mainWindow)

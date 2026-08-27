@@ -430,6 +430,7 @@ const api = {
     allRepayments: (): Promise<Row[]> => ipcRenderer.invoke('bd:allRepayments'),
     linkedOrders: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:linkedOrders', { id }),
     parties: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:parties', { id }),
+    allParties: (): Promise<Row[]> => ipcRenderer.invoke('bd:allParties'),
     openTradingInvoices: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:openTradingInvoices', { id }),
     paymentIns: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:paymentIns', { id }),
     paymentIn: (id: number, amount: number, date?: string, keys?: string[]): Promise<{ id: number; date: string }> =>

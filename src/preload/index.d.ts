@@ -322,6 +322,7 @@ export interface Api {
     allRepayments: () => Promise<Row[]>
     linkedOrders: (id: number) => Promise<Row[]>
     parties: (id: number) => Promise<Row[]>
+    allParties: () => Promise<Row[]>
     openTradingInvoices: (id: number) => Promise<Row[]>
     paymentIns: (id: number) => Promise<Row[]>
     paymentIn: (id: number, amount: number, date?: string, keys?: string[]) => Promise<{ id: number; date: string }>

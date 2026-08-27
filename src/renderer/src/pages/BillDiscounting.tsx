@@ -129,6 +129,8 @@ const NBFC_COLUMNS: ColumnDef[] = [
 function bdCalc(f: Row): {
   intDays: number
   marginAmount: number
+  sanctionedAmount: number
+  undrawnAmount: number
   openAmount: number
   interestAmount: number
   tdsAmount: number
@@ -136,17 +138,35 @@ function bdCalc(f: Row): {
   receiptAmount: number
 } {
   const amount = n(f.amount)
+  const invoice = n(f.invoice_amount)
   const from = String(f.payment_received_date || '').slice(0, 10)
   const to = String(f.maturity_date || '').slice(0, 10)
   const intDays = from && to ? Math.max(0, (daysTo(to) ?? 0) - (daysTo(from) ?? 0)) : 0
-  const marginAmount = round2((amount * n(f.margin_pct)) / 100)
-  const openAmount = round2(amount - marginAmount)
+  // Mirrors bdCalc: the margin is struck on the INVOICE being discounted and
+  // what is left is sanctioned. A bill with no invoice value on record falls
+  // back to the amount, which is the old behaviour exactly.
+  const marginBase = invoice > 0 ? invoice : amount
+  const marginAmount = round2((marginBase * n(f.margin_pct)) / 100)
+  const sanctionedAmount = round2(marginBase - marginAmount)
+  const drawn = invoice > 0 ? amount : sanctionedAmount
+  const undrawnAmount = round2(sanctionedAmount - drawn)
+  const openAmount = drawn
   const daysYear = n(f.days_year) || 360
   const interestAmount = round2((openAmount * n(f.interest_pct) * intDays) / (100 * daysYear))
   const tdsAmount = round2((interestAmount * n(f.tds_pct)) / 100)
   const netInterest = round2(interestAmount - tdsAmount)
   const receiptAmount = f.interest_upfront ? openAmount : round2(openAmount - interestAmount)
-  return { intDays, marginAmount, openAmount, interestAmount, tdsAmount, netInterest, receiptAmount }
+  return {
+    intDays,
+    marginAmount,
+    sanctionedAmount,
+    undrawnAmount,
+    openAmount,
+    interestAmount,
+    tdsAmount,
+    netInterest,
+    receiptAmount
+  }
 }
 
 // The company controls come from Treasury, which already holds them for the LC
@@ -358,6 +378,15 @@ export function BillDiscounting({
         .split(',')
         .filter(Boolean)
         .map(Number),
+      party_amounts: Object.fromEntries(
+        String(r.party_split_csv || '')
+          .split(',')
+          .filter(Boolean)
+          .map((pair) => {
+            const [pid, amt] = pair.split(':')
+            return [String(pid), amt]
+          })
+      ),
       purpose: r.purpose,
       invoice_amount: r.invoice_amount ?? '',
       amount: r.amount ?? '',
@@ -386,6 +415,7 @@ export function BillDiscounting({
       party_type: v === 'SID' ? 'customer' : 'supplier',
       party_id: '',
       party_ids: [],
+      party_amounts: {},
       nbfc_id: ''
     }))
   }
@@ -470,6 +500,8 @@ export function BillDiscounting({
         party_type: form.party_type,
         party_id: form.party_id ? Number(form.party_id) : null,
         party_ids: Array.isArray(form.party_ids) ? form.party_ids : form.party_id ? [Number(form.party_id)] : [],
+        // Only meaningful on a multi-party bill; the backend ignores it otherwise.
+        party_amounts: form.party_amounts || {},
         purpose: form.purpose,
         amount: Number(form.amount) || 0,
         invoice_amount: String(form.invoice_amount ?? '').trim() === '' ? null : Number(form.invoice_amount),
@@ -526,6 +558,7 @@ export function BillDiscounting({
     // down to whatever instalment is actually going back.
     setRepayForm({
       repay_date: todayISO(),
+      // SID never settles on a party's ledger, so it is not even offered.
       settle_via: 'bank',
       ref: '',
       amount: String(dueOn(r)),
@@ -675,7 +708,12 @@ export function BillDiscounting({
       const parts = filtered.some((r) => n(r.repay_parts) > 0)
         ? await window.api.billDiscounting.allRepayments()
         : []
-      await exportBdRegister(filtered, `bd-register-${todayISO()}`, parts)
+      // Only fetched when a bill in this list actually has more than one party,
+      // so a register of single-party bills still downloads without a query.
+      const parties = filtered.some((r) => n(r.party_count) > 1)
+        ? await window.api.billDiscounting.allParties().catch(() => [] as Row[])
+        : []
+      await exportBdRegister(filtered, `bd-register-${todayISO()}`, parts, parties)
       toast.success(`Downloaded ${filtered.length} bill${filtered.length === 1 ? '' : 's'}`)
     } catch (e) {
       toast.error((e as Error).message)
@@ -1521,7 +1559,14 @@ export function BillDiscounting({
                           const ids: number[] = Array.isArray(prev?.party_ids) ? prev!.party_ids : []
                           const id = Number(v)
                           const next = ids.map(Number).includes(id) ? ids.filter((x) => Number(x) !== id) : [...ids, id]
-                          return { ...prev, party_ids: next, party_id: next.length ? String(next[0]) : '' }
+                          const amounts = { ...(prev?.party_amounts || {}) }
+                          if (!next.map(Number).includes(id)) delete amounts[String(id)]
+                          return {
+                            ...prev,
+                            party_ids: next,
+                            party_id: next.length ? String(next[0]) : '',
+                            party_amounts: amounts
+                          }
                         })
                       }
                     >
@@ -1578,6 +1623,83 @@ export function BillDiscounting({
                       </div>
                     )}
                   </div>
+                  {/* Dividing the open amount between the parties. A facility
+                      drawn on invoices from three suppliers is not three equal
+                      shares, so it is asked for rather than assumed — and the
+                      parts have to come to the whole, since a split that does
+                      not add up makes every party's share quietly wrong. */}
+                  {(Array.isArray(form.party_ids) ? form.party_ids : []).length > 1 && (
+                    <div className="flex flex-col gap-1.5 md:col-span-2 xl:col-span-3">
+                      <Label className="flex items-center gap-1">
+                        Open amount per party
+                        <InfoTip text="How the open amount is divided between the parties on this bill. The shares must add up to the open amount." />
+                      </Label>
+                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                        {(form.party_ids as number[]).map((pid) => (
+                          <div key={String(pid)} className="flex items-center gap-2 rounded-md border bg-white px-2 py-1.5">
+                            <span className="min-w-0 flex-1 truncate text-[12px]">
+                              {formParties.find((x) => Number(x.id) === Number(pid))?.name || `#${pid}`}
+                            </span>
+                            <Input
+                              type="number"
+                              className="h-7 w-32 text-[12px] tabular-nums"
+                              value={String((form.party_amounts || {})[String(pid)] ?? '')}
+                              onChange={(e) =>
+                                setForm((prev) => ({
+                                  ...prev,
+                                  party_amounts: { ...(prev?.party_amounts || {}), [String(pid)]: e.target.value }
+                                }))
+                              }
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      {(() => {
+                        const ids: number[] = Array.isArray(form.party_ids) ? form.party_ids : []
+                        const sum = round2(
+                          ids.reduce((t, pid) => t + n((form.party_amounts || {})[String(pid)]), 0)
+                        )
+                        const total = round2(n(form.amount))
+                        const gap = round2(total - sum)
+                        if (Math.abs(gap) < 0.05) {
+                          return (
+                            <div className="text-[11px] font-medium text-emerald-700">
+                              Shares add up to {formatINR(sum)} — matches the open amount
+                            </div>
+                          )
+                        }
+                        return (
+                          <div className="flex items-center gap-2 text-[11px] font-medium text-destructive">
+                            <span>
+                              Shares come to {formatINR(sum)} against an open amount of {formatINR(total)} —{' '}
+                              {gap > 0 ? `${formatINR(gap)} still to allocate` : `${formatINR(-gap)} over`}
+                            </span>
+                            {ids.length > 0 && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="h-6 px-2 text-[11px]"
+                                title="Divide the open amount equally between the parties"
+                                onClick={() => {
+                                  const each = Math.floor((total / ids.length) * 100) / 100
+                                  const amounts: Record<string, string> = {}
+                                  ids.forEach((pid, i) => {
+                                    // The last one absorbs the rounding, so the
+                                    // parts always add to the whole exactly.
+                                    amounts[String(pid)] =
+                                      i === ids.length - 1 ? String(round2(total - each * (ids.length - 1))) : String(each)
+                                  })
+                                  setForm((prev) => ({ ...prev, party_amounts: amounts }))
+                                }}
+                              >
+                                Split equally
+                              </Button>
+                            )}
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  )}
                   <div className="flex flex-col gap-1.5">
                     <Label className="flex items-center gap-1">
                       BD no *
@@ -1612,9 +1734,40 @@ export function BillDiscounting({
                   <div className="flex flex-col gap-1.5">
                     <Label className="flex items-center gap-1">
                       Open amount (₹) *
-                      <InfoTip text="What is being opened against the invoice — the amount the NBFC discounts, and the figure every term below is calculated on. Often less than the invoice itself." />
+                      <InfoTip text="What is actually drawn. It defaults to the sanctioned amount — invoice less the margin — and can be lowered if less was taken; the shortfall then shows as the balance still available on this bill." />
                     </Label>
-                    <Input type="number" value={form.amount ?? ''} onChange={(e) => setForm((p) => ({ ...p, amount: e.target.value }))} />
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        className="flex-1"
+                        value={form.amount ?? ''}
+                        onChange={(e) => setForm((p) => ({ ...p, amount: e.target.value, amount_touched: true }))}
+                      />
+                      {preview && preview.sanctionedAmount > 0 && round2(n(form.amount)) !== preview.sanctionedAmount && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-9 shrink-0 px-2 text-xs"
+                          title="Draw the whole sanctioned amount"
+                          onClick={() => setForm((p) => ({ ...p, amount: String(preview.sanctionedAmount), amount_touched: true }))}
+                        >
+                          Full
+                        </Button>
+                      )}
+                    </div>
+                    {preview && preview.undrawnAmount > 0.004 && n(form.invoice_amount) > 0 && (
+                      <div className="text-[11px] text-muted-foreground">
+                        Balance still available on this bill:{' '}
+                        <b className="font-semibold text-[#1a2c56]">{formatINR(preview.undrawnAmount)}</b> of the{' '}
+                        {formatINR(preview.sanctionedAmount)} sanctioned
+                      </div>
+                    )}
+                    {preview && preview.undrawnAmount < -0.004 && n(form.invoice_amount) > 0 && (
+                      <div className="text-[11px] font-medium text-amber-700">
+                        {formatINR(Math.abs(preview.undrawnAmount))} more than the {formatINR(preview.sanctionedAmount)}{' '}
+                        sanctioned — check the invoice amount and margin
+                      </div>
+                    )}
                     {n(form.invoice_amount) > 0 && n(form.amount) > 0 && (
                       <div
                         className={cn(
@@ -1792,8 +1945,8 @@ export function BillDiscounting({
                     <div className="text-[13px] font-semibold tabular-nums text-[#1a2c56]">{formatINR(preview.marginAmount)}</div>
                   </div>
                   <div className="bg-white px-3 py-2 text-center">
-                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Funded (net margin)</div>
-                    <div className="text-[13px] font-semibold tabular-nums text-[#1a2c56]">{formatINR(preview.openAmount)}</div>
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Sanctioned amt</div>
+                    <div className="text-[13px] font-semibold tabular-nums text-[#1a2c56]">{formatINR(preview.sanctionedAmount)}</div>
                   </div>
                   <div className="bg-amber-50 px-3 py-2 text-center">
                     <div className="text-[10px] uppercase tracking-wide text-amber-800">Interest · TDS · payout</div>
@@ -1806,7 +1959,7 @@ export function BillDiscounting({
                   {([
                     { label: 'Int. days', value: String(preview.intDays), tone: 'text-[#1a2c56]' },
                     { label: 'Margin', value: formatINR(preview.marginAmount), tone: 'text-[#1a2c56]' },
-                    { label: 'Funded (net margin)', value: formatINR(preview.openAmount), tone: 'text-[#1a2c56]' },
+                    { label: 'Sanctioned amt', value: formatINR(preview.sanctionedAmount), tone: 'text-[#1a2c56]' },
                     { label: 'Interest', value: formatINR(preview.interestAmount), tone: 'text-rose-700' },
                     { label: 'TDS', value: formatINR(preview.tdsAmount), tone: 'text-[#1a2c56]' },
                     { label: 'Net int.', value: formatINR(preview.netInterest), tone: 'text-[#1a2c56]' }
@@ -2144,7 +2297,19 @@ export function BillDiscounting({
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="bank">Our bank</SelectItem>
-                    <SelectItem value="party">
+                    {/* A SID bill is assigned to the financier: they pay us and
+                        we repay them, so the customer's ledger is never part of
+                        it. The option is shown but disabled rather than removed,
+                        so its absence is explained rather than mysterious. */}
+                    <SelectItem
+                      value="party"
+                      disabled={String(repayRow.finance_type) === 'SID'}
+                      title={
+                        String(repayRow.finance_type) === 'SID'
+                          ? 'A SID bill is repaid to the financier — the customer’s ledger is not involved'
+                          : undefined
+                      }
+                    >
                       Against{' '}
                       {n(repayRow.party_count) > 1
                         ? `one of the ${n(repayRow.party_count)} parties`
