@@ -50,6 +50,8 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { convertQty, errText, formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { ExcelButton } from '@/components/ExcelButton'
 import { downloadSkuRateExcel, parseSkuRateExcel, caseMT } from '@/lib/skuRateExcel'
+import { BASIS_LABEL, saleShortage } from '@/lib/saleShortage'
+import { ShortageWorkings } from '@/components/ShortageWorkings'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { isManufacturingParty } from '@/lib/constants'
@@ -237,6 +239,10 @@ function SalesTab({
   const [packagings, setPackagings] = useState<Row[]>([])
   const [transporters, setTransporters] = useState<Row[]>([])
   const [stock, setStock] = useState<Record<number, Row>>({})
+  // The mill-wide shortage tolerance, the last fallback for a delivered sale
+  // that names no allowance of its own. Same setting the purchase side reads,
+  // so a tanker is judged by one rule whichever way it is travelling.
+  const [defaultShortagePct, setDefaultShortagePct] = useState('0.2')
   const [loading, setLoading] = useState(true)
 
   // The invoice form is a full-screen page (room for many line items + freight/GST).
@@ -265,20 +271,24 @@ function SalesTab({
     // contract rates and the masters are of no use without the invoice form, so
     // they are not even fetched — the thin row set is the whole point.
     if (UNLOAD_DESK()) {
-      setRows(await window.api.sales.list())
+      const [ds, dcfg] = await Promise.all([window.api.sales.list(), window.api.settings.all()])
+      setRows(ds)
+      setDefaultShortagePct(String(dcfg.allowed_shortage_pct ?? '0.2'))
       setLoading(false)
       return
     }
-    const [s, pr, sb, st, cu, pk, tr] = await Promise.all([
+    const [s, pr, sb, st, cu, pk, tr, cfg] = await Promise.all([
       window.api.sales.list(),
       window.api.data.list('products'),
       window.api.salesBargains.list(),
       window.api.stock.list(),
       window.api.data.list('customers'),
       window.api.data.list('packagings'),
-      window.api.data.list('transporters')
+      window.api.data.list('transporters'),
+      window.api.settings.all()
     ])
     setRows(s)
+    setDefaultShortagePct(String(cfg.allowed_shortage_pct ?? '0.2'))
     setProducts(pr.filter((x) => x.active && x.category === 'finished'))
     setBargains(sb)
     setCustomers(cu.filter((x) => x.active))
@@ -501,6 +511,7 @@ function SalesTab({
       freight_term: 'FREIGHT_ON_GOODS',
       transporter_id: '',
       transport_rate: '',
+      allowed_shortage_pct: '',
       dispatch_stage: 'pending',
       loaded_date: '',
       transit_date: '',
@@ -535,6 +546,7 @@ function SalesTab({
       freight_term: f.freight_term ?? 'FREIGHT_ON_GOODS',
       transporter_id: f.transporter_id ? String(f.transporter_id) : '',
       transport_rate: f.transport_rate ?? '',
+      allowed_shortage_pct: f.allowed_shortage_pct ?? '',
       deduct_freight: !!f.deduct_freight,
       is_trading: !!f.is_trading,
       dispatch_stage: f.dispatch_stage ?? (f.status === 'done' ? 'unloaded' : 'pending'),
@@ -671,6 +683,16 @@ function SalesTab({
   }
 
   const isDld = header.freight_term === 'DLD'
+  // What the rate contract behind these lines allows, if it says anything —
+  // shown as the placeholder so the invoice's blank field states what leaving
+  // it blank will actually mean, rather than just looking unanswered.
+  const bargainShortagePct = useMemo(() => {
+    for (const it of items) {
+      const b = bargains.find((x) => Number(x.id) === Number(it.sales_bargain_id))
+      if (b && b.allowed_shortage_pct != null && b.allowed_shortage_pct !== '') return Number(b.allowed_shortage_pct)
+    }
+    return null
+  }, [items, bargains])
   const totals = items.reduce(
     (acc, it) => {
       const c = calc(it)
@@ -1438,6 +1460,13 @@ function SalesTab({
                 const nextStage = idx < DISPATCH_STAGES.length - 1 ? DISPATCH_STAGES[idx + 1] : null
                 const untracked = Number(inv.first.track_stock) === 0
                 const isOpen = !!expanded[inv.group]
+                // The excess across every line of the invoice. Shown on the
+                // closed row because a claim that only appears once somebody
+                // thinks to expand the invoice is a claim that goes unmade.
+                const invShort = inv.lines
+                  .map((r) => saleShortage(r, defaultShortagePct))
+                  .filter((x) => x.applies && !x.within)
+                const invDue = invShort.reduce((t, x) => t + x.deductible, 0)
                 return (
                   <Fragment key={inv.group}>
                     <TableRow
@@ -1488,6 +1517,15 @@ function SalesTab({
                         >
                           {exTerm ? 'Ex' : 'FOR'}
                         </span>
+                        {invDue > 0 && (
+                          <div
+                            className="mt-1 flex items-center gap-1 whitespace-nowrap text-[10px] font-semibold text-rose-700"
+                            title={`Shortage beyond the agreed tolerance on ${invShort.length} line${invShort.length === 1 ? '' : 's'} — open the invoice for the workings`}
+                          >
+                            <AlertTriangle className="h-3 w-3 shrink-0" />
+                            {formatINR(invDue)} short
+                          </div>
+                        )}
                       </TableCell>
                         </>
                       )}
@@ -1588,6 +1626,7 @@ function SalesTab({
                     </TableRow>
                     {!unloadOnly && isOpen && inv.lines.map((r) => {
                       const inStock = stock[r.product_id as number]?.stock ?? 0
+                      const sh = saleShortage(r, defaultShortagePct)
                       return (
                         <TableRow key={r.id as number} className="bg-muted/30">
                           <TableCell />
@@ -1599,18 +1638,43 @@ function SalesTab({
                           <TableCell className="align-top text-right tabular-nums">
                             <div>{formatNum(r.qty)} {r.uom}</div>
                             {r.received_qty != null ? (
-                              <div
-                                className={cn(
-                                  'text-[11px]',
-                                  Number(r.qty) - Number(r.received_qty) > 0.0005 ? 'text-rose-600' : 'text-emerald-700'
-                                )}
-                                title="Weighed in by the transporter at the customer's end"
-                              >
-                                rec {formatNum(r.received_qty)}
-                                {Number(r.qty) - Number(r.received_qty) > 0.0005 && (
-                                  <> · short {formatNum(Number(r.qty) - Number(r.received_qty))}</>
-                                )}
-                              </div>
+                              // A shortage on a delivered sale is a claim or it
+                              // is nothing, and which of the two cannot be read
+                              // off the number alone — so on FOR the figure
+                              // carries its workings, and only there. An Ex sale
+                              // is lifted by the customer at our weighbridge:
+                              // there is no second weighment and no tolerance to
+                              // judge it against.
+                              sh.applies && sh.shortage > 0.0000005 ? (
+                                <ShortageWorkings
+                                  s={sh}
+                                  uom={String(r.uom || '')}
+                                  className={cn(
+                                    'block text-[11px] font-medium',
+                                    sh.within ? 'text-amber-700' : 'text-rose-600'
+                                  )}
+                                >
+                                  rec {formatNum(r.received_qty)} · short {formatNum(sh.shortage)}
+                                  {!sh.within && (
+                                    <span className="ml-1 rounded bg-rose-100 px-1 py-px text-[9.5px] font-bold uppercase tracking-wide text-rose-700">
+                                      {formatINR(sh.deductible)} due
+                                    </span>
+                                  )}
+                                </ShortageWorkings>
+                              ) : (
+                                <div
+                                  className={cn(
+                                    'text-[11px]',
+                                    Number(r.qty) - Number(r.received_qty) > 0.0005 ? 'text-rose-600' : 'text-emerald-700'
+                                  )}
+                                  title="Weighed in by the transporter at the customer's end"
+                                >
+                                  rec {formatNum(r.received_qty)}
+                                  {Number(r.qty) - Number(r.received_qty) > 0.0005 && (
+                                    <> · short {formatNum(Number(r.qty) - Number(r.received_qty))}</>
+                                  )}
+                                </div>
+                              )
                             ) : null}
                             <div className="text-[11px] text-muted-foreground" title="Finished stock in hand">stk {formatNum(inStock)}</div>
                           </TableCell>
@@ -1730,6 +1794,29 @@ function SalesTab({
                 <Label>Freight rate / unit</Label>
                 <Input type="number" className="bg-white" value={header.transport_rate ?? ''} onChange={(e) => setHeaderField('transport_rate', e.target.value)} />
                 <span className="text-[10px] text-muted-foreground">per case for a packed item, per MT for a loose one</span>
+              </div>
+              {/* The tolerance this delivery is judged by when it is weighed in
+                  at the other end. Left blank it falls back to the sales
+                  bargain, and then to the mill-wide default — so it only needs
+                  answering when this particular customer was promised
+                  something different. */}
+              <div className="flex flex-col gap-1.5">
+                <Label>Shortage allowed %</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  className="bg-white"
+                  placeholder={`default ${bargainShortagePct ?? defaultShortagePct}`}
+                  value={header.allowed_shortage_pct ?? ''}
+                  onChange={(e) => setHeaderField('allowed_shortage_pct', e.target.value)}
+                />
+                <span className="text-[10px] text-muted-foreground">
+                  {header.allowed_shortage_pct === '' || header.allowed_shortage_pct == null
+                    ? bargainShortagePct != null
+                      ? `Blank — using ${bargainShortagePct}% from the sales bargain`
+                      : `Blank — using the mill default of ${defaultShortagePct}%`
+                    : 'Anything short beyond this is deductible from the transporter'}
+                </span>
               </div>
               <p className="col-span-full text-[11px] text-sky-800">
                 {header.deduct_freight
@@ -2383,17 +2470,23 @@ function SalesTab({
             <div className="w-44"><DatePicker value={unloadDate} onChange={(v) => setUnloadDate(v || todayISO())} /></div>
           </div>
           <div className="overflow-hidden rounded-md border">
-            <div className="grid grid-cols-[minmax(0,1fr)_84px_96px_76px] items-center gap-2 border-b bg-muted/60 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="grid grid-cols-[minmax(0,1fr)_78px_92px_72px_72px] items-center gap-2 border-b bg-muted/60 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
               <span>Product</span>
               <span className="text-right">Dispatched</span>
               <span className="text-right">Received</span>
               <span className="text-right">Shortage</span>
+              <span className="text-right">Allowed</span>
             </div>
             {(unloadInv?.lines || []).map((l) => {
               const raw = unloadQty[String(l.id)]
               const short = raw === '' || raw == null ? null : Number(l.qty) - Number(raw)
+              // Judged as it is typed, so the desk knows at the keyboard whether
+              // the delivery it is recording is a normal one or one somebody
+              // will have to make a claim about. Quantities only — this desk is
+              // shown no rates and no values, and that does not change here.
+              const sh = saleShortage({ ...l, received_qty: raw === '' || raw == null ? null : Number(raw) }, defaultShortagePct)
               return (
-                <div key={String(l.id)} className="grid grid-cols-[minmax(0,1fr)_84px_96px_76px] items-center gap-2 border-b px-3 py-1.5 last:border-0">
+                <div key={String(l.id)} className="grid grid-cols-[minmax(0,1fr)_78px_92px_72px_72px] items-center gap-2 border-b px-3 py-1.5 last:border-0">
                   <span className="min-w-0 truncate text-[13px]">{l.product_name}</span>
                   <span className="text-right text-[12px] tabular-nums text-muted-foreground">{formatNum(l.qty)}</span>
                   <Input
@@ -2411,9 +2504,26 @@ function SalesTab({
                   >
                     {short == null ? '—' : formatNum(short)}
                   </span>
+                  <span
+                    className="text-right text-[11px] tabular-nums"
+                    title={`${sh.pct}% of ${formatNum(l.qty)} — ${BASIS_LABEL[sh.basis]}`}
+                  >
+                    {!sh.applies || short == null ? (
+                      <span className="text-muted-foreground">{formatNum(sh.allowedQty)}</span>
+                    ) : sh.within ? (
+                      <span className="font-medium text-emerald-700">within</span>
+                    ) : (
+                      <span className="font-semibold text-rose-700">+{formatNum(sh.excessQty)}</span>
+                    )}
+                  </span>
                 </div>
               )
             })}
+            <div className="border-t bg-muted/40 px-3 py-1.5 text-[10.5px] leading-snug text-muted-foreground">
+              <span className="font-medium">Allowed</span> is the transit loss agreed for this delivery. A figure inside it
+              reads <span className="font-medium text-emerald-700">within</span>; beyond it, the excess is shown and becomes
+              deductible.
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setUnloadInv(null)} disabled={unloadSaving}>Cancel</Button>
@@ -2687,6 +2797,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
       sale_category: sectionCategory === 'ALL' ? 'FINISHED_OIL' : sectionCategory,
       packaging_id: '',
       freight_term: 'FREIGHT_ON_GOODS',
+      allowed_shortage_pct: '',
       manual_bargain_no: ''
     }
   }
@@ -2714,6 +2825,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
       sale_category: row.sale_category ?? 'FINISHED_OIL',
       packaging_id: row.packaging_id ? String(row.packaging_id) : '',
       freight_term: row.freight_term ?? 'FREIGHT_ON_GOODS',
+      allowed_shortage_pct: row.allowed_shortage_pct ?? '',
       manual_bargain_no: row.manual_bargain_no ?? ''
     })
     setError(null)
@@ -3658,6 +3770,24 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                 </SelectContent>
               </Select>
             </div>
+            {/* Agreed once here rather than retyped on every invoice drawn
+                against the contract. Only a delivered sale is weighed again at
+                the far end, so only FOR has anything to allow. */}
+            {form.freight_term === 'DLD' && (
+              <div className="flex flex-col gap-1.5">
+                <Label>Shortage allowed %</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={form.allowed_shortage_pct ?? ''}
+                  onChange={(e) => setField('allowed_shortage_pct', e.target.value)}
+                  placeholder="blank — use the mill default"
+                />
+                <span className="text-[10px] text-muted-foreground">
+                  Transit loss this customer accepts. Anything short beyond it is deductible.
+                </span>
+              </div>
+            )}
             {form.sale_type === 'PACKED' && (
               <div className="flex flex-col gap-1.5 sm:col-span-2">
                 <Label>Default packaging</Label>

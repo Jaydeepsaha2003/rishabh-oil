@@ -455,20 +455,27 @@ async function validateBd(v: Row): Promise<void> {
   const inactive = found.rows.find((r) => !n(r.active))
   if (inactive) throw new Error(`${String(inactive.name)} is marked inactive`)
 
-  // With more than one party the open amount has to be divided between them, and
-  // the parts have to come to the whole — a split that does not add up is worse
-  // than none, because each party's share would be quietly wrong.
+  // With more than one party the SANCTIONED amount has to be divided between
+  // them, and the parts have to come to the whole — a split that does not add
+  // up is worse than none, because each party's share would be quietly wrong.
+  //
+  // Sanctioned rather than open: what each party is on the bill for is its
+  // portion of the facility the NBFC granted against its invoices, which is
+  // fixed the day the bill is raised. The open amount is only what happens to
+  // be drawn against that facility right now — draw less today and every
+  // party's recorded share would have to be rewritten, which is plainly not
+  // what a share of a bill means.
   if (partyIds.length > 1) {
     const split = (v.party_amounts || {}) as Record<string, unknown>
     const given = partyIds.map((pid) => round2(n(split[String(pid)])))
     if (given.some((x) => x <= 0)) {
-      throw new Error('Give each party its share of the open amount')
+      throw new Error('Give each party its sanctioned amount')
     }
     const sum = round2(given.reduce((t, x) => t + x, 0))
-    const total = round2(n(v.amount))
+    const total = round2(bdCalc(v).sanctionedAmount)
     if (Math.abs(sum - total) > 0.05) {
       throw new Error(
-        `The parties' shares come to ${inr(sum)}, but the open amount is ${inr(total)} — they have to match`
+        `The parties' sanctioned amounts come to ${inr(sum)}, but the bill's sanctioned amount is ${inr(total)} — they have to match`
       )
     }
   }

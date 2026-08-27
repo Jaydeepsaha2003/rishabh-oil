@@ -208,6 +208,38 @@ app.whenReady().then(async () => {
     const c = getClient()
     await c.execute('ALTER TABLE bd_parties ADD COLUMN amount REAL NOT NULL DEFAULT 0')
   }).catch((e) => console.error('[bd] party split failed:', e))
+  // A FOR delivery is weighed again at the customer's end, and a little is
+  // always lost in transit — so a tolerance is agreed and only the shortage
+  // BEYOND it is anybody's fault. The purchase side has carried this since the
+  // beginning; the sales side had the weighbridge figure and no allowance to
+  // judge it against. Nullable on both, so every existing invoice and bargain
+  // keeps falling back to the mill-wide default exactly as it does today.
+  await runOnce('sales_shortage_v1', async () => {
+    const c = getClient()
+    for (const t of ['sales', 'sales_bargains']) {
+      // A column already there is the job already done, not a failure. Left to
+      // throw, runOnce never records the marker and the whole block is retried
+      // -- and logged -- on every launch for the life of the install.
+      await c
+        .execute(`ALTER TABLE ${t} ADD COLUMN allowed_shortage_pct REAL`)
+        .catch((e) => {
+          if (!/duplicate column/i.test(String((e as Error).message))) throw e
+        })
+    }
+  }).catch((e) => console.error('[sales] shortage allowance failed:', e))
+  // A hand-typed fix to a packed count and a real day's packing are two
+  // different events, and the register could not tell them apart -- it guessed
+  // from the sign, so a correction that ADDED stock passed for production.
+  // Recorded explicitly from here on, with who made it. Nullable, so every
+  // existing row keeps being read by the old guess and nothing restates itself.
+  await runOnce('sku_adj_kind_v1', async () => {
+    const c = getClient()
+    for (const col of ['kind TEXT', 'created_by TEXT']) {
+      await c.execute(`ALTER TABLE sku_adjustments ADD COLUMN ${col}`).catch((e) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+    }
+  }).catch((e) => console.error('[sku] adjustment kind failed:', e))
   startRevisionWatcher()
   registerIpc()
   registerUpdater(() => mainWindow)

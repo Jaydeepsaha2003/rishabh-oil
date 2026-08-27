@@ -314,6 +314,7 @@ export async function listSalesForUnloadDesk(companyIds?: number[]): Promise<Row
     SELECT s.id, s.invoice_no, s.invoice_group, s.sale_date, s.customer, s.customer_id,
            s.product_id, s.packaging_id, s.qty, s.uom, s.received_qty,
            s.dispatch_stage, s.status, s.freight_term, s.track_stock, s.is_trading,
+           s.allowed_shortage_pct, sb.allowed_shortage_pct AS bargain_allowed_shortage_pct,
            s.loaded_date, s.transit_date, s.unloaded_date, s.rejected_at, s.company_id,
            pr.name AS product_name, pr.material_type AS product_category,
            pr.category AS product_sub_category, pk.name AS packaging_name,
@@ -328,6 +329,7 @@ export async function listSalesForUnloadDesk(companyIds?: number[]): Promise<Row
     LEFT JOIN packagings pk ON pk.id = s.packaging_id
     LEFT JOIN customers cu ON cu.id = s.customer_id
     LEFT JOIN companies co ON co.id = s.company_id
+    LEFT JOIN sales_bargains sb ON sb.id = s.sales_bargain_id
     WHERE ${cos.length ? `s.company_id IN (${cos.join(',')})` : 's.company_id = ?'}
       AND COALESCE(s.freight_term, 'FREIGHT_ON_GOODS') = 'DLD'
       AND COALESCE(s.dispatch_stage, CASE WHEN s.status = 'done' THEN 'unloaded' ELSE 'pending' END) <> 'unloaded'
@@ -350,6 +352,9 @@ export async function listSales(companyIds?: number[]): Promise<Row[]> {
     sql: `
     SELECT s.*, pr.name AS product_name, pr.material_type AS product_category,
            pr.category AS product_sub_category, sb.bargain_no AS sales_bargain_no,
+           -- The allowance falls back invoice -> bargain -> mill default, so
+           -- the bargain's figure has to travel with the line.
+           sb.allowed_shortage_pct AS bargain_allowed_shortage_pct,
            pk.name AS packaging_name, tr.name AS transporter_name, cu.name AS customer_master,
            co.name AS company_name,
            COALESCE((SELECT SUM(cl.amount) FROM customer_ledger cl
@@ -596,8 +601,8 @@ export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_
     String(v.bargain_date)
   )
   const res = await getClient().execute({
-    sql: `INSERT INTO sales_bargains (company_id, bargain_no, manual_bargain_no, bargain_date, customer, customer_id, product_id, qty, uom, rate, rate_expiry_date, status, note, sale_type, sale_category, packaging_id, freight_term, gst_pct, gst_type)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO sales_bargains (company_id, bargain_no, manual_bargain_no, bargain_date, customer, customer_id, product_id, qty, uom, rate, rate_expiry_date, status, note, sale_type, sale_category, packaging_id, freight_term, gst_pct, gst_type, allowed_shortage_pct)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       bargain_no,
@@ -616,7 +621,8 @@ export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_
       v.packaging_id ? n(v.packaging_id) : null,
       v.freight_term === 'DLD' ? 'DLD' : 'FREIGHT_ON_GOODS',
       n(v.gst_pct),
-      v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST'
+      v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
+      shortagePct(v)
     ]
   })
   return { id: Number(res.lastInsertRowid), bargain_no }
@@ -653,7 +659,7 @@ export async function updateSalesBargain(id: number, v: Row): Promise<{ id: numb
   }
   await getClient().execute({
     sql: `UPDATE sales_bargains SET bargain_date = ?, customer = ?, customer_id = ?, product_id = ?, qty = ?, uom = ?,
-          rate = ?, rate_expiry_date = ?, note = ?, sale_type = ?, sale_category = ?, packaging_id = ?, freight_term = ?, gst_pct = ?, gst_type = ?, manual_bargain_no = ? WHERE id = ?`,
+          rate = ?, rate_expiry_date = ?, note = ?, sale_type = ?, sale_category = ?, packaging_id = ?, freight_term = ?, gst_pct = ?, gst_type = ?, manual_bargain_no = ?, allowed_shortage_pct = ? WHERE id = ?`,
     args: [
       v.bargain_date,
       v.customer || null,
@@ -671,6 +677,7 @@ export async function updateSalesBargain(id: number, v: Row): Promise<{ id: numb
       n(v.gst_pct),
       v.gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
       v.manual_bargain_no ? String(v.manual_bargain_no).trim() : null,
+      shortagePct(v),
       id
     ]
   })
@@ -846,6 +853,15 @@ async function resolveFreightQty(v: Row, qty: number): Promise<number> {
   return v.received_qty != null && n(v.received_qty) > 0 ? n(v.received_qty) : qty
 }
 
+// Blank means "no override" and must stay NULL, so the invoice keeps falling
+// back to its bargain and then to the mill-wide default. A typed 0 is a real
+// answer -- no tolerance at all -- and is not the same thing.
+function shortagePct(v: Row): number | null {
+  return v.allowed_shortage_pct != null && v.allowed_shortage_pct !== ''
+    ? Number(v.allowed_shortage_pct)
+    : null
+}
+
 // DLD deliveries: we manage the transporter, so post the freight to the
 // transporter ledger (we owe them) and recover it from the customer (they owe
 // us). Freight-on-goods deliveries post nothing. Replaces any prior entries.
@@ -948,8 +964,9 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   const res = await getClient().execute({
     sql: `INSERT INTO sales (company_id, sale_date, invoice_no, invoice_group, customer, customer_id, product_id, sales_bargain_id,
             qty, uom, rate, amount, gst_pct, gst_amount, gst_type, round_off, round_off_manual, tds_pct, tds_amount, status, dispatch_stage, track_stock, loaded_date, transit_date, unloaded_date, note, sale_type, packaging_id, boxes, pouches, freight_term,
-            transporter_id, transport_rate, transport_amount, is_trading, affects_stock, deduct_freight, rate_per_case)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            transporter_id, transport_rate, transport_amount, is_trading, affects_stock, deduct_freight, rate_per_case,
+            allowed_shortage_pct)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       getActiveCompanyId(),
       v.sale_date,
@@ -988,7 +1005,8 @@ export async function createSale(v: Row): Promise<{ id: number }> {
       isTrading ? 1 : 0,
       isTrading ? 0 : 1,
       v.deduct_freight ? 1 : 0,
-      n(v.rate_per_case) > 0 ? round2(n(v.rate_per_case)) : null
+      n(v.rate_per_case) > 0 ? round2(n(v.rate_per_case)) : null,
+      shortagePct(v)
     ]
   })
   const id = Number(res.lastInsertRowid)
@@ -1059,7 +1077,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
     sql: `UPDATE sales SET sale_date = ?, invoice_no = ?, customer = ?, customer_id = ?, product_id = ?, sales_bargain_id = ?,
           qty = ?, uom = ?, rate = ?, amount = ?, gst_pct = ?, gst_amount = ?, gst_type = ?, round_off = ?, round_off_manual = ?, tds_pct = ?, tds_amount = ?, status = ?, dispatch_stage = ?, track_stock = ?, loaded_date = ?, transit_date = ?, unloaded_date = ?, note = ?, sale_type = ?, packaging_id = ?, boxes = ?,
           pouches = ?, freight_term = ?, transporter_id = ?, transport_rate = ?, transport_amount = ?, deduct_freight = ?,
-          rate_per_case = ? WHERE id = ?`,
+          rate_per_case = ?, allowed_shortage_pct = ? WHERE id = ?`,
     args: [
       v.sale_date,
       v.invoice_no || null,
@@ -1095,6 +1113,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       transportAmount,
       v.deduct_freight ? 1 : 0,
       n(v.rate_per_case) > 0 ? round2(n(v.rate_per_case)) : null,
+      shortagePct(v),
       id
     ]
   })
@@ -1252,7 +1271,9 @@ function mergeInvoiceItem(header: Row, item: Row, group: string): Row {
     unloaded_date: header.unloaded_date,
     force_no_stock: header.force_no_stock,
     is_trading: header.is_trading,
-    deduct_freight: header.deduct_freight
+    deduct_freight: header.deduct_freight,
+    // Agreed for the whole delivery, not per line — one tanker, one tolerance.
+    allowed_shortage_pct: header.allowed_shortage_pct
   }
 }
 

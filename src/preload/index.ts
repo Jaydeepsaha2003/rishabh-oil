@@ -218,8 +218,14 @@ const api = {
   skuStock: {
     breakdown: (date?: string): Promise<Row[]> => ipcRenderer.invoke('skuStock:breakdown', { date }),
     list: (date?: string): Promise<Row[]> => ipcRenderer.invoke('skuStock:list', { date }),
-    adjust: (id: number, delta: number, note?: string, date?: string): Promise<{ id: number; on_hand: number }> =>
-      ipcRenderer.invoke('skuStock:adjust', { id, delta, note, date })
+    adjust: (
+      id: number,
+      delta: number,
+      note?: string,
+      date?: string,
+      kind?: string
+    ): Promise<{ id: number; on_hand: number }> =>
+      ipcRenderer.invoke('skuStock:adjust', { id, delta, note, date, kind })
   },
   transporterFreight: {
     list: (

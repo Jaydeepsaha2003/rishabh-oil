@@ -161,7 +161,13 @@ export interface Api {
   skuStock: {
     breakdown: (date?: string) => Promise<Row[]>
     list: (date?: string) => Promise<Row[]>
-    adjust: (id: number, delta: number, note?: string, date?: string) => Promise<{ id: number; on_hand: number }>
+    adjust: (
+      id: number,
+      delta: number,
+      note?: string,
+      date?: string,
+      kind?: string
+    ) => Promise<{ id: number; on_hand: number }>
   }
   transporterFreight: {
     list: (

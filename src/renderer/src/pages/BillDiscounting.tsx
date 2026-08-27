@@ -30,7 +30,7 @@ import { InfoTip } from '@/components/ui/tooltip'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { RowActions } from '@/components/ui/row-actions'
-import { formatDate, formatDateShort, formatINR, todayISO } from '@/lib/format'
+import { formatDate, formatDateShort, formatINR, formatNum, todayISO } from '@/lib/format'
 import { isTradingParty } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
@@ -173,6 +173,43 @@ function bdCalc(f: Row): {
 // form. A discounted bill is booked into ONE company's books and draws on that
 // company's invoices, so the company has to be settable without leaving the
 // form — the same way opening an LC does it.
+// One figure in the derived strip: what it is, what it comes to, and a word on
+// why. Read-only by construction — there is no input here to mistake for one.
+function Derived({
+  label,
+  value,
+  hint,
+  strong,
+  tone
+}: {
+  label: string
+  value: string
+  hint?: string
+  strong?: boolean
+  tone?: 'bad'
+}): React.JSX.Element {
+  return (
+    <div className="min-w-0">
+      <div className="text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div
+        className={cn(
+          'whitespace-nowrap tabular-nums',
+          strong ? 'text-[15px] font-bold' : 'text-[13px] font-semibold',
+          tone === 'bad' ? 'text-amber-700' : 'text-[#1a2c56]'
+        )}
+      >
+        {value}
+      </div>
+      {hint && <div className="text-[9.5px] leading-tight text-muted-foreground">{hint}</div>}
+    </div>
+  )
+}
+
+// The minus and the equals between them, so it reads as a sum.
+function Op({ children }: { children: React.ReactNode }): React.JSX.Element {
+  return <div className="self-center pt-1 text-[15px] font-semibold text-muted-foreground">{children}</div>
+}
+
 export function BillDiscounting({
   companies = [],
   activeCompany = 0,
@@ -390,6 +427,9 @@ export function BillDiscounting({
       purpose: r.purpose,
       invoice_amount: r.invoice_amount ?? '',
       amount: r.amount ?? '',
+      // Whatever was drawn on this bill was decided when it was raised. Marked
+      // as the user's own figure so the auto-fill below leaves it alone.
+      amount_touched: true,
       // Not editable on this form any more — it is stamped by Mark payment
       // received — but carried through so saving other terms cannot clear it.
       payment_received_date: r.payment_received_date || '',
@@ -484,6 +524,20 @@ export function BillDiscounting({
   }
 
   const preview = useMemo(() => (form ? bdCalc(form) : null), [form])
+
+  // Invoice less margin is the whole of what the NBFC will lend, and it is what
+  // is drawn in all but the exceptional case — so the form fills it in rather
+  // than asking for a number the two fields above already determine. Typing in
+  // the open amount stops this for good on that bill (amount_touched), because
+  // a deliberately smaller draw must not be overwritten by the next keystroke
+  // in the margin box.
+  useEffect(() => {
+    if (!form || form.amount_touched) return
+    const target = round2(bdCalc({ ...form, amount: 0 }).sanctionedAmount)
+    if (!(n(form.invoice_amount) > 0) || target <= 0) return
+    if (round2(n(form.amount)) === target) return
+    setForm((prev) => (prev && !prev.amount_touched ? { ...prev, amount: String(target) } : prev))
+  }, [form?.invoice_amount, form?.margin_pct, form?.amount_touched])
 
   async function save(): Promise<void> {
     if (!form) return
@@ -1542,11 +1596,20 @@ export function BillDiscounting({
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="flex flex-col gap-1.5 md:col-span-2 xl:col-span-1">
+                  <div
+                    className={cn(
+                      'flex flex-col gap-1.5',
+                      // One party is an ordinary field; several need the width to
+                      // list them with their amounts, so the cell takes the row.
+                      (Array.isArray(form.party_ids) ? form.party_ids : []).length > 1
+                        ? 'md:col-span-3 xl:col-span-4'
+                        : 'md:col-span-2 xl:col-span-1'
+                    )}
+                  >
                     <Label className="flex items-center gap-1">
                       {String(form.finance_type) === 'SID' ? 'Customer' : 'Supplier'}
                       {(Array.isArray(form.party_ids) ? form.party_ids : []).length > 1 ? 's *' : ' *'}
-                      <InfoTip text="One bill can be raised against several parties — a facility drawn on a batch of invoices from more than one of them. Picking adds; picking again removes. The FIRST one is the primary, which is the party the bill is filed under and the default for a repayment settled on a party's ledger." />
+                      <InfoTip text="One bill can be raised against several parties — a facility drawn on a batch of invoices from more than one of them. Picking adds; picking again removes. The FIRST one is the primary, which is the party the bill is filed under and the default for a repayment settled on a party's ledger. With more than one, each party's sanctioned amount is asked for below, and they must add up to the bill's sanctioned amount (invoice less margin)." />
                     </Label>
                     {/* Picking adds rather than replaces, so a bill covering
                         several parties no longer means losing the first. */}
@@ -1583,7 +1646,10 @@ export function BillDiscounting({
                             if (ids.length === 1) {
                               return formParties.find((x) => Number(x.id) === Number(ids[0]))?.name || '1 party'
                             }
-                            return `${ids.length} parties`
+                            // The names are listed below, so the trigger says
+                            // how many and invites another rather than repeating
+                            // a string of names it would only truncate.
+                            return `${ids.length} parties — pick to add or remove`
                           })()}
                         </span>
                       </SelectTrigger>
@@ -1593,113 +1659,134 @@ export function BillDiscounting({
                         ))}
                       </SelectContent>
                     </Select>
-                    {(Array.isArray(form.party_ids) ? form.party_ids : []).length > 0 && (
-                      <div className="flex flex-wrap gap-1">
-                        {(form.party_ids as number[]).map((pid, i) => (
-                          <button
-                            key={String(pid)}
-                            type="button"
-                            title={i === 0 ? 'Primary party — click to remove' : 'Remove this party'}
-                            onClick={() =>
-                              setForm((prev) => {
-                                const next = (Array.isArray(prev?.party_ids) ? prev!.party_ids : []).filter(
-                                  (x: number) => Number(x) !== Number(pid)
-                                )
-                                return { ...prev, party_ids: next, party_id: next.length ? String(next[0]) : '' }
-                              })
-                            }
-                            className={cn(
-                              'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
-                              i === 0
-                                ? 'bg-[#1a2c56] text-white hover:bg-[#24407e]'
-                                : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
-                            )}
-                          >
-                            {i === 0 && <span className="text-[9px] uppercase tracking-wide opacity-70">1st</span>}
-                            {formParties.find((x) => Number(x.id) === Number(pid))?.name || `#${pid}`}
-                            <span className="opacity-70">×</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  {/* Dividing the open amount between the parties. A facility
-                      drawn on invoices from three suppliers is not three equal
-                      shares, so it is asked for rather than assumed — and the
-                      parts have to come to the whole, since a split that does
-                      not add up makes every party's share quietly wrong. */}
-                  {(Array.isArray(form.party_ids) ? form.party_ids : []).length > 1 && (
-                    <div className="flex flex-col gap-1.5 md:col-span-2 xl:col-span-3">
-                      <Label className="flex items-center gap-1">
-                        Open amount per party
-                        <InfoTip text="How the open amount is divided between the parties on this bill. The shares must add up to the open amount." />
-                      </Label>
-                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                        {(form.party_ids as number[]).map((pid) => (
-                          <div key={String(pid)} className="flex items-center gap-2 rounded-md border bg-white px-2 py-1.5">
-                            <span className="min-w-0 flex-1 truncate text-[12px]">
-                              {formParties.find((x) => Number(x.id) === Number(pid))?.name || `#${pid}`}
-                            </span>
-                            <Input
-                              type="number"
-                              className="h-7 w-32 text-[12px] tabular-nums"
-                              value={String((form.party_amounts || {})[String(pid)] ?? '')}
-                              onChange={(e) =>
-                                setForm((prev) => ({
-                                  ...prev,
-                                  party_amounts: { ...(prev?.party_amounts || {}), [String(pid)]: e.target.value }
-                                }))
-                              }
-                            />
-                          </div>
-                        ))}
-                      </div>
-                      {(() => {
-                        const ids: number[] = Array.isArray(form.party_ids) ? form.party_ids : []
-                        const sum = round2(
-                          ids.reduce((t, pid) => t + n((form.party_amounts || {})[String(pid)]), 0)
-                        )
-                        const total = round2(n(form.amount))
-                        const gap = round2(total - sum)
-                        if (Math.abs(gap) < 0.05) {
-                          return (
-                            <div className="text-[11px] font-medium text-emerald-700">
-                              Shares add up to {formatINR(sum)} — matches the open amount
-                            </div>
+                    {/* Everything about the chosen parties in ONE place: who
+                        is on the bill, what each one's sanctioned amount is,
+                        and whether they add up. Picking, listing and
+                        dividing used to be three separate things on the form —
+                        the names appeared twice and the split was asked for in a
+                        different section from the amount it divides. */}
+                    {(Array.isArray(form.party_ids) ? form.party_ids : []).length > 0 && (() => {
+                      const ids: number[] = Array.isArray(form.party_ids) ? form.party_ids : []
+                      const many = ids.length > 1
+                      const nameOf = (pid: number): string =>
+                        formParties.find((x) => Number(x.id) === Number(pid))?.name || `#${pid}`
+                      const drop = (pid: number): void =>
+                        setForm((prev) => {
+                          const next = (Array.isArray(prev?.party_ids) ? prev!.party_ids : []).filter(
+                            (x: number) => Number(x) !== Number(pid)
                           )
-                        }
-                        return (
-                          <div className="flex items-center gap-2 text-[11px] font-medium text-destructive">
-                            <span>
-                              Shares come to {formatINR(sum)} against an open amount of {formatINR(total)} —{' '}
-                              {gap > 0 ? `${formatINR(gap)} still to allocate` : `${formatINR(-gap)} over`}
-                            </span>
-                            {ids.length > 0 && (
+                          const amounts = { ...(prev?.party_amounts || {}) }
+                          delete amounts[String(pid)]
+                          return {
+                            ...prev,
+                            party_ids: next,
+                            party_id: next.length ? String(next[0]) : '',
+                            party_amounts: amounts
+                          }
+                        })
+                      const sum = round2(ids.reduce((t, pid) => t + n((form.party_amounts || {})[String(pid)]), 0))
+                      // Divided by SANCTIONED amount, not by what is drawn: a
+                      // party's share of the bill is its portion of the facility
+                      // granted against its invoices, and that does not move
+                      // when less is drawn against it today.
+                      const total = round2(n(preview?.sanctionedAmount))
+                      const gap = round2(total - sum)
+                      return (
+                        <div className="overflow-hidden rounded-lg border border-[#e5dfc8] bg-white">
+                          {ids.map((pid, i) => (
+                            <div
+                              key={String(pid)}
+                              className="flex items-center gap-2 border-b border-dashed border-[#e5dfc8] px-2.5 py-1.5 last:border-b-0"
+                            >
+                              <span
+                                className={cn(
+                                  'shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide',
+                                  i === 0 ? 'bg-[#1a2c56] text-white' : 'bg-slate-200 text-slate-600'
+                                )}
+                                title={i === 0 ? 'Primary — the party this bill is filed under' : undefined}
+                              >
+                                {i === 0 ? 'Primary' : i + 1}
+                              </span>
+                              <span className="min-w-0 flex-1 truncate text-[13px]">{nameOf(pid)}</span>
+                              {many && (
+                                <Input
+                                  type="number"
+                                  placeholder="Sanctioned amt"
+                                  className="h-7 w-40 text-[12px] tabular-nums"
+                                  value={String((form.party_amounts || {})[String(pid)] ?? '')}
+                                  onChange={(e) =>
+                                    setForm((prev) => ({
+                                      ...prev,
+                                      party_amounts: {
+                                        ...(prev?.party_amounts || {}),
+                                        [String(pid)]: e.target.value
+                                      }
+                                    }))
+                                  }
+                                />
+                              )}
                               <Button
                                 type="button"
-                                variant="outline"
-                                className="h-6 px-2 text-[11px]"
-                                title="Divide the open amount equally between the parties"
-                                onClick={() => {
-                                  const each = Math.floor((total / ids.length) * 100) / 100
-                                  const amounts: Record<string, string> = {}
-                                  ids.forEach((pid, i) => {
-                                    // The last one absorbs the rounding, so the
-                                    // parts always add to the whole exactly.
-                                    amounts[String(pid)] =
-                                      i === ids.length - 1 ? String(round2(total - each * (ids.length - 1))) : String(each)
-                                  })
-                                  setForm((prev) => ({ ...prev, party_amounts: amounts }))
-                                }}
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 w-6 shrink-0 p-0 text-muted-foreground hover:bg-rose-50 hover:text-rose-700"
+                                title={`Remove ${nameOf(pid)} from this bill`}
+                                onClick={() => drop(pid)}
                               >
-                                Split equally
+                                ×
                               </Button>
-                            )}
-                          </div>
-                        )
-                      })()}
-                    </div>
-                  )}
+                            </div>
+                          ))}
+                          {many && (
+                            <div
+                              className={cn(
+                                'flex flex-wrap items-center gap-2 border-t px-2.5 py-1.5 text-[11px]',
+                                total > 0 && Math.abs(gap) < 0.05
+                                  ? 'bg-emerald-50 text-emerald-800'
+                                  : 'bg-amber-50 text-amber-900'
+                              )}
+                            >
+                              <span className="font-medium">
+                                Sanctioned {formatINR(sum)} of {formatINR(total)}
+                              </span>
+                              <span>
+                                {total <= 0
+                                  ? '· enter the invoice amount first'
+                                  : Math.abs(gap) < 0.05
+                                    ? '· adds up'
+                                    : gap > 0
+                                      ? `· ${formatINR(gap)} still to allocate`
+                                      : `· ${formatINR(-gap)} over the sanctioned amount`}
+                              </span>
+                              {Math.abs(gap) >= 0.05 && total > 0 && (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  className="ml-auto h-6 bg-white px-2 text-[11px]"
+                                  title="Divide the sanctioned amount equally between the parties"
+                                  onClick={() => {
+                                    const each = Math.floor((total / ids.length) * 100) / 100
+                                    const amounts: Record<string, string> = {}
+                                    ids.forEach((pid, i) => {
+                                      // The last one absorbs the rounding, so
+                                      // the parts always add to the whole.
+                                      amounts[String(pid)] =
+                                        i === ids.length - 1
+                                          ? String(round2(total - each * (ids.length - 1)))
+                                          : String(each)
+                                    })
+                                    setForm((prev) => ({ ...prev, party_amounts: amounts }))
+                                  }}
+                                >
+                                  Split equally
+                                </Button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
+                  </div>
                   <div className="flex flex-col gap-1.5">
                     <Label className="flex items-center gap-1">
                       BD no *
@@ -1796,6 +1883,47 @@ export function BillDiscounting({
                     </Label>
                     <Input type="number" value={form.margin_pct ?? ''} onChange={(e) => setForm((p) => ({ ...p, margin_pct: e.target.value }))} />
                   </div>
+                  {/* The margin and the sanctioned amount are not questions —
+                      the invoice and the margin % already answer them. So they
+                      are worked out and shown, as a line of arithmetic rather
+                      than as two more boxes that look like they want typing
+                      into. It also puts the sanctioned figure in front of the
+                      user at the moment it is decided, instead of only in the
+                      summary further down the form. */}
+                  {n(form.invoice_amount) > 0 && preview && (
+                    <div className="md:col-span-3 xl:col-span-4">
+                      <div className="flex flex-wrap items-stretch gap-x-3 gap-y-2 rounded-lg border border-[#e5dfc8] bg-[#f7f4e8] px-3 py-2">
+                        <Derived label="Invoice" value={formatINR(form.invoice_amount)} />
+                        <Op>−</Op>
+                        <Derived
+                          label={`Margin ${formatNum(n(form.margin_pct))}%`}
+                          value={formatINR(preview.marginAmount)}
+                          hint="held back by the NBFC"
+                        />
+                        <Op>=</Op>
+                        <Derived
+                          label="Sanctioned amt"
+                          value={formatINR(preview.sanctionedAmount)}
+                          hint="the most this bill can draw"
+                          strong
+                        />
+                        <div className="hidden w-px self-stretch bg-[#d9d2b8] sm:block" />
+                        <Derived
+                          label="Drawn now"
+                          value={formatINR(preview.openAmount)}
+                          hint={
+                            preview.undrawnAmount > 0.004
+                              ? `${formatINR(preview.undrawnAmount)} still available`
+                              : preview.undrawnAmount < -0.004
+                                ? `${formatINR(Math.abs(preview.undrawnAmount))} over the sanction`
+                                : 'fully drawn'
+                          }
+                          tone={preview.undrawnAmount < -0.004 ? 'bad' : undefined}
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex flex-col gap-1.5">
                     <Label>Interest % p.a.</Label>
                     <Input type="number" value={form.interest_pct ?? ''} onChange={(e) => setForm((p) => ({ ...p, interest_pct: e.target.value }))} />

@@ -1,6 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
 import { getActiveCompanyId } from './company'
+import { getCurrentUser } from './currentUser'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -63,19 +64,92 @@ export async function listSkuStock(date?: string): Promise<Row[]> {
     ORDER BY pk.name COLLATE NOCASE ASC`,
     args: [cid, cid, cid, d, d, cid, d, d, cid, d, cid, d]
   })
+  // Only worth replaying the history when something is actually negative, but
+  // that is not known until the rows are mapped -- and the check is one query
+  // either way, so it is simply always done.
+  const runs = await negativeRuns(cid, d)
   return toPlain(res).map((r) => {
     const opening = round(n(r.added_before) - n(r.sold_before))
     const addedOn = round(n(r.added_on))
     const soldOn = round(n(r.sold_on))
+    const onHand = d ? round(opening + addedOn - soldOn) : round(n(r.added) - n(r.sold))
+    const run = onHand < -1e-6 ? runs.get(n(r.id)) : undefined
     return {
       ...r,
       opening,
       added_on: addedOn,
       sold_on: soldOn,
       // Day view: closing for that date. Otherwise the running balance.
-      on_hand: d ? round(opening + addedOn - soldOn) : round(n(r.added) - n(r.sold))
+      on_hand: onHand,
+      negative_since: run?.negative_since ?? null,
+      negative_trigger: run?.negative_trigger ?? null
     }
   })
+}
+
+// How long a SKU has been below zero.
+//
+// "Closing −97" says a count is wrong; it does not say WHEN it went wrong, and
+// that is the only thing that helps -- the day it first went under is the day
+// whose paperwork has the answer, and everything after it is just the same
+// error being carried forward. So the balance is replayed day by day from the
+// first movement, and what comes back is the start of the run it is CURRENTLY
+// in: not the first time it ever dipped, but the last time it went under
+// without coming back.
+//
+// One query for every SKU, and the walk is in JS -- SQLite window functions
+// would do it too, but not legibly, and this runs over a few hundred rows.
+async function negativeRuns(cid: number, upto: string | null): Promise<Map<number, Row>> {
+  const c = getClient()
+  const res = await c.execute({
+    sql: `
+    SELECT sku, d, SUM(adj) AS adj, SUM(sale) AS sale FROM (
+      SELECT packaging_id AS sku, substr(adj_date, 1, 10) AS d, SUM(delta) AS adj, 0 AS sale
+        FROM sku_adjustments
+       WHERE company_id = ? AND (? IS NULL OR substr(adj_date, 1, 10) <= ?)
+       GROUP BY packaging_id, d
+      UNION ALL
+      SELECT s.packaging_id, substr(s.sale_date, 1, 10), 0,
+             SUM(s.boxes * pk.pouches_per_box + s.pouches)
+        FROM sales s JOIN packagings pk ON pk.id = s.packaging_id
+       WHERE s.sale_type = 'PACKED' AND s.status = 'done' AND s.company_id = ?
+         AND (? IS NULL OR substr(s.sale_date, 1, 10) <= ?)
+       GROUP BY s.packaging_id, substr(s.sale_date, 1, 10)
+    )
+    GROUP BY sku, d
+    ORDER BY sku, d`,
+    args: [cid, upto, upto, cid, upto, upto]
+  })
+
+  const byS = new Map<number, Row[]>()
+  for (const r of toPlain(res)) {
+    const k = n(r.sku)
+    byS.set(k, [...(byS.get(k) || []), r])
+  }
+
+  const out = new Map<number, Row>()
+  for (const [sku, days] of byS) {
+    let bal = 0
+    let since: string | null = null
+    let trigger: Row | null = null
+    for (const day of days) {
+      const before = bal
+      bal = Math.round((bal + n(day.adj) - n(day.sale)) * 1e6) / 1e6
+      if (bal < -1e-6) {
+        // Only the START of a run is recorded; a day that was already negative
+        // did not push it under, it inherited it.
+        if (since === null) {
+          since = String(day.d)
+          trigger = { ...day, before }
+        }
+      } else {
+        since = null
+        trigger = null
+      }
+    }
+    if (since) out.set(sku, { negative_since: since, negative_trigger: trigger })
+  }
+  return out
 }
 
 // Where each figure on the packed-SKU register comes from.
@@ -104,9 +178,13 @@ export async function skuMovementBreakdown(date?: string): Promise<Row[]> {
     args: [cid, d, d]
   })
 
-  // Packing/correction entries, by SKU.
+  // Packing / correction entries, by SKU. `kind` is NULL on everything entered
+  // before it was asked for, so it falls back to the old guess from the sign --
+  // which is right for the negatives and merely unproven for the positives.
   const packed = await c.execute({
-    sql: `SELECT packaging_id AS sku, adj_date, delta, note
+    sql: `SELECT packaging_id AS sku, adj_date, delta, note, created_by, created_at,
+                 COALESCE(kind, CASE WHEN delta < 0 THEN 'correction' ELSE 'packing' END) AS kind,
+                 kind AS kind_stated
           FROM sku_adjustments
           WHERE company_id = ? AND (? IS NULL OR substr(adj_date, 1, 10) = ?)
           ORDER BY adj_date, id`,
@@ -130,7 +208,8 @@ export async function adjustSkuStock(
   packagingId: number,
   delta: number,
   note?: string,
-  date?: string
+  date?: string,
+  kind?: string
 ): Promise<{ id: number; on_hand: number }> {
   const c = getClient()
   const pid = n(packagingId)
@@ -140,10 +219,24 @@ export async function adjustSkuStock(
   const pkg = await c.execute({ sql: 'SELECT id FROM packagings WHERE id = ?', args: [pid] })
   if (!pkg.rows.length) throw new Error('SKU not found')
   const adjDate = (date && String(date).slice(0, 10)) || todayISO()
+  // A correction has to say why -- an unexplained hand-typed fix to a stock
+  // figure is the thing the indication exists to catch.
+  const k = String(kind) === 'correction' ? 'correction' : 'packing'
+  if (k === 'correction' && !String(note || '').trim()) {
+    throw new Error('Say what is being corrected — a correction without a reason cannot be checked later')
+  }
   await c.execute({
-    sql: `INSERT INTO sku_adjustments (company_id, packaging_id, delta, adj_date, note)
-          VALUES (?, ?, ?, ?, ?)`,
-    args: [getActiveCompanyId(), pid, d, adjDate, note ? String(note).trim() : null]
+    sql: `INSERT INTO sku_adjustments (company_id, packaging_id, delta, adj_date, note, kind, created_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      getActiveCompanyId(),
+      pid,
+      d,
+      adjDate,
+      note ? String(note).trim() : null,
+      k,
+      getCurrentUser().username || null
+    ]
   })
   const rows = await listSkuStock()
   const cur = rows.find((r) => Number(r.id) === pid)

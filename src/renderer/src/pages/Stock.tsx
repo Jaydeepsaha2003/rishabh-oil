@@ -52,15 +52,19 @@ function CellWithWorkings({
   className,
   title,
   lines,
-  footer
+  footer,
+  extra
 }: {
   value: string
   className?: string
   title: string
   lines: { left: string; mid?: string; right: string }[]
   footer?: string
+  // A block below the footer, for anything that is more than one more line —
+  // the negative-since panel builds its own rows.
+  extra?: React.ReactNode
 }): React.JSX.Element {
-  if (!lines.length) return <span className={className}>{value}</span>
+  if (!lines.length && !extra) return <span className={className}>{value}</span>
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -86,9 +90,18 @@ function CellWithWorkings({
           {lines.length > 12 && <div className="text-[10px] text-white/50">… {lines.length - 12} more</div>}
         </div>
         {footer && <div className="mt-1 border-t border-white/20 pt-1 text-[10px] text-white/70">{footer}</div>}
+        {extra}
       </TooltipContent>
     </Tooltip>
   )
+}
+
+// Whole days between two ISO dates.
+function daysApart(from: string, to: string): number {
+  const a = Date.parse(`${String(from).slice(0, 10)}T00:00:00`)
+  const b = Date.parse(`${String(to).slice(0, 10)}T00:00:00`)
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0
+  return Math.max(0, Math.round((b - a) / 86400000))
 }
 
 // How a packed SKU is counted. The register stores and shows PIECES (pouches,
@@ -1323,8 +1336,13 @@ function SkuStock(): React.JSX.Element {
     date: string
     // Which unit the typed figure is in. Stored stock is always pieces.
     unit: 'case' | 'piece'
+    // Real packing off the line, or a hand fix to a wrong count. The register
+    // used to guess this from the sign, which made every correction that ADDED
+    // stock look like a day's production.
+    kind: 'packing' | 'correction'
   }>({
     mode: 'add',
+    kind: 'packing',
     amount: '',
     note: '',
     date: todayISO(),
@@ -1377,7 +1395,7 @@ function SkuStock(): React.JSX.Element {
     // Default the entry to the day being viewed, so day-wise updates land there.
     // Counted in cases by default: that is how packed output comes off the line,
     // and it is what was being typed into a field that meant pieces.
-    setAdjustForm({ mode: 'add', amount: '', note: '', date: dayMode ? date : todayISO(), unit: 'case' })
+    setAdjustForm({ mode: 'add', kind: 'packing', amount: '', note: '', date: dayMode ? date : todayISO(), unit: 'case' })
     setError(null)
   }
 
@@ -1385,6 +1403,12 @@ function SkuStock(): React.JSX.Element {
     if (!adjustRow) return
     const amt = Number(adjustForm.amount)
     if (!amt || amt <= 0) { setError('Enter a quantity greater than zero'); return }
+    // Refused here as well as in the main process, so the message lands on the
+    // field rather than arriving as a failed save.
+    if (adjustForm.kind === 'correction' && !adjustForm.note.trim()) {
+      setError('Say what is being corrected — a correction without a reason cannot be checked later')
+      return
+    }
     // The register counts, and this column stores, PIECES. A case of 40 pouches
     // is 40 of them, so an entry made in cases is converted here rather than
     // being stored as if 40 pouches were 40 cases.
@@ -1393,7 +1417,13 @@ function SkuStock(): React.JSX.Element {
     setSaving(true)
     setError(null)
     try {
-      await window.api.skuStock.adjust(Number(adjustRow.id), delta, adjustForm.note || undefined, adjustForm.date || undefined)
+      await window.api.skuStock.adjust(
+        Number(adjustRow.id),
+        delta,
+        adjustForm.note || undefined,
+        adjustForm.date || undefined,
+        adjustForm.kind
+      )
       toast.success(
         `${adjustForm.mode === 'add' ? 'Added' : 'Removed'} ${formatNum(Math.abs(pieces))} ${pieceLabel(adjustRow)}` +
           `${adjustForm.unit === 'case' && perCase(adjustRow) > 1 ? ` (${formatNum(amt)} × ${caseLabel(adjustRow)})` : ''} — ${adjustRow.name}`
@@ -1722,28 +1752,49 @@ function SkuStock(): React.JSX.Element {
                     mid: `${dr.customer || 'Unknown'} · ${dr.invoice_no || 'no invoice no'}`,
                     right: asCases(Number(dr.pieces) || 0)
                   }))
-                  const inLines = ((part?.packed_in || []) as Row[])
-                    .filter((a) => Number(a.delta) > 0)
+                  // A correction is not packing, and lumping the two together
+                  // is how a hand-typed fix passes for production. It is split
+                  // on what the entry SAYS it is now that it is asked for; the
+                  // sign is only the fallback for entries made before that, and
+                  // the backend already applies it.
+                  const adjustments = (part?.packed_in || []) as Row[]
+                  const fixes = adjustments.filter((a) => String(a.kind) === 'correction')
+                  const inLines = adjustments
+                    .filter((a) => String(a.kind) !== 'correction')
                     .map((a) => ({
                       left: formatDateShort(a.adj_date),
                       mid: String(a.note || 'Packed'),
                       right: asCases(Number(a.delta) || 0)
                     }))
-                  // A correction is not packing, and lumping the two together is
-                  // how a hand-typed fix passes for production.
-                  const fixLines = ((part?.packed_in || []) as Row[])
-                    .filter((a) => Number(a.delta) < 0)
-                    .map((a) => ({
-                      left: formatDateShort(a.adj_date),
-                      mid: String(a.note || 'Correction'),
-                      right: asCases(Number(a.delta) || 0)
-                    }))
+                  const fixLines = fixes.map((a) => ({
+                    left: formatDateShort(a.adj_date),
+                    // Who made it matters more than anything else on the line —
+                    // a correction is somebody's judgement, not a measurement.
+                    mid: `${a.note || 'Correction'}${a.created_by ? ` · ${a.created_by}` : ''}`,
+                    right: `${Number(a.delta) > 0 ? '+' : ''}${asCases(Number(a.delta) || 0)}`
+                  }))
+                  const fixNet = fixes.reduce((t, a) => t + (Number(a.delta) || 0), 0)
                   return (
                     <TableRow
                       key={r.id as number}
                       className={cn('border-b', i % 2 === 1 && 'bg-muted/30', touched && 'bg-sky-50/70 hover:bg-sky-50')}
                     >
-                      <TableCell className="font-medium">{r.name}</TableCell>
+                      <TableCell className="font-medium">
+                        <div className="flex items-center gap-1.5">
+                          <span>{r.name}</span>
+                          {/* A correction that only shows up if somebody thinks
+                              to hover is a correction nobody reviews. */}
+                          {fixes.length > 0 && (
+                            <CellWithWorkings
+                              value={fixes.length === 1 ? 'Corrected' : `Corrected ×${fixes.length}`}
+                              className="shrink-0 rounded bg-amber-100 px-1.5 py-px text-[9.5px] font-bold uppercase tracking-wide text-amber-800 no-underline"
+                              title={dayMode ? `Hand corrections on ${formatDate(date)}` : 'Hand corrections — all time'}
+                              lines={fixLines}
+                              footer={`Net ${fixNet > 0 ? '+' : ''}${asCases(fixNet)} by hand — typed in, not counted off a production or despatch entry.`}
+                            />
+                          )}
+                        </div>
+                      </TableCell>
                       <TableCell className="whitespace-nowrap text-muted-foreground">{unitLabel(r)}</TableCell>
                       {dayMode && (
                         <TableCell className="text-right tabular-nums text-muted-foreground">
@@ -1811,8 +1862,53 @@ function SkuStock(): React.JSX.Element {
                           }
                           footer={
                             onHand < -1e-6
-                              ? `= ${asCases(onHand)} — below zero, so more has gone out than was ever packed in`
+                              ? r.negative_since
+                                ? `= ${asCases(onHand)} — below zero since ${formatDate(r.negative_since)}` +
+                                  `${daysApart(String(r.negative_since), dayMode ? date : todayISO()) > 0 ? `, ${daysApart(String(r.negative_since), dayMode ? date : todayISO())} days now` : ' — today'}` +
+                                  `. Every figure since carries the same error forward.`
+                                : `= ${asCases(onHand)} — below zero, so more has gone out than was ever packed in`
                               : `= ${asCases(onHand)} · ${formatNum(skuMT(r))} MT`
+                          }
+                          extra={
+                            onHand < -1e-6 && r.negative_since ? (
+                              <div className="mt-1.5 border-t border-white/20 pt-1.5">
+                                <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-widest text-rose-300">
+                                  Went negative on {formatDate(r.negative_since)}
+                                </div>
+                                {/* The day it first went under is the day whose
+                                    paperwork has the answer — so the balance
+                                    either side of that day is spelled out
+                                    rather than left to be worked back to. */}
+                                <div className="space-y-0.5 text-[11px]">
+                                  <div className="flex items-baseline gap-2">
+                                    <span className="text-white/60">Stood at</span>
+                                    <span className="ml-auto font-semibold tabular-nums">
+                                      {asCases(Number(r.negative_trigger?.before) || 0)}
+                                    </span>
+                                  </div>
+                                  {Number(r.negative_trigger?.sale) > 0 && (
+                                    <div className="flex items-baseline gap-2">
+                                      <span className="text-white/60">Despatched that day</span>
+                                      <span className="ml-auto font-semibold tabular-nums text-rose-300">
+                                        −{asCases(Number(r.negative_trigger?.sale) || 0)}
+                                      </span>
+                                    </div>
+                                  )}
+                                  {Math.abs(Number(r.negative_trigger?.adj) || 0) > 1e-6 && (
+                                    <div className="flex items-baseline gap-2">
+                                      <span className="text-white/60">Packed / corrected that day</span>
+                                      <span className="ml-auto font-semibold tabular-nums">
+                                        {Number(r.negative_trigger?.adj) > 0 ? '+' : ''}
+                                        {asCases(Number(r.negative_trigger?.adj) || 0)}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="mt-1 text-[10px] text-white/70">
+                                  It has not been back above zero since. Fix that day and the rest follows.
+                                </div>
+                              </div>
+                            ) : undefined
                           }
                         />
                       </TableCell>
@@ -1871,6 +1967,35 @@ function SkuStock(): React.JSX.Element {
             const newHand = onHand + delta
             return (
               <div className="space-y-3">
+                {/* Asked before anything else, because it changes what the
+                    entry MEANS. Packing is production; a correction is somebody
+                    deciding the count was wrong, and the register now says so
+                    on the row rather than leaving it to look like output. */}
+                <div className="flex gap-2">
+                  {(
+                    [
+                      ['packing', 'Packing', 'Real packs off the line'],
+                      ['correction', 'Correction', 'The count was wrong']
+                    ] as const
+                  ).map(([k, label, hint]) => (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => setAdjustForm((p) => ({ ...p, kind: k }))}
+                      className={cn(
+                        'flex-1 rounded-md border px-3 py-2 text-left',
+                        adjustForm.kind === k
+                          ? k === 'correction'
+                            ? 'border-amber-500 bg-amber-50 text-amber-900'
+                            : 'border-sky-500 bg-sky-50 text-sky-900'
+                          : 'hover:bg-muted/40'
+                      )}
+                    >
+                      <div className="text-sm font-medium">{label}</div>
+                      <div className="text-[10.5px] leading-tight text-muted-foreground">{hint}</div>
+                    </button>
+                  ))}
+                </div>
                 <div className="flex gap-2">
                   <button type="button" onClick={() => setAdjustForm((p) => ({ ...p, mode: 'add' }))} className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'add' ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'hover:bg-muted/40')}>+ Add packs</button>
                   <button type="button" onClick={() => setAdjustForm((p) => ({ ...p, mode: 'remove' }))} className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'remove' ? 'border-red-500 bg-red-50 text-red-700' : 'hover:bg-muted/40')}>− Remove packs</button>
@@ -1926,8 +2051,23 @@ function SkuStock(): React.JSX.Element {
                   <DatePicker value={adjustForm.date} onChange={(v) => setAdjustForm((p) => ({ ...p, date: v || '' }))} />
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <Label>Note (optional)</Label>
-                  <Input value={adjustForm.note} onChange={(e) => setAdjustForm((p) => ({ ...p, note: e.target.value }))} placeholder="e.g. packed today / stock correction" />
+                  <Label>
+                    {adjustForm.kind === 'correction' ? 'What is being corrected *' : 'Note (optional)'}
+                  </Label>
+                  <Input
+                    value={adjustForm.note}
+                    onChange={(e) => setAdjustForm((p) => ({ ...p, note: e.target.value }))}
+                    placeholder={
+                      adjustForm.kind === 'correction'
+                        ? 'e.g. counted in cases by mistake on 12-08'
+                        : 'e.g. packed today'
+                    }
+                  />
+                  {adjustForm.kind === 'correction' && (
+                    <span className="text-[10.5px] text-muted-foreground">
+                      This will be flagged on the register as a hand correction, against your name.
+                    </span>
+                  )}
                 </div>
                 <div className="rounded-md bg-muted px-3 py-2 text-sm">
                   On hand: <span className="tabular-nums">{formatNum(onHand)}</span> →{' '}

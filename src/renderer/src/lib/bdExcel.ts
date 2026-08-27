@@ -92,7 +92,7 @@ export async function exportBdRegister(
       finance_type: TYPE_LABEL[String(b.finance_type || '')] || b.finance_type || '',
       nbfc: b.nbfc_name || '',
       // Several parties are named in full here; each also gets its own row below
-      // with its share.
+      // with its sanctioned amount.
       party: n(b.party_count) > 1 ? String(b.party_names || b.party_name || '') : b.party_name || '—',
       party_count: n(b.party_count) > 1 ? n(b.party_count) : '',
       purpose: PURPOSE_LABEL[String(b.purpose || '')] || b.purpose || '',
@@ -126,11 +126,11 @@ export async function exportBdRegister(
   })
 
   // A bill raised against several parties gets one row per party underneath it,
-  // carrying that party's share of the open amount. Excel puts them on an
+  // carrying that party's sanctioned amount. Excel puts them on an
   // outline level, so the +/- handle in the margin collapses them and the sheet
   // reads as one row per bill again.
   //
-  // Interleaved rather than put on a separate sheet: the share belongs directly
+  // Interleaved rather than put on a separate sheet: the split belongs directly
   // under the bill it divides, and a reader scanning the register should not
   // have to cross-reference another tab to see who the money is for.
   const partiesByBill = new Map<string, Row[]>()
@@ -152,8 +152,9 @@ export async function exportBdRegister(
         party: `   ${pr.name || 'Unknown party'}`,
         purpose: '',
         stage: '',
-        // The party's share of what was drawn — the one figure that is its own.
-        open_amount: n(pr.amount) || '',
+        // The party's slice of the facility — the one figure that is its own,
+        // and it sits under Sanctioned amt because that is what was divided.
+        sanctioned_amount: n(pr.amount) || '',
         note: ''
       })
     }

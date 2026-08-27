@@ -592,8 +592,12 @@ export function registerIpc(): void {
 
   handle('skuStock:breakdown', (_e, { date }: { date?: string } = {}) => skuMovementBreakdown(date))
   handle('skuStock:list', (_e, args?: { date?: string }) => listSkuStock(args?.date))
-  handle('skuStock:adjust', (_e, { id, delta, note, date }: { id: number; delta: number; note?: string; date?: string }) =>
-    adjustSkuStock(id, delta, note, date)
+  handle(
+    'skuStock:adjust',
+    (
+      _e,
+      { id, delta, note, date, kind }: { id: number; delta: number; note?: string; date?: string; kind?: string }
+    ) => adjustSkuStock(id, delta, note, date, kind)
   )
 
   handle(
