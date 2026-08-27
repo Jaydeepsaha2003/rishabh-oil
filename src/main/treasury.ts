@@ -733,6 +733,22 @@ export async function deleteBdPaymentIn(paymentInId: number): Promise<{ id: numb
   return { id: paymentInId }
 }
 
+// Every LC repayment in the active company, for the Excel export's second
+// sheet. One query, not one per LC — the export would otherwise fire a query
+// per row of the register.
+export async function listAllLcRepayments(): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT r.*, l.lc_no, l.bank, s.name AS supplier_name
+          FROM lc_repayments r
+          JOIN letters_of_credit l ON l.id = r.lc_id
+          LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+          WHERE l.company_id = ?
+          ORDER BY l.lc_no, r.repay_date, r.id`,
+    args: [getActiveCompanyId()]
+  })
+  return toPlain(res)
+}
+
 export async function listLcPaymentIns(lcId: number): Promise<Row[]> {
   const res = await getClient().execute({
     sql: 'SELECT * FROM lc_payment_ins WHERE lc_id = ? ORDER BY id DESC',

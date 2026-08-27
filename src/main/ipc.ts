@@ -67,7 +67,7 @@ import {
   createStockTransfer,
   deleteStockTransfer
 } from './stock'
-import { stockCountSheet, listStockCounts, saveStockCounts } from './stockcount'
+import { stockCountSheet, listStockCounts, saveStockCounts, previousStockCount } from './stockcount'
 import { listSkuStock, adjustSkuStock, skuMovementBreakdown } from './skustock'
 import { listNotes, listNoteItems, createNote, updateNote, deleteNote } from './notes'
 import { daybook } from './daybook'
@@ -87,7 +87,8 @@ import {
   postBdPaymentIn,
   listBdPaymentIns,
   deleteBdPaymentIn,
-  listBdOpenTradingInvoices
+  listBdOpenTradingInvoices,
+  listAllLcRepayments
 } from './treasury'
 import {
   createVoucher,
@@ -159,7 +160,7 @@ import {
   unreconcileBankLine,
   setBankLineSubEntry
 } from './bankRecon'
-import { listBd, createBd, updateBd, deleteBd, repayBd, reopenBd, postBdUpfrontInterest, bdKpis, listBdRepayments, deleteBdRepayment, markBdPaymentReceived, unmarkBdPaymentReceived, listAllBdRepayments, listBdLinkedOrders, bdLimits, setBdCombinedLimit } from './billDiscounting'
+import { listBd, createBd, updateBd, deleteBd, repayBd, reopenBd, postBdUpfrontInterest, bdKpis, listBdRepayments, deleteBdRepayment, markBdPaymentReceived, unmarkBdPaymentReceived, listAllBdRepayments, listBdLinkedOrders, bdLimits, setBdCombinedLimit, listBdParties } from './billDiscounting'
 import {
   listTransporterFreight,
   transporterFreightKpis,
@@ -342,7 +343,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^bd:allRepayments$|^bd:linkedOrders$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entityHistory$|^trading:list$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^stockCount:previous$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entityHistory$|^trading:list$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -582,6 +583,7 @@ export function registerIpc(): void {
   handle('stock:transfers', () => listStockTransfers())
   handle('stock:transfer', (_e, { values }: { values: Row }) => createStockTransfer(values))
   handle('stock:deleteTransfer', (_e, { id }: { id: number }) => deleteStockTransfer(id))
+  handle('stockCount:previous', (_e, { date }: { date: string }) => previousStockCount(date))
   handle('stockCount:sheet', (_e, { date }: { date: string }) => stockCountSheet(date))
   handle('stockCount:list', (_e, { date }: { date: string }) => listStockCounts(date))
   handle('stockCount:save', (_e, { date, items }: { date: string; items: Row[] }) =>
@@ -753,6 +755,7 @@ export function registerIpc(): void {
       { id, amount, date, selectedKeys }: { id: number; amount: number; date?: string; selectedKeys?: string[] }
     ) => postLcPaymentIn(id, amount, date, selectedKeys)
   )
+  handle('lc:allRepayments', () => listAllLcRepayments())
   handle('lc:paymentIns', (_e, { lcId }: { lcId: number }) => listLcPaymentIns(lcId))
   handle('lc:deletePaymentIn', (_e, { id }: { id: number }) => deleteLcPaymentIn(id))
   handle('lc:openTradingInvoices', (_e, { lcId }: { lcId: number }) => listLcOpenTradingInvoices(lcId))
@@ -807,6 +810,7 @@ export function registerIpc(): void {
           release_margin?: boolean
           amount?: number | string | null
           note?: string | null
+          party_id?: number | null
         }
       }
     ) => repayBd(id, values)
@@ -814,6 +818,7 @@ export function registerIpc(): void {
   handle('bd:repayments', (_e, { id }: { id: number }) => listBdRepayments(id))
   handle('bd:allRepayments', () => listAllBdRepayments())
   handle('bd:linkedOrders', (_e, { id }: { id: number }) => listBdLinkedOrders(id))
+  handle('bd:parties', (_e, { id }: { id: number }) => listBdParties(id))
   handle('bd:openTradingInvoices', (_e, { id }: { id: number }) => listBdOpenTradingInvoices(id))
   handle('bd:paymentIns', (_e, { id }: { id: number }) => listBdPaymentIns(id))
   handle(

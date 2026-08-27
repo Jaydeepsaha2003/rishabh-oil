@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowRightLeft, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
+import { ArrowRightLeft, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -775,6 +775,64 @@ function DayClose(): React.JSX.Element {
   const actualValueOf = (r: Row): number => totalOf(r) * rateOf(r)
   const diffOf = (r: Row): number => Number(r.book_qty || 0) - totalOf(r)
 
+  // Fill the sheet from the last count taken before this date — for the days
+  // the plant is shut, when the stock on the ground has not moved.
+  //
+  // It fills the form, it does NOT save: a shutdown day is still a day someone
+  // is asserting a figure for, so it goes in front of them first and is only
+  // recorded when they press Save. Rows already filled in are left alone, so a
+  // partly-counted sheet is never overwritten by yesterday's numbers.
+  const [carrying, setCarrying] = useState(false)
+  async function carryForward(): Promise<void> {
+    setCarrying(true)
+    try {
+      const prev = await window.api.stockCount.previous(date)
+      if (!prev.source_date) {
+        toast.error('No earlier day close on file to copy from')
+        return
+      }
+      const by = new Map(prev.items.map((i) => [Number(i.product_id), i]))
+      let filled = 0
+      let kept = 0
+      setRows((rs) =>
+        rs.map((r) => {
+          const src = by.get(Number(r.product_id))
+          if (!src) return r
+          const hasActual = r.actual_qty !== '' && r.actual_qty != null
+          const hasPp = r.pp_qty !== '' && r.pp_qty != null
+          if (hasActual || hasPp) {
+            kept += 1
+            return r
+          }
+          if (src.actual_qty == null && src.pp_qty == null) return r
+          filled += 1
+          return {
+            ...r,
+            actual_qty: src.actual_qty == null ? r.actual_qty : src.actual_qty,
+            pp_qty: src.pp_qty == null ? r.pp_qty : src.pp_qty
+          }
+        })
+      )
+      if (!filled) {
+        toast.error(
+          kept
+            ? `Every counted row is already filled in — nothing copied from ${formatDate(prev.source_date)}`
+            : `Nothing to copy from ${formatDate(prev.source_date)}`
+        )
+        return
+      }
+      toast.success(
+        `Filled ${filled} ${filled === 1 ? 'row' : 'rows'} from ${formatDate(prev.source_date)}` +
+          (kept ? ` · ${kept} already filled, left as they were` : '') +
+          ' — check them and Save'
+      )
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setCarrying(false)
+    }
+  }
+
   async function save(): Promise<void> {
     setSaving(true)
     try {
@@ -841,7 +899,17 @@ function DayClose(): React.JSX.Element {
               ))}
             </TabsList>
           </div>
-          <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save day close'}</Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={() => void carryForward()}
+              disabled={carrying || saving || loading}
+              title="Plant shut? Fill this sheet from the last day close before this date, then check and save"
+            >
+              <Copy className="h-4 w-4" /> {carrying ? 'Copying…' : 'Same as previous day'}
+            </Button>
+            <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save day close'}</Button>
+          </div>
         </div>
         {DAY_SECTIONS.map((s) => (
           <TabsContent key={s.key} value={s.key} className="mt-4">

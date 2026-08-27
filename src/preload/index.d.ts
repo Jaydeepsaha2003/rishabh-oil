@@ -153,6 +153,7 @@ export interface Api {
     deleteTransfer: (id: number) => Promise<{ id: number }>
   }
   stockCount: {
+    previous: (date: string) => Promise<{ source_date: string | null; items: Row[] }>
     sheet: (date: string) => Promise<Row[]>
     list: (date: string) => Promise<Row[]>
     save: (date: string, items: Row[]) => Promise<{ count: number }>
@@ -260,6 +261,7 @@ export interface Api {
     remove: (id: number) => Promise<{ id: number }>
     issue: (values: Row) => Promise<{ id: number }>
     removeIssuance: (id: number) => Promise<{ id: number }>
+    allRepayments: () => Promise<Row[]>
     repayments: (lcId: number) => Promise<Row[]>
     saveRepayment: (values: Row) => Promise<{ id: number }>
     removeRepayment: (id: number) => Promise<{ id: number }>
@@ -313,11 +315,13 @@ export interface Api {
         release_margin?: boolean
         amount?: number | string | null
         note?: string | null
+        party_id?: number | null
       }
     ) => Promise<{ id: number; amount: number; outstanding: number; closed: boolean }>
     repayments: (id: number) => Promise<Row[]>
     allRepayments: () => Promise<Row[]>
     linkedOrders: (id: number) => Promise<Row[]>
+    parties: (id: number) => Promise<Row[]>
     openTradingInvoices: (id: number) => Promise<Row[]>
     paymentIns: (id: number) => Promise<Row[]>
     paymentIn: (id: number, amount: number, date?: string, keys?: string[]) => Promise<{ id: number; date: string }>

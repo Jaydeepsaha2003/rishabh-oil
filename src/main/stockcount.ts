@@ -45,6 +45,44 @@ export async function stockCountSheet(date: string): Promise<Row[]> {
   })
 }
 
+// The last count taken BEFORE this date, for the days the plant is shut.
+//
+// A factory standing idle for a few days has the same physical stock each
+// morning, and re-typing the whole sheet to say "unchanged" is both tedious and
+// the likeliest place to introduce a typo. This hands back the most recent
+// earlier count so the sheet can be filled from it; the figures land in the
+// form unsaved, so they can be adjusted and are only recorded when saved.
+//
+// Deliberately the most recent EARLIER count, not literally yesterday: a
+// shutdown spans several days, and the last real count may be further back.
+export async function previousStockCount(
+  date: string
+): Promise<{ source_date: string | null; items: Row[] }> {
+  const c = getClient()
+  const cid = getActiveCompanyId()
+  const prev = await c.execute({
+    sql: `SELECT MAX(count_date) AS d FROM stock_counts
+          WHERE company_id = ? AND count_date < ?`,
+    args: [cid, String(date).slice(0, 10)]
+  })
+  const src = prev.rows[0]?.d ? String(prev.rows[0].d) : null
+  if (!src) return { source_date: null, items: [] }
+  const res = await c.execute({
+    sql: `SELECT product_id, actual_qty, pp_qty, note FROM stock_counts
+          WHERE company_id = ? AND count_date = ?`,
+    args: [cid, src]
+  })
+  return {
+    source_date: src,
+    items: res.rows.map((r) => ({
+      product_id: Number(r.product_id),
+      actual_qty: r.actual_qty == null ? null : Number(r.actual_qty),
+      pp_qty: r.pp_qty == null ? null : Number(r.pp_qty),
+      note: r.note ?? null
+    }))
+  }
+}
+
 // Saved actual counts for a date (for read-only history / dashboards).
 export async function listStockCounts(date: string): Promise<Row[]> {
   const res = await getClient().execute({

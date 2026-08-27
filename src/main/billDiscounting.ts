@@ -284,6 +284,46 @@ function bdArgs(v: Row): (string | number | null)[] {
   })
 }
 
+// The bill's own party_id is the PRIMARY party, and everything that reads the
+// column expects it to be the first of the list. Normalised here so the row and
+// the link table can never say different things.
+function withPrimaryParty(v: Row): Row {
+  if (!Array.isArray(v.party_ids)) return v
+  const ids = (v.party_ids as unknown[]).map((x) => n(x)).filter((x) => x > 0)
+  return ids.length ? { ...v, party_id: ids[0] } : v
+}
+
+// Replace the parties on one bill. The FIRST is the primary and is written onto
+// the bill itself, so everything that reads `party_id` keeps working; all of
+// them, primary included, land in the link table.
+async function syncBdParties(bdId: number, partyType: string, partyIds: unknown): Promise<number | null> {
+  const c = getClient()
+  const ids = Array.isArray(partyIds) ? Array.from(new Set(partyIds.map((x) => n(x)).filter((x) => x > 0))) : []
+  await c.execute({ sql: 'DELETE FROM bd_parties WHERE bd_id = ?', args: [bdId] })
+  for (const pid of ids) {
+    await c.execute({
+      sql: 'INSERT OR IGNORE INTO bd_parties (bd_id, party_type, party_id) VALUES (?, ?, ?)',
+      args: [bdId, partyType, pid]
+    })
+  }
+  return ids.length ? ids[0] : null
+}
+
+// The parties on one bill, for the form and for choosing whose ledger a
+// repayment settles against.
+export async function listBdParties(bdId: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT bp.party_id, bp.party_type,
+                 COALESCE(s.name, cu.name) AS name
+          FROM bd_parties bp
+          LEFT JOIN suppliers s ON bp.party_type = 'supplier' AND s.id = bp.party_id
+          LEFT JOIN customers cu ON bp.party_type = 'customer' AND cu.id = bp.party_id
+          WHERE bp.bd_id = ? ORDER BY bp.id`,
+    args: [bdId]
+  })
+  return toPlain(res)
+}
+
 // A purchase invoice belongs to at most one discounted bill at a time — the
 // same exclusivity the LC side enforces. Refused rather than silently taken
 // away from the bill that already has it.
@@ -337,7 +377,14 @@ async function validateBd(v: Row): Promise<void> {
   if (!['PID', 'SID'].includes(String(v.finance_type))) throw new Error('Choose PID or SID')
   const partyType = String(v.finance_type) === 'PID' ? 'supplier' : 'customer'
   if (String(v.party_type) !== partyType) throw new Error('Party type must follow the finance type')
-  if (!n(v.party_id)) throw new Error(partyType === 'supplier' ? 'Choose the supplier' : 'Choose the customer')
+  // One or several. The list is the source of truth when it is given; a caller
+  // that sends only the single id (an older path, or the API) still works.
+  const partyIds: number[] = Array.isArray(v.party_ids)
+    ? Array.from(new Set((v.party_ids as unknown[]).map((x) => n(x)).filter((x) => x > 0)))
+    : n(v.party_id)
+      ? [n(v.party_id)]
+      : []
+  if (!partyIds.length) throw new Error(partyType === 'supplier' ? 'Choose the supplier' : 'Choose the customer')
   if (n(v.amount) <= 0) throw new Error('Enter the open amount')
   if (!v.maturity_date) throw new Error('Enter the maturity date')
   // The payment received date is not asked for when the bill is opened -- it is
@@ -347,9 +394,14 @@ async function validateBd(v: Row): Promise<void> {
     throw new Error('Maturity date cannot be before the payment received date')
   }
   const table = partyType === 'supplier' ? 'suppliers' : 'customers'
-  const party = await getClient().execute({ sql: `SELECT id, active FROM ${table} WHERE id = ?`, args: [n(v.party_id)] })
-  if (!party.rows.length) throw new Error('That party no longer exists')
-  if (!n(party.rows[0].active)) throw new Error('That party is marked inactive')
+  // Every one of them has to exist and be active, not just the first.
+  const found = await getClient().execute({
+    sql: `SELECT id, name, active FROM ${table} WHERE id IN (${partyIds.map(() => '?').join(',')})`,
+    args: partyIds
+  })
+  if (found.rows.length !== partyIds.length) throw new Error('One of the parties no longer exists')
+  const inactive = found.rows.find((r) => !n(r.active))
+  if (inactive) throw new Error(`${String(inactive.name)} is marked inactive`)
 }
 
 export async function listBd(filter?: Row): Promise<Row[]> {
@@ -375,6 +427,14 @@ export async function listBd(filter?: Row): Promise<Row[]> {
                  s.name AS supplier_name, cu.name AS customer_name,
                  COALESCE(rp.paid, 0) AS parts_paid, COALESCE(rp.parts, 0) AS repay_parts,
                  rc.name AS receivable_party_name,
+                 -- A bill can be raised against several parties; the register
+                 -- names them all rather than only the one on the row.
+                 (SELECT COUNT(*) FROM bd_parties bp WHERE bp.bd_id = bd.id) AS party_count,
+                 (SELECT GROUP_CONCAT(COALESCE(s2.name, cu2.name), ', ') FROM bd_parties bp
+                    LEFT JOIN suppliers s2 ON bp.party_type = 'supplier' AND s2.id = bp.party_id
+                    LEFT JOIN customers cu2 ON bp.party_type = 'customer' AND cu2.id = bp.party_id
+                    WHERE bp.bd_id = bd.id) AS party_names,
+                 (SELECT GROUP_CONCAT(bp.party_id) FROM bd_parties bp WHERE bp.bd_id = bd.id) AS party_ids_csv,
                  -- The purchase invoices this bill funded: the route to the
                  -- trading deal, and through it to the resale invoices.
                  (SELECT COUNT(*) FROM bd_linked_orders bo WHERE bo.bd_id = bd.id) AS linked_invoice_count,
@@ -421,12 +481,15 @@ export async function listBd(filter?: Row): Promise<Row[]> {
 
 export async function createBd(v: Row): Promise<{ id: number }> {
   await validateBd(v)
+  v = withPrimaryParty(v)
   const res = await getClient().execute({
     sql: `INSERT INTO bill_discountings (company_id, ${BD_COLS.join(', ')}, status)
           VALUES (?, ${BD_COLS.map(() => '?').join(', ')}, 'open')`,
     args: [getActiveCompanyId(), ...bdArgs(v)]
   })
   const id = Number(res.lastInsertRowid)
+  const partyIds = Array.isArray(v.party_ids) ? v.party_ids : n(v.party_id) ? [n(v.party_id)] : []
+  await syncBdParties(id, String(v.party_type), partyIds)
   // Only when the caller names them — an untouched form must not clear links.
   if (Array.isArray(v.linked_order_ids)) await syncBdLinkedOrders(id, v.linked_order_ids)
   await postBdOpening(id)
@@ -440,6 +503,7 @@ export async function updateBd(id: number, v: Row): Promise<{ id: number }> {
   // Part of this bill may already have gone back. Cutting the face amount below
   // what has been repaid would leave the facility owing a negative balance, so
   // the repayments have to be undone first.
+  v = withPrimaryParty(v)
   const paid = await repaidSoFar(cur)
   if (paid > 0 && n(v.amount) - paid < -0.004) {
     throw new Error(`${inr(paid)} has already been repaid on this bill — the amount cannot be set below that`)
@@ -448,6 +512,9 @@ export async function updateBd(id: number, v: Row): Promise<{ id: number }> {
     sql: `UPDATE bill_discountings SET ${BD_COLS.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`,
     args: [...bdArgs(v), id]
   })
+  if (Array.isArray(v.party_ids) || n(v.party_id)) {
+    await syncBdParties(id, String(v.party_type), Array.isArray(v.party_ids) ? v.party_ids : [n(v.party_id)])
+  }
   if (Array.isArray(v.linked_order_ids)) await syncBdLinkedOrders(id, v.linked_order_ids)
   await postBdOpening(id)
   return { id }
@@ -465,6 +532,7 @@ export async function deleteBd(id: number): Promise<{ id: number }> {
   for (const r of ins.rows) await dropEntry(n(r.journal_entry_id) || null)
   await c.execute({ sql: 'DELETE FROM bd_payment_ins WHERE bd_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM bd_linked_orders WHERE bd_id = ?', args: [id] })
+  await c.execute({ sql: 'DELETE FROM bd_parties WHERE bd_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM bill_discountings WHERE id = ?', args: [id] })
   return { id }
 }
@@ -506,6 +574,9 @@ export async function repayBd(
     // What is going back now. Omitted (or blank) means the whole balance.
     amount?: number | string | null
     note?: string | null
+    // Which party's ledger to settle against, when the bill carries several.
+    // Defaults to the primary.
+    party_id?: number | null
   }
 ): Promise<{ id: number; amount: number; outstanding: number; closed: boolean }> {
   const c = getClient()
@@ -530,7 +601,15 @@ export async function repayBd(
   const date = String(v.repay_date || todayISO()).slice(0, 10)
   assertNotFuture(date, 'The repayment date')
   const settleVia = v.settle_via === 'party' ? 'party' : 'bank'
-  const party = partyName(bd)
+  // A bill raised against several parties has to name the one being settled —
+  // crediting the primary for a payment that cleared another party's invoices
+  // would put the money on the wrong ledger.
+  let party = partyName(bd)
+  if (settleVia === 'party' && n(v.party_id) && n(v.party_id) !== n(bd.party_id)) {
+    const chosen = (await listBdParties(id)).find((p) => n(p.party_id) === n(v.party_id))
+    if (!chosen) throw new Error('That party is not on this bill')
+    party = String(chosen.name || '').trim()
+  }
   if (settleVia === 'party' && !party) throw new Error('This bill has no linked party to settle against')
   // What is left AFTER this payment decides whether the bill closes, and it is
   // also what the narration has to say, so the voucher reads as a running

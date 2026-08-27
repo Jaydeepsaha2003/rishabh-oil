@@ -180,6 +180,27 @@ app.whenReady().then(async () => {
     await c.execute('ALTER TABLE nbfcs ADD COLUMN sanctioned_limit REAL NOT NULL DEFAULT 0')
     await c.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_nbfcs_company_name ON nbfcs(company_id, TRIM(LOWER(name)))')
   }).catch((e) => console.error('[bd] limits schema failed:', e))
+  // One discounted bill can be raised against several suppliers (PID) or
+  // customers (SID) -- a single facility drawn on a batch of invoices from more
+  // than one party. The bill keeps its PRIMARY party in the column it always
+  // had, so every register, voucher and ledger posting is untouched, and this
+  // table holds all of them, the primary included.
+  await runOnce('bd_parties_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS bd_parties (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bd_id INTEGER NOT NULL REFERENCES bill_discountings(id),
+      party_type TEXT NOT NULL,
+      party_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(bd_id, party_id)
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_bd_parties_bd ON bd_parties(bd_id)')
+    // Every bill already on file gets its existing single party as a link, so
+    // both paths read alike from here and nothing has to be re-keyed.
+    await c.execute(`INSERT OR IGNORE INTO bd_parties (bd_id, party_type, party_id)
+      SELECT id, party_type, party_id FROM bill_discountings WHERE party_id IS NOT NULL`)
+  }).catch((e) => console.error('[bd] parties schema failed:', e))
   startRevisionWatcher()
   registerIpc()
   registerUpdater(() => mainWindow)

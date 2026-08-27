@@ -35,7 +35,7 @@ const PURPOSE_LABEL: Record<string, string> = {
 
 // One flat row per LC, per the client's suggested format — every stage date
 // and the FD/margin/interest/charges breakdown each in their own column.
-export async function exportLcRegister(lcs: Row[], filename: string): Promise<void> {
+export async function exportLcRegister(lcs: Row[], filename: string, repayments: Row[] = []): Promise<void> {
   const rows: Row[] = lcs.map((l) => {
     const marginAmount = round2((n(l.amount) * n(l.margin_pct)) / 100)
     const interestAmount = round2((n(l.amount) * n(l.interest_pct) * n(l.usance_days)) / (100 * 365))
@@ -69,9 +69,32 @@ export async function exportLcRegister(lcs: Row[], filename: string): Promise<vo
       charges: n(l.charges),
       open_amount: n(l.amount),
       receipt_amount: n(l.lc_net_available),
-      linked_invoices: l.linked_invoice_nos || ''
+      linked_invoices: l.linked_invoice_nos || '',
+      // The note typed on the LC. It was not in the sheet at all, so anything
+      // recorded against a facility could not leave the app.
+      note: l.note || ''
     }
   })
+
+  // The repayments, each with its own note and charges. The register carries
+  // one row per LC and no repayment detail, so a note written on a repayment —
+  // which is where they actually get written — had nowhere to appear. Mirrors
+  // the Bill Discounting sheet.
+  const lcNos = new Set(lcs.map((l) => String(l.lc_no || '')))
+  const repayRows: Row[] = repayments
+    .filter((r) => lcNos.has(String(r.lc_no || '')))
+    .map((r) => ({
+      lc_no: r.lc_no || '',
+      bank: r.bank || '',
+      supplier: r.supplier_name || '—',
+      repay_date: formatDate(r.repay_date),
+      amount: n(r.amount),
+      maturity_charges: n(r.maturity_charges) || '',
+      comm_charges: n(r.comm_charges) || '',
+      bank_charges: n(r.bank_charges) || '',
+      posted: n(r.posted) ? 'Posted' : 'Logged only',
+      note: r.note || ''
+    }))
 
   await exportRowsToExcel({
     filename,
@@ -101,8 +124,31 @@ export async function exportLcRegister(lcs: Row[], filename: string): Promise<vo
       { header: 'Interest amount (₹)', key: 'interest_amount', align: 'right', numFmt: '#,##0.00', width: 16, headerFill: 'FFF2DCDB', headerTextColor: 'FF1F2937' },
       { header: 'LC charges (₹)', key: 'charges', align: 'right', numFmt: '#,##0.00', width: 14, headerFill: 'FFF2DCDB', headerTextColor: 'FF1F2937' },
       { header: 'LC Receipt Amount (₹)', key: 'receipt_amount', align: 'right', numFmt: '#,##0.00', width: 18, headerFill: 'FFF2DCDB', headerTextColor: 'FF1F2937' },
-      { header: 'Linked invoices', key: 'linked_invoices', width: 24 }
+      { header: 'Linked invoices', key: 'linked_invoices', width: 24 },
+      { header: 'Note', key: 'note', width: 28 }
     ],
-    rows
+    rows,
+    extraSheets: repayRows.length
+      ? [
+          {
+            sheetName: 'Repayments',
+            title: 'Letters of Credit — repayments, with charges and notes',
+            subtitle: `${repayRows.length} repayment${repayRows.length === 1 ? '' : 's'} across ${new Set(repayRows.map((r) => r.lc_no)).size} LC(s)`,
+            columns: [
+              { header: 'LC no', key: 'lc_no', width: 12 },
+              { header: 'Bank', key: 'bank', width: 20 },
+              { header: 'Supplier', key: 'supplier', width: 24 },
+              { header: 'Repaid on', key: 'repay_date', width: 15 },
+              { header: 'Amount (₹)', key: 'amount', align: 'right', numFmt: '#,##0.00', width: 17 },
+              { header: 'Maturity charges (₹)', key: 'maturity_charges', align: 'right', numFmt: '#,##0.00', width: 18 },
+              { header: 'Commission (₹)', key: 'comm_charges', align: 'right', numFmt: '#,##0.00', width: 16 },
+              { header: 'Bank charges (₹)', key: 'bank_charges', align: 'right', numFmt: '#,##0.00', width: 16 },
+              { header: 'Status', key: 'posted', width: 14 },
+              { header: 'Note', key: 'note', width: 30 }
+            ],
+            rows: repayRows
+          }
+        ]
+      : undefined
   })
 }

@@ -353,6 +353,11 @@ export function BillDiscounting({
       finance_type: r.finance_type,
       party_type: r.party_type,
       party_id: r.party_id ? String(r.party_id) : '',
+      // The first is the primary — the one written on the bill itself.
+      party_ids: String(r.party_ids_csv || '')
+        .split(',')
+        .filter(Boolean)
+        .map(Number),
       purpose: r.purpose,
       invoice_amount: r.invoice_amount ?? '',
       amount: r.amount ?? '',
@@ -380,6 +385,7 @@ export function BillDiscounting({
       finance_type: v,
       party_type: v === 'SID' ? 'customer' : 'supplier',
       party_id: '',
+      party_ids: [],
       nbfc_id: ''
     }))
   }
@@ -463,6 +469,7 @@ export function BillDiscounting({
         finance_type: form.finance_type,
         party_type: form.party_type,
         party_id: form.party_id ? Number(form.party_id) : null,
+        party_ids: Array.isArray(form.party_ids) ? form.party_ids : form.party_id ? [Number(form.party_id)] : [],
         purpose: form.purpose,
         amount: Number(form.amount) || 0,
         invoice_amount: String(form.invoice_amount ?? '').trim() === '' ? null : Number(form.invoice_amount),
@@ -495,11 +502,21 @@ export function BillDiscounting({
   // repaid. A bill with no parts is simply its own amount.
   const dueOn = (r: Row | null): number => (r ? round2(n(r.amount) - n(r.repaid_total)) : 0)
 
+  // The parties on the bill being repaid — a repayment settled on a ledger has
+  // to say WHOSE, and a bill can carry several.
+  const [repayParties, setRepayParties] = useState<Row[]>([])
+
   async function loadRepayParts(bdId: number): Promise<void> {
     try {
-      setRepayParts(await window.api.billDiscounting.repayments(bdId))
+      const [parts, parties] = await Promise.all([
+        window.api.billDiscounting.repayments(bdId),
+        window.api.billDiscounting.parties(bdId).catch(() => [] as Row[])
+      ])
+      setRepayParts(parts)
+      setRepayParties(parties)
     } catch {
       setRepayParts([])
+      setRepayParties([])
     }
   }
 
@@ -512,7 +529,9 @@ export function BillDiscounting({
       settle_via: 'bank',
       ref: '',
       amount: String(dueOn(r)),
-      release_margin: n(r.marginAmount) > 0
+      release_margin: n(r.marginAmount) > 0,
+      // The primary by default; only asked about when the bill has more.
+      party_id: r.party_id ? String(r.party_id) : ''
     })
     setRepayParts([])
     void loadRepayParts(Number(r.id))
@@ -537,7 +556,9 @@ export function BillDiscounting({
         settle_via: repayForm.settle_via === 'party' ? 'party' : 'bank',
         ref: repayForm.settle_via === 'party' && repayForm.ref ? String(repayForm.ref) : null,
         release_margin: !!repayForm.release_margin,
-        amount
+        amount,
+        party_id:
+          repayForm.settle_via === 'party' && repayForm.party_id ? Number(repayForm.party_id) : null
       })
       toast.success(
         res.closed
@@ -1036,7 +1057,8 @@ export function BillDiscounting({
                         <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
                           <Landmark className="h-3 w-3 shrink-0" /> {r.nbfc_name || '—'}
                           <span className="text-[#e5dfc8]">·</span>
-                          <Users className="h-3 w-3 shrink-0" /> {r.party_name || '—'}
+                          <Users className="h-3 w-3 shrink-0" />{' '}
+                          {n(r.party_count) > 1 ? `${r.party_names} (${r.party_count})` : r.party_name || '—'}
                         </div>
                       </div>
                       <Badge variant={String(r.purpose) === 'trading' ? 'success' : 'muted'} className="capitalize">
@@ -1253,7 +1275,15 @@ export function BillDiscounting({
                           </div>
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
-                          {r.party_name || '—'}
+                          {/* Several parties on one bill: named in full, with
+                              the count, rather than showing only the first. */}
+                          {n(r.party_count) > 1 ? (
+                            <span title={String(r.party_names)}>
+                              {r.party_name} <span className="text-[11px] text-muted-foreground">+{n(r.party_count) - 1} more</span>
+                            </span>
+                          ) : (
+                            r.party_name || '—'
+                          )}
                           {/* Trading picked out in green: it is the bill with a
                               round trip behind it — money going out to the NBFC
                               and coming back from a customer — so it reads
@@ -1465,7 +1495,7 @@ export function BillDiscounting({
                     <Label>Purpose *</Label>
                     <Select
                       value={String(form.purpose || '')}
-                      onValueChange={(v) => setForm((p) => ({ ...p, purpose: v, party_id: '' }))}
+                      onValueChange={(v) => setForm((p) => ({ ...p, purpose: v, party_id: '', party_ids: [] }))}
                     >
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
@@ -1475,17 +1505,80 @@ export function BillDiscounting({
                     </Select>
                   </div>
                   <div className="flex flex-col gap-1.5 md:col-span-2 xl:col-span-1">
-                    <Label>{String(form.finance_type) === 'SID' ? 'Customer *' : 'Supplier *'}</Label>
-                    <Select value={String(form.party_id || '')} onValueChange={(v) => setForm((p) => ({ ...p, party_id: v }))}>
+                    <Label className="flex items-center gap-1">
+                      {String(form.finance_type) === 'SID' ? 'Customer' : 'Supplier'}
+                      {(Array.isArray(form.party_ids) ? form.party_ids : []).length > 1 ? 's *' : ' *'}
+                      <InfoTip text="One bill can be raised against several parties — a facility drawn on a batch of invoices from more than one of them. Picking adds; picking again removes. The FIRST one is the primary, which is the party the bill is filed under and the default for a repayment settled on a party's ledger." />
+                    </Label>
+                    {/* Picking adds rather than replaces, so a bill covering
+                        several parties no longer means losing the first. */}
+                    <Select
+                      searchable
+                      value=""
+                      onValueChange={(v) =>
+                        setForm((prev) => {
+                          const ids: number[] = Array.isArray(prev?.party_ids) ? prev!.party_ids : []
+                          const id = Number(v)
+                          const next = ids.map(Number).includes(id) ? ids.filter((x) => Number(x) !== id) : [...ids, id]
+                          return { ...prev, party_ids: next, party_id: next.length ? String(next[0]) : '' }
+                        })
+                      }
+                    >
                       <SelectTrigger>
-                        <SelectValue placeholder={formParties.length ? 'Select the party' : `No ${form.purpose} party set up`} />
+                        <span
+                          className={cn(
+                            'truncate',
+                            !(Array.isArray(form.party_ids) ? form.party_ids : []).length && 'text-muted-foreground'
+                          )}
+                        >
+                          {(() => {
+                            const ids: number[] = Array.isArray(form.party_ids) ? form.party_ids : []
+                            if (!ids.length) return formParties.length ? 'Select the party' : `No ${form.purpose} party set up`
+                            if (ids.length === 1) {
+                              return formParties.find((x) => Number(x.id) === Number(ids[0]))?.name || '1 party'
+                            }
+                            return `${ids.length} parties`
+                          })()}
+                        </span>
                       </SelectTrigger>
                       <SelectContent>
                         {formParties.map((p) => (
-                          <SelectItem key={String(p.id)} value={String(p.id)}>{p.name}</SelectItem>
+                          <SelectItem key={String(p.id)} value={String(p.id)}>
+                            {(Array.isArray(form.party_ids) ? form.party_ids : []).map(Number).includes(Number(p.id)) ? '✓ ' : ''}
+                            {p.name}
+                          </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                    {(Array.isArray(form.party_ids) ? form.party_ids : []).length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {(form.party_ids as number[]).map((pid, i) => (
+                          <button
+                            key={String(pid)}
+                            type="button"
+                            title={i === 0 ? 'Primary party — click to remove' : 'Remove this party'}
+                            onClick={() =>
+                              setForm((prev) => {
+                                const next = (Array.isArray(prev?.party_ids) ? prev!.party_ids : []).filter(
+                                  (x: number) => Number(x) !== Number(pid)
+                                )
+                                return { ...prev, party_ids: next, party_id: next.length ? String(next[0]) : '' }
+                              })
+                            }
+                            className={cn(
+                              'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
+                              i === 0
+                                ? 'bg-[#1a2c56] text-white hover:bg-[#24407e]'
+                                : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+                            )}
+                          >
+                            {i === 0 && <span className="text-[9px] uppercase tracking-wide opacity-70">1st</span>}
+                            {formParties.find((x) => Number(x.id) === Number(pid))?.name || `#${pid}`}
+                            <span className="opacity-70">×</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label className="flex items-center gap-1">
@@ -2053,10 +2146,41 @@ export function BillDiscounting({
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="bank">Our bank</SelectItem>
-                    <SelectItem value="party">Against {repayRow.party_name || 'the party'}</SelectItem>
+                    <SelectItem value="party">
+                      Against{' '}
+                      {n(repayRow.party_count) > 1
+                        ? `one of the ${n(repayRow.party_count)} parties`
+                        : repayRow.party_name || 'the party'}
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
+              {/* Which party's ledger this lands on. Only asked when the bill
+                  carries more than one — crediting the primary for a payment
+                  that cleared another party's invoices would put the money on
+                  the wrong ledger. */}
+              {repayForm.settle_via === 'party' && repayParties.length > 1 && (
+                <div className="flex flex-col gap-1.5">
+                  <Label className="flex items-center gap-1">
+                    Whose ledger
+                    <InfoTip text="This bill is raised against several parties. Pick the one whose account this repayment settles." />
+                  </Label>
+                  <Select
+                    value={String(repayForm.party_id || '')}
+                    onValueChange={(v) => setRepayForm((p) => ({ ...p, party_id: v }))}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Select the party" /></SelectTrigger>
+                    <SelectContent>
+                      {repayParties.map((pp, i) => (
+                        <SelectItem key={String(pp.party_id)} value={String(pp.party_id)}>
+                          {pp.name}
+                          {i === 0 ? ' (primary)' : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
               {repayForm.settle_via === 'party' && (
                 <div className="flex flex-col gap-1.5">
                   <Label>

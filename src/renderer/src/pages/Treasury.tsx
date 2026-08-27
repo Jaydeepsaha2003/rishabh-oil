@@ -891,7 +891,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   async function downloadLcRegister(): Promise<void> {
     setLcExporting(true)
     try {
-      await exportLcRegister(lcsFiltered, `lc-register-${lcDuePeriod === 'all' ? todayISO() : `${lcDuePeriod}-${todayISO()}`}`)
+      // One query for every repayment in the company rather than one per LC —
+      // and only when a repayment actually exists to report.
+      const reps = lcsFiltered.some((l) => Number(l.repaid_count ?? 1) !== 0)
+        ? await window.api.lc.allRepayments().catch(() => [] as Row[])
+        : []
+      await exportLcRegister(
+        lcsFiltered,
+        `lc-register-${lcDuePeriod === 'all' ? todayISO() : `${lcDuePeriod}-${todayISO()}`}`,
+        reps
+      )
     } catch (e) {
       toast.error((e as Error).message)
     } finally {

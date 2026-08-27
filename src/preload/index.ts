@@ -208,6 +208,8 @@ const api = {
       ipcRenderer.invoke('stock:deleteTransfer', { id })
   },
   stockCount: {
+    previous: (date: string): Promise<{ source_date: string | null; items: Row[] }> =>
+      ipcRenderer.invoke('stockCount:previous', { date }),
     sheet: (date: string): Promise<Row[]> => ipcRenderer.invoke('stockCount:sheet', { date }),
     list: (date: string): Promise<Row[]> => ipcRenderer.invoke('stockCount:list', { date }),
     save: (date: string, items: Row[]): Promise<{ count: number }> =>
@@ -357,6 +359,7 @@ const api = {
     issue: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('lc:issue', { values }),
     removeIssuance: (id: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('lc:deleteIssuance', { id }),
+    allRepayments: (): Promise<Row[]> => ipcRenderer.invoke('lc:allRepayments'),
     repayments: (lcId: number): Promise<Row[]> => ipcRenderer.invoke('lc:repayments', { lcId }),
     saveRepayment: (values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('lc:saveRepayment', { values }),
@@ -419,12 +422,14 @@ const api = {
         release_margin?: boolean
         amount?: number | string | null
         note?: string | null
+        party_id?: number | null
       }
     ): Promise<{ id: number; amount: number; outstanding: number; closed: boolean }> =>
       ipcRenderer.invoke('bd:repay', { id, values }),
     repayments: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:repayments', { id }),
     allRepayments: (): Promise<Row[]> => ipcRenderer.invoke('bd:allRepayments'),
     linkedOrders: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:linkedOrders', { id }),
+    parties: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:parties', { id }),
     openTradingInvoices: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:openTradingInvoices', { id }),
     paymentIns: (id: number): Promise<Row[]> => ipcRenderer.invoke('bd:paymentIns', { id }),
     paymentIn: (id: number, amount: number, date?: string, keys?: string[]): Promise<{ id: number; date: string }> =>
