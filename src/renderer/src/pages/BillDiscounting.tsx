@@ -287,9 +287,9 @@ export function BillDiscounting({
   // outstanding just computed above — the same figure the limits view derives
   // server-side, so the two cannot disagree and nothing is read twice.
   const availableLimit = useMemo(() => {
-    const combined = limits?.combined_limit
-    if (combined == null) return null
-    return round2(n(combined) - n(kpis.outstanding_total))
+    const ceiling = limits?.effective_limit
+    if (ceiling == null) return null
+    return round2(n(ceiling) - n(kpis.outstanding_total))
   }, [limits, kpis.outstanding_total])
 
   const filtered = useMemo(() => {
@@ -915,7 +915,7 @@ export function BillDiscounting({
               <button
                 type="button"
                 className="text-[12px] font-medium text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground"
-                title="Set a combined limit under Manage NBFCs → Facility limits"
+                title="Set a limit on each NBFC, or a combined ceiling, under Manage NBFCs → Facility limits"
                 onClick={() => setNbfcOpen(true)}
               >
                 not set
@@ -926,7 +926,8 @@ export function BillDiscounting({
                   {formatINR(availableLimit)}
                 </div>
                 <div className={cn('text-[10px]', availableLimit < 0 ? 'text-red-700' : 'text-sky-800')}>
-                  of {formatINR(limits?.combined_limit)}
+                  of {formatINR(limits?.effective_limit)}
+                  {limits?.effective_basis === 'lines' ? ' (NBFC lines)' : ' (combined)'}
                   {availableLimit < 0 ? ' · over the limit' : ''}
                 </div>
               </>
@@ -1038,7 +1039,9 @@ export function BillDiscounting({
                           <Users className="h-3 w-3 shrink-0" /> {r.party_name || '—'}
                         </div>
                       </div>
-                      <Badge variant="muted" className="capitalize">{r.purpose}</Badge>
+                      <Badge variant={String(r.purpose) === 'trading' ? 'success' : 'muted'} className="capitalize">
+                        {r.purpose}
+                      </Badge>
                     </div>
                     {/* A part-repaid bill's face value is no longer what it
                         owes, so the outstanding balance leads and the face
@@ -1251,7 +1254,18 @@ export function BillDiscounting({
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
                           {r.party_name || '—'}
-                          <div className="text-[11px] capitalize text-muted-foreground">{r.purpose}</div>
+                          {/* Trading picked out in green: it is the bill with a
+                              round trip behind it — money going out to the NBFC
+                              and coming back from a customer — so it reads
+                              differently from a manufacturing bill at a glance. */}
+                          <div
+                            className={cn(
+                              'text-[11px] capitalize',
+                              String(r.purpose) === 'trading' ? 'font-semibold text-emerald-700' : 'text-muted-foreground'
+                            )}
+                          >
+                            {r.purpose}
+                          </div>
                         </TableCell>
                         <TableCell className="whitespace-nowrap tabular-nums">
                           <div>
@@ -1846,7 +1860,8 @@ export function BillDiscounting({
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Received on</Label>
-                    <DatePicker value={payInDate} onChange={(v) => setPayInDate(v || todayISO())} />
+                    {/* Money already received — today at the latest. */}
+                    <DatePicker max={todayISO()} value={payInDate} onChange={(v) => setPayInDate(v || todayISO())} />
                   </div>
                 </>
               )}
@@ -1929,7 +1944,18 @@ export function BillDiscounting({
                   Payment received on
                   <InfoTip text="The day the NBFC's money actually landed. Interest runs from this date to maturity, and the disbursement — bank debited, margin held, interest taken — posts on it." />
                 </Label>
-                <DatePicker value={receiveDate} max={receiveRow.maturity_date || undefined} onChange={(v) => setReceiveDate(v)} />
+                {/* Capped at whichever comes first — the maturity, or today.
+                    The money cannot have landed after maturity, and it cannot
+                    have landed tomorrow. */}
+                <DatePicker
+                  value={receiveDate}
+                  max={
+                    receiveRow.maturity_date && String(receiveRow.maturity_date).slice(0, 10) < todayISO()
+                      ? String(receiveRow.maturity_date).slice(0, 10)
+                      : todayISO()
+                  }
+                  onChange={(v) => setReceiveDate(v)}
+                />
               </div>
               {receiveDate && receiveRow.maturity_date && (
                 <div className="text-[11px] text-muted-foreground">
@@ -2011,7 +2037,12 @@ export function BillDiscounting({
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label>Repay date</Label>
-                <DatePicker value={String(repayForm.repay_date || '')} onChange={(v) => setRepayForm((p) => ({ ...p, repay_date: v }))} />
+                {/* Money already gone back — today at the latest. */}
+                <DatePicker
+                  max={todayISO()}
+                  value={String(repayForm.repay_date || '')}
+                  onChange={(v) => setRepayForm((p) => ({ ...p, repay_date: v }))}
+                />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label className="flex items-center gap-1">

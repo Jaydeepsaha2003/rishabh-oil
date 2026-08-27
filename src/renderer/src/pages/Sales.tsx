@@ -59,6 +59,16 @@ type Row = Record<string, any>
 
 // A rate contract past its expiry date. Still a real open bargain — it is
 // offered and labelled rather than hidden.
+// The first day a contract struck on `date` may expire — the day after it. A
+// contract cannot expire on the day it was struck, so same-day is out too.
+function dayAfter(date: unknown): string | undefined {
+  const v = String(date || '').slice(0, 10)
+  if (!v) return undefined
+  const d = new Date(`${v}T00:00:00`)
+  d.setDate(d.getDate() + 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 const rateExpired = (b: Row): boolean => !!b.rate_expiry_date && String(b.rate_expiry_date) < todayISO()
 
 // Dispatch lifecycle: a sale is a pending commitment until the tanker is
@@ -2718,11 +2728,24 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
   const editSold = editing ? Math.max(0, (Number(editing.qty) || 0) - (Number(editing.balance_qty) || 0)) : 0
   const editLocked = editSold > 1e-4
 
+  // Shown the moment the pair stops making sense — which happens when the
+  // bargain date is moved past an expiry already set, not only when the expiry
+  // itself is picked.
+  const expiryProblem = ((): string | null => {
+    const struck = String(form.bargain_date || '').slice(0, 10)
+    const expires = String(form.rate_expiry_date || '').slice(0, 10)
+    if (!struck || !expires || expires > struck) return null
+    return expires === struck
+      ? 'Expiry cannot be the same day as the bargain'
+      : `Expiry is before the bargain date (${formatDate(struck)})`
+  })()
+
   async function save(): Promise<void> {
     if (!form.customer || !String(form.customer).trim()) return setError('Customer is required')
     if (!form.product_id) return setError('Select a product')
     if (!form.qty || Number(form.qty) <= 0) return setError('Quantity must be greater than 0')
     if (!form.rate || Number(form.rate) <= 0) return setError('Rate must be greater than 0')
+    if (expiryProblem) return setError(`Rate expiry must be after the bargain date — ${expiryProblem.toLowerCase()}`)
     if (editLocked && Number(form.qty) < editSold - 1e-4) {
       return setError(`Quantity cannot be below the ${formatNum(editSold)} already sold`)
     }
@@ -3597,7 +3620,15 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>Rate expiry</Label>
-              <DatePicker value={form.rate_expiry_date ?? ''} onChange={(v) => setField('rate_expiry_date', v)} />
+              {/* Nothing on or before the bargain date is selectable, and an
+                  expiry already set that a later change to the bargain date has
+                  invalidated is called out rather than silently discarded. */}
+              <DatePicker
+                value={form.rate_expiry_date ?? ''}
+                min={dayAfter(form.bargain_date)}
+                onChange={(v) => setField('rate_expiry_date', v)}
+              />
+              {expiryProblem && <div className="text-[11px] font-medium text-destructive">{expiryProblem}</div>}
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>Manual bargain no <span className="text-[10px] font-normal text-muted-foreground">(optional)</span></Label>

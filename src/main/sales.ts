@@ -574,6 +574,18 @@ function validateSalesBargainInput(v: Row): void {
   if (!v.product_id) throw new Error('Product is required')
   if (n(v.qty) <= 0) throw new Error('Quantity must be greater than zero')
   if (n(v.rate) <= 0) throw new Error('Rate must be greater than zero')
+  // A contract cannot expire on or before the day it was struck — a rate that
+  // expires the same day was never valid for anything, and one expiring earlier
+  // is a typo. Same rule the purchase bargain enforces.
+  const struck = String(v.bargain_date || '').slice(0, 10)
+  const expires = String(v.rate_expiry_date || '').slice(0, 10)
+  if (struck && expires && expires <= struck) {
+    throw new Error(
+      expires === struck
+        ? 'Rate expiry cannot be the same day as the bargain — it has to be after it'
+        : 'Rate expiry cannot be before the bargain date'
+    )
+  }
 }
 
 export async function createSalesBargain(v: Row): Promise<{ id: number; bargain_no: string }> {

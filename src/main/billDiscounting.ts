@@ -469,6 +469,15 @@ export async function deleteBd(id: number): Promise<{ id: number }> {
   return { id }
 }
 
+// Money that has moved has a date in the past or today, never ahead of it: a
+// receipt or a payment dated forward is a forecast, and the ledger would carry
+// it as fact. The MATURITY date is deliberately not checked this way -- a bill
+// matures in the future by definition.
+function assertNotFuture(date: string, what: string): void {
+  const d = String(date || '').slice(0, 10)
+  if (d && d > todayISO()) throw new Error(`${what} cannot be a future date`)
+}
+
 // A rupee figure for a message, so an error reads the way the screen does.
 function inr(v: number): string {
   return `Rs ${round2(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -519,6 +528,7 @@ export async function repayBd(
     )
   }
   const date = String(v.repay_date || todayISO()).slice(0, 10)
+  assertNotFuture(date, 'The repayment date')
   const settleVia = v.settle_via === 'party' ? 'party' : 'bank'
   const party = partyName(bd)
   if (settleVia === 'party' && !party) throw new Error('This bill has no linked party to settle against')
@@ -657,6 +667,7 @@ export async function markBdPaymentReceived(id: number, dateIn?: string): Promis
   const bd = await loadBd(id)
   if (String(bd.status) === 'repaid') throw new Error('This bill is already repaid — reopen it first if the receipt date needs correcting')
   const date = String(dateIn || todayISO()).slice(0, 10)
+  assertNotFuture(date, 'The payment received date')
   const maturity = String(bd.maturity_date || '').slice(0, 10)
   if (maturity && date > maturity) {
     throw new Error('The payment cannot be received after the maturity date — check the date')
@@ -762,6 +773,40 @@ export async function bdLimits(): Promise<Row> {
     combined_limit: combined,
     combined_available: combined == null ? null : round2(combined - utilisedTotal),
     combined_used_pct: combined && combined > 0 ? Math.round((utilisedTotal / combined) * 1000) / 10 : null,
+    // What can actually be drawn, from whichever limits have been recorded:
+    //
+    //   lines only    -> the sum of them
+    //   combined only -> the combined ceiling
+    //   both          -> the LOWER of the two. A group ceiling caps the lines,
+    //                    and the lines cap the group in the other direction —
+    //                    you cannot draw more than either allows.
+    //   neither       -> nothing to report
+    //
+    // The basis is named alongside it, so the figure is never a number without
+    // provenance. Reporting only the combined ceiling was wrong: per-NBFC limits
+    // on their own are a real limit, and the screen said "not set" over them.
+    ...(() => {
+      const lines = sanctionedTotal > 0 ? sanctionedTotal : null
+      if (combined == null && lines == null) {
+        return { effective_limit: null, effective_basis: null, effective_available: null, effective_used_pct: null }
+      }
+      const limit =
+        combined != null && lines != null ? Math.min(combined, lines) : combined != null ? combined : (lines as number)
+      const basis =
+        combined != null && lines != null
+          ? combined <= lines
+            ? 'combined'
+            : 'lines'
+          : combined != null
+            ? 'combined'
+            : 'lines'
+      return {
+        effective_limit: round2(limit),
+        effective_basis: basis,
+        effective_available: round2(limit - utilisedTotal),
+        effective_used_pct: limit > 0 ? Math.round((utilisedTotal / limit) * 1000) / 10 : null
+      }
+    })(),
     // Worth saying out loud: a group ceiling under the sum of the lines means
     // the lines cannot all be drawn at once.
     lines_exceed_combined: combined != null && sanctionedTotal > combined

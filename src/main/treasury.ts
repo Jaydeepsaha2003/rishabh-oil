@@ -81,6 +81,14 @@ async function allocAgainst(entryId: number, partyName: string, ref: string | nu
 // visible separately from another rather than lumped into one figure. An LC
 // with no bank of ours named yet falls back to the single generic account the
 // books used before, so nothing is stranded.
+// Money that has moved is dated today or earlier. A receipt dated forward is a
+// forecast, and the ledger would carry it as fact. Maturity and expiry dates
+// are deliberately exempt — those are meant to be ahead of today.
+function assertNotFuture(date: string, what: string): void {
+  const d = String(date || '').slice(0, 10)
+  if (d && d > todayISO()) throw new Error(`${what} cannot be a future date`)
+}
+
 async function bankAccountFor(lc: Row): Promise<string> {
   const id = n(lc.our_bank_id)
   if (!id) return 'BANK A/C'
@@ -503,6 +511,7 @@ export async function postLcPaymentIn(
 
   const c = getClient()
   const date = String(dateIn || todayISO()).slice(0, 10)
+  assertNotFuture(date, 'The date the payment was received')
   const je = await postJournal({
     date,
     vchType: 'RECEIPT',
@@ -669,6 +678,7 @@ export async function postBdPaymentIn(
 
   const c = getClient()
   const date = String(dateIn || todayISO()).slice(0, 10)
+  assertNotFuture(date, 'The date the payment was received')
   const je = await postJournal({
     date,
     vchType: 'RECEIPT',
@@ -938,6 +948,7 @@ export async function saveLcRepayment(v: Row): Promise<{ id: number }> {
   }
   const maturityCharges = round2(commCharges + bankCharges)
   const posted = v.posted ? 1 : 0
+  assertNotFuture(v.repay_date ? String(v.repay_date).slice(0, 10) : '', 'The repayment date')
   const args = [
     lcId,
     v.party_id ? n(v.party_id) : null,

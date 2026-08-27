@@ -2956,9 +2956,38 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   })}
                 </>
               )}
+              {/* The adjusted rate is billed at the whole rupee, rounded UP —
+                  that is how the supplier invoices it, and the taxable value is
+                  struck on the rounded figure. Rounding it silently made the
+                  column stop adding up: bargain 1,28,100.00 plus interest
+                  829.14 read as 1,28,930.00, with the 86 paise nowhere. The
+                  rounding now has its own line, so the arithmetic on screen is
+                  the arithmetic that was done. */}
+              {(() => {
+                const r2 = (v: number): number => Math.round(v * 100) / 100
+                const exact = r2(
+                  (Number(form.bargain_rate) || 0) +
+                    (Number(calc.interestPerUnit) || 0) +
+                    (Number(form.additional_interest) || 0) +
+                    ratePremium
+                )
+                const up = r2((Number(calc.adjustedRate) || 0) - exact)
+                if (rateAlloc.length > 1 || Math.abs(up) < 0.005) return null
+                return (
+                  <MoneyRow
+                    label="Rounded up to the rupee"
+                    title={`Exact ${formatINR(exact)} per ${form.uom || 'MT'} — the supplier bills at the whole rupee, and the taxable value is struck on the rounded rate`}
+                    value={`+${formatINR(up)}`}
+                  />
+                )
+              })()}
               <MoneyRow
                 label={rateAlloc.length > 1 ? 'Adjusted invoice rate (avg)' : 'Adjusted invoice rate'}
-                title={rateAlloc.length > 1 ? `Quantity-weighted average across ${rateAlloc.length} bargains` : undefined}
+                title={
+                  rateAlloc.length > 1
+                    ? `Quantity-weighted average across ${rateAlloc.length} bargains`
+                    : `Billed at the whole rupee · x ${formatNum(totalQty)} ${form.uom || 'MT'} = ${formatINR(calc.taxableValue)}`
+                }
                 value={formatINR(calc.adjustedRate)}
                 strong
               />
