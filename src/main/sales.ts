@@ -262,6 +262,19 @@ async function postSaleEntry(
     args: [n(v.product_id)]
   })
   const code = String(prod.rows[0]?.code || prod.rows[0]?.name || 'FG').toUpperCase()
+  // The MASTER's name first, then the free text.
+  //
+  // The voucher used to read v.customer alone — the free-text column — and a
+  // sale booked from the Trading page sets customer_id and leaves that text
+  // NULL. The name came out empty and the whole invoice was debited to CASH
+  // CUSTOMER A/C, while every screen showed the real party (they read the
+  // master through the join). So the customer's own ledger was missing invoices
+  // that the register said were theirs.
+  let customerName = String(v.customer || '').trim()
+  if (v.customer_id) {
+    const cu = await getClient().execute({ sql: 'SELECT name FROM customers WHERE id = ?', args: [n(v.customer_id)] })
+    if (cu.rows.length) customerName = String(cu.rows[0].name || '').trim() || customerName
+  }
   let transporterName: string | null = null
   if (freightAmount > 0 && v.transporter_id) {
     const t = await getClient().execute({ sql: 'SELECT name FROM transporters WHERE id = ?', args: [n(v.transporter_id)] })
@@ -272,7 +285,7 @@ async function postSaleEntry(
     date: String(v.sale_date),
     invoiceNo: v.invoice_no ? String(v.invoice_no) : null,
     productCode: code,
-    customerName: String(v.customer || '').trim(),
+    customerName,
     amount: taxable,
     gst,
     roundOff,
@@ -281,6 +294,34 @@ async function postSaleEntry(
     deductFreight: !!v.deduct_freight,
     tds
   }).catch((e) => console.error('[journal] sale post failed:', (e as Error).message))
+}
+
+// Re-post one sale's voucher from what is already stored on it.
+//
+// Nothing about the sale changes — the figures are read back off the row and
+// handed to the same posting function a save uses, so the only thing that can
+// come out different is what the posting rules now do with them. Written for
+// the CASH CUSTOMER repair (a trading sale's party name was resolved from a
+// column the Trading page leaves empty), and useful for any future rule change
+// that should reach vouchers already written.
+export async function repostSaleJournal(saleId: number): Promise<{ id: number; party: string }> {
+  const r = await getClient().execute({
+    sql: `SELECT s.*, cu.name AS customer_master FROM sales s
+            LEFT JOIN customers cu ON cu.id = s.customer_id WHERE s.id = ?`,
+    args: [n(saleId)]
+  })
+  if (!r.rows.length) throw new Error('Sale not found')
+  const row = r.rows[0] as unknown as Row
+  await postSaleEntry(
+    n(saleId),
+    row,
+    n(row.amount),
+    n(row.gst_amount),
+    n(row.round_off),
+    n(row.transport_amount),
+    n(row.tds_amount)
+  )
+  return { id: n(saleId), party: String(row.customer_master || row.customer || 'CASH CUSTOMER A/C') }
 }
 
 export async function listCustomerLedger(): Promise<Row[]> {
@@ -916,7 +957,7 @@ async function postSaleShortageDebit(saleId: number): Promise<number> {
       saleId,
       row.unloaded_date || row.sale_date || null,
       -charge,
-      `Shortage ${excess.toFixed(3)} ${String(row.uom || '')} beyond ${pct}% tolerance`,
+      `Oil shortage ${excess.toFixed(3)} ${String(row.uom || '')} beyond ${pct}% tolerance`,
       n(row.company_id) || getActiveCompanyId()
     ]
   })

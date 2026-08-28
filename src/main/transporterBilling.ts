@@ -46,6 +46,14 @@ export async function listTransporterFreight(
   const args: (string | number)[] = [cid]
   const where: string[] = ['l.company_id = ?', "l.entry_type IN ('freight', 'shortage_penalty')"]
   where.push(side === 'purchase' ? 'l.order_id IS NOT NULL' : 'l.sale_id IS NOT NULL')
+  if (side === 'sales') {
+    // Freight the CUSTOMER settles with the truck is not ours to pay, so it has
+    // no business on a register of what we owe transporters. postSaleFreight
+    // already refuses to post it; this applies the same rule on the way out, so
+    // an invoice created before the box was ticked cannot leave a row behind
+    // that someone then bills to a transporter we owe nothing.
+    where.push("COALESCE((SELECT sa2.deduct_freight FROM sales sa2 WHERE sa2.id = l.sale_id), 0) <> 1")
+  }
   if (opts.from) {
     where.push('COALESCE(l.entry_date, ?) >= ?')
     args.push(opts.from, opts.from)
@@ -348,7 +356,7 @@ export async function raiseFreightShortageNote(
     base_amount: amount,
     gst_pct: 0,
     against_invoice: inv || null,
-    narration: `Shortage recovery${inv ? ` on ${inv}` : ''}${line.note ? ` — ${String(line.note)}` : ''}`
+    narration: `Oil shortage recovery${inv ? ` on ${inv}` : ''}${line.note ? ` — ${String(line.note)}` : ''}`
   })
   await c.execute({
     sql: 'UPDATE transporter_ledger SET note_id = ? WHERE id = ?',

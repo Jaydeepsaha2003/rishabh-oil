@@ -3237,7 +3237,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                           className={cn(!booked && 'italic text-amber-800')}
                           title={
                             String(r.entry_type) === 'shortage_penalty'
-                              ? String(r.note || 'Shortage beyond the agreed tolerance')
+                              ? String(r.note || 'Oil shortage beyond the agreed tolerance')
                               : booked
                                 ? undefined
                                 : 'Provisional until the transporter bill is booked — the rate, the received qty and any adjustment on the bill can still move it.'
@@ -3254,7 +3254,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                             className="text-[10px] font-semibold uppercase tracking-wide text-rose-700"
                             title={String(r.note || '')}
                           >
-                            {noted ? 'Claimed · debit note' : 'Shortage · to claim'}
+                            {noted ? 'Oil shortage · claimed' : 'Oil shortage · to claim'}
                           </div>
                         )}
                         {Number(r.provisional) === 1 && (
@@ -3284,7 +3284,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                           <button
                             type="button"
                             className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-800 hover:bg-rose-200"
-                            title={`Debit note ${r.note_no} raised on the transporter — Dr ${r.transporter_name}, Cr Freight Outward. Click to delete it and put the shortage back on the freight bill.`}
+                            title={`Debit note ${r.note_no} raised on the transporter — Dr ${r.transporter_name}, Cr Freight Outward. Click to delete it and put the oil shortage back on the freight bill.`}
                             disabled={tfNoting === id}
                             onClick={(e) => { e.stopPropagation(); void tfUnraiseNote(r) }}
                           >
@@ -3294,7 +3294,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                           <button
                             type="button"
                             className="rounded border border-rose-300 bg-white px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-700 hover:bg-rose-50 disabled:opacity-50"
-                            title={`Raise a debit note on ${r.transporter_name} for this shortage — Dr ${r.transporter_name}, Cr Freight Outward, no GST. The freight then bills in full and the note stands on its own.`}
+                            title={`Raise a debit note on ${r.transporter_name} for this oil shortage — Dr ${r.transporter_name}, Cr Freight Outward, no GST. The freight then bills in full and the note stands on its own.`}
                             disabled={tfNoting === id}
                             onClick={(e) => { e.stopPropagation(); void tfRaiseNote(r) }}
                           >

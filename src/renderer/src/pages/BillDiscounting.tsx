@@ -322,35 +322,6 @@ export function BillDiscounting({
   }, [loadBills])
   useLiveRefresh(refresh)
 
-  // The same figures bdKpis returned, off the rows already loaded -- exposure
-  // counts only funded bills, since nothing is disbursed on one still awaiting
-  // its payment, and those are reported separately.
-  const kpis = useMemo(() => {
-    const open = rows.filter((r) => String(r.status) !== 'repaid')
-    const live = open.filter((r) => String(r.stage) === 'live')
-    const awaiting = open.filter((r) => String(r.stage) === 'awaiting')
-    const sum = (list: Row[], key: string): number => round2(list.reduce((t, r) => t + n(r[key]), 0))
-    return {
-      count: live.length,
-      outstanding_total: sum(live, 'outstanding_amount'),
-      margin_total: sum(live, 'marginAmount'),
-      interest_total: sum(live, 'interestAmount'),
-      tds_total: sum(live, 'tdsAmount'),
-      receipt_total: sum(live, 'receiptAmount'),
-      awaiting_count: awaiting.length,
-      awaiting_total: sum(awaiting, 'amount')
-    }
-  }, [rows])
-
-  // Sanctioned combined, less what is drawn on it. The drawn half is the
-  // outstanding just computed above — the same figure the limits view derives
-  // server-side, so the two cannot disagree and nothing is read twice.
-  const availableLimit = useMemo(() => {
-    const ceiling = limits?.effective_limit
-    if (ceiling == null) return null
-    return round2(n(ceiling) - n(kpis.outstanding_total))
-  }, [limits, kpis.outstanding_total])
-
   const filtered = useMemo(() => {
     let list = rows
     if (nbfcFilter) list = list.filter((r) => String(r.nbfc_id ?? '') === String(nbfcFilter))
@@ -367,6 +338,71 @@ export function BillDiscounting({
     }
     return list
   }, [rows, nbfcFilter, statusFilter, typeFilter, duePeriod])
+
+  // The same figures bdKpis returned, off the rows already loaded -- exposure
+  // counts only funded bills, since nothing is disbursed on one still awaiting
+  // its payment, and those are reported separately.
+  const kpisOf = useCallback((list: Row[]) => {
+    const open = list.filter((r) => String(r.status) !== 'repaid')
+    const live = open.filter((r) => String(r.stage) === 'live')
+    const awaiting = open.filter((r) => String(r.stage) === 'awaiting')
+    const sum = (l: Row[], key: string): number => round2(l.reduce((t, r) => t + n(r[key]), 0))
+    return {
+      count: live.length,
+      outstanding_total: sum(live, 'outstanding_amount'),
+      margin_total: sum(live, 'marginAmount'),
+      interest_total: sum(live, 'interestAmount'),
+      tds_total: sum(live, 'tdsAmount'),
+      receipt_total: sum(live, 'receiptAmount'),
+      awaiting_count: awaiting.length,
+      awaiting_total: sum(awaiting, 'amount')
+    }
+  }, [])
+
+  // The band describes WHAT IS ON SCREEN. It totalled every bill in the company
+  // regardless of the chips right beneath it, so picking PID, or This week, or
+  // Awaiting payment changed the list and left the figures standing — a filter
+  // that visibly does nothing reads as a page that has stopped working.
+  const kpis = useMemo(() => kpisOf(filtered), [kpisOf, filtered])
+  // The unfiltered set, for the "of ..." line and for the facility headroom.
+  const kpisAll = useMemo(() => kpisOf(rows), [kpisOf, rows])
+  const narrowed = filtered.length !== rows.length
+
+  // Sanctioned less what is drawn on it. The drawn half comes from the rows in
+  // hand, so it stays current as bills are raised and repaid without asking the
+  // database again — only the sanctioned half is fetched.
+  //
+  // WHICH sanction depends on what is being looked at. With one NBFC picked the
+  // question is "how much is left with THEM", and answering it with the group
+  // ceiling would be plainly wrong — a lender with 5 crore sanctioned and 5
+  // crore drawn has nothing left, whatever the other lines still allow. Only
+  // with no NBFC chosen is the whole book the right answer.
+  const availableLimit = useMemo(() => {
+    if (nbfcFilter) {
+      const line = ((limits?.per_nbfc || []) as Row[]).find((x) => String(x.id) === String(nbfcFilter))
+      const sanctioned = line ? n(line.sanctioned) : 0
+      if (sanctioned <= 0) return null
+      const drawn = kpisOf(rows.filter((r) => String(r.nbfc_id ?? '') === String(nbfcFilter))).outstanding_total
+      return round2(sanctioned - drawn)
+    }
+    const ceiling = limits?.effective_limit
+    if (ceiling == null) return null
+    return round2(n(ceiling) - n(kpisAll.outstanding_total))
+  }, [limits, kpisAll.outstanding_total, nbfcFilter, rows, kpisOf])
+
+  // The ceiling the figure above was struck against, and where it came from.
+  const limitBasis = useMemo(() => {
+    if (nbfcFilter) {
+      const line = ((limits?.per_nbfc || []) as Row[]).find((x) => String(x.id) === String(nbfcFilter))
+      return line ? { ceiling: n(line.sanctioned), label: String(line.name || 'this NBFC') } : null
+    }
+    return limits?.effective_limit == null
+      ? null
+      : {
+          ceiling: n(limits.effective_limit),
+          label: limits.effective_basis === 'lines' ? 'NBFC lines' : 'combined'
+        }
+  }, [limits, nbfcFilter])
 
   // Only the NBFCs that actually provide the finance type being booked.
   const formNbfcs = useMemo(() => {
@@ -959,19 +995,19 @@ export function BillDiscounting({
           </span>
           <span className="text-[13px] font-bold uppercase tracking-widest">Bill Discounting</span>
           <span className="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold tabular-nums">
-            {n(kpis.count)} open
+            {narrowed ? `${n(kpis.count)} of ${n(kpisAll.count)} open` : `${n(kpisAll.count)} open`}
           </span>
           {/* Awaiting bills are deliberately NOT in the money figures below —
               nothing has been disbursed on them — so they are counted here
               rather than being left invisible. */}
-          {n(kpis.awaiting_count) > 0 && (
+          {n(kpisAll.awaiting_count) > 0 && (
             <button
               type="button"
-              onClick={() => setStatusFilter('awaiting')}
+              onClick={() => setStatusFilter(statusFilter === 'awaiting' ? 'all' : 'awaiting')}
               className="rounded-full bg-amber-400/90 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-[#1a2c56] transition-colors hover:bg-amber-300"
               title="Opened, waiting on the NBFC's payment — click to show only these"
             >
-              {n(kpis.awaiting_count)} awaiting {formatINR(kpis.awaiting_total)}
+              {n(kpisAll.awaiting_count)} awaiting {formatINR(kpisAll.awaiting_total)}
             </button>
           )}
           <Button
@@ -1002,22 +1038,37 @@ export function BillDiscounting({
           <div className="bg-[#1a2c56] px-3 py-2.5 text-center">
             <div className="text-[10px] font-semibold uppercase tracking-wide text-white/70">Outstanding</div>
             <div className="text-[15px] font-bold tabular-nums text-white">{formatINR(kpis.outstanding_total)}</div>
+            {narrowed && (
+              <div className="text-[10px] tabular-nums text-white/50">of {formatINR(kpisAll.outstanding_total)}</div>
+            )}
           </div>
           <div className="bg-[#fffdf4] px-3 py-2.5 text-center">
             <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Margin held</div>
             <div className="text-[15px] font-bold tabular-nums text-[#1a2c56]">{formatINR(kpis.margin_total)}</div>
+            {narrowed && (
+              <div className="text-[10px] tabular-nums text-muted-foreground">of {formatINR(kpisAll.margin_total)}</div>
+            )}
           </div>
           <div className="bg-[#fffdf4] px-3 py-2.5 text-center">
             <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Interest</div>
             <div className="text-[15px] font-bold tabular-nums text-rose-700">{formatINR(kpis.interest_total)}</div>
+            {narrowed && (
+              <div className="text-[10px] tabular-nums text-muted-foreground">of {formatINR(kpisAll.interest_total)}</div>
+            )}
           </div>
           <div className="bg-[#fffdf4] px-3 py-2.5 text-center">
             <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">TDS withheld</div>
             <div className="text-[15px] font-bold tabular-nums text-[#1a2c56]">{formatINR(kpis.tds_total)}</div>
+            {narrowed && (
+              <div className="text-[10px] tabular-nums text-muted-foreground">of {formatINR(kpisAll.tds_total)}</div>
+            )}
           </div>
           <div className="bg-emerald-50 px-3 py-2.5 text-center">
             <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800">Received</div>
             <div className="text-[15px] font-bold tabular-nums text-emerald-900">{formatINR(kpis.receipt_total)}</div>
+            {narrowed && (
+              <div className="text-[10px] tabular-nums text-emerald-800/60">of {formatINR(kpisAll.receipt_total)}</div>
+            )}
           </div>
           {/* Sanctioned less what is drawn. The drawn half is the outstanding
               already on this strip, so this stays current as bills are raised
@@ -1032,7 +1083,7 @@ export function BillDiscounting({
                 availableLimit == null ? 'text-muted-foreground' : availableLimit < 0 ? 'text-red-800' : 'text-sky-800'
               )}
             >
-              Available limit
+              {nbfcFilter ? 'Available · this NBFC' : 'Available limit'}
             </div>
             {availableLimit == null ? (
               <button
@@ -1048,9 +1099,15 @@ export function BillDiscounting({
                 <div className={cn('text-[15px] font-bold tabular-nums', availableLimit < 0 ? 'text-red-700' : 'text-sky-900')}>
                   {formatINR(availableLimit)}
                 </div>
-                <div className={cn('text-[10px]', availableLimit < 0 ? 'text-red-700' : 'text-sky-800')}>
-                  of {formatINR(limits?.effective_limit)}
-                  {limits?.effective_basis === 'lines' ? ' (NBFC lines)' : ' (combined)'}
+                <div className={cn('truncate text-[10px]', availableLimit < 0 ? 'text-red-700' : 'text-sky-800')}
+                  title={
+                    nbfcFilter
+                      ? `${limitBasis?.label} — sanctioned ${formatINR(limitBasis?.ceiling)}, less what is drawn on it`
+                      : `The whole book — ${limits?.effective_basis === 'lines' ? 'the sum of the NBFC lines' : 'the combined ceiling'}`
+                  }
+                >
+                  of {formatINR(limitBasis?.ceiling)}
+                  {nbfcFilter ? ` · ${limitBasis?.label}` : limits?.effective_basis === 'lines' ? ' (NBFC lines)' : ' (combined)'}
                   {availableLimit < 0 ? ' · over the limit' : ''}
                 </div>
               </>
