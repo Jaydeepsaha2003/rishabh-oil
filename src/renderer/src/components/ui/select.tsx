@@ -318,13 +318,20 @@ function Select({ value, onValueChange, disabled, children, searchable, showChec
               )}
             >
               {showCheckbox || multi ? (
+                // A real checkbox has to LOOK like one before it is ticked, or
+                // nobody knows the list takes more than one answer. At 16px
+                // with a hairline border at 40% it was there and unreadable —
+                // 18px, a 2px border and a white ground make it a box on the
+                // row, and the tick is drawn heavy enough to read at this size.
                 <span
                   className={cn(
-                    'mr-2 flex h-4 w-4 shrink-0 items-center justify-center rounded border',
-                    isOn(it.value) ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40'
+                    'mr-2.5 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[4px] border-2 transition-colors',
+                    isOn(it.value)
+                      ? 'border-primary bg-primary text-primary-foreground'
+                      : 'border-slate-400 bg-white'
                   )}
                 >
-                  {isOn(it.value) && <Check className="h-3 w-3" />}
+                  {isOn(it.value) && <Check className="h-3.5 w-3.5" strokeWidth={3} />}
                 </span>
               ) : (
                 <Check className={cn('mr-2 h-4 w-4 shrink-0', isOn(it.value) ? 'opacity-100' : 'opacity-0')} />
