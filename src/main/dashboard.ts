@@ -52,8 +52,17 @@ export async function dashboardStats(): Promise<Row> {
     q(`SELECT s.name, SUM(o.taxable_value + o.gst_amount + o.round_off) AS v, SUM(o.ordered_qty) AS qty
        FROM orders o JOIN suppliers s ON s.id = o.supplier_id
        WHERE o.company_id = ? GROUP BY o.supplier_id ORDER BY v DESC LIMIT 5`),
-    q(`SELECT COALESCE(NULLIF(TRIM(s.customer), ''), 'CASH') AS name, SUM(s.amount + s.gst_amount + s.round_off) AS v, SUM(s.qty) AS qty
-       FROM sales s WHERE s.company_id = ? GROUP BY name ORDER BY v DESC LIMIT 5`),
+    // The MASTER's name first, then the free text, and only then CASH.
+    //
+    // This read the free-text column alone. A sale booked from the Trading page
+    // sets customer_id and leaves that text NULL, so every trading invoice fell
+    // into one "CASH" bucket -- which then led the chart at Rs 26.54 Cr, a
+    // customer that does not exist, while the real ones were understated. The
+    // supplier query beside it has always joined its master; this now matches.
+    q(`SELECT COALESCE(NULLIF(TRIM(cu.name), ''), NULLIF(TRIM(s.customer), ''), 'CASH') AS name,
+              SUM(s.amount + s.gst_amount + s.round_off) AS v, SUM(s.qty) AS qty
+       FROM sales s LEFT JOIN customers cu ON cu.id = s.customer_id
+       WHERE s.company_id = ? GROUP BY name ORDER BY v DESC LIMIT 5`),
     q(`SELECT a.name, SUM(jl.cr) - SUM(jl.dr) AS bal
        FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
        JOIN ledger_accounts a ON a.id = jl.account_id

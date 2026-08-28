@@ -213,7 +213,9 @@ const api = {
     sheet: (date: string): Promise<Row[]> => ipcRenderer.invoke('stockCount:sheet', { date }),
     list: (date: string): Promise<Row[]> => ipcRenderer.invoke('stockCount:list', { date }),
     save: (date: string, items: Row[]): Promise<{ count: number }> =>
-      ipcRenderer.invoke('stockCount:save', { date, items })
+      ipcRenderer.invoke('stockCount:save', { date, items }),
+    history: (from: string, to: string): Promise<Row[]> =>
+      ipcRenderer.invoke('stockCount:history', { from, to })
   },
   skuStock: {
     breakdown: (date?: string): Promise<Row[]> => ipcRenderer.invoke('skuStock:breakdown', { date }),

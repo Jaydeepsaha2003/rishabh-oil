@@ -157,6 +157,7 @@ export interface Api {
     sheet: (date: string) => Promise<Row[]>
     list: (date: string) => Promise<Row[]>
     save: (date: string, items: Row[]) => Promise<{ count: number }>
+    history: (from: string, to: string) => Promise<Row[]>
   }
   skuStock: {
     breakdown: (date?: string) => Promise<Row[]>

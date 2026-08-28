@@ -1255,24 +1255,43 @@ export async function updateTankerDetails(id: number, v: Row): Promise<{ id: num
 
     // Refresh this tanker's freight entry in the transporter ledger — unless
     // the supplier billed the freight (then it stays data-only).
+    //
+    // The freight and the shortage go on as TWO rows, not one netted figure.
+    // Posted as `transport - penalty` they were indistinguishable: a tanker
+    // whose shortage exceeded its freight simply showed a negative "freight"
+    // with nothing to say why, and there was no shortage line to raise a debit
+    // note against — which is the whole point of separating them. The sales
+    // side already works this way; this is the same rule on the buying side.
     if (t.order_id) {
+      const tankerNo = String(pick('tanker_no') || t.tanker_no)
       await c.execute({
-        sql: "DELETE FROM transporter_ledger WHERE order_id = ? AND entry_type = 'freight' AND note LIKE ?",
+        sql: `DELETE FROM transporter_ledger
+               WHERE order_id = ? AND entry_type IN ('freight','shortage_penalty') AND note LIKE ?`,
         args: [n(t.order_id), `Tanker ${t.tanker_no}:%`]
       })
       if (transporterId && !(await freightPaidToSupplier(n(t.order_id)))) {
-        await c.execute({
-          sql: `INSERT INTO transporter_ledger (transporter_id, order_id, entry_date, entry_type, amount, note, company_id)
-                VALUES (?, ?, ?, 'freight', ?, ?, (SELECT company_id FROM orders WHERE id = ?))`,
-          args: [
-            transporterId,
-            n(t.order_id),
-            (pick('empty_date') as string) || null,
-            transport - penalty,
-            `Tanker ${String(pick('tanker_no') || t.tanker_no)}: freight less shortage`,
-            n(t.order_id)
-          ]
-        })
+        const emptyOn = (pick('empty_date') as string) || null
+        if (transport > 0.004) {
+          await c.execute({
+            sql: `INSERT INTO transporter_ledger (transporter_id, order_id, entry_date, entry_type, amount, note, company_id)
+                  VALUES (?, ?, ?, 'freight', ?, ?, (SELECT company_id FROM orders WHERE id = ?))`,
+            args: [transporterId, n(t.order_id), emptyOn, Math.round(transport * 100) / 100, `Tanker ${tankerNo}: freight`, n(t.order_id)]
+          })
+        }
+        if (penalty > 0.004) {
+          await c.execute({
+            sql: `INSERT INTO transporter_ledger (transporter_id, order_id, entry_date, entry_type, amount, note, company_id)
+                  VALUES (?, ?, ?, 'shortage_penalty', ?, ?, (SELECT company_id FROM orders WHERE id = ?))`,
+            args: [
+              transporterId,
+              n(t.order_id),
+              emptyOn,
+              -(Math.round(penalty * 100) / 100),
+              `Tanker ${tankerNo}: oil shortage ${excess.toFixed(3)} ${String(t.uom || 'MT')} beyond ${pct}% tolerance`,
+              n(t.order_id)
+            ]
+          })
+        }
       }
     }
   }

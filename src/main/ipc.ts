@@ -67,7 +67,7 @@ import {
   createStockTransfer,
   deleteStockTransfer
 } from './stock'
-import { stockCountSheet, listStockCounts, saveStockCounts, previousStockCount } from './stockcount'
+import { stockCountSheet, listStockCounts, saveStockCounts, previousStockCount, stockCountHistory } from './stockcount'
 import { listSkuStock, adjustSkuStock, skuMovementBreakdown } from './skustock'
 import { listNotes, listNoteItems, createNote, updateNote, deleteNote } from './notes'
 import { daybook } from './daybook'
@@ -592,6 +592,7 @@ export function registerIpc(): void {
     saveStockCounts(date, items)
   )
 
+  handle('stockCount:history', (_e, { from, to }: { from: string; to: string }) => stockCountHistory(from, to))
   handle('skuStock:breakdown', (_e, { date }: { date?: string } = {}) => skuMovementBreakdown(date))
   handle('skuStock:list', (_e, args?: { date?: string }) => listSkuStock(args?.date))
   handle(

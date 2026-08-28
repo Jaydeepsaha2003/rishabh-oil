@@ -315,9 +315,9 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
 // way. This makes it a document: the transporter's own ledger shows the debit,
 // and there is something to send them.
 //
-// Credit goes to FREIGHT OUTWARD, because the recovery reduces what the
-// delivery cost rather than earning anything, and no GST: a shortage recovery
-// is not a supply.
+// Credit goes to the freight expense the recovery reduces — OUTWARD on a sale,
+// INWARD on a purchase — because it reduces what the movement cost rather than
+// earning anything. No GST either way: a shortage recovery is not a supply.
 export async function raiseFreightShortageNote(
   lineId: number,
   v: { date?: string; companyId?: number } = {}
@@ -346,13 +346,17 @@ export async function raiseFreightShortageNote(
   if (!line.transporter_id) throw new Error('This line has no transporter to raise a note against')
 
   const inv = String(line.sale_invoice || line.order_invoice || '')
+  // Which side this line belongs to decides which freight expense the recovery
+  // comes off. A purchase tanker's shortage reduces inward freight; a delivery's
+  // reduces outward.
+  const inward = line.order_id != null
   const note = await createNote({
     company_id: cid,
     note_type: 'debit',
     party_type: 'transporter',
     party_id: n(line.transporter_id),
     note_date: String(v.date || line.entry_date || todayISO()).slice(0, 10),
-    against_account: 'FREIGHT OUTWARD A/C',
+    against_account: inward ? 'FREIGHT INWARD A/C' : 'FREIGHT OUTWARD A/C',
     base_amount: amount,
     gst_pct: 0,
     against_invoice: inv || null,

@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowRightLeft, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
+import { ArrowRightLeft, Building2, CalendarRange, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -28,7 +28,7 @@ import {
 } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { PageHeader } from '@/components/PageHeader'
-import { formatDate, formatDateShort, formatINR, formatNum, todayISO } from '@/lib/format'
+import { errText, formatDate, formatDateShort, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
@@ -774,6 +774,16 @@ const DAY_SECTIONS: Array<{ key: string; title: string; cats: string[] }> = [
 // Excel download/upload; actual value = actual qty × weighted-average cost.
 function DayClose(): React.JSX.Element {
   const [date, setDate] = useState(todayISO())
+  // The sheet is one day by nature — you cannot type a week's count into it —
+  // so a range cannot narrow the sheet. What a range IS good for is the run of
+  // closings: whether every day this month was closed, and where the
+  // differences fell. That is a panel of its own, and picking a day in it jumps
+  // the sheet to that day.
+  const [histOpen, setHistOpen] = useState(false)
+  const [histFrom, setHistFrom] = useState(() => `${todayISO().slice(0, 8)}01`)
+  const [histTo, setHistTo] = useState(todayISO())
+  const [hist, setHist] = useState<Row[] | null>(null)
+  const [histBusy, setHistBusy] = useState(false)
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -788,6 +798,22 @@ function DayClose(): React.JSX.Element {
   useEffect(() => {
     load()
   }, [load])
+
+  const loadHistory = useCallback(async () => {
+    setHistBusy(true)
+    try {
+      setHist(await window.api.stockCount.history(histFrom, histTo))
+    } catch (e) {
+      toast.error(errText(e))
+      setHist([])
+    } finally {
+      setHistBusy(false)
+    }
+  }, [histFrom, histTo])
+
+  useEffect(() => {
+    if (histOpen) void loadHistory()
+  }, [histOpen, loadHistory])
 
   function setField(pid: number, key: string, value: unknown): void {
     setRows((rs) => rs.map((r) => (r.product_id === pid ? { ...r, [key]: value } : r)))
@@ -917,7 +943,41 @@ function DayClose(): React.JSX.Element {
           <div className="flex flex-wrap items-end gap-3">
             <div className="flex flex-col gap-1.5">
               <Label className="text-xs text-muted-foreground">Closing date</Label>
-              <DatePicker max={todayISO()} value={date} onChange={(v) => setDate(v || todayISO())} className="w-44" />
+              {/* Stepped, because a day close is read one day after another and
+                  re-picking from a calendar each time is the slow way to do it. */}
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  title="Previous day"
+                  onClick={() => setDate(shiftDate(date, -1))}
+                  className="flex h-9 w-7 shrink-0 items-center justify-center rounded-md border bg-white hover:bg-muted"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <DatePicker max={todayISO()} value={date} onChange={(v) => setDate(v || todayISO())} className="w-40" />
+                <button
+                  type="button"
+                  title="Next day"
+                  disabled={date >= todayISO()}
+                  onClick={() => setDate(shiftDate(date, 1))}
+                  className="flex h-9 w-7 shrink-0 items-center justify-center rounded-md border bg-white hover:bg-muted disabled:opacity-40"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+                {date !== todayISO() && (
+                  <Button variant="outline" className="h-9 px-2 text-xs" onClick={() => setDate(todayISO())}>
+                    Today
+                  </Button>
+                )}
+                <Button
+                  variant={histOpen ? 'default' : 'outline'}
+                  className="h-9 gap-1 px-2 text-xs"
+                  title="Which days have been closed over a period, and how each came out"
+                  onClick={() => setHistOpen((o) => !o)}
+                >
+                  <CalendarRange className="h-3.5 w-3.5" /> Date range
+                </Button>
+              </div>
             </div>
             <TabsList>
               {DAY_SECTIONS.map((s) => (
@@ -937,6 +997,96 @@ function DayClose(): React.JSX.Element {
             <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save day close'}</Button>
           </div>
         </div>
+        {histOpen && (
+          <div className="mt-4 overflow-hidden rounded-lg border border-[#d9d2b8] bg-[#fffdf4]">
+            <div className="flex flex-wrap items-end gap-3 border-b border-[#e5dfc8] bg-[#f7f4e8] px-3 py-2">
+              <div className="flex flex-col gap-1">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">From</Label>
+                <DatePicker value={histFrom} max={histTo} onChange={(v) => setHistFrom(v || histFrom)} className="h-8 w-36 text-[12px]" />
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">To</Label>
+                <DatePicker value={histTo} min={histFrom} max={todayISO()} onChange={(v) => setHistTo(v || histTo)} className="h-8 w-36 text-[12px]" />
+              </div>
+              {/* The periods actually asked for, rather than making the user
+                  count back to the first of the month every time. */}
+              {(
+                [
+                  ['This month', `${todayISO().slice(0, 8)}01`, todayISO()],
+                  ['Last 7 days', shiftDate(todayISO(), -6), todayISO()],
+                  ['Last 30 days', shiftDate(todayISO(), -29), todayISO()]
+                ] as const
+              ).map(([label, f, t]) => (
+                <Button
+                  key={label}
+                  variant="outline"
+                  className="h-8 bg-white px-2 text-[11px]"
+                  onClick={() => { setHistFrom(f); setHistTo(t) }}
+                >
+                  {label}
+                </Button>
+              ))}
+              <span className="ml-auto text-[11px] text-muted-foreground">
+                {histBusy ? 'Loading…' : `${(hist || []).length} day${(hist || []).length === 1 ? '' : 's'} closed in this period`}
+              </span>
+            </div>
+            <div className="max-h-64 overflow-auto">
+              <table className="w-full text-[13px]">
+                <thead className="sticky top-0 bg-[#f1ecd9]">
+                  <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                    <th className="px-3 py-1.5">Closing date</th>
+                    <th className="px-3 py-1.5 text-right">Products</th>
+                    <th className="px-3 py-1.5 text-right">Mismatches</th>
+                    <th className="px-3 py-1.5 text-right">Net difference</th>
+                    <th className="px-3 py-1.5 text-right">Actual value</th>
+                    <th className="px-3 py-1.5" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {(hist || []).length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-3 py-8 text-center text-muted-foreground">
+                        {histBusy ? 'Loading…' : 'No day close saved in this period.'}
+                      </td>
+                    </tr>
+                  ) : (
+                    (hist || []).map((h) => {
+                      const diff = Number(h.net_diff) || 0
+                      const mis = Number(h.mismatches) || 0
+                      return (
+                        <tr
+                          key={String(h.count_date)}
+                          className={cn(
+                            'cursor-pointer border-b border-dotted hover:bg-amber-50',
+                            String(h.count_date) === date && 'bg-amber-100/70'
+                          )}
+                          style={{ borderColor: '#e5dfc8' }}
+                          onClick={() => setDate(String(h.count_date))}
+                          title="Open this day in the sheet"
+                        >
+                          <td className="px-3 py-1.5 font-medium tabular-nums">{formatDate(h.count_date)}</td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">{formatNum(h.products)}</td>
+                          <td className={cn('px-3 py-1.5 text-right tabular-nums', mis > 0 && 'font-semibold text-rose-700')}>
+                            {mis || '—'}
+                          </td>
+                          <td className={cn('px-3 py-1.5 text-right tabular-nums', Math.abs(diff) > 0.0005 && 'font-semibold text-rose-700')}>
+                            {Math.abs(diff) > 0.0005 ? formatNum(diff) : '—'}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">{formatINR(h.actual_value)}</td>
+                          <td className="px-3 py-1.5 text-right text-[11px] text-muted-foreground">open →</td>
+                        </tr>
+                      )
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="border-t border-[#e5dfc8] bg-[#f7f4e8] px-3 py-1.5 text-[10.5px] leading-snug text-muted-foreground">
+              One row per day that has a close saved. A date missing from this list was never closed — which is the
+              thing a single-day sheet cannot tell you. Click a row to open that day.
+            </div>
+          </div>
+        )}
         {DAY_SECTIONS.map((s) => (
           <TabsContent key={s.key} value={s.key} className="mt-4">
             <DayCloseSection

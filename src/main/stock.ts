@@ -76,9 +76,21 @@ export async function stockLevels(
       date: 'p.prod_date',
       group: 'GROUP BY i.product_id'
     },
+    // Stock leaves on the INVOICE date, and the quantity is the dispatched one.
+    //
+    // The mill invoices as the lorry goes, so the invoice date IS the dispatch:
+    // 158 of 163 lines have the two the same. It used to date by the unloaded
+    // date, which kept goods on our books for as long as the lorry was on the
+    // road — twelve days on one August invoice. Then by the loaded date, which
+    // was nearly right but is re-stamped whenever an invoice is edited, so a
+    // July dispatch could silently reappear as an August one.
+    //
+    // The invoice date is the one figure on a sale that never moves by itself,
+    // and it is what the Sales register counts by — so the two pages can no
+    // longer disagree about which month a dispatch belongs to.
     sold: {
       base: `SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status = 'done' AND COALESCE(affects_stock, 1) = 1 AND company_id IN (${ph})`,
-      date: 'COALESCE(unloaded_date, sale_date)',
+      date: 'sale_date',
       group: 'GROUP BY product_id'
     },
     transferredIn: {
@@ -314,7 +326,9 @@ export async function stockPartyBreakdown(
                              THEN o.order_date
                              ELSE COALESCE(o.received_date, o.order_date) END`
   const recB = bounds(recDateExpr)
-  const dispB = bounds('COALESCE(s.unloaded_date, s.sale_date)')
+  // Same rule as the register's Dispatch column above — the hover has to cover
+  // exactly the period the cell it explains does.
+  const dispB = bounds('s.sale_date')
   const out: Record<number, { receipt: Row[]; dispatch: Row[] }> = {}
   const ensure = (pid: number): { receipt: Row[]; dispatch: Row[] } => (out[pid] ??= { receipt: [], dispatch: [] })
 
@@ -700,7 +714,7 @@ export async function stockRegisters(
     args: [...cidList, ...recB.args]
   })
 
-  const dispB = bounds('COALESCE(s.unloaded_date, s.sale_date)')
+  const dispB = bounds('s.sale_date')
   const disp = await c.execute({
     sql: `SELECT s.loaded_date AS loaded_date,
                  COALESCE(s.unloaded_date, s.sale_date) AS received_date,

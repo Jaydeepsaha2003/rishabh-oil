@@ -15,6 +15,7 @@ import {
   Receipt,
   Scale,
   ScrollText,
+  Search,
   Trash2,
   Wallet,
   X
@@ -493,6 +494,10 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   // open. The cursor is an INDEX into the filtered list rather than an id, so
   // narrowing the search always leaves it on a row that exists.
   const [lgCursor, setLgCursor] = useState(0)
+  // Tally's way: the list is not a permanent column stealing a third of the
+  // screen, it is a picker you call up, choose from and dismiss. The statement
+  // then gets the whole width — which is what anyone is actually reading.
+  const [lgPickerOpen, setLgPickerOpen] = useState(false)
   const lgItemRefs = useRef<(HTMLDivElement | null)[]>([])
   // Tally's Bills Outstanding for the open ledger: F5 while a party is
   // selected. A sub-view of the ledger rather than a screen of its own, so Esc
@@ -620,14 +625,22 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     setLgBills(false)
   }, [ledgerId])
 
-  // Landing on Ledgers, the first thing anyone does is type a name — so put the
-  // caret there rather than making them click. Mount has to settle first or the
-  // caret lands nowhere.
+  // Landing on Ledgers, the first thing anyone does is name a ledger — so the
+  // picker opens itself when nothing is chosen yet. With one already open the
+  // screen stays on the statement, which is what you came back for.
   useEffect(() => {
     if (screen !== 'ledger') return
+    if (!ledgerId) setLgPickerOpen(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen])
+
+  // The caret belongs in the search box whenever the picker is up. Mount has to
+  // settle first or it lands nowhere.
+  useEffect(() => {
+    if (!lgPickerOpen) return
     const t = window.setTimeout(() => ledgerSearchRef.current?.focus(), 40)
     return () => window.clearTimeout(t)
-  }, [screen])
+  }, [lgPickerOpen])
 
   // Unbooking a transporter bill, and bills whose voucher was deleted from the
   // Day Book on its own (which used to leave their freight stuck on Booked).
@@ -1273,6 +1286,15 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         setCompany(null)
         return
       }
+      // On the Ledgers screen F4 picks a different ledger, which is what it
+      // does in Tally's own ledger report — not a Contra voucher. Checked
+      // before the voucher keys claim it, the same way F5 is below.
+      if (e.key === 'F4' && !e.altKey && screen === 'ledger') {
+        e.preventDefault()
+        setLedgerSearch('')
+        setLgPickerOpen(true)
+        return
+      }
       // On a ledger with a party open, F5 is Tally's Bills Outstanding rather
       // than a Payment voucher — checked before the voucher keys claim it.
       if (e.key === 'F5' && !e.altKey && screen === 'ledger' && ledgerId) {
@@ -1300,6 +1322,14 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
         return
       }
       if (e.key === 'Escape') {
+        // The ledger picker is the innermost thing on screen, so it backs out
+        // first — Esc should close what is over the page, not the page under
+        // it. With nothing chosen yet there is nothing to go back TO, so it
+        // stays open and Esc leaves the screen as usual.
+        if (lgPickerOpen && ledgerId) {
+          e.preventDefault()
+          return setLgPickerOpen(false)
+        }
         if (lgBills) {
           e.preventDefault()
           return setLgBills(false)
@@ -1372,7 +1402,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, gwIndex, viewRow, newLedger, editingId, lines, payLines, payAccounts, rawAlter, vchDate, vchNo, narration, vchType, saving, onExit, company, companies, coIndex, ledgerId, lgBills])
+  }, [screen, gwIndex, viewRow, newLedger, editingId, lines, payLines, payAccounts, rawAlter, vchDate, vchNo, narration, vchType, saving, onExit, company, companies, coIndex, ledgerId, lgBills, lgPickerOpen])
 
   // ------- derived -------
   const ledgerAccount = accounts.find((a) => Number(a.id) === ledgerId)
@@ -1503,7 +1533,18 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     } else if (e.key === 'Enter') {
       e.preventDefault()
       const hit = filteredAccounts[lgCursor]
-      if (hit) setLedgerId(Number(hit.id))
+      if (hit) {
+        setLedgerId(Number(hit.id))
+        setLgPickerOpen(false)
+      }
+    } else if (e.key === 'Escape' && lgPickerOpen) {
+      // Only meaningful with a ledger already on screen behind it — otherwise
+      // dismissing would leave an empty page and no way back but the button.
+      if (ledgerId) {
+        e.preventDefault()
+        e.stopPropagation()
+        setLgPickerOpen(false)
+      }
     }
   }
 
@@ -1546,6 +1587,12 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
       {screen === 'ledger' && (
         <>
           <div className="my-1 border-t border-white/20" />
+          <FKey
+            k="F4"
+            label="Change ledger"
+            active={lgPickerOpen}
+            onClick={() => { setLedgerSearch(''); setLgPickerOpen(true) }}
+          />
           {!!ledgerId && (
             <FKey k="F5" label={lgBills ? 'Statement' : 'Bills outstanding'} active={lgBills} onClick={() => setLgBills((b2) => !b2)} />
           )}
@@ -3232,9 +3279,18 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                       {tfSide === 'purchase' && <td className="px-2 py-1.5 text-[12px]">{r.vehicle_no || '—'}</td>}
                       <td className="px-2 py-1.5 text-[12px]">{r.party_name || '—'}</td>
                       <td className="px-2 py-1.5 text-[12px]">{r.product_name || '—'}</td>
-                      <td className={cn('px-2 py-1.5 text-right font-semibold tabular-nums', Number(r.amount) < 0 && 'text-rose-700')}>
+                      {/* Money coming IN to us reads green, money going back
+                          out reads red. The figure's own sign is the thing to
+                          see first on a register that now carries both freight
+                          earned and debit notes against it; whether the bill is
+                          booked yet is a separate question, and stays with the
+                          italics and the badge in the last column. */}
+                      <td className="px-2 py-1.5 text-right font-semibold tabular-nums">
                         <span
-                          className={cn(!booked && 'italic text-amber-800')}
+                          className={cn(
+                            Number(r.amount) < 0 ? 'text-rose-700' : 'text-emerald-700',
+                            !booked && 'italic'
+                          )}
                           title={
                             String(r.entry_type) === 'shortage_penalty'
                               ? String(r.note || 'Oil shortage beyond the agreed tolerance')
@@ -3284,7 +3340,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                           <button
                             type="button"
                             className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-800 hover:bg-rose-200"
-                            title={`Debit note ${r.note_no} raised on the transporter — Dr ${r.transporter_name}, Cr Freight Outward. Click to delete it and put the oil shortage back on the freight bill.`}
+                            title={`Debit note ${r.note_no} raised on the transporter — Dr ${r.transporter_name}, Cr Freight ${tfSide === 'purchase' ? 'Inward' : 'Outward'}. Click to delete it and put the oil shortage back on the freight bill.`}
                             disabled={tfNoting === id}
                             onClick={(e) => { e.stopPropagation(); void tfUnraiseNote(r) }}
                           >
@@ -3294,7 +3350,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                           <button
                             type="button"
                             className="rounded border border-rose-300 bg-white px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-700 hover:bg-rose-50 disabled:opacity-50"
-                            title={`Raise a debit note on ${r.transporter_name} for this oil shortage — Dr ${r.transporter_name}, Cr Freight Outward, no GST. The freight then bills in full and the note stands on its own.`}
+                            title={`Raise a debit note on ${r.transporter_name} for this oil shortage — Dr ${r.transporter_name}, Cr Freight ${tfSide === 'purchase' ? 'Inward' : 'Outward'}, no GST. The freight then bills in full and the note stands on its own.`}
                             disabled={tfNoting === id}
                             onClick={(e) => { e.stopPropagation(); void tfRaiseNote(r) }}
                           >
@@ -3470,44 +3526,30 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     </div>
   )
 
-  const ledgerScreen = (
-    <div className="flex flex-1 gap-3 p-3">
-      <div className={cn('flex w-80 shrink-0 flex-col rounded-md border shadow-lg xl:w-96', T.paperEdge, T.paper)}>
-        <div className={cn('rounded-t-md px-4 py-2 text-[13px] font-bold uppercase tracking-widest', T.headBar)}>
-          Ledgers
-        </div>
-        <div className="p-2">
-          <Input
-            ref={ledgerSearchRef}
-            className="h-8 bg-white text-[13px]"
-            placeholder="Search ledger… ↑↓ to move, Enter to open"
-            value={ledgerSearch}
-            onChange={(e) => setLedgerSearch(e.target.value)}
-            onKeyDown={ledgerKeyNav}
-          />
-        </div>
-        <div className="flex-1 overflow-auto px-2 pb-2">
-          {filteredAccounts.map((a, ai) => {
-            // Stranded, not merely quiet: no postings, no allocations, and no
-            // master claiming the name. CASH A/C or a transporter not yet
-            // billed has none of the first two either, and must stay put.
-            const unused =
-              a.line_count != null &&
-              Number(a.line_count) === 0 &&
-              Number(a.alloc_count || 0) === 0 &&
-              Number(a.claimed_by_master || 0) === 0 &&
-              !/\bA\/C$/i.test(String(a.name || ''))
-            return (
+  // One row per ledger in the picker. Pulled out of the panel it used to live
+  // in so the modal and nothing else renders it.
+  const ledgerRow = (a: Row, ai: number): React.JSX.Element => {
+    // Stranded, not merely quiet: no postings, no allocations, and no
+    // master claiming the name. CASH A/C or a transporter not yet
+    // billed has none of the first two either, and must stay put.
+    const unused =
+      a.line_count != null &&
+      Number(a.line_count) === 0 &&
+      Number(a.alloc_count || 0) === 0 &&
+      Number(a.claimed_by_master || 0) === 0 &&
+      !/\bA\/C$/i.test(String(a.name || ''))
+    return (
             <div
               key={String(a.id)}
               ref={(el) => { lgItemRefs.current[ai] = el }}
               role="button"
               tabIndex={0}
-              onClick={() => { setLgCursor(ai); setLedgerId(Number(a.id)) }}
+              onClick={() => { setLgCursor(ai); setLedgerId(Number(a.id)); setLgPickerOpen(false) }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault()
                   setLedgerId(Number(a.id))
+                  setLgPickerOpen(false)
                 } else {
                   // Arrows work from the list too, not only the search box.
                   ledgerKeyNav(e)
@@ -3540,10 +3582,81 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                 {formatINR(Math.abs(Number(a.balance) || 0))} {Number(a.balance) >= 0 ? 'Dr' : 'Cr'}
               </span>
             </div>
-            )
-          })}
+    )
+  }
+
+  const ledgerScreen = (
+    <div className="flex flex-1 flex-col gap-3 p-3">
+      {/* The search bar IS the ledger picker: one line across the top that
+          opens the list over the page. Nothing is chosen from it directly, so
+          it reads as a button rather than a field. */}
+      <button
+        type="button"
+        onClick={() => setLgPickerOpen(true)}
+        className={cn(
+          'flex w-full items-center gap-2 rounded-md border px-3 py-2 text-left shadow-sm transition-colors hover:bg-amber-50',
+          T.paperEdge,
+          T.paper
+        )}
+      >
+        <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+        {ledgerAccount ? (
+          <>
+            <span className="truncate text-[14px] font-semibold text-[#1a2c56]">{String(ledgerAccount.name)}</span>
+            <span className="shrink-0 text-[11px] uppercase tracking-wide text-muted-foreground">
+              {String(ledgerAccount.acc_group || '')}
+            </span>
+          </>
+        ) : (
+          <span className="text-[13px] text-muted-foreground">Search ledger… ↑↓ to move, Enter to open</span>
+        )}
+        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+          <span className="rounded bg-[#1a2c56]/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#1a2c56]">
+            change
+          </span>
+          <span className="rounded border border-[#1a2c56]/25 px-1 py-0.5 text-[10px] font-bold text-[#1a2c56]/70">F4</span>
+        </span>
+      </button>
+
+      {/* Over the page, not beside it — so the statement below keeps the full
+          width whether the picker is up or not. */}
+      {lgPickerOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-6 pt-[8vh]"
+          onClick={() => ledgerId && setLgPickerOpen(false)}
+        >
+          <div
+            className={cn('flex max-h-[78vh] w-full max-w-2xl flex-col overflow-hidden rounded-md border shadow-2xl', T.paperEdge, T.paper)}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className={cn('flex items-center gap-2 px-4 py-2 text-[13px] font-bold uppercase tracking-widest', T.headBar)}>
+              Ledgers
+              <span className="ml-auto text-[10px] font-normal normal-case tracking-normal opacity-80">
+                {filteredAccounts.length} of {accounts.length}
+                {ledgerId ? ' · Esc to close' : ''}
+              </span>
+            </div>
+            <div className="p-2">
+              <Input
+                ref={ledgerSearchRef}
+                className="h-9 bg-white text-[13px]"
+                placeholder="Search ledger… ↑↓ to move, Enter to open"
+                value={ledgerSearch}
+                onChange={(e) => setLedgerSearch(e.target.value)}
+                onKeyDown={ledgerKeyNav}
+              />
+            </div>
+            <div className="flex-1 overflow-auto px-2 pb-2">
+              {filteredAccounts.length === 0 ? (
+                <div className="px-2 py-10 text-center text-sm text-muted-foreground">No ledger matches that.</div>
+              ) : (
+                filteredAccounts.map((a, ai) => ledgerRow(a, ai))
+              )}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
+
       <div className={cn('min-w-0 flex-1 rounded-md border shadow-lg', T.paperEdge, T.paper)}>
         {!ledgerAccount ? (
           <div className="flex h-full items-center justify-center p-10 text-muted-foreground">

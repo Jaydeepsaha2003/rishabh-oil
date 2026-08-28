@@ -98,6 +98,34 @@ export async function listStockCounts(date: string): Promise<Row[]> {
   })
 }
 
+// Which days have actually been closed over a period, and how each came out.
+//
+// The sheet only ever shows ONE day, which answers "what did we count today"
+// and nothing at all about "did we close every day this month, and where were
+// the differences". One row per closed day, so a gap in the run is visible as a
+// missing date rather than having to be looked for a day at a time.
+export async function stockCountHistory(from: string, to: string): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: `SELECT substr(sc.count_date, 1, 10) AS count_date,
+                 COUNT(*) AS products,
+                 SUM(CASE WHEN ABS(COALESCE(sc.book_qty,0) - (COALESCE(sc.actual_qty,0) + COALESCE(sc.pp_qty,0))) > 0.0005
+                          THEN 1 ELSE 0 END) AS mismatches,
+                 ROUND(SUM(COALESCE(sc.book_qty,0) - (COALESCE(sc.actual_qty,0) + COALESCE(sc.pp_qty,0))), 3) AS net_diff,
+                 ROUND(SUM(COALESCE(sc.actual_value, 0)), 2) AS actual_value,
+                 MAX(sc.created_at) AS last_saved
+            FROM stock_counts sc
+           WHERE substr(sc.count_date, 1, 10) >= ? AND substr(sc.count_date, 1, 10) <= ?
+           GROUP BY substr(sc.count_date, 1, 10)
+           ORDER BY count_date DESC`,
+    args: [String(from).slice(0, 10), String(to).slice(0, 10)]
+  })
+  return res.rows.map((r) => {
+    const o: Row = {}
+    for (const col of res.columns) o[col] = (r as unknown as Row)[col]
+    return o
+  })
+}
+
 export async function saveStockCounts(date: string, items: Row[]): Promise<{ count: number }> {
   const c = getClient()
   // Value the count with the current weighted-average cost — actual value is
