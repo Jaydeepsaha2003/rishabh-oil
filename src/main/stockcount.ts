@@ -106,6 +106,9 @@ export async function listStockCounts(date: string): Promise<Row[]> {
 // missing date rather than having to be looked for a day at a time.
 export async function stockCountHistory(from: string, to: string): Promise<Row[]> {
   const res = await getClient().execute({
+    // Company-scoped, like every other read on this page. Without it the
+    // history mixed both companies' closings into one row per date AND could
+    // not use the (company_id, count_date) index, so it scanned the table.
     sql: `SELECT substr(sc.count_date, 1, 10) AS count_date,
                  COUNT(*) AS products,
                  SUM(CASE WHEN ABS(COALESCE(sc.book_qty,0) - (COALESCE(sc.actual_qty,0) + COALESCE(sc.pp_qty,0))) > 0.0005
@@ -114,10 +117,10 @@ export async function stockCountHistory(from: string, to: string): Promise<Row[]
                  ROUND(SUM(COALESCE(sc.actual_value, 0)), 2) AS actual_value,
                  MAX(sc.created_at) AS last_saved
             FROM stock_counts sc
-           WHERE substr(sc.count_date, 1, 10) >= ? AND substr(sc.count_date, 1, 10) <= ?
+           WHERE sc.company_id = ? AND sc.count_date >= ? AND sc.count_date <= ?
            GROUP BY substr(sc.count_date, 1, 10)
            ORDER BY count_date DESC`,
-    args: [String(from).slice(0, 10), String(to).slice(0, 10)]
+    args: [getActiveCompanyId(), String(from).slice(0, 10), String(to).slice(0, 10)]
   })
   return res.rows.map((r) => {
     const o: Row = {}

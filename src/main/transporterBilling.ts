@@ -87,9 +87,8 @@ export async function listTransporterFreight(
          p.name AS product_name,
          -- A sale has no tanker record of its own; the vehicle that carried it
          -- is whatever the gate wrote against the invoice group on the way out.
-         (SELECT ge.tanker_no FROM gate_entries ge
-           WHERE ge.direction = 'out' AND ge.invoice_group = sa.invoice_group
-             AND sa.invoice_group IS NOT NULL ORDER BY ge.id DESC LIMIT 1) AS vehicle_no,
+         -- Resolved through the join below rather than a subquery per row.
+         gv.tanker_no AS vehicle_no,
          sa.qty AS dispatch_qty, sa.received_qty AS received_qty, sa.dispatch_stage AS dispatch_stage,
          -- Until the invoice is unloaded there is no weighed-in quantity, so the
          -- freight is still an estimate off the dispatched qty. Flagged so the
@@ -104,7 +103,12 @@ export async function listTransporterFreight(
          LEFT JOIN products p ON p.id = o.oil_type_id`
       : `LEFT JOIN sales sa ON sa.id = l.sale_id
          LEFT JOIN customers cu ON cu.id = sa.customer_id
-         LEFT JOIN products p ON p.id = sa.product_id`
+         LEFT JOIN products p ON p.id = sa.product_id
+         LEFT JOIN (SELECT ge.invoice_group AS grp, MAX(ge.id) AS ge_id
+                      FROM gate_entries ge
+                     WHERE ge.direction = 'out' AND ge.invoice_group IS NOT NULL
+                     GROUP BY ge.invoice_group) go2 ON go2.grp = sa.invoice_group
+         LEFT JOIN gate_entries gv ON gv.id = go2.ge_id`
 
   const res = await c.execute({
     sql: `SELECT l.id, l.transporter_id, l.entry_date, l.entry_type, l.amount, l.note,

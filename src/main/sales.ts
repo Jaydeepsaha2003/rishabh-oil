@@ -353,6 +353,21 @@ export async function listSalesForUnloadDesk(companyIds?: number[]): Promise<Row
   const res = await getClient().execute({
     args: cos.length ? [] : [getActiveCompanyId()],
     sql: `
+    WITH gate_out AS (
+      -- Which gate entry carried each invoice group out. A gate entry names its
+      -- group directly, or reaches it through gate_entry_sales when one vehicle
+      -- carried several invoices; both are the same question, so they are one
+      -- UNION rather than an OR nobody can index.
+      SELECT grp, MAX(id) AS ge_id FROM (
+        SELECT ge.invoice_group AS grp, ge.id AS id
+          FROM gate_entries ge
+         WHERE ge.direction = 'out' AND ge.invoice_group IS NOT NULL
+        UNION ALL
+        SELECT gs.invoice_group AS grp, ge.id AS id
+          FROM gate_entry_sales gs
+          JOIN gate_entries ge ON ge.id = gs.gate_entry_id AND ge.direction = 'out'
+      ) GROUP BY grp
+    )
     SELECT s.id, s.invoice_no, s.invoice_group, s.sale_date, s.customer, s.customer_id,
            s.product_id, s.packaging_id, s.qty, s.uom, s.received_qty,
            s.dispatch_stage, s.status, s.freight_term, s.track_stock, s.is_trading,
@@ -361,17 +376,15 @@ export async function listSalesForUnloadDesk(companyIds?: number[]): Promise<Row
            pr.name AS product_name, pr.material_type AS product_category,
            pr.category AS product_sub_category, pk.name AS packaging_name,
            cu.name AS customer_master, co.name AS company_name,
-           (SELECT ge.tanker_no FROM gate_entries ge
-             WHERE ge.direction = 'out' AND (ge.invoice_group = s.invoice_group
-                    OR EXISTS (SELECT 1 FROM gate_entry_sales gs
-                               WHERE gs.gate_entry_id = ge.id AND gs.invoice_group = s.invoice_group)) AND s.invoice_group IS NOT NULL
-             ORDER BY ge.id DESC LIMIT 1) AS gate_vehicle_no
+           gv.tanker_no AS gate_vehicle_no
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id
     LEFT JOIN packagings pk ON pk.id = s.packaging_id
     LEFT JOIN customers cu ON cu.id = s.customer_id
     LEFT JOIN companies co ON co.id = s.company_id
     LEFT JOIN sales_bargains sb ON sb.id = s.sales_bargain_id
+    LEFT JOIN gate_out go2 ON go2.grp = s.invoice_group
+    LEFT JOIN gate_entries gv ON gv.id = go2.ge_id
     WHERE ${cos.length ? `s.company_id IN (${cos.join(',')})` : 's.company_id = ?'}
       AND COALESCE(s.freight_term, 'FREIGHT_ON_GOODS') = 'DLD'
       AND COALESCE(s.dispatch_stage, CASE WHEN s.status = 'done' THEN 'unloaded' ELSE 'pending' END) <> 'unloaded'
@@ -392,6 +405,21 @@ export async function listSales(companyIds?: number[]): Promise<Row[]> {
   const res = await getClient().execute({
     args: cos.length ? [] : [getActiveCompanyId()],
     sql: `
+    WITH gate_out AS (
+      -- Which gate entry carried each invoice group out. A gate entry names its
+      -- group directly, or reaches it through gate_entry_sales when one vehicle
+      -- carried several invoices; both are the same question, so they are one
+      -- UNION rather than an OR nobody can index.
+      SELECT grp, MAX(id) AS ge_id FROM (
+        SELECT ge.invoice_group AS grp, ge.id AS id
+          FROM gate_entries ge
+         WHERE ge.direction = 'out' AND ge.invoice_group IS NOT NULL
+        UNION ALL
+        SELECT gs.invoice_group AS grp, ge.id AS id
+          FROM gate_entry_sales gs
+          JOIN gate_entries ge ON ge.id = gs.gate_entry_id AND ge.direction = 'out'
+      ) GROUP BY grp
+    )
     SELECT s.*, pr.name AS product_name, pr.material_type AS product_category,
            pr.category AS product_sub_category, sb.bargain_no AS sales_bargain_no,
            -- The allowance falls back invoice -> bargain -> mill default, so
@@ -404,21 +432,9 @@ export async function listSales(companyIds?: number[]): Promise<Row[]> {
            -- The vehicle that actually carried this invoice out, from the
            -- gate register — Gate Out already links to a sale by invoice
            -- group; this is that link read back onto the invoice itself.
-           (SELECT ge.tanker_no FROM gate_entries ge
-             WHERE ge.direction = 'out' AND (ge.invoice_group = s.invoice_group
-                    OR EXISTS (SELECT 1 FROM gate_entry_sales gs
-                               WHERE gs.gate_entry_id = ge.id AND gs.invoice_group = s.invoice_group)) AND s.invoice_group IS NOT NULL
-             ORDER BY ge.id DESC LIMIT 1) AS gate_vehicle_no,
-           (SELECT ge.gate_entry_no FROM gate_entries ge
-             WHERE ge.direction = 'out' AND (ge.invoice_group = s.invoice_group
-                    OR EXISTS (SELECT 1 FROM gate_entry_sales gs
-                               WHERE gs.gate_entry_id = ge.id AND gs.invoice_group = s.invoice_group)) AND s.invoice_group IS NOT NULL
-             ORDER BY ge.id DESC LIMIT 1) AS gate_entry_no,
-           (SELECT ge.status FROM gate_entries ge
-             WHERE ge.direction = 'out' AND (ge.invoice_group = s.invoice_group
-                    OR EXISTS (SELECT 1 FROM gate_entry_sales gs
-                               WHERE gs.gate_entry_id = ge.id AND gs.invoice_group = s.invoice_group)) AND s.invoice_group IS NOT NULL
-             ORDER BY ge.id DESC LIMIT 1) AS gate_status
+           gv.tanker_no AS gate_vehicle_no,
+           gv.gate_entry_no AS gate_entry_no,
+           gv.status AS gate_status
     FROM sales s
     LEFT JOIN products pr ON pr.id = s.product_id
     LEFT JOIN sales_bargains sb ON sb.id = s.sales_bargain_id
@@ -426,6 +442,8 @@ export async function listSales(companyIds?: number[]): Promise<Row[]> {
     LEFT JOIN transporters tr ON tr.id = s.transporter_id
     LEFT JOIN customers cu ON cu.id = s.customer_id
     LEFT JOIN companies co ON co.id = s.company_id
+    LEFT JOIN gate_out go2 ON go2.grp = s.invoice_group
+    LEFT JOIN gate_entries gv ON gv.id = go2.ge_id
     WHERE ${cos.length ? `s.company_id IN (${cos.join(',')})` : 's.company_id = ?'}
     ORDER BY s.sale_date DESC, s.id DESC
   `

@@ -265,6 +265,14 @@ app.whenReady().then(async () => {
         if (!/duplicate column/i.test(String((e as Error).message))) throw e
       })
   }).catch((e) => console.error('[freight] penalty note link failed:', e))
+  // The freight registers filter transporter_ledger by company and entry type
+  // on every refresh, and neither led an index — so both sides scanned the
+  // whole ledger to find their handful of rows.
+  await runOnce('tledger_company_idx_v1', async () => {
+    await getClient().execute(
+      'CREATE INDEX IF NOT EXISTS idx_tl_company_type ON transporter_ledger(company_id, entry_type)'
+    )
+  }).catch((e) => console.error('[freight] ledger index failed:', e))
   startRevisionWatcher()
   registerIpc()
   registerUpdater(() => mainWindow)
