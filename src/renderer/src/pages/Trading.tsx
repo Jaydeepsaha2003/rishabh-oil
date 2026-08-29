@@ -16,6 +16,7 @@ import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { computeMoney } from '@/lib/orderCalc'
 import { isTradingParty } from '@/lib/constants'
 import { exportTradingDeals } from '@/lib/tradingExcel'
+import { useEntryWindow } from '@/lib/useEntryWindow'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -289,6 +290,9 @@ const emptyForm = (): Row => ({
 })
 
 export function Trading(): React.JSX.Element {
+  // How far back this user may date a new entry. The save is refused either
+  // way; greying the days out just stops the form offering one it will reject.
+  const minDate = useEntryWindow('trading')
   // Alt+F2's period picker filters this list by deal date — deliberately no
   // visible date-range control of its own on this page.
   const globalRange = useGlobalDateRange()
@@ -771,7 +775,7 @@ export function Trading(): React.JSX.Element {
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Deal date</Label>
-                    <DatePicker value={String(form.deal_date || '')} onChange={(v) => setForm((p) => ({ ...p, deal_date: v }))} />
+                    <DatePicker min={minDate} value={String(form.deal_date || '')} onChange={(v) => setForm((p) => ({ ...p, deal_date: v }))} />
                   </div>
                   <div className="flex flex-col gap-1.5 md:col-span-3">
                     <Label>Note</Label>
@@ -1004,7 +1008,12 @@ export function Trading(): React.JSX.Element {
   }
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-auto p-6">
+    // No h-full and no scroller of its own. The app's <main> already scrolls,
+    // and nesting a second one inside it meant the page scrolled in a box:
+    // the outer scrollbar never appeared and the inner one sat inside the
+    // padding where it is easy to miss. p-4 to match every other register,
+    // which also gives the table back the width p-6 was taking.
+    <div className="flex flex-col gap-4 p-4">
       <PageHeader
         title="Purchase & Sales Trading"
         hint="No bargain, no tanker movement, no stock entries, no interest — the purchase and sale book straight through in one step, same as ticking 'Trading' inside Purchases/Sales, just from one dedicated screen with full GST/TDS/round-off control. GST/TDS auto-load from the supplier/customer master (highlighted amber) and can be overridden. Deleting a deal removes both its purchase and sale invoices."
@@ -1081,8 +1090,13 @@ export function Trading(): React.JSX.Element {
       </div>
 
       {/* Tally-style register: ruled columns, tight rows, figures right-aligned
-          on a cream ledger, and a grand total pinned at the foot. */}
-      <div className="overflow-hidden rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
+          on a cream ledger, and a grand total pinned at the foot.
+          -mx-4 breaks it out of the page padding so the register runs the full
+          width of the screen — fifteen money columns need every pixel, and the
+          side gaps bought nothing. The header and search above keep their
+          margin; only the table goes edge to edge, so the rounding and the
+          left/right border go with it. */}
+      <div className="-mx-4 overflow-hidden border-y border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
         {loading ? (
           <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">Loading…</div>
         ) : filteredDeals.length === 0 ? (

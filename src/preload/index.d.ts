@@ -28,7 +28,7 @@ export interface Api {
     all: () => Promise<Record<string, string>>
   }
   bargains: {
-    list: (from?: string, to?: string, companyIds?: number[]) => Promise<Row[]>
+    list: (from?: string, to?: string, companyIds?: number[], forModule?: string) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number; bargain_no: string }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
@@ -36,7 +36,7 @@ export interface Api {
   }
   orders: {
     bargainNotes: (id: number) => Promise<Row[]>
-    list: () => Promise<Row[]>
+    list: (forModule?: string) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
@@ -55,7 +55,7 @@ export interface Api {
     getActive: () => Promise<{ id: number }>
   }
   consignment: {
-    list: () => Promise<Row[]>
+    list: (forModule?: string) => Promise<Row[]>
     summary: (range?: { from?: string; to?: string }) => Promise<Row[]>
     invoices: (range?: { from?: string; to?: string }) => Promise<Row[]>
     pending: () => Promise<Row[]>
@@ -67,7 +67,7 @@ export interface Api {
     openingLog: (supplierId: number, productId: number) => Promise<Row[]>
   }
   tankers: {
-    list: (all?: boolean) => Promise<Row[]>
+    list: (all?: boolean, forModule?: string) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
@@ -121,6 +121,7 @@ export interface Api {
       userId: number,
       username: string
     ) => Promise<{ blocked: boolean; revoked?: boolean; role?: string; full_name?: string; permissions?: unknown }>
+    entryWindows: () => Promise<Record<string, string>>
     liveUsers: () => Promise<Row[]>
     ips: () => Promise<Row[]>
     setIp: (id: number, active: boolean) => Promise<{ id: number }>
@@ -194,13 +195,13 @@ export interface Api {
     remove: (id: number, companyId?: number) => Promise<{ id: number }>
   }
   production: {
-    list: () => Promise<Row[]>
+    list: (forModule?: string) => Promise<Row[]>
     items: (id: number) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
   }
   sales: {
-    list: (companyIds?: number[]) => Promise<Row[]>
+    list: (companyIds?: number[], forModule?: string) => Promise<Row[]>
     fyTaxable: (customerId: number, date: string, excludeId: number) => Promise<number>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
@@ -227,7 +228,7 @@ export interface Api {
     save: (id: number, rows: Row[]) => Promise<{ saved: number; cleared: number }>
   }
   salesBargains: {
-    list: (from?: string, to?: string, companyIds?: number[]) => Promise<Row[]>
+    list: (from?: string, to?: string, companyIds?: number[], forModule?: string) => Promise<Row[]>
     returns: (companyIds?: number[]) => Promise<Row[]>
     unattributedReturns: (companyIds?: number[]) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number; bargain_no: string }>
@@ -348,7 +349,7 @@ export interface Api {
     setCombinedLimit: (value: number | string | null) => Promise<{ value: number | null }>
   }
   trading: {
-    list: () => Promise<Row[]>
+    list: (forModule?: string) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>

@@ -2331,7 +2331,7 @@ function MncStock(): React.JSX.Element {
     setLoading(true)
     const [sm, ls, inv, sup, prd] = await Promise.all([
       window.api.consignment.summary(mncRanged ? { from: mncFrom, to: mncTo } : undefined),
-      window.api.consignment.list(),
+      window.api.consignment.list('stock'),
       // The purchases that drew this stock down — the detail behind the
       // Invoiced column, on the same period as the summary.
       window.api.consignment.invoices(mncRanged ? { from: mncFrom, to: mncTo } : undefined),

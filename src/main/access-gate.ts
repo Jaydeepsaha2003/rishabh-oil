@@ -7,7 +7,16 @@
 // discovering a legitimate edit is now impossible.
 import { getClient, todayISO } from './db'
 import { getCurrentUser } from './currentUser'
-import { can, moduleScope, type Action, type AccessUser } from './access-rules'
+import {
+  can,
+  moduleScope,
+  modulePerm,
+  windowStart,
+  viewDays,
+  entryDays,
+  type Action,
+  type AccessUser
+} from './access-rules'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -47,9 +56,10 @@ const CHANNEL_RULES: Record<string, Rule> = {
   gate: { module: 'gateEntry', label: 'Gate entries', table: 'gate_entries', dateCol: 'entry_date' },
   payments: { module: 'payments', label: 'Payments', table: 'payments', dateCol: 'payment_date' },
   billDiscounts: { module: 'payments', label: 'Bill discounts' },
-  production: { module: 'production', label: 'Production', table: 'production', dateCol: 'production_date' },
+  production: { module: 'production', label: 'Production', table: 'production', dateCol: 'prod_date' },
   // One table behind two menus; the Debit note grant governs both.
   notes: { module: 'debitNotes', label: 'Debit/Credit notes', table: 'notes', dateCol: 'note_date' },
+  trading: { module: 'trading', label: 'Trading', table: 'trading_deals', dateCol: 'deal_date' },
   stockCount: { module: 'stock', label: 'Stock' },
   skuStock: { module: 'stock', label: 'Stock' },
   formulations: { module: 'formulation', label: 'Formulations' }
@@ -103,6 +113,68 @@ async function currentAccessUser(): Promise<AccessUser | null> {
   return user
 }
 
+// The earliest date this user may SEE in a module, or null for no limit.
+//
+// Enforced HERE, in the query, and never in the page — a row filtered in the
+// renderer has already crossed the wire, which is no restriction at all.
+//
+// This bounds a LIST, and must not be used to bound a figure. A user given a
+// seven-day window still owes the full stock balance, the full outstanding, the
+// full KPI; those are computed from every row and only the register they read
+// is shortened. Bounding a total by the reader's window would not shorten it,
+// it would make it wrong.
+//
+// An admin, an unknown user (harness, first run) and a module with no visible
+// window set are all unlimited.
+export async function visibleFrom(moduleKey: string): Promise<string | null> {
+  const user = await currentAccessUser()
+  if (!user) return null
+  const days = viewDays(user, moduleKey)
+  if (days == null) return null
+  return windowStart(days, todayISO())
+}
+
+// The same window, handed to the renderer: the earliest date each module's
+// forms may offer. A date picker that presents a day the save is going to
+// refuse is a trap, so the pages ask once and set it as the minimum.
+//
+// This is a courtesy to the user, NOT the control — the control is `can()`,
+// which refuses the write whatever the form sent. Keyed by module, so one call
+// answers for every page instead of one call per page.
+export async function entryWindows(): Promise<Record<string, string>> {
+  const out: Record<string, string> = {}
+  const user = await currentAccessUser()
+  if (!user) return out
+  if (String(user.role || '').toLowerCase() === 'admin') return out
+  const perms = user.permissions
+  if (!perms || typeof perms !== 'object' || Array.isArray(perms)) return out
+  const today = todayISO()
+  for (const key of Object.keys(perms as Record<string, unknown>)) {
+    const days = entryDays(user, key)
+    if (days != null) out[key] = windowStart(days, today)
+  }
+  return out
+}
+
+// The visible window for a list channel that serves more than one page.
+//
+// `sales:list` is read by the Sales register, but also by Accounts and Treasury,
+// which reconcile money against it. Bounding those two by the SALES window would
+// not shorten their pages — it would make their figures wrong, quietly, for one
+// user only. So the caller names the module it is actually rendering and the
+// bound comes from THAT module's window.
+//
+// The escape hatch cannot be used to widen anything: naming a module the user
+// has no view rights on falls straight back to the owning module's window. A
+// user who cannot open Treasury gains nothing by claiming to be it.
+export async function visibleFromFor(ownModule: string, callerModule?: string): Promise<string | null> {
+  if (!callerModule || callerModule === ownModule) return visibleFrom(ownModule)
+  const user = await currentAccessUser()
+  if (!user) return null
+  if (!modulePerm(user, callerModule).view) return visibleFrom(ownModule)
+  return visibleFrom(callerModule)
+}
+
 // The narrowed job the signed-in user holds in a module, for the readers that
 // have to hand back less than the full row set. Null for an admin, for a user
 // the app does not know (harness, first run), or for an unrestricted grant.
@@ -148,6 +220,12 @@ export async function assertAllowed(channel: string, args: unknown): Promise<voi
   // right itself is checked.
   let entryDate: unknown
   const id = Number((args as Row)?.id) || 0
+  // For a create there is no row yet, so the date being written IS the date to
+  // judge. It arrives on the values object under its own column name.
+  if (action === 'create' && rule.dateCol) {
+    const a = args as Row
+    entryDate = a?.values?.[rule.dateCol] ?? a?.[rule.dateCol]
+  }
   if ((action === 'edit' || action === 'delete') && rule.table && rule.dateCol && id) {
     try {
       const res = await getClient().execute({

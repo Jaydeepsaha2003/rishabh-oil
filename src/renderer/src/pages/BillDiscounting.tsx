@@ -742,7 +742,7 @@ export function BillDiscounting({
   useEffect(() => {
     if (!form || String(form.purpose || '') !== 'trading' || tradingLoaded) return
     let live = true
-    void Promise.all([window.api.trading.list(), window.api.orders.list()])
+    void Promise.all([window.api.trading.list('treasury'), window.api.orders.list('treasury')])
       .then(([deals, ords]) => {
         if (!live) return
         setTradingDeals(deals)

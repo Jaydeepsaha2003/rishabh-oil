@@ -28,6 +28,7 @@ import { formatDate, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { Pagination, usePaged } from '@/components/Pagination'
+import { useEntryWindow } from '@/lib/useEntryWindow'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -39,6 +40,9 @@ const CAT_LABEL: Record<string, string> = {
 }
 
 export function Production(): React.JSX.Element {
+  // How far back this user may date a new entry. The save is refused either
+  // way; greying the days out just stops the form offering one it will reject.
+  const minDate = useEntryWindow('production')
   const [rows, setRows] = useState<Row[]>([])
   const paged = usePaged(rows)
   const [products, setProducts] = useState<Row[]>([])
@@ -163,6 +167,7 @@ export function Production(): React.JSX.Element {
               <div className="flex flex-col gap-1.5">
                 <Label>Date</Label>
                 <DatePicker
+                  min={minDate}
                   value={form.prod_date}
                   onChange={(v) => setForm((p) => ({ ...p, prod_date: v }))}
                 />

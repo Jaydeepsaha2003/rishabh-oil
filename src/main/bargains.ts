@@ -1,6 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
 import { getActiveCompanyId } from './company'
+import { visibleFromFor } from './access-gate'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -34,7 +35,12 @@ function dayMonth(dateStr: string): string {
   return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
-export async function listBargains(from?: string, to?: string, companyIds?: number[]): Promise<Row[]> {
+export async function listBargains(
+  from?: string,
+  to?: string,
+  companyIds?: number[],
+  forModule?: string
+): Promise<Row[]> {
   // Bargains are GENERAL — shared across every company, not company-scoped.
   // loaded_qty = total dispatched (received in) across this bargain's tankers +
   // consignment orders; balance = qty − loaded. Period register fields (relative
@@ -49,6 +55,10 @@ export async function listBargains(from?: string, to?: string, companyIds?: numb
   const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
   const ptCo = cos.length ? ` AND company_id IN (${cos.join(',')})` : ''
   const obCo = cos.length ? ` AND o2.company_id IN (${cos.join(',')})` : ''
+  // Bounded to what this user may see. The bound goes in the SQL so the older
+  // rows are never fetched; `forModule` lets a page that only borrows this
+  // register (Accounts, Treasury) keep its own window instead of this one.
+  const vis = await visibleFromFor('bargains', forModule)
   const res = await getClient().execute({
     sql: `
     SELECT b.*, s.name AS supplier_name, s.supplier_type AS supplier_type,
@@ -89,9 +99,10 @@ export async function listBargains(from?: string, to?: string, companyIds?: numb
     LEFT JOIN suppliers s ON s.id = b.supplier_id
     LEFT JOIN products o ON o.id = b.oil_type_id
     LEFT JOIN brokers br ON br.id = b.broker_id
+    ${vis ? 'WHERE b.bargain_date >= ?' : ''}
     ORDER BY b.id DESC
   `,
-    args: [f, f, f, f, t, f, t, f, t, f, f, t, t]
+    args: vis ? [f, f, f, f, t, f, t, f, t, f, f, t, t, vis] : [f, f, f, f, t, f, t, f, t, f, f, t, t]
   })
   return toPlain(res)
 }

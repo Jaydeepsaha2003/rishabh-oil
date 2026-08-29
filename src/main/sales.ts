@@ -10,6 +10,7 @@ import {
   createSaleProduction,
   deleteSaleProductions
 } from './production'
+import { visibleFromFor } from './access-gate'
 
 // Guard: a dispatched (done) sale physically draws finished-goods stock, so the
 // available stock (excluding this sale's own effect) must cover the quantity.
@@ -400,10 +401,20 @@ export async function listSalesForUnloadDesk(companyIds?: number[]): Promise<Row
 // register counts every company's dispatch in its balance, so its drilldown has
 // to be able to list them all. Left empty (the default) it stays on the active
 // company, which is what the invoice screens want.
-export async function listSales(companyIds?: number[]): Promise<Row[]> {
+export async function listSales(companyIds?: number[], forModule?: string): Promise<Row[]> {
   const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
+  // Bounded to what this user may see. The bound goes in the SQL so the older
+  // rows are never fetched; `forModule` lets a page that only borrows this
+  // register (Accounts, Treasury) keep its own window instead of this one.
+  const vis = await visibleFromFor('sales', forModule)
   const res = await getClient().execute({
-    args: cos.length ? [] : [getActiveCompanyId()],
+    args: vis
+      ? cos.length
+        ? [vis]
+        : [getActiveCompanyId(), vis]
+      : cos.length
+        ? []
+        : [getActiveCompanyId()],
     sql: `
     WITH gate_out AS (
       -- Which gate entry carried each invoice group out. A gate entry names its
@@ -444,7 +455,7 @@ export async function listSales(companyIds?: number[]): Promise<Row[]> {
     LEFT JOIN companies co ON co.id = s.company_id
     LEFT JOIN gate_out go2 ON go2.grp = s.invoice_group
     LEFT JOIN gate_entries gv ON gv.id = go2.ge_id
-    WHERE ${cos.length ? `s.company_id IN (${cos.join(',')})` : 's.company_id = ?'}
+    WHERE ${cos.length ? `s.company_id IN (${cos.join(',')})` : 's.company_id = ?'}${vis ? ' AND s.sale_date >= ?' : ''}
     ORDER BY s.sale_date DESC, s.id DESC
   `
   })
@@ -492,7 +503,12 @@ function returnSum(dateWhere: string, coWhere: string): string {
        AND ${RETURN_MATCH}${coWhere}${dateWhere}), 0)`
 }
 
-export async function listSalesBargains(from?: string, to?: string, companyIds?: number[]): Promise<Row[]> {
+export async function listSalesBargains(
+  from?: string,
+  to?: string,
+  companyIds?: number[],
+  forModule?: string
+): Promise<Row[]> {
   // Sales bargains are GENERAL — shared across every company, like purchase
   // bargains (no company filter; sold sums sales from all companies).
   // Period register fields (relative to [from,to]): disp_before = dispatched
@@ -506,6 +522,10 @@ export async function listSalesBargains(from?: string, to?: string, companyIds?:
   const cos = (companyIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
   const sCo = cos.length ? ` AND company_id IN (${cos.join(',')})` : ''
   const nCo = cos.length ? ` AND nt.company_id IN (${cos.join(',')})` : ''
+  // Bounded to what this user may see. The bound goes in the SQL so the older
+  // rows are never fetched; `forModule` lets a page that only borrows this
+  // register (Accounts, Treasury) keep its own window instead of this one.
+  const vis = await visibleFromFor('salesBargains', forModule)
   const res = await getClient().execute({
     sql: `
     SELECT b.*, pr.name AS product_name, pk.name AS packaging_name, cu.name AS customer_master,
@@ -528,9 +548,10 @@ export async function listSalesBargains(from?: string, to?: string, companyIds?:
     LEFT JOIN packagings pk ON pk.id = b.packaging_id
     LEFT JOIN customers cu ON cu.id = b.customer_id
     LEFT JOIN companies co ON co.id = b.company_id
+    ${vis ? 'WHERE b.bargain_date >= ?' : ''}
     ORDER BY b.id DESC
   `,
-    args: [f, f, t, f, f, t, t, f, f, t, t]
+    args: vis ? [f, f, t, f, f, t, t, f, f, t, t, vis] : [f, f, t, f, f, t, t, f, f, t, t]
   })
   // When linked to the master, always show the master's current name (renames
   // propagate); otherwise fall back to the free-text name stored on the bargain.

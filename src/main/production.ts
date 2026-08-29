@@ -2,6 +2,7 @@ import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
 import { stockMap, productStockAvailable } from './stock'
+import { visibleFromFor } from './access-gate'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -146,15 +147,19 @@ export function expandRecipe(
   return lines
 }
 
-export async function listProduction(): Promise<Row[]> {
+export async function listProduction(forModule?: string): Promise<Row[]> {
+  // Bounded to what this user may see. The bound goes in the SQL so the older
+  // rows are never fetched; `forModule` lets a page that only borrows this
+  // register (Accounts, Treasury) keep its own window instead of this one.
+  const from = await visibleFromFor('production', forModule)
   const res = await getClient().execute({
-    args: [getActiveCompanyId()],
+    args: from ? [getActiveCompanyId(), from] : [getActiveCompanyId()],
     sql: `
     SELECT p.*, pr.name AS product_name, pr.category AS product_category, f.name AS formulation_name
     FROM production p
     LEFT JOIN products pr ON pr.id = p.product_id
     LEFT JOIN formulations f ON f.id = p.formulation_id
-    WHERE p.company_id = ?
+    WHERE p.company_id = ?${from ? ' AND p.prod_date >= ?' : ''}
     ORDER BY p.prod_date DESC, p.id DESC
   `
   })

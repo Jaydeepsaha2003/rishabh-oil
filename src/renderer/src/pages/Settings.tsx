@@ -30,6 +30,7 @@ import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import type { AppUser } from '@/lib/session'
 import { cn } from '@/lib/utils'
 import { MODULES, canWrite } from '@/lib/modules'
+import { clearEntryWindows } from '@/lib/useEntryWindow'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -125,6 +126,9 @@ function UsersManager(): React.JSX.Element {
     try {
       if (editing) await window.api.users.update(editing.id as number, form)
       else await window.api.users.create(form)
+      // The day counts just moved; the next form to ask must not be handed the
+      // window this session cached at login.
+      clearEntryWindows()
       toast.success('User saved')
       setOpen(false)
       await load()
@@ -148,11 +152,25 @@ function UsersManager(): React.JSX.Element {
 
   // A module's rights, read from either the new object shape or the older
   // 'read' / 'write' string so existing users edit without being reset.
-  type Rights = { view: boolean; create: boolean; edit: boolean; delete: boolean; editDays: string; scope: string }
+  // editDays = the ENTRY window (how far back they may date, edit or delete).
+  // viewDays  = the VISIBLE window (how far back rows are listed at all).
+  // Two numbers because reading a week of history is context and keying a week
+  // late is a habit: the client wants to grant the first without the second.
+  type Rights = {
+    view: boolean
+    create: boolean
+    edit: boolean
+    delete: boolean
+    editDays: string
+    viewDays: string
+    scope: string
+  }
   function rightsOf(key: string): Rights {
     const raw = (form.permissions || {})[key]
-    if (raw === 'write') return { view: true, create: true, edit: true, delete: true, editDays: '', scope: '' }
-    if (raw === 'read') return { view: true, create: false, edit: false, delete: false, editDays: '', scope: '' }
+    if (raw === 'write')
+      return { view: true, create: true, edit: true, delete: true, editDays: '', viewDays: '', scope: '' }
+    if (raw === 'read')
+      return { view: true, create: false, edit: false, delete: false, editDays: '', viewDays: '', scope: '' }
     if (raw && typeof raw === 'object') {
       const o = raw as Record<string, unknown>
       return {
@@ -161,10 +179,11 @@ function UsersManager(): React.JSX.Element {
         edit: !!o.edit,
         delete: !!o.delete,
         editDays: o.editDays == null || o.editDays === '' ? '' : String(o.editDays),
+        viewDays: o.viewDays == null || o.viewDays === '' ? '' : String(o.viewDays),
         scope: o.scope ? String(o.scope) : ''
       }
     }
-    return { view: false, create: false, edit: false, delete: false, editDays: '', scope: '' }
+    return { view: false, create: false, edit: false, delete: false, editDays: '', viewDays: '', scope: '' }
   }
 
   function writeRights(key: string, next: Rights): void {
@@ -181,6 +200,9 @@ function UsersManager(): React.JSX.Element {
         }
         if (next.editDays !== '' && Number.isFinite(Number(next.editDays))) {
           entry.editDays = Math.max(0, Number(next.editDays))
+        }
+        if (next.viewDays !== '' && Number.isFinite(Number(next.viewDays))) {
+          entry.viewDays = Math.max(0, Number(next.viewDays))
         }
         // Carried, not rebuilt — ticking any box on a scoped module would
         // otherwise silently drop the restriction it was granted under.
@@ -222,6 +244,7 @@ function UsersManager(): React.JSX.Element {
         else {
           const entry: Record<string, unknown> = { view: true, create: next.create, edit: next.edit, delete: next.delete }
           if (next.editDays !== '') entry.editDays = Math.max(0, Number(next.editDays))
+          if (next.viewDays !== '') entry.viewDays = Math.max(0, Number(next.viewDays))
           if (next.scope) entry.scope = next.scope
           perms[m.key] = entry
         }
@@ -267,15 +290,27 @@ function UsersManager(): React.JSX.Element {
     })
   }
 
-  // Apply one read-only window to every module the user can edit.
-  function setAllDays(days: string): void {
+  // Fill one window down the whole grid. Typing 7 into Visible and 2 into Entry
+  // is the common setup — a week of history to read, two days to key — and
+  // doing it a row at a time across two dozen modules invites a missed box.
+  //
+  // The two fields have different reach on purpose: a visible window restricts
+  // READING, so it applies to any module the user can open; an entry window
+  // restricts WRITING, so it would mean nothing on a view-only module.
+  function setAllDays(field: 'editDays' | 'viewDays', days: string): void {
     setForm((p) => {
       const perms = { ...(p.permissions || {}) }
       for (const m of MODULES) {
         const cur = rightsOf(m.key)
-        if (!(cur.view || cur.create || cur.edit || cur.delete)) continue
+        const writes = cur.create || cur.edit || cur.delete
+        if (field === 'editDays' ? !writes : !cur.view) continue
         const entry: Record<string, unknown> = { view: true, create: cur.create, edit: cur.edit, delete: cur.delete }
-        if (days !== '' && Number.isFinite(Number(days))) entry.editDays = Math.max(0, Number(days))
+        // Carry the OTHER window through untouched — filling one column must
+        // not wipe the column beside it.
+        const keep = field === 'editDays' ? cur.viewDays : cur.editDays
+        const keepKey = field === 'editDays' ? 'viewDays' : 'editDays'
+        if (keep !== '') entry[keepKey] = Math.max(0, Number(keep))
+        if (days !== '' && Number.isFinite(Number(days))) entry[field] = Math.max(0, Number(days))
         if (cur.scope) entry.scope = cur.scope
         perms[m.key] = entry
       }
@@ -381,16 +416,30 @@ function UsersManager(): React.JSX.Element {
                   </div>
                 </div>
 
-                <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
-                  <span className="text-muted-foreground">Read-only after</span>
-                  <Input
-                    type="number"
-                    min="0"
-                    className="h-7 w-20 text-right"
-                    placeholder="days"
-                    onChange={(e) => setAllDays(e.target.value)}
-                  />
-                  <span className="text-muted-foreground">days, applied to every module below</span>
+                <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px]">
+                  <span className="text-muted-foreground">Set every module below —</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium">Visible for</span>
+                    <Input
+                      type="number"
+                      min="0"
+                      className="h-7 w-16 text-right"
+                      placeholder="days"
+                      onChange={(e) => setAllDays('viewDays', e.target.value)}
+                    />
+                    <span className="text-muted-foreground">days</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium">Entry window</span>
+                    <Input
+                      type="number"
+                      min="0"
+                      className="h-7 w-16 text-right"
+                      placeholder="days"
+                      onChange={(e) => setAllDays('editDays', e.target.value)}
+                    />
+                    <span className="text-muted-foreground">days</span>
+                  </div>
                 </div>
                 <div className="overflow-hidden rounded-lg border">
                   <table className="w-full text-[12px]">
@@ -407,8 +456,12 @@ function UsersManager(): React.JSX.Element {
                           </th>
                         ))}
                         <th className="px-3 py-1.5 text-right font-semibold">
-                          Read-only after
-                          <div className="font-normal text-muted-foreground">days (blank = never)</div>
+                          Visible for
+                          <div className="font-normal text-muted-foreground">days (blank = all)</div>
+                        </th>
+                        <th className="px-3 py-1.5 text-right font-semibold">
+                          Entry window
+                          <div className="font-normal text-muted-foreground">days (blank = no limit)</div>
                         </th>
                       </tr>
                     </thead>
@@ -447,12 +500,27 @@ function UsersManager(): React.JSX.Element {
                               </td>
                             ))}
                             <td className="px-3 py-1.5 text-right">
+                              {/* Visible window: a read limit, so it applies to
+                                  anyone who can open the page at all. */}
                               <Input
                                 type="number"
                                 min="0"
                                 className="ml-auto h-7 w-20 text-right text-[12px]"
-                                placeholder="never"
-                                disabled={!r.edit && !r.delete}
+                                placeholder="all"
+                                disabled={!r.view}
+                                value={r.viewDays}
+                                onChange={(e) => writeRights(m.key, { ...r, viewDays: e.target.value })}
+                              />
+                            </td>
+                            <td className="px-3 py-1.5 text-right">
+                              {/* Entry window: a write limit, so it means
+                                  nothing without one of the write ticks. */}
+                              <Input
+                                type="number"
+                                min="0"
+                                className="ml-auto h-7 w-20 text-right text-[12px]"
+                                placeholder="no limit"
+                                disabled={!r.create && !r.edit && !r.delete}
                                 value={r.editDays}
                                 onChange={(e) => writeRights(m.key, { ...r, editDays: e.target.value })}
                               />
@@ -465,9 +533,29 @@ function UsersManager(): React.JSX.Element {
                 </div>
                 <p className="text-xs text-muted-foreground">
                   Tick what this user may do on each page. <b>Create</b> without <b>Edit</b> means they can add entries
-                  but never change them afterwards. <b>Read-only after</b> N days locks an entry once its own date
-                  (invoice date, bargain date…) is more than N days old — 0 means the entry&apos;s own day only. The
-                  entry stays visible either way, so totals still reconcile, and it is enforced on save, not just here.
+                  but never change them afterwards.
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Both windows count days on the calendar with <b>today among them</b>: <b>2</b> on the 29th means the
+                  28th and the 29th, and nothing before. Blank means no limit, and an admin is never limited.
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  <b>Visible for</b> is how far back they may <b>read</b>. An entry whose own date (invoice date,
+                  bargain date…) falls outside it is not listed on that page at all — the bound goes into the query, so
+                  those rows are never sent to their screen rather than merely hidden on it. Pages that only borrow a
+                  register keep their own window, so a short window on Sales does not shorten Treasury.
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  <b>Entry window</b> is how far back they may <b>write</b> — date a new entry, or edit or delete an
+                  old one. The date picker greys out everything before it, and the save refuses it too. Keep this one
+                  tight: it is what puts an operator on duty, since someone who cannot reach last Friday has to key
+                  Friday&apos;s work on Friday. It is capped by <b>Visible for</b>, because changing a row you cannot
+                  see is not a right worth granting.
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  A page&apos;s own totals cover the rows that user can see, so a restricted user&apos;s figures will
+                  not match an admin&apos;s. Stock, Accounting and Treasury are computed from every row and are not
+                  affected.
                 </p>
 
               </>

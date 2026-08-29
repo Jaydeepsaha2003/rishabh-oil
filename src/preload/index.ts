@@ -39,8 +39,8 @@ const api = {
     all: (): Promise<Record<string, string>> => ipcRenderer.invoke('settings:all')
   },
   bargains: {
-    list: (from?: string, to?: string, companyIds?: number[]): Promise<Row[]> =>
-      ipcRenderer.invoke('bargains:list', { from, to, companyIds }),
+    list: (from?: string, to?: string, companyIds?: number[], forModule?: string): Promise<Row[]> =>
+      ipcRenderer.invoke('bargains:list', { from, to, companyIds, forModule }),
     create: (values: Row): Promise<{ id: number; bargain_no: string }> =>
       ipcRenderer.invoke('bargains:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>
@@ -51,7 +51,7 @@ const api = {
   },
   orders: {
     bargainNotes: (id: number): Promise<Row[]> => ipcRenderer.invoke('orders:bargainNotes', { id }),
-    list: (): Promise<Row[]> => ipcRenderer.invoke('orders:list'),
+    list: (forModule?: string): Promise<Row[]> => ipcRenderer.invoke('orders:list', { forModule }),
     create: (values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('orders:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>
@@ -77,7 +77,7 @@ const api = {
     getActive: (): Promise<{ id: number }> => ipcRenderer.invoke('company:getActive')
   },
   consignment: {
-    list: (): Promise<Row[]> => ipcRenderer.invoke('consignment:list'),
+    list: (forModule?: string): Promise<Row[]> => ipcRenderer.invoke('consignment:list', { forModule }),
     summary: (range?: { from?: string; to?: string }): Promise<Row[]> =>
       ipcRenderer.invoke('consignment:summary', { range }),
     invoices: (range?: { from?: string; to?: string }): Promise<Row[]> =>
@@ -95,7 +95,8 @@ const api = {
       ipcRenderer.invoke('consignment:openingLog', { supplierId, productId })
   },
   tankers: {
-    list: (all?: boolean): Promise<Row[]> => ipcRenderer.invoke('tankers:list', { all }),
+    list: (all?: boolean, forModule?: string): Promise<Row[]> =>
+      ipcRenderer.invoke('tankers:list', { all, forModule }),
     create: (values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('tankers:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>
@@ -164,6 +165,7 @@ const api = {
       username: string
     ): Promise<{ blocked: boolean; revoked?: boolean; role?: string; full_name?: string; permissions?: unknown }> =>
       ipcRenderer.invoke('access:heartbeat', { userId, username }),
+    entryWindows: (): Promise<Record<string, string>> => ipcRenderer.invoke('access:entryWindows'),
     liveUsers: (): Promise<Row[]> => ipcRenderer.invoke('access:liveUsers'),
     ips: (): Promise<Row[]> => ipcRenderer.invoke('access:ips'),
     setIp: (id: number, active: boolean): Promise<{ id: number }> =>
@@ -262,7 +264,7 @@ const api = {
       ipcRenderer.invoke('notes:delete', { id, companyId })
   },
   production: {
-    list: (): Promise<Row[]> => ipcRenderer.invoke('production:list'),
+    list: (forModule?: string): Promise<Row[]> => ipcRenderer.invoke('production:list', { forModule }),
     items: (id: number): Promise<Row[]> => ipcRenderer.invoke('production:items', { id }),
     create: (values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('production:create', { values }),
@@ -270,7 +272,8 @@ const api = {
       ipcRenderer.invoke('production:delete', { id })
   },
   sales: {
-    list: (companyIds?: number[]): Promise<Row[]> => ipcRenderer.invoke('sales:list', { companyIds }),
+    list: (companyIds?: number[], forModule?: string): Promise<Row[]> =>
+      ipcRenderer.invoke('sales:list', { companyIds, forModule }),
     fyTaxable: (customerId: number, date: string, excludeId: number): Promise<number> =>
       ipcRenderer.invoke('sales:fyTaxable', { customerId, date, excludeId }),
     create: (values: Row): Promise<{ id: number }> =>
@@ -317,8 +320,8 @@ const api = {
       ipcRenderer.invoke('skuRates:save', { id, rows })
   },
   salesBargains: {
-    list: (from?: string, to?: string, companyIds?: number[]): Promise<Row[]> =>
-      ipcRenderer.invoke('salesBargains:list', { from, to, companyIds }),
+    list: (from?: string, to?: string, companyIds?: number[], forModule?: string): Promise<Row[]> =>
+      ipcRenderer.invoke('salesBargains:list', { from, to, companyIds, forModule }),
     returns: (companyIds?: number[]): Promise<Row[]> =>
       ipcRenderer.invoke('salesBargains:returns', { companyIds }),
     unattributedReturns: (companyIds?: number[]): Promise<Row[]> =>
@@ -466,7 +469,7 @@ const api = {
       ipcRenderer.invoke('bd:setCombinedLimit', { value })
   },
   trading: {
-    list: (): Promise<Row[]> => ipcRenderer.invoke('trading:list'),
+    list: (forModule?: string): Promise<Row[]> => ipcRenderer.invoke('trading:list', { forModule }),
     create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('trading:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('trading:update', { id, values }),
     remove: (id: number): Promise<{ id: number }> => ipcRenderer.invoke('trading:delete', { id })

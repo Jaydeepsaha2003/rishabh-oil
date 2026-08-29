@@ -25,6 +25,7 @@ import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { useCategories } from '@/lib/useCategories'
 import { Pagination, usePaged } from '@/components/Pagination'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useEntryWindow } from '@/lib/useEntryWindow'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -120,6 +121,9 @@ function shiftDate(iso: string, days: number): string {
 }
 
 export function GateEntry(): React.JSX.Element {
+  // How far back this user may date a new entry. The save is refused either
+  // way; greying the days out just stops the form offering one it will reject.
+  const minDate = useEntryWindow('gateEntry')
   const [rows, setRows] = useState<Row[]>([])
   // Register filters: date range on the entry date, receipt category, free text.
   const [gFrom, setGFrom] = useState('')
@@ -840,7 +844,7 @@ export function GateEntry(): React.JSX.Element {
             </div>
             <div className="flex min-w-0 flex-col gap-1">
               <Label>Date</Label>
-              <DatePicker value={quick.entry_date || ''} onChange={(v) => setQuick((p) => ({ ...p, entry_date: v }))} />
+              <DatePicker min={minDate} value={quick.entry_date || ''} onChange={(v) => setQuick((p) => ({ ...p, entry_date: v }))} />
             </div>
           </div>
           <div className="mt-4 flex items-center justify-end gap-3">
@@ -1582,7 +1586,7 @@ export function GateEntry(): React.JSX.Element {
             </div>
             <div className="flex min-w-0 flex-col gap-1">
               <Label>Date</Label>
-              <DatePicker value={arrival.entry_date || ''} onChange={(v) => setArrival((p) => ({ ...p, entry_date: v }))} />
+              <DatePicker min={minDate} value={arrival.entry_date || ''} onChange={(v) => setArrival((p) => ({ ...p, entry_date: v }))} />
             </div>
           </div>
           <div className="mt-4 flex justify-end">
@@ -1749,7 +1753,7 @@ export function GateEntry(): React.JSX.Element {
             </div>
             <div className="flex min-w-0 flex-col gap-1">
               <Label>Date</Label>
-              <DatePicker value={gateOut.entry_date || ''} onChange={(v) => setGateOut((p) => ({ ...p, entry_date: v }))} />
+              <DatePicker min={minDate} value={gateOut.entry_date || ''} onChange={(v) => setGateOut((p) => ({ ...p, entry_date: v }))} />
             </div>
           </div>
           <div className="mt-4 flex justify-end">
@@ -2188,7 +2192,7 @@ export function GateEntry(): React.JSX.Element {
               <div className="flex flex-col gap-1.5"><Label>Manual gate no <span className="text-[10px] font-normal text-muted-foreground">(optional)</span></Label><Input value={editForm.ref_no || ''} onChange={(e) => setEditForm((p) => ({ ...p, ref_no: e.target.value }))} /></div>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1.5"><Label>Date *</Label><DatePicker value={editForm.entry_date || ''} onChange={(v) => setEditForm((p) => ({ ...p, entry_date: v }))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Date *</Label><DatePicker min={minDate} value={editForm.entry_date || ''} onChange={(v) => setEditForm((p) => ({ ...p, entry_date: v }))} /></div>
               <div />
             </div>
             <label

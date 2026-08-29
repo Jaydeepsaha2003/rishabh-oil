@@ -1,6 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
 import { getActiveCompanyId } from './company'
+import { visibleFromFor } from './access-gate'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -110,7 +111,11 @@ export async function consignmentAvailable(supplierId: number, productId: number
 }
 
 // Individual deposit lots for the active company.
-export async function listConsignment(): Promise<Row[]> {
+export async function listConsignment(forModule?: string): Promise<Row[]> {
+  // Bounded to what this user may see. The bound goes in the SQL so the older
+  // rows are never fetched; `forModule` lets a page that only borrows this
+  // register (Accounts, Treasury) keep its own window instead of this one.
+  const from = await visibleFromFor('consignment', forModule)
   const res = await getClient().execute({
     sql: `SELECT cs.*, s.name AS supplier_name, p.code AS product_code, p.name AS product_name,
                  ge.gate_entry_no, ge.entry_date AS gate_date, o.invoice_no, o.order_date,
@@ -123,9 +128,9 @@ export async function listConsignment(): Promise<Row[]> {
           LEFT JOIN orders o ON o.id = cs.order_id
           LEFT JOIN bargains b ON b.id = cs.bargain_id
           LEFT JOIN bargains xb ON xb.id = cs.extra_bargain_id
-          WHERE cs.company_id = ?
+          WHERE cs.company_id = ?${from ? ' AND cs.deposit_date >= ?' : ''}
           ORDER BY cs.id DESC`,
-    args: [getActiveCompanyId()]
+    args: from ? [getActiveCompanyId(), from] : [getActiveCompanyId()]
   })
   return toPlain(res)
 }

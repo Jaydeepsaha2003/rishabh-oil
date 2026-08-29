@@ -15,6 +15,7 @@ import {
 } from './consignment'
 import { deleteJournalByRef, postPurchaseJournal } from './journal'
 import { getActiveCompanyId } from './company'
+import { visibleFromFor } from './access-gate'
 
 const STAGES = [
   'ordered',
@@ -328,9 +329,13 @@ async function setSupplierPayable(
   })
 }
 
-export async function listOrders(): Promise<Row[]> {
+export async function listOrders(forModule?: string): Promise<Row[]> {
+  // Bounded to what this user may see. The bound goes in the SQL so the older
+  // rows are never fetched; `forModule` lets a page that only borrows this
+  // register (Accounts, Treasury) keep its own window instead of this one.
+  const from = await visibleFromFor('orders', forModule)
   const res = await getClient().execute({
-    args: [getActiveCompanyId()],
+    args: from ? [getActiveCompanyId(), from] : [getActiveCompanyId()],
     sql: `
     SELECT o.*,
            s.name AS supplier_name,
@@ -386,7 +391,7 @@ export async function listOrders(): Promise<Row[]> {
     LEFT JOIN products ot ON ot.id = o.oil_type_id
     LEFT JOIN sources src ON src.id = o.source_id
     LEFT JOIN transporters t ON t.id = o.transporter_id
-    WHERE o.company_id = ?
+    WHERE o.company_id = ?${from ? ' AND o.order_date >= ?' : ''}
     ORDER BY o.id DESC
   `
   })
@@ -1089,9 +1094,14 @@ async function assignTankers(
 }
 
 // allCompanies = true is used by the (shared) Gate Entry screen.
-export async function listPurchaseTankers(allCompanies = false): Promise<Row[]> {
+export async function listPurchaseTankers(allCompanies = false, forModule?: string): Promise<Row[]> {
+  // Only a FINISHED tanker ages out of view. One still on the road is live work
+  // whenever it loaded, and hiding it would strand the pipeline rather than
+  // shorten the history.
+  const from = await visibleFromFor('orders', forModule)
+  const base = allCompanies ? [] : [getActiveCompanyId()]
   const res = await getClient().execute({
-    args: allCompanies ? [] : [getActiveCompanyId()],
+    args: from ? [...base, from] : base,
     sql: `
     SELECT pt.*, o.invoice_no, o.order_date AS invoice_date, o.company_id AS invoice_company_id,
            o.allowed_shortage_pct AS order_allowed_shortage_pct,
@@ -1118,6 +1128,7 @@ export async function listPurchaseTankers(allCompanies = false): Promise<Row[]> 
     LEFT JOIN transporters tr ON tr.id = pt.transporter_id
     LEFT JOIN gate_entries ge ON ge.tanker_id = pt.id AND ge.direction = 'in'
     ${allCompanies ? '' : 'WHERE pt.company_id = ?'}
+    ${from ? `${allCompanies ? 'WHERE' : 'AND'} (pt.status != 'empty' OR pt.loaded_date IS NULL OR pt.loaded_date >= ?)` : ''}
     ORDER BY CASE pt.status
       WHEN 'supplier_factory' THEN 1 WHEN 'loaded' THEN 2 WHEN 'transit' THEN 3
       WHEN 'outside_factory' THEN 4 WHEN 'inside_factory' THEN 5 ELSE 6 END, pt.id DESC

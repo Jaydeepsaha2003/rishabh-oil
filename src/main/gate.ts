@@ -1,5 +1,6 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
+import { visibleFrom } from './access-gate'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -24,7 +25,13 @@ function n(v: unknown): number {
 }
 
 export async function listGateEntries(): Promise<Row[]> {
-  const res = await getClient().execute(`
+  // A user given a day count on Gate Entry sees only that many days back. The
+  // bound is applied in SQL so the older rows are never fetched, let alone
+  // rendered.
+  const from = await visibleFrom('gateEntry')
+  const res = await getClient().execute({
+    args: from ? [from] : [],
+    sql: `
     SELECT g.*, p.code AS oil_code, p.name AS oil_name,
            b.bargain_no, COALESCE(ds.name, s.name, dc.name) AS supplier_name,
            dc.name AS gate_customer_name,
@@ -43,8 +50,13 @@ export async function listGateEntries(): Promise<Row[]> {
     LEFT JOIN suppliers ds ON ds.id = g.supplier_id
     LEFT JOIN customers dc ON dc.id = g.customer_id
     LEFT JOIN sales sl ON sl.id = g.sale_id
+    ${/* Compared directly, not through substr(): a function around the column
+          makes the whole thing unindexable, and a plain string compare is
+          correct anyway since the dates sort lexicographically. */ ''}
+    ${from ? 'WHERE g.entry_date >= ?' : ''}
     ORDER BY g.id DESC
-  `)
+  `
+  })
   return toPlain(res)
 }
 

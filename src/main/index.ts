@@ -284,6 +284,12 @@ app.whenReady().then(async () => {
       })
     }
   }).catch((e) => console.error('[freight] waiver columns failed:', e))
+  // The gate register is read on every refresh, and a user held to a moving
+  // window now bounds it by date. Small today at 246 rows; indexed before it
+  // is not.
+  await runOnce('gate_date_idx_v1', async () => {
+    await getClient().execute('CREATE INDEX IF NOT EXISTS idx_gate_date ON gate_entries(entry_date)')
+  }).catch((e) => console.error('[gate] date index failed:', e))
   startRevisionWatcher()
   registerIpc()
   registerUpdater(() => mainWindow)

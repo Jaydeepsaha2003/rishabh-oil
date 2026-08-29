@@ -577,8 +577,8 @@ export function Accounts({
 
   const loadRegisters = useCallback(async () => {
     const [o, s, l] = await Promise.all([
-      window.api.orders.list(),
-      window.api.sales.list(),
+      window.api.orders.list('accounts'),
+      window.api.sales.list(undefined, 'accounts'),
       window.api.lc.list()
     ])
     setPurchases(o)

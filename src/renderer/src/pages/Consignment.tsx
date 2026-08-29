@@ -19,6 +19,7 @@ import { computeMoney } from '@/lib/orderCalc'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { FyPicker } from '@/components/FyPicker'
+import { useEntryWindow } from '@/lib/useEntryWindow'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -33,6 +34,9 @@ function SummaryLine({ label, value, strong }: { label: string; value: string; s
 }
 
 export function Consignment(): React.JSX.Element {
+  // How far back this user may date a new entry. The save is refused either
+  // way; greying the days out just stops the form offering one it will reject.
+  const minDate = useEntryWindow('consignment')
   const [deposits, setDeposits] = useState<Row[]>([])
   const [pending, setPending] = useState<Row[]>([])
   const [summary, setSummary] = useState<Row[]>([])
@@ -76,7 +80,7 @@ export function Consignment(): React.JSX.Element {
       window.api.consignment.pending(),
       window.api.data.list('suppliers'),
       window.api.data.list('products'),
-      window.api.bargains.list(),
+      window.api.bargains.list(undefined, undefined, undefined, 'consignment'),
       window.api.settings.all(),
       window.api.company.list(),
       window.api.company.getActive()
@@ -852,7 +856,7 @@ export function Consignment(): React.JSX.Element {
             )}
             <div className="flex flex-col gap-1.5">
               <Label>Deposit date</Label>
-              <DatePicker value={depForm.deposit_date || ''} onChange={(v) => setDepForm((p) => ({ ...p, deposit_date: v }))} />
+              <DatePicker min={minDate} value={depForm.deposit_date || ''} onChange={(v) => setDepForm((p) => ({ ...p, deposit_date: v }))} />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>Note</Label>

@@ -29,6 +29,7 @@ import { computeMoney, computeShortage } from '@/lib/orderCalc'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { isManufacturingParty } from '@/lib/constants'
+import { useEntryWindow } from '@/lib/useEntryWindow'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -200,6 +201,9 @@ interface OrdersProps {
 }
 
 export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersProps = {}): React.JSX.Element {
+  // How far back this user may date a new entry. The save is refused either
+  // way; greying the days out just stops the form offering one it will reject.
+  const minDate = useEntryWindow('orders')
   const [tab, setTab] = useState('tankers')
   // Invoices with no live bargain link, and the mapping dialog state.
   const [companies, setCompanies] = useState<Row[]>([])
@@ -309,7 +313,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       // company yet, so both the movement register and the booking picker
       // need to see across all of them (each filters down its own way).
       window.api.tankers.list(true),
-      window.api.bargains.list(),
+      window.api.bargains.list(undefined, undefined, undefined, 'orders'),
       window.api.data.list('suppliers'),
       window.api.data.list('sources'),
       window.api.data.list('transporters'),
@@ -2270,7 +2274,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Purchase date *</Label>
-                    <DatePicker value={form.order_date || ''} onChange={(v) => setForm((p) => ({ ...p, order_date: v }))} />
+                    <DatePicker min={minDate} value={form.order_date || ''} onChange={(v) => setForm((p) => ({ ...p, order_date: v }))} />
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Invoice rate *</Label>

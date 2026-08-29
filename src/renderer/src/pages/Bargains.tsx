@@ -54,6 +54,7 @@ import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useCategories } from '@/lib/useCategories'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { isManufacturingParty } from '@/lib/constants'
+import { useEntryWindow } from '@/lib/useEntryWindow'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -175,6 +176,9 @@ function emptyForm(uom: string): Row {
 }
 
 export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => void } = {}): React.JSX.Element {
+  // How far back this user may date a new entry. The save is refused either
+  // way; greying the days out just stops the form offering one it will reject.
+  const minDate = useEntryWindow('bargains')
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [suppliers, setSuppliers] = useState<Row[]>([])
@@ -1438,6 +1442,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
             <div className="flex flex-col gap-1.5">
               <Label>Bargain date *</Label>
               <DatePicker
+                min={minDate}
                 value={form.bargain_date}
                 onChange={(v) => setField('bargain_date', v)}
               />

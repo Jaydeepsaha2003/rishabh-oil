@@ -55,6 +55,7 @@ import { ShortageWorkings, type ShortageLine } from '@/components/ShortageWorkin
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { isManufacturingParty } from '@/lib/constants'
+import { useEntryWindow } from '@/lib/useEntryWindow'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -232,6 +233,9 @@ function SalesTab({
   onBack?: () => void
   backLabel?: string
 }): React.JSX.Element {
+  // How far back this user may date a new entry. The save is refused either
+  // way; greying the days out just stops the form offering one it will reject.
+  const minDate = useEntryWindow('sales')
   const [rows, setRows] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
   const [bargains, setBargains] = useState<Row[]>([])
@@ -280,7 +284,7 @@ function SalesTab({
     const [s, pr, sb, st, cu, pk, tr, cfg] = await Promise.all([
       window.api.sales.list(),
       window.api.data.list('products'),
-      window.api.salesBargains.list(),
+      window.api.salesBargains.list(undefined, undefined, undefined, 'sales'),
       window.api.stock.list(),
       window.api.data.list('customers'),
       window.api.data.list('packagings'),
@@ -1762,7 +1766,7 @@ function SalesTab({
           <div className="grid gap-x-3 gap-y-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 [&>div]:min-w-0 [&>div]:gap-1 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
             <div className="flex flex-col gap-1.5">
               <Label>Date</Label>
-              <DatePicker value={header.sale_date} onChange={(v) => setHeaderField('sale_date', v)} />
+              <DatePicker min={minDate} value={header.sale_date} onChange={(v) => setHeaderField('sale_date', v)} />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>Invoice no</Label>
@@ -2624,6 +2628,9 @@ function SalesTab({
 // ---------------- Sales bargains tab ----------------
 
 function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } = {}): React.JSX.Element {
+  // How far back this user may date a new entry. The save is refused either
+  // way; greying the days out just stops the form offering one it will reject.
+  const minDate = useEntryWindow('salesBargains')
   const [rows, setRows] = useState<Row[]>([])
   const [sales, setSales] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
@@ -3703,7 +3710,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="flex flex-col gap-1.5">
               <Label>Date</Label>
-              <DatePicker value={form.bargain_date} onChange={(v) => setField('bargain_date', v)} />
+              <DatePicker min={minDate} value={form.bargain_date} onChange={(v) => setField('bargain_date', v)} />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>Customer *</Label>

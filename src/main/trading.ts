@@ -3,6 +3,7 @@ import { getClient } from './db'
 import { getActiveCompanyId } from './company'
 import { createOrder, updateOrder, deleteOrder } from './orders'
 import { createSale, updateSale, deleteSale } from './sales'
+import { visibleFromFor } from './access-gate'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -120,7 +121,11 @@ async function saleReceiptsByKey(companyId: number): Promise<Map<string, number>
   return m
 }
 
-export async function listTradingDeals(): Promise<Row[]> {
+export async function listTradingDeals(forModule?: string): Promise<Row[]> {
+  // Bounded to what this user may see. The bound goes in the SQL so the older
+  // rows are never fetched; `forModule` lets a page that only borrows this
+  // register (Accounts, Treasury) keep its own window instead of this one.
+  const from = await visibleFromFor('trading', forModule)
   const cid = getActiveCompanyId()
   const res = await getClient().execute({
     sql: `SELECT td.*, p.code AS product_code, p.name AS product_name,
@@ -129,9 +134,9 @@ export async function listTradingDeals(): Promise<Row[]> {
           FROM trading_deals td
           LEFT JOIN products p ON p.id = td.product_id
           LEFT JOIN letters_of_credit l ON l.id = td.lc_id
-          WHERE td.company_id = ?
+          WHERE td.company_id = ?${from ? ' AND td.deal_date >= ?' : ''}
           ORDER BY td.deal_date DESC, td.id DESC`,
-    args: [cid]
+    args: from ? [cid, from] : [cid]
   })
   const deals = toPlain(res)
   const dealIds = deals.map((d) => n(d.id)).filter(Boolean)

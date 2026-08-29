@@ -37,7 +37,7 @@ import {
   deleteLedgerEntry, purchaseBargainNotes } from './orders'
 import { listUnmappedOrders, unmappedCount, mapOrderToBargains } from './unmapped'
 import { listTradingDeals, createTradingDeal, updateTradingDeal, deleteTradingDeal } from './trading'
-import { assertAllowed, clearAccessCache, currentScope } from './access-gate'
+import { assertAllowed, clearAccessCache, currentScope, entryWindows } from './access-gate'
 import { listSkuRates, saveSkuRates, listPackagingParties, setPackagingParties, packagingPartyCounts } from './skurates'
 import {
   listConsignment,
@@ -347,7 +347,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^stockCount:previous$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entityHistory$|^trading:list$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^stockCount:previous$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -418,8 +418,11 @@ export function registerIpc(): void {
   )
   handle('settings:all', () => allSettings())
 
-  handle('bargains:list', (_e, args?: { from?: string; to?: string; companyIds?: number[] }) =>
-    listBargains(args?.from, args?.to, args?.companyIds)
+  // forModule: the page doing the reading. A register borrowed by another page
+  // keeps THAT page's visible window, so a narrow window on one module never
+  // silently shortens another module's figures.
+  handle('bargains:list', (_e, args?: { from?: string; to?: string; companyIds?: number[]; forModule?: string }) =>
+    listBargains(args?.from, args?.to, args?.companyIds, args?.forModule)
   )
   handle('bargains:create', (_e, { values }: { values: Row }) => createBargain(values))
   handle('bargains:update', (_e, { id, values }: { id: number; values: Row }) =>
@@ -431,7 +434,7 @@ export function registerIpc(): void {
   )
 
   handle('orders:bargainNotes', (_e, { id }: { id: number }) => purchaseBargainNotes(id))
-  handle('orders:list', () => listOrders())
+  handle('orders:list', (_e, args?: { forModule?: string }) => listOrders(args?.forModule))
   handle('skuRates:list', (_e, { id }: { id: number }) => listSkuRates(id))
   handle('skuRates:partyCounts', () => packagingPartyCounts())
   handle('skuRates:parties', (_e, { packagingId }: { packagingId: number }) => listPackagingParties(packagingId))
@@ -440,7 +443,9 @@ export function registerIpc(): void {
   handle('orders:consignmentDraws', (_e, args?: { companyIds?: number[] }) => listConsignmentDraws(args?.companyIds))
   handle('orders:bargainLines', (_e, { id }: { id: number }) => listOrderBargains(id))
   handle('orders:bargainInterest', (_e, { id }: { id: number }) => listOrderBargainInterest(id))
-  handle('tankers:list', (_e, args?: { all?: boolean }) => listPurchaseTankers(!!args?.all))
+  handle('tankers:list', (_e, args?: { all?: boolean; forModule?: string }) =>
+    listPurchaseTankers(!!args?.all, args?.forModule)
+  )
   handle('tankers:create', (_e, { values }: { values: Row }) => createPurchaseTanker(values))
   handle('tankers:update', (_e, { id, values }: { id: number; values: Row }) =>
     updateTankerDetails(id, values)
@@ -479,7 +484,7 @@ export function registerIpc(): void {
   handle('orders:map', (_e, { id, lines, force }: { id: number; lines: Row[]; force?: boolean }) =>
     mapOrderToBargains(id, lines, !!force)
   )
-  handle('consignment:list', () => listConsignment())
+  handle('consignment:list', (_e, args?: { forModule?: string }) => listConsignment(args?.forModule))
   handle('consignment:summary', (_e, args?: { range?: { from?: string; to?: string } }) => consignmentSummary(args?.range))
   handle('consignment:pending', () => listPendingGateArrivals())
   handle('consignment:invoices', (_e, args?: { range?: { from?: string; to?: string } }) =>
@@ -556,6 +561,9 @@ export function registerIpc(): void {
   handle('access:heartbeat', (_e, { userId, username }: { userId: number; username: string }) =>
     heartbeat(userId, username)
   )
+  // The earliest date each module's forms may offer this user. A read, and a
+  // hint only — the gate refuses the write regardless of what the form sends.
+  handle('access:entryWindows', () => entryWindows())
   handle('access:liveUsers', () => liveUsers())
   handle('access:ips', () => listIps())
   handle('access:setIp', (_e, { id, active }: { id: number; active: boolean }) =>
@@ -642,7 +650,7 @@ export function registerIpc(): void {
   handle('notes:update', (_e, { id, values }: { id: number; values: Row }) => updateNote(id, values))
   handle('notes:delete', (_e, { id, companyId }: { id: number; companyId?: number }) => deleteNote(id, companyId))
 
-  handle('production:list', () => listProduction())
+  handle('production:list', (_e, args?: { forModule?: string }) => listProduction(args?.forModule))
   handle('production:items', (_e, { id }: { id: number }) => getProductionItems(id))
   handle('production:create', (_e, { values }: { values: Row }) => createProduction(values))
   handle('production:delete', (_e, { id }: { id: number }) => deleteProduction(id))
@@ -650,10 +658,10 @@ export function registerIpc(): void {
   // The unload desk's grant hands back its own thin row set — the money columns
   // are never selected, so a restricted user cannot reach them even by calling
   // the channel directly.
-  handle('sales:list', async (_e, args?: { companyIds?: number[] }) =>
+  handle('sales:list', async (_e, args?: { companyIds?: number[]; forModule?: string }) =>
     (await currentScope('sales')) === 'unload'
       ? listSalesForUnloadDesk(args?.companyIds)
-      : listSales(args?.companyIds)
+      : listSales(args?.companyIds, args?.forModule)
   )
   handle('sales:create', (_e, { values }: { values: Row }) => createSale(values))
   handle('sales:update', (_e, { id, values }: { id: number; values: Row }) => updateSale(id, values))
@@ -682,8 +690,8 @@ export function registerIpc(): void {
   )
   handle('sales:delete', (_e, { id }: { id: number }) => deleteSale(id))
 
-  handle('salesBargains:list', (_e, args?: { from?: string; to?: string; companyIds?: number[] }) =>
-    listSalesBargains(args?.from, args?.to, args?.companyIds)
+  handle('salesBargains:list', (_e, args?: { from?: string; to?: string; companyIds?: number[]; forModule?: string }) =>
+    listSalesBargains(args?.from, args?.to, args?.companyIds, args?.forModule)
   )
   handle('salesBargains:returns', (_e, args?: { companyIds?: number[] }) => listSalesBargainReturns(args?.companyIds))
   handle('salesBargains:unattributedReturns', (_e, args?: { companyIds?: number[] }) =>
@@ -878,7 +886,7 @@ export function registerIpc(): void {
     ) => entityHistory(entity, { id, key, detail, limit })
   )
 
-  handle('trading:list', () => listTradingDeals())
+  handle('trading:list', (_e, args?: { forModule?: string }) => listTradingDeals(args?.forModule))
   handle('trading:create', (_e, { values }: { values: Row }) => createTradingDeal(values))
   handle('trading:update', (_e, { id, values }: { id: number; values: Row }) => updateTradingDeal(id, values))
   handle('trading:delete', (_e, { id }: { id: number }) => deleteTradingDeal(id))
