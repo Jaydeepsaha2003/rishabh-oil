@@ -183,6 +183,8 @@ export interface Api {
     orphanBills: (companyId?: number) => Promise<Row[]>
     raiseShortageNote: (lineId: number, date?: string, companyId?: number) => Promise<{ note_id: number; note_no: string }>
     unraiseShortageNote: (lineId: number, companyId?: number) => Promise<{ id: number }>
+    waiveShortage: (lineId: number, reason: string, companyId?: number) => Promise<{ id: number; entry_id: number | null }>
+    unwaiveShortage: (lineId: number, companyId?: number) => Promise<{ id: number }>
   }
   notes: {
     list: (companyId?: number) => Promise<Row[]>

@@ -171,6 +171,8 @@ import {
   deleteTransporterBill,
   raiseFreightShortageNote,
   unraiseFreightShortageNote,
+  waiveFreightShortage,
+  unwaiveFreightShortage,
   type FreightSide
 } from './transporterBilling'
 import {
@@ -620,6 +622,14 @@ export function registerIpc(): void {
   )
   handle('tfreight:unraiseNote', (_e, { lineId, companyId }: { lineId: number; companyId?: number }) =>
     unraiseFreightShortageNote(lineId, companyId)
+  )
+  handle(
+    'tfreight:waive',
+    (_e, { lineId, reason, date, companyId }: { lineId: number; reason: string; date?: string; companyId?: number }) =>
+      waiveFreightShortage(lineId, { reason, date, companyId })
+  )
+  handle('tfreight:unwaive', (_e, { lineId, companyId }: { lineId: number; companyId?: number }) =>
+    unwaiveFreightShortage(lineId, companyId)
   )
   handle('tbill:update', (_e, { id, values }: { id: number; values: Row }) => updateTransporterBill(id, values))
   handle('tbill:delete', (_e, { id, companyId }: { id: number; companyId?: number }) =>

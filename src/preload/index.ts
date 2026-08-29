@@ -245,7 +245,11 @@ const api = {
     raiseShortageNote: (lineId: number, date?: string, companyId?: number): Promise<{ note_id: number; note_no: string }> =>
       ipcRenderer.invoke('tfreight:raiseNote', { lineId, date, companyId }),
     unraiseShortageNote: (lineId: number, companyId?: number): Promise<{ id: number }> =>
-      ipcRenderer.invoke('tfreight:unraiseNote', { lineId, companyId })
+      ipcRenderer.invoke('tfreight:unraiseNote', { lineId, companyId }),
+    waiveShortage: (lineId: number, reason: string, companyId?: number): Promise<{ id: number; entry_id: number | null }> =>
+      ipcRenderer.invoke('tfreight:waive', { lineId, reason, companyId }),
+    unwaiveShortage: (lineId: number, companyId?: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('tfreight:unwaive', { lineId, companyId })
   },
   notes: {
     list: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('notes:list', { companyId }),

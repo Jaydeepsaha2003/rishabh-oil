@@ -98,9 +98,14 @@ function App(): React.JSX.Element {
   // Where "Back" returns to after a drill-through (e.g. Ledgers → the source
   // document → Back → Ledgers, with the ledger it opened from still showing).
   const [returnTo, setReturnTo] = useState<Page | null>(null)
+  // Accounts unmounts when you drill out of it, so it would come back on the
+  // Gateway with the ledger you were reading forgotten. It hands over where it
+  // was on the way out, and gets it back on the way in.
+  const [accountsResume, setAccountsResume] = useState<{ screen: string; ledgerId: number | null } | null>(null)
 
-  function openRecord(target: 'orders' | 'sales', id: number): void {
+  function openRecord(target: 'orders' | 'sales', id: number, resume?: { screen: string; ledgerId: number | null }): void {
     setReturnTo(page)
+    if (resume) setAccountsResume(resume)
     setFocus({ page: target, id })
     setPage(target)
   }
@@ -109,6 +114,8 @@ function App(): React.JSX.Element {
   function navigate(p: Page): void {
     setReturnTo(null)
     setFocus(null)
+    // Going somewhere deliberately is not coming back from a drill-through.
+    setAccountsResume(null)
     setPage(p)
   }
 
@@ -371,7 +378,18 @@ function App(): React.JSX.Element {
         {view === 'consignment' && <Consignment />}
         {view === 'gateEntry' && <GateEntry />}
         {view === 'trading' && <Trading />}
-        {view === 'accounts' && <Accounts onExit={() => setPage('dashboard')} />}
+        {view === 'accounts' && (
+          <Accounts
+            onExit={() => setPage('dashboard')}
+            resume={accountsResume}
+            onResumed={() => setAccountsResume(null)}
+            // A ledger line is a pointer to a document, so it opens the
+            // document's OWN page — the purchase in Purchases, the sale in
+            // Sales — rather than a read-only copy of its voucher. Back there
+            // returns here with the same ledger still showing.
+            onOpenRecord={openRecord}
+          />
+        )}
         {view === 'treasury' && <Treasury onCompanyChange={switchCompany} />}
         {view === 'bankRecon' && <BankReconciliation />}
         {view === 'products' && <Products />}

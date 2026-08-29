@@ -3,6 +3,7 @@ import { getClient, bumpRevision } from './db'
 import { getActiveCompanyId } from './company'
 import { postJournal } from './journal'
 import { createNote, deleteNote } from './notes'
+import { getCurrentUser } from './currentUser'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -112,7 +113,8 @@ export async function listTransporterFreight(
 
   const res = await c.execute({
     sql: `SELECT l.id, l.transporter_id, l.entry_date, l.entry_type, l.amount, l.note,
-                 l.accrued, l.bill_id, l.note_id, nt.note_no, nt.note_date,
+                 l.accrued, l.bill_id, l.note_id, l.waived_at, l.waived_by, l.waived_reason,
+                 nt.note_no, nt.note_date,
                  t.name AS transporter_name,
                  b.bill_no, b.bill_date, ${doc}
           FROM transporter_ledger l
@@ -216,6 +218,11 @@ export async function createTransporterBill(v: Row, existingId?: number): Promis
     // same shortage twice.
     if (l.note_id != null) {
       throw new Error('That shortage is already on a debit note — leave it off the bill, which books the freight in full')
+    }
+    // Written off rather than claimed, so the transporter is owed the freight
+    // in full and this line has nothing left to net.
+    if (l.waived_at != null) {
+      throw new Error('That shortage was written off — leave it off the bill, which books the freight in full')
     }
   }
 
@@ -342,6 +349,9 @@ export async function raiseFreightShortageNote(
     throw new Error('Only a shortage line can be raised as a debit note')
   }
   if (line.note_id != null) throw new Error('A debit note has already been raised on this shortage')
+  if (line.waived_at != null) {
+    throw new Error('This shortage was written off as not the transporter\'s — undo that first to claim it')
+  }
   if (line.bill_id != null) {
     throw new Error('That shortage is already netted into a booked bill — delete the bill first if it should be claimed separately')
   }
@@ -372,6 +382,97 @@ export async function raiseFreightShortageNote(
   })
   await bumpRevision()
   return { note_id: note.id, note_no: note.note_no }
+}
+
+// Write the shortage off instead of claiming it — a tanker accident, a leak in
+// transit, anything that is not the carrier's to answer for.
+//
+// Two things follow. The transporter is paid IN FULL, so the line stops netting
+// off their bill exactly as a raised note does. And the loss is named: it is
+// reclassified out of the goods it was bought as and into OIL SHORTAGE LOSS, so
+// a year's accidents can be reported on rather than sitting invisibly inside
+// material cost.
+//
+// The credit is the PURCHASE/SALE account, not the freight. The oil was already
+// paid for on the invoice — bought 100 MT, received 99.8 — so its cost is
+// already in the books; crediting freight would understate the freight the
+// transporter is about to be paid in full, and invent a loss that is already
+// counted. Naming it is the job here, not booking it twice.
+export async function waiveFreightShortage(
+  lineId: number,
+  v: { reason: string; date?: string; companyId?: number }
+): Promise<{ id: number; entry_id: number | null }> {
+  const c = getClient()
+  const cid = v.companyId ? n(v.companyId) : getActiveCompanyId()
+  const reason = String(v.reason || '').trim()
+  if (!reason) throw new Error('Say why this shortage is not the transporter\'s — a waiver without a reason cannot be reviewed later')
+
+  const r = await c.execute({
+    sql: `SELECT l.*, o.invoice_no AS order_invoice, s.invoice_no AS sale_invoice,
+                 pr.code AS oil_code, pr.name AS oil_name, sp.code AS sale_code, sp.name AS sale_name
+            FROM transporter_ledger l
+            LEFT JOIN orders o ON o.id = l.order_id
+            LEFT JOIN products pr ON pr.id = o.oil_type_id
+            LEFT JOIN sales s ON s.id = l.sale_id
+            LEFT JOIN products sp ON sp.id = s.product_id
+           WHERE l.id = ? AND l.company_id = ?`,
+    args: [n(lineId), cid]
+  })
+  if (!r.rows.length) throw new Error('That freight line no longer exists')
+  const line = toPlain(r)[0]
+  if (String(line.entry_type) !== 'shortage_penalty') throw new Error('Only a shortage line can be written off')
+  if (line.note_id != null) throw new Error('A debit note has already been raised on this shortage — delete it first')
+  if (line.waived_at != null) throw new Error('This shortage has already been written off')
+  if (line.bill_id != null) throw new Error('That shortage is already netted into a booked bill — delete the bill first')
+  const amount = round2(Math.abs(n(line.amount)))
+  if (amount <= 0) throw new Error('Nothing to write off on this line')
+
+  const inward = line.order_id != null
+  const goods = inward
+    ? `${String(line.oil_code || line.oil_name || 'OIL').toUpperCase()} PUR A/C`
+    : `${String(line.sale_code || line.sale_name || 'FG').toUpperCase()} SALE A/C`
+  const inv = String(line.order_invoice || line.sale_invoice || '')
+  const je = await postJournal({
+    date: String(v.date || line.entry_date || todayISO()).slice(0, 10),
+    vchType: 'JOURNAL',
+    vchNo: null,
+    narration: `Oil shortage written off${inv ? ` on ${inv}` : ''} — not the transporter's: ${reason}`,
+    companyId: cid,
+    lines: [
+      { account: 'OIL SHORTAGE LOSS A/C', group: 'Indirect Expenses', dr: amount },
+      { account: goods, group: inward ? 'Purchase Accounts' : 'Sales Accounts', cr: amount }
+    ]
+  })
+  await c.execute({
+    sql: `UPDATE transporter_ledger
+             SET waived_at = ?, waived_by = ?, waived_reason = ?, waived_entry_id = ?
+           WHERE id = ?`,
+    args: [todayISO(), getCurrentUser().username || null, reason, je.id ?? null, n(lineId)]
+  })
+  await bumpRevision()
+  return { id: n(lineId), entry_id: je.id ?? null }
+}
+
+// Undo a write-off: the voucher is reversed and the shortage goes back to being
+// a claim waiting to be made.
+export async function unwaiveFreightShortage(lineId: number, companyId?: number): Promise<{ id: number }> {
+  const c = getClient()
+  const cid = companyId ? n(companyId) : getActiveCompanyId()
+  const r = await c.execute({
+    sql: 'SELECT waived_entry_id FROM transporter_ledger WHERE id = ? AND company_id = ?',
+    args: [n(lineId), cid]
+  })
+  if (!r.rows.length) throw new Error('That freight line no longer exists')
+  const entryId = r.rows[0].waived_entry_id
+  await c.execute({
+    sql: `UPDATE transporter_ledger
+             SET waived_at = NULL, waived_by = NULL, waived_reason = NULL, waived_entry_id = NULL
+           WHERE id = ?`,
+    args: [n(lineId)]
+  })
+  if (entryId != null) await dropEntry(n(entryId))
+  await bumpRevision()
+  return { id: n(lineId) }
 }
 
 // Undo it: the note is deleted (reversing its voucher and its ledger row) and

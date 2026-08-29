@@ -273,6 +273,17 @@ app.whenReady().then(async () => {
       'CREATE INDEX IF NOT EXISTS idx_tl_company_type ON transporter_ledger(company_id, entry_type)'
     )
   }).catch((e) => console.error('[freight] ledger index failed:', e))
+  // A shortage beyond tolerance is not always the transporter's doing. When it
+  // is written off instead of claimed, the register has to say so, say who
+  // decided and why, and stop the line netting off their bill.
+  await runOnce('tledger_waived_v1', async () => {
+    const c = getClient()
+    for (const col of ['waived_at TEXT', 'waived_by TEXT', 'waived_reason TEXT', 'waived_entry_id INTEGER']) {
+      await c.execute(`ALTER TABLE transporter_ledger ADD COLUMN ${col}`).catch((e) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+    }
+  }).catch((e) => console.error('[freight] waiver columns failed:', e))
   startRevisionWatcher()
   registerIpc()
   registerUpdater(() => mainWindow)

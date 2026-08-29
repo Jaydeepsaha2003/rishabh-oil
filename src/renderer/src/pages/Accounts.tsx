@@ -381,7 +381,21 @@ function AccountPicker({
   )
 }
 
-export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element {
+export function Accounts({
+  onExit,
+  onOpenRecord,
+  resume,
+  onResumed
+}: {
+  onExit?: () => void
+  // Drill through to the source document's own page. Absent when Accounts is
+  // mounted somewhere that cannot navigate, in which case a line falls back to
+  // showing its voucher in place.
+  onOpenRecord?: (target: 'orders' | 'sales', id: number, resume?: { screen: string; ledgerId: number | null }) => void
+  // Where this page was when it drilled out, handed back on the way in.
+  resume?: { screen: string; ledgerId: number | null } | null
+  onResumed?: () => void
+}): React.JSX.Element {
   // Tally opens on Select Company — every report and voucher below is pinned
   // to this choice (F3 changes it), never silently the app-wide company.
   const [companies, setCompanies] = useState<Row[]>([])
@@ -487,6 +501,20 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
 
   // Ledger screen.
   const [ledgerId, setLedgerId] = useState<number | null>(null)
+
+  // Coming back from a drill-through: put the page where it was. Done before
+  // anything paints, so the Gateway never flashes, and consumed immediately so
+  // a later manual visit starts fresh.
+  const resumedRef = useRef(false)
+  if (resume && !resumedRef.current) {
+    resumedRef.current = true
+    if (resume.screen) setScreen(resume.screen as Screen)
+    if (resume.ledgerId != null) setLedgerId(resume.ledgerId)
+  }
+  useEffect(() => {
+    if (resumedRef.current) onResumed?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [ledgerLines, setLedgerLines] = useState<Row[]>([])
   const [ledgerSearch, setLedgerSearch] = useState('')
   const ledgerSearchRef = useRef<HTMLInputElement>(null)
@@ -630,6 +658,7 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   // screen stays on the statement, which is what you came back for.
   useEffect(() => {
     if (screen !== 'ledger') return
+    // Resumed onto a ledger already: show the statement, not the picker.
     if (!ledgerId) setLgPickerOpen(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen])
@@ -3078,6 +3107,10 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
   // a claimed line — so the freight then goes on in full and the note stands
   // beside it, which is what a debit note actually means.
   const [tfNoting, setTfNoting] = useState<number | null>(null)
+  // Writing a shortage off instead of claiming it. The reason is required —
+  // a waived claim with no explanation cannot be reviewed months later.
+  const [tfWaive, setTfWaive] = useState<Row | null>(null)
+  const [tfWaiveReason, setTfWaiveReason] = useState('')
   async function tfRaiseNote(row: Row): Promise<void> {
     setTfNoting(Number(row.id))
     try {
@@ -3097,6 +3130,39 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
     try {
       await window.api.transporterFreight.unraiseShortageNote(Number(row.id), cid)
       toast.success(`Debit note ${row.note_no} deleted`)
+      await loadTFreight()
+      loadAccounts()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setTfNoting(null)
+    }
+  }
+
+  async function tfDoWaive(): Promise<void> {
+    const row = tfWaive
+    if (!row) return
+    if (!tfWaiveReason.trim()) return void toast.error('Say why this shortage is not the transporter\'s')
+    setTfNoting(Number(row.id))
+    try {
+      await window.api.transporterFreight.waiveShortage(Number(row.id), tfWaiveReason.trim(), cid)
+      toast.success('Written off — the transporter bills in full')
+      setTfWaive(null)
+      setTfWaiveReason('')
+      await loadTFreight()
+      loadAccounts()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setTfNoting(null)
+    }
+  }
+  async function tfUnwaive(row: Row): Promise<void> {
+    if (!window.confirm('Undo this write-off? Its voucher is reversed and the shortage goes back to being a claim.')) return
+    setTfNoting(Number(row.id))
+    try {
+      await window.api.transporterFreight.unwaiveShortage(Number(row.id), cid)
+      toast.success('Write-off undone')
       await loadTFreight()
       loadAccounts()
     } catch (e) {
@@ -3236,13 +3302,17 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                 <th className="px-2 py-1.5">{tfSide === 'purchase' ? 'Supplier' : 'Customer'}</th>
                 <th className="px-2 py-1.5">Product</th>
                 <th className="px-2 py-1.5 text-right">Freight</th>
+                {/* What the line IS, out of the money column. Stacked under the
+                    figure it turned "-2,69,932.24" into three wrapped lines and
+                    made the amount hard to read at a glance. */}
+                <th className="px-2 py-1.5">Kind</th>
                 <th className="px-2 py-1.5">Booked</th>
               </tr>
             </thead>
             <tbody>
               {tfRows.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-10 text-center text-muted-foreground">
+                  <td colSpan={10} className="px-4 py-10 text-center text-muted-foreground">
                     No {tfSide === 'purchase' ? 'inward' : 'outward'} freight {tfState === 'unbilled' ? 'waiting to be booked' : 'here'}.
                   </td>
                 </tr>
@@ -3256,15 +3326,19 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                   // transporter is owed, so it must not be tickable onto a bill
                   // as well.
                   const noted = r.note_id != null
+                  // Written off: the transporter is owed the freight in full,
+                  // so this line has nothing left to net off their bill.
+                  const waived = r.waived_at != null
+                  const settled = noted || waived
                   return (
                     <tr
                       key={id}
-                      className={cn('border-b border-dotted', picked ? 'bg-amber-100/70' : 'hover:bg-amber-50', !booked && !noted && 'cursor-pointer')}
+                      className={cn('border-b border-dotted', picked ? 'bg-amber-100/70' : 'hover:bg-amber-50', !booked && !settled && 'cursor-pointer')}
                       style={{ borderColor: '#e5dfc8' }}
-                      onClick={() => !booked && !noted && tfToggle(r)}
+                      onClick={() => !booked && !settled && tfToggle(r)}
                     >
                       <td className="py-1.5 pl-4">
-                        {!booked && !noted && (
+                        {!booked && !settled && (
                           <input
                             type="checkbox"
                             className="h-3.5 w-3.5 cursor-pointer accent-[#1a2c56]"
@@ -3301,21 +3375,29 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                         >
                           {formatINR(r.amount)}
                         </span>
-                        {/* A debit note is not freight and must not read as a
-                            negative freight line — it is money coming back off
-                            what the transporter is owed, and the bill it goes
-                            on nets the two. */}
-                        {isShortage && (
-                          <div
-                            className="text-[10px] font-semibold uppercase tracking-wide text-rose-700"
+                      </td>
+                      {/* A debit note is not freight and must not read as a
+                          negative freight line — it is money coming back off
+                          what the transporter is owed, and the bill it goes on
+                          nets the two. */}
+                      <td className="whitespace-nowrap px-2 py-1.5 text-[10px] uppercase tracking-wide">
+                        {isShortage ? (
+                          <span
+                            className={cn('font-semibold', noted ? 'text-rose-800' : 'text-rose-700')}
                             title={String(r.note || '')}
                           >
-                            {noted ? 'Oil shortage · claimed' : 'Oil shortage · to claim'}
-                          </div>
+                            {noted
+                              ? 'Oil shortage · claimed'
+                              : waived
+                                ? 'Oil shortage · written off'
+                                : 'Oil shortage · to claim'}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">Freight</span>
                         )}
                         {Number(r.provisional) === 1 && (
                           <div
-                            className="text-[10px] font-normal uppercase tracking-wide text-rose-700"
+                            className="font-normal text-rose-700"
                             title={
                               tfSide === 'sales'
                                 ? 'Not unloaded yet — worked out on the dispatched qty. It settles to received qty x rate once the invoice is marked Unloaded.'
@@ -3346,16 +3428,41 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                           >
                             {r.note_no || 'Dr note'}
                           </button>
-                        ) : isShortage ? (
+                        ) : waived ? (
                           <button
                             type="button"
-                            className="rounded border border-rose-300 bg-white px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-700 hover:bg-rose-50 disabled:opacity-50"
-                            title={`Raise a debit note on ${r.transporter_name} for this oil shortage — Dr ${r.transporter_name}, Cr Freight ${tfSide === 'purchase' ? 'Inward' : 'Outward'}, no GST. The freight then bills in full and the note stands on its own.`}
+                            className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-slate-700 hover:bg-slate-300"
+                            title={`Written off by ${r.waived_by || 'someone'}: ${r.waived_reason || ''} — the transporter bills in full. Click to undo.`}
                             disabled={tfNoting === id}
-                            onClick={(e) => { e.stopPropagation(); void tfRaiseNote(r) }}
+                            onClick={(e) => { e.stopPropagation(); void tfUnwaive(r) }}
                           >
-                            {tfNoting === id ? 'Raising…' : 'Raise Dr note'}
+                            Written off
                           </button>
+                        ) : isShortage ? (
+                          <div className="flex flex-col items-stretch gap-1">
+                            <button
+                              type="button"
+                              className="rounded border border-rose-300 bg-white px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+                              title={`Raise a debit note on ${r.transporter_name} for this oil shortage — Dr ${r.transporter_name}, Cr Freight ${tfSide === 'purchase' ? 'Inward' : 'Outward'}, no GST. The freight then bills in full and the note stands on its own.`}
+                              disabled={tfNoting === id}
+                              onClick={(e) => { e.stopPropagation(); void tfRaiseNote(r) }}
+                            >
+                              {tfNoting === id ? 'Raising…' : 'Raise Dr note'}
+                            </button>
+                            {/* Not every shortage is the carrier's doing. An
+                                accident is written off rather than claimed —
+                                the transporter is paid in full and the loss is
+                                named instead of hiding in material cost. */}
+                            <button
+                              type="button"
+                              className="rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground hover:bg-slate-100 disabled:opacity-50"
+                              title="Not the transporter's — write it off. They bill in full and the loss posts to Oil Shortage Loss."
+                              disabled={tfNoting === id}
+                              onClick={(e) => { e.stopPropagation(); setTfWaive(r); setTfWaiveReason('') }}
+                            >
+                              Not theirs
+                            </button>
+                          </div>
                         ) : (
                           <span
                             className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-800"
@@ -3984,7 +4091,35 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
                       </tr>
                     )}
                     {stmt.rows.map((l) => (
-                      <tr key={String(l.id)} className="border-b border-dotted align-top" style={{ borderColor: '#e5dfc8' }}>
+                      // A statement line is a pointer to a voucher, so it opens
+                      // one — reading a purchase off the ledger and then hunting
+                      // for it in the Day Book was the long way round. An
+                      // auto-posted voucher opens read-only; a manual one opens
+                      // for alteration, which is what openForAlter already
+                      // decides.
+                      <tr
+                        key={String(l.id)}
+                        className="cursor-pointer border-b border-dotted align-top hover:bg-amber-50"
+                        style={{ borderColor: '#e5dfc8' }}
+                        title={
+                          l.order_id && onOpenRecord
+                            ? 'Open this purchase in Purchases'
+                            : l.sale_id && onOpenRecord
+                              ? 'Open this invoice in Sales'
+                              : `Open ${String(l.vch_type || 'this voucher')}${l.vch_no ? ` ${l.vch_no}` : ''}`
+                        }
+                        onClick={() => {
+                          // The document itself where there is one — a purchase
+                          // belongs in Purchases, where it can be read in full
+                          // and edited. Only a voucher with no source document
+                          // behind it (a manual journal, a contra) has nothing
+                          // better to show than itself.
+                          const here = { screen, ledgerId }
+                          if (l.order_id && onOpenRecord) return onOpenRecord('orders', Number(l.order_id), here)
+                          if (l.sale_id && onOpenRecord) return onOpenRecord('sales', Number(l.sale_id), here)
+                          void openForAlter({ id: l.entry_id ?? l.id })
+                        }}
+                      >
                         <td className={cn('whitespace-nowrap px-3 py-1.5 tabular-nums', lgDetailed && 'sticky left-0 z-10 bg-[#fffdf4]')}>{formatDate(l.entry_date)}</td>
                         <td className={cn('overflow-hidden px-2 py-1.5', lgDetailed && 'sticky left-[104px] z-10 max-w-[190px] bg-[#fffdf4] shadow-[4px_0_6px_-4px_rgba(26,44,86,0.25)]')}>
                           <div className="truncate font-medium" title={String(l.particulars || l.vch_type)}>{l.particulars || l.vch_type}</div>
@@ -4319,6 +4454,51 @@ export function Accounts({ onExit }: { onExit?: () => void }): React.JSX.Element
 
 
       {/* Read-only view of an auto-posted voucher */}
+      <Dialog open={!!tfWaive} onOpenChange={(o) => { if (!o) { setTfWaive(null); setTfWaiveReason('') } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Write off the oil shortage</DialogTitle>
+          </DialogHeader>
+          {tfWaive && (
+            <div className="space-y-3">
+              <div className="rounded-md border bg-muted/40 px-3 py-2 text-[13px]">
+                <div className="font-medium">{String(tfWaive.transporter_name || '')}</div>
+                <div className="text-[12px] text-muted-foreground">
+                  {String(tfWaive.doc_no || '')} · {formatINR(Math.abs(Number(tfWaive.amount) || 0))} ·{' '}
+                  {String(tfWaive.note || '')}
+                </div>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Why is this not the transporter&apos;s? *</Label>
+                <Input
+                  autoFocus
+                  value={tfWaiveReason}
+                  onChange={(e) => setTfWaiveReason(e.target.value)}
+                  placeholder="e.g. tanker overturned on NH-8, FIR filed"
+                />
+                <span className="text-[10.5px] text-muted-foreground">
+                  Recorded against your name and shown on the register. Required — a waived claim with no reason
+                  cannot be reviewed later.
+                </span>
+              </div>
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11.5px] leading-snug text-amber-900">
+                The transporter will bill <b>in full</b>, and{' '}
+                <b>{formatINR(Math.abs(Number(tfWaive.amount) || 0))}</b> posts as{' '}
+                <b>Dr OIL SHORTAGE LOSS A/C</b> against the{' '}
+                {tfSide === 'purchase' ? 'purchase' : 'sale'} account it was bought as — naming the loss rather than
+                leaving it inside material cost.
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setTfWaive(null); setTfWaiveReason('') }}>Cancel</Button>
+            <Button onClick={() => void tfDoWaive()} disabled={tfNoting != null || !tfWaiveReason.trim()}>
+              {tfNoting != null ? 'Saving…' : 'Write it off'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!viewRow} onOpenChange={(o) => !o && setViewRow(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>

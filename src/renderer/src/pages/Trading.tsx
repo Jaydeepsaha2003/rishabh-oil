@@ -675,9 +675,18 @@ export function Trading(): React.JSX.Element {
   // Summary cards mirror the filtered list, not the full unfiltered set — so
   // "Total deals" never shows a count higher than what's actually listed
   // below it once a date range or search is narrowing the view.
+  // Both sides on TAXABLE value, because that is what a trade is judged on.
+  //
+  // Purchase showed the net payable (taxable + GST − TDS) and Sale the
+  // tax-inclusive total, while Margin was struck on taxable — so the three
+  // figures never reconciled. On the current book they read as a Rs 5,28,213
+  // profit sitting beside a Rs 5,73,120 loss. GST is a pass-through (input
+  // credit against output liability) and TDS is a withholding, not a cost;
+  // neither belongs in what the trade earned. Now Sale − Purchase IS the
+  // margin, to the paisa.
   const totalMargin = filteredDeals.reduce((s, d) => s + n(d.margin), 0)
-  const totalPurchase = filteredDeals.reduce((s, d) => s + n(d.purchase_total), 0)
-  const totalSale = filteredDeals.reduce((s, d) => s + n(d.sale_net), 0)
+  const totalPurchase = filteredDeals.reduce((s, d) => s + n(d.purchase_taxable), 0)
+  const totalSale = filteredDeals.reduce((s, d) => s + n(d.sale_amount), 0)
 
   if (formPage) {
     return (
@@ -1041,11 +1050,11 @@ export function Trading(): React.JSX.Element {
           </div>
         </Card>
         <Card className="p-3">
-          <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Total purchase</div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Total purchase (taxable)</div>
           <div className="mt-0.5 text-lg font-semibold tabular-nums">{formatINR(totalPurchase)}</div>
         </Card>
         <Card className="p-3">
-          <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Total sale</div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Total sale (taxable)</div>
           <div className="mt-0.5 text-lg font-semibold tabular-nums">{formatINR(totalSale)}</div>
         </Card>
         <Card className="flex items-center gap-3 p-3">
@@ -1098,9 +1107,9 @@ export function Trading(): React.JSX.Element {
                   { label: 'Product' },
                   { label: 'Qty', right: true },
                   { label: 'Supplier' },
-                  { label: 'Purchase (net)', right: true },
+                  { label: 'Purchase (taxable)', right: true },
                   { label: 'Customer' },
-                  { label: 'Sale (total)', right: true },
+                  { label: 'Sale (taxable)', right: true },
                   { label: 'Margin', right: true },
                   { label: 'Margin %', right: true },
                   { label: 'Actions', right: true }
@@ -1144,9 +1153,19 @@ export function Trading(): React.JSX.Element {
                   </TableCell>
                   {/* Invoice numbers live in the expanded view, not here. */}
                   <TableCell className="py-1.5 text-[13px] font-medium">{d.supplier_name || '—'}</TableCell>
-                  <TableCell className="py-1.5 text-right text-[13px] tabular-nums">{formatINR(d.purchase_net)}</TableCell>
+                  <TableCell
+                    className="py-1.5 text-right text-[13px] tabular-nums"
+                    title={`Taxable ${formatINR(d.purchase_taxable)} + GST ${formatINR(d.purchase_gst_amount)} − TDS ${formatINR(d.purchase_tds_amount)} = ${formatINR(d.purchase_net)} payable to the supplier`}
+                  >
+                    {formatINR(d.purchase_taxable)}
+                  </TableCell>
                   <TableCell className="py-1.5 text-[13px] font-medium">{d.customer_name || '—'}</TableCell>
-                  <TableCell className="py-1.5 text-right text-[13px] tabular-nums">{formatINR(d.sale_net)}</TableCell>
+                  <TableCell
+                    className="py-1.5 text-right text-[13px] tabular-nums"
+                    title={`Taxable ${formatINR(d.sale_amount)} + GST ${formatINR(d.sale_gst_amount)} = ${formatINR(d.sale_net)} invoiced to the customer`}
+                  >
+                    {formatINR(d.sale_amount)}
+                  </TableCell>
                   <TableCell
                     className={cn(
                       'py-1.5 text-right text-[13px] font-semibold tabular-nums',
@@ -1254,8 +1273,8 @@ export function Trading(): React.JSX.Element {
                 const t = filteredDeals.reduce(
                   (a, d) => ({
                     qty: a.qty + n(d.purchase_qty),
-                    purchase: a.purchase + n(d.purchase_net),
-                    sale: a.sale + n(d.sale_net),
+                    purchase: a.purchase + n(d.purchase_taxable),
+                    sale: a.sale + n(d.sale_amount),
                     margin: a.margin + n(d.margin),
                     purchaseTaxable: a.purchaseTaxable + n(d.purchase_taxable)
                   }),
