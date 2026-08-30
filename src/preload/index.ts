@@ -133,6 +133,15 @@ const api = {
       ipcRenderer.invoke('journal:pendingRefs', { account, companyId, side }),
     tradingAccount: (from?: string, to?: string, companyId?: number): Promise<Row[]> =>
       ipcRenderer.invoke('journal:tradingAccount', { from, to, companyId }),
+    booksFrom: (companyId?: number): Promise<string | null> =>
+      ipcRenderer.invoke('journal:booksFrom', { companyId }),
+    setBooksFrom: (date: string | null, companyId?: number): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('journal:setBooksFrom', { date, companyId }),
+    openings: (companyId?: number): Promise<Row> => ipcRenderer.invoke('journal:openings', { companyId }),
+    saveOpenings: (rows: Row[], companyId?: number): Promise<{ saved: number }> =>
+      ipcRenderer.invoke('journal:saveOpenings', { rows, companyId }),
+    opening: (accountId: number, companyId?: number): Promise<Row> =>
+      ipcRenderer.invoke('journal:opening', { accountId, companyId }),
     accounts: (companyId?: number): Promise<Row[]> => ipcRenderer.invoke('journal:accounts', { companyId }),
     createAccount: (name: string, group?: string): Promise<{ id: number }> =>
       ipcRenderer.invoke('journal:createAccount', { name, group }),

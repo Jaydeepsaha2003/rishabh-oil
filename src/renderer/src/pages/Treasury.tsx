@@ -123,6 +123,43 @@ interface Props {
   onCompanyChange: (id: string) => void
 }
 
+// How an LC's closure sits against its maturity. Only 'early' is a preclosure.
+function closureKind(l: Row): 'none' | 'early' | 'on_time' | 'late' {
+  const closed = String(l?.preclosed_date || '').slice(0, 10)
+  if (!closed) return 'none'
+  const mat = String(l?.expiry_date || '').slice(0, 10)
+  if (!mat) return 'on_time'
+  if (closed < mat) return 'early'
+  if (closed > mat) return 'late'
+  return 'on_time'
+}
+
+// The badge each of those deserves, or null when the LC is still open.
+function ClosureBadge({ l, withDate }: { l: Row; withDate?: boolean }): React.JSX.Element | null {
+  const kind = closureKind(l)
+  if (kind === 'none') return null
+  const on = withDate ? ` ${formatDate(l.preclosed_date)}` : ''
+  if (kind === 'early') {
+    return (
+      <Badge variant="muted" title={`Wound up early on ${formatDate(l.preclosed_date)} — ${formatDate(l.expiry_date)} never came`}>
+        Preclosed{on}
+      </Badge>
+    )
+  }
+  if (kind === 'late') {
+    return (
+      <Badge variant="warning" title={`Closed on ${formatDate(l.preclosed_date)}, after its ${formatDate(l.expiry_date)} maturity`}>
+        Closed late{on}
+      </Badge>
+    )
+  }
+  return (
+    <Badge variant="muted" title={`Closed on maturity, ${formatDate(l.preclosed_date)}`}>
+      Closed{on}
+    </Badge>
+  )
+}
+
 export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   const [tab, setTab] = useState('lc')
   const [lcs, setLcs] = useState<Row[]>([])
@@ -150,6 +187,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   const [lcStageFilter, setLcStageFilter] = useState<string | null>(null)
   const [lcPurposeFilter, setLcPurposeFilter] = useState<string | null>(null)
   // 'all' = every LC; 'matured' = past its own expiry but not yet repaid;
+  // A closure is a PRECLOSURE only when it happened BEFORE maturity. Closed on
+  // the maturity date is the LC running its natural course, and closed after it
+  // is late — neither is a preclosure.
+  //
+  // Every badge keyed off the closure date merely existing, so an LC repaid
+  // exactly on its due date was labelled "Preclosed" and had its maturity
+  // struck through as though the date never came. It came; that is the day it
+  // was paid.
+  //
+  // Signature: 'none' | 'early' | 'on_time' | 'late'.
   // 'repaid' = preclosed/repaid already.
   const [lcStatusFilter, setLcStatusFilter] = useState<'all' | 'matured' | 'repaid'>('all')
   // Every LC bill and discounted bill in one due-date-sorted list, regardless
@@ -1541,7 +1588,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               <div className="flex flex-wrap items-center gap-1.5">
                                 <span className={cn('text-[15px] font-bold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
                                 {currentStageBadge(l)}
-                                {l.preclosed_date && <Badge variant="muted">Preclosed {formatDate(l.preclosed_date)}</Badge>}
+                                <ClosureBadge l={l} withDate />
                               </div>
                               <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
                                 <Landmark className="h-3 w-3 shrink-0" /> {l.bank}
@@ -1753,7 +1800,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                   <div className="flex items-center gap-1.5">
                                     <span className={cn('font-semibold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
                                     {currentStageBadge(l)}
-                                    {l.preclosed_date && <Badge variant="muted">Preclosed</Badge>}
+                                    <ClosureBadge l={l} />
                                   </div>
                                   <div className="text-[11px] text-muted-foreground">{l.bank}{n(l.margin_pct) ? ` · margin ${l.margin_pct}%` : ''}</div>
                                 </div>
@@ -1765,17 +1812,23 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 <span className="mr-1 text-[10px] font-semibold uppercase text-muted-foreground" title="Opened">Op</span>
                                 {formatDateShort(l.open_date)}
                               </div>
-                              {/* A preclosed LC never reached its maturity, so the
-                                  planned date is struck through and the date it
-                                  actually closed on is shown beneath it. */}
-                              <div className={cn(l.preclosed_date && 'text-muted-foreground line-through decoration-muted-foreground/60')}>
+                              {/* Only a PRECLOSED LC never reached its maturity, so
+                                  only that case strikes the planned date out. An
+                                  LC closed on or after maturity did reach it. */}
+                              <div className={cn(closureKind(l) === 'early' && 'text-muted-foreground line-through decoration-muted-foreground/60')}>
                                 <span className="mr-1 text-[10px] font-semibold uppercase text-muted-foreground no-underline" title="Maturity">Mat</span>
                                 {formatDateShort(l.expiry_date)}
                               </div>
                               {!!l.preclosed_date && (
                                 <div
                                   className="mt-0.5 inline-flex items-center gap-1 rounded bg-violet-100 px-1.5 py-px text-[11px] font-semibold text-violet-800"
-                                  title={`Closed on ${formatDate(l.preclosed_date)} — ${formatDateShort(l.expiry_date)} never came`}
+                                  title={
+                                    closureKind(l) === 'early'
+                                      ? `Wound up early on ${formatDate(l.preclosed_date)} — ${formatDateShort(l.expiry_date)} never came`
+                                      : closureKind(l) === 'late'
+                                        ? `Closed on ${formatDate(l.preclosed_date)}, after its ${formatDateShort(l.expiry_date)} maturity`
+                                        : `Closed on maturity, ${formatDate(l.preclosed_date)}`
+                                  }
                                 >
                                   <span className="text-[9px] uppercase tracking-wide text-violet-700/70">Closed</span>
                                   {formatDateShort(l.preclosed_date)}
@@ -3026,7 +3079,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   <DialogTitle className="flex flex-wrap items-center gap-1.5 pr-6">
                     <span className={cn(!dRow.lc_no && 'italic text-muted-foreground')}>{dRow.lc_no || 'Pending LC no'}</span>
                     <StageBadge stage={String(dRow.stage || 'application')} />
-                    {dRow.preclosed_date && <Badge variant="muted">Preclosed {formatDate(dRow.preclosed_date)}</Badge>}
+                    <ClosureBadge l={dRow} withDate />
                     {isLcPaymentInDone(dRow) && <Badge variant="success">Payment IN</Badge>}
                     {canMarkPaymentIn(dRow) && <Badge variant="warning">Awaiting Payment IN</Badge>}
                     {dRow.purpose && <Badge variant="muted" className="capitalize">{dRow.purpose}</Badge>}

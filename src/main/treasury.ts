@@ -105,45 +105,60 @@ async function bankAccountFor(lc: Row): Promise<string> {
 // (skipped when all three are zero). Interest is simple interest over the
 // usance period: amount x interest_pct x usance_days / 365 — the same
 // day-count convention interest already uses elsewhere in the books.
+// What you owe the bank that issued the LC, from the moment it honours the
+// credit until you repay it. Named per issuing bank, so the books say who is
+// owed rather than lumping every LC into one figure.
+//
+// This is the hinge of the whole cycle: the bank's outlay to the beneficiary
+// credits it, and your repayment debits it. Both halves must name the SAME
+// account or the liability never clears.
+const LC_PAYABLE_GROUP = 'Current Liabilities'
+function lcPayable(lc: Row): string {
+  const bank = String(lc.bank || '').trim().toUpperCase()
+  return bank ? `LC PAYABLE - ${bank}` : 'LC PAYABLE'
+}
+
 export async function postLcOpening(lcId: number): Promise<void> {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [lcId] })
   if (!res.rows.length) return
   const lc = toPlain(res)[0]
-  const bankAcc = await bankAccountFor(lc)
   await dropEntry(n(lc.journal_entry_id) || null)
-  // Margin is the security deposit the bank asks for on the LC's own open
-  // amount — a straight percentage of the credit limit itself, not of
-  // whichever invoices happen to be linked to it.
+
+  // Opening an LC is not itself a transaction — it is a commitment the bank
+  // makes, carried off the books until it honours the credit. Only ONE thing
+  // moves money at opening: the margin you lodge as security.
+  //
+  // It is a CONTRA, because nothing is spent — your money moves out of the
+  // current account into a deposit the bank holds, and comes back when the LC
+  // closes. This used to be one JOURNAL that also credited the bank for
+  // interest and charges, which said cash had gone that had not.
+  //
+  // Interest and commission are NOT posted here. On a usance LC the bank takes
+  // them at maturity, with the repayment — which is what the recorded
+  // repayments show: ₹79,50,000 against a ₹77,76,117.45 bill, the difference
+  // being exactly that LC's interest and charges. Expensing them at opening
+  // dated the cost months before it was incurred. They belong to the repayment
+  // voucher, and postLcRepaymentEntry now carries them.
+  //
+  // interest_journal_entry_id is deliberately untouched: it belongs to the
+  // upfront path (postLcUpfrontInterest), which posts against a reconciled bank
+  // statement line. Dropping it here would delete a voucher this function never
+  // created and cannot re-post.
   const margin = round2((n(lc.amount) * n(lc.margin_pct)) / 100)
-  const rawInterest = round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
-  const rawCharges = round2(n(lc.charges))
-  // Some parties (e.g. Bunge-style deals) pay interest AND charges upfront
-  // straight from the bank account instead of either coming out of the LC's
-  // own open amount — this voucher then posts neither; both are deferred
-  // until the matching bank statement line is reconciled (see
-  // postLcUpfrontInterest below).
-  const interest = lc.interest_upfront ? 0 : rawInterest
-  const charges = lc.interest_upfront ? 0 : rawCharges
-  if (margin < 0.005 && interest < 0.005 && charges < 0.005) {
+  if (margin < 0.005) {
     await c.execute({ sql: 'UPDATE letters_of_credit SET journal_entry_id = NULL WHERE id = ?', args: [lcId] })
     return
   }
   const je = await postJournal({
     date: String(lc.open_date || todayISO()),
-    vchType: 'JOURNAL',
+    vchType: 'CONTRA',
     vchNo: String(lc.lc_no || ''),
-    narration: `LC ${lc.lc_no} opened at ${lc.bank} — margin ${margin.toFixed(2)}, interest ${interest.toFixed(2)}, charges ${charges.toFixed(2)}${
-      lc.interest_upfront
-        ? ` (interest ₹${rawInterest.toFixed(2)} and charges ₹${rawCharges.toFixed(2)} paid upfront from the bank — linked separately via bank reconciliation)`
-        : ''
-    }`,
+    narration: `LC ${lc.lc_no} — margin ${margin.toFixed(2)} lodged with ${lc.bank}`,
     companyId: n(lc.company_id) || undefined,
     lines: [
       { account: 'LC MARGIN A/C', group: 'Deposits (Asset)', dr: margin },
-      { account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest },
-      { account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: charges },
-      { account: bankAcc, group: 'Bank Accounts', cr: round2(margin + interest + charges) }
+      { account: await bankAccountFor(lc), group: 'Bank Accounts', cr: margin }
     ]
   })
   await c.execute({ sql: 'UPDATE letters_of_credit SET journal_entry_id = ? WHERE id = ?', args: [je.id, lcId] })
@@ -194,16 +209,16 @@ export async function postLcUpfrontInterest(lcId: number, dateIn?: string): Prom
 // is deliberate, so a leftover there is genuine undrawn limit, not a shortfall
 // to settle. Such an LC is therefore only ever corrected DOWNWARD, never paid
 // more than its invoice called for.
-export function lcFeeDelta(lc: Row, settled: number, invoiceLinkedBills: number): number {
-  if (settled <= 0.005) return 0
-  const upfront = !!lc.interest_upfront
-  const interest = upfront ? 0 : round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
-  const charges = upfront ? 0 : round2(n(lc.charges))
-  const released = round2(n(lc.amount) - interest - charges)
-  const delta = round2(released - settled)
-  if (Math.abs(delta) < 0.005) return 0
-  if (delta > 0 && invoiceLinkedBills > 0) return 0
-  return delta
+export function lcFeeDelta(): number {
+  // Always nil. This existed to plug the gap netAvailable() opened by sizing a
+  // bill at the LC amount LESS interest and charges, which made the supplier's
+  // ledger show them paid less than they were owed. The beneficiary is paid in
+  // full, so there is nothing left to correct.
+  //
+  // Kept rather than deleted so syncLcFeeAdjustment() still runs and REMOVES
+  // the corrections already posted under the old rule — saving any such LC
+  // clears its plug voucher.
+  return 0
 }
 
 // The bank deducts its interest and charges from the LC's open amount before it
@@ -234,7 +249,7 @@ export async function syncLcFeeAdjustment(lcId: number): Promise<number> {
           FROM lc_issuances WHERE lc_id = ?`,
     args: [lcId]
   })
-  const delta = lcFeeDelta(lc, n(iss.rows[0]?.settled), n(iss.rows[0]?.linked))
+  const delta = lcFeeDelta()
   await dropEntry(n(lc.fee_adjust_journal_entry_id) || null)
   const party = String(lc.supplier_name || '').trim()
   if (delta === 0 || !party) {
@@ -825,23 +840,45 @@ export async function settleLcBillsCombined(issuanceIds: number[], dateIn?: stri
   const bills = toPlain(res).filter((b) => String(b.status) !== 'settled')
   if (!bills.length) return null
   const first = bills[0]
-  const bankAcc = await bankAccountFor(first)
   const party = String(first.supplier_name || '').trim()
   if (!party) throw new Error('The LC has no supplier party — set it on the LC first')
   const date = String(dateIn || todayISO()).slice(0, 10)
   const total = round2(bills.reduce((s, b) => s + n(b.amount), 0))
   const je = await postJournal({
     date,
-    vchType: 'PAYMENT',
+    // A JOURNAL, not a PAYMENT. Nothing of yours moves here — the bank honours
+    // the credit and pays the beneficiary out of its own funds. What happens is
+    // that one liability is exchanged for another: the supplier is discharged,
+    // and the bank takes their place as the party you owe.
+    vchType: 'JOURNAL',
     vchNo: String(first.lc_no || ''),
-    narration:
-      bills.length === 1
-        ? `LC ${first.lc_no} ${first.bill_no ? `bill ${first.bill_no}` : 'on account'} matured — paid by ${first.bank}`
-        : `LC ${first.lc_no} — ${bills.length} bills matured — paid by ${first.bank}`,
+    // A bill auto-issued against the whole LC is NAMED after it, so repeating
+    // the name tells the reader nothing: "LC LC-11 bill LC-11 matured". Worse,
+    // once an LC is renumbered the bill keeps its old name and the narration
+    // reads as two documents — "LC LC-11 bill LC-17" — when there is only one.
+    // So the bill is mentioned only when it carries a name of its own, such as
+    // a reference the bank gave you.
+    narration: (() => {
+      if (bills.length > 1) {
+        return `LC ${first.lc_no} — ${bills.length} bills matured — ${first.bank} paid ${party} under the LC`
+      }
+      const bill = String(first.bill_no || '').trim()
+      const named = bill && bill !== String(first.lc_no || '').trim() ? ` (bill ${bill})` : ''
+      return `LC ${first.lc_no}${named} matured — ${first.bank} paid ${party} under the LC`
+    })(),
     companyId: n(first.company_id) || undefined,
+    // The BANK pays the beneficiary here, not you — that is what a letter of
+    // credit is for. So the party is discharged (a debit, rightly, since paying
+    // a creditor reduces what you owe them) against the LIABILITY to the bank,
+    // never against your bank balance.
+    //
+    // Crediting the bank instead meant your account was shown as paying twice:
+    // once when the bill matured and again when the LC was actually repaid. It
+    // also left the liability invisible for the whole usance period, so the
+    // books never admitted you owed the bank anything between the two dates.
     lines: [
       { account: party, group: 'Sundry Creditors', dr: total },
-      { account: bankAcc, group: 'Bank Accounts', cr: total }
+      { account: lcPayable(first), group: LC_PAYABLE_GROUP, cr: total }
     ]
   })
   for (const b of bills) {
@@ -894,10 +931,11 @@ export async function listLcRepayments(lcId: number): Promise<Row[]> {
 // Posts (or re-posts) the repayment's journal entry: money leaves our bank —
 // the repayment itself and any commission/bank charges combine into that one
 // Bank credit line, matching the single combined debit the bank statement shows.
-async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
+export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   const c = getClient()
   const res = await c.execute({
-    sql: `SELECT r.*, l.lc_no, l.company_id, l.bank, l.our_bank_id, l.amount AS lc_open_amount
+    sql: `SELECT r.*, l.lc_no, l.company_id, l.bank, l.our_bank_id, l.amount AS lc_open_amount,
+                 l.charges AS lc_charges
           FROM lc_repayments r
           JOIN letters_of_credit l ON l.id = r.lc_id
           WHERE r.id = ?`,
@@ -907,31 +945,80 @@ async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   const rep = toPlain(res)[0]
   const bankAcc = await bankAccountFor(rep)
   await dropEntry(n(rep.journal_entry_id) || null)
-  // rep.amount is the TOTAL the bank debited (open amount + any excess) —
-  // comm_charges/bank_charges are that excess broken into expense categories,
-  // so only the LC's own open amount goes to LC REPAYMENT A/C. Posting the
-  // full rep.amount there too would double-count the excess against the
-  // charge lines below.
-  const openAmount = round2(n(rep.lc_open_amount))
-  const commCharges = round2(n(rep.comm_charges))
-  const bankCharges = round2(n(rep.bank_charges))
-  const date = String(rep.repay_date || todayISO()).slice(0, 10)
+
+  // The bank statement is the authority here, and nothing else is.
+  //
+  // `rep.amount` is what the bank actually debited — a figure read off the
+  // statement. The voucher credits exactly that, never a total assembled from
+  // parts. Computing the total instead (advance + a re-derived interest) made
+  // six of ten vouchers disagree with the bank by anything up to ₹1.87 lakh,
+  // because a bill and a day-count formula have no obligation to add up to what
+  // the bank chose to take.
+  const total = round2(n(rep.amount))
+
+  // What the bank advanced under this LC — the bills it honoured. That is the
+  // figure sitting as a credit in LC PAYABLE, so that is what clears it, to the
+  // paisa. Anything else would leave the payable never quite closing.
+  const adv = await c.execute({
+    sql: `SELECT COALESCE(SUM(amount), 0) a FROM lc_issuances
+           WHERE lc_id = ? AND journal_entry_id IS NOT NULL`,
+    args: [n(rep.lc_id)]
+  })
+  const advanced = round2(n(adv.rows[0]?.a)) || round2(n(rep.lc_open_amount))
+
+  // Everything the bank took beyond what it advanced IS the cost of the credit.
+  // Deriving it as the residual is what keeps the voucher tied to the statement:
+  // the parts can only ever sum to the whole.
+  let residual = round2(total - advanced)
   const lines: { account: string; group: string; dr?: number; cr?: number }[] = [
-    { account: 'LC REPAYMENT A/C', group: 'Loans (Liability)', dr: openAmount }
+    { account: lcPayable(rep), group: LC_PAYABLE_GROUP, dr: advanced }
   ]
-  if (commCharges > 0.005) lines.push({ account: 'COMM. CHARGES A/C', group: 'Indirect Expenses', dr: commCharges })
-  if (bankCharges > 0.005) lines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: bankCharges })
-  const totalCharges = round2(commCharges + bankCharges)
-  lines.push({ account: bankAcc, group: 'Bank Accounts', cr: round2(openAmount + totalCharges) })
+
+  // The user's own breakdown of the excess comes first — they read it off the
+  // statement, so it beats anything inferred.
+  const comm = Math.min(round2(n(rep.comm_charges)), Math.max(0, residual))
+  residual = round2(residual - comm)
+  const stated = Math.min(round2(n(rep.bank_charges)), Math.max(0, residual))
+  residual = round2(residual - stated)
+
+  // Then the LC's own commission, a fixed fee the bank quoted when it opened.
+  const lcChg = Math.min(round2(n(rep.lc_charges)), Math.max(0, residual))
+  residual = round2(residual - lcChg)
+
+  // Whatever is left is the usance interest. Left as the remainder on purpose:
+  // interest is the one component that varies with the exact days the bank
+  // counted, and the bank's count wins over ours.
+  const interest = round2(residual)
+
+  if (comm > 0.005) lines.push({ account: 'COMM. CHARGES A/C', group: 'Indirect Expenses', dr: comm })
+  // One line, not two: the LC's quoted commission and any charge keyed on the
+  // day are the same kind of cost to the same account.
+  const charges = round2(stated + lcChg)
+  if (charges > 0.005) lines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: charges })
+  if (interest > 0.005) lines.push({ account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest })
+
+  // A bank that took LESS than it advanced (a rebate, a part settlement) leaves
+  // a negative residual. Rather than post a negative expense, the shortfall
+  // stays against the payable, which then still carries what is owed.
+  if (interest < -0.005) {
+    lines[0].dr = round2(advanced + interest)
+    lines.splice(1)
+  }
+
+  lines.push({ account: bankAcc, group: 'Bank Accounts', cr: total })
+
+  const cost = round2(comm + charges + Math.max(0, interest))
   const je = await postJournal({
-    date,
-    // A JOURNAL, not a PAYMENT: closing an LC squares the LC liability off
-    // against the bank rather than paying a party, so it reads as JV in the
-    // ledger. The two PAYMENT postings above are different — those settle a
-    // supplier's matured bill, which genuinely is a payment.
-    vchType: 'JOURNAL',
+    date: String(rep.repay_date || todayISO()).slice(0, 10),
+    // A PAYMENT. This is the one moment in the whole cycle when your own money
+    // leaves — the bank honoured the credit months ago out of its own funds,
+    // and now it wants them back. The settlement is the JOURNAL; this is the
+    // payment. They used to be the wrong way round.
+    vchType: 'PAYMENT',
     vchNo: rep.lc_no ? String(rep.lc_no) : null,
-    narration: `LC ${rep.lc_no} repaid to ${rep.bank || 'the bank'}${totalCharges > 0.005 ? ` (incl. ${totalCharges.toFixed(2)} charges)` : ''}`,
+    narration:
+      `LC ${rep.lc_no} repaid to ${rep.bank || 'the bank'} — ${advanced.toFixed(2)}` +
+      `${cost > 0.005 ? ` plus ${cost.toFixed(2)} interest and charges` : ''}`,
     companyId: n(rep.company_id) || undefined,
     lines
   })

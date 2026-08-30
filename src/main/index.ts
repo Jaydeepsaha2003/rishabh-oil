@@ -290,6 +290,19 @@ app.whenReady().then(async () => {
   await runOnce('gate_date_idx_v1', async () => {
     await getClient().execute('CREATE INDEX IF NOT EXISTS idx_gate_date ON gate_entries(entry_date)')
   }).catch((e) => console.error('[gate] date index failed:', e))
+  // Books beginning from: one opening figure per ledger stands in for
+  // everything before the cutoff. Per company, since the two books can start on
+  // different days.
+  await runOnce('ledger_openings_v1', async () => {
+    await getClient().execute(`CREATE TABLE IF NOT EXISTS ledger_openings (
+      company_id INTEGER NOT NULL,
+      account_id INTEGER NOT NULL,
+      dr REAL NOT NULL DEFAULT 0,
+      cr REAL NOT NULL DEFAULT 0,
+      updated_at TEXT,
+      PRIMARY KEY (company_id, account_id)
+    )`)
+  }).catch((e) => console.error('[openings] table failed:', e))
   startRevisionWatcher()
   registerIpc()
   registerUpdater(() => mainWindow)

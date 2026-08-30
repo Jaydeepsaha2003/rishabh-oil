@@ -1,6 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
+import { getBooksFrom } from './openings'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -222,14 +223,20 @@ async function voucherCodeMap(companyId: number): Promise<Map<number, string>> {
 export async function accountStatement(accountId: number, companyId?: number): Promise<Row[]> {
   const c = getClient()
   const cid = companyId || getActiveCompanyId()
+  // Nothing before the books begin. Those vouchers still exist — an LC needs to
+  // know what it advanced — but the ledger's answer for that period is the
+  // entered opening balance, not a list of entries that were never this
+  // company's accounts.
+  const booksFrom = await getBooksFrom(cid)
   const res = await c.execute({
     sql: `SELECT jl.id, je.id AS entry_id, je.entry_date, je.vch_type, je.vch_no, je.narration,
                  jl.dr, jl.cr, je.order_id, je.sale_id, je.payment_id
           FROM journal_lines jl
           JOIN journal_entries je ON je.id = jl.entry_id
           WHERE jl.account_id = ? AND je.company_id = ?
+            ${booksFrom ? 'AND je.entry_date >= ?' : ''}
           ORDER BY je.entry_date ASC, je.id ASC, jl.id ASC`,
-    args: [accountId, cid]
+    args: booksFrom ? [accountId, cid, booksFrom] : [accountId, cid]
   })
   const lines = toPlain(res)
   if (!lines.length) return lines

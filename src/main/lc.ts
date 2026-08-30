@@ -26,16 +26,18 @@ function round2(v: number): number {
   return Math.round(v * 100) / 100
 }
 
-// What's actually left to issue bills against: interest and charges come out
-// of the LC's own open amount before anything else, the same as the money
-// that lands with the bank — issuing bills doesn't get to ignore what the LC
-// itself already owes in fees. Unless both are paid upfront (some parties,
-// e.g. Bunge-style deals, settle interest and charges straight from the bank
-// account) — then the open amount isn't touched by either.
+// What's left to issue bills against: the whole open amount, less what has
+// already been drawn.
+//
+// Interest and charges used to be deducted here, on the assumption that the
+// bank keeps them out of the LC and releases only the remainder. It does not —
+// the beneficiary is entitled to the full value of the documents they present,
+// and the bank debits its interest and commission to your account separately.
+// Netting them here under-sized every bill, left the supplier's ledger showing
+// them paid less than they were, and needed a correcting voucher to paper over
+// the gap.
 function netAvailable(lc: Row, issued: number): number {
-  const interest = lc.interest_upfront ? 0 : round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
-  const charges = lc.interest_upfront ? 0 : round2(n(lc.charges))
-  return round2(n(lc.amount) - interest - charges - issued)
+  return round2(n(lc.amount) - issued)
 }
 
 // LCs / discounting facilities with their utilisation (sum of issuances),
@@ -107,8 +109,8 @@ export async function listLCs(): Promise<Row[]> {
       // now credited back to the party instead (syncLcFeeAdjustment), so the
       // LC itself is square — reporting it as still negative would double-count
       // a correction that has already been posted.
-      fee_adjustment: lcFeeDelta(l, n(l.settled_total), n(l.linked_bill_count)),
-      available: round2(netAvailable(l, n(l.utilized)) - lcFeeDelta(l, n(l.settled_total), n(l.linked_bill_count))),
+      fee_adjustment: lcFeeDelta(),
+      available: round2(netAvailable(l, n(l.utilized)) - lcFeeDelta()),
       // What's still owed against the LC's full sanctioned limit, net of
       // repayments — explicitly requested this way even for an LC that's
       // barely drawn down, so it reads as the limit's outstanding exposure.

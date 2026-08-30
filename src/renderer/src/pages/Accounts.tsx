@@ -64,7 +64,7 @@ const T = {
 
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
 
-type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg' | 'trading' | 'notesreg' | 'tfpur' | 'tfsal'
+type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg' | 'trading' | 'notesreg' | 'tfpur' | 'tfsal' | 'openings'
 type VchType = 'CONTRA' | 'PAYMENT' | 'RECEIPT' | 'JOURNAL' | 'DEBIT NOTE' | 'CREDIT NOTE'
 
 const VCH_TYPES: { key: VchType; fkey: string; label: string }[] = [
@@ -558,6 +558,259 @@ export function Accounts({
   const [regFunding, setRegFunding] = useState<string[]>([])
   // Tag-a-purchase-to-an-LC dialog.
   const [tagForm, setTagForm] = useState<Row | null>(null)
+  // Books beginning from, and the opening balance each ledger was given as at
+  // that date. Everything before the cutoff is excluded from the ledger and
+  // these figures stand in its place — so they are not a convenience, they are
+  // the only record of where the business stood when the books opened.
+  const [obRows, setObRows] = useState<Row[]>([])
+  const [obFrom, setObFrom] = useState('')
+  const [obEdit, setObEdit] = useState<Record<number, { dr: string; cr: string }>>({})
+  const [obQuery, setObQuery] = useState('')
+  const [obSaving, setObSaving] = useState(false)
+  const [obOnlySet, setObOnlySet] = useState(false)
+
+  const loadOpenings = useCallback(async (): Promise<void> => {
+    try {
+      const r = await window.api.journal.openings(cid || undefined)
+      setObRows((r.rows as Row[]) || [])
+      setObFrom(String(r.books_from || ''))
+      setObEdit({})
+    } catch (e) {
+      toast.error(errText(e))
+    }
+  }, [cid])
+
+  useEffect(() => {
+    if (screen === 'openings') void loadOpenings()
+  }, [screen, loadOpenings])
+
+  // What is typed wins over what is stored, so the difference moves as you go
+  // rather than only after a save.
+  const obLive = useMemo(() => {
+    const rows: Row[] = obRows.map((r): Row => {
+      const e = obEdit[Number(r.id)]
+      return {
+        ...r,
+        dr: e ? Number(e.dr || 0) || 0 : Number(r.dr || 0),
+        cr: e ? Number(e.cr || 0) || 0 : Number(r.cr || 0)
+      }
+    })
+    const dr = rows.reduce((t, r) => t + Number(r.dr || 0), 0)
+    const cr = rows.reduce((t, r) => t + Number(r.cr || 0), 0)
+    return { rows, dr, cr, difference: Math.round((dr - cr) * 100) / 100 }
+  }, [obRows, obEdit])
+
+  const obVisible = useMemo(() => {
+    const q = obQuery.trim().toUpperCase()
+    return obLive.rows.filter((r) => {
+      if (obOnlySet && Math.abs(Number(r.dr || 0)) < 0.005 && Math.abs(Number(r.cr || 0)) < 0.005) return false
+      if (!q) return true
+      return String(r.name || '').toUpperCase().includes(q) || String(r.acc_group || '').toUpperCase().includes(q)
+    })
+  }, [obLive, obQuery, obOnlySet])
+
+  async function saveOpenings(): Promise<void> {
+    const rows = Object.entries(obEdit).map(([id, v]) => ({
+      account_id: Number(id),
+      dr: Number(v.dr || 0) || 0,
+      cr: Number(v.cr || 0) || 0
+    }))
+    if (!rows.length) return void toast.message('Nothing changed')
+    setObSaving(true)
+    try {
+      await window.api.journal.saveOpenings(rows, cid || undefined)
+      toast.success(`Saved ${rows.length} opening balance${rows.length === 1 ? '' : 's'}`)
+      await loadOpenings()
+      loadAccounts()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setObSaving(false)
+    }
+  }
+
+  async function saveBooksFrom(v: string): Promise<void> {
+    try {
+      await window.api.journal.setBooksFrom(v || null, cid || undefined)
+      setObFrom(v)
+      toast.success(v ? `Books now begin on ${formatDate(v)}` : 'Books run from the beginning')
+      await loadOpenings()
+      loadAccounts()
+    } catch (e) {
+      toast.error(errText(e))
+    }
+  }
+
+  const openingsScreen = (
+    <div className="flex-1 p-3">
+      <div className={cn('rounded-md border shadow-lg', T.paperEdge, T.paper)}>
+        <div className={cn('flex flex-wrap items-center gap-3 rounded-t-md px-4 py-2', T.headBar)}>
+          <span className="text-[13px] font-bold uppercase tracking-widest">Opening Balances</span>
+          <div className="flex items-center gap-2 text-[11px]">
+            <span>Books beginning from</span>
+            <div className="w-40">
+              <DatePicker value={obFrom} onChange={(v) => void saveBooksFrom(v)} />
+            </div>
+          </div>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <Input
+              value={obQuery}
+              onChange={(e) => setObQuery(e.target.value)}
+              placeholder="Find a ledger…"
+              className="h-9 w-52 bg-white text-xs"
+            />
+            <label className="flex items-center gap-1.5 whitespace-nowrap text-[11px]">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5"
+                checked={obOnlySet}
+                onChange={(e) => setObOnlySet(e.target.checked)}
+              />
+              Only with a figure
+            </label>
+            {/* Tally calls this "Difference in opening balances". It stays on
+                screen until it is nil, because a difference is not an error to
+                tuck away — it is the part of the opening position not yet
+                accounted for. */}
+            <span
+              className={cn(
+                'rounded px-2 py-1 text-[11.5px] font-semibold tabular-nums',
+                Math.abs(obLive.difference) < 0.005
+                  ? 'bg-emerald-100 text-emerald-800'
+                  : 'bg-amber-200 text-amber-900'
+              )}
+              title={
+                Math.abs(obLive.difference) < 0.005
+                  ? 'Debits and credits agree'
+                  : 'Debits and credits do not agree — this is what is still unaccounted for'
+              }
+            >
+              {Math.abs(obLive.difference) < 0.005
+                ? 'Balanced'
+                : `Difference ${formatINR(Math.abs(obLive.difference))} ${obLive.difference > 0 ? 'Dr' : 'Cr'}`}
+            </span>
+            <Button
+              size="sm"
+              className="h-9 bg-[#1a2c56] text-xs font-semibold text-white hover:bg-[#24407e]"
+              disabled={obSaving || !Object.keys(obEdit).length}
+              onClick={() => void saveOpenings()}
+            >
+              {obSaving ? 'Saving…' : `Save${Object.keys(obEdit).length ? ` (${Object.keys(obEdit).length})` : ''}`}
+            </Button>
+          </div>
+        </div>
+
+        {!obFrom && (
+          <div className="border-b bg-amber-50 px-4 py-2 text-[11.5px] text-amber-900" style={{ borderColor: '#e5dfc8' }}>
+            No start date is set, so the ledgers show every entry ever made and these figures are ignored. Set{' '}
+            <b>Books beginning from</b> above to bring them into effect.
+          </div>
+        )}
+
+        <div className="max-h-[calc(100vh-225px)] overflow-auto">
+          <table className="w-full text-[13px]">
+            <thead className="sticky top-0 z-10 bg-[#f1ecd9]">
+              <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                <th className="px-4 py-1.5">Ledger</th>
+                <th className="px-2 py-1.5">Under</th>
+                <th className="border-l px-2 py-1.5 text-right" style={{ borderColor: '#e0d8bd' }}>
+                  Opening Dr
+                </th>
+                <th className="px-2 py-1.5 text-right">Opening Cr</th>
+                <th
+                  className="border-l px-2 py-1.5 text-right"
+                  style={{ borderColor: '#e0d8bd' }}
+                  title="What this ledger has recorded from the start date onward"
+                >
+                  Since start
+                </th>
+                <th
+                  className="px-3 py-1.5 text-right"
+                  title="What this ledger holds BEFORE the start date — excluded from the books, and what your opening figure stands in for"
+                >
+                  Before start
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {obVisible.map((r) => {
+                const id = n(r.id)
+                const e = obEdit[id]
+                const before = n(r.before_cutoff)
+                const moved = n(r.movement)
+                const drVal = e ? e.dr : n(r.dr) ? String(r.dr) : ''
+                const crVal = e ? e.cr : n(r.cr) ? String(r.cr) : ''
+                return (
+                  <tr key={id} className="border-b hover:bg-amber-50/60" style={{ borderColor: '#e5dfc8' }}>
+                    <td className="whitespace-nowrap px-4 py-1 font-medium">{String(r.name)}</td>
+                    <td className="whitespace-nowrap px-2 py-1 text-[11.5px] text-muted-foreground">
+                      {String(r.acc_group || '')}
+                    </td>
+                    <td className="border-l px-2 py-1 text-right" style={{ borderColor: '#e0d8bd' }}>
+                      <Input
+                        inputMode="decimal"
+                        className="ml-auto h-7 w-32 bg-white text-right text-[12px] tabular-nums"
+                        value={drVal}
+                        placeholder="—"
+                        onChange={(ev) => setObEdit((prev) => ({ ...prev, [id]: { dr: ev.target.value, cr: crVal } }))}
+                      />
+                    </td>
+                    <td className="px-2 py-1 text-right">
+                      <Input
+                        inputMode="decimal"
+                        className="ml-auto h-7 w-32 bg-white text-right text-[12px] tabular-nums"
+                        value={crVal}
+                        placeholder="—"
+                        onChange={(ev) => setObEdit((prev) => ({ ...prev, [id]: { dr: drVal, cr: ev.target.value } }))}
+                      />
+                    </td>
+                    <td
+                      className="whitespace-nowrap border-l px-2 py-1 text-right tabular-nums text-muted-foreground"
+                      style={{ borderColor: '#e0d8bd' }}
+                    >
+                      {Math.abs(moved) < 0.005 ? '—' : `${formatINR(Math.abs(moved))} ${moved > 0 ? 'Dr' : 'Cr'}`}
+                    </td>
+                    {/* The strongest hint the screen can give: what the
+                        pre-cutoff entries add up to, which is usually close to
+                        the opening figure that belongs beside it. */}
+                    <td
+                      className={cn(
+                        'whitespace-nowrap px-3 py-1 text-right tabular-nums',
+                        Math.abs(before) > 0.005 ? 'font-medium text-sky-700' : 'text-muted-foreground'
+                      )}
+                    >
+                      {Math.abs(before) < 0.005 ? '—' : `${formatINR(Math.abs(before))} ${before > 0 ? 'Dr' : 'Cr'}`}
+                    </td>
+                  </tr>
+                )
+              })}
+              {!obVisible.length && (
+                <tr>
+                  <td colSpan={6} className="px-4 py-10 text-center text-muted-foreground">
+                    No ledger matches.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+            <tfoot className="sticky bottom-0 bg-[#f1ecd9] font-semibold text-[#1a2c56]">
+              <tr className="border-t-2" style={{ borderColor: '#d9d2b8' }}>
+                <td className="px-4 py-1.5" colSpan={2}>
+                  Total
+                </td>
+                <td className="border-l px-2 py-1.5 text-right tabular-nums" style={{ borderColor: '#e0d8bd' }}>
+                  {formatINR(obLive.dr)}
+                </td>
+                <td className="px-2 py-1.5 text-right tabular-nums">{formatINR(obLive.cr)}</td>
+                <td className="border-l px-2 py-1.5" style={{ borderColor: '#e0d8bd' }} />
+                <td className="px-3 py-1.5" />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+
   // Trading Account report — per-oil-code purchase vs sale roll-up.
   const [tradingRows, setTradingRows] = useState<Row[]>([])
   const [tradingFrom, setTradingFrom] = useState('')
@@ -620,9 +873,20 @@ export function Accounts({
   }, [screen, loadRegisters])
   useLiveRefresh(refreshRegisters)
 
+  // The statement no longer carries anything dated before the books begin, so
+  // the entered opening has to come alongside it — otherwise the ledger would
+  // start from nil and understate the party by whatever was brought forward.
+  const [lgOpening, setLgOpening] = useState(0)
+  const [lgBooksFrom, setLgBooksFrom] = useState('')
   const loadLedger = useCallback(async () => {
     if (screen !== 'ledger' || !ledgerId || !cid) return
-    setLedgerLines(await window.api.journal.statement(ledgerId, cid))
+    const [lines, ob] = await Promise.all([
+      window.api.journal.statement(ledgerId, cid),
+      window.api.journal.opening(ledgerId, cid).catch(() => ({ opening: 0, books_from: '' }))
+    ])
+    setLedgerLines(lines)
+    setLgOpening(Number((ob as Row).opening) || 0)
+    setLgBooksFrom(String((ob as Row).books_from || ''))
   }, [screen, ledgerId, cid])
   useEffect(() => {
     loadLedger()
@@ -1282,7 +1546,8 @@ export function Accounts({
       { key: 'O', label: 'Fr. Outward Working', icon: Truck, go: () => setScreen('tfsal') },
       { key: 'L', label: 'Ledger Accounts', icon: Wallet, go: () => setScreen('ledger') },
       { key: 'T', label: 'Trial Balance', icon: Scale, go: () => setScreen('trial') },
-      { key: 'U', label: 'Trading Account', icon: ArrowLeftRight, go: () => setScreen('trading') }
+      { key: 'U', label: 'Trading Account', icon: ArrowLeftRight, go: () => setScreen('trading') },
+      { key: 'B', label: 'Opening Balances', icon: Landmark, go: () => setScreen('openings') }
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
@@ -1438,7 +1703,7 @@ export function Accounts({
   // The statement for the chosen period: opening = everything before `from`,
   // rows within [from, to] with a running balance seeded from the opening.
   const stmt = useMemo(() => {
-    let opening = 0
+    let opening = lgOpening
     const rows: Row[] = []
     for (const l of ledgerLines) {
       const d = String(l.entry_date)
@@ -1462,7 +1727,7 @@ export function Accounts({
       totDr: out.reduce((sum, l) => sum + (Number(l.dr) || 0), 0),
       totCr: out.reduce((sum, l) => sum + (Number(l.cr) || 0), 0)
     }
-  }, [ledgerLines, lgFrom, lgTo])
+  }, [ledgerLines, lgFrom, lgTo, lgOpening])
 
   // Tally's month-wise ledger summary: Dr/Cr per month and the cumulative
   // closing, drillable into that month's vouchers.
@@ -1613,6 +1878,7 @@ export function Accounts({
       <FKey k="L" label="Ledgers" active={screen === 'ledger'} onClick={() => setScreen('ledger')} />
       <FKey k="T" label="Trial Balance" active={screen === 'trial'} onClick={() => setScreen('trial')} />
       <FKey k="U" label="Trading Account" active={screen === 'trading'} onClick={() => setScreen('trading')} />
+      <FKey k="B" label="Opening Balances" active={screen === 'openings'} onClick={() => setScreen('openings')} />
       {screen === 'ledger' && (
         <>
           <div className="my-1 border-t border-white/20" />
@@ -4061,11 +4327,11 @@ export function Accounts({
                   <thead className="sticky top-0 z-20 bg-[#f1ecd9]">
                     <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
                       <th className={cn('px-3 py-1.5', lgDetailed && 'sticky left-0 z-30 w-[104px] min-w-[104px] bg-[#f1ecd9]')}>Date</th>
-                      <th className={cn('px-2 py-1.5', lgDetailed && 'sticky left-[104px] z-30 w-[190px] min-w-[190px] bg-[#f1ecd9] shadow-[4px_0_6px_-4px_rgba(26,44,86,0.35)]')}>Particulars</th>
-                      <th className="px-2 py-1.5">Vch</th>
-                      <th className="px-2 py-1.5">Bill ref</th>
+                      <th className={cn('border-l px-2 py-1.5', lgDetailed && 'sticky left-[104px] z-30 w-[190px] min-w-[190px] bg-[#f1ecd9] shadow-[4px_0_6px_-4px_rgba(26,44,86,0.35)]')} style={{ borderColor: '#e0d8bd' }}>Particulars</th>
+                      <th className="border-l px-2 py-1.5" style={{ borderColor: '#e0d8bd' }}>Vch</th>
+                      <th className="border-l px-2 py-1.5" style={{ borderColor: '#e0d8bd' }}>Bill ref</th>
                       <th className="border-l px-2 py-1.5 text-right" style={{ borderColor: '#e0d8bd' }}>Debit</th>
-                      <th className="px-2 py-1.5 text-right">Credit</th>
+                      <th className="border-l px-2 py-1.5 text-right" style={{ borderColor: '#e0d8bd' }}>Credit</th>
                       <th className="border-l px-3 py-1.5 text-right" style={{ borderColor: '#e0d8bd' }}>Balance</th>
                       {lgDetailed &&
                         legCols.map((c) => (
@@ -4076,12 +4342,12 @@ export function Accounts({
                     </tr>
                   </thead>
                   <tbody>
-                    {(lgFrom || Math.abs(stmt.opening) > 0.004) && (
+                    {(lgFrom || lgBooksFrom || Math.abs(stmt.opening) > 0.004) && (
                       <tr className="border-b bg-amber-50/60 font-medium" style={{ borderColor: '#e5dfc8' }}>
                         <td className={cn('whitespace-nowrap px-3 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground', lgDetailed && 'sticky left-0 z-10 bg-[#fbf3dc]')}>
                           {lgFrom ? formatDate(lgFrom) : ''}
                         </td>
-                        <td className={cn('px-2 py-1.5 italic', lgDetailed && 'sticky left-[104px] z-10 bg-[#fbf3dc]')} colSpan={lgDetailed ? 1 : 5}>Opening balance</td>
+                        <td className={cn('border-l px-2 py-1.5 italic', lgDetailed && 'sticky left-[104px] z-10 bg-[#fbf3dc]')} style={{ borderColor: '#f0ead2' }} colSpan={lgDetailed ? 1 : 5}>Opening balance</td>
                         {lgDetailed && <td colSpan={4} />}
                         <td className="whitespace-nowrap border-l px-3 py-1.5 text-right font-medium tabular-nums" style={{ borderColor: '#e0d8bd' }}>
                           {formatINR(Math.abs(stmt.opening))}{' '}
@@ -4121,15 +4387,19 @@ export function Accounts({
                         }}
                       >
                         <td className={cn('whitespace-nowrap px-3 py-1.5 tabular-nums', lgDetailed && 'sticky left-0 z-10 bg-[#fffdf4]')}>{formatDate(l.entry_date)}</td>
-                        <td className={cn('overflow-hidden px-2 py-1.5', lgDetailed && 'sticky left-[104px] z-10 max-w-[190px] bg-[#fffdf4] shadow-[4px_0_6px_-4px_rgba(26,44,86,0.25)]')}>
+                        <td className={cn('overflow-hidden border-l px-2 py-1.5', lgDetailed && 'sticky left-[104px] z-10 max-w-[190px] bg-[#fffdf4] shadow-[4px_0_6px_-4px_rgba(26,44,86,0.25)]')} style={{ borderColor: '#f0ead2' }}>
                           <div className="truncate font-medium" title={String(l.particulars || l.vch_type)}>{l.particulars || l.vch_type}</div>
                           {l.narration && <div className="truncate text-[11px] italic text-muted-foreground">{l.narration}</div>}
                         </td>
-                        <td className="whitespace-nowrap px-2 py-1.5 text-[11px] text-muted-foreground">
-                          <div>{l.voucher_code}</div>
-                          {lgDetailed && <div>{l.vch_type}{l.vch_no ? ` · ${l.vch_no}` : ''}</div>}
+                        <td className="whitespace-nowrap border-l px-2 py-1.5 text-[11px]" style={{ borderColor: '#f0ead2' }}>
+                          <div className="doc-ref font-medium text-slate-500">{l.voucher_code}</div>
+                          {lgDetailed && (
+                            <div className="doc-ref text-[10.5px] text-muted-foreground">
+                              {l.vch_type}{l.vch_no ? ` · ${l.vch_no}` : ''}
+                            </div>
+                          )}
                         </td>
-                        <td className="max-w-[150px] overflow-hidden px-2 py-1.5 text-[11px]">
+                        <td className="max-w-[150px] overflow-hidden border-l px-2 py-1.5 text-[11px]" style={{ borderColor: '#f0ead2' }}>
                           {(() => {
                             // The bill this line is against. A bill-wise
                             // allocation is the truest answer — it names the
@@ -4148,13 +4418,13 @@ export function Accounts({
                               const onAccount = ((l.allocs as Row[]) || []).some((a2) => String(a2.method) === 'on_account')
                               return <span className="text-muted-foreground">{onAccount ? 'On account' : '—'}</span>
                             }
-                            return <span className="block truncate" title={text}>{text}</span>
+                            return <span className="doc-ref block truncate font-medium text-slate-700" title={text}>{text}</span>
                           })()}
                         </td>
                         <td className="whitespace-nowrap border-l px-2 py-1.5 text-right tabular-nums" style={{ borderColor: '#f0ead2' }}>
                           {Number(l.dr) ? formatINR(l.dr) : ''}
                         </td>
-                        <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">{Number(l.cr) ? formatINR(l.cr) : ''}</td>
+                        <td className="whitespace-nowrap border-l px-2 py-1.5 text-right tabular-nums" style={{ borderColor: '#f0ead2' }}>{Number(l.cr) ? formatINR(l.cr) : ''}</td>
                         <td className="whitespace-nowrap border-l px-3 py-1.5 text-right font-medium tabular-nums" style={{ borderColor: '#f0ead2' }}>
                           {formatINR(Math.abs(l.running))}{' '}
                           <span className="text-[10px] text-muted-foreground">{l.running >= 0 ? 'Dr' : 'Cr'}</span>
@@ -4186,7 +4456,7 @@ export function Accounts({
                       <td className="whitespace-nowrap border-l px-2 py-2 text-right tabular-nums" style={{ borderColor: '#1a2c56' }}>
                         {formatINR(stmt.totDr)}
                       </td>
-                      <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatINR(stmt.totCr)}</td>
+                      <td className="whitespace-nowrap border-l px-2 py-2 text-right tabular-nums" style={{ borderColor: '#1a2c56' }}>{formatINR(stmt.totCr)}</td>
                       <td className="whitespace-nowrap border-l px-3 py-2 text-right tabular-nums" style={{ borderColor: '#1a2c56' }}>
                         {formatINR(Math.abs(stmt.closing))}{' '}
                         <span className="text-[10px] font-normal text-muted-foreground">{stmt.closing >= 0 ? 'Dr' : 'Cr'}</span>
@@ -4405,6 +4675,7 @@ export function Accounts({
             {screen === 'ledger' && ledgerScreen}
             {screen === 'trial' && trialScreen}
             {screen === 'trading' && tradingScreen}
+            {screen === 'openings' && openingsScreen}
           </div>
           {rightBar}
         </div>

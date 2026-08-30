@@ -96,6 +96,11 @@ export interface Api {
     ) => Promise<Row>
     pendingRefs: (account: string, companyId?: number, side?: 'customer' | 'supplier') => Promise<Row[]>
     tradingAccount: (from?: string, to?: string, companyId?: number) => Promise<Row[]>
+    booksFrom: (companyId?: number) => Promise<string | null>
+    setBooksFrom: (date: string | null, companyId?: number) => Promise<{ ok: true }>
+    openings: (companyId?: number) => Promise<Row>
+    saveOpenings: (rows: Row[], companyId?: number) => Promise<{ saved: number }>
+    opening: (accountId: number, companyId?: number) => Promise<Row>
     accounts: (companyId?: number) => Promise<Row[]>
     createAccount: (name: string, group?: string) => Promise<{ id: number }>
     statement: (accountId: number, companyId?: number) => Promise<Row[]>

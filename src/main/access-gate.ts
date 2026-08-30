@@ -6,6 +6,7 @@
 // the map one entity at a time instead of gating everything at once and
 // discovering a legitimate edit is now impossible.
 import { getClient, todayISO } from './db'
+import { getBooksFrom } from './openings'
 import { getCurrentUser } from './currentUser'
 import {
   can,
@@ -184,6 +185,24 @@ export async function currentScope(moduleKey: string): Promise<string | null> {
   return moduleScope(user, moduleKey)
 }
 
+// An entry dated before the books begin would land nowhere at all — the ledger
+// starts after it, and the opening balance that covers that period was entered
+// by hand. So it is refused for EVERYONE, admin included: this is not a
+// permission, it is a statement about which period these books cover.
+async function assertOnOrAfterBooksStart(rule: Rule, op: string, args: unknown): Promise<void> {
+  if (!rule.dateCol) return
+  if (actionFor(op) !== 'create') return
+  const a = args as Row
+  const raw = a?.values?.[rule.dateCol] ?? a?.[rule.dateCol]
+  const d = String(raw ?? '').slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return
+  const from = await getBooksFrom()
+  if (!from || d >= from) return
+  throw new Error(
+    `These books begin on ${from}. An entry dated ${d} falls before that, where the opening balances already account for it — it would be counted twice.`
+  )
+}
+
 // The unload desk may record exactly one thing: that a delivery arrived, and
 // what was weighed in. Everything else on the sales channel is refused here, so
 // the restriction is a control and not a hidden button.
@@ -204,6 +223,7 @@ export async function assertAllowed(channel: string, args: unknown): Promise<voi
   const rule = CHANNEL_RULES[ns]
   if (!rule || !op) return
   if (READ_OPS.has(op)) return
+  await assertOnOrAfterBooksStart(rule, op, args)
   const user = await currentAccessUser()
   if (!user) return
   if (user.role === 'admin') return

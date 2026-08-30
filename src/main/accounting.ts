@@ -1,6 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
+import { getBooksFrom, openingMap } from './openings'
 import { getOrCreateAccount, postJournal, type JournalLine } from './journal'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -410,9 +411,19 @@ export async function listVouchers(
 export async function trialBalance(from?: string, to?: string, companyId?: number): Promise<Row> {
   const c = getClient()
   const cid = companyId || getActiveCompanyId()
+  // The books' own start, and the opening each ledger was given as at that
+  // date. Everything before the cutoff is excluded and the entered figure
+  // stands in its place — otherwise the pre-book entries would be counted
+  // twice, once as themselves and once inside the opening.
+  const booksFrom = await getBooksFrom(cid)
+  const entered = await openingMap(cid)
   const period = async (lo?: string, hi?: string): Promise<Map<number, { dr: number; cr: number }>> => {
     const conds = ['je.company_id = ?']
     const args: (string | number)[] = [cid]
+    if (booksFrom) {
+      conds.push('je.entry_date >= ?')
+      args.push(booksFrom)
+    }
     if (lo) {
       conds.push('je.entry_date >= ?')
       args.push(lo)
@@ -442,7 +453,9 @@ export async function trialBalance(from?: string, to?: string, companyId?: numbe
   for (const a of accounts) {
     const p = inPeriod.get(Number(a.id)) || { dr: 0, cr: 0 }
     const o = before.get(Number(a.id)) || { dr: 0, cr: 0 }
-    const opening = o.dr - o.cr
+    // The entered opening seeds the account; the movement between the cutoff
+    // and the period start is added on top of it.
+    const opening = (entered.get(Number(a.id)) || 0) + o.dr - o.cr
     const closing = opening + p.dr - p.cr
     if (Math.abs(opening) < 0.005 && Math.abs(p.dr) < 0.005 && Math.abs(p.cr) < 0.005) continue
     rows.push({

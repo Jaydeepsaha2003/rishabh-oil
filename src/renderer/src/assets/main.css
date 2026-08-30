@@ -72,6 +72,23 @@
   }
 }
 
+/* A voucher code or a bill number is an IDENTIFIER, not prose. It is scanned
+   down a column and compared against its neighbours, never read as a sentence,
+   so it wants the treatment a reference gets rather than the one body text
+   gets:
+
+   - tabular figures, so every digit sits on the same pitch and
+     "TI/DL1/26/406" lines up character-for-character under "TI/DL1/26/464";
+   - a slashed zero, so a 0 in a bank reference cannot be misread as an O;
+   - a little tracking, because slashes and digits crowd each other at 11px.
+
+   Inter carries all three, so this needs no second font. */
+.doc-ref {
+  font-variant-numeric: tabular-nums slashed-zero;
+  font-feature-settings: 'tnum' 1, 'zero' 1, 'calt' 0;
+  letter-spacing: 0.02em;
+}
+
 /* Scrollable area without a visible scrollbar (wheel/touch still works). */
 .no-scrollbar {
   -ms-overflow-style: none;
