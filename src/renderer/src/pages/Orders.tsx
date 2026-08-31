@@ -217,6 +217,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const [mapping, setMapping] = useState(false)
 
   const [rows, setRows] = useState<Row[]>([])
+  // The purchase already booked under this invoice number, if any. Trimmed and
+  // case-insensitive, scoped to the loaded register (already this company), so
+  // the warning and the refusal on save agree on what a duplicate is.
+  function invoiceClash(no: unknown, selfId: unknown): Row | null {
+    const want = String(no || '').trim().toUpperCase()
+    if (!want) return null
+    return (
+      rows.find(
+        (r) => String(r.invoice_no || '').trim().toUpperCase() === want && Number(r.id) !== Number(selfId || 0)
+      ) || null
+    )
+  }
   const [tankers, setTankers] = useState<Row[]>([])
   const [bargains, setBargains] = useState<Row[]>([])
   const [suppliers, setSuppliers] = useState<Row[]>([])
@@ -2025,7 +2037,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       if (!selected.length) return setError('Select at least one loaded tanker')
       if (!form.bargain_id) return setError('Select at least one loaded tanker')
     }
-    if (!form.invoice_no) return setError('Invoice number is required')
+    if (!String(form.invoice_no || '').trim()) return setError('Invoice number is required')
+    {
+      const hit = invoiceClash(form.invoice_no, editing?.id)
+      if (hit) {
+        return setError(
+          `Purchase invoice ${String(form.invoice_no).trim()} is already booked — ` +
+            `${String(hit.supplier_name || hit.supplier || 'another supplier')}` +
+            `${hit.order_date ? `, ${formatDate(hit.order_date)}` : ''}.`
+        )
+      }
+    }
     if (Number(form.invoice_rate) <= 0) return setError('Invoice rate must be greater than zero')
     setSaving(true)
     setError(null)
@@ -2270,7 +2292,25 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Invoice number *</Label>
-                    <Input value={form.invoice_no || ''} onChange={(e) => setForm((p) => ({ ...p, invoice_no: e.target.value }))} />
+                    {(() => {
+                      const hit = invoiceClash(form.invoice_no, editing?.id)
+                      return (
+                        <>
+                          <Input
+                            className={cn('doc-ref', hit && 'border-rose-400 focus-visible:ring-rose-300')}
+                            value={form.invoice_no || ''}
+                            onChange={(e) => setForm((p) => ({ ...p, invoice_no: e.target.value }))}
+                          />
+                          {hit && (
+                            <span className="text-[11px] font-medium leading-snug text-rose-600">
+                              Already booked — {String(hit.supplier_name || hit.supplier || 'another supplier')}
+                              {hit.order_date ? `, ${formatDate(hit.order_date)}` : ''}. Two purchases cannot share one
+                              invoice number.
+                            </span>
+                          )}
+                        </>
+                      )
+                    })()}
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Purchase date *</Label>

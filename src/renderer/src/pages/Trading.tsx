@@ -96,11 +96,24 @@ function InvoiceLines({
       {rows.map((l, i) => (
         <div key={i} className="grid grid-cols-[2rem_1fr_7rem_8rem_2rem] items-center gap-2 border-b border-dotted border-[#e5dfc8] px-2.5 py-1.5 last:border-0">
           <span className="text-[11px] tabular-nums text-muted-foreground">{i + 1}</span>
-          <Input
-            className="h-8"
-            value={String(l.invoice_no ?? '')}
-            onChange={(e) => onChange(i, 'invoice_no', e.target.value)}
-          />
+          {(() => {
+            // Each line of a deal becomes an invoice of its own, so a number
+            // used twice down this grid is two documents with one name. Marked
+            // on the later line, the one that would have to change.
+            const k = String(l.invoice_no ?? '').trim().toUpperCase()
+            const dupOf = k
+              ? rows.findIndex((o) => String(o.invoice_no ?? '').trim().toUpperCase() === k)
+              : -1
+            const repeated = dupOf >= 0 && dupOf < i
+            return (
+              <Input
+                className={cn('doc-ref h-8', repeated && 'border-rose-400 focus-visible:ring-rose-300')}
+                title={repeated ? `Same number as line ${dupOf + 1} — each line needs its own` : undefined}
+                value={String(l.invoice_no ?? '')}
+                onChange={(e) => onChange(i, 'invoice_no', e.target.value)}
+              />
+            )
+          })()}
           <Input
             className="h-8 text-right"
             type="number"

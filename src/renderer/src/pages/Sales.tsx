@@ -1094,6 +1094,23 @@ function SalesTab({
   async function save(overrideItems?: Row[], excessResolved = false): Promise<void> {
     const lines = overrideItems ?? items
     if (!String(header.invoice_no || '').trim()) return void toast.error('Invoice number is required')
+    {
+      // The main process refuses this too, and has to — it is the only side a
+      // script or a second window cannot go around. Said here so the message
+      // names the invoice instead of arriving as a thrown error.
+      const want = String(header.invoice_no).trim().toUpperCase()
+      const hit = rows.find(
+        (r) =>
+          String(r.invoice_no || '').trim().toUpperCase() === want &&
+          String(r.invoice_group || `row:${r.id}`) !== String(editingGroup || '')
+      )
+      if (hit) {
+        return void toast.error(
+          `Invoice ${String(header.invoice_no).trim()} is already used — ${String(hit.customer || 'another customer')}` +
+            `${hit.sale_date ? `, ${formatDate(hit.sale_date)}` : ''}. Give this one a number of its own.`
+        )
+      }
+    }
     if (!lines.length) return void toast.error('Add at least one item')
     for (const [i, it] of lines.entries()) {
       if (!it.product_id) return void toast.error(`Item ${i + 1}: select a product`)
@@ -1828,12 +1845,16 @@ function SalesTab({
                 // the number, so the prefix is a fact of the form rather than
                 // something to be retyped correctly each time.
                 const bare = current.replace(new RegExp(`^${prefix}[/\\-]?`, 'i'), '')
+                // An invoice is identified by its GROUP, which is what editingGroup
+                // holds. The old test compared header.id — a field the header never
+                // carries — so it was NaN against every row and editing any invoice
+                // warned that its own number was taken.
                 const clash =
                   bare.trim() !== '' &&
                   rows.some(
                     (r) =>
                       String(r.invoice_no || '').trim().toUpperCase() === `${prefix}/${bare}`.toUpperCase() &&
-                      Number(r.id) !== Number(header.id)
+                      String(r.invoice_group || `row:${r.id}`) !== String(editingGroup || '')
                   )
                 return (
                   <>

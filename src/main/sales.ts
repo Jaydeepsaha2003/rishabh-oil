@@ -11,6 +11,7 @@ import {
   deleteSaleProductions
 } from './production'
 import { visibleFromFor } from './access-gate'
+import { assertSalesInvoiceNoFree } from './invoiceno'
 
 // Guard: a dispatched (done) sale physically draws finished-goods stock, so the
 // available stock (excluding this sale's own effect) must cover the quantity.
@@ -1203,6 +1204,12 @@ async function postSaleFreight(saleId: number, v: Row, qty: number): Promise<num
 export async function createSale(v: Row): Promise<{ id: number }> {
   const productId = n(v.product_id)
   if (!productId) throw new Error('Select a product')
+  // One invoice number, one invoice — though an invoice may of course run to
+  // several products, and each of those is a row of its own sharing this
+  // group, so lines of the same invoice are not rivals. Trading sales come
+  // through here as well, line by line and with no group, each counting as an
+  // invoice in its own right.
+  await assertSalesInvoiceNoFree(v, getActiveCompanyId(), undefined, !!v.invoice_no_grandfathered)
   const { qty, uom } = await resolveSaleQty(v)
   if (qty <= 0) throw new Error('Quantity must be greater than zero')
   const rate = n(v.rate)
@@ -1324,6 +1331,17 @@ export async function createSale(v: Row): Promise<{ id: number }> {
 export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   const productId = n(v.product_id)
   if (!productId) throw new Error('Select a product')
+  {
+    // Against the company and the invoice this row is actually filed under —
+    // updateSale is handed the header's fields, which do not carry either.
+    const own = await getClient().execute({
+      sql: 'SELECT company_id, invoice_group FROM sales WHERE id = ? LIMIT 1',
+      args: [id]
+    })
+    const cid = n(own.rows[0]?.company_id) || getActiveCompanyId()
+    const grp = v.invoice_group || own.rows[0]?.invoice_group || null
+    await assertSalesInvoiceNoFree({ ...v, invoice_group: grp }, cid, id, !!v.invoice_no_grandfathered)
+  }
   const { qty, uom } = await resolveSaleQty(v)
   if (qty <= 0) throw new Error('Quantity must be greater than zero')
   const rate = n(v.rate)
@@ -1602,9 +1620,16 @@ export async function updateSaleInvoice(group: string, v: Row): Promise<{ group:
   const items: Row[] = Array.isArray(v.items) ? v.items : []
   if (!items.length) throw new Error('Add at least one item to the invoice')
   const existing = await getClient().execute({
-    sql: 'SELECT id, product_id, packaging_id, received_qty FROM sales WHERE invoice_group = ? ORDER BY id',
+    sql: 'SELECT id, product_id, packaging_id, received_qty, invoice_no FROM sales WHERE invoice_group = ? ORDER BY id',
     args: [group]
   })
+  // This edit works by deleting every line and building them again, so by the
+  // time they are re-created the originals are gone. A number the invoice has
+  // held all along would then read as a stranger's — unless we look first and
+  // say so. Only an UNCHANGED number is waved through; changing it to one
+  // another invoice holds is still refused.
+  const heldBefore = String(existing.rows[0]?.invoice_no || '').trim().toUpperCase()
+  const keepsItsNumber = !!heldBefore && heldBefore === String(v.invoice_no || '').trim().toUpperCase()
   // What the customer's weighbridge said is a MEASUREMENT, not something the
   // invoice form holds — and this function works by deleting every line and
   // building it again, so without carrying it across, editing a delivered
@@ -1621,7 +1646,12 @@ export async function updateSaleInvoice(group: string, v: Row): Promise<{ group:
   for (const r of existing.rows) await deleteSale(Number(r.id))
   const ids: number[] = []
   for (let i = 0; i < items.length; i++) {
-    const res = await createSale({ ...mergeInvoiceItem(v, items[i], group), round_off: i === 0 ? v.round_off : 0, round_off_manual: i === 0 ? v.round_off_manual : 0 })
+    const res = await createSale({
+      ...mergeInvoiceItem(v, items[i], group),
+      round_off: i === 0 ? v.round_off : 0,
+      round_off_manual: i === 0 ? v.round_off_manual : 0,
+      invoice_no_grandfathered: keepsItsNumber
+    })
     ids.push(res.id)
     const match = weighed.find(
       (w) => !w.used && w.product_id === n(items[i].product_id) && w.packaging_id === n(items[i].packaging_id)

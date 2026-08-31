@@ -1,5 +1,6 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
+import { assertNoRepeatsWithin, assertPurchaseInvoiceNoFree, assertSalesInvoiceNoFree } from './invoiceno'
 import { getActiveCompanyId } from './company'
 import { createOrder, updateOrder, deleteOrder } from './orders'
 import { createSale, updateSale, deleteSale } from './sales'
@@ -267,6 +268,14 @@ function toLines(raw: unknown, side: 'purchase' | 'sale'): { invoiceNo: string; 
     if (l.qty <= 0) throw new Error(`${at}: enter the quantity`)
     if (l.rate <= 0) throw new Error(`${at}: enter the rate`)
   })
+  // Each line of a deal becomes an invoice of its own, so two lines cannot
+  // share a number. Caught here because the per-row guards deliberately
+  // overlook the deal's own rows — see invoice_dup_exclude_ids below — which
+  // leaves this the one repeat they cannot see.
+  assertNoRepeatsWithin(
+    lines.map((l) => l.invoiceNo),
+    side === 'purchase' ? 'Purchase invoice' : 'Invoice'
+  )
   return lines
 }
 
@@ -335,8 +344,30 @@ function dealFields(v: Row): {
   return { productId, uom, dealDate, orderPayloads, salePayloads }
 }
 
+// Every invoice number on the deal, checked BEFORE a single row is written.
+//
+// The per-row guards inside createOrder/createSale are the authority, but they
+// fire mid-flight: by the time the third line is refused the first two are
+// already posted, and unwinding them is a rollback that has to be perfect. It
+// is cheaper and steadier to refuse the deal before it starts.
+async function assertDealNumbersFree(
+  orderPayloads: Row[],
+  salePayloads: Row[],
+  ownOrders: number[] = [],
+  ownSales: number[] = []
+): Promise<void> {
+  const cid = getActiveCompanyId()
+  for (const p of orderPayloads) {
+    await assertPurchaseInvoiceNoFree({ ...p, invoice_dup_exclude_ids: ownOrders }, cid)
+  }
+  for (const p of salePayloads) {
+    await assertSalesInvoiceNoFree({ ...p, invoice_dup_exclude_ids: ownSales }, cid)
+  }
+}
+
 export async function createTradingDeal(v: Row): Promise<{ id: number }> {
   const { productId, dealDate, orderPayloads, salePayloads } = dealFields(v)
+  await assertDealNumbersFree(orderPayloads, salePayloads)
 
   // Every invoice on both sides is posted before the deal row exists, so a
   // failure anywhere rolls the whole lot back rather than leaving half a deal
@@ -352,7 +383,15 @@ export async function createTradingDeal(v: Row): Promise<{ id: number }> {
     // party's year-to-date total, which decides where the next sits on the TDS
     // slab. The two sides are independent of each other though, so they run
     // side by side and the wall-clock is the longer chain, not the sum.
-    await Promise.all([
+    // allSettled, not all. Promise.all rejects the INSTANT one side throws,
+    // while the other side is still posting — so the rollback ran against a
+    // half-filled id list and the invoices created after it survived. A
+    // refused deal left real orders and sales in the books, which is how
+    // ZZTEST-T-1 came to exist twice.
+    //
+    // Both sides are allowed to finish; then, if either failed, everything
+    // both of them made is unwound.
+    const settled = await Promise.allSettled([
       (async () => {
         for (const p of orderPayloads) orderIds.push((await createOrder(p)).id)
       })(),
@@ -360,6 +399,8 @@ export async function createTradingDeal(v: Row): Promise<{ id: number }> {
         for (const p of salePayloads) saleIds.push((await createSale(p)).id)
       })()
     ])
+    const failed = settled.find((r) => r.status === 'rejected')
+    if (failed) throw (failed as PromiseRejectedResult).reason
   } catch (e) {
     await rollback()
     throw e
@@ -425,22 +466,33 @@ export async function updateTradingDeal(id: number, v: Row): Promise<{ id: numbe
   // Existing invoices are reused position by position, so editing a rate or a
   // number keeps the same underlying order/sale (and everything already
   // pointing at it). Only the surplus is created or removed.
+  // The deal's own rows are left out of the duplicate search, because these
+  // updates run one line at a time: swapping two lines' invoice numbers would
+  // otherwise have the first update collide with the second row's number as it
+  // stood a moment earlier — a refusal for a rearrangement that ends up
+  // perfectly valid. The lines are checked against each other in toLines
+  // instead, so a genuine repeat inside the deal is still refused.
+  const ownOrders = [...existingOrders]
+  const ownSales = [...existingSales]
+  await assertDealNumbersFree(orderPayloads, salePayloads, ownOrders, ownSales)
   const orderIds: number[] = []
   for (let i = 0; i < orderPayloads.length; i++) {
+    const p = { ...orderPayloads[i], invoice_dup_exclude_ids: ownOrders }
     if (i < existingOrders.length) {
-      await updateOrder(existingOrders[i], orderPayloads[i])
+      await updateOrder(existingOrders[i], p)
       orderIds.push(existingOrders[i])
     } else {
-      orderIds.push((await createOrder(orderPayloads[i])).id)
+      orderIds.push((await createOrder(p)).id)
     }
   }
   const saleIds: number[] = []
   for (let i = 0; i < salePayloads.length; i++) {
+    const p = { ...salePayloads[i], invoice_dup_exclude_ids: ownSales }
     if (i < existingSales.length) {
-      await updateSale(existingSales[i], salePayloads[i])
+      await updateSale(existingSales[i], p)
       saleIds.push(existingSales[i])
     } else {
-      saleIds.push((await createSale(salePayloads[i])).id)
+      saleIds.push((await createSale(p)).id)
     }
   }
 

@@ -16,6 +16,7 @@ import {
 import { deleteJournalByRef, postPurchaseJournal } from './journal'
 import { getActiveCompanyId } from './company'
 import { visibleFromFor } from './access-gate'
+import { assertPurchaseInvoiceNoFree } from './invoiceno'
 
 const STAGES = [
   'ordered',
@@ -645,6 +646,11 @@ export async function createOrder(v: Row): Promise<{ id: number }> {
   // below must resolve against this SAME company, since a deposit and the
   // purchase drawing on it always belong to one company together.
   const bookInCompany = v.company_id ? n(v.company_id) : getActiveCompanyId()
+  // One invoice number, one purchase. Checked before anything is written so a
+  // refused booking leaves nothing half-made behind. Trading purchases come
+  // through here too, which is why the rule lives at this level rather than in
+  // the purchase form.
+  await assertPurchaseInvoiceNoFree(v, bookInCompany)
   // Tankers picked from Log Consignment Stock, each with the bargain(s) it draws
   // against. The invoiced quantity is their sum, exactly as a tanker-based
   // invoice adds up its loaded qty. Validated up front so a bad pick never
@@ -857,10 +863,14 @@ export async function updateOrder(id: number, v: Row): Promise<{ id: number }> {
   await ensureOilType(n(v.oil_type_id))
   const supplier = await getSupplier(n(v.supplier_id))
   const cur = await getClient().execute({
-    sql: 'SELECT is_consignment FROM orders WHERE id = ? LIMIT 1',
+    sql: 'SELECT is_consignment, company_id FROM orders WHERE id = ? LIMIT 1',
     args: [id]
   })
   const wasConsignment = !!cur.rows[0]?.is_consignment
+  // Against the company the purchase is actually booked in, not the one on
+  // screen — a register can be open in one book while the invoice lives in the
+  // other, and the number must be unique where it is filed.
+  await assertPurchaseInvoiceNoFree(v, n(cur.rows[0]?.company_id) || getActiveCompanyId(), id)
   const picks = toLotPicks(v.consignment_lot_ids)
   // Re-picked tankers redefine the invoiced quantity — checked before any write.
   let lotAlloc: LotAllocation = { total: 0, lines: [], primaryBargainId: 0 }
