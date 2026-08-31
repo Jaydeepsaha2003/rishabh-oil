@@ -233,6 +233,10 @@ export async function postLcUpfrontInterest(lcId: number, dateIn?: string): Prom
     ]
   })
   await c.execute({ sql: 'UPDATE letters_of_credit SET interest_journal_entry_id = ? WHERE id = ?', args: [je.id, lcId] })
+  // The fees now sit here, so the settlement voucher must let go of them.
+  // Without this they would be charged twice: once on this voucher and once on
+  // the settlement journal that was written before the bank line was matched.
+  await resyncLcSettlement(lcId)
   return { id: je.id }
 }
 
@@ -354,6 +358,9 @@ export async function dropLcUpfrontInterest(lcId: number): Promise<void> {
   if (res.rows.length && res.rows[0].interest_journal_entry_id) {
     await dropEntry(n(res.rows[0].interest_journal_entry_id))
     await c.execute({ sql: 'UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?', args: [lcId] })
+    // Nothing carries the fees now, so the settlement voucher takes them back.
+    // Un-matching a bank line should move an expense, never delete it.
+    await resyncLcSettlement(lcId)
   }
 }
 
@@ -868,7 +875,7 @@ export async function settleLcBillsCombined(issuanceIds: number[], dateIn?: stri
   const res = await c.execute({
     sql: `SELECT i.*, l.lc_no, l.bank, l.our_bank_id, l.party_type, l.party_id, l.company_id,
                  l.amount AS lc_amount, l.charges AS lc_charges, l.interest_pct, l.usance_days,
-                 l.interest_upfront, s.name AS supplier_name, o.invoice_no
+                 l.interest_upfront, l.interest_journal_entry_id, s.name AS supplier_name, o.invoice_no
           FROM lc_issuances i
           JOIN letters_of_credit l ON l.id = i.lc_id
           LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
@@ -901,7 +908,21 @@ export async function settleLcBillsCombined(issuanceIds: number[], dateIn?: stri
     const lcId = n(b.lc_id)
     if (seen.has(lcId)) continue
     seen.add(lcId)
-    if (b.interest_upfront) continue // settled straight from the account instead
+    // The fees belong on this voucher unless they are ALREADY on one of their
+    // own. The test is whether that voucher exists, not whether the LC is
+    // FLAGGED as paid upfront — those are different things, and reading the flag
+    // instead of the fact lost the fees altogether.
+    //
+    // The upfront voucher is raised only when the bank line is reconciled
+    // (bankRecon), so an LC ticked "interest paid upfront" whose statement line
+    // was never matched had its interest and commission on no voucher at all:
+    // this loop skipped them on the flag, and nothing else ever posted them.
+    // Three live LCs were carrying ₹5,34,176 of unposted bank expense that way.
+    //
+    // Keying off the voucher makes the expense appear exactly once in either
+    // state, and postLcUpfrontInterest/dropLcUpfrontInterest re-post this
+    // voucher so the two stay in step when a line is matched or un-matched.
+    if (n(b.interest_journal_entry_id)) continue
     const interest = round2((n(b.lc_amount) * n(b.interest_pct) * n(b.usance_days)) / (100 * 365))
     const charges = round2(n(b.lc_charges))
     if (interest > 0.005) feeLines.push({ account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest })

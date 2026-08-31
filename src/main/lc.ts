@@ -493,6 +493,55 @@ function assertLcNoIfPastApplication(v: Row): void {
   }
 }
 
+// An LC number identifies one credit with one bank, so two of them in the same
+// company is not a variation on a theme — it is two different liabilities
+// wearing the same name. Both settlement journals then carry the same vch_no,
+// the register shows two rows you cannot tell apart, and a ledger reference to
+// "LC-1" no longer points at anything in particular.
+//
+// Scoped to the company, because the two books number their credits
+// independently — KR FOODS LC-1 and KR FINMARK LC-1 are unrelated documents and
+// always were. Compared trimmed and case-insensitively, since "lc-1 " and
+// "LC-1" are the same number typed twice, and a collision that slips through on
+// whitespace is worse than none at all.
+//
+// Blank passes: an LC still at Application has no number yet, and
+// assertLcNoIfPastApplication is what requires one later.
+//
+// A NUMBER ALREADY IN THE BOOKS IS LEFT ALONE. KR FINMARK has eight numbers on
+// two LCs each — a genuine restart of the series in July, not duplicate data —
+// and refusing those saves would lock sixteen live LCs out of every edit,
+// including the corrections needed to sort them out. So an existing LC keeping
+// the number it already has is allowed through; what is refused is CREATING a
+// collision, or CHANGING a number into one.
+async function assertLcNoNotTaken(v: Row, id?: number): Promise<void> {
+  const lcNo = String(v.lc_no || '').trim()
+  if (!lcNo) return
+  const c = getClient()
+  const cid = n(v.company_id) || getActiveCompanyId()
+
+  if (id) {
+    const own = await c.execute({ sql: 'SELECT lc_no FROM letters_of_credit WHERE id = ?', args: [id] })
+    const was = String(own.rows[0]?.lc_no || '').trim()
+    // Unchanged — grandfathered, per the note above.
+    if (was.toUpperCase() === lcNo.toUpperCase()) return
+  }
+
+  const res = await c.execute({
+    sql: `SELECT id, lc_no, bank, amount, open_date FROM letters_of_credit
+           WHERE company_id = ? AND UPPER(TRIM(COALESCE(lc_no,''))) = ? AND id <> ?
+           ORDER BY id LIMIT 1`,
+    args: [cid, lcNo.toUpperCase(), n(id)]
+  })
+  if (!res.rows.length) return
+  const clash = toPlain(res)[0]
+  const when = String(clash.open_date || '').slice(0, 10)
+  throw new Error(
+    `LC ${lcNo} already exists in this company — ${clash.bank || 'unknown bank'}` +
+      `${when ? `, opened ${when}` : ''}. Give this one a number of its own.`
+  )
+}
+
 // An LC past Application is financing actual goods, so it has to name the
 // purchase invoice(s) it covers — without one the LC has nothing to draw
 // against, and the bill it auto-issues on Payment received ends up named
@@ -566,6 +615,14 @@ async function syncLcVouchers(id: number): Promise<string | undefined> {
     problems.push(`the stray fee voucher (${(e as Error).message})`)
   }
   try {
+    // Before the settlement, because the settlement's fee lines depend on
+    // whether an upfront voucher is carrying them. Re-posting it first would
+    // only be undone a moment later.
+    await refreshLcUpfrontInterest(id)
+  } catch (e) {
+    problems.push(`the upfront interest voucher (${(e as Error).message})`)
+  }
+  try {
     // The settlement journal carries the supplier's discharge AND the bank's
     // interest and commission, so a change to the rate, the days or the
     // commission has to re-derive it. Without this the ledger would keep
@@ -573,11 +630,6 @@ async function syncLcVouchers(id: number): Promise<string | undefined> {
     await resyncLcSettlement(id)
   } catch (e) {
     problems.push(`the settlement journal (${(e as Error).message})`)
-  }
-  try {
-    await refreshLcUpfrontInterest(id)
-  } catch (e) {
-    problems.push(`the upfront interest voucher (${(e as Error).message})`)
   }
   try {
     await syncLcFeeAdjustment(id)
@@ -606,6 +658,7 @@ export async function createLC(v: Row): Promise<{ id: number; warning?: string }
   if (!v.bank) throw new Error('Bank is required')
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
+  await assertLcNoNotTaken(v)
   await assertHasLinkedInvoice(v)
   await assertOwnBankBelongsToCompany(v)
   assertPaymentReceivedNotBeforeOpen(v)
@@ -630,6 +683,7 @@ export async function updateLC(id: number, v: Row): Promise<{ id: number; warnin
   if (!v.bank) throw new Error('Bank is required')
   if (!String(v.open_date || '').trim()) throw new Error('Application date is required')
   assertLcNoIfPastApplication(v)
+  await assertLcNoNotTaken(v, id)
   await assertHasLinkedInvoice(v)
   await assertOwnBankBelongsToCompany(v)
   assertPaymentReceivedNotBeforeOpen(v)

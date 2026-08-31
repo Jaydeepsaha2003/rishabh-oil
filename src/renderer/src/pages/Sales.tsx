@@ -2561,17 +2561,37 @@ function SalesTab({
       {/* Reject — the customer refused the consignment before it was fully delivered */}
       {/* Marking Unloaded: capture what the transporter actually delivered. */}
       <Dialog open={gapsOpen} onOpenChange={setGapsOpen}>
-        <DialogContent className="sm:max-w-2xl">
-          <DialogHeader>
+        <DialogContent
+          // Capped to the window and scrolled INSIDE, because this list is as
+          // long as the books are wrong — 38 numbers across two series here.
+          // Uncapped, the panel grew taller than the screen; being centred, it
+          // overflowed equally off the top and the bottom, which carried the
+          // ✕ (pinned to the panel's own top corner) clean off the display.
+          // There was nothing to scroll either: the panel WAS the overflow.
+          //
+          // dvh, not vh, so a phone's address bar shrinking the viewport
+          // doesn't leave the last row under it.
+          className="flex max-h-[88dvh] w-[min(96vw,46rem)] max-w-none flex-col gap-0 p-0"
+          // Escape and click-outside close this one. The shared dialog refuses
+          // both to stop a half-filled form being thrown away by accident —
+          // sound for a form, wrong for a report, where there is nothing to
+          // lose and every instinct for getting out of a window is disabled.
+          onEscapeKeyDown={() => {}}
+          onInteractOutside={() => {}}
+        >
+          {/* Fixed head. pr-14 keeps the title clear of the ✕ sitting in the
+              corner, which the old padding had it running under. */}
+          <DialogHeader className="shrink-0 border-b px-5 py-4 pr-14">
             <DialogTitle>Missing invoice numbers</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
             <p className="text-[11.5px] leading-snug text-muted-foreground">
-              Counted between the <b>lowest and highest number actually used</b>, not from 1 — a book that starts at 367
-              has not skipped 366 invoices, and saying so would bury the ones that matter.
+              Numbers with no invoice against them, counted from the lowest to the highest you have actually used.
               {(dateFrom || dateTo) && ' Limited to the dates set on the register.'}
             </p>
+          </DialogHeader>
 
+          {/* min-h-0 is what makes the scroll work: without it a flex child
+              refuses to shrink below its content and the cap does nothing. */}
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
             {gapsBusy && <div className="py-8 text-center text-muted-foreground">Checking…</div>}
 
             {!gapsBusy &&
@@ -2594,62 +2614,63 @@ function SalesTab({
 
                   {Number(sr.missing_count) > 0 && (
                     <>
-                      {/* Numbered, because this is a list somebody reads out or
-                          copies into a note to the auditor — "the fourth one"
-                          has to mean something. Flowing chips gave no way to
-                          say where you were in it. */}
+                      {/* One row per GAP, not per number.
+                          
+                          Listing all thirteen and captioning each "part of the
+                          6 above" said the same thing six times over and made
+                          thirteen rows out of five events. Consecutive numbers
+                          are one event anyway — a spoiled book, a cancelled
+                          batch — so a run is shown once, as a range.
+                          
+                          With the range on the row there is nothing left to
+                          explain, and the column that was explaining it is now
+                          just the count. */}
                       <table className="ruled-cols w-full text-[12px]">
                         <thead className="bg-muted/40 text-[10px] uppercase tracking-widest text-muted-foreground">
                           <tr>
                             <th className="w-12 px-3 py-1.5 text-right">Sl.</th>
-                            <th className="px-3 py-1.5 text-left">Invoice no</th>
-                            <th className="px-3 py-1.5 text-left">What this looks like</th>
+                            <th className="px-3 py-1.5 text-left">Missing</th>
+                            <th className="w-24 px-3 py-1.5 text-right">How many</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {((sr.missing as number[]) || []).map((num, i) => {
-                            const list = (sr.missing as number[]) || []
-                            // A stretch of consecutive numbers is one event — a
-                            // spoiled book, a cancelled batch — and reads quite
-                            // differently from the same count scattered about.
-                            const runStart = i === 0 || list[i - 1] !== num - 1
-                            const runEnd = i === list.length - 1 || list[i + 1] !== num + 1
-                            // Said in words, because whoever reads this list has
-                            // to explain it to somebody else. "run of 6" is our
-                            // language, not theirs.
-                            let note = ''
-                            let count = 0
-                            if (runStart && !runEnd) {
-                              let j = i
-                              while (j + 1 < list.length && list[j + 1] === list[j] + 1) j += 1
-                              count = j - i + 1
-                              note = `${count} in a row, ${sr.prefix}/${num} to ${sr.prefix}/${list[j]}`
-                            } else if (!runStart) {
-                              let start = i
-                              while (start > 0 && list[start - 1] === list[start] - 1) start -= 1
-                              let end = i
-                              while (end + 1 < list.length && list[end + 1] === list[end] + 1) end += 1
-                              note = `part of the ${end - start + 1} above`
-                            } else {
-                              note = 'on its own'
+                          {(() => {
+                            const list = ((sr.missing as number[]) || []).slice().sort((a, b) => a - b)
+                            // Collapse each run of consecutive numbers into one
+                            // block: [first, last].
+                            const blocks: [number, number][] = []
+                            for (const num of list) {
+                              const tail = blocks[blocks.length - 1]
+                              if (tail && num === tail[1] + 1) tail[1] = num
+                              else blocks.push([num, num])
                             }
-                            return (
-                              <tr key={num} className="border-t">
-                                <td className="px-3 py-1 text-right tabular-nums text-muted-foreground">{i + 1}</td>
-                                <td className="doc-ref px-3 py-1 font-medium tabular-nums text-rose-800">
-                                  {String(sr.prefix)}/{num}
-                                </td>
-                                <td
-                                  className={cn(
-                                    'px-3 py-1 text-[11px]',
-                                    count > 1 ? 'font-medium text-amber-800' : 'text-muted-foreground'
-                                  )}
-                                >
-                                  {note}
-                                </td>
-                              </tr>
-                            )
-                          })}
+                            return blocks.map(([from, to], i) => {
+                              const count = to - from + 1
+                              return (
+                                <tr key={`${from}-${to}`} className="border-t">
+                                  <td className="px-3 py-1 text-right tabular-nums text-muted-foreground">{i + 1}</td>
+                                  <td className="doc-ref px-3 py-1 font-medium tabular-nums text-rose-800">
+                                    {count === 1 ? (
+                                      `${sr.prefix}/${from}`
+                                    ) : (
+                                      <>
+                                        {String(sr.prefix)}/{from} <span className="text-muted-foreground">to</span>{' '}
+                                        {String(sr.prefix)}/{to}
+                                      </>
+                                    )}
+                                  </td>
+                                  <td
+                                    className={cn(
+                                      'px-3 py-1 text-right tabular-nums',
+                                      count > 1 ? 'font-semibold text-amber-800' : 'text-muted-foreground'
+                                    )}
+                                  >
+                                    {count}
+                                  </td>
+                                </tr>
+                              )
+                            })
+                          })()}
                         </tbody>
                       </table>
                     </>
@@ -2660,7 +2681,7 @@ function SalesTab({
                       series and invisible in another. */}
                   {((sr.strays as Row[]) || []).length > 0 && (
                     <div className="border-t bg-amber-50 px-3 py-2 text-[11.5px] leading-snug text-amber-900">
-                      Keyed under a different spelling, so <b>not</b> missing —{' '}
+                      <b>Not missing</b> — these were keyed with the prefix spelt differently:{' '}
                       {((sr.strays as Row[]) || []).map((x) => String(x.as)).join(', ')}. Worth correcting the invoice
                       number itself.
                     </div>
@@ -2670,7 +2691,7 @@ function SalesTab({
 
             {!gapsBusy && ((gaps?.unparsed as string[]) || []).length > 0 && (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11.5px] leading-snug text-amber-900">
-                <b>No number at all</b> in these invoice fields, so they sit outside every series:{' '}
+                <b>No number in these invoice fields</b>, so they count towards no series:{' '}
                 {((gaps?.unparsed as string[]) || []).join(' · ')}
               </div>
             )}
@@ -2679,6 +2700,15 @@ function SalesTab({
               <div className="py-8 text-center text-muted-foreground">No numbered invoices in this range.</div>
             )}
           </div>
+
+          {/* A named way out, not only the ✕. The corner glyph is faint, and on
+              a panel that had overflowed the screen it was not there at all —
+              so a button that says what it does earns its row. */}
+          <DialogFooter className="shrink-0 border-t px-5 py-3">
+            <Button variant="outline" onClick={() => setGapsOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

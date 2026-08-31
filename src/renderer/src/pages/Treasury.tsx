@@ -311,6 +311,45 @@ function DateLine({
   )
 }
 
+// The LC already wearing this number, if there is one. Matched the way the
+// main process matches it — trimmed, case-insensitively, within the company —
+// so the form's warning and the refusal on save agree about what a collision is.
+//
+// `lcs` is already scoped to the active company, which is the whole point: the
+// two books number their credits independently, so KR FOODS LC-1 says nothing
+// about KR FINMARK LC-1.
+function lcNoClash(lcs: Row[], lcNo: unknown, selfId?: unknown): Row | null {
+  const want = String(lcNo || '').trim().toUpperCase()
+  if (!want) return null
+  return (
+    lcs.find(
+      (x) => String(x.lc_no || '').trim().toUpperCase() === want && Number(x.id) !== Number(selfId || 0)
+    ) || null
+  )
+}
+
+// Marks a number that more than one LC in this company is wearing. New ones
+// are refused outright now, but the eight that predate the rule are still here,
+// and a rule nobody can see the exceptions to is no help — this is how you find
+// them to renumber.
+function DuplicateNoBadge({ lcs, l }: { lcs: Row[]; l: Row }): React.JSX.Element | null {
+  const other = lcNoClash(lcs, l.lc_no, l.id)
+  if (!other) return null
+  return (
+    <Badge
+      variant="warning"
+      title={
+        `This number is on two LCs in this company — also ${String(other.bank || 'unknown bank')}` +
+        `${other.open_date ? `, opened ${formatDate(other.open_date)}` : ''}` +
+        `${Number(other.amount) ? `, ${formatINR(other.amount)}` : ''}. ` +
+        'Both settlement vouchers carry it, so the ledger cannot tell them apart. Renumber one.'
+      }
+    >
+      Number used twice
+    </Badge>
+  )
+}
+
 // How an LC's closure sits against its maturity. Only 'early' is a preclosure.
 function closureKind(l: Row): 'none' | 'early' | 'on_time' | 'late' {
   const closed = String(l?.preclosed_date || '').slice(0, 10)
@@ -558,6 +597,15 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     if (!next) return
     if (next === 'open' && (!stageForm.opened_date || !String(stageForm.lc_no || '').trim())) {
       return setStageError('The LC number and the date it opened are both needed')
+    }
+    {
+      const clash = lcNoClash(lcs, stageForm.lc_no, stageRow?.id)
+      if (clash) {
+        return setStageError(
+          `LC ${String(stageForm.lc_no).trim()} already exists in this company — ${String(clash.bank || 'unknown bank')}` +
+            `${clash.open_date ? `, opened ${formatDate(clash.open_date)}` : ''}. Use the number the bank gave this credit.`
+        )
+      }
     }
     if (needsLinkedInvoice({ ...stageRow, stage: next })) {
       return setStageError(
@@ -811,6 +859,18 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     if (!lcForm.party_id) return void toast.error('Supplier is required')
     if (String(lcForm.stage || 'application') !== 'application' && !String(lcForm.lc_no || '').trim()) {
       return void toast.error('LC number is required once the LC is Open')
+    }
+    {
+      // The main process refuses this too — it has to, since it is the only
+      // side a script or a second window cannot go around. This is here so the
+      // message reads like a sentence rather than a thrown error.
+      const clash = lcNoClash(lcs, lcForm.lc_no, lcForm.id)
+      if (clash) {
+        return void toast.error(
+          `LC ${String(lcForm.lc_no).trim()} already exists in this company — ${String(clash.bank || 'unknown bank')}` +
+            `${clash.open_date ? `, opened ${formatDate(clash.open_date)}` : ''}. Give this one a number of its own.`
+        )
+      }
     }
     // Past Application the LC is financing real goods, so it has to name the
     // invoice(s) it covers — otherwise the bill it auto-issues has nothing
@@ -1854,7 +1914,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           <div className="flex items-start justify-between gap-2">
                             <div>
                               <div className="flex flex-wrap items-center gap-1.5">
-                                <span className={cn('text-[15px] font-bold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
+                                <span className={cn('doc-ref text-[15px] font-bold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
+                                <DuplicateNoBadge lcs={lcs} l={l} />
                                 {currentStageBadge(l)}
                                 <ClosureBadge l={l} withDate />
                               </div>
@@ -2085,6 +2146,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                   <div className="flex items-center gap-1.5">
                                     <span className={cn('doc-ref font-semibold', !l.lc_no && 'italic text-muted-foreground')}>
                                       {l.lc_no || 'Pending LC no'}
+                                      <DuplicateNoBadge lcs={lcs} l={l} />
                                     </span>
                                     {currentStageBadge(l)}
                                     <ClosureBadge l={l} />
@@ -2686,7 +2748,25 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   <section className="grid gap-3 rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm sm:grid-cols-2">
                     <div className="flex flex-col gap-1.5">
                       <Label>LC no <span className="text-red-600">*</span></Label>
-                      <Input value={stageForm.lc_no ?? ''} onChange={(e) => setStageForm((p) => ({ ...p, lc_no: e.target.value }))} />
+                      {(() => {
+                        const clash = lcNoClash(lcs, stageForm.lc_no, stageRow?.id)
+                        return (
+                          <>
+                            <Input
+                              className={cn('doc-ref', clash && 'border-rose-400 focus-visible:ring-rose-300')}
+                              value={stageForm.lc_no ?? ''}
+                              onChange={(e) => setStageForm((p) => ({ ...p, lc_no: e.target.value }))}
+                            />
+                            {clash && (
+                              <span className="text-[11px] font-medium leading-snug text-rose-600">
+                                Already used in this company — {String(clash.bank || 'unknown bank')}
+                                {clash.open_date ? `, opened ${formatDate(clash.open_date)}` : ''}. The bank gave this
+                                credit its own number; use that one.
+                              </span>
+                            )}
+                          </>
+                        )
+                      })()}
                       <span className="text-[10px] text-muted-foreground">Issued by the bank now that the LC is actually open.</span>
                     </div>
                     <div className="flex flex-col gap-1.5">
@@ -2843,7 +2923,31 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="flex flex-col gap-1.5">
                     <Label>LC no {String(lcForm.stage || 'application') !== 'application' && <span className="text-red-600">*</span>}</Label>
-                    <Input value={lcForm.lc_no ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, lc_no: e.target.value }))} placeholder={String(lcForm.stage || 'application') === 'application' ? 'Obtained once the LC is Open' : ''} />
+                    {(() => {
+                      const clash = lcNoClash(lcs, lcForm.lc_no, lcForm.id)
+                      // Said here rather than only on save. A number typed at the
+                      // top of a long form is worth challenging while the cursor
+                      // is still in it — not after every other field has been
+                      // filled in and the save is refused.
+                      return (
+                        <>
+                          <Input
+                            className={cn('doc-ref', clash && 'border-rose-400 focus-visible:ring-rose-300')}
+                            value={lcForm.lc_no ?? ''}
+                            onChange={(e) => setLcForm((p) => ({ ...p, lc_no: e.target.value }))}
+                            placeholder={String(lcForm.stage || 'application') === 'application' ? 'Obtained once the LC is Open' : ''}
+                          />
+                          {clash && (
+                            <span className="text-[11px] font-medium leading-snug text-rose-600">
+                              Already used in this company — {String(clash.bank || 'unknown bank')}
+                              {clash.open_date ? `, opened ${formatDate(clash.open_date)}` : ''}
+                              {Number(clash.amount) ? `, ${formatINR(clash.amount)}` : ''}. Two LCs on one number cannot be
+                              told apart in the ledger.
+                            </span>
+                          )}
+                        </>
+                      )
+                    })()}
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Bank / discounting bank <span className="text-red-600">*</span></Label>
@@ -3401,7 +3505,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               <>
                 <DialogHeader>
                   <DialogTitle className="flex flex-wrap items-center gap-1.5 pr-6">
-                    <span className={cn(!dRow.lc_no && 'italic text-muted-foreground')}>{dRow.lc_no || 'Pending LC no'}</span>
+                    <span className={cn('doc-ref', !dRow.lc_no && 'italic text-muted-foreground')}>{dRow.lc_no || 'Pending LC no'}</span>
+                    <DuplicateNoBadge lcs={lcs} l={dRow} />
                     <StageBadge stage={String(dRow.stage || 'application')} />
                     <ClosureBadge l={dRow} withDate />
                     {isLcPaymentInDone(dRow) && <Badge variant="success">Payment IN</Badge>}
