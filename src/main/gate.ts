@@ -28,6 +28,14 @@ export async function listGateEntries(): Promise<Row[]> {
   // A user given a day count on Gate Entry sees only that many days back. The
   // bound is applied in SQL so the older rows are never fetched, let alone
   // rendered.
+  //
+  // But an UNFINISHED entry is never hidden, however old. A tanker still
+  // waiting to be weighed is today's problem whenever it arrived, and a window
+  // that hid it would strand the work rather than shorten the history — the
+  // desk would see "no tankers waiting for weight" while three sat in the yard.
+  //
+  // Same rule the tanker register follows: the window hides what is done, never
+  // what is outstanding.
   const from = await visibleFrom('gateEntry')
   const res = await getClient().execute({
     args: from ? [from] : [],
@@ -53,7 +61,7 @@ export async function listGateEntries(): Promise<Row[]> {
     ${/* Compared directly, not through substr(): a function around the column
           makes the whole thing unindexable, and a plain string compare is
           correct anyway since the dates sort lexicographically. */ ''}
-    ${from ? 'WHERE g.entry_date >= ?' : ''}
+    ${from ? "WHERE (g.entry_date >= ? OR COALESCE(g.status, '') <> 'completed')" : ''}
     ORDER BY g.id DESC
   `
   })

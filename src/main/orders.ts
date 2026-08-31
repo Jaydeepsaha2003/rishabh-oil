@@ -333,6 +333,10 @@ export async function listOrders(forModule?: string): Promise<Row[]> {
   // Bounded to what this user may see. The bound goes in the SQL so the older
   // rows are never fetched; `forModule` lets a page that only borrows this
   // register (Accounts, Treasury) keep its own window instead of this one.
+  //
+  // An invoice whose oil has not all arrived is live work, so it is never
+  // hidden however old — the same rule the tanker register and the gate
+  // register follow. The window shortens the history, not the workload.
   const from = await visibleFromFor('orders', forModule)
   const res = await getClient().execute({
     args: from ? [getActiveCompanyId(), from] : [getActiveCompanyId()],
@@ -391,7 +395,7 @@ export async function listOrders(forModule?: string): Promise<Row[]> {
     LEFT JOIN products ot ON ot.id = o.oil_type_id
     LEFT JOIN sources src ON src.id = o.source_id
     LEFT JOIN transporters t ON t.id = o.transporter_id
-    WHERE o.company_id = ?${from ? ' AND o.order_date >= ?' : ''}
+    WHERE o.company_id = ?${from ? " AND (o.order_date >= ? OR COALESCE(o.status, '') <> 'received')" : ''}
     ORDER BY o.id DESC
   `
   })
