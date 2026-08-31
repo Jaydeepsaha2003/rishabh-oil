@@ -230,7 +230,7 @@ function UsersManager(): React.JSX.Element {
   function setColumn(flag: 'view' | 'create' | 'edit' | 'delete', on: boolean): void {
     setForm((p) => {
       const perms = { ...(p.permissions || {}) }
-      for (const m of MODULES) {
+      for (const m of MODULES.filter((x) => !x.derived)) {
         const cur = rightsOf(m.key)
         const next = { ...cur, [flag]: on }
         if (flag === 'view' && !on) {
@@ -257,7 +257,7 @@ function UsersManager(): React.JSX.Element {
     setForm((p) => {
       if (level === 'none') return { ...p, permissions: {} }
       const perms: Record<string, unknown> = {}
-      for (const m of MODULES) {
+      for (const m of MODULES.filter((x) => !x.derived)) {
         perms[m.key] =
           level === 'read'
             ? { view: true, create: false, edit: false, delete: false }
@@ -300,7 +300,7 @@ function UsersManager(): React.JSX.Element {
   function setAllDays(field: 'editDays' | 'viewDays', days: string): void {
     setForm((p) => {
       const perms = { ...(p.permissions || {}) }
-      for (const m of MODULES) {
+      for (const m of MODULES.filter((x) => !x.derived)) {
         const cur = rightsOf(m.key)
         const writes = cur.create || cur.edit || cur.delete
         if (field === 'editDays' ? !writes : !cur.view) continue
@@ -466,7 +466,10 @@ function UsersManager(): React.JSX.Element {
                       </tr>
                     </thead>
                     <tbody>
-                      {MODULES.map((m, i) => {
+                      {/* A derived page takes no row: it is reached through
+                          its sections, so ticking it as well would be a second
+                          switch for the same door. */}
+                      {MODULES.filter((m) => !m.derived).map((m, i) => {
                         const r = rightsOf(m.key)
                         const granted = r.view || r.create || r.edit || r.delete
                         return (

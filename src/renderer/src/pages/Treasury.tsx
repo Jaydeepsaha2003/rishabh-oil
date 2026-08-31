@@ -23,6 +23,7 @@ import {
   Users
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -43,6 +44,9 @@ import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { exportLcRegister } from '@/lib/lcExcel'
 import { HistoryDialog, useHistoryDialog } from '@/components/HistoryDialog'
 import { BillDiscounting } from './BillDiscounting'
+import { ColumnFilter } from '@/components/ui/column-filter'
+import { canAccess } from '@/lib/modules'
+import { loadUser } from '@/lib/session'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -71,7 +75,11 @@ const DUE_PERIODS: { key: string; label: string; maxDays?: number }[] = [
   { key: 'all', label: 'All' },
   { key: 't1', label: 'T+1 due', maxDays: 1 },
   { key: 'week', label: 'This week', maxDays: 7 },
-  { key: 'fortnight', label: 'Fortnight', maxDays: 14 }
+  { key: 'fortnight', label: 'Fortnight', maxDays: 14 },
+  // Rolling 30 days, not the calendar month — every other bucket here counts
+  // forward from today, and one that jumped to a month boundary would answer a
+  // different question from the two beside it.
+  { key: 'month', label: 'This month', maxDays: 30 }
 ]
 
 // Countdown chip: red overdue, amber close, muted otherwise.
@@ -123,6 +131,173 @@ interface Props {
   onCompanyChange: (id: string) => void
 }
 
+// What the beneficiary actually receives, shown as the arithmetic rather than
+// as a number to be taken on trust.
+//
+// A derived figure with no working is a figure nobody can check. This one is
+// three deductions off the open amount, and each of them has a source: a rate
+// and a day count that were entered on the LC, and a commission the bank
+// quoted. Putting the sum on screen means a disagreement can be traced to the
+// input that caused it instead of being argued about.
+//
+// Opens on hover AND on click: hover to glance, click to keep it open while
+// reading the numbers off.
+function PayableBreakdown({ l, children }: { l: Row; children: React.ReactNode }): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const amount = n(l.amount)
+  const upfront = !!l.interest_upfront
+  const rate = n(l.interest_pct)
+  const days = n(l.usance_days)
+  const interest = upfront ? 0 : Math.round(((amount * rate * days) / (100 * 365)) * 100) / 100
+  const charges = upfront ? 0 : Math.round(n(l.charges) * 100) / 100
+  // What the bank actually released, when it has released anything. The
+  // expectation below it is only that — an expectation — and where the two
+  // differ the recorded figure is the one that happened.
+  const paid = l.paid_to_party == null ? null : n(l.paid_to_party)
+  const expected = n(l.paid_expected)
+  const net = paid ?? expected
+  const drift = paid == null ? 0 : Math.round((paid - expected) * 100) / 100
+  const party = String(l.supplier_name || 'the beneficiary')
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <div
+          className="cursor-help"
+          onMouseEnter={() => setOpen(true)}
+          onMouseLeave={() => setOpen(false)}
+          onClick={(e) => {
+            e.stopPropagation()
+            setOpen((v) => !v)
+          }}
+        >
+          {children}
+        </div>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        className="w-[19rem] p-0 text-[12px]"
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="rounded-t-md bg-[#1a2c56] px-3 py-2 text-[11px] font-semibold uppercase tracking-widest text-white">
+          Payment rec
+        </div>
+        <div className="space-y-1.5 px-3 py-2.5">
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="text-muted-foreground">Open amount</span>
+            <span className="font-medium tabular-nums">{formatINR(amount)}</span>
+          </div>
+
+          {upfront ? (
+            <div className="rounded border border-sky-200 bg-sky-50 px-2 py-1.5 text-[11px] leading-snug text-sky-900">
+              Interest and charges are settled <b>upfront from the bank</b> on this LC, so nothing is
+              deducted here — {party} receives the full open amount.
+            </div>
+          ) : (
+            <>
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-muted-foreground">
+                  less Interest
+                  <span className="ml-1 text-[10.5px] text-muted-foreground/70">
+                    {rate}% · {days}d
+                  </span>
+                </span>
+                <span className="tabular-nums text-rose-700">− {formatINR(interest)}</span>
+              </div>
+              {/* The sum itself, so the rate and the day count can be checked
+                  against the bank's own working rather than guessed at. */}
+              <div className="doc-ref pl-2 text-[10.5px] text-muted-foreground/70">
+                {formatINR(amount)} × {rate}% × {days} ÷ 365
+              </div>
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-muted-foreground">less Bank charges</span>
+                <span className="tabular-nums text-rose-700">− {formatINR(charges)}</span>
+              </div>
+            </>
+          )}
+
+          <div className="!mt-2 flex items-baseline justify-between gap-3 border-t pt-2">
+            <span className="font-semibold">
+              {paid == null ? 'Would reach' : 'Paid to'} {party}
+            </span>
+            <span className="font-bold tabular-nums text-emerald-700">{formatINR(net)}</span>
+          </div>
+
+          {/* The bill the bank raised need not match the arithmetic above it —
+              a rate struck over different days, a commission waived. When it
+              does not, say so and name the gap rather than quietly showing one
+              figure in the register and the other in the ledger. */}
+          {Math.abs(drift) > 0.005 && (
+            <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10.5px] leading-snug text-amber-900">
+              The bill the bank raised is <b>{formatINR(Math.abs(drift))}</b> {drift > 0 ? 'more' : 'less'} than the
+              sum above ({formatINR(expected)}). The bill is what {party} was paid, and it is what the ledger carries.
+            </div>
+          )}
+          {paid == null && (
+            <div className="rounded border border-sky-200 bg-sky-50 px-2 py-1.5 text-[10.5px] leading-snug text-sky-900">
+              No bill has been raised yet, so nothing has reached {party}. This is what the LC would release.
+            </div>
+          )}
+        </div>
+        <div className="rounded-b-md border-t bg-muted/40 px-3 py-2 text-[10.5px] leading-snug text-muted-foreground">
+          The bank keeps its interest and commission out of the credit before releasing the rest. You repay
+          the <b>open amount</b> at maturity, not this figure.
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+// Whether an LC can be wound up at all. Only once the bank has PAID under the
+// credit: before that there is no advance to repay, no interest running, and
+// nothing the preclosure arithmetic can work from.
+//
+// The button used to appear on every LC that was not already preclosed, so an
+// application the bank had not even opened offered to be closed early. The
+// server refuses it too — this only stops the offer being made.
+function canPreclose(l: Row): boolean {
+  return !l?.preclosed_date && String(l?.stage || 'application') === 'payment_received'
+}
+
+// One dated line in the validity column: a fixed-width tag, then the date.
+//
+// The tag box is fixed because "Op" and "Mat" are different lengths, and a
+// label that flows pushes its date sideways — which is what made the column
+// look ragged when every date in it is in fact the same width. Columned dates
+// can be compared down the page at a glance; staggered ones cannot.
+function DateLine({
+  tag,
+  date,
+  title,
+  tone,
+  struck
+}: {
+  tag: string
+  date?: string | null
+  title?: string
+  tone?: string
+  struck?: boolean
+}): React.JSX.Element {
+  return (
+    <div className={cn('flex items-baseline gap-1.5 leading-[1.45]', struck && 'text-muted-foreground')}>
+      <span
+        className={cn(
+          'inline-block w-[26px] shrink-0 text-[9.5px] font-semibold uppercase tracking-wider',
+          tone || 'text-muted-foreground/70'
+        )}
+        title={title}
+      >
+        {tag}
+      </span>
+      <span className={cn('text-[12.5px] tabular-nums', struck && 'line-through decoration-muted-foreground/50')}>
+        {date ? formatDateShort(date) : <span className="text-muted-foreground/50">—</span>}
+      </span>
+    </div>
+  )
+}
+
 // How an LC's closure sits against its maturity. Only 'early' is a preclosure.
 function closureKind(l: Row): 'none' | 'early' | 'on_time' | 'late' {
   const closed = String(l?.preclosed_date || '').slice(0, 10)
@@ -161,7 +336,31 @@ function ClosureBadge({ l, withDate }: { l: Row; withDate?: boolean }): React.JS
 }
 
 export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
-  const [tab, setTab] = useState('lc')
+  // Treasury's three sections are granted separately. A user reaches this page
+  // through the Treasury permission, then sees only the sections they hold —
+  // the LC desk, the discounting decision and collections are different jobs.
+  //
+  // A section with no grant is not rendered at all rather than shown disabled:
+  // the figures on these tabs are the whole content, so a disabled tab would
+  // still be displaying them.
+  const sessionUser = useMemo(() => loadUser(), [])
+  const TREASURY_TABS = useMemo(
+    () =>
+      [
+        { key: 'lc', module: 'treasuryLc', label: 'Letters of Credit' },
+        { key: 'bd', module: 'treasuryBd', label: 'Bill Discounting' },
+        { key: 'tracker', module: 'treasuryTracker', label: 'Payment Tracker' }
+      ].filter((t) => !sessionUser || canAccess(sessionUser, t.module)),
+    [sessionUser]
+  )
+  const [tab, setTab] = useState(() => TREASURY_TABS[0]?.key || 'lc')
+
+  // If the tab in hand is one they may not see — a permission changed under
+  // them, or it was restored from a previous session — fall to the first they
+  // can.
+  useEffect(() => {
+    if (TREASURY_TABS.length && !TREASURY_TABS.some((t) => t.key === tab)) setTab(TREASURY_TABS[0].key)
+  }, [TREASURY_TABS, tab])
   const [lcs, setLcs] = useState<Row[]>([])
   const [bills, setBills] = useState<Row[]>([])
   const [alerts, setAlerts] = useState<Row | null>(null)
@@ -900,7 +1099,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       }),
     [lcs]
   )
-  const lcsFiltered = useMemo(() => {
+  // Column filters, kept separate from the bar above the table so each can be
+  // built from the rows the OTHER filters leave — a column's own options must
+  // not shift under the cursor while it is being ticked.
+  const [lcBankCol, setLcBankCol] = useState<string[]>([])
+  const [lcPartyCol, setLcPartyCol] = useState<string[]>([])
+  const [lcMatCol, setLcMatCol] = useState<string[]>([])
+
+  const lcsBase = useMemo(() => {
     let rows = lcsWithDue
     if (lcStageFilter) rows = rows.filter((l) => String(l.stage || 'application') === lcStageFilter)
     if (lcPurposeFilter) rows = rows.filter((l) => String(l.purpose || 'manufacturing') === lcPurposeFilter)
@@ -923,6 +1129,47 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     // slice of days that falls exactly in this bucket.
     return rows.filter((l) => l.days_left_effective != null && l.days_left_effective <= maxDays)
   }, [lcsWithDue, lcDuePeriod, lcStageFilter, lcPurposeFilter, lcStatusFilter, activeBank, lcKpiFrom, lcKpiTo])
+
+  // The month an LC matures in — the one useful way to filter a date column,
+  // since a checkbox list of individual days would be as long as the register.
+  const matMonth = (l: Row): string => String(l.expiry_date || '').slice(0, 7)
+  const monthLabel = (m: string): string => {
+    if (!/^\d{4}-\d{2}$/.test(m)) return 'No maturity date'
+    const d = new Date(`${m}-01T00:00:00`)
+    return d.toLocaleString('en-IN', { month: 'short', year: 'numeric' })
+  }
+
+  // Options come from the rows the other two column filters leave, so ticking
+  // one column never removes a value another column is still offering.
+  const colOptions = useMemo(() => {
+    const uniq = (rows: Row[], get: (l: Row) => string, label?: (v: string) => string) => {
+      const set = new Set<string>()
+      for (const r of rows) set.add(get(r))
+      return [...set]
+        .filter((v) => v !== '')
+        .sort()
+        .map((v) => ({ value: v, label: label ? label(v) : v }))
+    }
+    const byParty = (rows: Row[]) =>
+      lcPartyCol.length ? rows.filter((l) => lcPartyCol.includes(String(l.supplier_name || ''))) : rows
+    const byBank = (rows: Row[]) =>
+      lcBankCol.length ? rows.filter((l) => lcBankCol.includes(String(l.bank || ''))) : rows
+    const byMat = (rows: Row[]) => (lcMatCol.length ? rows.filter((l) => lcMatCol.includes(matMonth(l))) : rows)
+    return {
+      bank: uniq(byMat(byParty(lcsBase)), (l) => String(l.bank || '')),
+      party: uniq(byMat(byBank(lcsBase)), (l) => String(l.supplier_name || '')),
+      mat: uniq(byParty(byBank(lcsBase)), matMonth, monthLabel)
+    }
+  }, [lcsBase, lcBankCol, lcPartyCol, lcMatCol])
+
+  const lcsFiltered = useMemo(() => {
+    let rows = lcsBase
+    if (lcBankCol.length) rows = rows.filter((l) => lcBankCol.includes(String(l.bank || '')))
+    if (lcPartyCol.length) rows = rows.filter((l) => lcPartyCol.includes(String(l.supplier_name || '')))
+    if (lcMatCol.length) rows = rows.filter((l) => lcMatCol.includes(matMonth(l)))
+    return rows
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lcsBase, lcBankCol, lcPartyCol, lcMatCol])
 
   // Who did what to one LC — the same dialog every other register uses.
   const hist = useHistoryDialog()
@@ -1253,9 +1500,17 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               <SelectValue placeholder="Select a view" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="lc">Letters of Credit ({lcs.length})</SelectItem>
-              <SelectItem value="bd">Bill Discounting ({bills.length})</SelectItem>
-              <SelectItem value="tracker">Payment Tracker ({tracker.filter((x) => !x.settled).length})</SelectItem>
+              {TREASURY_TABS.map((t) => (
+                <SelectItem key={t.key} value={t.key}>
+                  {t.label} (
+                  {t.key === 'lc'
+                    ? lcs.length
+                    : t.key === 'bd'
+                      ? bills.length
+                      : tracker.filter((x) => !x.settled).length}
+                  )
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
           </>
@@ -1672,7 +1927,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               Mark Payment IN
                             </Button>
                           )}
-                          {!l.preclosed_date && (
+                          {canPreclose(l) && (
                             <Button
                               size="sm"
                               variant="outline"
@@ -1723,23 +1978,40 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 </Button>
               </div>
               <div className="overflow-x-auto">
-              <Table className="text-[13px]">
+              <Table className="ruled-cols text-[13px]">
                 <TableHeader className="sticky top-0 z-10">
                   <TableRow className="border-b-2 border-[#1a2c56]/20 bg-[#dce6f5] hover:bg-[#dce6f5]">
-                    <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">LC no · bank</TableHead>
-                    <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Supplier</TableHead>
-                    <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Validity</TableHead>
+                    <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                      <ColumnFilter label="LC no · bank" options={colOptions.bank} value={lcBankCol} onApply={setLcBankCol} />
+                    </TableHead>
+                    <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                      <ColumnFilter label="Supplier" options={colOptions.party} value={lcPartyCol} onApply={setLcPartyCol} />
+                    </TableHead>
+                    <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                      {/* By maturity MONTH — a tick list of individual days
+                          would be as long as the register itself. */}
+                      <ColumnFilter label="Validity" options={colOptions.mat} value={lcMatCol} onApply={setLcMatCol} />
+                    </TableHead>
                     <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Days left</TableHead>
                     <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Int. days</TableHead>
                     <TableHead
-                      className="h-9 whitespace-nowrap border-l border-[#1a2c56]/15 text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]"
+                      className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]"
                       title="Interest for the days between preclosure and the LC's original maturity — the stretch that never happened"
                     >
                       Premature int.
                     </TableHead>
-                    <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Limit</TableHead>
-                    <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Available</TableHead>
-                    <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Actions</TableHead>
+                    <TableHead className="h-9 w-[150px] min-w-[150px] whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                      Open amount
+                    </TableHead>
+                    <TableHead
+                      className="h-9 w-[165px] min-w-[165px] whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]"
+                      title="What reaches the beneficiary — the open amount less the interest and commission the bank keeps"
+                    >
+                      Payment rec
+                    </TableHead>
+                    <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                      Actions
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1758,7 +2030,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       <TableCell />
                       <TableCell />
                       <TableCell />
-                      <TableCell className="whitespace-nowrap border-l border-[#1a2c56]/15 text-right font-semibold tabular-nums text-amber-900">
+                      <TableCell className="whitespace-nowrap text-right font-semibold tabular-nums text-amber-900">
                         {(() => {
                           const t = lcsFiltered.reduce((a2, l) => a2 + n(l.preclose_premature_interest), 0)
                           return t > 0.004 ? formatINR(t) : ''
@@ -1768,7 +2040,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         {formatINR(lcsFiltered.reduce((t, l) => t + n(l.amount), 0))}
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-right font-semibold tabular-nums text-amber-900">
-                        {formatINR(lcsFiltered.reduce((t, l) => t + n(l.available), 0))}
+                        {formatINR(lcsFiltered.reduce((t, l) => t + n(l.paid_to_party ?? l.paid_expected), 0))}
                       </TableCell>
                       <TableCell />
                     </TableRow>
@@ -1798,27 +2070,46 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                                 <div>
                                   <div className="flex items-center gap-1.5">
-                                    <span className={cn('font-semibold', !l.lc_no && 'italic text-muted-foreground')}>{l.lc_no || 'Pending LC no'}</span>
+                                    <span className={cn('doc-ref font-semibold', !l.lc_no && 'italic text-muted-foreground')}>
+                                      {l.lc_no || 'Pending LC no'}
+                                    </span>
                                     {currentStageBadge(l)}
                                     <ClosureBadge l={l} />
                                   </div>
-                                  <div className="text-[11px] text-muted-foreground">{l.bank}{n(l.margin_pct) ? ` · margin ${l.margin_pct}%` : ''}</div>
+                                  <div className="mt-0.5 text-[11px] text-muted-foreground">
+                                    {l.bank}
+                                    {n(l.margin_pct) ? <span className="tabular-nums"> · margin {l.margin_pct}%</span> : ''}
+                                  </div>
                                 </div>
                               </div>
                             </TableCell>
                             <TableCell className="whitespace-nowrap">{l.supplier_name || '—'}</TableCell>
-                            <TableCell className="whitespace-nowrap tabular-nums">
-                              <div>
-                                <span className="mr-1 text-[10px] font-semibold uppercase text-muted-foreground" title="Opened">Op</span>
-                                {formatDateShort(l.open_date)}
-                              </div>
+                            <TableCell className="doc-ref whitespace-nowrap py-2">
+                              {/* open_date is the date the LC was APPLIED for;
+                                  opened_date is the day the bank actually opened
+                                  it. Until that day exists this is an
+                                  application and says so — an LC still with the
+                                  bank has not been opened, and a row claiming
+                                  otherwise reads as a live credit. */}
+                              {l.opened_date ? (
+                                <DateLine tag="Op" date={l.opened_date} title="Opened by the bank" />
+                              ) : (
+                                <DateLine
+                                  tag="App"
+                                  date={l.open_date}
+                                  title="Applied for — the bank has not opened it yet"
+                                  tone="text-amber-700"
+                                />
+                              )}
                               {/* Only a PRECLOSED LC never reached its maturity, so
                                   only that case strikes the planned date out. An
                                   LC closed on or after maturity did reach it. */}
-                              <div className={cn(closureKind(l) === 'early' && 'text-muted-foreground line-through decoration-muted-foreground/60')}>
-                                <span className="mr-1 text-[10px] font-semibold uppercase text-muted-foreground no-underline" title="Maturity">Mat</span>
-                                {formatDateShort(l.expiry_date)}
-                              </div>
+                              <DateLine
+                                tag="Mat"
+                                date={l.expiry_date}
+                                title="Maturity"
+                                struck={closureKind(l) === 'early'}
+                              />
                               {!!l.preclosed_date && (
                                 <div
                                   className="mt-0.5 inline-flex items-center gap-1 rounded bg-violet-100 px-1.5 py-px text-[11px] font-semibold text-violet-800"
@@ -1862,12 +2153,32 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             </TableCell>
                             <TableCell className="whitespace-nowrap text-right font-medium tabular-nums">{formatINR(l.amount)}</TableCell>
                             <TableCell className="whitespace-nowrap text-right">
-                              <div className={cn('font-semibold tabular-nums', n(l.available) <= 0 ? 'text-rose-600' : 'text-emerald-700')}>
-                                {formatINR(l.available)}
-                              </div>
-                              <div className={cn('text-[10px] tabular-nums', pct >= 95 ? 'text-rose-600' : 'text-muted-foreground')}>
-                                {pct.toFixed(0)}% used
-                              </div>
+                              {/* lc_net_available is the open amount less this
+                                  LC's interest and charges — the sum the bank
+                                  releases to the beneficiary. Headroom used to
+                                  sit here, which says nothing once an LC is
+                                  fully drawn, and every one of them is.
+                                  The working is one hover away. */}
+                              <PayableBreakdown l={l}>
+                                {/* The bill the bank honoured, which is what the
+                                    supplier's ledger carries. Falls back to the
+                                    expectation only while no bill exists. */}
+                                <div
+                                  className={cn(
+                                    'font-semibold tabular-nums underline decoration-dotted underline-offset-4',
+                                    l.paid_to_party == null
+                                      ? 'text-muted-foreground decoration-muted-foreground/30'
+                                      : 'text-emerald-700 decoration-emerald-700/25'
+                                  )}
+                                >
+                                  {formatINR(l.paid_to_party ?? l.paid_expected)}
+                                </div>
+                                <div className="text-[10px] tabular-nums text-muted-foreground">
+                                  {l.paid_to_party == null
+                                    ? 'not drawn yet'
+                                    : `after ${formatINR(n(l.amount) - n(l.paid_to_party))} int + chg`}
+                                </div>
+                              </PayableBreakdown>
                             </TableCell>
                             <TableCell className="whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex justify-end gap-1">
@@ -1890,7 +2201,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                     Mark Payment IN
                                   </Button>
                                 )}
-                                {!l.preclosed_date && (
+                                {canPreclose(l) && (
                                   <Button
                                     size="sm"
                                     variant="outline"
@@ -3160,7 +3471,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         Mark Payment IN
                       </Button>
                     )}
-                    {!dRow.preclosed_date && (
+                    {canPreclose(dRow) && (
                       <Button
                         size="sm"
                         variant="outline"

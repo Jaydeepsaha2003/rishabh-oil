@@ -293,6 +293,32 @@ app.whenReady().then(async () => {
   // Books beginning from: one opening figure per ledger stands in for
   // everything before the cutoff. Per company, since the two books can start on
   // different days.
+  // The fee journal an LC repayment now raises alongside its payment voucher.
+  // The payout voucher a preclosure raises when the rebate is passed to the
+  // supplier — separate from the reversal, so it needs its own handle to be
+  // undone by.
+  // The commission voucher an LC raises when the bank opens it.
+  await runOnce('lc_charges_je_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE letters_of_credit ADD COLUMN charges_journal_entry_id INTEGER')
+      .catch((e) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+  }).catch((e) => console.error('[lc] charges journal column failed:', e))
+  await runOnce('lc_preclose_payout_je_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE letters_of_credit ADD COLUMN preclose_payout_journal_entry_id INTEGER')
+      .catch((e) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+  }).catch((e) => console.error('[lc] preclose payout column failed:', e))
+  await runOnce('lc_fee_je_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE lc_repayments ADD COLUMN fee_journal_entry_id INTEGER')
+      .catch((e) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+  }).catch((e) => console.error('[lc] fee journal column failed:', e))
   await runOnce('ledger_openings_v1', async () => {
     await getClient().execute(`CREATE TABLE IF NOT EXISTS ledger_openings (
       company_id INTEGER NOT NULL,

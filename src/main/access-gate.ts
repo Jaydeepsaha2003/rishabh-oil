@@ -55,8 +55,16 @@ const CHANNEL_RULES: Record<string, Rule> = {
     dateCol: 'deposit_date'
   },
   gate: { module: 'gateEntry', label: 'Gate entries', table: 'gate_entries', dateCol: 'entry_date' },
-  payments: { module: 'payments', label: 'Payments', table: 'payments', dateCol: 'payment_date' },
-  billDiscounts: { module: 'payments', label: 'Bill discounts' },
+  // Treasury's three sections are granted separately, so each channel names
+  // the section it belongs to rather than the page they share.
+  //
+  // `payments` used to name a module key that is not grantable anywhere, which
+  // read as "no access" and refused every payment a non-admin tried to make.
+  payments: { module: 'treasuryTracker', label: 'Payment Tracker', table: 'payments', dateCol: 'payment_date' },
+  tbill: { module: 'treasuryTracker', label: 'Payment Tracker' },
+  lc: { module: 'treasuryLc', label: 'Letters of Credit' },
+  bd: { module: 'treasuryBd', label: 'Bill Discounting' },
+  billDiscounts: { module: 'treasuryBd', label: 'Bill discounts' },
   production: { module: 'production', label: 'Production', table: 'production', dateCol: 'prod_date' },
   // One table behind two menus; the Debit note grant governs both.
   notes: { module: 'debitNotes', label: 'Debit/Credit notes', table: 'notes', dateCol: 'note_date' },

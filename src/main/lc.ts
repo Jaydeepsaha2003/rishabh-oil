@@ -1,7 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
-import { postLcOpening, settleLcBillsCombined, postLcMarginRelease, postLcPrematureInterestRebate, saveLcRepayment, refreshLcUpfrontInterest, syncLcFeeAdjustment, lcFeeDelta } from './treasury'
+import { postLcOpening, postLcOpeningCharges, settleLcBillsCombined, postLcMarginRelease, postLcPrematureInterestRebate, saveLcRepayment, refreshLcUpfrontInterest, syncLcFeeAdjustment, lcFeeDelta } from './treasury'
 import { facilityHeadroom } from './facilities'
 import { linkTradingDealsToLc } from './trading'
 import { getSetting } from './repos'
@@ -26,18 +26,23 @@ function round2(v: number): number {
   return Math.round(v * 100) / 100
 }
 
-// What's left to issue bills against: the whole open amount, less what has
-// already been drawn.
+// What's left to issue bills against: the open amount, less the interest and
+// commission the bank keeps out of it, less what has already been drawn.
 //
-// Interest and charges used to be deducted here, on the assumption that the
-// bank keeps them out of the LC and releases only the remainder. It does not —
-// the beneficiary is entitled to the full value of the documents they present,
-// and the bank debits its interest and commission to your account separately.
-// Netting them here under-sized every bill, left the supplier's ledger showing
-// them paid less than they were, and needed a correcting voucher to paper over
-// the gap.
+// The bank releases the NET to the beneficiary — it takes its interest and its
+// commission out of the credit first — so a bill raised for the gross would
+// credit the supplier with money that never left the bank. That difference is
+// exactly what showed up on LC-15, where a commission set after the bill was
+// raised left the supplier ₹3,360 better off in the ledger than in fact.
+//
+// Unless both are settled upfront from the account instead (interest_upfront),
+// in which case the credit is untouched and the full amount is available.
 function netAvailable(lc: Row, issued: number): number {
-  return round2(n(lc.amount) - issued)
+  const interest = lc.interest_upfront
+    ? 0
+    : round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
+  const charges = lc.interest_upfront ? 0 : round2(n(lc.charges))
+  return round2(n(lc.amount) - interest - charges - issued)
 }
 
 // LCs / discounting facilities with their utilisation (sum of issuances),
@@ -103,6 +108,18 @@ export async function listLCs(): Promise<Row[]> {
       // interest and charges come OUT of it, not added on top (unless both
       // are paid upfront from the bank instead — see interest_upfront).
       lc_net_available: Math.round((n(l.amount) - chargedInterest - charges) * 100) / 100,
+      // What the beneficiary was ACTUALLY paid: the bills the bank honoured.
+      //
+      // lc_net_available above is a back-calculation — open amount less what
+      // the fees ought to be — and the two disagreed. LC-15's bill was raised
+      // for 1,60,57,801.64 while the back-calculation said 1,60,54,441.64,
+      // because the bill deducted the interest and not the ₹3,360 charges. The
+      // ledger carried one figure and the register showed the other.
+      //
+      // A recorded amount beats a formula, every time. Until a bill exists
+      // there is nothing recorded, so the expectation stands in — and says so.
+      paid_to_party: n(l.utilized) > 0.004 ? round2(n(l.utilized)) : null,
+      paid_expected: Math.round((n(l.amount) - chargedInterest - charges) * 100) / 100,
       // What's actually left to issue bills against — interest and charges
       // come out of the open amount before issued bills reduce it further.
       // The shortfall an over-drawn LC used to show as a negative balance is
@@ -539,7 +556,12 @@ async function syncLcVouchers(id: number): Promise<string | undefined> {
   try {
     await postLcOpening(id)
   } catch (e) {
-    problems.push(`the margin/interest/charges voucher (${(e as Error).message})`)
+    problems.push(`the margin voucher (${(e as Error).message})`)
+  }
+  try {
+    await postLcOpeningCharges(id)
+  } catch (e) {
+    problems.push(`the opening commission (${(e as Error).message})`)
   }
   try {
     await refreshLcUpfrontInterest(id)
@@ -645,6 +667,17 @@ export async function precloseLC(
   if (!res.rows.length) throw new Error('LC not found')
   const lc = toPlain(res)[0]
   if (lc.preclosed_date) throw new Error('This LC is already preclosed')
+  // Winding up early only means something once the bank has PAID under the
+  // credit. Before that there is no advance to repay and no interest running —
+  // an LC still with the bank is cancelled, not preclosed, and this routine
+  // would compute its interest from a payout date that does not exist.
+  if (String(lc.stage || 'application') !== 'payment_received') {
+    throw new Error(
+      String(lc.stage || 'application') === 'application'
+        ? 'This LC is still an application — the bank has not opened it, so there is nothing to wind up. Mark it Open first.'
+        : 'The bank has not paid the beneficiary under this LC yet, so there is nothing to repay. Mark Payment received first.'
+    )
+  }
   const precloseDate = String(v.preclose_date || '').slice(0, 10)
   if (!precloseDate) throw new Error('Pick the preclosure date')
   // Interest accrues from when the bank actually paid out (or, failing that,
@@ -672,7 +705,12 @@ export async function precloseLC(
   // this much when their bill was settled.
   const rebate = await postLcPrematureInterestRebate(id, rebateDirection, prematureInterest, precloseDate)
   if (rebate) {
-    await c.execute({ sql: 'UPDATE letters_of_credit SET preclose_interest_journal_entry_id = ? WHERE id = ?', args: [rebate.id, id] })
+    await c.execute({
+      sql: `UPDATE letters_of_credit
+               SET preclose_interest_journal_entry_id = ?, preclose_payout_journal_entry_id = ?
+             WHERE id = ?`,
+      args: [rebate.id, rebate.payoutId ?? null, id]
+    })
   }
   // Preclosing is ALSO the same event as logging an LC repayment — the bank
   // still wants its full open amount back, just before maturity instead of
@@ -723,6 +761,11 @@ export async function unPrecloseLC(id: number): Promise<{ id: number; removed: s
   if (!lc.preclosed_date) throw new Error('This LC is not preclosed, so there is nothing to undo')
   const removed: string[] = []
 
+  if (lc.preclose_payout_journal_entry_id) {
+    // The rebate raises two vouchers when it is passed on — the reversal and
+    // the payout — so undoing a preclosure has to take both.
+    await dropTreasuryEntry(n(lc.preclose_payout_journal_entry_id))
+  }
   if (lc.preclose_interest_journal_entry_id) {
     await dropTreasuryEntry(n(lc.preclose_interest_journal_entry_id))
     removed.push('premature-interest rebate voucher')
@@ -755,6 +798,7 @@ export async function unPrecloseLC(id: number): Promise<{ id: number; removed: s
     sql: `UPDATE letters_of_credit
              SET usance_days = ?, preclosed_date = NULL, preclose_premature_interest = NULL,
                  preclose_interest_route = NULL, preclose_interest_journal_entry_id = NULL,
+                 preclose_payout_journal_entry_id = NULL,
                  preclose_settlement_direction = NULL, preclose_settlement_amount = NULL,
                  preclose_journal_entry_id = NULL, workflow_status = 'in_progress'
            WHERE id = ?`,
@@ -776,7 +820,8 @@ export async function deleteLC(id: number): Promise<{ id: number }> {
   const paymentIns = await c.execute({ sql: 'SELECT journal_entry_id FROM lc_payment_ins WHERE lc_id = ?', args: [id] })
   for (const p of paymentIns.rows) if (p.journal_entry_id) await dropTreasuryEntry(Number(p.journal_entry_id))
   const lc = await c.execute({
-    sql: `SELECT journal_entry_id, preclose_journal_entry_id, interest_journal_entry_id, preclose_interest_journal_entry_id
+    sql: `SELECT journal_entry_id, preclose_journal_entry_id, interest_journal_entry_id, preclose_interest_journal_entry_id,
+                 preclose_payout_journal_entry_id, charges_journal_entry_id
           FROM letters_of_credit WHERE id = ?`,
     args: [id]
   })
@@ -784,6 +829,8 @@ export async function deleteLC(id: number): Promise<{ id: number }> {
   if (lc.rows.length && lc.rows[0].preclose_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].preclose_journal_entry_id))
   if (lc.rows.length && lc.rows[0].interest_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].interest_journal_entry_id))
   if (lc.rows.length && lc.rows[0].preclose_interest_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].preclose_interest_journal_entry_id))
+  if (lc.rows.length && lc.rows[0].preclose_payout_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].preclose_payout_journal_entry_id))
+  if (lc.rows.length && lc.rows[0].charges_journal_entry_id) await dropTreasuryEntry(Number(lc.rows[0].charges_journal_entry_id))
   await c.execute({ sql: 'DELETE FROM lc_issuances WHERE lc_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM lc_repayments WHERE lc_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM lc_payment_ins WHERE lc_id = ?', args: [id] })

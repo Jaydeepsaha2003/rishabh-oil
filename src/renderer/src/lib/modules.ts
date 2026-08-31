@@ -3,6 +3,18 @@ import type { AppUser } from './session'
 export interface ModuleDef {
   key: string
   label: string
+  // A page reached through its sections rather than granted in its own right.
+  // It still needs a key so the navigation and the router can name it, but it
+  // takes no row of its own on the rights grid — a parent tick beside three
+  // child ticks is two ways of saying the same thing, and the two can
+  // disagree.
+  derived?: boolean
+}
+
+// Sections that stand in for a derived page: holding any one of them opens the
+// page, and the strongest of them is the access the page carries.
+export const DERIVED_FROM: Record<string, string[]> = {
+  treasury: ['treasuryLc', 'treasuryBd', 'treasuryTracker']
 }
 
 // Modules an admin can grant per user. (User management stays admin-only.)
@@ -14,7 +26,17 @@ export const MODULES: ModuleDef[] = [
   { key: 'gateEntry', label: 'Gate Entry' },
   { key: 'trading', label: 'Trading' },
   { key: 'accounts', label: 'Accounting' },
-  { key: 'treasury', label: 'Treasury' },
+  { key: 'treasury', label: 'Treasury', derived: true },
+  // Treasury holds three quite separate jobs, and the people who do them are
+  // rarely the same person: the LC desk deals with the bank, bill discounting
+  // is a financing decision, and the payment tracker is collections. Granting
+  // "Treasury" gave all three to whoever needed one of them.
+  //
+  // These sit UNDER Treasury — a user needs Treasury itself to reach the page
+  // at all, and then one of these to see a section of it.
+  { key: 'treasuryLc', label: 'Treasury · Letters of Credit' },
+  { key: 'treasuryBd', label: 'Treasury · Bill Discounting' },
+  { key: 'treasuryTracker', label: 'Treasury · Payment Tracker' },
   { key: 'bankRecon', label: 'Bank Reconciliation' },
   { key: 'categories', label: 'Categories' },
   { key: 'products', label: 'Products' },
@@ -46,6 +68,29 @@ type PermUser = Pick<AppUser, 'role' | 'permissions'> | null | undefined
 //      grid on the Users page. 'write' here means any of create/edit/delete;
 //      'read' means view-only (view but no write flags).
 export function permLevel(user: PermUser, key: string): 'none' | 'read' | 'write' {
+  if (!user) return 'none'
+  // A derived page carries whatever its strongest section carries — you reach
+  // Treasury because you hold the LC desk, not because someone remembered to
+  // tick Treasury as well.
+  //
+  // An explicit grant on the page itself still counts, so users saved before
+  // the sections existed keep working: their old `treasury` entry is inherited
+  // by each section below (see modulePerm on the server, and inheritFrom here).
+  const sections = DERIVED_FROM[key]
+  if (sections && user.role !== 'admin') {
+    const own = directLevel(user, key)
+    let best: 'none' | 'read' | 'write' = own
+    for (const sec of sections) {
+      const lvl = directLevel(user, sec)
+      if (lvl === 'write') return 'write'
+      if (lvl === 'read' && best === 'none') best = 'read'
+    }
+    return best
+  }
+  return directLevel(user, key)
+}
+
+function directLevel(user: PermUser, key: string): 'none' | 'read' | 'write' {
   if (!user) return 'none'
   // Everyone can see Approvals: admins act on the queue, others track their
   // own submitted masters (and see rejection reasons).

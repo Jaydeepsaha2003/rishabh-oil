@@ -66,6 +66,14 @@ const OK: Verdict = { allowed: true }
 // their own submissions and sees why something was rejected.
 const ALWAYS_OPEN = new Set(['approvals'])
 
+// A section falls back to the page it belongs to when it has no grant of its
+// own — the split must not silently revoke access that already existed.
+const SECTION_PARENT: Record<string, string> = {
+  treasuryLc: 'treasury',
+  treasuryBd: 'treasury',
+  treasuryTracker: 'treasury'
+}
+
 // Read whichever permission shape this user was saved with.
 export function modulePerm(user: AccessUser | null | undefined, moduleKey: string): ModulePerm {
   if (!user) return {}
@@ -92,6 +100,20 @@ export function modulePerm(user: AccessUser | null | undefined, moduleKey: strin
       // view is implied by any other right — you cannot edit what you cannot see.
       const view = e.view ?? !!(e.create || e.edit || e.delete)
       return { ...e, view }
+    }
+    // A section with no grant of its own inherits the page it belongs to, so
+    // users saved before Treasury was split into sections keep exactly the
+    // access they had. Once a section is ticked explicitly, that wins.
+    const parent = SECTION_PARENT[moduleKey]
+    if (parent) {
+      const up = (p as Record<string, unknown>)[parent]
+      if (up === 'write') return { view: true, create: true, edit: true, delete: true, editDays: null }
+      if (up === 'read') return { view: true }
+      if (up && typeof up === 'object') {
+        const e = up as ModulePerm
+        const view = e.view ?? !!(e.create || e.edit || e.delete)
+        return { ...e, view }
+      }
     }
   }
   return {}
@@ -153,10 +175,27 @@ export function viewDays(user: AccessUser | null | undefined, moduleKey: string)
 export function entryDays(user: AccessUser | null | undefined, moduleKey: string): number | null {
   if (!user || String(user.role || '').toLowerCase() === 'admin') return null
   const e = modulePerm(user, moduleKey).editDays
+  if (e == null) return viewDays(user, moduleKey)
+  return Math.max(0, Number(e) || 0)
+}
+
+// The window for CHANGING an existing entry, which is the entry window capped
+// by what the user can see.
+//
+// Creating and altering are not the same act, so they no longer share a cap.
+// Someone given five days to key and two days to read is being told: catch up
+// on the week's work, but do not browse the history. That is a coherent
+// instruction, and clamping the entry window down to the visible one silently
+// refused it — the setting simply appeared not to work.
+//
+// Altering is different. A row the register never showed cannot be picked off
+// the screen to edit, so bounding the edit window by the visible one states
+// plainly what was already true.
+export function alterDays(user: AccessUser | null | undefined, moduleKey: string): number | null {
+  const e = entryDays(user, moduleKey)
   const v = viewDays(user, moduleKey)
   if (e == null) return v
-  const days = Math.max(0, Number(e) || 0)
-  return v == null ? days : Math.min(days, v)
+  return v == null ? e : Math.min(e, v)
 }
 
 // The one question every write path should ask. `entryDate` is only needed for
@@ -201,7 +240,7 @@ export function can(
   // The module is allowed; only the working window can still refuse. Same
   // arithmetic as the create rule above, so what a user may key in and what
   // they may go back and fix are one window and not two.
-  const limit = entryDays(user, moduleKey)
+  const limit = alterDays(user, moduleKey)
   if (limit == null) return OK
   if (withinWindow(opts.entryDate, limit, opts.today)) return OK
   const days = ageInDays(opts.entryDate, opts.today)
