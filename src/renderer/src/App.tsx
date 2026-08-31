@@ -35,6 +35,7 @@ import { GlobalDateRangeProvider } from './lib/globalDateRange'
 import { clearUser, loadUser, saveUser, type AppUser } from './lib/session'
 import { useLiveRefresh } from './lib/useLiveRefresh'
 import { MODULES, canAccess } from './lib/modules'
+import { clearEntryWindows } from './lib/useEntryWindow'
 
 // Full-width bar pinned above the sidebar+page area — visible on every page,
 // not just once the download finishes, so no one is caught mid-task on a
@@ -101,14 +102,60 @@ function App(): React.JSX.Element {
   // Accounts unmounts when you drill out of it, so it would come back on the
   // Gateway with the ledger you were reading forgotten. It hands over where it
   // was on the way out, and gets it back on the way in.
-  const [accountsResume, setAccountsResume] = useState<{ screen: string; ledgerId: number | null } | null>(null)
+  const [accountsResume, setAccountsResume] = useState<{ screen: string; ledgerId: number | null; companyId?: number } | null>(null)
 
-  function openRecord(target: 'orders' | 'sales', id: number, resume?: { screen: string; ledgerId: number | null }): void {
+  // Opens a document from somewhere else — a ledger line, a bargain — and
+  // remembers enough to come back.
+  //
+  // The company matters. Accounting keeps its own book selector, so a ledger
+  // can be read for KR FINMARK while the app is working in KR FOODS. Drilling
+  // into a purchase then landed on a page loading the OTHER company's invoices,
+  // where the one being asked for does not exist and nothing opened at all.
+  // So the book follows the document.
+  function openRecord(
+    target: 'orders' | 'sales',
+    id: number,
+    resume?: { screen: string; ledgerId: number | null; companyId?: number }
+  ): void {
     setReturnTo(page)
     if (resume) setAccountsResume(resume)
+    const want = resume?.companyId
+    if (want && Number(want) !== Number(companyId)) void switchCompany(String(want))
     setFocus({ page: target, id })
     setPage(target)
   }
+
+  // Esc returns from a drill-through, because that is what Esc means
+  // everywhere else in this app — the Back button was the only way out, and a
+  // keyboard-driven desk does not reach for it.
+  //
+  // Ignored while a dialog is open: Esc belongs to the dialog then, and closing
+  // a voucher would otherwise also leave the page it was opened from.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void {
+      if (e.key !== 'Escape' || !returnTo) return
+      if (document.querySelector('[role="dialog"],[role="alertdialog"]')) return
+      // Two stages, because a voucher form is nothing but inputs and the first
+      // version of this refused to fire in any of them — which is exactly where
+      // you are when you want to leave.
+      //
+      // Focus in a field: the first Esc steps out of the field, so typing can
+      // still be abandoned without abandoning the page. A second Esc, with
+      // nothing focused, goes back. That keeps both meanings of the key and
+      // makes leaving deliberate rather than a slip.
+      const el = document.activeElement as HTMLElement | null
+      const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
+      if (typing) {
+        el.blur()
+        return
+      }
+      e.preventDefault()
+      goBack()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [returnTo])
 
   // Manual navigation (sidebar) always clears any pending drill-through context.
   function navigate(p: Page): void {
@@ -243,6 +290,11 @@ function App(): React.JSX.Element {
           JSON.stringify(prev.permissions ?? {}) === JSON.stringify(r.permissions ?? {}) &&
           String(prev.full_name || '') === String(r.full_name || '')
         if (same) return prev
+        // The entry/visible windows live inside these permissions, and the date
+        // pickers hold them in a shared cache. Tell that cache to re-ask, or a
+        // window widened by an admin would not reach the person it applies to
+        // until they restarted the app.
+        clearEntryWindows()
         const next = {
           ...prev,
           role: String(r.role || ''),

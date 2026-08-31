@@ -207,6 +207,8 @@ export interface Api {
   }
   sales: {
     list: (companyIds?: number[], forModule?: string) => Promise<Row[]>
+    invoiceGaps: (companyId?: number, from?: string, to?: string) => Promise<Row>
+    series: (companyId?: number) => Promise<Row>
     fyTaxable: (customerId: number, date: string, excludeId: number) => Promise<number>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>

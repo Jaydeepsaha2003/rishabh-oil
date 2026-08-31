@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Download, History, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Tags, Trash2, Truck, Upload } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Download, History, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Tags, Trash2, Truck, Upload, ListChecks} from 'lucide-react'
 import { moduleScope } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
 import { loadUser } from '@/lib/session'
@@ -263,6 +263,35 @@ function SalesTab({
   const [dateTo, setDateTo] = useState(todayISO())
   // Empty = every product type.
   const [productType, setProductType] = useState<string[]>([])
+  // Which numbers the invoice series has skipped. A number nobody used is a
+  // number somebody has to account for — a cancelled bill, a spoiled form, or
+  // one written and never keyed — so it is worth being able to ask.
+  // The prefix this company's invoices carry, read from the series it already
+  // uses. Handed to the field so it cannot be mistyped — the "KRFL./490" that
+  // read as a missing bill was a stray full stop, and no amount of care stops
+  // that happening again while the prefix is typed by hand.
+  const [series, setSeries] = useState<Row | null>(null)
+  useEffect(() => {
+    window.api.sales
+      .series()
+      .then(setSeries)
+      .catch(() => {})
+  }, [rows.length])
+
+  const [gapsOpen, setGapsOpen] = useState(false)
+  const [gaps, setGaps] = useState<Row | null>(null)
+  const [gapsBusy, setGapsBusy] = useState(false)
+
+  async function loadGaps(): Promise<void> {
+    setGapsBusy(true)
+    try {
+      setGaps(await window.api.sales.invoiceGaps(undefined, dateFrom || undefined, dateTo || undefined))
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setGapsBusy(false)
+    }
+  }
   // Alt+F2 broadcasts a period from anywhere.
   const globalRange = useGlobalDateRange()
   useEffect(() => {
@@ -1357,6 +1386,20 @@ function SalesTab({
             className="h-9 w-[11.5rem] text-[12px]"
           />
         </div>
+        {!unloadOnly && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 shrink-0 text-[12px]"
+            title="Which numbers the KRFL / KRFIN series has skipped, between the lowest and highest actually used"
+            onClick={() => {
+              setGapsOpen(true)
+              void loadGaps()
+            }}
+          >
+            <ListChecks className="h-3.5 w-3.5" /> Missing invoice nos
+          </Button>
+        )}
         {unloadOnly && (
           <span className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-[11px] font-medium text-sky-900">
             <Truck className="h-3.5 w-3.5 shrink-0" />
@@ -1770,7 +1813,71 @@ function SalesTab({
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>Invoice no</Label>
-              <Input value={header.invoice_no ?? ''} onChange={(e) => setHeaderField('invoice_no', e.target.value)} />
+              {(() => {
+                const prefix = String(series?.prefix || '')
+                const current = String(header.invoice_no ?? '')
+                if (!prefix) {
+                  // No series to go on — a first invoice, or a company whose
+                  // numbers have never followed one. Left free rather than
+                  // inventing a prefix nobody asked for.
+                  return (
+                    <Input value={current} onChange={(e) => setHeaderField('invoice_no', e.target.value)} />
+                  )
+                }
+                // What is stored is the whole reference; the field edits only
+                // the number, so the prefix is a fact of the form rather than
+                // something to be retyped correctly each time.
+                const bare = current.replace(new RegExp(`^${prefix}[/\\-]?`, 'i'), '')
+                const clash =
+                  bare.trim() !== '' &&
+                  rows.some(
+                    (r) =>
+                      String(r.invoice_no || '').trim().toUpperCase() === `${prefix}/${bare}`.toUpperCase() &&
+                      Number(r.id) !== Number(header.id)
+                  )
+                return (
+                  <>
+                    <div
+                      className={cn(
+                        'flex h-9 items-stretch overflow-hidden rounded-md border bg-background',
+                        clash && 'border-rose-400'
+                      )}
+                    >
+                      <span className="doc-ref flex select-none items-center border-r bg-muted px-2.5 text-[13px] font-semibold text-muted-foreground">
+                        {prefix}/
+                      </span>
+                      <input
+                        className="doc-ref w-full bg-transparent px-2 text-[13px] tabular-nums outline-none"
+                        inputMode="numeric"
+                        placeholder={String(series?.next ?? '')}
+                        value={bare}
+                        onChange={(e) => {
+                          // Digits only. Everything the gap report could not
+                          // account for — a stray stop, a party name typed in
+                          // here — arrived through this field accepting it.
+                          const digits = e.target.value.replace(/[^0-9]/g, '')
+                          setHeaderField('invoice_no', digits ? `${prefix}/${digits}` : '')
+                        }}
+                      />
+                      {!bare && Number(series?.next) > 0 && (
+                        <button
+                          type="button"
+                          className="shrink-0 border-l px-2 text-[11px] font-medium text-sky-700 hover:bg-sky-50"
+                          title={`Highest used is ${series?.highest}`}
+                          onClick={() => setHeaderField('invoice_no', `${prefix}/${series?.next}`)}
+                        >
+                          next {String(series?.next)}
+                        </button>
+                      )}
+                    </div>
+                    {clash && (
+                      <span className="text-[11px] font-medium text-rose-600">
+                        {prefix}/{bare} is already used on another invoice
+                      </span>
+                    )}
+                  </>
+                )
+              })()}
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>Customer</Label>
@@ -2453,6 +2560,128 @@ function SalesTab({
 
       {/* Reject — the customer refused the consignment before it was fully delivered */}
       {/* Marking Unloaded: capture what the transporter actually delivered. */}
+      <Dialog open={gapsOpen} onOpenChange={setGapsOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Missing invoice numbers</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-[11.5px] leading-snug text-muted-foreground">
+              Counted between the <b>lowest and highest number actually used</b>, not from 1 — a book that starts at 367
+              has not skipped 366 invoices, and saying so would bury the ones that matter.
+              {(dateFrom || dateTo) && ' Limited to the dates set on the register.'}
+            </p>
+
+            {gapsBusy && <div className="py-8 text-center text-muted-foreground">Checking…</div>}
+
+            {!gapsBusy &&
+              ((gaps?.series as Row[]) || []).map((sr) => (
+                <div key={String(sr.prefix)} className="rounded-md border">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/40 px-3 py-2">
+                    <span className="doc-ref text-[13px] font-bold">{String(sr.prefix)}</span>
+                    <span className="text-[11.5px] tabular-nums text-muted-foreground">
+                      {String(sr.used)} used · {String(sr.from)}–{String(sr.to)}
+                    </span>
+                    <span
+                      className={cn(
+                        'rounded px-2 py-0.5 text-[11.5px] font-semibold tabular-nums',
+                        Number(sr.missing_count) ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'
+                      )}
+                    >
+                      {Number(sr.missing_count) ? `${sr.missing_count} missing` : 'none missing'}
+                    </span>
+                  </div>
+
+                  {Number(sr.missing_count) > 0 && (
+                    <>
+                      {/* Numbered, because this is a list somebody reads out or
+                          copies into a note to the auditor — "the fourth one"
+                          has to mean something. Flowing chips gave no way to
+                          say where you were in it. */}
+                      <table className="ruled-cols w-full text-[12px]">
+                        <thead className="bg-muted/40 text-[10px] uppercase tracking-widest text-muted-foreground">
+                          <tr>
+                            <th className="w-12 px-3 py-1.5 text-right">Sl.</th>
+                            <th className="px-3 py-1.5 text-left">Invoice no</th>
+                            <th className="px-3 py-1.5 text-left">What this looks like</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {((sr.missing as number[]) || []).map((num, i) => {
+                            const list = (sr.missing as number[]) || []
+                            // A stretch of consecutive numbers is one event — a
+                            // spoiled book, a cancelled batch — and reads quite
+                            // differently from the same count scattered about.
+                            const runStart = i === 0 || list[i - 1] !== num - 1
+                            const runEnd = i === list.length - 1 || list[i + 1] !== num + 1
+                            // Said in words, because whoever reads this list has
+                            // to explain it to somebody else. "run of 6" is our
+                            // language, not theirs.
+                            let note = ''
+                            let count = 0
+                            if (runStart && !runEnd) {
+                              let j = i
+                              while (j + 1 < list.length && list[j + 1] === list[j] + 1) j += 1
+                              count = j - i + 1
+                              note = `${count} in a row, ${sr.prefix}/${num} to ${sr.prefix}/${list[j]}`
+                            } else if (!runStart) {
+                              let start = i
+                              while (start > 0 && list[start - 1] === list[start] - 1) start -= 1
+                              let end = i
+                              while (end + 1 < list.length && list[end + 1] === list[end] + 1) end += 1
+                              note = `part of the ${end - start + 1} above`
+                            } else {
+                              note = 'on its own'
+                            }
+                            return (
+                              <tr key={num} className="border-t">
+                                <td className="px-3 py-1 text-right tabular-nums text-muted-foreground">{i + 1}</td>
+                                <td className="doc-ref px-3 py-1 font-medium tabular-nums text-rose-800">
+                                  {String(sr.prefix)}/{num}
+                                </td>
+                                <td
+                                  className={cn(
+                                    'px-3 py-1 text-[11px]',
+                                    count > 1 ? 'font-medium text-amber-800' : 'text-muted-foreground'
+                                  )}
+                                >
+                                  {note}
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </>
+                  )}
+
+                  {/* A number keyed under a misspelt prefix is a typo, not a
+                      lost bill. It would otherwise read as missing from one
+                      series and invisible in another. */}
+                  {((sr.strays as Row[]) || []).length > 0 && (
+                    <div className="border-t bg-amber-50 px-3 py-2 text-[11.5px] leading-snug text-amber-900">
+                      Keyed under a different spelling, so <b>not</b> missing —{' '}
+                      {((sr.strays as Row[]) || []).map((x) => String(x.as)).join(', ')}. Worth correcting the invoice
+                      number itself.
+                    </div>
+                  )}
+                </div>
+              ))}
+
+            {!gapsBusy && ((gaps?.unparsed as string[]) || []).length > 0 && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11.5px] leading-snug text-amber-900">
+                <b>No number at all</b> in these invoice fields, so they sit outside every series:{' '}
+                {((gaps?.unparsed as string[]) || []).join(' · ')}
+              </div>
+            )}
+
+            {!gapsBusy && !((gaps?.series as Row[]) || []).length && (
+              <div className="py-8 text-center text-muted-foreground">No numbered invoices in this range.</div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!cancelInv} onOpenChange={(o) => !o && !cancelling && setCancelInv(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>

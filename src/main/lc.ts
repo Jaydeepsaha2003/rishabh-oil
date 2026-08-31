@@ -1,7 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
-import { postLcOpening, postLcOpeningCharges, settleLcBillsCombined, postLcMarginRelease, postLcPrematureInterestRebate, saveLcRepayment, refreshLcUpfrontInterest, syncLcFeeAdjustment, lcFeeDelta } from './treasury'
+import { postLcOpening, postLcFees, resyncLcSettlement, settleLcBillsCombined, postLcMarginRelease, postLcPrematureInterestRebate, saveLcRepayment, refreshLcUpfrontInterest, syncLcFeeAdjustment, lcFeeDelta } from './treasury'
 import { facilityHeadroom } from './facilities'
 import { linkTradingDealsToLc } from './trading'
 import { getSetting } from './repos'
@@ -559,9 +559,20 @@ async function syncLcVouchers(id: number): Promise<string | undefined> {
     problems.push(`the margin voucher (${(e as Error).message})`)
   }
   try {
-    await postLcOpeningCharges(id)
+    // Clears the separate fee voucher earlier versions raised; the fees ride on
+    // the settlement journal now.
+    await postLcFees(id)
   } catch (e) {
-    problems.push(`the opening commission (${(e as Error).message})`)
+    problems.push(`the stray fee voucher (${(e as Error).message})`)
+  }
+  try {
+    // The settlement journal carries the supplier's discharge AND the bank's
+    // interest and commission, so a change to the rate, the days or the
+    // commission has to re-derive it. Without this the ledger would keep
+    // whatever those were on the day the bank paid.
+    await resyncLcSettlement(id)
+  } catch (e) {
+    problems.push(`the settlement journal (${(e as Error).message})`)
   }
   try {
     await refreshLcUpfrontInterest(id)

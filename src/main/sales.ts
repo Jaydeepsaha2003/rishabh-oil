@@ -503,6 +503,154 @@ function returnSum(dateWhere: string, coWhere: string): string {
        AND ${RETURN_MATCH}${coWhere}${dateWhere}), 0)`
 }
 
+// The prefix this company's sales invoices carry, and the next free number.
+//
+// Typed by hand, a prefix goes wrong in ways a gap report then reports as lost
+// bills: "KRFL." with a stray stop, a bare "KRFL", a party name in the field.
+// Handing the prefix to the form fixes the class of mistake rather than the
+// instances.
+//
+// Not configured anywhere: it is read from the series the company already
+// uses, taking whichever prefix the most invoices carry. A book with a history
+// has already decided what its invoices are called, and asking again would only
+// invite a second answer.
+export async function salesInvoiceSeries(companyId?: number): Promise<Row> {
+  const cid = companyId || getActiveCompanyId()
+  const res = await getClient().execute({
+    sql: `SELECT invoice_no FROM sales
+           WHERE company_id = ? AND invoice_no IS NOT NULL AND TRIM(invoice_no) <> ''`,
+    args: [cid]
+  })
+  const count = new Map<string, number>()
+  const highest = new Map<string, number>()
+  for (const r of toPlain(res)) {
+    const m = String(r.invoice_no || '').trim().match(/^(.*?)[/\-]?(\d+)$/)
+    if (!m || !m[1]) continue
+    // Punctuation and case are noise here: KRFL, KRFL. and krfl are one series,
+    // and the tidiest spelling should win rather than the first seen.
+    const prefix = m[1].replace(/[/\-]+$/, '').replace(/[^A-Za-z0-9]/g, '').toUpperCase()
+    count.set(prefix, (count.get(prefix) || 0) + 1)
+    const num = Number(m[2])
+    if (num > (highest.get(prefix) || 0)) highest.set(prefix, num)
+  }
+  let prefix = ''
+  let best = 0
+  for (const [p, c] of count) {
+    if (c > best) {
+      best = c
+      prefix = p
+    }
+  }
+  return {
+    company_id: cid,
+    prefix,
+    highest: prefix ? highest.get(prefix) || 0 : 0,
+    // The obvious next one. A suggestion only — a gap being filled in is a
+    // perfectly good reason to type something else.
+    next: prefix ? (highest.get(prefix) || 0) + 1 : 1,
+    invoices: best
+  }
+}
+
+// Which invoice numbers are missing from the series.
+//
+// Invoices run KRFL/1 … KRFL/n and KRFIN/1 … KRFIN/n, and a number that was
+// never used is a number somebody has to account for — a cancelled bill, a
+// spoiled form, or one issued and never keyed. The only way to find them is to
+// walk the range and see what is not there.
+//
+// Bounded by the lowest and highest number actually present, not by 1: a book
+// that starts mid-year at 367 has not "missed" 366 invoices, and reporting it
+// that way would bury the twenty-five that matter.
+//
+// A near-miss prefix is called out rather than silently counted as a gap.
+// "KRFL." holding 490 while "KRFL" appears to be missing 490 is a typo in one
+// invoice, not a lost bill, and the two facts belong together.
+export async function salesInvoiceGaps(
+  companyId?: number,
+  range?: { from?: string; to?: string }
+): Promise<Row> {
+  const cid = companyId || getActiveCompanyId()
+  const conds = ['s.company_id = ?', "s.invoice_no IS NOT NULL", "TRIM(s.invoice_no) <> ''"]
+  const args: (string | number)[] = [cid]
+  if (range?.from) {
+    conds.push('s.sale_date >= ?')
+    args.push(range.from)
+  }
+  if (range?.to) {
+    conds.push('s.sale_date <= ?')
+    args.push(range.to)
+  }
+  const res = await getClient().execute({
+    sql: `SELECT DISTINCT s.invoice_no, MIN(s.sale_date) AS first_date
+            FROM sales s WHERE ${conds.join(' AND ')}
+           GROUP BY s.invoice_no ORDER BY s.invoice_no`,
+    args
+  })
+
+  // prefix -> the numbers seen under it, and the date each was first used
+  const series = new Map<string, Map<number, string>>()
+  const unparsed: string[] = []
+  for (const r of toPlain(res)) {
+    const inv = String(r.invoice_no || '').trim()
+    const m = inv.match(/^(.*?)[/\\-]?(\d+)$/)
+    if (!m || !m[1]) {
+      unparsed.push(inv)
+      continue
+    }
+    const prefix = m[1].replace(/[/\\-]+$/, '')
+    if (!series.has(prefix)) series.set(prefix, new Map())
+    series.get(prefix)!.set(Number(m[2]), String(r.first_date || '').slice(0, 10))
+  }
+
+  // A prefix differing from another only by punctuation or case is the same
+  // series mistyped, so what it holds is NOT missing from the real one.
+  const bare = (v: string): string => v.replace(/[^A-Za-z0-9]/g, '').toUpperCase()
+  const rows: Row[] = []
+  for (const [prefix, nums] of series) {
+    const keys = [...nums.keys()].sort((a, b) => a - b)
+    if (!keys.length) continue
+    const lo = keys[0]
+    const hi = keys[keys.length - 1]
+
+    // Everything the same series holds, however it was spelled.
+    const held = new Set<number>()
+    const strays: Row[] = []
+    for (const [other, otherNums] of series) {
+      if (bare(other) !== bare(prefix)) continue
+      for (const k of otherNums.keys()) held.add(k)
+      if (other !== prefix) {
+        for (const k of otherNums.keys()) strays.push({ number: k, as: `${other}/${k}` })
+      }
+    }
+    const missing = []
+    for (let i = lo; i <= hi; i++) if (!held.has(i)) missing.push(i)
+
+    rows.push({
+      prefix,
+      used: keys.length,
+      from: lo,
+      to: hi,
+      expected: hi - lo + 1,
+      missing,
+      missing_count: missing.length,
+      // Numbers that exist, but keyed under a misspelt prefix — a typo to fix,
+      // not a bill to hunt for.
+      strays
+    })
+  }
+  // The real series first: a mistyped prefix holding one invoice is not the one
+  // anybody came here to read.
+  rows.sort((a, b) => n(b.used) - n(a.used))
+  return {
+    company_id: cid,
+    series: rows.filter((r) => n(r.used) > 1 || !rows.some((o) => o !== r && bare(String(o.prefix)) === bare(String(r.prefix)))),
+    // Invoice numbers with no number in them at all — a party name typed into
+    // the invoice field, most often.
+    unparsed
+  }
+}
+
 export async function listSalesBargains(
   from?: string,
   to?: string,

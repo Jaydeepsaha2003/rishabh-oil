@@ -283,6 +283,9 @@ const api = {
   sales: {
     list: (companyIds?: number[], forModule?: string): Promise<Row[]> =>
       ipcRenderer.invoke('sales:list', { companyIds, forModule }),
+    invoiceGaps: (companyId?: number, from?: string, to?: string): Promise<Row> =>
+      ipcRenderer.invoke('sales:invoiceGaps', { companyId, from, to }),
+    series: (companyId?: number): Promise<Row> => ipcRenderer.invoke('sales:series', { companyId }),
     fyTaxable: (customerId: number, date: string, excludeId: number): Promise<number> =>
       ipcRenderer.invoke('sales:fyTaxable', { customerId, date, excludeId }),
     create: (values: Row): Promise<{ id: number }> =>

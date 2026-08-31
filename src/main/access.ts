@@ -2,6 +2,7 @@ import os from 'os'
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getSetting } from './repos'
+import { clearAccessCache } from './access-gate'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -55,6 +56,13 @@ export async function recordSession(userId: number, username: string, ip: string
 //
 // `revoked` says the account is gone or switched off — the renderer signs out on
 // it, the same as a device block.
+// Every beat drops the write gate's cached copy of this user's rights.
+//
+// That cache lives in the main process of EACH machine, and only the admin's
+// own process was told when permissions changed. So the clerk's app kept
+// enforcing yesterday's window — the screen would show the new one while the
+// save refused on the old. The beat already reads the user's row fresh, so
+// clearing here costs nothing and keeps the two in step.
 export async function heartbeat(
   userId: number,
   username: string
@@ -69,6 +77,9 @@ export async function heartbeat(
   const allowed = await isIpAllowed(ip)
   if (!allowed) return { blocked: true }
   await recordSession(userId, username, ip)
+  // Drop the write gate's cached rights for this machine before reading them
+  // again, so the enforcement and the screen cannot disagree.
+  clearAccessCache()
   const res = await getClient().execute({
     sql: 'SELECT role, full_name, permissions, active FROM users WHERE id = ? LIMIT 1',
     args: [userId]

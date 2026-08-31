@@ -64,6 +64,50 @@ const T = {
 
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
 
+// A money field that is readable when you are not in it.
+//
+// A raw number input shows 16054441.64, and nobody can tell at a glance whether
+// that is sixteen lakh or one crore sixty. Grouped, it reads 1,60,54,441.64 and
+// the magnitude is obvious — which on a voucher is the whole point, since the
+// commonest error is an amount an order of magnitude out.
+//
+// Grouped while blurred, raw while focused: grouping separators fight the caret
+// and the keyboard, so they are dropped the moment you start typing.
+function AmountInput({
+  value,
+  onChange,
+  onFocus,
+  className
+}: {
+  value: string
+  onChange: (v: string) => void
+  onFocus?: () => void
+  className?: string
+}): React.JSX.Element {
+  const [live, setLive] = useState(false)
+  const num = Number(value)
+  const shown = live || value === '' || !Number.isFinite(num) ? value : formatNum(num)
+  return (
+    <input
+      // Not type=number: that forbids the grouping separators shown when
+      // blurred, and its spinner has no business on a ledger amount.
+      inputMode="decimal"
+      className={cn(
+        'doc-ref h-8 w-full rounded-md border bg-white px-2 text-right text-[13px] tabular-nums outline-none',
+        'focus:border-[#1a2c56] focus:ring-1 focus:ring-[#1a2c56]/20',
+        className
+      )}
+      value={shown}
+      onFocus={() => {
+        setLive(true)
+        onFocus?.()
+      }}
+      onBlur={() => setLive(false)}
+      onChange={(e) => onChange(e.target.value.replace(/[^0-9.]/g, ''))}
+    />
+  )
+}
+
 type Screen = 'gateway' | 'voucher' | 'daybook' | 'ledger' | 'trial' | 'purchreg' | 'salesreg' | 'trading' | 'notesreg' | 'tfpur' | 'tfsal' | 'openings'
 type VchType = 'CONTRA' | 'PAYMENT' | 'RECEIPT' | 'JOURNAL' | 'DEBIT NOTE' | 'CREDIT NOTE'
 
@@ -391,9 +435,9 @@ export function Accounts({
   // Drill through to the source document's own page. Absent when Accounts is
   // mounted somewhere that cannot navigate, in which case a line falls back to
   // showing its voucher in place.
-  onOpenRecord?: (target: 'orders' | 'sales', id: number, resume?: { screen: string; ledgerId: number | null }) => void
+  onOpenRecord?: (target: 'orders' | 'sales', id: number, resume?: { screen: string; ledgerId: number | null; companyId?: number }) => void
   // Where this page was when it drilled out, handed back on the way in.
-  resume?: { screen: string; ledgerId: number | null } | null
+  resume?: { screen: string; ledgerId: number | null; companyId?: number } | null
   onResumed?: () => void
 }): React.JSX.Element {
   // Tally opens on Select Company — every report and voucher below is pinned
@@ -405,8 +449,17 @@ export function Accounts({
     Promise.all([window.api.company.list(), window.api.company.getActive()])
       .then(([cs, active]) => {
         setCompanies(cs)
-        const i = cs.findIndex((x) => Number(x.id) === Number(active.id))
+        const resuming = pendingCoRef.current != null
+        const want = pendingCoRef.current ?? Number(active.id)
+        pendingCoRef.current = null
+        const i = cs.findIndex((x) => Number(x.id) === Number(want))
         setCoIndex(i >= 0 ? i : 0)
+        // Coming back from a drill-through, the company was CHOSEN before we
+        // left — so choose it again rather than asking. `coIndex` is only the
+        // cursor on the picker; `company` is the answer, and the Select Company
+        // gate reads the answer. Moving the cursor and not the answer put every
+        // return trip back on the picker.
+        if (resuming && i >= 0) setCompany(cs[i])
       })
       .catch(() => {})
   }, [])
@@ -436,6 +489,7 @@ export function Accounts({
   // Rate-difference helper (Journal only): a later price revision on an
   // already-invoiced purchase/sale, settled through RATE DIFFERENCE A/C
   // rather than reopening the original document.
+  const [rateDiffOpen, setRateDiffOpen] = useState(false)
   const [rateDiff, setRateDiff] = useState({ party: '', group: '', amount: '', direction: 'owes_more' as 'owes_more' | 'owes_less' })
   // Tally invoice-mode for Debit/Credit notes: party -> original invoice ->
   // item lines (qty x rate) -> GST + round off, posted through the notes engine.
@@ -506,10 +560,16 @@ export function Accounts({
   // anything paints, so the Gateway never flashes, and consumed immediately so
   // a later manual visit starts fresh.
   const resumedRef = useRef(false)
+  // The company to restore once the company list has loaded — it arrives after
+  // the resume does, so the index cannot be set on the spot.
+  const pendingCoRef = useRef<number | null>(null)
   if (resume && !resumedRef.current) {
     resumedRef.current = true
     if (resume.screen) setScreen(resume.screen as Screen)
     if (resume.ledgerId != null) setLedgerId(resume.ledgerId)
+    // Come back to the book the ledger was being read in, not to whichever the
+    // drill-through left the app working in.
+    if (resume.companyId != null) pendingCoRef.current = Number(resume.companyId)
   }
   useEffect(() => {
     if (resumedRef.current) onResumed?.()
@@ -2500,7 +2560,25 @@ export function Accounts({
           </div>
         )}
 
-        {!structured && !noteInvoiceMode && vchType === 'JOURNAL' && (
+        {/* A niche tool, folded away. It was sitting above the entry lines
+            taking the best space on the form for something used on perhaps one
+            voucher in fifty — and pushing the thing you actually came to read
+            below the fold. */}
+        {!structured && !noteInvoiceMode && vchType === 'JOURNAL' && !rateDiffOpen && (
+          <div className="px-4 pt-2.5">
+            <button
+              type="button"
+              className="text-[11px] font-medium text-sky-700 hover:underline"
+              onClick={() => setRateDiffOpen(true)}
+            >
+              + Rate difference helper
+              <span className="ml-1.5 font-normal text-muted-foreground">
+                — a price revision on a bill already invoiced
+              </span>
+            </button>
+          </div>
+        )}
+        {!structured && !noteInvoiceMode && vchType === 'JOURNAL' && rateDiffOpen && (
           <div className="mx-4 mt-3 flex flex-wrap items-end gap-3 rounded border border-dashed border-sky-300 bg-sky-50/60 px-3 py-2">
             <span className="pb-1.5 text-[10px] font-bold uppercase tracking-widest text-sky-800">Rate difference helper</span>
             <div className="flex w-56 flex-col gap-1">
@@ -2537,6 +2615,13 @@ export function Accounts({
             <Button size="sm" variant="outline" className="h-8 bg-white text-xs" onClick={applyRateDiff}>
               Build the legs
             </Button>
+            <button
+              type="button"
+              className="pb-1.5 text-[11px] text-muted-foreground hover:underline"
+              onClick={() => setRateDiffOpen(false)}
+            >
+              Hide
+            </button>
             <span className="pb-1.5 text-[11px] text-sky-800">
               {rateDiff.party
                 ? `${rateDiff.direction === 'owes_more' ? 'Party owes more' : 'Party owes less'} against RATE DIFFERENCE A/C — settle bill-wise below if it's against a specific invoice.`
@@ -2546,13 +2631,16 @@ export function Accounts({
         )}
 
         {!structured && !noteInvoiceMode && (
-        <table className="w-full text-[13px]">
+        <table className="ruled-cols w-full text-[13px]">
           <thead>
-            <tr className="border-b text-left text-[10px] uppercase tracking-widest text-muted-foreground" style={{ borderColor: '#d9d2b8' }}>
+            <tr
+              className="border-y bg-[#f1ecd9] text-left text-[10px] uppercase tracking-widest text-[#1a2c56]"
+              style={{ borderColor: '#d9d2b8' }}
+            >
               <th className="w-16 px-4 py-1.5">Dr/Cr</th>
               <th className="px-2 py-1.5">Particulars</th>
-              <th className="w-36 px-2 py-1.5 text-right">Debit</th>
-              <th className="w-36 px-2 py-1.5 text-right">Credit</th>
+              <th className="w-40 px-2 py-1.5 text-right">Debit</th>
+              <th className="w-40 px-2 py-1.5 text-right">Credit</th>
               <th className="w-10" />
             </tr>
           </thead>
@@ -2591,23 +2679,19 @@ export function Accounts({
                 </td>
                 <td className="px-2 py-1.5">
                   {l.side === 'dr' && (
-                    <Input
-                      type="number"
-                      className="h-8 bg-white text-right tabular-nums"
+                    <AmountInput
                       value={l.amount}
                       onFocus={() => suggestAmount(i)}
-                      onChange={(e) => setLine(i, { amount: e.target.value })}
+                      onChange={(v) => setLine(i, { amount: v })}
                     />
                   )}
                 </td>
                 <td className="px-2 py-1.5">
                   {l.side === 'cr' && (
-                    <Input
-                      type="number"
-                      className="h-8 bg-white text-right tabular-nums"
+                    <AmountInput
                       value={l.amount}
                       onFocus={() => suggestAmount(i)}
-                      onChange={(e) => setLine(i, { amount: e.target.value })}
+                      onChange={(v) => setLine(i, { amount: v })}
                     />
                   )}
                 </td>
@@ -2653,25 +2737,31 @@ export function Accounts({
             </tr>
           </tbody>
           <tfoot>
-            <tr className="border-t-2 font-semibold" style={{ borderColor: '#1a2c56' }}>
+            <tr className="border-t-2 bg-[#f1ecd9] font-semibold" style={{ borderColor: '#1a2c56' }}>
               <td className="px-4 py-2" colSpan={2}>
+                {/* The state of the voucher, said as a state rather than left
+                    to be worked out by comparing two totals. Which side is
+                    short is the useful half — it says where to type next. */}
                 {Math.abs(totals.diff) < 0.005 ? (
-                  <span className="flex items-center gap-1 text-[12px] text-emerald-700">
+                  <span className="inline-flex items-center gap-1.5 rounded bg-emerald-100 px-2 py-0.5 text-[12px] text-emerald-800">
                     <Check className="h-3.5 w-3.5" /> Balanced
                   </span>
                 ) : (
-                  <span className="flex items-center gap-2 text-[12px] text-red-600">
-                    Difference {formatINR(Math.abs(totals.diff))} {totals.diff > 0 ? '(Cr short)' : '(Dr short)'}
+                  <span className="inline-flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1.5 rounded bg-rose-100 px-2 py-0.5 text-[12px] text-rose-800">
+                      {totals.diff > 0 ? 'Credit short by' : 'Debit short by'}{' '}
+                      <span className="doc-ref tabular-nums">{formatINR(Math.abs(totals.diff))}</span>
+                    </span>
                     {Math.abs(totals.diff) < 1 && (
-                      <Button size="sm" variant="outline" className="h-6 px-1.5 text-[11px]" onClick={addRoundOffLine}>
+                      <Button size="sm" variant="outline" className="h-6 bg-white px-1.5 text-[11px]" onClick={addRoundOffLine}>
                         Close with round off
                       </Button>
                     )}
                   </span>
                 )}
               </td>
-              <td className="px-2 py-2 text-right tabular-nums">{formatINR(totals.dr)}</td>
-              <td className="px-2 py-2 text-right tabular-nums">{formatINR(totals.cr)}</td>
+              <td className="doc-ref px-2 py-2 text-right tabular-nums">{formatINR(totals.dr)}</td>
+              <td className="doc-ref px-2 py-2 text-right tabular-nums">{formatINR(totals.cr)}</td>
               <td />
             </tr>
           </tfoot>
@@ -4380,7 +4470,11 @@ export function Accounts({
                           // and edited. Only a voucher with no source document
                           // behind it (a manual journal, a contra) has nothing
                           // better to show than itself.
-                          const here = { screen, ledgerId }
+                          // The book this ledger is being read in travels with
+                          // the request, so the document opens in its own
+                          // company rather than whichever one the app happens
+                          // to be working in.
+                          const here = { screen, ledgerId, companyId: cid }
                           if (l.order_id && onOpenRecord) return onOpenRecord('orders', Number(l.order_id), here)
                           if (l.sale_id && onOpenRecord) return onOpenRecord('sales', Number(l.sale_id), here)
                           void openForAlter({ id: l.entry_id ?? l.id })

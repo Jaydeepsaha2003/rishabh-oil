@@ -182,49 +182,22 @@ export async function postLcOpening(lcId: number): Promise<void> {
   await c.execute({ sql: 'UPDATE letters_of_credit SET journal_entry_id = ? WHERE id = ?', args: [je.id, lcId] })
 }
 
-// The bank's commission for OPENING the credit.
+// The fees an LC's own settlement voucher carries — see settleLcBillsCombined,
+// which posts them on the same journal as the supplier's discharge, because the
+// bank pays the beneficiary and keeps its cut in one act.
 //
-// Raised when the bank actually opens it, because that is when the service is
-// rendered and the fee incurred — not months later when the bill matures. It
-// used to ride along with the repayment, so an LC that had not been repaid
-// showed no commission at all: four entries in BANK CHARGES against
-// twenty-five open LCs, all of which had been charged.
-//
-// A JOURNAL: the fee becomes a cost and is added to what the bank is owed. It
-// leaves the account later, inside the one lump the repayment settles.
-//
-// Skipped when interest and charges are paid upfront instead — that path has
-// its own voucher, posted against the reconciled bank line.
-export async function postLcOpeningCharges(lcId: number): Promise<void> {
+// This function no longer posts anything. It survives to REMOVE the separate
+// fee voucher earlier versions raised, so re-posting an LC cleans up after
+// them rather than leaving two entries where there should be one.
+export async function postLcFees(lcId: number): Promise<void> {
   const c = getClient()
-  const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [lcId] })
+  const res = await c.execute({
+    sql: 'SELECT charges_journal_entry_id FROM letters_of_credit WHERE id = ?',
+    args: [lcId]
+  })
   if (!res.rows.length) return
-  const lc = toPlain(res)[0]
-  await dropEntry(n(lc.charges_journal_entry_id) || null)
-
-  const charges = lc.interest_upfront ? 0 : round2(n(lc.charges))
-  // Nothing is owed until the bank has opened the credit. An application it
-  // has not agreed to has cost nothing yet.
-  const opened = String(lc.opened_date || '').slice(0, 10)
-  if (charges < 0.005 || !opened) {
-    await c.execute({ sql: 'UPDATE letters_of_credit SET charges_journal_entry_id = NULL WHERE id = ?', args: [lcId] })
-    return
-  }
-  const je = await postJournal({
-    date: opened,
-    vchType: 'JOURNAL',
-    vchNo: String(lc.lc_no || ''),
-    narration: `LC ${lc.lc_no} — ${lc.bank} commission ${charges.toFixed(2)} on opening`,
-    companyId: n(lc.company_id) || undefined,
-    lines: [
-      { account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: charges },
-      { account: await lcPayable(lc), group: LC_PAYABLE_GROUP, cr: charges }
-    ]
-  })
-  await c.execute({
-    sql: 'UPDATE letters_of_credit SET charges_journal_entry_id = ? WHERE id = ?',
-    args: [je.id, lcId]
-  })
+  await dropEntry(n(res.rows[0].charges_journal_entry_id) || null)
+  await c.execute({ sql: 'UPDATE letters_of_credit SET charges_journal_entry_id = NULL WHERE id = ?', args: [lcId] })
 }
 
 // Posts the Dr Interest + Dr Charges / Cr Bank entry for interest and charges
@@ -864,42 +837,24 @@ export async function deleteLcPaymentIn(id: number): Promise<{ id: number }> {
 
 // A bill under the LC matures and the bank pays the supplier: the payable
 // clears against the original invoice, money leaves the bank.
+// Settle one bill. Delegates, deliberately: a second implementation of this
+// posting is how the books came to disagree with themselves in the first place.
+//
+// It had its own postJournal crediting the bank directly, so settling a bill by
+// hand posted the way the app used to — while the same act through Payment
+// received posted the way it does now. Two paths, two answers, and no way to
+// tell from a voucher which one had written it.
+//
+// There is one path now. Everything about how an LC settles lives in
+// settleLcBillsCombined, and every caller reaches it.
 export async function settleLcBill(issuanceId: number, dateIn?: string): Promise<{ id: number }> {
   const c = getClient()
-  const res = await c.execute({
-    sql: `SELECT i.*, l.lc_no, l.bank, l.our_bank_id, l.party_type, l.party_id, l.company_id, s.name AS supplier_name, o.invoice_no
-          FROM lc_issuances i
-          JOIN letters_of_credit l ON l.id = i.lc_id
-          LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
-          LEFT JOIN orders o ON o.id = i.order_id
-          WHERE i.id = ?`,
-    args: [issuanceId]
-  })
+  const res = await c.execute({ sql: 'SELECT status FROM lc_issuances WHERE id = ?', args: [issuanceId] })
   if (!res.rows.length) throw new Error('LC bill not found')
-  const b = toPlain(res)[0]
-  const bankAcc = await bankAccountFor(b)
-  if (String(b.status) === 'settled') throw new Error('This bill is already settled')
-  const party = String(b.supplier_name || '').trim()
-  if (!party) throw new Error('The LC has no supplier party — set it on the LC first')
-  const date = String(dateIn || todayISO()).slice(0, 10)
-  const amount = round2(n(b.amount))
-  const je = await postJournal({
-    date,
-    vchType: 'PAYMENT',
-    vchNo: String(b.bill_no || b.lc_no || ''),
-    narration: `LC ${b.lc_no} ${b.bill_no ? `bill ${b.bill_no}` : 'on account'} matured — paid by ${b.bank}`,
-    companyId: n(b.company_id) || undefined,
-    lines: [
-      { account: party, group: 'Sundry Creditors', dr: amount },
-      { account: bankAcc, group: 'Bank Accounts', cr: amount }
-    ]
-  })
-  await allocAgainst(je.id, party, b.invoice_no ? String(b.invoice_no) : b.bill_no ? String(b.bill_no) : null, amount)
-  await c.execute({
-    sql: "UPDATE lc_issuances SET status = 'settled', settled_date = ?, journal_entry_id = ? WHERE id = ?",
-    args: [date, je.id, issuanceId]
-  })
-  return { id: issuanceId }
+  if (String(res.rows[0].status) === 'settled') throw new Error('This bill is already settled')
+  const je = await settleLcBillsCombined([issuanceId], dateIn)
+  if (!je) throw new Error('That bill could not be settled')
+  return je
 }
 
 // Every bill still outstanding on an LC settles as ONE payment — one bank
@@ -911,7 +866,9 @@ export async function settleLcBillsCombined(issuanceIds: number[], dateIn?: stri
   if (!issuanceIds.length) return null
   const c = getClient()
   const res = await c.execute({
-    sql: `SELECT i.*, l.lc_no, l.bank, l.our_bank_id, l.party_type, l.party_id, l.company_id, s.name AS supplier_name, o.invoice_no
+    sql: `SELECT i.*, l.lc_no, l.bank, l.our_bank_id, l.party_type, l.party_id, l.company_id,
+                 l.amount AS lc_amount, l.charges AS lc_charges, l.interest_pct, l.usance_days,
+                 l.interest_upfront, s.name AS supplier_name, o.invoice_no
           FROM lc_issuances i
           JOIN letters_of_credit l ON l.id = i.lc_id
           LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
@@ -925,42 +882,56 @@ export async function settleLcBillsCombined(issuanceIds: number[], dateIn?: stri
   const party = String(first.supplier_name || '').trim()
   if (!party) throw new Error('The LC has no supplier party — set it on the LC first')
   const date = String(dateIn || todayISO()).slice(0, 10)
-  const total = round2(bills.reduce((s, b) => s + n(b.amount), 0))
+  const total = round2(bills.reduce((s2, b) => s2 + n(b.amount), 0))
+  const payable = await lcPayable(first)
+
+  // ONE voucher, because this is one event.
+  //
+  // The bank honours the credit: it pays the beneficiary the net and keeps its
+  // interest and commission out of the same credit, in a single act. Posting
+  // the supplier in one journal and the fees in another made two entries out of
+  // one, numbered differently, so nothing on screen showed they belonged
+  // together — and the payable was credited twice for halves of one figure.
+  //
+  // The fees are taken once per LC, however many bills share the voucher.
+  const feeLines: { account: string; group: string; dr?: number; cr?: number }[] = []
+  let fees = 0
+  const seen = new Set<number>()
+  for (const b of bills) {
+    const lcId = n(b.lc_id)
+    if (seen.has(lcId)) continue
+    seen.add(lcId)
+    if (b.interest_upfront) continue // settled straight from the account instead
+    const interest = round2((n(b.lc_amount) * n(b.interest_pct) * n(b.usance_days)) / (100 * 365))
+    const charges = round2(n(b.lc_charges))
+    if (interest > 0.005) feeLines.push({ account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest })
+    if (charges > 0.005) feeLines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: charges })
+    fees = round2(fees + interest + charges)
+  }
+
   const je = await postJournal({
     date,
     // A JOURNAL, not a PAYMENT. Nothing of yours moves here — the bank honours
-    // the credit and pays the beneficiary out of its own funds. What happens is
-    // that one liability is exchanged for another: the supplier is discharged,
-    // and the bank takes their place as the party you owe.
+    // the credit out of its own funds. One liability is exchanged for another:
+    // the supplier is discharged, and the bank takes their place.
     vchType: 'JOURNAL',
     vchNo: String(first.lc_no || ''),
     // A bill auto-issued against the whole LC is NAMED after it, so repeating
-    // the name tells the reader nothing: "LC LC-11 bill LC-11 matured". Worse,
-    // once an LC is renumbered the bill keeps its old name and the narration
-    // reads as two documents — "LC LC-11 bill LC-17" — when there is only one.
-    // So the bill is mentioned only when it carries a name of its own, such as
-    // a reference the bank gave you.
+    // the name tells the reader nothing. It is mentioned only when it carries a
+    // name of its own, such as a reference the bank gave you.
     narration: (() => {
-      if (bills.length > 1) {
-        return `LC ${first.lc_no} — ${bills.length} bills matured — ${first.bank} paid ${party} under the LC`
-      }
       const bill = String(first.bill_no || '').trim()
-      const named = bill && bill !== String(first.lc_no || '').trim() ? ` (bill ${bill})` : ''
-      return `LC ${first.lc_no}${named} matured — ${first.bank} paid ${party} under the LC`
+      const named =
+        bills.length === 1 && bill && bill !== String(first.lc_no || '').trim() ? ` (bill ${bill})` : ''
+      const many = bills.length > 1 ? ` — ${bills.length} bills` : ''
+      const kept = fees > 0.005 ? `, keeping ${fees.toFixed(2)} interest and commission` : ''
+      return `LC ${first.lc_no}${named}${many} matured — ${first.bank} paid ${party} ${total.toFixed(2)}${kept}`
     })(),
     companyId: n(first.company_id) || undefined,
-    // The BANK pays the beneficiary here, not you — that is what a letter of
-    // credit is for. So the party is discharged (a debit, rightly, since paying
-    // a creditor reduces what you owe them) against the LIABILITY to the bank,
-    // never against your bank balance.
-    //
-    // Crediting the bank instead meant your account was shown as paying twice:
-    // once when the bill matured and again when the LC was actually repaid. It
-    // also left the liability invisible for the whole usance period, so the
-    // books never admitted you owed the bank anything between the two dates.
     lines: [
       { account: party, group: 'Sundry Creditors', dr: total },
-      { account: await lcPayable(first), group: LC_PAYABLE_GROUP, cr: total }
+      ...feeLines,
+      { account: payable, group: LC_PAYABLE_GROUP, cr: round2(total + fees) }
     ]
   })
   for (const b of bills) {
@@ -973,6 +944,37 @@ export async function settleLcBillsCombined(issuanceIds: number[], dateIn?: stri
     args: [date, je.id, ...bills.map((b) => Number(b.id))]
   })
   return { id: je.id }
+}
+
+// Re-posts an LC's settlement voucher from the LC's CURRENT figures.
+//
+// A voucher written once and never revisited goes stale the moment anything it
+// was derived from changes: correct an interest rate or a commission after the
+// bank has paid, and the ledger keeps yesterday's number for ever. Every other
+// voucher in this cycle is re-posted on save; this one was not, because the
+// bills were already settled and settling skips them.
+//
+// The settlement DATE is preserved — it is a fact about when the bank paid, not
+// something to be re-derived — and bills that shared a voucher are kept
+// together so a combined settlement stays combined.
+export async function resyncLcSettlement(lcId: number): Promise<void> {
+  const c = getClient()
+  const res = await c.execute({
+    sql: `SELECT id, journal_entry_id, settled_date FROM lc_issuances
+           WHERE lc_id = ? AND journal_entry_id IS NOT NULL ORDER BY journal_entry_id, id`,
+    args: [n(lcId)]
+  })
+  if (!res.rows.length) return
+  const groups = new Map<number, { ids: number[]; date: string }>()
+  for (const r of toPlain(res)) {
+    const je = n(r.journal_entry_id)
+    if (!groups.has(je)) groups.set(je, { ids: [], date: String(r.settled_date || '').slice(0, 10) })
+    groups.get(je)!.ids.push(n(r.id))
+  }
+  for (const g of groups.values()) {
+    await reopenLcBill(g.ids[0])
+    await settleLcBillsCombined(g.ids, g.date || undefined)
+  }
 }
 
 // Reopening a bill that was settled as part of a combined payment reopens
@@ -1016,8 +1018,7 @@ export async function listLcRepayments(lcId: number): Promise<Row[]> {
 export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   const c = getClient()
   const res = await c.execute({
-    sql: `SELECT r.*, l.lc_no, l.company_id, l.bank, l.our_bank_id, l.amount AS lc_open_amount,
-                 l.charges AS lc_charges, l.interest_pct, l.usance_days, l.interest_upfront
+    sql: `SELECT r.*, l.lc_no, l.company_id, l.bank, l.our_bank_id, l.amount AS lc_open_amount
           FROM lc_repayments r
           JOIN letters_of_credit l ON l.id = r.lc_id
           WHERE r.id = ?`,
@@ -1030,60 +1031,37 @@ export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   await dropEntry(n(rep.journal_entry_id) || null)
   await dropEntry(n(rep.fee_journal_entry_id) || null)
 
-  // TWO vouchers, because two different things happen and a voucher type is a
-  // statement about which:
+  // The LC's own interest and commission are NOT here. The bank kept them out
+  // of the credit when it paid the beneficiary, so they were posted then (see
+  // postLcFees) and are already sitting in the payable this settles.
   //
-  //   JOURNAL  the bank's interest and commission become a cost, and are added
-  //            to what you owe it. No money moves.
-  //   PAYMENT  you settle the whole liability in one debit. Money moves, and
-  //            the figure is exactly what the statement says.
-  //
-  // They used to be one PAYMENT carrying all three legs, which called an
-  // accrual a payment and left the payment voucher showing expense accounts
-  // where a bank statement shows a single lump.
+  // What can still belong to this voucher is anything the bank took ON THE DAY
+  // over and above the credit — a maturity charge, a commission keyed off the
+  // statement. Those are this event's cost.
   const total = round2(n(rep.amount))
-
-  // The fees are the LC's OWN — its rate over its days, and the commission it
-  // was quoted — not whatever is left over after the advance. Deriving them as
-  // a residual made interest absorb any error in the bill: KR FINMARK LC-1
-  // showed 1,68,509.59 against a real 1,79,431.51, quietly 10,921.92 light
-  // because its bill was that much over. An expense account is not the place
-  // to hide a discrepancy; the payable is, where it stays visible.
-  const upfront = !!rep.interest_upfront
-  const usance = upfront
-    ? 0
-    : round2((n(rep.lc_open_amount) * n(rep.interest_pct) * n(rep.usance_days)) / (100 * 365))
-  // The LC's own commission is NOT here — it was raised when the bank opened
-  // the credit, and is already sitting in the payable this repayment settles.
-  // Only what the bank took on the day, over and above, belongs to this
-  // voucher.
   const comm = round2(n(rep.comm_charges))
-  const charges = round2(n(rep.bank_charges))
-  const fees = round2(usance + charges + comm)
+  const extra = round2(n(rep.bank_charges))
+  const onTheDay = round2(comm + extra)
   const date = String(rep.repay_date || todayISO()).slice(0, 10)
 
   let feeJe: number | null = null
-  if (fees > 0.004) {
+  if (onTheDay > 0.004) {
     const lines: { account: string; group: string; dr?: number; cr?: number }[] = []
-    if (usance > 0.005) lines.push({ account: 'INTEREST A/C', group: 'Indirect Expenses', dr: usance })
-    if (charges > 0.005) lines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: charges })
     if (comm > 0.005) lines.push({ account: 'COMM. CHARGES A/C', group: 'Indirect Expenses', dr: comm })
-    lines.push({ account: payable, group: LC_PAYABLE_GROUP, cr: fees })
+    if (extra > 0.005) lines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: extra })
+    lines.push({ account: payable, group: LC_PAYABLE_GROUP, cr: onTheDay })
     const je = await postJournal({
       date,
       vchType: 'JOURNAL',
       vchNo: rep.lc_no ? String(rep.lc_no) : null,
-      narration:
-        `LC ${rep.lc_no} — ${rep.bank || 'the bank'} charged interest ${usance.toFixed(2)}` +
-        ` and charges ${round2(charges + comm).toFixed(2)}`,
+      narration: `LC ${rep.lc_no} — ${rep.bank || 'the bank'} charged ${onTheDay.toFixed(2)} on settlement`,
       companyId: n(rep.company_id) || undefined,
       lines
     })
     feeJe = je.id
   }
 
-  // The payment settles the liability in one lump, which is what the bank
-  // statement shows and what a payment voucher is for.
+  // One lump out of the account, exactly what the statement shows.
   const je = await postJournal({
     date,
     vchType: 'PAYMENT',

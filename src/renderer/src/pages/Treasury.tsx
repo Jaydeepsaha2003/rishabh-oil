@@ -101,13 +101,24 @@ const STAGE_LABEL: Record<string, string> = {
 }
 
 // The LC's own lifecycle — Application → Open → Payment received.
+// The three stages read as a journey, and the colours follow it: nothing has
+// happened yet, the bank has agreed, the money has moved.
+//
+// Application is SLATE, deliberately unsaturated. It used to be amber, which
+// says "attention" — and an application needs none: it is a request sitting
+// with the bank, not something going wrong. Amber is also what a genuine
+// warning uses here (Awaiting Payment IN, Closed late), so an LC that had done
+// nothing wrong wore the same colour as one that had. Grey says "not yet",
+// which is exactly what it is, and gives amber back its meaning.
 function StageBadge({ stage }: { stage: string }): React.JSX.Element {
   const tone =
     stage === 'payment_received'
       ? 'bg-emerald-100 text-emerald-800'
       : stage === 'open'
         ? 'bg-sky-100 text-sky-800'
-        : 'bg-amber-100 text-amber-800'
+        : stage === 'application'
+          ? 'bg-slate-200 text-slate-700'
+          : 'bg-amber-100 text-amber-800'
   return (
     <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide', tone)}>
       {STAGE_LABEL[stage] || stage}
@@ -122,7 +133,9 @@ function StageBadge({ stage }: { stage: string }): React.JSX.Element {
 // Tailwind utility — `border-dotted` there would flatten this left border's
 // style too, so it's pinned back to solid with an explicit arbitrary property.
 const STAGE_ROW_TONE: Record<string, { row: string; hover: string }> = {
-  application: { row: "border-l-4 border-l-amber-400 bg-amber-50/50 [border-left-style:solid]", hover: 'hover:bg-amber-100/60' },
+  // Slate, matching the badge — the border and the chip are two readings of the
+  // same fact and must not disagree.
+  application: { row: "border-l-4 border-l-slate-400 bg-slate-50/60 [border-left-style:solid]", hover: 'hover:bg-slate-100/70' },
   open: { row: "border-l-4 border-l-sky-400 bg-sky-50/50 [border-left-style:solid]", hover: 'hover:bg-sky-100/60' },
   payment_received: { row: "border-l-4 border-l-emerald-400 bg-emerald-50/50 [border-left-style:solid]", hover: 'hover:bg-emerald-100/60' }
 }
@@ -2098,7 +2111,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                   tag="App"
                                   date={l.open_date}
                                   title="Applied for — the bank has not opened it yet"
-                                  tone="text-amber-700"
+                                  tone="text-slate-600"
                                 />
                               )}
                               {/* Only a PRECLOSED LC never reached its maturity, so
