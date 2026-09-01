@@ -2034,8 +2034,6 @@ function SkuStock(): React.JSX.Element {
     amount: string
     note: string
     date: string
-    // Which unit the typed figure is in. Stored stock is always pieces.
-    unit: 'case' | 'piece'
     // Real packing off the line, or a hand fix to a wrong count. The register
     // used to guess this from the sign, which made every correction that ADDED
     // stock look like a day's production.
@@ -2045,8 +2043,7 @@ function SkuStock(): React.JSX.Element {
     kind: 'packing',
     amount: '',
     note: '',
-    date: todayISO(),
-    unit: 'case'
+    date: todayISO()
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -2095,7 +2092,7 @@ function SkuStock(): React.JSX.Element {
     // Default the entry to the day being viewed, so day-wise updates land there.
     // Counted in cases by default: that is how packed output comes off the line,
     // and it is what was being typed into a field that meant pieces.
-    setAdjustForm({ mode: 'add', kind: 'packing', amount: '', note: '', date: dayMode ? date : todayISO(), unit: 'case' })
+    setAdjustForm({ mode: 'add', kind: 'packing', amount: '', note: '', date: dayMode ? date : todayISO() })
     setError(null)
   }
 
@@ -2112,7 +2109,7 @@ function SkuStock(): React.JSX.Element {
     // The register counts, and this column stores, PIECES. A case of 40 pouches
     // is 40 of them, so an entry made in cases is converted here rather than
     // being stored as if 40 pouches were 40 cases.
-    const pieces = amt * (adjustForm.unit === 'case' ? perCase(adjustRow) : 1)
+    const pieces = amt
     const delta = adjustForm.mode === 'add' ? pieces : -pieces
     setSaving(true)
     setError(null)
@@ -2125,8 +2122,7 @@ function SkuStock(): React.JSX.Element {
         adjustForm.kind
       )
       toast.success(
-        `${adjustForm.mode === 'add' ? 'Added' : 'Removed'} ${formatNum(Math.abs(pieces))} ${pieceLabel(adjustRow)}` +
-          `${adjustForm.unit === 'case' && perCase(adjustRow) > 1 ? ` (${formatNum(amt)} × ${caseLabel(adjustRow)})` : ''} — ${adjustRow.name}`
+        `${adjustForm.mode === 'add' ? 'Added' : 'Removed'} ${formatNum(Math.abs(pieces))} ${pieceLabel(adjustRow)} — ${adjustRow.name}`
       )
       setAdjustRow(null)
       await load()
@@ -2223,11 +2219,20 @@ function SkuStock(): React.JSX.Element {
           unchanged++
           continue
         }
+        // MORE on the floor than the software expected is the day's packing:
+        // it draws the oil off the plant tank, which is the whole point of
+        // uploading the sheet.
+        //
+        // LESS is not negative packing — no oil goes back into the tank because
+        // a shelf came up short. That is a correction, and it says so, so the
+        // register does not read a shrinkage as a day of production run backwards.
+        const isPacking = delta > 0
         await window.api.skuStock.adjust(
           Number(row.id),
           delta,
-          p.note || `Closing count ${formatDate(when)}`,
-          when
+          p.note || (isPacking ? `Packed ${formatDate(when)}` : `Closing count ${formatDate(when)} — short`),
+          when,
+          isPacking ? 'packing' : 'correction'
         )
         applied++
       }
@@ -2703,7 +2708,7 @@ function SkuStock(): React.JSX.Element {
           {adjustRow && (() => {
             const onHand = Number(adjustRow.on_hand) || 0
             const amt = Number(adjustForm.amount) || 0
-            const pieces = amt * (adjustForm.unit === 'case' ? perCase(adjustRow) : 1)
+            const pieces = amt
             const delta = adjustForm.mode === 'add' ? pieces : -pieces
             const newHand = onHand + delta
             return (
@@ -2722,7 +2727,9 @@ function SkuStock(): React.JSX.Element {
                     <button
                       key={k}
                       type="button"
-                      onClick={() => setAdjustForm((p) => ({ ...p, kind: k }))}
+                      onClick={() =>
+                        setAdjustForm((p) => ({ ...p, kind: k, mode: k === 'packing' ? 'add' : p.mode }))
+                      }
                       className={cn(
                         'flex-1 rounded-md border px-3 py-2 text-left',
                         adjustForm.kind === k
@@ -2737,15 +2744,39 @@ function SkuStock(): React.JSX.Element {
                     </button>
                   ))}
                 </div>
-                <div className="flex gap-2">
-                  <button type="button" onClick={() => setAdjustForm((p) => ({ ...p, mode: 'add' }))} className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'add' ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'hover:bg-muted/40')}>+ Add packs</button>
-                  <button type="button" onClick={() => setAdjustForm((p) => ({ ...p, mode: 'remove' }))} className={cn('flex-1 rounded-md border px-3 py-2 text-sm font-medium', adjustForm.mode === 'remove' ? 'border-red-500 bg-red-50 text-red-700' : 'hover:bg-muted/40')}>− Remove packs</button>
-                </div>
-                {/* The unit has to be stated. This field used to say "Packs",
-                    which on a 40-pouch case means either 1 or 40 depending on
-                    who is reading it -- and the register counts pieces, so cases
-                    typed in here were being read as pieces and the SKU went
-                    tens of thousands negative. */}
+{/* Packing only ever ADDS — it is what came off the line, and a negative
+                    run does not exist. A correction can go either way, because the
+                    count being wrong is as often too high as too low. */}
+                {adjustForm.kind === 'correction' && (
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAdjustForm((p) => ({ ...p, mode: 'add' }))}
+                      className={cn(
+                        'flex-1 rounded-md border px-3 py-2 text-sm font-medium',
+                        adjustForm.mode === 'add' ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'hover:bg-muted/40'
+                      )}
+                    >
+                      + Count was too low
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdjustForm((p) => ({ ...p, mode: 'remove' }))}
+                      className={cn(
+                        'flex-1 rounded-md border px-3 py-2 text-sm font-medium',
+                        adjustForm.mode === 'remove' ? 'border-red-500 bg-red-50 text-red-700' : 'hover:bg-muted/40'
+                      )}
+                    >
+                      − Count was too high
+                    </button>
+                  </div>
+                )}
+{/* Always the SKU's own Type — the unit the Packaging master calls
+                    it and the unit the register counts in. It used to offer Case as
+                    well, and on a 40-per-case SKU that is the difference between 12
+                    and 480: cases typed here were read as pieces and sent an SKU tens
+                    of thousands negative. One unit, no conversion to get wrong. The
+                    case equivalent is shown underneath for anyone counting in cases. */}
                 <div className="flex flex-col gap-1.5">
                   <Label>Quantity to {adjustForm.mode === 'add' ? 'add' : 'remove'}</Label>
                   <div className="flex gap-2">
@@ -2756,34 +2787,19 @@ function SkuStock(): React.JSX.Element {
                       value={adjustForm.amount}
                       onChange={(e) => setAdjustForm((p) => ({ ...p, amount: e.target.value }))}
                     />
-                    {perCase(adjustRow) > 1 ? (
-                      <div className="inline-flex shrink-0 rounded-lg border p-0.5">
-                        {(['case', 'piece'] as const).map((u) => (
-                          <button
-                            key={u}
-                            type="button"
-                            onClick={() => setAdjustForm((p) => ({ ...p, unit: u }))}
-                            className={cn(
-                              'rounded-md px-3 py-1 text-[13px] font-medium transition',
-                              adjustForm.unit === u
-                                ? 'bg-primary text-primary-foreground'
-                                : 'text-muted-foreground hover:text-foreground'
-                            )}
-                          >
-                            {u === 'case' ? caseLabel(adjustRow) : pieceLabel(adjustRow)}
-                          </button>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="flex h-9 shrink-0 items-center rounded-md bg-muted px-3 text-[13px] text-muted-foreground">
-                        {pieceLabel(adjustRow)}
-                      </div>
-                    )}
+                    <div className="flex h-9 shrink-0 items-center rounded-md bg-muted px-3 text-[13px] font-medium text-muted-foreground">
+                      {pieceLabel(adjustRow)}
+                    </div>
                   </div>
-                  {amt > 0 && perCase(adjustRow) > 1 && adjustForm.unit === 'case' && (
+                  {amt > 0 && (
                     <div className="text-[11px] text-muted-foreground">
-                      {formatNum(amt)} × {perCase(adjustRow)} = <b>{formatNum(amt * perCase(adjustRow))}</b>{' '}
-                      {pieceLabel(adjustRow)} · {formatNum((amt * perCase(adjustRow) * Number(adjustRow.base_per_pouch || 0)) / 1000)} MT
+                      {formatNum((amt * Number(adjustRow.base_per_pouch || 0)) / 1000)} MT off the plant tank
+                      {perCase(adjustRow) > 1 && (
+                        <>
+                          {' '}· {formatNum(amt / perCase(adjustRow))} {caseLabel(adjustRow)} at{' '}
+                          {perCase(adjustRow)} per {caseLabel(adjustRow).toLowerCase()}
+                        </>
+                      )}
                     </div>
                   )}
                 </div>

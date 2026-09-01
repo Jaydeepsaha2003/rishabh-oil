@@ -1,7 +1,8 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
-import { postJournal } from './journal'
+import { postJournal, repostJournal } from './journal'
+import { lcInterest, lcInterestBasis } from './lcInterest'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -213,7 +214,7 @@ export async function postLcUpfrontInterest(lcId: number, dateIn?: string): Prom
   const lc = toPlain(res)[0]
   const bankAcc = await bankAccountFor(lc)
   await dropEntry(n(lc.interest_journal_entry_id) || null)
-  const interest = round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
+  const interest = lcInterest(lc)
   const charges = round2(n(lc.charges))
   const total = round2(interest + charges)
   if (total < 0.005) {
@@ -224,7 +225,9 @@ export async function postLcUpfrontInterest(lcId: number, dateIn?: string): Prom
     date: String(dateIn || todayISO()).slice(0, 10),
     vchType: 'JOURNAL',
     vchNo: String(lc.lc_no || ''),
-    narration: `LC ${lc.lc_no} — interest ${interest.toFixed(2)} and charges ${charges.toFixed(2)} paid upfront from the bank, per its statement`,
+    narration:
+      `LC ${lc.lc_no} — interest ${interest.toFixed(2)} and charges ${charges.toFixed(2)} paid upfront from the bank, per its statement` +
+      (lc.interest_excl_charges ? ` (interest on ${lcInterestBasis(lc)})` : ''),
     companyId: n(lc.company_id) || undefined,
     lines: [
       { account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest },
@@ -869,13 +872,22 @@ export async function settleLcBill(issuanceId: number, dateIn?: string): Promise
 // several invoices at once. Each bill still gets its own bill-wise allocation
 // row on the party line, so the ledger can be expanded to show exactly how
 // the lump sum squares off invoice by invoice.
-export async function settleLcBillsCombined(issuanceIds: number[], dateIn?: string): Promise<{ id: number } | null> {
+export async function settleLcBillsCombined(
+  issuanceIds: number[],
+  dateIn?: string,
+  // When given, the settlement is written back over THIS entry instead of a new
+  // one. The ledger numbers vouchers by position, so a fresh entry would land at
+  // the end of the sequence with a new number and shift every voucher after the
+  // old one — see repostJournal.
+  reuseEntryId?: number
+): Promise<{ id: number } | null> {
   if (!issuanceIds.length) return null
   const c = getClient()
   const res = await c.execute({
     sql: `SELECT i.*, l.lc_no, l.bank, l.our_bank_id, l.party_type, l.party_id, l.company_id,
                  l.amount AS lc_amount, l.charges AS lc_charges, l.interest_pct, l.usance_days,
-                 l.interest_upfront, l.interest_journal_entry_id, s.name AS supplier_name, o.invoice_no
+                 l.interest_upfront, l.interest_excl_charges, l.interest_journal_entry_id,
+                 s.name AS supplier_name, o.invoice_no
           FROM lc_issuances i
           JOIN letters_of_credit l ON l.id = i.lc_id
           LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
@@ -923,14 +935,23 @@ export async function settleLcBillsCombined(issuanceIds: number[], dateIn?: stri
     // state, and postLcUpfrontInterest/dropLcUpfrontInterest re-post this
     // voucher so the two stay in step when a line is matched or un-matched.
     if (n(b.interest_journal_entry_id)) continue
-    const interest = round2((n(b.lc_amount) * n(b.interest_pct) * n(b.usance_days)) / (100 * 365))
+    const interest = lcInterest({
+      amount: b.lc_amount,
+      charges: b.lc_charges,
+      interest_pct: b.interest_pct,
+      usance_days: b.usance_days,
+      interest_excl_charges: b.interest_excl_charges
+    })
     const charges = round2(n(b.lc_charges))
     if (interest > 0.005) feeLines.push({ account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest })
     if (charges > 0.005) feeLines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: charges })
     fees = round2(fees + interest + charges)
   }
 
-  const je = await postJournal({
+  const post = reuseEntryId
+    ? (args: Parameters<typeof postJournal>[0]): Promise<{ id: number }> => repostJournal(reuseEntryId, args)
+    : postJournal
+  const je = await post({
     date,
     // A JOURNAL, not a PAYMENT. Nothing of yours moves here — the bank honours
     // the credit out of its own funds. One liability is exchanged for another:
@@ -946,7 +967,9 @@ export async function settleLcBillsCombined(issuanceIds: number[], dateIn?: stri
         bills.length === 1 && bill && bill !== String(first.lc_no || '').trim() ? ` (bill ${bill})` : ''
       const many = bills.length > 1 ? ` — ${bills.length} bills` : ''
       const kept = fees > 0.005 ? `, keeping ${fees.toFixed(2)} interest and commission` : ''
-      return `LC ${first.lc_no}${named}${many} matured — ${first.bank} paid ${party} ${total.toFixed(2)}${kept}`
+      // Only when the base is not the ordinary one — see lcInterest.ts.
+      const basis = fees > 0.005 && first.interest_excl_charges ? ` (interest on ${lcInterestBasis(first)})` : ''
+      return `LC ${first.lc_no}${named}${many} matured — ${first.bank} paid ${party} ${total.toFixed(2)}${kept}${basis}`
     })(),
     companyId: n(first.company_id) || undefined,
     lines: [
@@ -992,10 +1015,64 @@ export async function resyncLcSettlement(lcId: number): Promise<void> {
     if (!groups.has(je)) groups.set(je, { ids: [], date: String(r.settled_date || '').slice(0, 10) })
     groups.get(je)!.ids.push(n(r.id))
   }
-  for (const g of groups.values()) {
-    await reopenLcBill(g.ids[0])
-    await settleLcBillsCombined(g.ids, g.date || undefined)
+  const live: number[] = []
+  for (const [entryId, g] of groups) {
+    // Reopen WITHOUT dropping the voucher — it is about to be rewritten in
+    // place. Deleting and re-inserting would renumber it and everything after
+    // it, which is what had LC-15 reading JV/46 on one page and JV/23 on
+    // another.
+    await c.execute({
+      sql: `UPDATE lc_issuances SET status = 'outstanding', settled_date = NULL, journal_entry_id = NULL
+             WHERE id IN (${g.ids.map(() => '?').join(',')})`,
+      args: g.ids
+    })
+    const je = await settleLcBillsCombined(g.ids, g.date || undefined, entryId)
+    if (je) live.push(je.id)
   }
+  // Anything else claiming to be this LC's settlement is a leftover from a
+  // re-post whose link was lost. Swept here, where the live ids are known, so
+  // the sweep can never take the voucher it just wrote.
+  const dropped = await dropOrphanLcSettlements(lcId, live)
+  if (dropped) console.log(`[lc] removed ${dropped} orphaned settlement voucher(s) on LC ${lcId}`)
+}
+
+// Settlement journals for this LC that no bill points at any more.
+//
+// A settlement voucher is only ever reachable through the bill that owns it —
+// lc_issuances.journal_entry_id. If that link is broken while the voucher
+// survives, the entry becomes invisible to every check the app makes and
+// permanently doubles the party's balance: DEEPCHAND carried LC-15 twice for
+// exactly this reason, 1,60,54,441.64 debited on JE 2266 and again on JE 2278.
+//
+// Earlier verification could not catch it, because "one voucher per LC" was
+// counted over the vouchers bills point AT — an orphan is in neither the numerator
+// nor the denominator.
+//
+// Matched narrowly: this LC's own number, this LC's company, the wording the
+// settlement posts, a JOURNAL, and no bill referencing it. A hand-written
+// journal would have to impersonate all five to be caught.
+async function dropOrphanLcSettlements(lcId: number, keep: number[] = []): Promise<number> {
+  const c = getClient()
+  const lc = await c.execute({
+    sql: 'SELECT lc_no, company_id FROM letters_of_credit WHERE id = ?',
+    args: [n(lcId)]
+  })
+  if (!lc.rows.length) return 0
+  const lcNo = String(lc.rows[0].lc_no || '').trim()
+  if (!lcNo) return 0
+  const skip = keep.filter((x) => n(x) > 0)
+  const res = await c.execute({
+    sql: `SELECT je.id FROM journal_entries je
+           WHERE je.company_id = ?
+             AND TRIM(COALESCE(je.vch_no, '')) = ?
+             AND je.vch_type = 'JOURNAL'
+             AND je.narration LIKE '%matured%'
+             AND NOT EXISTS (SELECT 1 FROM lc_issuances i WHERE i.journal_entry_id = je.id)
+             ${skip.length ? `AND je.id NOT IN (${skip.map(() => '?').join(',')})` : ''}`,
+    args: [n(lc.rows[0].company_id), lcNo, ...skip]
+  })
+  for (const r of res.rows) await dropEntry(n(r.id))
+  return res.rows.length
 }
 
 // Reopening a bill that was settled as part of a combined payment reopens

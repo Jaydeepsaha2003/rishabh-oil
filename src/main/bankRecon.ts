@@ -4,6 +4,7 @@ import { readFileSync } from 'fs'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
 import { postLcUpfrontInterest, dropLcUpfrontInterest } from './treasury'
+import { lcInterest } from './lcInterest'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -241,7 +242,7 @@ export async function suggestBankLineMatch(lineId: number): Promise<Row | null> 
   //    open amount), and repayments (incl. maturity charges) for an amount
   //    match near the line's date.
   const lcRes = await c.execute(
-    `SELECT id, lc_no, charges, opened_date, open_date, amount, interest_pct, usance_days, interest_upfront
+    `SELECT id, lc_no, charges, opened_date, open_date, amount, interest_pct, usance_days, interest_upfront, interest_excl_charges
      FROM letters_of_credit WHERE lc_no IS NOT NULL AND lc_no != ''`
   )
   for (const lc of toPlain(lcRes)) {
@@ -261,7 +262,7 @@ export async function suggestBankLineMatch(lineId: number): Promise<Row | null> 
     }
 
     if (n(lc.interest_upfront)) {
-      const interest = round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
+      const interest = lcInterest(lc)
       const charges = round2(n(lc.charges))
       const total = round2(interest + charges)
       if (total > 0 && Math.abs(total - amount) <= AMOUNT_TOLERANCE) {

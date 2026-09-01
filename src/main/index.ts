@@ -177,6 +177,32 @@ app.whenReady().then(async () => {
     )
   }).catch((e) => console.error('[sales] cancelled-invoice table failed:', e))
 
+  // What an LC's interest is charged ON.
+  //
+  // Off means the whole open amount, which is how every LC on the books today
+  // was posted — so the default preserves them exactly and nothing recalculates
+  // until somebody edits an LC and says otherwise. On means the commission is
+  // deducted first and interest runs only on what the bank actually advanced.
+  //
+  // Handles all three states, because an earlier build of this shipped the
+  // column under a name that described the opposite option: rename it if that
+  // one is present, add it if neither is, do nothing if it is already right.
+  await runOnce('lc_interest_excl_charges_v1', async () => {
+    const c = getClient()
+    const info = await c.execute({ sql: "PRAGMA table_info('letters_of_credit')", args: [] })
+    const cols = new Set(info.rows.map((r) => String((r as unknown as Record<string, unknown>).name)))
+    if (cols.has('interest_excl_charges')) return
+    if (cols.has('interest_on_charges')) {
+      await c.execute(
+        'ALTER TABLE letters_of_credit RENAME COLUMN interest_on_charges TO interest_excl_charges'
+      )
+      return
+    }
+    await c.execute(
+      'ALTER TABLE letters_of_credit ADD COLUMN interest_excl_charges INTEGER NOT NULL DEFAULT 0'
+    )
+  }).catch((e) => console.error('[lc] interest-base column failed:', e))
+
   // Index work for installs that are already past the migration-count mark, so
   // it cannot be added to that list and be run. Keyed by name, so it happens
   // exactly once per database and costs nothing on every launch after.

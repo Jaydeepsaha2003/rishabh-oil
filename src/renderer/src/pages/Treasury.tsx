@@ -311,6 +311,15 @@ function DateLine({
   )
 }
 
+// What the bank charges interest ON — the whole open amount, or the open amount
+// with the commission taken off first. Mirrors lcInterest() in the main process
+// exactly; the form previewing one figure while the ledger posts another is the
+// whole reason this is a function and not three copies of the arithmetic.
+function lcInterestOf(v: Row): number {
+  const base = v?.interest_excl_charges ? Math.max(0, n(v.amount) - n(v.charges)) : n(v.amount)
+  return round2((base * n(v.interest_pct) * n(v.usance_days)) / (100 * 365))
+}
+
 // The LC already wearing this number, if there is one. Matched the way the
 // main process matches it — trimmed, case-insensitively, within the company —
 // so the form's warning and the refusal on save agree about what a collision is.
@@ -585,7 +594,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
             margin_pct: l.margin_pct || '',
             interest_pct: l.interest_pct || '',
             charges: l.charges || '',
-            interest_upfront: !!l.interest_upfront
+            interest_upfront: !!l.interest_upfront,
+            interest_excl_charges: !!l.interest_excl_charges
           }
     )
     setStageError(null)
@@ -821,7 +831,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     const days = from != null && to != null ? to - from : null
     const interestPct = n(stageForm.interest_pct)
     const charges = n(stageForm.charges)
-    const interest = days != null ? round2((amount * interestPct * days) / (100 * 365)) : 0
+    const base = stageForm.interest_excl_charges ? Math.max(0, round2(amount - charges)) : amount
+    const interest = days != null ? round2((base * interestPct * days) / (100 * 365)) : 0
     const upfront = !!stageForm.interest_upfront
     const netAvailable = upfront ? amount : round2(amount - interest - charges)
     // Margin is the security deposit the bank asks for on the LC's own open
@@ -829,7 +840,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     // whichever invoices happen to be linked to it.
     const margin = round2((amount * n(stageForm.margin_pct)) / 100)
     return { amount, days, interest, charges, margin, netAvailable, upfront }
-  }, [stageRow, stageForm.payment_received_date, stageForm.expiry_date, stageForm.margin_pct, stageForm.interest_pct, stageForm.charges, stageForm.interest_upfront])
+  }, [stageRow, stageForm.payment_received_date, stageForm.expiry_date, stageForm.margin_pct, stageForm.interest_pct, stageForm.charges, stageForm.interest_upfront, stageForm.interest_excl_charges])
 
   // Mirrors the backend rule (assertHasLinkedInvoice in lc.ts): an LC past
   // Application must name the invoice(s) it covers — UNLESS the supplier has
@@ -2827,7 +2838,21 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         </div>
                         <div className="mt-3 flex items-center gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
                           <Switch checked={!!stageForm.interest_upfront} onCheckedChange={(v) => setStageForm((p) => ({ ...p, interest_upfront: v }))} />
-                          <div className="text-[12px] font-semibold">Interest & charges paid upfront</div>
+                          <div className="text-[12px] font-semibold">Interest &amp; charges paid upfront</div>
+                        </div>
+                        <div className="mt-2 flex items-center gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
+                          <Switch
+                            checked={!!stageForm.interest_excl_charges}
+                            onCheckedChange={(v) => setStageForm((p) => ({ ...p, interest_excl_charges: v }))}
+                          />
+                          <div className="min-w-0">
+                            <div className="text-[12px] font-semibold">Exclude bank charges from the interest</div>
+                            <div className="text-[11px] leading-snug text-muted-foreground">
+                              {stageForm.interest_excl_charges
+                                ? 'Interest runs on the open amount less the charges.'
+                                : 'Interest runs on the whole open amount.'}
+                            </div>
+                          </div>
                         </div>
                       </section>
                     </div>
@@ -3299,9 +3324,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           const issued = n(lcForm.utilized)
                           if (issued <= 0) return null
                           const amt = n(lcForm.amount)
-                          const interest = lcForm.interest_upfront
-                            ? 0
-                            : round2((amt * n(lcForm.interest_pct) * n(lcForm.usance_days)) / (100 * 365))
+                          const interest = lcForm.interest_upfront ? 0 : lcInterestOf(lcForm)
                           const charges = lcForm.interest_upfront ? 0 : round2(n(lcForm.charges))
                           const over = round2(issued - round2(amt - interest - charges))
                           if (over < 0.005) return null
@@ -3406,7 +3429,57 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 <span className="mt-1 block text-[10px] text-muted-foreground">ROI and LC charges are obtained once payment is received; interest is charged over the interest days (maturity date − payment received date).</span>
                 <div className="mt-3 flex items-center gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
                   <Switch checked={!!lcForm.interest_upfront} onCheckedChange={(v) => setLcForm((p) => ({ ...p, interest_upfront: v }))} />
-                  <div className="text-[12px] font-semibold">Interest & charges paid upfront</div>
+                  <div className="text-[12px] font-semibold">Interest &amp; charges paid upfront</div>
+                </div>
+                {/* What the interest is charged ON. Normally the whole open
+                    amount: the bank funds the credit in full and takes its
+                    commission on top. Under some arrangements the commission is
+                    deducted before the credit is funded, and interest then runs
+                    only on what was actually advanced.
+
+                    Editing this and saving re-posts the LC's vouchers from the
+                    new figure — the settlement journal, the upfront-interest
+                    journal and the party's fee adjustment all follow. */}
+                <div className="mt-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={!!lcForm.interest_excl_charges}
+                      onCheckedChange={(v) => setLcForm((p) => ({ ...p, interest_excl_charges: v }))}
+                    />
+                    <div className="text-[12px] font-semibold">Exclude bank charges from the interest</div>
+                  </div>
+                  <div className="mt-1.5 pl-11 text-[11px] leading-snug text-muted-foreground">
+                    {(() => {
+                      const amt = n(lcForm.amount)
+                      const chg = round2(n(lcForm.charges))
+                      const excl = !!lcForm.interest_excl_charges
+                      if (!(amt > 0)) {
+                        return excl
+                          ? 'Interest will be worked out on the open amount less the bank charges.'
+                          : 'Interest will be worked out on the whole open amount.'
+                      }
+                      const full = lcInterestOf({ ...lcForm, interest_excl_charges: false })
+                      const less = lcInterestOf({ ...lcForm, interest_excl_charges: true })
+                      const saved = round2(full - less)
+                      return (
+                        <>
+                          Interest is worked out on{' '}
+                          <b className="text-foreground">
+                            {excl
+                              ? `${formatINR(amt)} − ${formatINR(chg)} = ${formatINR(Math.max(0, amt - chg))}`
+                              : formatINR(amt)}
+                          </b>
+                          {saved > 0.005 && (
+                            <>
+                              {' '}&mdash; {excl ? 'that is' : 'turning this on would save'}{' '}
+                              <b className="text-foreground">{formatINR(saved)}</b>{' '}
+                              {excl ? 'less than on the whole open amount' : 'of interest'}.
+                            </>
+                          )}
+                        </>
+                      )
+                    })()}
+                  </div>
                 </div>
               </section>
 
@@ -3416,7 +3489,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 // own open amount — a straight percentage of the credit limit
                 // itself, not of whichever invoices happen to be linked to it.
                 const margin = round2((openAmount * n(lcForm.margin_pct)) / 100)
-                const interest = round2((openAmount * n(lcForm.interest_pct) * n(lcForm.usance_days)) / (100 * 365))
+                const interest = lcInterestOf(lcForm)
                 const charges = round2(n(lcForm.charges))
                 const upfront = !!lcForm.interest_upfront
                 // Back-calculation: the open amount is the limit as struck with
@@ -3564,7 +3637,18 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <div><div className="text-muted-foreground">Payment received</div><div className="font-medium tabular-nums">{formatDate(dRow.payment_received_date)}</div></div>
                     <div><div className="text-muted-foreground">Maturity</div><div className="font-medium tabular-nums">{formatDate(dRow.expiry_date)}</div></div>
                     <div><div className="text-muted-foreground">Margin</div><div className="font-medium tabular-nums">{n(dRow.margin_pct)}%</div></div>
-                    <div><div className="text-muted-foreground">Interest</div><div className="font-medium tabular-nums">{n(dRow.interest_pct)}%{dRow.interest_upfront ? ' upfront' : ''}</div></div>
+                    <div>
+                      <div className="text-muted-foreground">Interest</div>
+                      <div className="font-medium tabular-nums">
+                        {n(dRow.interest_pct)}%{dRow.interest_upfront ? ' upfront' : ''}
+                      </div>
+                      {/* Which base produced the figure. Without it the reader
+                          has to open the LC to know why two LCs at the same
+                          rate carry different interest. */}
+                      <div className="text-[10.5px] text-muted-foreground">
+                        on {dRow.interest_excl_charges ? 'amount − charges' : 'open amount'}
+                      </div>
+                    </div>
                     <div><div className="text-muted-foreground">Charges</div><div className="font-medium tabular-nums">{formatINR(dRow.charges)}</div></div>
                     <div><div className="text-muted-foreground">Int. days</div><div className="font-medium tabular-nums">{n(dRow.usance_days) > 0 ? n(dRow.usance_days) : '—'}</div></div>
                   </div>

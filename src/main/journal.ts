@@ -124,6 +124,70 @@ export async function postJournal(a: PostArgs): Promise<{ id: number }> {
   return { id: entryId }
 }
 
+// Re-post an EXISTING entry in place, keeping its id.
+//
+// The voucher number a ledger shows is positional: every journal for the
+// company, ordered by id, numbered 1..n (see voucherCodeMap). So deleting a
+// voucher and inserting its replacement does two unwanted things — the new one
+// lands at the END of the sequence with a different number, and every voucher
+// after the deleted one shifts down by one.
+//
+// That is why LC-15 read JV/46 on one page and JV/23 on another: the same
+// settlement had been re-posted between the two renders. Updating in place
+// keeps the id, so the number stays put and nothing around it moves.
+//
+// Same balance check as postJournal — an in-place update must not be a way to
+// write an unbalanced entry.
+export async function repostJournal(entryId: number, a: PostArgs): Promise<{ id: number }> {
+  const c = getClient()
+  const id = n(entryId)
+  if (!id) throw new Error('No entry to re-post')
+  const exists = await c.execute({ sql: 'SELECT id FROM journal_entries WHERE id = ?', args: [id] })
+  if (!exists.rows.length) throw new Error('That journal entry no longer exists')
+
+  const lines = a.lines.filter((l) => n(l.dr) > 0.004 || n(l.cr) > 0.004)
+  if (!lines.length) throw new Error('Journal entry has no amounts')
+  const dr = lines.reduce((s, l) => s + n(l.dr), 0)
+  const cr = lines.reduce((s, l) => s + n(l.cr), 0)
+  if (Math.abs(dr - cr) > 0.01) {
+    throw new Error(`Journal not balanced (Dr ${dr.toFixed(2)} vs Cr ${cr.toFixed(2)})`)
+  }
+
+  await c.execute({
+    sql: `UPDATE journal_entries
+             SET entry_date = ?, vch_type = ?, vch_no = ?, narration = ?,
+                 order_id = ?, sale_id = ?, payment_id = ?
+           WHERE id = ?`,
+    args: [
+      a.date,
+      a.vchType,
+      a.vchNo || null,
+      a.narration || null,
+      a.orderId ?? null,
+      a.saleId ?? null,
+      a.paymentId ?? null,
+      id
+    ]
+  })
+  // The lines themselves are replaced: which accounts appear can change between
+  // one posting and the next (a nil interest line simply is not written), so
+  // matching them up would be guesswork. Their bill allocations go with them and
+  // are re-made by the caller.
+  await c.execute({
+    sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
+    args: [id]
+  })
+  await c.execute({ sql: 'DELETE FROM journal_lines WHERE entry_id = ?', args: [id] })
+  for (const l of lines) {
+    const accountId = await getOrCreateAccount(l.account, l.group)
+    await c.execute({
+      sql: 'INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, ?, ?)',
+      args: [id, accountId, n(l.dr), n(l.cr)]
+    })
+  }
+  return { id }
+}
+
 // Remove auto-posted entries tied to a source document (used before reposting).
 export async function deleteJournalByRef(
   refCol: 'order_id' | 'sale_id' | 'payment_id',

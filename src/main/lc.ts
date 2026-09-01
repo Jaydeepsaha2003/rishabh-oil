@@ -5,6 +5,7 @@ import { postLcOpening, postLcFees, resyncLcSettlement, settleLcBillsCombined, p
 import { facilityHeadroom } from './facilities'
 import { linkTradingDealsToLc } from './trading'
 import { getSetting } from './repos'
+import { lcInterest, lcInterestBase, lcInterestBasis } from './lcInterest'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -38,9 +39,7 @@ function round2(v: number): number {
 // Unless both are settled upfront from the account instead (interest_upfront),
 // in which case the credit is untouched and the full amount is available.
 function netAvailable(lc: Row, issued: number): number {
-  const interest = lc.interest_upfront
-    ? 0
-    : round2((n(lc.amount) * n(lc.interest_pct) * n(lc.usance_days)) / (100 * 365))
+  const interest = lc.interest_upfront ? 0 : lcInterest(lc)
   const charges = lc.interest_upfront ? 0 : round2(n(lc.charges))
   return round2(n(lc.amount) - interest - charges - issued)
 }
@@ -86,7 +85,7 @@ export async function listLCs(): Promise<Row[]> {
     // amount — a straight percentage of the credit limit itself, not of
     // whichever invoices happen to be linked to it.
     const margin = Math.round((n(l.amount) * n(l.margin_pct)) / 100 * 100) / 100
-    const interest = Math.round(((n(l.amount) * n(l.interest_pct) * n(l.usance_days)) / (100 * 365)) * 100) / 100
+    const interest = lcInterest(l)
     const rawCharges = Math.round(n(l.charges) * 100) / 100
     const chargedInterest = l.interest_upfront ? 0 : interest
     const charges = l.interest_upfront ? 0 : rawCharges
@@ -126,6 +125,8 @@ export async function listLCs(): Promise<Row[]> {
       // now credited back to the party instead (syncLcFeeAdjustment), so the
       // LC itself is square — reporting it as still negative would double-count
       // a correction that has already been posted.
+      interest_basis: lcInterestBasis(l),
+      interest_base_amount: lcInterestBase(l),
       fee_adjustment: lcFeeDelta(),
       available: round2(netAvailable(l, n(l.utilized)) - lcFeeDelta()),
       // What's still owed against the LC's full sanctioned limit, net of
@@ -412,7 +413,8 @@ const LC_COLS = [
   'fd_no',
   'payment_received_date',
   'opened_date',
-  'interest_upfront'
+  'interest_upfront',
+  'interest_excl_charges'
 ]
 
 function lcArgs(v: Row): (string | number | null)[] {
@@ -424,7 +426,15 @@ function lcArgs(v: Row): (string | number | null)[] {
       // NOT NULL columns — Interest days in particular is blank until both
       // maturity and payment-received dates are set, so a fresh LC must still
       // insert cleanly with 0 rather than null.
-      if (k === 'amount' || k === 'usance_days' || k === 'margin_pct' || k === 'interest_upfront') return 0
+      if (
+        k === 'amount' ||
+        k === 'usance_days' ||
+        k === 'margin_pct' ||
+        k === 'interest_upfront' ||
+        k === 'interest_excl_charges'
+      ) {
+        return 0
+      }
       // lc_no is NOT NULL but genuinely unknown until Open — an empty string
       // satisfies the column without pretending to have a real number.
       if (k === 'lc_no') return ''
@@ -600,6 +610,43 @@ function assertPaymentReceivedNotBeforeOpen(v: Row): void {
 // would strand the caller, but staying silent used to leave the ledger quietly
 // out of step with the LC (the bug this replaces). The caller passes the
 // warning back to the user instead.
+// Keep the auto-issued bill in step with the LC's own figures.
+//
+// A whole-limit bill is RAISED at net available — open amount less interest and
+// charges — but only at the moment it is first created. Change the interest
+// afterwards and the bill keeps yesterday's number: turning off interest on the
+// bank charges lowered LC-15's interest by 70.11, so the beneficiary was owed
+// 70.11 more, and the bill still said the old figure. The LC then reported
+// 70.11 of undrawn limit that was never really undrawn.
+//
+// Only the auto-issued whole-limit bill is touched — one bill, tied to no
+// purchase invoice, which is exactly the shape the `else if` branch of
+// syncPaymentReceivedIssuance creates. A bill sized to a specific invoice is a
+// deliberate figure and is left alone.
+async function resizeAutoLcBill(lcId: number): Promise<void> {
+  const c = getClient()
+  const lcRes = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [n(lcId)] })
+  if (!lcRes.rows.length) return
+  const lc = toPlain(lcRes)[0]
+  const res = await c.execute({
+    sql: 'SELECT id, amount, order_id, bill_no FROM lc_issuances WHERE lc_id = ?',
+    args: [n(lcId)]
+  })
+  if (res.rows.length !== 1) return
+  const bill = toPlain(res)[0]
+  if (n(bill.order_id)) return
+  if (String(bill.bill_no || '').trim()) return
+
+  const want = netAvailable(lc, 0)
+  if (want <= 0.005) return
+  if (Math.abs(want - n(bill.amount)) < 0.005) return
+
+  await c.execute({
+    sql: 'UPDATE lc_issuances SET amount = ? WHERE id = ?',
+    args: [round2(want), n(bill.id)]
+  })
+}
+
 async function syncLcVouchers(id: number): Promise<string | undefined> {
   const problems: string[] = []
   try {
@@ -613,6 +660,13 @@ async function syncLcVouchers(id: number): Promise<string | undefined> {
     await postLcFees(id)
   } catch (e) {
     problems.push(`the stray fee voucher (${(e as Error).message})`)
+  }
+  try {
+    // Before anything is posted: the settlement voucher is written from the
+    // bill's amount, so the bill has to be right first.
+    await resizeAutoLcBill(id)
+  } catch (e) {
+    problems.push(`the bill amount (${(e as Error).message})`)
   }
   try {
     // Before the settlement, because the settlement's fee lines depend on
