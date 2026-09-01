@@ -105,6 +105,23 @@
   border-left-color: rgba(26, 44, 86, 0.15);
 }
 
+/* The same idea for the stock registers, which are slate and white rather than
+   the cream of the accounting ledgers — a parchment rule on a slate table reads
+   as a mistake. Deliberately faint: on a nine-column register the job of a rule
+   is to stop the eye sliding a row, not to draw a grid.
+
+   `th + th` / `td + td` means only the gaps BETWEEN columns get a rule, so
+   nothing is drawn down the outside of the table. */
+.ruled-slate th + th,
+.ruled-slate td + td {
+  border-left: 1px solid rgb(148 163 184 / 0.22);
+}
+/* A touch stronger under the headings, where the rule has to carry across a
+   filled band. */
+.ruled-slate thead th + th {
+  border-left-color: rgb(100 116 139 / 0.28);
+}
+
 /* Scrollable area without a visible scrollbar (wheel/touch still works). */
 .no-scrollbar {
   -ms-overflow-style: none;

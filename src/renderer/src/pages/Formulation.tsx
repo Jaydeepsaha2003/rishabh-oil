@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, ArrowRight, Beaker, Calculator, Flame, Package, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Beaker, Calculator, Flame, Layers, Package, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
+import { Switch } from '@/components/ui/switch'
 import {
   Select,
   SelectContent,
@@ -151,6 +159,147 @@ function recipeTorOf(items: Row[]): number {
   )
 }
 
+// One sub-category in the manage dialog: rename it, note what it means, retire it, or
+// delete it outright when nothing points at it.
+//
+// Retiring rather than deleting is the default for one in use, because a deleted
+// sub-category would leave its recipes classified as nothing — silently, and
+// with no way to tell them from recipes never classified at all.
+function SubcatRow({ row, onDone }: { row: Row; onDone: () => Promise<void> }): React.JSX.Element {
+  const [name, setName] = useState(String(row.name ?? ''))
+  const [note, setNote] = useState(String(row.note ?? ''))
+  const [busy, setBusy] = useState(false)
+  const used = Number(row.in_use) || 0
+  const active = Number(row.active) === 1
+  const dirty = name !== String(row.name ?? '') || note !== String(row.note ?? '')
+
+  async function save(next?: { active?: boolean }): Promise<void> {
+    setBusy(true)
+    try {
+      await window.api.formulationSubcategory.save({
+        id: Number(row.id),
+        name,
+        note,
+        active: next?.active ?? active
+      })
+      await onDone()
+    } catch (e) {
+      toast.error((e as Error).message)
+      setName(String(row.name ?? ''))
+      setNote(String(row.note ?? ''))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function remove(): Promise<void> {
+    setBusy(true)
+    try {
+      await window.api.formulationSubcategory.delete(Number(row.id))
+      toast.success(`Sub-category "${row.name}" deleted`)
+      await onDone()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div
+      className={cn(
+        // A left stripe carries the state, so in-use and retired read apart at a
+        // glance without a badge on every row.
+        'group relative overflow-hidden rounded-xl border bg-white pl-3.5 pr-2.5 py-2.5 shadow-sm transition-colors',
+        active ? 'border-[#e0d8bd] hover:border-[#c9c0a2]' : 'border-dashed border-[#d9d2b8] bg-[#faf8f1]'
+      )}
+    >
+      <span
+        aria-hidden
+        className={cn(
+          'absolute inset-y-0 left-0 w-1',
+          active ? 'bg-gradient-to-b from-[#1a2c56] to-[#2c4a8c]' : 'bg-[#d9d2b8]'
+        )}
+      />
+      <div className="flex items-center gap-2">
+        <input
+          className={cn(
+            'min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-[14px] font-semibold outline-none transition-colors',
+            'hover:border-[#e0d8bd] focus:border-[#1a2c56] focus:bg-white focus:ring-2 focus:ring-[#1a2c56]/15',
+            active ? 'text-[#1a2c56]' : 'text-muted-foreground line-through decoration-muted-foreground/40'
+          )}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={() => dirty && void save()}
+          disabled={busy}
+        />
+
+        {/* The count says what it is counting. A bare "0" beside a switch and a
+            bin was the one thing on this row nobody could read. */}
+        <span
+          className={cn(
+            'shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold tabular-nums',
+            used > 0 ? 'bg-[#1a2c56]/8 text-[#1a2c56]' : 'bg-muted text-muted-foreground'
+          )}
+          title={
+            used === 0
+              ? 'No recipe is in this sub-category yet'
+              : used === 1
+                ? 'One recipe is in this sub-category'
+                : `${used} recipes are in this sub-category`
+          }
+        >
+          {used === 0 ? 'unused' : `${used} ${used === 1 ? 'recipe' : 'recipes'}`}
+        </span>
+
+        <div className="flex shrink-0 items-center gap-1.5 rounded-full border border-[#e0d8bd] bg-[#fffdf4] pl-2.5 pr-1.5 py-1">
+          <span className={cn('text-[10px] font-bold uppercase tracking-wider', active ? 'text-[#1a2c56]' : 'text-muted-foreground')}>
+            {active ? 'In use' : 'Retired'}
+          </span>
+          <Switch
+            checked={active}
+            disabled={busy}
+            onCheckedChange={(v) => void save({ active: v })}
+            title={active ? 'Retire it — hidden from the picker, recipes keep it' : 'Bring it back into the picker'}
+          />
+        </div>
+
+        <Button
+          variant="ghost"
+          size="icon"
+          className={cn(
+            'h-8 w-8 shrink-0 transition-opacity',
+            used > 0 ? 'cursor-not-allowed opacity-25' : 'opacity-40 hover:bg-rose-50 hover:text-rose-700 hover:opacity-100'
+          )}
+          disabled={busy}
+          title={
+            used > 0
+              ? `${used} ${used === 1 ? 'recipe uses' : 'recipes use'} this — retire it instead`
+              : 'Delete this sub-category'
+          }
+          onClick={remove}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+
+      {/* The note only takes space once it has something to say — a permanently
+          empty second field doubled the height of every row. */}
+      <input
+        className={cn(
+          'mt-0.5 w-full rounded-md border border-transparent bg-transparent px-2 py-1 text-[11.5px] italic text-muted-foreground outline-none transition-colors',
+          'placeholder:not-italic hover:border-[#e0d8bd] focus:border-[#1a2c56] focus:bg-white focus:not-italic focus:ring-2 focus:ring-[#1a2c56]/15'
+        )}
+        placeholder="Add a note (optional)"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        onBlur={() => dirty && void save()}
+        disabled={busy}
+      />
+    </div>
+  )
+}
+
 export function Formulation(): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [products, setProducts] = useState<Row[]>([])
@@ -158,7 +307,56 @@ export function Formulation(): React.JSX.Element {
 
   const [editing, setEditing] = useState<Row | null>(null)
   const [building, setBuilding] = useState(false)
-  const [form, setForm] = useState<Row>({ product_id: '', name: '', uom: 'ton' })
+  const [form, setForm] = useState<Row>({ product_id: '', name: '', uom: 'ton', subcategory_id: '' })
+  // The sub-categories a recipe can belong to. Two recipes can both output DALDA and be
+  // entirely different jobs — one on recovered oil, one on RPS — and the output
+  // product cannot say which.
+  const [subcats, setSubcats] = useState<Row[]>([])
+  const [subcatOpen, setSubcatOpen] = useState(false)
+  const [newSubcat, setNewSubcat] = useState('')
+  const [subcatFilter, setSubcatFilter] = useState('all')
+
+  // Recipes the sub-category filter lets through. Unclassified is its own choice
+  // rather than being lumped in with "all", because finding the recipes nobody
+  // has classified yet is the first thing anyone wants from this.
+  const shownRows =
+    subcatFilter === 'all'
+      ? rows
+      : subcatFilter === 'none'
+        ? rows.filter((r) => !r.subcategory_id)
+        : rows.filter((r) => String(r.subcategory_id ?? '') === subcatFilter)
+
+  // A sub-category change moves the chips, the counts and the badges on the recipes,
+  // so both lists are re-read rather than only the one that was edited.
+  async function reloadAfterSubcats(): Promise<void> {
+    await loadSubcats()
+    await load()
+  }
+
+  async function addSubcat(): Promise<void> {
+    const name = newSubcat.trim()
+    if (!name) return
+    try {
+      await window.api.formulationSubcategory.save({ name })
+      setNewSubcat('')
+      toast.success(`Sub-category "${name}" added`)
+      await reloadAfterSubcats()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  const loadSubcats = useCallback(async (): Promise<void> => {
+    try {
+      setSubcats(await window.api.formulationSubcategory.list())
+    } catch {
+      // A missing sub-category list must never stop the recipes themselves loading.
+      setSubcats([])
+    }
+  }, [])
+  useEffect(() => {
+    void loadSubcats()
+  }, [loadSubcats])
   const [items, setItems] = useState<Row[]>([])
   const [saving, setSaving] = useState(false)
 
@@ -183,14 +381,19 @@ export function Formulation(): React.JSX.Element {
 
   function openAdd(): void {
     setEditing(null)
-    setForm({ product_id: '', name: '', uom: 'ton' })
+    setForm({ product_id: '', name: '', uom: 'ton', subcategory_id: '' })
     setItems([{ product_id: '', qty: '', kind: 'input' }])
     setBuilding(true)
   }
 
   async function openEdit(row: Row): Promise<void> {
     setEditing(row)
-    setForm({ product_id: String(row.product_id ?? ''), name: row.name ?? '', uom: row.uom ?? 'ton' })
+    setForm({
+      product_id: String(row.product_id ?? ''),
+      name: row.name ?? '',
+      uom: row.uom ?? 'ton',
+      subcategory_id: row.subcategory_id ? String(row.subcategory_id) : ''
+    })
     const its = await window.api.formulations.items(row.id as number)
     setItems(
       its.length
@@ -324,6 +527,7 @@ export function Formulation(): React.JSX.Element {
         product_id: Number(form.product_id),
         name: form.name,
         uom: form.uom,
+        subcategory_id: form.subcategory_id ? Number(form.subcategory_id) : null,
         items: clean
       }
       if (editing) await window.api.formulations.update(editing.id as number, payload)
@@ -350,6 +554,84 @@ export function Formulation(): React.JSX.Element {
   }
 
   // ---- builder (page view) ----
+  // Rendered by BOTH returns below.
+  //
+  // The recipe form returns early, so a dialog declared only in the list return
+  // does not exist while the form is open — and the form carries its own
+  // "Manage sub-categories" link, which therefore did nothing at all. Held in a
+  // variable rather than written twice, so the two can never drift apart.
+  // Kept deliberately plain: a name, a note, and whether it is still in use. The
+  // count is the important column — nobody should rename or retire one without
+  // seeing what it carries.
+  const manageSubcats = (
+    <Dialog open={subcatOpen} onOpenChange={setSubcatOpen}>
+      <DialogContent
+        // Capped to the window and scrolled inside, so a long list never pushes
+        // the panel — or its close button — off the screen.
+        //
+        // [&>button] reaches the built-in corner ✕, which is a plain child of
+        // DialogContent and would otherwise be near-invisible on the navy header.
+        className="flex max-h-[88dvh] w-[min(94vw,37rem)] max-w-none flex-col gap-0 overflow-hidden rounded-2xl p-0 [&>button]:top-5 [&>button]:text-white [&>button]:opacity-70 [&>button]:hover:opacity-100"
+        onEscapeKeyDown={() => {}}
+        onInteractOutside={() => {}}
+      >
+        <DialogHeader className="shrink-0 space-y-0 bg-gradient-to-r from-[#1a2c56] to-[#2c4a8c] px-5 py-4 pr-14 text-left">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/15">
+              <Layers className="h-4 w-4 text-white" />
+            </span>
+            <div className="min-w-0">
+              <DialogTitle className="text-white">Recipe sub-categories</DialogTitle>
+              <p className="mt-1 text-[11.5px] leading-snug text-white/70">
+                What a recipe is built on, as against what it makes. One name each, so
+                &ldquo;recovered-oil&rdquo; stays one thing instead of three spellings of itself.
+              </p>
+            </div>
+          </div>
+        </DialogHeader>
+
+        <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto bg-[#fffdf4] px-4 py-4">
+          {subcats.map((sc) => (
+            <SubcatRow key={String(sc.id)} row={sc} onDone={reloadAfterSubcats} />
+          ))}
+          {!subcats.length && (
+            <div className="rounded-xl border border-dashed border-[#d9d2b8] bg-white/60 px-4 py-10 text-center">
+              <Layers className="mx-auto h-5 w-5 text-muted-foreground/50" />
+              <p className="mt-2 text-[13px] font-medium text-[#1a2c56]">No sub-categories yet</p>
+              <p className="mt-0.5 text-[11.5px] text-muted-foreground">Add the first one below.</p>
+            </div>
+          )}
+        </div>
+
+        {/* Add and Close share the footer, so the scrolling list gets the height
+            instead of an entry field that is only used now and then. */}
+        <DialogFooter className="shrink-0 gap-2 border-t border-[#e0d8bd] bg-[#f1ecd9] px-4 py-3 sm:justify-between">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <input
+              className="h-9 min-w-0 flex-1 rounded-md border border-[#d9d2b8] bg-white px-2.5 text-[13px] outline-none focus:border-[#1a2c56] focus:ring-2 focus:ring-[#1a2c56]/15"
+              placeholder="Add a sub-category…"
+              value={newSubcat}
+              onChange={(e) => setNewSubcat(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void addSubcat()
+              }}
+            />
+            <Button
+              className="h-9 shrink-0 bg-[#1a2c56] hover:bg-[#24407e]"
+              onClick={addSubcat}
+              disabled={!newSubcat.trim()}
+            >
+              <Plus className="h-4 w-4" /> Add
+            </Button>
+          </div>
+          <Button variant="outline" className="h-9 shrink-0 bg-white" onClick={() => setSubcatOpen(false)}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+
   if (building) {
     return (
       <>
@@ -404,6 +686,42 @@ export function Formulation(): React.JSX.Element {
                     onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
                     placeholder="e.g. standard recipe"
                   />
+                </div>
+                <div className="flex flex-col gap-1.5 sm:col-span-2">
+                  <div className="flex items-center justify-between">
+                    <Label>Sub-category</Label>
+                    <button
+                      type="button"
+                      className="text-[11px] font-medium text-sky-700 hover:underline"
+                      onClick={() => setSubcatOpen(true)}
+                    >
+                      Manage sub-categories
+                    </button>
+                  </div>
+                  <Select
+                    value={form.subcategory_id ? String(form.subcategory_id) : 'none'}
+                    onValueChange={(v) => setForm((p) => ({ ...p, subcategory_id: v === 'none' ? '' : v }))}
+                  >
+                    <SelectTrigger className="h-10">
+                      <SelectValue placeholder="Not classified" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Not classified</SelectItem>
+                      {subcats
+                        .filter((sc) => Number(sc.active) === 1 || String(sc.id) === String(form.subcategory_id))
+                        .map((sc) => (
+                          <SelectItem key={String(sc.id)} value={String(sc.id)}>
+                            {String(sc.name)}
+                            {Number(sc.active) === 1 ? '' : ' (retired)'}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                  <span className="text-[11px] leading-snug text-muted-foreground">
+                    What this recipe is built on, as against what it produces &mdash; so a recipe fed
+                    by SHEA can still be tracked as recovered-oil. Production and stock can then be
+                    read by sub-category.
+                  </span>
                 </div>
               </div>
             </div>
@@ -810,6 +1128,7 @@ export function Formulation(): React.JSX.Element {
             </div>
           </div>
         </div>
+        {manageSubcats}
       </>
     )
   }
@@ -829,6 +1148,46 @@ export function Formulation(): React.JSX.Element {
         }
       />
       <div className="px-4 py-6">
+        {/* Sub-category filter. Counts on each chip so it is obvious at a glance how
+            much of the book is still unclassified. */}
+        {rows.length > 0 && (
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Sub-category</span>
+            {[
+              { key: 'all', label: 'All', count: rows.length },
+              { key: 'none', label: 'Not classified', count: rows.filter((r) => !r.subcategory_id).length },
+              ...subcats
+                .filter((sc) => Number(sc.active) === 1)
+                .map((sc) => ({
+                  key: String(sc.id),
+                  label: String(sc.name),
+                  count: rows.filter((r) => String(r.subcategory_id ?? '') === String(sc.id)).length
+                }))
+            ].map((o) => (
+              <button
+                key={o.key}
+                type="button"
+                onClick={() => setSubcatFilter(o.key)}
+                className={cn(
+                  'rounded-md border px-2.5 py-1 text-[12px] font-medium transition-colors',
+                  subcatFilter === o.key
+                    ? 'border-[#1a2c56] bg-[#1a2c56] text-white'
+                    : 'text-muted-foreground hover:bg-muted'
+                )}
+              >
+                {o.label}
+                <span className="ml-1.5 tabular-nums opacity-70">{o.count}</span>
+              </button>
+            ))}
+            <button
+              type="button"
+              className="ml-auto text-[11px] font-medium text-sky-700 hover:underline"
+              onClick={() => setSubcatOpen(true)}
+            >
+              Manage sub-categories
+            </button>
+          </div>
+        )}
         {outputs.length === 0 && (
           <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             Add finished or intermediate products first (Products page) to build a formulation.
@@ -841,6 +1200,10 @@ export function Formulation(): React.JSX.Element {
                 <TableHead>Output product</TableHead>
                 <TableHead>Category</TableHead>
                 <TableHead>Recipe</TableHead>
+                {/* Beside Recipe, and in the SAME position as its cell below —
+                    the header sat one column further right, which shifted every
+                    value from here to Loss out of its heading. */}
+                <TableHead>Sub-category</TableHead>
                 <TableHead className="text-right">Lines</TableHead>
                 <TableHead className="text-right">By-products</TableHead>
                 <TableHead className="text-right">Loss</TableHead>
@@ -851,18 +1214,18 @@ export function Formulation(): React.JSX.Element {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
                     Loading…
                   </TableCell>
                 </TableRow>
-              ) : rows.length === 0 ? (
+              ) : shownRows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
-                    No formulations yet.
+                  <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
+                    {rows.length ? 'No recipe in that sub-category.' : 'No formulations yet.'}
                   </TableCell>
                 </TableRow>
               ) : (
-                rows.map((row) => (
+                shownRows.map((row) => (
                   <TableRow key={row.id as number}>
                     <TableCell className="font-medium">{row.product_name ?? '—'}</TableCell>
                     <TableCell>
@@ -871,6 +1234,13 @@ export function Formulation(): React.JSX.Element {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-muted-foreground">{row.name || '—'}</TableCell>
+                    <TableCell>
+                      {row.subcategory_name ? (
+                        <Badge variant="muted">{String(row.subcategory_name)}</Badge>
+                      ) : (
+                        <span className="text-[12px] italic text-muted-foreground">Not classified</span>
+                      )}
+                    </TableCell>
                     <TableCell className="text-right tabular-nums">{row.item_count}</TableCell>
                     <TableCell className="text-right tabular-nums text-emerald-700">
                       {Number(row.byproduct_pct) ? `${formatNum(row.byproduct_pct)}%` : '—'}
@@ -916,6 +1286,7 @@ export function Formulation(): React.JSX.Element {
           </Table>
         </div>
       </div>
+      {manageSubcats}
     </>
   )
 }

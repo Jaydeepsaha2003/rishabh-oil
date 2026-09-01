@@ -155,10 +155,12 @@ export async function listProduction(forModule?: string): Promise<Row[]> {
   const res = await getClient().execute({
     args: from ? [getActiveCompanyId(), from] : [getActiveCompanyId()],
     sql: `
-    SELECT p.*, pr.name AS product_name, pr.category AS product_category, f.name AS formulation_name
+    SELECT p.*, pr.name AS product_name, pr.category AS product_category, f.name AS formulation_name,
+           sc.name AS subcategory_name, f.subcategory_id
     FROM production p
     LEFT JOIN products pr ON pr.id = p.product_id
     LEFT JOIN formulations f ON f.id = p.formulation_id
+    LEFT JOIN formulation_subcategories sc ON sc.id = f.subcategory_id
     WHERE p.company_id = ?${from ? ' AND p.prod_date >= ?' : ''}
     ORDER BY p.prod_date DESC, p.id DESC
   `
@@ -331,8 +333,27 @@ export async function deleteProduction(id: number): Promise<{ id: number }> {
   // (Reversing the consumption only adds raw stock back, so it's always safe.)
   const without = await productStockAvailable(productId, { excludeProductionId: id })
   if (without < -1e-6) {
+    // Say which of the two situations this actually is.
+    //
+    // The old message always blamed "a later batch", which sent the reader
+    // hunting for something that need not exist. When the balance is ALREADY
+    // negative the cause is the opposite: more has been dispatched than was
+    // ever produced, and this run is one of the few things holding the figure
+    // up. Deleting it does not fix that, it deepens it.
+    const withIt = await productStockAvailable(productId)
+    const nameRow = await c.execute({ sql: 'SELECT name FROM products WHERE id = ?', args: [productId] })
+    const label = String(nameRow.rows[0]?.name || 'this product')
+    const q3 = (v: number): string => (Math.round(v * 1000) / 1000).toLocaleString('en-IN')
+    if (withIt < -1e-6) {
+      throw new Error(
+        `${label} is already short by ${q3(-withIt)} — more has been dispatched than was ever produced. ` +
+          `Deleting this run removes ${q3(withIt - without)} more of it and takes the shortage to ${q3(-without)}. ` +
+          'Enter the production that is missing, or the stock this product opened with, rather than removing what is here.'
+      )
+    }
     throw new Error(
-      "Can't delete this production — its output has already been sold or used in a later batch. Reverse those first."
+      `Can't delete this run — ${q3(withIt - without)} of its output has already been sold or used in a later batch, ` +
+        `so removing it would leave ${label} short by ${q3(-without)}. Reverse those first.`
     )
   }
   await c.execute({ sql: 'DELETE FROM production_items WHERE production_id = ?', args: [id] })

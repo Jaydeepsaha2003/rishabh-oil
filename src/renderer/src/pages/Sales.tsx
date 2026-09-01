@@ -282,6 +282,50 @@ function SalesTab({
   const [gaps, setGaps] = useState<Row | null>(null)
   const [gapsBusy, setGapsBusy] = useState(false)
 
+  // Book the missing number: close the report and open a fresh invoice with the
+  // number already in it. No navigation involved — this report lives on the
+  // Sales page, so the form it wants is the one right behind it.
+  function bookGap(prefix: string, num: number): void {
+    setGapsOpen(false)
+    setEditingGroup(null)
+    setHeader({ ...blankHeader(), invoice_no: `${prefix}/${num}` })
+    setItems([blankItem()])
+    setFormPage(true)
+  }
+
+  // Void the number instead. A spoiled form or a cancelled bill is a complete
+  // answer to a gap, and recording it is what stops the report growing a tail of
+  // questions nobody can close.
+  const [voidTarget, setVoidTarget] = useState<{ prefix: string; number: number } | null>(null)
+  const [voidReason, setVoidReason] = useState('')
+  const [voidBusy, setVoidBusy] = useState(false)
+
+  async function confirmVoid(): Promise<void> {
+    if (!voidTarget) return
+    setVoidBusy(true)
+    try {
+      await window.api.sales.cancelInvoiceNo({ ...voidTarget, reason: voidReason })
+      toast.success(`${voidTarget.prefix}/${voidTarget.number} recorded as cancelled`)
+      setVoidTarget(null)
+      setVoidReason('')
+      await loadGaps()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setVoidBusy(false)
+    }
+  }
+
+  async function undoVoid(prefix: string, num: number): Promise<void> {
+    try {
+      await window.api.sales.uncancelInvoiceNo({ prefix, number: num })
+      toast.success(`${prefix}/${num} back in the missing list`)
+      await loadGaps()
+    } catch (e) {
+      toast.error(errText(e))
+    }
+  }
+
   async function loadGaps(): Promise<void> {
     setGapsBusy(true)
     try {
@@ -2623,78 +2667,115 @@ function SalesTab({
                     <span className="text-[11.5px] tabular-nums text-muted-foreground">
                       {String(sr.used)} used · {String(sr.from)}–{String(sr.to)}
                     </span>
-                    <span
-                      className={cn(
-                        'rounded px-2 py-0.5 text-[11.5px] font-semibold tabular-nums',
-                        Number(sr.missing_count) ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'
+                    <span className="flex items-center gap-1.5">
+                      {Number(sr.cancelled_count) > 0 && (
+                        <span className="rounded bg-amber-100 px-2 py-0.5 text-[11.5px] font-semibold tabular-nums text-amber-900">
+                          {String(sr.cancelled_count)} cancelled
+                        </span>
                       )}
-                    >
-                      {Number(sr.missing_count) ? `${sr.missing_count} missing` : 'none missing'}
+                      <span
+                        className={cn(
+                          'rounded px-2 py-0.5 text-[11.5px] font-semibold tabular-nums',
+                          Number(sr.missing_count) ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'
+                        )}
+                      >
+                        {Number(sr.missing_count) ? `${sr.missing_count} missing` : 'none missing'}
+                      </span>
                     </span>
                   </div>
 
                   {Number(sr.missing_count) > 0 && (
                     <>
-                      {/* One row per GAP, not per number.
+                      {/* One row per NUMBER.
                           
-                          Listing all thirteen and captioning each "part of the
-                          6 above" said the same thing six times over and made
-                          thirteen rows out of five events. Consecutive numbers
-                          are one event anyway — a spoiled book, a cancelled
-                          batch — so a run is shown once, as a range.
+                          These get read out, ticked off against a bill book and
+                          copied into a note to the auditor, and every one of
+                          those jobs works down a list one number at a time. A
+                          collapsed range reads well but has to be expanded by
+                          hand before it can be used.
                           
-                          With the range on the row there is nothing left to
-                          explain, and the column that was explaining it is now
-                          just the count. */}
+                          With one number per row the count column is always 1,
+                          so it is gone — and so is the wording that used to
+                          explain the grouping. */}
                       <table className="ruled-cols w-full text-[12px]">
                         <thead className="bg-muted/40 text-[10px] uppercase tracking-widest text-muted-foreground">
                           <tr>
                             <th className="w-12 px-3 py-1.5 text-right">Sl.</th>
-                            <th className="px-3 py-1.5 text-left">Missing</th>
-                            <th className="w-24 px-3 py-1.5 text-right">How many</th>
+                            <th className="px-3 py-1.5 text-left">Invoice no</th>
+                            <th className="w-[210px] px-3 py-1.5 text-right">Action</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {(() => {
-                            const list = ((sr.missing as number[]) || []).slice().sort((a, b) => a - b)
-                            // Collapse each run of consecutive numbers into one
-                            // block: [first, last].
-                            const blocks: [number, number][] = []
-                            for (const num of list) {
-                              const tail = blocks[blocks.length - 1]
-                              if (tail && num === tail[1] + 1) tail[1] = num
-                              else blocks.push([num, num])
-                            }
-                            return blocks.map(([from, to], i) => {
-                              const count = to - from + 1
-                              return (
-                                <tr key={`${from}-${to}`} className="border-t">
-                                  <td className="px-3 py-1 text-right tabular-nums text-muted-foreground">{i + 1}</td>
-                                  <td className="doc-ref px-3 py-1 font-medium tabular-nums text-rose-800">
-                                    {count === 1 ? (
-                                      `${sr.prefix}/${from}`
-                                    ) : (
-                                      <>
-                                        {String(sr.prefix)}/{from} <span className="text-muted-foreground">to</span>{' '}
-                                        {String(sr.prefix)}/{to}
-                                      </>
-                                    )}
-                                  </td>
-                                  <td
-                                    className={cn(
-                                      'px-3 py-1 text-right tabular-nums',
-                                      count > 1 ? 'font-semibold text-amber-800' : 'text-muted-foreground'
-                                    )}
-                                  >
-                                    {count}
-                                  </td>
-                                </tr>
-                              )
-                            })
-                          })()}
+                          {((sr.missing as number[]) || [])
+                            .slice()
+                            .sort((a, b) => a - b)
+                            .map((num, i) => (
+                              <tr key={num} className="border-t">
+                                <td className="px-3 py-1 text-right tabular-nums text-muted-foreground">{i + 1}</td>
+                                <td className="doc-ref px-3 py-1 font-medium tabular-nums text-rose-800">
+                                  {String(sr.prefix)}/{num}
+                                </td>
+                                {/* The two things anybody does about a gap: book
+                                    the bill that belongs to it, or record that the
+                                    number was voided. */}
+                                <td className="px-3 py-1">
+                                  <div className="flex justify-end gap-1.5">
+                                    <button
+                                      type="button"
+                                      className="rounded border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-800 hover:bg-sky-100"
+                                      title={`Open a new invoice numbered ${sr.prefix}/${num}`}
+                                      onClick={() => bookGap(String(sr.prefix), num)}
+                                    >
+                                      Sales booking
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-900 hover:bg-amber-100"
+                                      title={`Record ${sr.prefix}/${num} as cancelled, so it stops reading as missing`}
+                                      onClick={() => {
+                                        setVoidTarget({ prefix: String(sr.prefix), number: num })
+                                        setVoidReason('')
+                                      }}
+                                    >
+                                      Cancel invoice
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
                         </tbody>
                       </table>
                     </>
+                  )}
+
+                  {/* Voided numbers, kept in view. Leaving them out entirely
+                      would answer the auditor's question by hiding it. */}
+                  {((sr.cancelled as Row[]) || []).length > 0 && (
+                    <div className="border-t bg-muted/30 px-3 py-2">
+                      <div className="mb-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                        Cancelled — accounted for, not missing
+                      </div>
+                      <div className="space-y-1">
+                        {((sr.cancelled as Row[]) || []).map((cv) => (
+                          <div key={String(cv.number)} className="flex flex-wrap items-baseline gap-x-2 text-[11.5px]">
+                            <span className="doc-ref font-medium tabular-nums line-through decoration-muted-foreground/50">
+                              {String(sr.prefix)}/{String(cv.number)}
+                            </span>
+                            <span className="text-muted-foreground">{String(cv.reason || 'no reason recorded')}</span>
+                            {cv.cancelled_on && (
+                              <span className="text-muted-foreground/70">· {formatDate(String(cv.cancelled_on))}</span>
+                            )}
+                            <button
+                              type="button"
+                              className="text-[11px] font-medium text-sky-700 hover:underline"
+                              onClick={() => void undoVoid(String(sr.prefix), Number(cv.number))}
+                            >
+                              Undo
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   )}
 
                   {/* A number keyed under a misspelt prefix is a typo, not a
@@ -2728,6 +2809,45 @@ function SalesTab({
           <DialogFooter className="shrink-0 border-t px-5 py-3">
             <Button variant="outline" onClick={() => setGapsOpen(false)}>
               Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Voiding a number asks why, because that reason is the whole value of the
+          record: "spoiled in the printer" closes the question, a blank does not.
+          Kept as its own small dialog rather than a prompt, so the number being
+          voided is visible while the reason is typed. */}
+      <Dialog open={!!voidTarget} onOpenChange={(o) => !o && !voidBusy && setVoidTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              Cancel {voidTarget ? `${voidTarget.prefix}/${voidTarget.number}` : 'invoice number'}
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-[12px] leading-relaxed text-muted-foreground">
+            This records the number as deliberately voided — a spoiled form, a bill cancelled before
+            it went out. It stops reading as missing and starts reading as accounted for. Nothing is
+            posted: no stock moves and no ledger entry is made, because no invoice ever existed.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Reason</Label>
+            <Input
+              autoFocus
+              placeholder="e.g. spoiled in the printer"
+              value={voidReason}
+              onChange={(e) => setVoidReason(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && voidReason.trim()) void confirmVoid()
+              }}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setVoidTarget(null)} disabled={voidBusy}>
+              Keep it
+            </Button>
+            <Button onClick={confirmVoid} disabled={voidBusy || !voidReason.trim()}>
+              {voidBusy ? 'Recording…' : 'Record as cancelled'}
             </Button>
           </DialogFooter>
         </DialogContent>

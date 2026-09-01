@@ -75,6 +75,108 @@ app.whenReady().then(async () => {
   await seedFormulations().catch((e) => console.error('[seed] formulations failed:', e))
   await seedPackagings().catch((e) => console.error('[seed] packagings failed:', e))
   await runDaily('cleanup_logs', () => cleanupLogs()).catch(() => {})
+  // Stock brought forward on the day the books begin.
+  //
+  // Created here rather than appended to MIGRATIONS because this database is
+  // already past the migration-count mark — it records 347 applied, and an
+  // appended statement below that mark is skipped in silence. Exactly the trap
+  // the note at the end of that list warns about, and exactly what runOnce is
+  // for.
+  //
+  // Book stock is derived entirely from movements, so a mill trading for years
+  // whose books start on a date opens every product at nothing, and every gram
+  // consumed since reads as stock it never had. Thirteen products in KR FOODS
+  // close negative for that reason alone.
+  await runOnce('stock_openings_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS stock_openings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER NOT NULL DEFAULT 1,
+      product_id INTEGER NOT NULL REFERENCES products(id),
+      as_of TEXT NOT NULL,
+      qty REAL NOT NULL DEFAULT 0,
+      rate REAL,
+      note TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(company_id, product_id)
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_stock_openings_co ON stock_openings(company_id)')
+  }).catch((e) => console.error('[stock] opening-stock table failed:', e))
+
+  // How a recipe is CLASSIFIED, as distinct from what it makes.
+  //
+  // Two recipes can both output DALDA and be entirely different jobs: one built
+  // on recovered oil, one on RPS. The output product cannot say which, so the
+  // sub-category needs a name of its own before production or stock can be read by it.
+  //
+  // A managed list rather than a text column on purpose. There are already two
+  // ledgers called LEGACY COMMODITIES (one with a full stop) and two products
+  // called RPO; free text would become "recovered-oil", "Recovered Oil" and
+  // "recovered oil " inside a month, and the grouping would quietly stop
+  // working while still looking as though it worked.
+  await runOnce('formulation_subcategory_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS formulation_subcategories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      note TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`)
+    // Case-insensitive uniqueness, so the very thing this table exists to
+    // prevent cannot be created inside it either.
+    await c.execute(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_fsubcat_name ON formulation_subcategories(UPPER(TRIM(name)))'
+    )
+    try {
+      await c.execute('ALTER TABLE formulations ADD COLUMN subcategory_id INTEGER REFERENCES formulation_subcategories(id)')
+    } catch (e) {
+      // Already there. Swallowed deliberately: runOnce does not record its
+      // marker if this throws, so it would retry on every launch for ever.
+      if (!/duplicate column/i.test((e as Error).message)) throw e
+    }
+    // The three sub-categories the client named. Seeded so the field is usable at once;
+    // all three can be renamed, retired or added to from the manage dialog.
+    for (const [i, name] of ['recovered-oil', 'fatty-oil-based', 'rps'].entries()) {
+      await c.execute({
+        sql: `INSERT INTO formulation_subcategories (name, sort_order)
+              SELECT ?, ? WHERE NOT EXISTS (
+                SELECT 1 FROM formulation_subcategories WHERE UPPER(TRIM(name)) = UPPER(TRIM(?))
+              )`,
+        args: [name, i, name]
+      })
+    }
+  }).catch((e) => console.error('[formulations] subcategory setup failed:', e))
+
+  // Invoice numbers that were deliberately voided rather than lost.
+  //
+  // A gap in the series has two innocent explanations and one worrying one: the
+  // form was spoiled, the bill was cancelled, or nobody knows. Recording the
+  // first two turns the report from a list of unanswered questions into a list
+  // of real ones — which is the only way the report stays useful as the series
+  // grows.
+  //
+  // The number is stored as prefix + number rather than as text, so it matches
+  // the series the gap report reconstructs however the invoice was punctuated.
+  await runOnce('cancelled_invoice_nos_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS cancelled_invoice_nos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER NOT NULL DEFAULT 1,
+      prefix TEXT NOT NULL,
+      number INTEGER NOT NULL,
+      reason TEXT,
+      cancelled_on TEXT NOT NULL,
+      created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(company_id, prefix, number)
+    )`)
+    await c.execute(
+      'CREATE INDEX IF NOT EXISTS idx_cancinv_co ON cancelled_invoice_nos(company_id, prefix)'
+    )
+  }).catch((e) => console.error('[sales] cancelled-invoice table failed:', e))
+
   // Index work for installs that are already past the migration-count mark, so
   // it cannot be added to that list and be run. Keyed by name, so it happens
   // exactly once per database and costs nothing on every launch after.

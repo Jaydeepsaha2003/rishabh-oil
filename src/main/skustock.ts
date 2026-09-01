@@ -25,7 +25,7 @@ function n(v: unknown): number {
 //   on_hand (units) = SUM(manual adjustments) − SUM(units sold on packed sales)
 // where units sold = boxes × pouches_per_box + loose pouches.
 // When `date` is given the row is a DAY REGISTER for that date (mirrors the
-// mill's production & despatch sheet): opening b/f + packed in − despatched =
+// mill's production & dispatch sheet): opening b/f + packed in − dispatched =
 // closing. Without a date the row carries the running to-date figures.
 export async function listSkuStock(date?: string): Promise<Row[]> {
   const c = getClient()
@@ -155,8 +155,8 @@ async function negativeRuns(cid: number, upto: string | null): Promise<Map<numbe
 // Where each figure on the packed-SKU register comes from.
 //
 // The register shows a number per SKU per day and nothing about how it got
-// there, so a despatch of 34,000 is unarguable and unexplainable at the same
-// time. This returns the parts: despatches split by the customer who took them,
+// there, so a dispatch of 34,000 is unarguable and unexplainable at the same
+// time. This returns the parts: dispatches split by the customer who took them,
 // and packing entries with their dates and notes.
 //
 // Fetched for EVERY SKU in one pair of queries rather than per SKU on hover --
@@ -166,7 +166,7 @@ export async function skuMovementBreakdown(date?: string): Promise<Row[]> {
   const cid = getActiveCompanyId()
   const d = date ? String(date).slice(0, 10) : null
 
-  // Despatches, by SKU and by customer. Pieces are boxes x per-box + loose.
+  // Dispatches, by SKU and by customer. Pieces are boxes x per-box + loose.
   const disp = await c.execute({
     sql: `SELECT s.packaging_id AS sku, s.invoice_no, s.sale_date, s.customer,
                  SUM(s.boxes * pk.pouches_per_box + s.pouches) AS pieces, SUM(s.boxes) AS boxes
@@ -193,11 +193,11 @@ export async function skuMovementBreakdown(date?: string): Promise<Row[]> {
 
   const bySku = new Map<number, Row>()
   const slot = (id: number): Row => {
-    const cur = bySku.get(id) || { sku: id, despatch: [] as Row[], packed_in: [] as Row[] }
+    const cur = bySku.get(id) || { sku: id, dispatch: [] as Row[], packed_in: [] as Row[] }
     bySku.set(id, cur)
     return cur
   }
-  for (const r of toPlain(disp)) slot(n(r.sku)).despatch.push(r)
+  for (const r of toPlain(disp)) slot(n(r.sku)).dispatch.push(r)
   for (const r of toPlain(packed)) slot(n(r.sku)).packed_in.push(r)
   return Array.from(bySku.values())
 }

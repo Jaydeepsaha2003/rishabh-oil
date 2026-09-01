@@ -207,7 +207,7 @@ const api = {
   stock: {
     list: (range?: { from?: string; to?: string }, companyIds?: number[]): Promise<Row[]> => ipcRenderer.invoke('stock:list', { range, companyIds }),
     needs: (): Promise<Row[]> => ipcRenderer.invoke('stock:needs'),
-    breakdown: (companyIds?: number[], range?: { from?: string; to?: string }): Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>> =>
+    breakdown: (companyIds?: number[], range?: { from?: string; to?: string }): Promise<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[] }>> =>
       ipcRenderer.invoke('stock:breakdown', { companyIds, range }),
     registers: (companyIds?: number[], range?: { from?: string; to?: string }): Promise<{ receipts: Row[]; dispatches: Row[] }> =>
       ipcRenderer.invoke('stock:registers', { companyIds, range }),
@@ -227,6 +227,18 @@ const api = {
       ipcRenderer.invoke('stockCount:save', { date, items }),
     history: (from: string, to: string): Promise<Row[]> =>
       ipcRenderer.invoke('stockCount:history', { from, to })
+  },
+  formulationSubcategory: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('formulationSubcategory:list'),
+    save: (values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('formulationSubcategory:save', { values }),
+    delete: (id: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('formulationSubcategory:delete', { id })
+  },
+  stockOpening: {
+    list: (companyId?: number): Promise<Row> => ipcRenderer.invoke('stockOpening:list', { companyId }),
+    save: (rows: Row[], asOf: string, companyId?: number): Promise<{ saved: number; cleared: number }> =>
+      ipcRenderer.invoke('stockOpening:save', { rows, asOf, companyId })
   },
   skuStock: {
     breakdown: (date?: string): Promise<Row[]> => ipcRenderer.invoke('skuStock:breakdown', { date }),
@@ -285,6 +297,10 @@ const api = {
       ipcRenderer.invoke('sales:list', { companyIds, forModule }),
     invoiceGaps: (companyId?: number, from?: string, to?: string): Promise<Row> =>
       ipcRenderer.invoke('sales:invoiceGaps', { companyId, from, to }),
+    cancelInvoiceNo: (values: Row): Promise<{ prefix: string; number: number }> =>
+      ipcRenderer.invoke('sales:cancelInvoiceNo', { values }),
+    uncancelInvoiceNo: (values: Row): Promise<{ prefix: string; number: number }> =>
+      ipcRenderer.invoke('sales:uncancelInvoiceNo', { values }),
     series: (companyId?: number): Promise<Row> => ipcRenderer.invoke('sales:series', { companyId }),
     fyTaxable: (customerId: number, date: string, excludeId: number): Promise<number> =>
       ipcRenderer.invoke('sales:fyTaxable', { customerId, date, excludeId }),

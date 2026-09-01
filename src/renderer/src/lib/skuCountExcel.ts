@@ -5,7 +5,7 @@ import { downloadWorkbook } from './excel'
 type Row = Record<string, any>
 
 // Column layout of the packed-SKU count sheet (1-indexed for exceljs).
-const COL = { sid: 1, sku: 2, pack: 3, opening: 4, packed: 5, despatch: 6, system: 7, counted: 8, mt: 9, note: 10 }
+const COL = { sid: 1, sku: 2, pack: 3, opening: 4, packed: 5, dispatch: 6, system: 7, counted: 8, mt: 9, note: 10 }
 
 // Build and download a PROTECTED .xlsx for counting a day's packed SKU closing
 // stock. Only "Counted closing (pcs)" and "Note" are editable; everything else,
@@ -40,7 +40,7 @@ export async function downloadSkuCountExcel(rows: Row[], date: string, packMT: (
     [COL.pack]: 'Pack size',
     [COL.opening]: 'Opening (pcs)',
     [COL.packed]: 'Packed in',
-    [COL.despatch]: 'Despatch',
+    [COL.dispatch]: 'Dispatch',
     [COL.system]: 'System closing (pcs)',
     [COL.counted]: 'Counted closing (pcs)',
     [COL.mt]: 'Counted (MT)',
@@ -75,7 +75,7 @@ export async function downloadSkuCountExcel(rows: Row[], date: string, packMT: (
     row.getCell(COL.pack).value = String(r.pack_label || '')
     row.getCell(COL.opening).value = Number(r.opening) || 0
     row.getCell(COL.packed).value = Number(r.added_on ?? r.added) || 0
-    row.getCell(COL.despatch).value = Number(r.sold_on ?? r.sold) || 0
+    row.getCell(COL.dispatch).value = Number(r.sold_on ?? r.sold) || 0
     row.getCell(COL.system).value = onHand
     // Pre-filled with the system figure so an untouched row changes nothing.
     row.getCell(COL.counted).value = onHand

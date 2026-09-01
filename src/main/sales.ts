@@ -1,15 +1,11 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
+import { getCurrentUser } from './currentUser'
 import { deleteJournalByRef, postSaleJournal } from './journal'
 import { getActiveCompanyId } from './company'
 import { getSetting } from './repos'
 import { productStockAvailable, stockMap } from './stock'
-import {
-  productHasFormulation,
-  formulationConsumption,
-  createSaleProduction,
-  deleteSaleProductions
-} from './production'
+import { deleteSaleProductions } from './production'
 import { visibleFromFor } from './access-gate'
 import { assertSalesInvoiceNoFree } from './invoiceno'
 
@@ -38,41 +34,6 @@ async function productLabel(productId: number): Promise<string> {
 // Guard for dispatching a made-to-order finished good: the formulation's inputs
 // must be in stock to make the dispatched qty. When editing an already-linked
 // sale, that sale's existing auto-production consumption is added back first so
-// the check reflects availability as if this dispatch weren't already booked.
-async function assertRawForFinished(
-  productId: number,
-  qty: number,
-  existingSaleId?: number
-): Promise<void> {
-  // Only the inputs are drawn from stock — a by-product line is made by the
-  // batch, so it can never be the thing that's short.
-  const consumption = (await formulationConsumption(productId, qty)).filter((l) => l.kind === 'input')
-  if (!consumption.length) return
-  const levels = await stockMap()
-  if (existingSaleId) {
-    const ex = await getClient().execute({
-      sql: `SELECT i.product_id AS pid, i.qty AS q FROM production_items i
-            JOIN production p ON p.id = i.production_id
-            WHERE i.kind = 'input' AND p.sale_id = ?`,
-      args: [existingSaleId]
-    })
-    for (const r of ex.rows) {
-      const pid = Number(r.pid)
-      levels[pid] = (Number(levels[pid]) || 0) + (Number(r.q) || 0)
-    }
-  }
-  const names = await getClient().execute('SELECT id, name FROM products')
-  const nameOf = new Map<number, string>()
-  for (const r of names.rows) nameOf.set(Number(r.id), String(r.name || ''))
-  const short = consumption.filter((cn) => cn.qty > (Number(levels[cn.product_id]) || 0) + 1e-6)
-  if (short.length) {
-    const detail = short
-      .map((s) => `${nameOf.get(s.product_id) || 'component'} (need ${s.qty.toFixed(3)}, have ${Math.max(Number(levels[s.product_id]) || 0, 0).toFixed(3)})`)
-      .join('; ')
-    throw new Error(`Not enough input stock to make this dispatch: ${detail}. Purchase/produce those first, or dispatch off-stock.`)
-  }
-}
-
 export type DispatchStage = 'pending' | 'loaded' | 'transit' | 'unloaded'
 
 // A dispatch moves through loaded → transit → unloaded; any of those three
@@ -589,6 +550,22 @@ export async function salesInvoiceGaps(
     args
   })
 
+  // Numbers deliberately voided — a spoiled form, a cancelled bill. They are
+  // accounted for, so they are not missing; but they are still shown, because
+  // "24 missing" and "18 missing, 6 cancelled" are different answers and only
+  // the second one can be signed off.
+  const voidRes = await getClient().execute({
+    sql: `SELECT prefix, number, reason, cancelled_on FROM cancelled_invoice_nos
+           WHERE company_id = ? ORDER BY prefix, number`,
+    args: [cid]
+  })
+  const voided = new Map<string, Map<number, Row>>()
+  for (const r of toPlain(voidRes)) {
+    const pfx = String(r.prefix || '')
+    if (!voided.has(pfx)) voided.set(pfx, new Map())
+    voided.get(pfx)!.set(n(r.number), r)
+  }
+
   // prefix -> the numbers seen under it, and the date each was first used
   const series = new Map<string, Map<number, string>>()
   const unparsed: string[] = []
@@ -624,12 +601,30 @@ export async function salesInvoiceGaps(
         for (const k of otherNums.keys()) strays.push({ number: k, as: `${other}/${k}` })
       }
     }
+    // Voided numbers under this series, however the prefix was punctuated.
+    const voidHere = new Map<number, Row>()
+    for (const [vp, vnums] of voided) {
+      if (bare(vp) !== bare(prefix)) continue
+      for (const [num, row] of vnums) voidHere.set(num, row)
+    }
+
     const missing = []
-    for (let i = lo; i <= hi; i++) if (!held.has(i)) missing.push(i)
+    const cancelled: Row[] = []
+    for (let i = lo; i <= hi; i++) {
+      if (held.has(i)) continue
+      const v = voidHere.get(i)
+      if (v) {
+        cancelled.push({ number: i, reason: v.reason ?? null, cancelled_on: v.cancelled_on ?? null })
+        continue
+      }
+      missing.push(i)
+    }
 
     rows.push({
       prefix,
       used: keys.length,
+      cancelled,
+      cancelled_count: cancelled.length,
       from: lo,
       to: hi,
       expected: hi - lo + 1,
@@ -1247,17 +1242,25 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   // formulation draw, no stock guard, and (affects_stock, below) never counted
   // in stock at all, on either the purchase or the sale side.
   const isTrading = !!v.is_trading
-  const hasFormula = !isTrading && (await productHasFormulation(productId))
   // Off-stock: dispatch is allowed without booking stock only when explicitly
   // forced (confirmed in the UI) or the sale is a Trading pass-through. Such a
   // sale is not stock-tracked.
   const trackStock = isTrading || (isDispatched(stage) && v.force_no_stock) ? 0 : 1
-  if (isDispatched(stage) && !isTrading) {
-    if (hasFormula) {
-      if (!v.force_no_stock) await assertRawForFinished(productId, qty)
-    } else if (trackStock === 1) {
-      await assertFinishedStock(productId, qty, await productLabel(productId))
-    }
+  // A dispatch draws FINISHED stock, whatever the product's recipe says.
+  //
+  // It used to check the recipe's raw inputs instead and then post a production
+  // run of its own to cover the sale. That run consumed the inputs and produced
+  // the dispatched quantity, so the finished side always netted to nothing and
+  // the shortage moved onto the raw materials — where it had no receipt behind
+  // it and simply went negative. IVF reached -532.7 MT that way, and RPO raw
+  // -291.5, without a single real batch being entered.
+  //
+  // Production is a thing that happens on the floor and gets recorded. A sale
+  // cannot manufacture it. So the guard is now the same one every other product
+  // gets: is there any of this to send? If not, say so — and let the user
+  // dispatch off-stock deliberately if that is really what they mean.
+  if (isDispatched(stage) && !isTrading && trackStock === 1) {
+    await assertFinishedStock(productId, qty, await productLabel(productId))
   }
   const freightQty = await resolveFreightQty(v, qty)
   // FOR freight is received qty x rate, always recomputed from the rate rather
@@ -1316,11 +1319,6 @@ export async function createSale(v: Row): Promise<{ id: number }> {
     ]
   })
   const id = Number(res.lastInsertRowid)
-  // Made-to-order dispatch → draw the raw inputs via a linked auto-production.
-  if (isDispatched(stage) && hasFormula) {
-    const prodDate = dates.loaded_date || dates.transit_date || dates.unloaded_date || String(v.sale_date) || todayLocal()
-    await createSaleProduction(id, productId, qty, prodDate, uom)
-  }
   await postCustomerReceivable(id, customerId, net, String(v.sale_date))
   await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount, tdsAmount)
   await postSaleFreight(id, v, freightQty)
@@ -1371,17 +1369,13 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   const status = statusForStage(stage)
   const dates = resolveStageDates(stage, v, (exTerm && String(v.sale_date || '')) || todayLocal())
   const isTrading = !!v.is_trading
-  const hasFormula = !isTrading && (await productHasFormulation(productId))
-  // Keeping/putting this sale in a dispatched stage must be backed by stock:
-  // formulation goods by their raw inputs, plain goods by finished stock —
-  // unless explicitly forced off-stock, or it's a Trading pass-through.
+  // Keeping or putting this sale in a dispatched stage must be backed by
+  // FINISHED stock — see the note in createSale on why a recipe no longer
+  // stands in for it — unless explicitly forced off-stock, or it is a Trading
+  // pass-through.
   const trackStock = isTrading || (isDispatched(stage) && v.force_no_stock) ? 0 : 1
-  if (isDispatched(stage) && !isTrading) {
-    if (hasFormula) {
-      if (!v.force_no_stock) await assertRawForFinished(productId, qty, id)
-    } else if (trackStock === 1) {
-      await assertFinishedStock(productId, qty, await productLabel(productId), id)
-    }
+  if (isDispatched(stage) && !isTrading && trackStock === 1) {
+    await assertFinishedStock(productId, qty, await productLabel(productId), id)
   }
   const freightQty = await resolveFreightQty(v, qty)
   // FOR freight is received qty x rate, always recomputed from the rate rather
@@ -1435,14 +1429,11 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
       id
     ]
   })
-  // Sync the linked auto-production to the edited state: (re)create it while
-  // dispatched with a formulation, otherwise drop it (reverses the raw draw).
-  if (isDispatched(stage) && hasFormula) {
-    const prodDate = dates.loaded_date || dates.transit_date || dates.unloaded_date || String(v.sale_date) || todayLocal()
-    await createSaleProduction(id, productId, qty, prodDate, uom)
-  } else {
-    await deleteSaleProductions(id)
-  }
+  // Sales no longer post production of their own. Any auto-production an
+  // earlier version left against this sale is removed as it is re-saved, so
+  // editing an old invoice cleans up after that behaviour rather than
+  // preserving it.
+  await deleteSaleProductions(id)
   await postCustomerReceivable(id, customerId, net, String(v.sale_date))
   await postSaleEntry(id, v, amount, gstAmount, roundOff, transportAmount, tdsAmount)
   await postSaleFreight(id, v, freightQty)
@@ -1505,19 +1496,16 @@ export async function setSaleStage(
   const row = r.rows[0]
   const pid = n(row.product_id)
   const saleQty = n(row.qty)
-  const hasFormula = await productHasFormulation(pid)
   const wasDispatched = String(row.status) === 'done'
   let trackStock = n(row.track_stock)
   if (!isDispatched(stage)) {
     // Back to pending → release stock and re-enable tracking for next time.
     trackStock = 1
   } else if (!wasDispatched) {
-    // Dispatching now: force → off-stock; otherwise require stock — raw inputs
-    // for a formulation good, finished stock for a plain one.
+    // Dispatching now: force → off-stock; otherwise there has to be finished
+    // stock to send, recipe or no recipe.
     trackStock = force ? 0 : 1
-    if (hasFormula) {
-      if (!force) await assertRawForFinished(pid, saleQty, id)
-    } else if (trackStock === 1) {
+    if (trackStock === 1) {
       await assertFinishedStock(pid, saleQty, await productLabel(pid), id)
     }
   }
@@ -1537,13 +1525,9 @@ export async function setSaleStage(
   // transporter would stay billed on the dispatched quantity. Nothing to do for
   // a lump-sum freight (no rate) or an Ex sale.
   await recomputeSaleFreight(id)
-  // Keep the linked auto-production in step with the sale's dispatch state.
-  if (isDispatched(stage) && hasFormula) {
-    const prodDate = dates.loaded_date || dates.transit_date || dates.unloaded_date || dateIn || todayLocal()
-    await createSaleProduction(id, pid, saleQty, prodDate, String(row.uom || 'MT'))
-  } else if (!isDispatched(stage)) {
-    await deleteSaleProductions(id)
-  }
+  // As in updateSale: no production is posted from here any more, and a legacy
+  // auto row against this sale is cleared as the sale moves.
+  await deleteSaleProductions(id)
   return { id }
 }
 
@@ -2004,4 +1988,61 @@ export async function backfillSalesBargainCustomers(): Promise<void> {
     linked++
   }
   if (linked > 0) console.log(`[sales] linked ${linked} sales bargains to the customer master`)
+}
+
+// Void one unused invoice number, so the gap report can tell a spoiled form
+// from a bill nobody can account for.
+//
+// Refuses a number that IS in use: cancelling a real invoice is a different act
+// with real consequences (stock, ledger, a credit note), and it already has its
+// own path on the register. This is only for a number that was never issued.
+export async function cancelInvoiceNo(v: Row): Promise<{ prefix: string; number: number }> {
+  const cid = n(v?.company_id) || getActiveCompanyId()
+  const prefix = String(v?.prefix || '').trim()
+  const num = n(v?.number)
+  const reason = String(v?.reason || '').trim()
+  if (!prefix || !num) throw new Error('Pick the invoice number to cancel')
+  if (!reason) {
+    throw new Error('Say why it was cancelled — a voided number with no reason cannot be checked later')
+  }
+  const c = getClient()
+
+  // Same tolerant match the gap report uses, so a number keyed as KRFL-380
+  // still counts as in use against a KRFL/380 cancellation.
+  const inUse = await c.execute({
+    sql: `SELECT invoice_no FROM sales
+           WHERE company_id = ?
+             AND UPPER(REPLACE(REPLACE(REPLACE(TRIM(COALESCE(invoice_no,'')), '/', ''), '-', ''), ' ', ''))
+                 = UPPER(REPLACE(REPLACE(REPLACE(? , '/', ''), '-', ''), ' ', ''))
+           LIMIT 1`,
+    args: [cid, `${prefix}${num}`]
+  })
+  if (inUse.rows.length) {
+    throw new Error(
+      `${String(inUse.rows[0].invoice_no)} is a real invoice — cancel it from the register instead, so its stock and ledger are reversed too.`
+    )
+  }
+
+  await c.execute({
+    sql: `INSERT INTO cancelled_invoice_nos (company_id, prefix, number, reason, cancelled_on, created_by)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(company_id, prefix, number) DO UPDATE SET
+            reason = excluded.reason, cancelled_on = excluded.cancelled_on, created_by = excluded.created_by`,
+    args: [cid, prefix, num, reason, todayISO(), getCurrentUser().username || null]
+  })
+  return { prefix, number: num }
+}
+
+// Put a voided number back into the missing list — for when it was voided by
+// mistake, or the bill turns out to exist after all.
+export async function uncancelInvoiceNo(v: Row): Promise<{ prefix: string; number: number }> {
+  const cid = n(v?.company_id) || getActiveCompanyId()
+  const prefix = String(v?.prefix || '').trim()
+  const num = n(v?.number)
+  if (!prefix || !num) throw new Error('Pick the invoice number')
+  await getClient().execute({
+    sql: 'DELETE FROM cancelled_invoice_nos WHERE company_id = ? AND prefix = ? AND number = ?',
+    args: [cid, prefix, num]
+  })
+  return { prefix, number: num }
 }

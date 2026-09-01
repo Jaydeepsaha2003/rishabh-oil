@@ -88,10 +88,56 @@ export async function stockLevels(
     // The invoice date is the one figure on a sale that never moves by itself,
     // and it is what the Sales register counts by — so the two pages can no
     // longer disagree about which month a dispatch belongs to.
+    // LOOSE sales only — see packedOut below for why a packed sale is excluded.
+    //
+    // Loose oil goes straight out of the plant tank, so it is drawn here exactly
+    // as it always was. A packed sale draws its SKU's piece count instead, the
+    // oil having already left the tank when it was packed.
     sold: {
-      base: `SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status = 'done' AND COALESCE(affects_stock, 1) = 1 AND company_id IN (${ph})`,
-      date: 'sale_date',
-      group: 'GROUP BY product_id'
+      base: `SELECT s.product_id AS pid, SUM(s.qty) AS q FROM sales s
+             LEFT JOIN packagings pk ON pk.id = s.packaging_id
+             WHERE s.status = 'done' AND COALESCE(s.affects_stock, 1) = 1
+               AND s.company_id IN (${ph})
+               AND NOT (COALESCE(s.sale_type, 'LOOSE') = 'PACKED' AND pk.product_id IS NOT NULL)`,
+      date: 's.sale_date',
+      group: 'GROUP BY s.product_id'
+    },
+    // Oil drawn out of the plant tank to be packed into SKUs.
+    packedOut: {
+      base: `SELECT pk.product_id AS pid,
+                    SUM(a.delta * (
+                      CASE
+                        WHEN COALESCE(pk.unit_size, 0) > 0 THEN
+                          CASE UPPER(COALESCE(pk.unit_uom, 'KG'))
+                            WHEN 'GM' THEN pk.unit_size / 1000.0
+                            WHEN 'G' THEN pk.unit_size / 1000.0
+                            WHEN 'ML' THEN pk.unit_size / 1000.0
+                            WHEN 'QUINTAL' THEN pk.unit_size * 100.0
+                            WHEN 'MT' THEN pk.unit_size * 1000.0
+                            WHEN 'TON' THEN pk.unit_size * 1000.0
+                            WHEN 'KL' THEN pk.unit_size * 1000.0
+                            ELSE pk.unit_size
+                          END
+                        ELSE
+                          CASE UPPER(COALESCE(pk.base_uom, 'KG'))
+                            WHEN 'GM' THEN pk.base_per_pouch / 1000.0
+                            WHEN 'G' THEN pk.base_per_pouch / 1000.0
+                            WHEN 'ML' THEN pk.base_per_pouch / 1000.0
+                            WHEN 'QUINTAL' THEN pk.base_per_pouch * 100.0
+                            WHEN 'MT' THEN pk.base_per_pouch * 1000.0
+                            WHEN 'TON' THEN pk.base_per_pouch * 1000.0
+                            WHEN 'KL' THEN pk.base_per_pouch * 1000.0
+                            ELSE pk.base_per_pouch
+                          END
+                      END
+                    ) / 1000.0) AS q
+             FROM sku_adjustments a
+             JOIN packagings pk ON pk.id = a.packaging_id
+             WHERE pk.product_id IS NOT NULL
+               AND COALESCE(a.kind, CASE WHEN a.delta < 0 THEN 'correction' ELSE 'packing' END) = 'packing'
+               AND a.company_id IN (${ph})`,
+      date: 'a.adj_date',
+      group: 'GROUP BY pk.product_id'
     },
     transferredIn: {
       base: `SELECT product_id AS pid, SUM(qty) AS q FROM stock_transfers WHERE to_company_id IN (${ph})`,
@@ -153,9 +199,31 @@ export async function stockLevels(
     return m
   }
 
+  // Stock brought forward, which is a BALANCE and not a movement — so it is
+  // read here rather than added to SOURCES. It belongs in the Opening column
+  // whatever range is asked for, because that is what it is; showing it as a
+  // receipt in whichever month it happens to fall would make it look like the
+  // mill bought 500 MT of IVF on the 1st of July.
+  //
+  // Bounded by `to` only: a range that ends before the books began has no
+  // opening to bring forward yet.
+  const openingBalance = async (): Promise<Map<number, number>> => {
+    const args: (string | number)[] = [...cidList]
+    let sql = `SELECT product_id AS pid, SUM(qty) AS q FROM stock_openings WHERE company_id IN (${ph})`
+    if (to) {
+      sql += ' AND as_of <= ?'
+      args.push(to)
+    }
+    const res = await c.execute({ sql: `${sql} GROUP BY product_id`, args })
+    const m = new Map<number, number>()
+    for (const r of res.rows) m.set(Number(r.pid), Number(r.q) || 0)
+    return m
+  }
+
   const keys = Object.keys(SOURCES) as (keyof typeof SOURCES)[]
-  const [products, ...maps] = await Promise.all([
+  const [products, brought, ...maps] = await Promise.all([
     c.execute('SELECT id, code, name, category, material_type, active FROM products ORDER BY category, name'),
+    openingBalance(),
     ...keys.map((k) => slice(SOURCES[k], 'period')),
     ...keys.map((k) => slice(SOURCES[k], 'opening'))
   ])
@@ -166,8 +234,9 @@ export async function stockLevels(
     const id = Number(p.id)
     const g = (m: Record<string, Map<number, number>>, k: string): number => m[k].get(id) || 0
     const open =
+      (brought.get(id) || 0) +
       g(opening, 'received') + g(opening, 'produced') + g(opening, 'byProduct') + g(opening, 'transferredIn') -
-      g(opening, 'consumed') - g(opening, 'sold') - g(opening, 'transferredOut') +
+      g(opening, 'consumed') - g(opening, 'sold') - g(opening, 'transferredOut') - g(opening, 'packedOut') +
       g(opening, 'returnedIn') - g(opening, 'returnedOut')
     const rec = g(period, 'received') - g(period, 'returnedOut')
     // A by-product of someone else's batch is produced stock all the same, so
@@ -177,6 +246,9 @@ export async function stockLevels(
     const sld = g(period, 'sold') - g(period, 'returnedIn')
     const tIn = g(period, 'transferredIn')
     const tOut = g(period, 'transferredOut')
+    // Oil that left the tank to be packed. Its own column, because "where did
+    // the DALDA go" has a different answer from "who did we sell it to".
+    const packed = g(period, 'packedOut')
     return {
       id,
       code: p.code,
@@ -185,13 +257,17 @@ export async function stockLevels(
       material_type: p.material_type,
       active: p.active,
       opening: open,
+      // The part of the opening that was entered as stock brought forward,
+      // rather than derived from movements before the range.
+      opening_brought: brought.get(id) || 0,
       received: rec,
       produced: prod,
       consumed: cons,
       sold: sld,
       transferred_in: tIn,
       transferred_out: tOut,
-      stock: open + rec + prod + tIn - cons - sld - tOut
+      packed_out: packed,
+      stock: open + rec + prod + tIn - cons - sld - tOut - packed
     }
   })
 }
@@ -293,7 +369,7 @@ async function productStockForCompany(companyId: number, productId: number): Pro
 export async function stockPartyBreakdown(
   companyIds?: number[],
   range?: { from?: string; to?: string }
-): Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>> {
+): Promise<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[] }>> {
   const c = getClient()
   const cidList = (companyIds || []).map(Number).filter((x) => x > 0)
   if (!cidList.length) cidList.push(getActiveCompanyId())
@@ -329,8 +405,9 @@ export async function stockPartyBreakdown(
   // Same rule as the register's Dispatch column above — the hover has to cover
   // exactly the period the cell it explains does.
   const dispB = bounds('s.sale_date')
-  const out: Record<number, { receipt: Row[]; dispatch: Row[] }> = {}
-  const ensure = (pid: number): { receipt: Row[]; dispatch: Row[] } => (out[pid] ??= { receipt: [], dispatch: [] })
+  const out: Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[] }> = {}
+  const ensure = (pid: number): { receipt: Row[]; dispatch: Row[]; packed: Row[] } =>
+    (out[pid] ??= { receipt: [], dispatch: [], packed: [] })
 
   // With more than one company in view, the party rows say whose books each
   // figure belongs to.
@@ -405,6 +482,60 @@ export async function stockPartyBreakdown(
       party: `${multi ? `${r.party} · ${r.company || ''}` : String(r.party)} — return ${r.note_no}`,
       qty: -(Number(r.qty) || 0),
       isReturn: true
+    })
+
+  // Which SKUs the packed tonnage went into. Same conversion and the same
+  // 'packing'-only rule as the packedOut source in stockLevels, so the lines
+  // add up to the cell they explain rather than to a different definition of it.
+  //
+  // Pieces come back alongside the tonnage because that is how the packing hall
+  // counts: a line reading "17,105 pieces · 256.575 MT" can be checked against
+  // the day's sheet, where "256.575 MT" alone cannot.
+  const packB = bounds('a.adj_date')
+  const packMT = `
+    CASE
+      WHEN COALESCE(pk.unit_size, 0) > 0 THEN
+        CASE UPPER(COALESCE(pk.unit_uom, 'KG'))
+          WHEN 'GM' THEN pk.unit_size / 1000.0
+          WHEN 'G' THEN pk.unit_size / 1000.0
+          WHEN 'ML' THEN pk.unit_size / 1000.0
+          WHEN 'QUINTAL' THEN pk.unit_size * 100.0
+          WHEN 'MT' THEN pk.unit_size * 1000.0
+          WHEN 'TON' THEN pk.unit_size * 1000.0
+          WHEN 'KL' THEN pk.unit_size * 1000.0
+          ELSE pk.unit_size
+        END
+      ELSE
+        CASE UPPER(COALESCE(pk.base_uom, 'KG'))
+          WHEN 'GM' THEN pk.base_per_pouch / 1000.0
+          WHEN 'G' THEN pk.base_per_pouch / 1000.0
+          WHEN 'ML' THEN pk.base_per_pouch / 1000.0
+          WHEN 'QUINTAL' THEN pk.base_per_pouch * 100.0
+          WHEN 'MT' THEN pk.base_per_pouch * 1000.0
+          WHEN 'TON' THEN pk.base_per_pouch * 1000.0
+          WHEN 'KL' THEN pk.base_per_pouch * 1000.0
+          ELSE pk.base_per_pouch
+        END
+    END / 1000.0`
+  const packed = await c.execute({
+    sql: `SELECT pk.product_id AS pid, pk.name AS sku, co.name AS company,
+                 SUM(a.delta) AS pieces, SUM(a.delta * (${packMT})) AS qty
+          FROM sku_adjustments a
+          JOIN packagings pk ON pk.id = a.packaging_id
+          LEFT JOIN companies co ON co.id = a.company_id
+          WHERE pk.product_id IS NOT NULL
+            AND COALESCE(a.kind, CASE WHEN a.delta < 0 THEN 'correction' ELSE 'packing' END) = 'packing'
+            AND a.company_id IN (${ph}) ${packB.sql}
+          GROUP BY pk.product_id, pk.id, a.company_id
+          HAVING SUM(a.delta) <> 0
+          ORDER BY qty DESC`,
+    args: [...cidList, ...packB.args]
+  })
+  for (const r of packed.rows)
+    ensure(Number(r.pid)).packed.push({
+      party: multi ? `${r.sku} · ${r.company || ''}` : String(r.sku),
+      pieces: Number(r.pieces) || 0,
+      qty: Number(r.qty) || 0
     })
 
   return out

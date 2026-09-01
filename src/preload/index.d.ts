@@ -151,7 +151,7 @@ export interface Api {
   stock: {
     list: (range?: { from?: string; to?: string }, companyIds?: number[]) => Promise<Row[]>
     needs: () => Promise<Row[]>
-    breakdown: (companyIds?: number[], range?: { from?: string; to?: string }) => Promise<Record<number, { receipt: Row[]; dispatch: Row[] }>>
+    breakdown: (companyIds?: number[], range?: { from?: string; to?: string }) => Promise<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[] }>>
     registers: (companyIds?: number[], range?: { from?: string; to?: string }) => Promise<{ receipts: Row[]; dispatches: Row[] }>
     daybook: (from: string, to: string) => Promise<{ vouchers: Row[]; material: Row[] }>
     transfers: () => Promise<Row[]>
@@ -164,6 +164,15 @@ export interface Api {
     list: (date: string) => Promise<Row[]>
     save: (date: string, items: Row[]) => Promise<{ count: number }>
     history: (from: string, to: string) => Promise<Row[]>
+  }
+  formulationSubcategory: {
+    list: () => Promise<Row[]>
+    save: (values: Row) => Promise<{ id: number }>
+    delete: (id: number) => Promise<{ id: number }>
+  }
+  stockOpening: {
+    list: (companyId?: number) => Promise<Row>
+    save: (rows: Row[], asOf: string, companyId?: number) => Promise<{ saved: number; cleared: number }>
   }
   skuStock: {
     breakdown: (date?: string) => Promise<Row[]>
@@ -208,6 +217,8 @@ export interface Api {
   sales: {
     list: (companyIds?: number[], forModule?: string) => Promise<Row[]>
     invoiceGaps: (companyId?: number, from?: string, to?: string) => Promise<Row>
+    cancelInvoiceNo: (values: Row) => Promise<{ prefix: string; number: number }>
+    uncancelInvoiceNo: (values: Row) => Promise<{ prefix: string; number: number }>
     series: (companyId?: number) => Promise<Row>
     fyTaxable: (customerId: number, date: string, excludeId: number) => Promise<number>
     create: (values: Row) => Promise<{ id: number }>

@@ -71,7 +71,14 @@ const CHANNEL_RULES: Record<string, Rule> = {
   trading: { module: 'trading', label: 'Trading', table: 'trading_deals', dateCol: 'deal_date' },
   stockCount: { module: 'stock', label: 'Stock' },
   skuStock: { module: 'stock', label: 'Stock' },
-  formulations: { module: 'formulation', label: 'Formulations' }
+  formulations: { module: 'formulation', label: 'Formulations' },
+  // The recipe sub-category master. Governed by the Formulation grant, since
+  // renaming or retiring one reclassifies every recipe pointing at it.
+  formulationSubcategory: { module: 'formulation', label: 'Recipe sub-categories' },
+  // Stock brought forward. Every balance in the register stands on these, so it
+  // belongs behind the Stock grant rather than being reachable by anyone who can
+  // open the page.
+  stockOpening: { module: 'stock', label: 'Opening stock' }
 }
 
 // Reads are never gated here, whatever the caller passes. ipc.ts already filters
@@ -92,6 +99,36 @@ function actionFor(op: string): Action {
   if (op === 'delete' || op === 'remove' || op === 'removeInvoice' || op === 'deleteEntry' || op === 'deleteTransfer' ||
       op === 'deleteIssuance' || op === 'removeIssuance') return 'delete'
   return 'edit'
+}
+
+// Taking a weight is how a gate entry gets FINISHED, not how it gets amended.
+//
+// A vehicle is booked in before anyone can weigh it: the entry is written at the
+// barrier and sits 'pending' until the weighbridge has both figures (gross in,
+// tare later — a part-weighed vehicle is still pending). Those two acts are one
+// piece of work by one person, so the right to make a gate entry has to include
+// the right to finish it.
+//
+// Reading every non-create channel as an edit meant turning OFF edit — meaning
+// "do not let them go back and alter finished entries" — also stopped the
+// weighbridge recording today's weights, which is the whole job.
+//
+// Once the entry is 'completed' a re-weigh IS an amendment, and needs edit.
+const GATE_FINISH_OPS = new Set(['complete', 'weights', 'skipWeighment'])
+
+async function gateEntryUnfinished(id: number): Promise<boolean> {
+  if (!id) return false
+  try {
+    const res = await getClient().execute({
+      sql: `SELECT COALESCE(status, '') AS s FROM gate_entries WHERE id = ? LIMIT 1`,
+      args: [id]
+    })
+    if (!res.rows.length) return false
+    return String(res.rows[0].s) !== 'completed'
+  } catch {
+    // Unreadable status must not quietly widen anyone's rights.
+    return false
+  }
 }
 
 // The signed-in user's role and permissions. Cached per user id and cleared
@@ -243,7 +280,18 @@ export async function assertAllowed(channel: string, args: unknown): Promise<voi
     return
   }
 
-  const action = actionFor(op)
+  let action = actionFor(op)
+  // Finishing an unfinished entry is part of making it — see GATE_FINISH_OPS.
+  // Deliberately only when the entry is still pending, and only for the three
+  // weighbridge acts; the Edit dialog (gate:update) stays an edit throughout.
+  if (
+    ns === 'gate' &&
+    action === 'edit' &&
+    GATE_FINISH_OPS.has(op) &&
+    (await gateEntryUnfinished(Number((args as Row)?.id) || 0))
+  ) {
+    action = 'create'
+  }
   // The row's own date decides the read-only window; without one, only the
   // right itself is checked.
   let entryDate: unknown

@@ -28,6 +28,7 @@ export async function listFormulations(): Promise<Row[]> {
   // shared across the whole blend.
   const res = await getClient().execute(`
     SELECT f.*, p.name AS product_name, p.category AS product_category,
+      sc.name AS subcategory_name,
       (SELECT COUNT(*) FROM formulation_items WHERE formulation_id = f.id) AS item_count,
       (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'input') AS blend_pct,
       (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id AND kind = 'output') AS byproduct_pct,
@@ -35,6 +36,7 @@ export async function listFormulations(): Promise<Row[]> {
       (SELECT COALESCE(SUM(qty), 0) FROM formulation_items WHERE formulation_id = f.id) AS total_qty
     FROM formulations f
     LEFT JOIN products p ON p.id = f.product_id
+    LEFT JOIN formulation_subcategories sc ON sc.id = f.subcategory_id
     ORDER BY f.id DESC
   `)
   const rows = toPlain(res)
@@ -97,8 +99,8 @@ async function writeItems(formulationId: number, items: Row[]): Promise<void> {
 
 export async function createFormulation(v: Row): Promise<{ id: number }> {
   const res = await getClient().execute({
-    sql: 'INSERT INTO formulations (product_id, name, uom, active) VALUES (?, ?, ?, 1)',
-    args: [n(v.product_id), v.name || null, v.uom || 'MT']
+    sql: 'INSERT INTO formulations (product_id, name, uom, subcategory_id, active) VALUES (?, ?, ?, ?, 1)',
+    args: [n(v.product_id), v.name || null, v.uom || 'MT', n(v.subcategory_id) || null]
   })
   const id = Number(res.lastInsertRowid)
   await writeItems(id, v.items)
@@ -107,8 +109,8 @@ export async function createFormulation(v: Row): Promise<{ id: number }> {
 
 export async function updateFormulation(id: number, v: Row): Promise<{ id: number }> {
   await getClient().execute({
-    sql: 'UPDATE formulations SET product_id = ?, name = ?, uom = ? WHERE id = ?',
-    args: [n(v.product_id), v.name || null, v.uom || 'MT', id]
+    sql: 'UPDATE formulations SET product_id = ?, name = ?, uom = ?, subcategory_id = ? WHERE id = ?',
+    args: [n(v.product_id), v.name || null, v.uom || 'MT', n(v.subcategory_id) || null, id]
   })
   await writeItems(id, v.items)
   return { id }
@@ -119,4 +121,73 @@ export async function deleteFormulation(id: number): Promise<{ id: number }> {
   await c.execute({ sql: 'DELETE FROM formulation_items WHERE formulation_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM formulations WHERE id = ?', args: [id] })
   return { id }
+}
+
+// The sub-categories a recipe can belong to. A managed list, so "recovered-oil" stays
+// one thing rather than becoming three spellings of itself.
+//
+// in_use lets the manage dialog say what a name is carrying before anybody
+// retires or renames it — a count is the difference between an informed change
+// and a surprise.
+export async function listFormulationSubcategories(): Promise<Row[]> {
+  const res = await getClient().execute(`
+    SELECT sc.*,
+      (SELECT COUNT(*) FROM formulations f WHERE f.subcategory_id = sc.id) AS in_use
+    FROM formulation_subcategories sc
+    ORDER BY sc.active DESC, sc.sort_order, UPPER(TRIM(sc.name))
+  `)
+  return toPlain(res)
+}
+
+export async function saveFormulationSubcategory(v: Row): Promise<{ id: number }> {
+  const name = String(v?.name || '').trim()
+  if (!name) throw new Error('Give the sub-category a name')
+  const c = getClient()
+  const id = n(v?.id)
+
+  // The unique index would refuse it anyway; caught here so the message says
+  // which name it collided with rather than surfacing a constraint error.
+  const clash = await c.execute({
+    sql: `SELECT id, name FROM formulation_subcategories
+           WHERE UPPER(TRIM(name)) = UPPER(TRIM(?)) AND id <> ?`,
+    args: [name, id]
+  })
+  if (clash.rows.length) {
+    throw new Error(`"${String(clash.rows[0].name)}" already exists — one name per sub-category.`)
+  }
+
+  if (id) {
+    await c.execute({
+      sql: 'UPDATE formulation_subcategories SET name = ?, note = ?, active = ? WHERE id = ?',
+      args: [name, v?.note ? String(v.note).trim() : null, v?.active === false ? 0 : 1, id]
+    })
+    return { id }
+  }
+  const res = await c.execute({
+    sql: `INSERT INTO formulation_subcategories (name, note, sort_order, active)
+          VALUES (?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM formulation_subcategories), 1)`,
+    args: [name, v?.note ? String(v.note).trim() : null]
+  })
+  return { id: Number(res.lastInsertRowid) }
+}
+
+// Deleting a sub-category that recipes still point at would leave them classified as
+// nothing, silently. Retiring it instead keeps the history readable and takes
+// it out of the picker — which is what "we do not run that one any more"
+// actually means.
+export async function deleteFormulationSubcategory(id: number): Promise<{ id: number }> {
+  const c = getClient()
+  const used = await c.execute({
+    sql: 'SELECT COUNT(*) AS c FROM formulations WHERE subcategory_id = ?',
+    args: [n(id)]
+  })
+  const count = n((used.rows[0] as Row).c)
+  if (count > 0) {
+    throw new Error(
+      `${count} ${count === 1 ? 'recipe uses' : 'recipes use'} this sub-category. Retire it instead, ` +
+        'or move those recipes first — deleting it would leave them classified as nothing.'
+    )
+  }
+  await c.execute({ sql: 'DELETE FROM formulation_subcategories WHERE id = ?', args: [n(id)] })
+  return { id: n(id) }
 }
