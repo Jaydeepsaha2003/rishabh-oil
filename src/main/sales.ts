@@ -168,14 +168,23 @@ async function resolveTdsPct(v: Row, customerId: number | null): Promise<number>
   return cu.rows.length ? n(cu.rows[0].tds_pct) : 0
 }
 
+// TDS the customer withholds on a sale.
+//
+// The base is the invoice's TAXABLE VALUE — the goods alone. Not the
+// tax-inclusive total: GST is the government's money passing through, so
+// withholding a slice of it would withhold tax on tax, and the rupee round-off
+// is a presentation artifact that has no business moving the withheld amount.
+// The slab (threshold / above-only) runs on the same taxable figures, which is
+// what customerFyTaxable already accumulates — so the base and the running
+// year-to-date it is measured against are now the same kind of number.
 async function saleTds(
   customerId: number | null,
   tdsPct: number,
-  base: number,
+  taxable: number,
   dateStr: string,
   excludeId: number
 ): Promise<number> {
-  if (!customerId || tdsPct <= 0 || base <= 0) return 0
+  if (!customerId || tdsPct <= 0 || taxable <= 0) return 0
   const cu = await getClient().execute({
     sql: 'SELECT tds_threshold, tds_above_only FROM customers WHERE id = ?',
     args: [customerId]
@@ -184,7 +193,7 @@ async function saleTds(
   const threshold = Number(master?.tds_threshold) || 0
   const basePct = master?.tds_above_only ? 0 : tdsPct
   const prior = threshold > 0 ? await customerFyTaxable(customerId, dateStr, excludeId) : 0
-  return Math.round(tierTds(base, prior, threshold, basePct, tdsPct) * 100) / 100
+  return Math.round(tierTds(taxable, prior, threshold, basePct, tdsPct) * 100) / 100
 }
 
 async function postCustomerReceivable(
@@ -1219,7 +1228,7 @@ export async function createSale(v: Row): Promise<{ id: number }> {
   // side and applied on the customer master's slab terms. With no rate set it
   // is 0, so the receivable is unchanged for a sale that carries no TDS.
   const tdsPct = await resolveTdsPct(v, customerId)
-  const tdsAmount = await saleTds(customerId, tdsPct, amount + gstAmount + roundOff, String(v.sale_date), 0)
+  const tdsAmount = await saleTds(customerId, tdsPct, amount, String(v.sale_date), 0)
   const net = amount + gstAmount + roundOff - tdsAmount
   // Can't dispatch more than the chosen sales bargain still has open.
   if (v.sales_bargain_id) {
@@ -1353,7 +1362,7 @@ export async function updateSale(id: number, v: Row): Promise<{ id: number }> {
   // TDS the customer withholds — see createSale. This sale is left out of its
   // own prior-billed figure so re-saving cannot inflate the slab.
   const tdsPct = n(v.tds_pct)
-  const tdsAmount = await saleTds(customerId, tdsPct, amount + gstAmount + roundOff, String(v.sale_date), id)
+  const tdsAmount = await saleTds(customerId, tdsPct, amount, String(v.sale_date), id)
   const net = amount + gstAmount + roundOff - tdsAmount
   if (v.sales_bargain_id) {
     const bal = await salesBargainBalanceFor(n(v.sales_bargain_id), id)

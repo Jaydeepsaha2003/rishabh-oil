@@ -98,6 +98,15 @@ function Select({ value, onValueChange, disabled, children, searchable, showChec
   // the button underneath it — the exact "one field covering another" this
   // guards against.
   const [inlineFlip, setInlineFlip] = React.useState<{ openUp: boolean; maxH: number } | null>(null)
+  // Which way the panel opened, decided ONCE per opening and then held.
+  //
+  // The height still tracks the room available, but the side does not: room
+  // below shrinks as the page scrolls, and recomputing the side on every
+  // scroll event made an open list jump from under the trigger to over it
+  // mid-scroll — the list appearing to leap upward over the fields above while
+  // the user was only trying to scroll. A dropdown that has already committed
+  // to a direction should stay there until it closes.
+  const dirRef = React.useRef<boolean | null>(null)
 
   let trigger: React.ReactNode = null
   let contentChildren: React.ReactNode = null
@@ -133,6 +142,7 @@ function Select({ value, onValueChange, disabled, children, searchable, showChec
     if (!open) {
       setPortal(null)
       setInlineFlip(null)
+      dirRef.current = null
       return
     }
     const recompute = (): void => {
@@ -144,7 +154,8 @@ function Select({ value, onValueChange, disabled, children, searchable, showChec
         const c = dialog.getBoundingClientRect()
         const spaceBelow = c.bottom - t.bottom
         const spaceAbove = t.top - c.top
-        const openUp = spaceBelow < 240 && spaceAbove > spaceBelow
+        const openUp = dirRef.current ?? (spaceBelow < 240 && spaceAbove > spaceBelow)
+        dirRef.current = openUp
         const listMaxH = Math.max(120, Math.min(320, (openUp ? spaceAbove : spaceBelow) - 12))
         setInlineFlip(null)
         setPortal({
@@ -173,7 +184,8 @@ function Select({ value, onValueChange, disabled, children, searchable, showChec
       setPortal(null)
       const spaceBelow = window.innerHeight - t.bottom
       const spaceAbove = t.top
-      const openUp = spaceBelow < 240 && spaceAbove > spaceBelow
+      const openUp = dirRef.current ?? (spaceBelow < 240 && spaceAbove > spaceBelow)
+      dirRef.current = openUp
       const maxH = Math.max(120, Math.min(320, (openUp ? spaceAbove : spaceBelow) - 12))
       setInlineFlip({ openUp, maxH })
     }

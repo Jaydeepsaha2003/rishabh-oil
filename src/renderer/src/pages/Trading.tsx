@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, CalendarClock, Check, ChevronDown, ChevronRight, FileSpreadsheet, Inbox, Loader2, Pencil, Plus, Repeat, Search, TrendingDown, TrendingUp, Trash2 } from 'lucide-react'
+import { ArrowLeft, CalendarClock, Check, ChevronDown, ChevronRight, FileSpreadsheet, Inbox, Loader2, Pencil, Plus, Repeat, Search, TrendingDown, TrendingUp, Trash2, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { PageHeader } from '@/components/PageHeader'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -37,7 +38,17 @@ function tierTds(base: number, prior: number, threshold: number, basePct: number
 // Each invoice on a side is posted in turn, so every one moves the party's
 // year-to-date total along and the next one sits further up the slab. Walking
 // the lines in the same order is the only way the preview can agree with what
-// gets saved. Round off rides on the first invoice, as it does on save.
+// gets saved.
+//
+// `on` is what the withholding is struck on, and the two sides differ:
+//   'total'   — taxable + GST, plus the round off that rides the first invoice.
+//               What the purchase side has always used.
+//   'taxable' — the goods alone. Every SALE withholds on this: GST is the
+//               government's money passing through, so taking a slice of it
+//               would withhold tax on tax, and the rupee round-off is a
+//               presentation artifact with no business moving the figure.
+//               Matches saleTds() in the main process, which is what actually
+//               gets saved.
 function slabTdsTotal(
   lines: { qty: number; rate: number }[],
   taxableOf: (l: { qty: number; rate: number }) => number,
@@ -45,7 +56,8 @@ function slabTdsTotal(
   roundOff: number,
   pct: number,
   master: { tds_threshold?: unknown; tds_above_only?: unknown } | undefined,
-  priorAtStart: number
+  priorAtStart: number,
+  on: 'total' | 'taxable' = 'total'
 ): number {
   if (pct <= 0 || !lines.length) return 0
   const threshold = n(master?.tds_threshold)
@@ -54,7 +66,8 @@ function slabTdsTotal(
   let total = 0
   lines.forEach((l, i) => {
     const taxable = taxableOf(l)
-    const base = taxable + (taxable * gstPct) / 100 + (i === 0 ? roundOff : 0)
+    const base =
+      on === 'taxable' ? taxable : taxable + (taxable * gstPct) / 100 + (i === 0 ? roundOff : 0)
     total += round2(tierTds(base, prior, threshold, basePct, pct))
     prior += taxable
   })
@@ -154,6 +167,63 @@ function InvoiceLines({
         </span>
       </div>
     </div>
+  )
+}
+
+// The Customer column when a deal was sold on to more than one buyer.
+//
+// The register keeps one row per deal, so the names cannot all sit in the cell
+// — but a bare count tells you nothing about who or for how much. The count is
+// a pill that reads as a count rather than a party name, and hovering it gives
+// the full split: every buyer, what they took, what they owe, and whether the
+// money is in. It replaces a native title attribute holding newline-joined
+// names, which had no figures in it and no styling at all.
+function BuyersCell({ parties, uom }: { parties: Row[]; uom: string }): React.JSX.Element {
+  const totalQty = parties.reduce((a, p) => a + n(p.qty), 0)
+  const totalTaxable = parties.reduce((a, p) => a + n(p.taxable), 0)
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex cursor-help items-center gap-1.5 rounded-full border border-[#1a2c56]/20 bg-[#eef4ff] px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-[#1a2c56] transition-colors hover:border-[#1a2c56]/45 hover:bg-[#dce6f5]">
+          <Users className="h-3 w-3 shrink-0" />
+          {parties.length} buyers
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-lg px-3 py-2">
+        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-white/55">
+          Sold on to {parties.length} buyers
+        </div>
+        <table className="w-full border-collapse text-[11.5px]">
+          <tbody>
+            {parties.map((p, i) => (
+              <tr key={i} className="align-baseline">
+                <td className="max-w-[15rem] truncate pr-3 font-semibold">{String(p.customer_name || '—')}</td>
+                <td className="whitespace-nowrap pr-3 text-white/55">
+                  {n(p.invoice_count)} inv · {formatNum(p.qty)} {uom}
+                </td>
+                <td className="whitespace-nowrap pr-3 text-right tabular-nums">{formatINR(p.taxable)}</td>
+                <td className="whitespace-nowrap text-right">
+                  <span
+                    className={cn(
+                      'rounded-full px-1.5 py-px text-[9.5px] font-bold uppercase tracking-wide',
+                      p.fully_paid ? 'bg-emerald-400/20 text-emerald-300' : 'bg-amber-400/20 text-amber-300'
+                    )}
+                  >
+                    {p.fully_paid ? 'Paid' : 'Due'}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="mt-1.5 flex items-baseline justify-between gap-4 border-t border-white/20 pt-1.5 text-[10.5px] text-white/70">
+          <span>
+            {formatNum(totalQty)} {uom} sold on
+          </span>
+          <span className="font-semibold tabular-nums text-white">{formatINR(totalTaxable)}</span>
+        </div>
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -752,7 +822,8 @@ export function Trading(): React.JSX.Element {
           roundOff,
           n(sp?.tds_pct),
           master,
-          n(salePriors[String(sp?.customer_id || '')])
+          n(salePriors[String(sp?.customer_id || '')]),
+          'taxable'
         )
         return {
           qty: ls.reduce((a, l) => a + l.qty, 0),
@@ -1082,11 +1153,11 @@ export function Trading(): React.JSX.Element {
                       <div
                         key={pi}
                         className={cn(
-                          'overflow-hidden rounded border bg-[#fffdf7] shadow-sm',
+                          'rounded border bg-[#fffdf7] shadow-sm',
                           repeated ? 'border-rose-400' : 'border-[#d9d2b8]'
                         )}
                       >
-                        <div className="flex flex-wrap items-center gap-2 border-b border-emerald-200 bg-emerald-50/80 px-3 py-1.5">
+                        <div className="flex flex-wrap items-center gap-2 rounded-t border-b border-emerald-200 bg-emerald-50/80 px-3 py-1.5">
                           <span className="rounded bg-emerald-700 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-widest text-white">
                             Buyer {pi + 1}
                           </span>
@@ -1204,7 +1275,7 @@ export function Trading(): React.JSX.Element {
                             document in hand, not against a deal-wide total
                             that belongs to nobody. */}
                         {!!c && c.invoiceCount > 0 && (
-                          <div className="grid gap-x-4 gap-y-1.5 border-t border-[#e5dfc8] bg-[#f7f2e2] px-3 py-2 sm:grid-cols-3 lg:grid-cols-5">
+                          <div className="grid gap-x-4 gap-y-1.5 rounded-b border-t border-[#e5dfc8] bg-[#f7f2e2] px-3 py-2 sm:grid-cols-3 lg:grid-cols-5">
                             <Fact label="Taxable" value={formatINR(c.amount)} />
                             <Fact label={`GST ${formatNum(sp?.gst_pct)}%`} value={formatINR(c.gstAmount)} />
                             <div className="min-w-0">
@@ -1346,22 +1417,41 @@ export function Trading(): React.JSX.Element {
                     so each buyer's net is listed above it. Round off is edited
                     on the buyer's own card, beside the invoice it rounds —
                     there is no single deal-wide figure to put here. */}
+                {/* One card per buyer, and the NAME gets a line to itself.
+                    Sharing a line with the amount left a 360px column trying to
+                    fit "FARMWICK COMMODITIES (P) LTD (1 inv · 500)" and a rupee
+                    figure at once, so the name was cut off mid-word and the
+                    invoice count with it — the two things a reader most needs
+                    from this block. The count, quantity and tax sit on a second
+                    line where there is room, with the money right-aligned so
+                    the figures stack into a column that adds up by eye. */}
                 {partyCalcs.length > 1 && (
-                  <div className="mb-2 space-y-1 border-b border-dotted border-[#d9d2b8] pb-2">
+                  <div className="mb-2.5 space-y-1.5 border-b border-dotted border-[#d9d2b8] pb-2.5">
+                    <div className="flex items-baseline justify-between text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                      <span>Per buyer</span>
+                      <span>Net receivable</span>
+                    </div>
                     {partyCalcs.map((c, pi) => {
                       const sp = parties()[pi]
                       const name = customers.find((x) => String(x.id) === String(sp?.customer_id || ''))?.name
                       return (
-                        <div key={pi} className="flex items-baseline justify-between gap-2 text-[12px]">
-                          <span className="min-w-0 truncate text-muted-foreground">
+                        <div key={pi} className="rounded border border-[#e5dfc8] bg-white px-2 py-1.5">
+                          <div
+                            className="truncate text-[11.5px] font-semibold leading-tight text-[#1a2c56]"
+                            title={name || undefined}
+                          >
                             {name || `Buyer ${pi + 1}`}
-                            {c.invoiceCount > 0 && (
-                              <span className="ml-1 text-[10px]">
-                                ({c.invoiceCount} inv · {formatNum(c.qty)})
-                              </span>
-                            )}
-                          </span>
-                          <span className="shrink-0 font-medium tabular-nums">{formatINR(c.netReceivable)}</span>
+                          </div>
+                          <div className="mt-1 flex items-baseline justify-between gap-2">
+                            <span className="min-w-0 truncate text-[10px] text-muted-foreground">
+                              {c.invoiceCount} inv · {formatNum(c.qty)} {form.uom || 'MT'}
+                              {n(sp?.gst_pct) > 0 && ` · GST ${formatNum(sp?.gst_pct)}%`}
+                              {c.tdsAmount > 0.005 && ` · TDS ${formatINR(c.tdsAmount)}`}
+                            </span>
+                            <span className="shrink-0 text-[12.5px] font-bold tabular-nums text-[#1a2c56]">
+                              {formatINR(c.netReceivable)}
+                            </span>
+                          </div>
                         </div>
                       )
                     })}
@@ -1376,7 +1466,7 @@ export function Trading(): React.JSX.Element {
                   value={formatINR(saleCalc.total)}
                   strong
                 />
-                <MoneyRow label="TDS" value={formatINR(saleCalc.tdsAmount)} muted />
+                <MoneyRow label="TDS (on taxable value)" value={formatINR(saleCalc.tdsAmount)} muted />
                 <MoneyRow
                   label={partyCalcs.length > 1 ? 'Net receivable from buyers' : 'Net receivable from customer'}
                   value={formatINR(saleCalc.netReceivable)}
@@ -1565,17 +1655,11 @@ export function Trading(): React.JSX.Element {
                   >
                     {formatINR(d.purchase_taxable)}
                   </TableCell>
-                  {/* One buyer reads as its name. Several read as the count,
-                      with every name on hover — the register keeps one row per
-                      deal, and the names are all in the expanded view below. */}
+                  {/* One buyer reads as its name. Several read as a count pill
+                      with the whole split on hover — see BuyersCell. */}
                   <TableCell className="py-1.5 text-[13px] font-medium">
                     {n(d.customer_count) > 1 ? (
-                      <span
-                        className="cursor-help border-b border-dotted border-[#1a2c56]/40"
-                        title={(Array.isArray(d.customer_names) ? d.customer_names : []).join('\n')}
-                      >
-                        {d.customer_count} buyers
-                      </span>
+                      <BuyersCell parties={sp} uom={String(d.purchase_uom || 'MT')} />
                     ) : (
                       d.customer_name || '—'
                     )}

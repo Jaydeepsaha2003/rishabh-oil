@@ -104,19 +104,12 @@ function daysApart(from: string, to: string): number {
   return Math.max(0, Math.round((b - a) / 86400000))
 }
 
-// How a packed SKU is counted. The register stores and shows PIECES (pouches,
-// jars, tins); a case holds `pouches_per_box` of them, which is 1 for a SKU sold
-// by the tin and 40 for a pouch case -- so the two are the same number for most
-// SKUs and wildly different for a few, which is exactly how the mix-up hid.
-function perCase(row: Row | null): number {
-  const v = Number(row?.pouches_per_box)
-  return Number.isFinite(v) && v > 0 ? v : 1
-}
-
-function caseLabel(row: Row | null): string {
-  return String(row?.box_label || 'Case')
-}
-
+// The unit a packed SKU is counted in -- its Type in the Packed SKU master.
+// Every quantity this screen stores, shows and accepts is a count of THESE,
+// so it is the only unit named anywhere on it. The master's outer/case level
+// is deliberately not shown: restating a count as cases put a second unit in
+// front of people who had only ever entered the first, and where a SKU's
+// per-case figure disagrees with its Type the case number was plain wrong.
 function pieceLabel(row: Row | null): string {
   return String(row?.pouch_label || 'Piece')
 }
@@ -2362,6 +2355,7 @@ function SkuStock(): React.JSX.Element {
                 ? [
                     { header: 'SKU', key: 'name', value: (r) => r.name || '' },
                     { header: 'Pack size', key: 'size', value: (r) => unitLabel(r) },
+                    { header: 'Type', key: 'type', value: (r) => pieceLabel(r) },
                     { header: 'Opening (pcs)', key: 'opening', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.opening) || 0 },
                     { header: 'Packed in', key: 'added_on', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.added_on) || 0 },
                     { header: 'Dispatch', key: 'sold_on', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.sold_on) || 0 },
@@ -2371,6 +2365,7 @@ function SkuStock(): React.JSX.Element {
                 : [
                     { header: 'SKU', key: 'name', value: (r) => r.name || '' },
                     { header: 'Pack size', key: 'size', value: (r) => unitLabel(r) },
+                    { header: 'Type', key: 'type', value: (r) => pieceLabel(r) },
                     { header: 'Packed in', key: 'added', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.added) || 0 },
                     { header: 'Sold (packed)', key: 'sold', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.sold) || 0 },
                     { header: 'On hand (pcs)', key: 'on_hand', align: 'right' as const, numFmt: '#,##0.000', value: (r) => Number(r.on_hand) || 0 },
@@ -2447,6 +2442,11 @@ function SkuStock(): React.JSX.Element {
             <TableRow className="bg-slate-200 hover:bg-slate-200">
               <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-slate-700">SKU</TableHead>
               <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-slate-700">Pack</TableHead>
+              {/* The unit every figure on the row is counted in — the SKU's own
+                  Type off the Packed SKU master. Without it the numbers across
+                  the row are bare counts of an unnamed thing: Pack size alone
+                  does not say whether 3,303 is jars, tins or pouches. */}
+              <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-slate-700">Type</TableHead>
               {dayMode && (
                 <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">Opening</TableHead>
               )}
@@ -2469,10 +2469,10 @@ function SkuStock(): React.JSX.Element {
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={dayMode ? 8 : 7} className="py-12 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={dayMode ? 9 : 8} className="py-12 text-center text-muted-foreground">Loading…</TableCell></TableRow>
             ) : shown.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={dayMode ? 8 : 7} className="py-12 text-center text-muted-foreground">
+                <TableCell colSpan={dayMode ? 9 : 8} className="py-12 text-center text-muted-foreground">
                   {rows.length === 0
                     ? 'No SKUs. Add packagings under Masters → Packed SKU first.'
                     : 'No SKU matches this search.'}
@@ -2486,11 +2486,17 @@ function SkuStock(): React.JSX.Element {
                   const outQty = dayMode ? Number(r.sold_on) || 0 : Number(r.sold) || 0
                   const touched = inQty > 1e-6 || outQty > 1e-6
                   const part = parts.get(Number(r.id))
-                  const per = perCase(r)
-                  // Pieces, and the same figure in the unit the shop floor
-                  // counts in, since that is the number people recognise.
+                  // A quantity in the SKU's OWN Type, and nothing else.
+                  //
+                  // This used to append the same figure divided by the master's
+                  // per-case count: 100 packed showed as "100 (2.5 case)". Every
+                  // number the register holds for this SKU is a count of its own
+                  // Type, so restating it as cases put a second unit on the row
+                  // that no entry was ever made in — and where the master's
+                  // per-case figure disagrees with the Type, that second number
+                  // was simply wrong.
                   const asCases = (pieces: number): string =>
-                    per > 1 ? `${formatNum(pieces)} (${formatNum(pieces / per)} ${caseLabel(r).toLowerCase()})` : formatNum(pieces)
+                    `${formatNum(pieces)} ${pieceLabel(r)}`
                   // Who took it. One line per invoice, so a party appearing on
                   // two invoices shows as two lines rather than one lump.
                   const outLines = ((part?.dispatch || []) as Row[]).map((dr) => ({
@@ -2542,6 +2548,11 @@ function SkuStock(): React.JSX.Element {
                         </div>
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-muted-foreground">{unitLabel(r)}</TableCell>
+                      <TableCell className="whitespace-nowrap">
+                        <span className="rounded bg-slate-100 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                          {pieceLabel(r)}
+                        </span>
+                      </TableCell>
                       {dayMode && (
                         <TableCell className="text-right tabular-nums text-muted-foreground">
                           {Number(r.opening) ? (
@@ -2674,7 +2685,7 @@ function SkuStock(): React.JSX.Element {
                   )
                 })}
                 <TableRow className="border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
-                  <TableCell colSpan={dayMode ? 3 : 2} className="font-bold uppercase tracking-wide text-amber-900">
+                  <TableCell colSpan={dayMode ? 4 : 3} className="font-bold uppercase tracking-wide text-amber-900">
                     Total{shown.length !== rows.length ? ' (filtered)' : ''}
                   </TableCell>
                   <TableCell className="text-right font-bold tabular-nums text-amber-900">
@@ -2791,15 +2802,21 @@ function SkuStock(): React.JSX.Element {
                       {pieceLabel(adjustRow)}
                     </div>
                   </div>
+                  {/* The tonnage with its working shown, in the SKU's own
+                      Type and nothing else. It used to print the MT alone and
+                      then the same quantity again as a Case count, which put
+                      two units in front of someone who had typed one — and
+                      hid which figure off the Packaging master it had used.
+                      Spelling out "× N per box" makes a wrong master figure
+                      visible here instead of only in the tonnage. */}
                   {amt > 0 && (
                     <div className="text-[11px] text-muted-foreground">
-                      {formatNum((amt * Number(adjustRow.base_per_pouch || 0)) / 1000)} MT off the plant tank
-                      {perCase(adjustRow) > 1 && (
-                        <>
-                          {' '}· {formatNum(amt / perCase(adjustRow))} {caseLabel(adjustRow)} at{' '}
-                          {perCase(adjustRow)} per {caseLabel(adjustRow).toLowerCase()}
-                        </>
-                      )}
+                      {formatNum(amt)} {pieceLabel(adjustRow)} × {formatNum(adjustRow.base_per_pouch)}{' '}
+                      {String(adjustRow.base_uom || 'KG')} per {pieceLabel(adjustRow).toLowerCase()} ={' '}
+                      <b className="text-foreground">
+                        {formatNum((amt * Number(adjustRow.base_per_pouch || 0)) / 1000)} MT
+                      </b>{' '}
+                      off the plant tank
                     </div>
                   )}
                 </div>
@@ -2832,8 +2849,8 @@ function SkuStock(): React.JSX.Element {
                   <span className="text-[11px] text-muted-foreground">{pieceLabel(adjustRow)}</span>
                   {newHand < -1e-9 && (
                     <div className="mt-1 text-[11px] font-medium text-red-600">
-                      That would take this SKU below zero — check whether the figure is in{' '}
-                      {caseLabel(adjustRow).toLowerCase()}s or {pieceLabel(adjustRow).toLowerCase()}s.
+                      That would take this SKU below zero — this box counts in{' '}
+                      {pieceLabel(adjustRow).toLowerCase()}s, so check the figure is not a case or kilo total.
                     </div>
                   )}
                 </div>

@@ -820,13 +820,18 @@ function SalesTab({
     freightPreview <= 0 || !header.transporter_id || !header.deduct_freight ? 0 : -freightPreview
   const invoiceTotal =
     Math.round((totals.amount + totals.gst + (Number(header.round_off) || 0) + freightOnInvoice) * 100) / 100
+  // Withheld on the TAXABLE value of the goods — see saleTds in sales.ts for
+  // why GST and the round-off are outside the base. This preview has to strike
+  // it on the same figure the save does, or the form quotes one net receivable
+  // and the ledger books another.
+  const tdsBase = Math.round(totals.amount * 100) / 100
   const tds = useMemo(() => {
     const pct = Number(header.tds_pct) || 0
     const cust = customers.find((c) => String(c.id) === String(header.customer_id || ''))
-    if (!cust || pct <= 0 || invoiceTotal <= 0) return { amount: 0, threshold: 0, belowSlab: false }
+    if (!cust || pct <= 0 || tdsBase <= 0) return { amount: 0, threshold: 0, belowSlab: false }
     const threshold = Number(cust.tds_threshold) || 0
     const basePct = cust.tds_above_only ? 0 : pct
-    if (threshold <= 0) return { amount: (invoiceTotal * pct) / 100, threshold: 0, belowSlab: false }
+    if (threshold <= 0) return { amount: (tdsBase * pct) / 100, threshold: 0, belowSlab: false }
     // What this customer has already been billed this financial year, taken
     // from the invoices on screen (this invoice itself excluded when editing).
     const d = new Date(String(header.sale_date || todayISO()))
@@ -842,15 +847,15 @@ function SalesTab({
           (!editingGroup || String(r.invoice_group ?? '') !== String(editingGroup))
       )
       .reduce((s, r) => s + (Number(r.amount) || 0), 0)
-    const below = Math.max(0, Math.min(threshold - prior, invoiceTotal))
-    const above = invoiceTotal - below
+    const below = Math.max(0, Math.min(threshold - prior, tdsBase))
+    const above = tdsBase - below
     return {
       amount: (below * basePct) / 100 + (above * pct) / 100,
       threshold,
       belowSlab: !!cust.tds_above_only && above <= 0
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [header.tds_pct, header.customer_id, header.sale_date, invoiceTotal, customers, rows, editingGroup])
+  }, [header.tds_pct, header.customer_id, header.sale_date, tdsBase, customers, rows, editingGroup])
 
   // Rate cards for the bargains used on this invoice, keyed by bargain id then
   // packaging id. Loaded when a line names a bargain; the rate it yields is
@@ -2450,8 +2455,13 @@ function SalesTab({
               <div className="flex items-center justify-between py-0.5">
                 <span className="text-muted-foreground">
                   TDS
-                  {tds.belowSlab && (
+                  {/* Naming the base on the line itself: it is the goods value,
+                      not the invoice total, so the figure reconciles for anyone
+                      checking it by hand. */}
+                  {tds.belowSlab ? (
                     <span className="ml-1 text-[11px]">— under the ₹{formatNum(tds.threshold)} slab, nothing withheld</span>
+                  ) : (
+                    <span className="ml-1 text-[11px]">on taxable {formatINR(tdsBase)}</span>
                   )}
                 </span>
                 <span className="tabular-nums">{formatINR(tds.amount)}</span>
