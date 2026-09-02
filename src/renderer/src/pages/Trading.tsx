@@ -139,7 +139,14 @@ function InvoiceLines({
         </div>
       ))}
       <div className="flex items-center justify-between gap-2 bg-[#f5f2e4] px-2.5 py-1.5">
-        <Button type="button" variant="outline" size="sm" className="h-7 gap-1 text-[11px]" onClick={onAdd}>
+        {/* Blue: one more line on THIS grid. The same colour as the column
+            headers above it, so it reads as belonging to this table. */}
+        <Button
+          type="button"
+          size="sm"
+          className="h-7 gap-1 border border-[#1a2c56]/25 bg-[#dce6f5] text-[11px] font-semibold text-[#1a2c56] shadow-sm hover:bg-[#c6d8f2]"
+          onClick={onAdd}
+        >
           <Plus className="h-3.5 w-3.5" /> Add invoice
         </Button>
         <span className="text-[11px] font-semibold tabular-nums">
@@ -279,27 +286,39 @@ function MoneyRow({ label, value, strong, muted }: { label: string; value: strin
   )
 }
 
-// One invoice line on either side of a deal. A deal buys across as many
-// purchase invoices as it needs and sells across as many sale invoices —
-// party, product, GST and TDS are set once and apply to every line.
+// One invoice line on either side of a deal: a number, a quantity, a rate.
 const blankLine = (): Row => ({ invoice_no: '', qty: '', rate: '' })
+
+// One buyer on the sale side. A deal buys from a single supplier and sells on
+// to one buyer or to several, so this side is a list of these — each with its
+// own invoices and its own tax treatment.
+//
+// GST and TDS live on the BUYER, not on the deal, because they belong to the
+// party rather than to the trade: an out-of-state buyer is IGST where an
+// in-state one is CGST+SGST, and each buyer withholds TDS on its own slab.
+// One deal-wide rate would tax somebody wrongly the moment a second buyer
+// joined. Round off likewise — it rounds that buyer's own invoice.
+const blankParty = (): Row => ({
+  customer_id: '',
+  lines: [blankLine()],
+  gst_pct: '',
+  gst_type: 'CGST_SGST',
+  tds_pct: '',
+  round_off: '',
+  round_off_manual: false
+})
 
 const emptyForm = (): Row => ({
   deal_date: todayISO(),
   product_category: 'ALL',
   uom: 'MT',
   purchase_lines: [blankLine()],
-  sale_lines: [blankLine()],
+  sale_parties: [blankParty()],
   purchase_gst_type: 'CGST_SGST',
-  sale_gst_type: 'CGST_SGST',
   purchase_gst_pct: '',
   purchase_tds_pct: '',
   purchase_round_off: '',
-  purchase_round_off_manual: false,
-  sale_gst_pct: '',
-  sale_tds_pct: '',
-  sale_round_off: '',
-  sale_round_off_manual: false
+  purchase_round_off_manual: false
 })
 
 export function Trading(): React.JSX.Element {
@@ -354,9 +373,16 @@ export function Trading(): React.JSX.Element {
     () => suppliers.filter((s) => isTradingParty(s) || String(s.id) === String(form.supplier_id || '')),
     [suppliers, form.supplier_id]
   )
+  // Every party this deal already names stays listed even if the master has
+  // since been flipped off Trading, so an existing deal still opens and edits.
+  // With several buyers that is every one of them, not just the first.
+  const namedCustomerIds = useMemo(() => {
+    const arr = Array.isArray(form.sale_parties) ? (form.sale_parties as Row[]) : []
+    return new Set(arr.map((sp) => String(sp?.customer_id || '')).filter(Boolean))
+  }, [form.sale_parties])
   const dealCustomers = useMemo(
-    () => customers.filter((c) => isTradingParty(c) || String(c.id) === String(form.customer_id || '')),
-    [customers, form.customer_id]
+    () => customers.filter((c) => isTradingParty(c) || namedCustomerIds.has(String(c.id))),
+    [customers, namedCustomerIds]
   )
 
   const load = useCallback(async () => {
@@ -397,6 +423,23 @@ export function Trading(): React.JSX.Element {
         ? arr.map((l) => ({ invoice_no: l.invoice_no ?? '', qty: l.qty ?? '', rate: l.rate ?? '' }))
         : [blankLine()]
     }
+    // The sale side comes back grouped by buyer. A deal booked before several
+    // buyers were possible has exactly one group, so it opens as one card —
+    // and a deal from before multi-invoice has one line inside it. Neither is
+    // rewritten to fit; the backend just describes them in today's shape.
+    const toParties = (deal: Row): Row[] => {
+      const arr = Array.isArray(deal.sale_parties) ? (deal.sale_parties as Row[]) : []
+      if (!arr.length) return [blankParty()]
+      return arr.map((sp) => ({
+        customer_id: String(sp.customer_id || ''),
+        lines: toLines(sp.lines),
+        gst_pct: sp.gst_pct ?? '',
+        gst_type: sp.gst_type || 'CGST_SGST',
+        tds_pct: sp.tds_pct ?? '',
+        round_off: sp.round_off ?? '',
+        round_off_manual: !!(sp.round_off && Number(sp.round_off) !== 0)
+      }))
+    }
     setForm({
       deal_date: d.deal_date || todayISO(),
       product_id: String(d.product_id || ''),
@@ -408,7 +451,6 @@ export function Trading(): React.JSX.Element {
       note: d.note || '',
       supplier_id: String(d.supplier_id || ''),
       purchase_lines: toLines(d.purchase_lines),
-      sale_lines: toLines(d.sale_lines),
       purchase_gst_pct: d.purchase_gst_pct ?? '',
       purchase_gst_type: d.purchase_gst_type || 'CGST_SGST',
       purchase_tds_pct: d.purchase_tds_pct ?? '',
@@ -416,12 +458,7 @@ export function Trading(): React.JSX.Element {
       // A non-zero saved round off was a deliberate override — preserve it as
       // manual rather than letting the auto-effect silently recompute it.
       purchase_round_off_manual: !!(d.purchase_round_off && Number(d.purchase_round_off) !== 0),
-      customer_id: String(d.customer_id || ''),
-      sale_gst_pct: d.sale_gst_pct ?? '',
-      sale_tds_pct: d.sale_tds_pct ?? '',
-      sale_gst_type: d.sale_gst_type || 'CGST_SGST',
-      sale_round_off: d.sale_round_off ?? '',
-      sale_round_off_manual: !!(d.sale_round_off && Number(d.sale_round_off) !== 0)
+      sale_parties: toParties(d)
     })
     setAutoFields(new Set())
     setError(null)
@@ -447,27 +484,101 @@ export function Trading(): React.JSX.Element {
     })
   }
 
-  // Same as the Sales Bargain form's customer pick — GST off the customer
-  // master when it carries one.
-  function chooseCustomer(id: string): void {
-    const c = customers.find((x) => String(x.id) === id)
-    const hasGst = c && Number(c.gst_pct) > 0
-    const hasTds = c && Number(c.tds_pct) > 0
-    setForm((p) => ({
-      ...p,
-      customer_id: id,
-      sale_gst_pct: hasGst ? c.gst_pct : p.sale_gst_pct,
-      sale_tds_pct: hasTds ? c.tds_pct : p.sale_tds_pct
-    }))
+  // ---------------------------------------------------------- the buyer cards
+  const parties = (): Row[] => (Array.isArray(form.sale_parties) ? (form.sale_parties as Row[]) : [])
+
+  // Auto-loaded flags are per buyer, so buyer 2's GST coming off its own
+  // master does not un-highlight buyer 1's.
+  const partyKey = (pi: number, field: string): string => `sale.${pi}.${field}`
+
+  function patchParty(pi: number, patch: Row): void {
+    setForm((p) => {
+      const arr = [...(Array.isArray(p.sale_parties) ? (p.sale_parties as Row[]) : [])]
+      arr[pi] = { ...arr[pi], ...patch }
+      return { ...p, sale_parties: arr }
+    })
+  }
+
+  function setPartyField(pi: number, field: string, value: unknown): void {
+    patchParty(pi, { [field]: value })
     setAutoFields((prev) => {
+      const k = partyKey(pi, field)
+      if (!prev.has(k)) return prev
       const next = new Set(prev)
-      if (hasGst) next.add('sale_gst_pct')
-      if (hasTds) next.add('sale_tds_pct')
+      next.delete(k)
       return next
     })
   }
 
-  type Side = 'purchase_lines' | 'sale_lines'
+  // Same as the Sales Bargain form's customer pick — GST and TDS off the
+  // customer master when it carries them, for this buyer alone.
+  function chooseCustomer(pi: number, id: string): void {
+    const c = customers.find((x) => String(x.id) === id)
+    const hasGst = !!c && Number(c.gst_pct) > 0
+    const hasTds = !!c && Number(c.tds_pct) > 0
+    patchParty(pi, {
+      customer_id: id,
+      ...(hasGst ? { gst_pct: c?.gst_pct } : {}),
+      ...(hasTds ? { tds_pct: c?.tds_pct } : {})
+    })
+    setAutoFields((prev) => {
+      const next = new Set(prev)
+      if (hasGst) next.add(partyKey(pi, 'gst_pct'))
+      if (hasTds) next.add(partyKey(pi, 'tds_pct'))
+      return next
+    })
+  }
+
+  function addParty(): void {
+    setForm((p) => ({
+      ...p,
+      sale_parties: [...(Array.isArray(p.sale_parties) ? (p.sale_parties as Row[]) : []), blankParty()]
+    }))
+  }
+
+  function removeParty(pi: number): void {
+    setForm((p) => {
+      const arr = (Array.isArray(p.sale_parties) ? (p.sale_parties as Row[]) : []).filter((_, i) => i !== pi)
+      // Never leave the sale side with no buyer to type into.
+      return { ...p, sale_parties: arr.length ? arr : [blankParty()] }
+    })
+    // The flags are keyed by position, so dropping a card would otherwise
+    // leave the one after it wearing the removed card's highlight. Only the
+    // sale side's flags go — the purchase side has not moved.
+    setAutoFields((prev) => new Set(Array.from(prev).filter((k) => !k.startsWith('sale.'))))
+  }
+
+  function setPartyLine(pi: number, i: number, key: string, value: string): void {
+    setForm((p) => {
+      const arr = [...(Array.isArray(p.sale_parties) ? (p.sale_parties as Row[]) : [])]
+      const ls = [...(Array.isArray(arr[pi]?.lines) ? (arr[pi].lines as Row[]) : [])]
+      ls[i] = { ...ls[i], [key]: value }
+      arr[pi] = { ...arr[pi], lines: ls }
+      return { ...p, sale_parties: arr }
+    })
+  }
+  function addPartyLine(pi: number): void {
+    setForm((p) => {
+      const arr = [...(Array.isArray(p.sale_parties) ? (p.sale_parties as Row[]) : [])]
+      arr[pi] = {
+        ...arr[pi],
+        lines: [...(Array.isArray(arr[pi]?.lines) ? (arr[pi].lines as Row[]) : []), blankLine()]
+      }
+      return { ...p, sale_parties: arr }
+    })
+  }
+  function removePartyLine(pi: number, i: number): void {
+    setForm((p) => {
+      const arr = [...(Array.isArray(p.sale_parties) ? (p.sale_parties as Row[]) : [])]
+      const ls = (Array.isArray(arr[pi]?.lines) ? (arr[pi].lines as Row[]) : []).filter((_, idx) => idx !== i)
+      arr[pi] = { ...arr[pi], lines: ls.length ? ls : [blankLine()] }
+      return { ...p, sale_parties: arr }
+    })
+  }
+
+  // The purchase side is still one grid under one supplier. The sale side is
+  // one grid per buyer and has its own helpers below.
+  type Side = 'purchase_lines'
   const lines = (side: Side): Row[] => (Array.isArray(form[side]) ? (form[side] as Row[]) : [])
 
   function setLine(side: Side, i: number, key: string, value: string): void {
@@ -496,8 +607,21 @@ export function Trading(): React.JSX.Element {
       .filter((l) => l.qty > 0 && l.rate > 0)
 
   const purchaseLines = priced('purchase_lines')
-  const saleLines = priced('sale_lines')
   const purchaseQty = purchaseLines.reduce((s, l) => s + l.qty, 0)
+
+  // Each buyer's own priced lines, and the sale side as a whole. Same rule as
+  // above: the blank row at the bottom of a grid is not an invoice yet.
+  const partyLines = useMemo(
+    () =>
+      parties().map((sp) =>
+        (Array.isArray(sp?.lines) ? (sp.lines as Row[]) : [])
+          .map((l) => ({ rate: n(l.rate), qty: n(l.qty) }))
+          .filter((l) => l.qty > 0 && l.rate > 0)
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(form.sale_parties)]
+  )
+  const saleLines = partyLines.flat()
   const saleQty = saleLines.reduce((s, l) => s + l.qty, 0)
   const qtyDiff = purchaseQty - saleQty
   const qtyMismatch = purchaseQty > 0 && saleQty > 0 && Math.abs(qtyDiff) > 1e-6
@@ -506,7 +630,7 @@ export function Trading(): React.JSX.Element {
   // the slab picks up from. Fetched from the same figures the main process
   // uses, so the preview lands on the saved number.
   const [purchasePrior, setPurchasePrior] = useState(0)
-  const [salePrior, setSalePrior] = useState(0)
+  const [salePriors, setSalePriors] = useState<Record<string, number>>({})
   useEffect(() => {
     const id = Number(form.supplier_id)
     if (!formPage || !id) { setPurchasePrior(0); return }
@@ -517,16 +641,41 @@ export function Trading(): React.JSX.Element {
       .catch(() => { if (alive) setPurchasePrior(0) })
     return () => { alive = false }
   }, [formPage, form.supplier_id, form.deal_date, editingDeal])
+  // One prior per buyer, keyed by customer id — each party's slab starts from
+  // its OWN year to date, so a deal split five ways needs five of these.
   useEffect(() => {
-    const id = Number(form.customer_id)
-    if (!formPage || !id) { setSalePrior(0); return }
+    if (!formPage) { setSalePriors({}); return }
+    const ids = Array.from(
+      new Set(parties().map((sp) => Number(sp?.customer_id)).filter((x) => x > 0))
+    )
+    if (!ids.length) { setSalePriors({}); return }
     let alive = true
-    window.api.sales
-      .fyTaxable(id, String(form.deal_date || todayISO()), Number(editingDeal?.sale_id || 0))
-      .then((v) => { if (alive) setSalePrior(n(v)) })
-      .catch(() => { if (alive) setSalePrior(0) })
+    const date = String(form.deal_date || todayISO())
+    // Editing: the deal's own already-saved invoice to this buyer must not
+    // count towards the buyer's prior, or re-saving would walk the slab up.
+    const ownSaleFor = (cid: number): number => {
+      const sp = (Array.isArray(editingDeal?.sale_parties) ? (editingDeal?.sale_parties as Row[]) : []).find(
+        (x) => Number(x?.customer_id) === cid
+      )
+      const first = (Array.isArray(sp?.lines) ? (sp?.lines as Row[]) : [])[0]
+      return Number(first?.sale_id || 0)
+    }
+    void Promise.all(
+      ids.map((id) =>
+        window.api.sales
+          .fyTaxable(id, date, ownSaleFor(id))
+          .then((v) => [id, n(v)] as const)
+          .catch(() => [id, 0] as const)
+      )
+    ).then((pairs) => {
+      if (!alive) return
+      const next: Record<string, number> = {}
+      for (const [id, v] of pairs) next[String(id)] = v
+      setSalePriors(next)
+    })
     return () => { alive = false }
-  }, [formPage, form.customer_id, form.deal_date, editingDeal])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formPage, JSON.stringify(parties().map((sp) => sp?.customer_id)), form.deal_date, editingDeal])
 
   // The flat product list runs to every active product, so a category narrows
   // it the way the purchase Bargain form does. ALL keeps everything visible.
@@ -542,7 +691,6 @@ export function Trading(): React.JSX.Element {
   }, [products, form.product_category])
 
   const supplierMaster = suppliers.find((s) => String(s.id) === String(form.supplier_id || ''))
-  const customerMaster = customers.find((c) => String(c.id) === String(form.customer_id || ''))
 
   const purchaseCalc = useMemo(
     () =>
@@ -583,33 +731,59 @@ export function Trading(): React.JSX.Element {
   )
   const purchaseNet = round2(purchaseCalc.roundedTotal - purchaseTds)
 
-  const saleCalc = useMemo(() => {
-    const amount = saleLines.reduce((s, l) => s + l.qty * l.rate, 0)
-    const gstAmount = (amount * n(form.sale_gst_pct)) / 100
-    const roundOff = n(form.sale_round_off)
-    const total = amount + gstAmount + roundOff
-    // TDS the customer withholds, on the customer's slab and per invoice —
-    // the invoice still stands at `total`, only `netReceivable` is collected.
-    const tdsAmount = slabTdsTotal(
-      saleLines,
-      (l) => l.qty * l.rate,
-      n(form.sale_gst_pct),
-      roundOff,
-      n(form.sale_tds_pct),
-      customerMaster,
-      salePrior
-    )
-    return {
-      amount,
-      gstAmount,
-      roundOff,
-      preRoundTotal: amount + gstAmount,
-      total,
-      tdsAmount,
-      netReceivable: round2(total - tdsAmount)
-    }
+  // One set of figures per buyer. Each buyer is invoiced separately, so each
+  // gets its own GST, its own round off and its own TDS on its own slab —
+  // adding them up afterwards is what the deal earned, but the arithmetic
+  // cannot be done on the total or a party would be taxed at another's rate.
+  const partyCalcs = useMemo(
+    () =>
+      parties().map((sp, pi) => {
+        const ls = partyLines[pi] ?? []
+        const master = customers.find((c) => String(c.id) === String(sp?.customer_id || ''))
+        const gstPct = n(sp?.gst_pct)
+        const amount = ls.reduce((a, l) => a + l.qty * l.rate, 0)
+        const gstAmount = (amount * gstPct) / 100
+        const roundOff = n(sp?.round_off)
+        const total = amount + gstAmount + roundOff
+        const tdsAmount = slabTdsTotal(
+          ls,
+          (l) => l.qty * l.rate,
+          gstPct,
+          roundOff,
+          n(sp?.tds_pct),
+          master,
+          n(salePriors[String(sp?.customer_id || '')])
+        )
+        return {
+          qty: ls.reduce((a, l) => a + l.qty, 0),
+          invoiceCount: ls.length,
+          master,
+          amount,
+          gstAmount,
+          roundOff,
+          preRoundTotal: amount + gstAmount,
+          total,
+          tdsAmount,
+          netReceivable: round2(total - tdsAmount)
+        }
+      }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(saleLines), form.sale_gst_pct, form.sale_round_off, form.sale_tds_pct, customerMaster, salePrior])
+    [JSON.stringify(form.sale_parties), JSON.stringify(partyLines), customers, JSON.stringify(salePriors)]
+  )
+
+  const saleCalc = useMemo(() => {
+    const sum = (pick: (c: (typeof partyCalcs)[number]) => number): number =>
+      round2(partyCalcs.reduce((a, c) => a + pick(c), 0))
+    return {
+      amount: sum((c) => c.amount),
+      gstAmount: sum((c) => c.gstAmount),
+      roundOff: sum((c) => c.roundOff),
+      preRoundTotal: sum((c) => c.preRoundTotal),
+      total: sum((c) => c.total),
+      tdsAmount: sum((c) => c.tdsAmount),
+      netReceivable: sum((c) => c.netReceivable)
+    }
+  }, [partyCalcs])
 
   // Margin is the profit on the trade itself — struck on taxable value on
   // both sides, not the tax-inclusive totals (GST is a pass-through, round-off
@@ -631,16 +805,30 @@ export function Trading(): React.JSX.Element {
     }
   }, [formPage, purchaseCalc.totalExclTds, form.purchase_round_off_manual, form.purchase_round_off])
 
+  // The same auto round-off, once per buyer — each buyer's own invoice is what
+  // rounds to whole rupees. Written back in a single pass so N buyers do not
+  // mean N renders.
   useEffect(() => {
-    if (!formPage || form.sale_round_off_manual) return
-    const total = saleCalc.preRoundTotal
-    if (!Number.isFinite(total) || total <= 0) return
-    const auto = Math.round(total) - total
-    const val = Math.abs(auto) < 0.005 ? '' : auto.toFixed(2)
-    if (String(form.sale_round_off ?? '') !== val) {
-      setForm((p) => ({ ...p, sale_round_off: val }))
-    }
-  }, [formPage, saleCalc.preRoundTotal, form.sale_round_off_manual, form.sale_round_off])
+    if (!formPage) return
+    const ps = parties()
+    const wanted = ps.map((sp, pi) => {
+      if (sp?.round_off_manual) return null
+      const total = partyCalcs[pi]?.preRoundTotal ?? 0
+      if (!Number.isFinite(total) || total <= 0) return null
+      const auto = Math.round(total) - total
+      return Math.abs(auto) < 0.005 ? '' : auto.toFixed(2)
+    })
+    if (!wanted.some((w, pi) => w !== null && String(ps[pi]?.round_off ?? '') !== w)) return
+    setForm((prev) => {
+      const arr = [...(Array.isArray(prev.sale_parties) ? (prev.sale_parties as Row[]) : [])]
+      wanted.forEach((w, pi) => {
+        if (w === null || !arr[pi]) return
+        if (String(arr[pi].round_off ?? '') !== w) arr[pi] = { ...arr[pi], round_off: w }
+      })
+      return { ...prev, sale_parties: arr }
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formPage, JSON.stringify(partyCalcs.map((c) => c.preRoundTotal)), JSON.stringify(form.sale_parties)])
 
   async function saveDeal(): Promise<void> {
     setSaving(true)
@@ -684,7 +872,10 @@ export function Trading(): React.JSX.Element {
         ...(Array.isArray(d.purchase_lines) ? d.purchase_lines : []),
         ...(Array.isArray(d.sale_lines) ? d.sale_lines : [])
       ].map((l: Row) => l.invoice_no)
-      return [d.product_code, d.product_name, d.supplier_name, d.customer_name, ...invoiceNos]
+      // Every buyer on the deal is searchable, not only the first — a deal
+      // split five ways should be findable by any of the five.
+      const buyers = Array.isArray(d.customer_names) ? d.customer_names : [d.customer_name]
+      return [d.product_code, d.product_name, d.supplier_name, ...buyers, ...invoiceNos]
         .some((f) => String(f || '').toLowerCase().includes(q))
     })
   }, [deals, search, globalRange])
@@ -861,73 +1052,227 @@ export function Trading(): React.JSX.Element {
               </section>
 
               <section className="rounded border border-[#e5dfc8] bg-white p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
-                <h3 className="mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
-                  Sale (out)
-                </h3>
-                <div className="grid gap-4 md:grid-cols-3">
-                  <div className="flex flex-col gap-1.5 md:col-span-2">
-                    <Label>Customer *</Label>
-                    <Select value={String(form.customer_id || '')} onValueChange={chooseCustomer}>
-                      <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
-                      <SelectContent className="max-h-64">
-                        {dealCustomers.length === 0 ? (
-                          <div className="px-2 py-3 text-center text-[12px] text-muted-foreground">
-                            No Trading customers yet — set a customer to Trading under Masters → Customers.
-                          </div>
-                        ) : (
-                          dealCustomers.map((c) => <SelectItem key={String(c.id)} value={String(c.id)}>{c.name}</SelectItem>)
-                        )}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="flex flex-col gap-1.5 md:col-span-3">
-                    <Label>Sale invoices *</Label>
-                    <InvoiceLines
-                      title="Sale"
-                      rows={lines('sale_lines')}
-                      uom={String(form.uom || 'MT')}
-                      totalQty={saleQty}
-                      onChange={(i, k, v) => setLine('sale_lines', i, k, v)}
-                      onAdd={() => addLine('sale_lines')}
-                      onRemove={(i) => removeLine('sale_lines', i)}
-                    />
-                    {qtyMismatch && (
-                      <p className="rounded border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900">
-                        Sold {formatNum(saleQty)} against {formatNum(purchaseQty)} {form.uom || 'MT'} bought —{' '}
-                        <b>{formatNum(Math.abs(qtyDiff))} {form.uom || 'MT'} {qtyDiff > 0 ? 'still unsold' : 'oversold'}</b>. You can
-                        save it this way and invoice the rest later.
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label>GST % {autoFields.has('sale_gst_pct') && <span className="text-amber-700">(auto)</span>}</Label>
-                    <Input
-                      type="number"
-                      className={autoFields.has('sale_gst_pct') ? AUTO_CLASS : ''}
-                      value={form.sale_gst_pct ?? ''}
-                      onChange={(e) => setField('sale_gst_pct', e.target.value)}
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label>GST type</Label>
-                    <Select value={form.sale_gst_type || 'CGST_SGST'} onValueChange={(v) => setForm((p) => ({ ...p, sale_gst_type: v }))}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="CGST_SGST">CGST + SGST</SelectItem>
-                        <SelectItem value="IGST">IGST</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label>TDS % {autoFields.has('sale_tds_pct') && <span className="text-amber-700">(auto)</span>}</Label>
-                    <Input
-                      type="number"
-                      className={autoFields.has('sale_tds_pct') ? AUTO_CLASS : ''}
-                      value={form.sale_tds_pct ?? ''}
-                      onChange={(e) => setField('sale_tds_pct', e.target.value)}
-                    />
-                  </div>
+                <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2 border-b border-dotted border-[#e5dfc8] pb-1.5">
+                  <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                    Sale (out)
+                  </h3>
+                  <span className="text-[11px] text-muted-foreground">
+                    {parties().length === 1
+                      ? 'One buyer — add another to split this purchase between several'
+                      : `${parties().length} buyers · ${formatNum(saleQty)} ${form.uom || 'MT'} sold on in ${saleLines.length} invoice${saleLines.length === 1 ? '' : 's'}`}
+                  </span>
                 </div>
+
+                {/* One card per buyer. The goods came in on one purchase and go
+                    out to whoever takes them, so each buyer gets its own
+                    invoices AND its own tax treatment — a buyer in another
+                    state is IGST where one in this state is CGST+SGST, and
+                    each withholds TDS on its own slab. */}
+                <div className="space-y-3">
+                  {parties().map((sp, pi) => {
+                    const c = partyCalcs[pi]
+                    const name = customers.find((x) => String(x.id) === String(sp?.customer_id || ''))?.name
+                    // The same buyer twice is two half-lists of one party's
+                    // invoices; marked on the later card, the one to change.
+                    const dupOf = sp?.customer_id
+                      ? parties().findIndex((o) => String(o?.customer_id || '') === String(sp.customer_id))
+                      : -1
+                    const repeated = dupOf >= 0 && dupOf < pi
+                    return (
+                      <div
+                        key={pi}
+                        className={cn(
+                          'overflow-hidden rounded border bg-[#fffdf7] shadow-sm',
+                          repeated ? 'border-rose-400' : 'border-[#d9d2b8]'
+                        )}
+                      >
+                        <div className="flex flex-wrap items-center gap-2 border-b border-emerald-200 bg-emerald-50/80 px-3 py-1.5">
+                          <span className="rounded bg-emerald-700 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-widest text-white">
+                            Buyer {pi + 1}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-emerald-900">
+                            {name || 'no customer picked yet'}
+                          </span>
+                          {c && c.invoiceCount > 0 && (
+                            <span className="shrink-0 text-[11px] font-medium tabular-nums text-emerald-800">
+                              {c.invoiceCount} invoice{c.invoiceCount === 1 ? '' : 's'} · {formatNum(c.qty)}{' '}
+                              {form.uom || 'MT'} · {formatINR(c.amount)}
+                            </span>
+                          )}
+                          {parties().length > 1 && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 shrink-0 text-muted-foreground hover:text-red-600"
+                              title="Remove this buyer and all of its invoices"
+                              onClick={() => removeParty(pi)}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                        </div>
+
+                        <div className="grid gap-4 p-3 md:grid-cols-3">
+                          <div className="flex flex-col gap-1.5 md:col-span-3">
+                            <Label>Customer *</Label>
+                            <Select
+                              value={String(sp?.customer_id || '')}
+                              onValueChange={(v) => chooseCustomer(pi, v)}
+                            >
+                              <SelectTrigger className={repeated ? 'border-rose-400 focus-visible:ring-rose-300' : ''}>
+                                <SelectValue placeholder="Select customer" />
+                              </SelectTrigger>
+                              <SelectContent className="max-h-64">
+                                {dealCustomers.length === 0 ? (
+                                  <div className="px-2 py-3 text-center text-[12px] text-muted-foreground">
+                                    No Trading customers yet — set a customer to Trading under Masters → Customers.
+                                  </div>
+                                ) : (
+                                  dealCustomers.map((cu) => (
+                                    <SelectItem key={String(cu.id)} value={String(cu.id)}>
+                                      {cu.name}
+                                    </SelectItem>
+                                  ))
+                                )}
+                              </SelectContent>
+                            </Select>
+                            {repeated && (
+                              <p className="text-[11px] text-rose-700">
+                                Already listed as buyer {dupOf + 1} — put all of that buyer&rsquo;s invoices under
+                                the one card, or the party&rsquo;s TDS slab is split in two.
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex flex-col gap-1.5 md:col-span-3">
+                            <Label>Sale invoices *</Label>
+                            <InvoiceLines
+                              title="Sale"
+                              rows={Array.isArray(sp?.lines) ? (sp.lines as Row[]) : []}
+                              uom={String(form.uom || 'MT')}
+                              totalQty={c?.qty ?? 0}
+                              onChange={(i, k, v) => setPartyLine(pi, i, k, v)}
+                              onAdd={() => addPartyLine(pi)}
+                              onRemove={(i) => removePartyLine(pi, i)}
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <Label>
+                              GST %{' '}
+                              {autoFields.has(partyKey(pi, 'gst_pct')) && (
+                                <span className="text-amber-700">(auto)</span>
+                              )}
+                            </Label>
+                            <Input
+                              type="number"
+                              className={autoFields.has(partyKey(pi, 'gst_pct')) ? AUTO_CLASS : ''}
+                              value={sp?.gst_pct ?? ''}
+                              onChange={(e) => setPartyField(pi, 'gst_pct', e.target.value)}
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <Label>GST type</Label>
+                            <Select
+                              value={sp?.gst_type || 'CGST_SGST'}
+                              onValueChange={(v) => patchParty(pi, { gst_type: v })}
+                            >
+                              <SelectTrigger><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="CGST_SGST">CGST + SGST</SelectItem>
+                                <SelectItem value="IGST">IGST</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <Label>
+                              TDS %{' '}
+                              {autoFields.has(partyKey(pi, 'tds_pct')) && (
+                                <span className="text-amber-700">(auto)</span>
+                              )}
+                            </Label>
+                            <Input
+                              type="number"
+                              className={autoFields.has(partyKey(pi, 'tds_pct')) ? AUTO_CLASS : ''}
+                              value={sp?.tds_pct ?? ''}
+                              onChange={(e) => setPartyField(pi, 'tds_pct', e.target.value)}
+                            />
+                          </div>
+                        </div>
+
+                        {/* This buyer's own invoice, totalled where it is
+                            entered — so the figure is checked against the
+                            document in hand, not against a deal-wide total
+                            that belongs to nobody. */}
+                        {!!c && c.invoiceCount > 0 && (
+                          <div className="grid gap-x-4 gap-y-1.5 border-t border-[#e5dfc8] bg-[#f7f2e2] px-3 py-2 sm:grid-cols-3 lg:grid-cols-5">
+                            <Fact label="Taxable" value={formatINR(c.amount)} />
+                            <Fact label={`GST ${formatNum(sp?.gst_pct)}%`} value={formatINR(c.gstAmount)} />
+                            <div className="min-w-0">
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                Round off {sp?.round_off_manual ? '(manual)' : '(auto)'}
+                              </div>
+                              <Input
+                                type="number"
+                                placeholder="0.00"
+                                title="Rounds this buyer's invoice to whole rupees. Clear it to go back to the automatic value."
+                                className={cn(
+                                  'mt-0.5 h-7 w-24 bg-white text-right text-[13px] tabular-nums',
+                                  sp?.round_off_manual && 'border-amber-300 bg-amber-50 focus-visible:ring-amber-400'
+                                )}
+                                value={String(sp?.round_off ?? '')}
+                                onChange={(e) =>
+                                  patchParty(pi, { round_off: e.target.value, round_off_manual: e.target.value !== '' })
+                                }
+                              />
+                            </div>
+                            <Fact label="Invoice total" value={formatINR(c.total)} />
+                            <Fact
+                              label="Net receivable"
+                              value={formatINR(c.netReceivable)}
+                              hint={c.tdsAmount > 0.005 ? `TDS ${formatINR(c.tdsAmount)}` : undefined}
+                            />
+                            {!!c.master?.tds_above_only && n(c.master?.tds_threshold) > 0 && (
+                              <p className="text-[11px] text-muted-foreground sm:col-span-3 lg:col-span-5">
+                                No TDS below ₹{formatNum(c.master.tds_threshold)} a year —{' '}
+                                {formatINR(n(salePriors[String(sp?.customer_id || '')]))} already billed to this
+                                buyer, so its slab applies from there.
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                  {/* Green, and heavier than Add invoice: this one adds a
+                      whole party — its own invoices, its own GST and its own
+                      TDS slab — so it should not look like one more row. Green
+                      to match the buyer cards it creates. */}
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-9 gap-1.5 bg-emerald-600 px-4 text-[12px] font-bold text-white shadow-md hover:bg-emerald-700"
+                    onClick={addParty}
+                  >
+                    <Plus className="h-4 w-4" /> Add another buyer
+                  </Button>
+                  {parties().length > 1 && (
+                    <span className="text-[11px] text-muted-foreground">
+                      Each buyer is invoiced separately, with its own GST, TDS and round off.
+                    </span>
+                  )}
+                </div>
+
+                {qtyMismatch && (
+                  <p className="mt-3 rounded border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900">
+                    Sold {formatNum(saleQty)} on{parties().length > 1 ? ` across ${parties().length} buyers` : ''} against{' '}
+                    {formatNum(purchaseQty)} {form.uom || 'MT'} bought —{' '}
+                    <b>{formatNum(Math.abs(qtyDiff))} {form.uom || 'MT'} {qtyDiff > 0 ? 'still unsold' : 'oversold'}</b>. You can
+                    save it this way and invoice the rest later.
+                  </p>
+                )}
               </section>
 
               {error && <p className="text-sm text-destructive">{error}</p>}
@@ -994,19 +1339,49 @@ export function Trading(): React.JSX.Element {
               </div>
 
               <div className="rounded border border-[#d9d2b8] bg-[#f7f2e2] p-4">
-                <h3 className="mb-2 border-b border-[#d9d2b8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Sale summary</h3>
+                <h3 className="mb-2 border-b border-[#d9d2b8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                  Sale summary
+                </h3>
+                {/* With several buyers the roll-up alone hides who owes what,
+                    so each buyer's net is listed above it. Round off is edited
+                    on the buyer's own card, beside the invoice it rounds —
+                    there is no single deal-wide figure to put here. */}
+                {partyCalcs.length > 1 && (
+                  <div className="mb-2 space-y-1 border-b border-dotted border-[#d9d2b8] pb-2">
+                    {partyCalcs.map((c, pi) => {
+                      const sp = parties()[pi]
+                      const name = customers.find((x) => String(x.id) === String(sp?.customer_id || ''))?.name
+                      return (
+                        <div key={pi} className="flex items-baseline justify-between gap-2 text-[12px]">
+                          <span className="min-w-0 truncate text-muted-foreground">
+                            {name || `Buyer ${pi + 1}`}
+                            {c.invoiceCount > 0 && (
+                              <span className="ml-1 text-[10px]">
+                                ({c.invoiceCount} inv · {formatNum(c.qty)})
+                              </span>
+                            )}
+                          </span>
+                          <span className="shrink-0 font-medium tabular-nums">{formatINR(c.netReceivable)}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
                 <MoneyRow label="Taxable value" value={formatINR(saleCalc.amount)} muted />
                 <MoneyRow label="GST" value={formatINR(saleCalc.gstAmount)} muted />
-                <MoneyEditRow
-                  label="Round off"
-                  value={String(form.sale_round_off ?? '')}
-                  manual={!!form.sale_round_off_manual}
-                  onChange={(v) => setForm((p) => ({ ...p, sale_round_off: v, sale_round_off_manual: v !== '' }))}
-                />
+                <MoneyRow label="Round off" value={formatINR(saleCalc.roundOff)} muted />
                 <div className="my-2 border-t-2 border-[#1a2c56]" />
-                <MoneyRow label="Sale invoice total" value={formatINR(saleCalc.total)} strong />
+                <MoneyRow
+                  label={partyCalcs.length > 1 ? `Sale invoice total (${partyCalcs.length} buyers)` : 'Sale invoice total'}
+                  value={formatINR(saleCalc.total)}
+                  strong
+                />
                 <MoneyRow label="TDS" value={formatINR(saleCalc.tdsAmount)} muted />
-                <MoneyRow label="Net receivable from customer" value={formatINR(saleCalc.netReceivable)} strong />
+                <MoneyRow
+                  label={partyCalcs.length > 1 ? 'Net receivable from buyers' : 'Net receivable from customer'}
+                  value={formatINR(saleCalc.netReceivable)}
+                  strong
+                />
               </div>
 
               <div className="rounded border border-[#1a2c56]/30 bg-white p-4">
@@ -1029,7 +1404,7 @@ export function Trading(): React.JSX.Element {
     <div className="flex flex-col gap-4 p-4">
       <PageHeader
         title="Purchase & Sales Trading"
-        hint="No bargain, no tanker movement, no stock entries, no interest — the purchase and sale book straight through in one step, same as ticking 'Trading' inside Purchases/Sales, just from one dedicated screen with full GST/TDS/round-off control. GST/TDS auto-load from the supplier/customer master (highlighted amber) and can be overridden. Deleting a deal removes both its purchase and sale invoices."
+        hint="No bargain, no tanker movement, no stock entries, no interest — the purchase and sale book straight through in one step, same as ticking 'Trading' inside Purchases/Sales, just from one dedicated screen with full GST/TDS/round-off control. One deal buys from a single supplier across as many purchase invoices as it needs, and sells on to ONE OR SEVERAL buyers — each buyer with its own invoices, its own GST type, its own TDS slab and its own round off, because those belong to the party and not to the trade. GST/TDS auto-load from the supplier/customer master (highlighted amber) and can be overridden. Deleting a deal removes every purchase and sale invoice on it."
         actions={
           <>
             {globalRangeAppliesTo(globalRange, 'trading') && (
@@ -1158,6 +1533,10 @@ export function Trading(): React.JSX.Element {
                 const open = expanded.has(Number(d.id))
                 const pl: Row[] = Array.isArray(d.purchase_lines) ? d.purchase_lines : []
                 const sl: Row[] = Array.isArray(d.sale_lines) ? d.sale_lines : []
+                // The sale side grouped by buyer. Empty only for a deal with
+                // no sale invoices at all, in which case the flat list stands
+                // in and the view reads exactly as it always did.
+                const sp: Row[] = Array.isArray(d.sale_parties) ? d.sale_parties : []
                 return (
                 <React.Fragment key={String(d.id)}>
                 <TableRow
@@ -1186,7 +1565,21 @@ export function Trading(): React.JSX.Element {
                   >
                     {formatINR(d.purchase_taxable)}
                   </TableCell>
-                  <TableCell className="py-1.5 text-[13px] font-medium">{d.customer_name || '—'}</TableCell>
+                  {/* One buyer reads as its name. Several read as the count,
+                      with every name on hover — the register keeps one row per
+                      deal, and the names are all in the expanded view below. */}
+                  <TableCell className="py-1.5 text-[13px] font-medium">
+                    {n(d.customer_count) > 1 ? (
+                      <span
+                        className="cursor-help border-b border-dotted border-[#1a2c56]/40"
+                        title={(Array.isArray(d.customer_names) ? d.customer_names : []).join('\n')}
+                      >
+                        {d.customer_count} buyers
+                      </span>
+                    ) : (
+                      d.customer_name || '—'
+                    )}
+                  </TableCell>
                   <TableCell
                     className="py-1.5 text-right text-[13px] tabular-nums"
                     title={`Taxable ${formatINR(d.sale_amount)} + GST ${formatINR(d.sale_gst_amount)} = ${formatINR(d.sale_net)} invoiced to the customer`}
@@ -1231,22 +1624,60 @@ export function Trading(): React.JSX.Element {
                           uom={String(d.purchase_uom || 'MT')}
                           tone="rose"
                         />
-                        <DealLineTable
-                          heading="Sale invoices"
-                          party={String(d.customer_name || '—')}
-                          lines={sl}
-                          uom={String(d.purchase_uom || 'MT')}
-                          tone="emerald"
-                        />
+                        {/* One table per buyer. Stacked in the sale column so
+                            a deal split five ways reads as five invoices to
+                            five parties, each with its own tax and its own
+                            money still to come in — not as one merged block
+                            that nobody can be chased for. */}
+                        <div className="space-y-3">
+                          {(sp.length ? sp : [{ customer_name: d.customer_name, lines: sl }]).map((party: Row, pi: number) => (
+                            <div key={pi}>
+                              <DealLineTable
+                                heading={sp.length > 1 ? `Sale invoices — buyer ${pi + 1}` : 'Sale invoices'}
+                                party={String(party.customer_name || '—')}
+                                lines={Array.isArray(party.lines) ? party.lines : []}
+                                uom={String(d.purchase_uom || 'MT')}
+                                tone="emerald"
+                              />
+                              {sp.length > 1 && (
+                                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 px-1 text-[11px] text-muted-foreground">
+                                  <span>GST {formatNum(party.gst_pct)}%</span>
+                                  <span>·</span>
+                                  <span>TDS {formatINR(party.tds_amount)}</span>
+                                  <span>·</span>
+                                  <span className="font-semibold text-[#1a2c56]">
+                                    Net {formatINR(party.net_receivable)}
+                                  </span>
+                                  <span
+                                    className={cn(
+                                      'rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                                      party.fully_paid ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                                    )}
+                                  >
+                                    {party.fully_paid
+                                      ? 'Paid'
+                                      : `Outstanding ${formatINR(Math.max(0, n(party.net_receivable) - n(party.paid)))}`}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
                         <div className="grid gap-x-6 gap-y-1 rounded border border-[#d9d2b8] bg-[#fffdf4] px-3 py-2 text-[12px] sm:grid-cols-2 lg:col-span-2 lg:grid-cols-4">
-                          <Fact label="GST (purchase / sale)" value={`${formatNum(d.purchase_gst_pct)}% / ${formatNum(d.sale_gst_pct)}%`} />
+                          <Fact
+                            label="GST (purchase / sale)"
+                            value={`${formatNum(d.purchase_gst_pct)}% / ${sp.length > 1 ? 'per buyer' : `${formatNum(d.sale_gst_pct)}%`}`}
+                          />
                           <Fact
                             label="TDS (purchase / sale)"
                             value={`${formatINR(d.purchase_tds_amount)} / ${formatINR(d.sale_tds_amount)}`}
-                            hint={`${formatNum(d.purchase_tds_pct)}% / ${formatNum(d.sale_tds_pct)}%`}
+                            hint={`${formatNum(d.purchase_tds_pct)}% / ${sp.length > 1 ? 'per buyer' : `${formatNum(d.sale_tds_pct)}%`}`}
                           />
                           <Fact label="Net payable to supplier" value={formatINR(d.purchase_net)} />
-                          <Fact label="Net receivable from customer" value={formatINR(d.sale_net_receivable)} />
+                          <Fact
+                            label={sp.length > 1 ? `Net receivable (${sp.length} buyers)` : 'Net receivable from customer'}
+                            value={formatINR(d.sale_net_receivable)}
+                          />
                           {!!d.lc_id && (
                             <div className="flex flex-wrap items-center gap-2 pt-1 sm:col-span-2 lg:col-span-4">
                               <span className="text-[11px] font-semibold text-[#1a2c56]">LC {d.lc_no || `#${d.lc_id}`}</span>

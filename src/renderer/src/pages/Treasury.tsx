@@ -985,8 +985,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
           order_id: orderId,
           invoice_no: pl.invoice_no || o?.invoice_no || '',
           deal_date: d.deal_date,
-          customer_id: d.customer_id,
-          customer_name: d.customer_name,
+          // A deal resold to ONE buyer names that buyer, and ticking the
+          // invoice pre-fills it as who the repayment comes from. Split
+          // between several there is no single payer to pre-fill, so the id
+          // is withheld and the label says how many — guessing the first of
+          // five would quietly point the repayment at the wrong party.
+          customer_id: n(d.customer_count) > 1 ? null : d.customer_id,
+          customer_name:
+            n(d.customer_count) > 1
+              ? `${d.customer_count} buyers`
+              : d.customer_name,
           net_amount: n(o?.net_amount)
         })
       }
@@ -3825,8 +3833,13 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       return (
                         <label key={String(inv.key)} className={cn('flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px]', checked ? 'bg-emerald-100' : 'hover:bg-muted/40')}>
                           <input type="checkbox" className="h-3.5 w-3.5" checked={checked} onChange={() => togglePaymentInInvoice(String(inv.key))} />
-                          <span className="flex-1">{inv.invoice_no || inv.key} · {formatDate(inv.sale_date)}</span>
-                          <span className="font-medium tabular-nums">{formatINR(inv.due)}</span>
+                          <span className="min-w-0 flex-1 truncate">
+                            {inv.invoice_no || inv.key} · {formatDate(inv.sale_date)}
+                            {!!inv.customer_name && (
+                              <span className="ml-1.5 text-muted-foreground">← {inv.customer_name}</span>
+                            )}
+                          </span>
+                          <span className="shrink-0 font-medium tabular-nums">{formatINR(inv.due)}</span>
                         </label>
                       )
                     })}

@@ -19,7 +19,14 @@ export async function exportTradingDeals(deals: Row[], filename: string): Promis
       deal_date: formatDate(d.deal_date),
       product,
       side: 'DEAL',
-      party: `${d.supplier_name || '—'} → ${d.customer_name || '—'}`,
+      // Who it was bought from and who it went to. Several buyers are named
+      // in full rather than counted, so the row is still readable on its own
+      // once the invoice lines under it are collapsed away.
+      party: `${d.supplier_name || '—'} → ${
+        Array.isArray(d.customer_names) && d.customer_names.length
+          ? d.customer_names.join(', ')
+          : d.customer_name || '—'
+      }`,
       invoice_no: '',
       qty: n(d.purchase_qty),
       rate: '',
@@ -45,6 +52,9 @@ export async function exportTradingDeals(deals: Row[], filename: string): Promis
       })
     }
 
+    // Each sale line carries its own buyer, so a deal split between parties
+    // exports one line per invoice naming the party it was raised on — the
+    // file can be filtered or pivoted by buyer without going back to the app.
     const sLines: Row[] = Array.isArray(d.sale_lines) ? d.sale_lines : []
     for (const l of sLines) {
       rows.push({
@@ -52,7 +62,7 @@ export async function exportTradingDeals(deals: Row[], filename: string): Promis
         deal_date: formatDate(d.deal_date),
         product,
         side: 'Sale',
-        party: d.customer_name || '—',
+        party: l.customer_name || d.customer_name || '—',
         invoice_no: l.invoice_no || '',
         qty: n(l.qty),
         rate: n(l.rate),

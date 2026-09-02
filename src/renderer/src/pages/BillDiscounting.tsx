@@ -774,8 +774,14 @@ export function BillDiscounting({
           order_id: orderId,
           invoice_no: pl.invoice_no || o?.invoice_no || '',
           deal_date: d.deal_date,
-          customer_id: d.customer_id,
-          customer_name: d.customer_name,
+          // See the same block on the LC side: one buyer is pre-filled as who
+          // pays the bill back, several are only counted — there is no single
+          // party to name, and naming the first would be a wrong guess.
+          customer_id: n(d.customer_count) > 1 ? null : d.customer_id,
+          customer_name:
+            n(d.customer_count) > 1
+              ? `${d.customer_count} buyers`
+              : d.customer_name,
           net_amount: n(o?.net_amount)
         })
       }
@@ -2271,9 +2277,15 @@ export function BillDiscounting({
                               )
                             }}
                           />
-                          <span className="flex-1 truncate">
+                          <span className="min-w-0 flex-1 truncate">
                             {o.invoice_no || key}
                             <span className="ml-1.5 text-muted-foreground">{formatDate(o.sale_date)}</span>
+                            {/* Which buyer owes it — a deal resold to several
+                                parties has a different debtor behind each
+                                number, and the receipt credits that one. */}
+                            {!!o.customer_name && (
+                              <span className="ml-1.5 text-muted-foreground">&larr; {o.customer_name}</span>
+                            )}
                           </span>
                           <span className="shrink-0 font-medium tabular-nums">{formatINR(o.due)}</span>
                         </label>

@@ -122,6 +122,62 @@ async function saleReceiptsByKey(companyId: number): Promise<Map<string, number>
   return m
 }
 
+// The sale side of a deal, grouped by who it was sold to. A deal sells to one
+// buyer or to several; either way this is a list, so the caller never has to
+// hold two shapes in mind. Buyers come out in the order their first invoice
+// was entered, which is the order the form shows them in.
+function groupSaleParties(sLines: Row[], receiptsByKey: Map<string, number>): Row[] {
+  const order: number[] = []
+  const byParty = new Map<number, Row[]>()
+  for (const l of sLines) {
+    const cid = n(l.customer_id)
+    if (!byParty.has(cid)) {
+      byParty.set(cid, [])
+      order.push(cid)
+    }
+    ;(byParty.get(cid) as Row[]).push(l)
+  }
+  return order.map((cid) => {
+    const ls = byParty.get(cid) as Row[]
+    const first = ls[0] ?? {}
+    const qty = ls.reduce((a, l) => a + n(l.qty), 0)
+    const taxable = ls.reduce((a, l) => a + n(l.amount), 0)
+    const gstAmount = ls.reduce((a, l) => a + n(l.gst_amount), 0)
+    const roundOff = ls.reduce((a, l) => a + n(l.round_off), 0)
+    const tdsAmount = ls.reduce((a, l) => a + n(l.tds_amount), 0)
+    const total = round2(taxable + gstAmount + roundOff)
+    // What this buyer owes and what has actually come back through the bank —
+    // per buyer, so one party paying up does not read as the deal being settled.
+    const keys = Array.from(new Set(ls.map((l) => saleRefKey(l)).filter(Boolean)))
+    const netReceivable = round2(total - tdsAmount)
+    const paid = round2(keys.reduce((a, k) => a + (receiptsByKey.get(k) || 0), 0))
+    return {
+      customer_id: cid || null,
+      customer_name: first.customer_name ?? null,
+      invoice_count: ls.length,
+      qty,
+      rate: qty > 0 ? ls.reduce((a, l) => a + n(l.qty) * n(l.rate), 0) / qty : 0,
+      taxable: round2(taxable),
+      gst_pct: n(first.gst_pct),
+      gst_type: first.gst_type ?? 'CGST_SGST',
+      gst_amount: round2(gstAmount),
+      round_off: round2(roundOff),
+      total,
+      tds_pct: n(first.tds_pct),
+      tds_amount: round2(tdsAmount),
+      net_receivable: netReceivable,
+      paid,
+      fully_paid: netReceivable > 0.005 && paid >= netReceivable - 0.005,
+      lines: ls.map((l) => ({
+        sale_id: n(l.id),
+        invoice_no: l.invoice_no ?? '',
+        qty: n(l.qty),
+        rate: n(l.rate)
+      }))
+    }
+  })
+}
+
 export async function listTradingDeals(forModule?: string): Promise<Row[]> {
   // Bounded to what this user may see. The bound goes in the SQL so the older
   // rows are never fetched; `forModule` lets a page that only borrows this
@@ -180,6 +236,10 @@ export async function listTradingDeals(forModule?: string): Promise<Row[]> {
     const saleKeys = Array.from(new Set(sLines.map((l) => saleRefKey(l)).filter(Boolean)))
     const salePaid = round2(saleKeys.reduce((s, k) => s + (receiptsByKey.get(k) || 0), 0))
     const saleFullyPaid = saleNetReceivable > 0.005 && salePaid >= saleNetReceivable - 0.005
+    // Who the goods went to. One entry when the deal has a single buyer, one
+    // per buyer when it was split — every figure below that reads "the
+    // customer" is the whole sale side, whether that is one party or five.
+    const saleParties = groupSaleParties(sLines, receiptsByKey)
     // The bank side of a Trading LC closes the same way any LC does — repaid
     // at maturity or preclosed early — both of which stamp preclosed_date.
     const lcBankRepaid = !!d.lc_preclosed_date
@@ -196,8 +256,18 @@ export async function listTradingDeals(forModule?: string): Promise<Row[]> {
         sale_id: n(l.id),
         invoice_no: l.invoice_no ?? '',
         qty: n(l.qty),
-        rate: n(l.rate)
+        rate: n(l.rate),
+        // Which buyer this invoice went to, so a flat list of the deal's sale
+        // invoices can still say who each one was raised on.
+        customer_id: l.customer_id ?? null,
+        customer_name: l.customer_name ?? null
       })),
+      sale_parties: saleParties,
+      customer_count: saleParties.length,
+      // Every buyer's name, for a list column and for search. The singular
+      // `customer_name` below stays the FIRST buyer, because that is what the
+      // LC and Bill Discounting pickers already read off a deal.
+      customer_names: saleParties.map((sp) => sp.customer_name).filter(Boolean),
       purchase_count: pLines.length,
       sale_count: sLines.length,
       purchase_invoice_no: first.invoice_no ?? '',
@@ -245,10 +315,17 @@ export async function listTradingDeals(forModule?: string): Promise<Row[]> {
   })
 }
 
-// One typed invoice line on either side of a deal: just a number, a quantity
-// and a rate — everything else (party, product, GST, TDS, round-off) is set
-// once for the whole deal and applies to every line.
-function toLines(raw: unknown, side: 'purchase' | 'sale'): { invoiceNo: string; qty: number; rate: number }[] {
+type DealLine = { invoiceNo: string; qty: number; rate: number }
+
+// One typed invoice line: just a number, a quantity and a rate. Product and
+// UOM are set once for the whole deal; the party and its GST/TDS are set once
+// per SIDE on the purchase side, and once per BUYER on the sale side.
+//
+// Repeats are NOT checked here. The sale side is several grids now — one per
+// buyer — all drawing on the same sale-invoice numbering, so a number used by
+// two different buyers is still one number on two documents. The caller checks
+// each side as a whole.
+function toLines(raw: unknown, at: (i: number) => string, emptyMsg: string): DealLine[] {
   const arr = Array.isArray(raw) ? raw : []
   const lines = arr
     .map((l) => {
@@ -262,21 +339,88 @@ function toLines(raw: unknown, side: 'purchase' | 'sale'): { invoiceNo: string; 
     // A blank trailing row is how the grid always looks mid-entry; drop it
     // rather than failing the save on it.
     .filter((l) => l.invoiceNo !== '' || l.qty !== 0 || l.rate !== 0)
-  if (!lines.length) throw new Error(`Add at least one ${side} invoice`)
+  if (!lines.length) throw new Error(emptyMsg)
   lines.forEach((l, i) => {
-    const at = `${side === 'purchase' ? 'Purchase' : 'Sale'} invoice ${i + 1}`
-    if (l.qty <= 0) throw new Error(`${at}: enter the quantity`)
-    if (l.rate <= 0) throw new Error(`${at}: enter the rate`)
+    if (l.qty <= 0) throw new Error(`${at(i)}: enter the quantity`)
+    if (l.rate <= 0) throw new Error(`${at(i)}: enter the rate`)
   })
-  // Each line of a deal becomes an invoice of its own, so two lines cannot
-  // share a number. Caught here because the per-row guards deliberately
-  // overlook the deal's own rows — see invoice_dup_exclude_ids below — which
-  // leaves this the one repeat they cannot see.
-  assertNoRepeatsWithin(
-    lines.map((l) => l.invoiceNo),
-    side === 'purchase' ? 'Purchase invoice' : 'Invoice'
-  )
   return lines
+}
+
+// One buyer on the sale side: the party, the tax treatment that party's own
+// invoices carry, and that party's invoices.
+//
+// GST and TDS sit HERE and not on the deal because they are properties of the
+// party, not of the trade: an out-of-state buyer is IGST while an in-state one
+// is CGST+SGST, and each buyer withholds TDS on its own slab. One deal-wide
+// rate would tax somebody wrongly the moment a second buyer is added.
+type SaleParty = {
+  customerId: number
+  gstPct: number
+  gstType: 'IGST' | 'CGST_SGST'
+  tdsPct: number
+  roundOff: number
+  lines: DealLine[]
+}
+
+// The sale side, whichever shape it arrives in.
+//
+// `sale_parties` is the current shape. A caller that still sends the old
+// single-customer shape (`customer_id` + `sale_lines` + `sale_gst_pct`…) is
+// read as one buyer holding every line, so nothing that used to save stops
+// saving — and a deal booked before this reads back through exactly that path.
+function toSaleParties(v: Row): SaleParty[] {
+  const raw = Array.isArray(v.sale_parties) ? (v.sale_parties as Row[]) : []
+  const groups: Row[] = raw.length
+    ? raw
+    : [
+        {
+          customer_id: v.customer_id,
+          gst_pct: v.sale_gst_pct,
+          gst_type: v.sale_gst_type,
+          tds_pct: v.sale_tds_pct,
+          round_off: v.sale_round_off,
+          lines: v.sale_lines
+        }
+      ]
+  // A buyer card with nothing typed into it at all is the blank one the form
+  // leaves waiting; drop it rather than refusing the save on it.
+  const live = groups.filter((g) => {
+    const ls = Array.isArray(g?.lines) ? (g.lines as Row[]) : []
+    const anyLine = ls.some(
+      (l) => String(l?.invoice_no ?? '').trim() !== '' || n(l?.qty) !== 0 || n(l?.rate) !== 0
+    )
+    return n(g?.customer_id) > 0 || anyLine
+  })
+  if (!live.length) throw new Error('Pick the customer')
+
+  const multi = live.length > 1
+  const parties = live.map((g, gi) => {
+    const label = multi ? `Buyer ${gi + 1}` : 'Sale'
+    if (!n(g?.customer_id)) {
+      throw new Error(multi ? `${label}: pick the customer` : 'Pick the customer')
+    }
+    return {
+      customerId: n(g.customer_id),
+      gstPct: n(g.gst_pct),
+      gstType: g.gst_type === 'IGST' ? ('IGST' as const) : ('CGST_SGST' as const),
+      tdsPct: n(g.tds_pct),
+      roundOff: n(g.round_off),
+      lines: toLines(g.lines, (i) => `${label} invoice ${i + 1}`, `${label}: add at least one sale invoice`)
+    }
+  })
+
+  // The same buyer entered twice is two half-lists of one party's invoices —
+  // its TDS slab and its running total would be split across them. Refused
+  // with the fix named, rather than quietly merged behind the user's back.
+  const seen = new Set<number>()
+  for (const p of parties) {
+    if (seen.has(p.customerId)) {
+      throw new Error("The same customer is listed twice — put all of that buyer's invoices under one entry")
+    }
+    seen.add(p.customerId)
+  }
+  return parties
 }
 
 // Shared shape for both create and update — updateOrder/updateSale fully
@@ -292,14 +436,27 @@ function dealFields(v: Row): {
   const productId = n(v.product_id)
   if (!productId) throw new Error('Select the raw product')
   if (!v.supplier_id) throw new Error('Pick the supplier')
-  if (!v.customer_id) throw new Error('Pick the customer')
   const uom = String(v.uom || 'MT')
   const dealDate = v.deal_date ? String(v.deal_date).slice(0, 10) : todayISO()
 
-  const purchaseLines = toLines(v.purchase_lines, 'purchase')
-  const saleLines = toLines(v.sale_lines, 'sale')
+  const purchaseLines = toLines(
+    v.purchase_lines,
+    (i) => `Purchase invoice ${i + 1}`,
+    'Add at least one purchase invoice'
+  )
+  const saleParties = toSaleParties(v)
   // The two sides not matching is allowed on purpose (a deal can sit
-  // part-sold) — the form shows the difference, and nothing is refused here.
+  // part-sold, or be sold on to buyers found one at a time) — the form shows
+  // the difference, and nothing is refused here.
+
+  // Each line becomes an invoice of its own, so no two lines on a side can
+  // share a number. Checked per side rather than per grid, because the sale
+  // side is now one grid per buyer and all of them draw on the same sale
+  // numbering. The per-row guards inside createOrder/createSale deliberately
+  // overlook the deal's own rows (see invoice_dup_exclude_ids), which leaves
+  // this the one repeat they cannot see.
+  assertNoRepeatsWithin(purchaseLines.map((l) => l.invoiceNo), 'Purchase invoice')
+  assertNoRepeatsWithin(saleParties.flatMap((sp) => sp.lines.map((l) => l.invoiceNo)), 'Invoice')
 
   const orderPayloads = purchaseLines.map((l) => ({
     is_trading: true,
@@ -323,23 +480,30 @@ function dealFields(v: Row): {
   }))
   if (orderPayloads.length) orderPayloads[0].round_off = n(v.purchase_round_off)
 
-  const salePayloads = saleLines.map((l) => ({
-    is_trading: true,
-    invoice_no: l.invoiceNo || null,
-    sale_date: dealDate,
-    customer_id: n(v.customer_id),
-    product_id: productId,
-    qty: l.qty,
-    uom,
-    rate: l.rate,
-    gst_pct: n(v.sale_gst_pct),
-    gst_type: v.sale_gst_type === 'IGST' ? 'IGST' : 'CGST_SGST',
-    tds_pct: n(v.sale_tds_pct),
-    round_off: 0,
-    sale_type: 'LOOSE',
-    freight_term: 'EX'
-  }))
-  if (salePayloads.length) salePayloads[0].round_off = n(v.sale_round_off)
+  // Flattened in buyer order, and that order is load-bearing: an update
+  // reuses the existing sale rows position by position, so the same flattening
+  // on the way back in keeps each invoice on the row it was already on.
+  const salePayloads = saleParties.flatMap((sp) =>
+    sp.lines.map((l, i) => ({
+      is_trading: true,
+      invoice_no: l.invoiceNo || null,
+      sale_date: dealDate,
+      customer_id: sp.customerId,
+      product_id: productId,
+      qty: l.qty,
+      uom,
+      rate: l.rate,
+      gst_pct: sp.gstPct,
+      gst_type: sp.gstType,
+      tds_pct: sp.tdsPct,
+      // Round off belongs to a buyer's own invoice total, so it rides that
+      // buyer's first invoice — not the deal's, which would round one party's
+      // bill by another party's paisa.
+      round_off: i === 0 ? sp.roundOff : 0,
+      sale_type: 'LOOSE',
+      freight_term: 'EX'
+    }))
+  )
 
   return { productId, uom, dealDate, orderPayloads, salePayloads }
 }

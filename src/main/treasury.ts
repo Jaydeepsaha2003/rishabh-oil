@@ -77,6 +77,46 @@ async function allocAgainst(entryId: number, partyName: string, ref: string | nu
   })
 }
 
+// One resale invoice still owed on a trading deal, and WHO owes it. The payer
+// is per invoice because a deal can be sold on to several buyers — see
+// toSaleParties in trading.ts.
+type SaleRef = { key: string; invoice_no: string; sale_date: string; due: number; customer_name: string }
+
+// How a lump receipt lands: biggest outstanding bill first, the way one
+// payment naturally clears the largest dues before spilling onto the next.
+//
+// Split out and made to return a PLAN rather than posting as it goes, because
+// the voucher's credit lines have to be known before it is written — a deal
+// sold on to two buyers owes two debtors, and each one's ledger must be
+// credited with what its own bills actually took. Crediting a single party for
+// the whole receipt would clear buyer B's invoice against buyer A's account.
+function planReceipt(
+  outstanding: SaleRef[],
+  value: number,
+  fallbackParty: string
+): { takes: { party: string; key: string; amount: number }[]; byParty: { party: string; amount: number }[] } {
+  const takes: { party: string; key: string; amount: number }[] = []
+  let remaining = value
+  for (const o of [...outstanding].sort((a, b) => b.due - a.due)) {
+    if (remaining <= 0.005) break
+    const amount = round2(Math.min(remaining, o.due))
+    takes.push({ party: (o.customer_name || fallbackParty).trim() || fallbackParty, key: o.key, amount })
+    remaining -= amount
+  }
+  // Rounding each take to the paisa can leave the credits a paisa short of the
+  // debit, which postJournal refuses outright. The shortfall goes on the
+  // largest credit — the same place a manual voucher would absorb it.
+  const totals = new Map<string, number>()
+  for (const t of takes) totals.set(t.party, round2((totals.get(t.party) || 0) + t.amount))
+  const byParty = Array.from(totals, ([party, amount]) => ({ party, amount }))
+  const drift = round2(value - byParty.reduce((a, b) => a + b.amount, 0))
+  if (Math.abs(drift) > 0.0005 && byParty.length) {
+    const biggest = byParty.reduce((a, b) => (b.amount > a.amount ? b : a))
+    biggest.amount = round2(biggest.amount + drift)
+  }
+  return { takes, byParty }
+}
+
 // Which ledger account an LC's bank movements post to. Each of our own
 // accounts keeps its own line in the books, so money leaving one bank is
 // visible separately from another rather than lumped into one figure. An LC
@@ -471,7 +511,7 @@ export async function postLcPrematureInterestRebate(
 // receipt always agree on what's still owed.
 async function outstandingSaleRefsForLc(
   lcId: number
-): Promise<{ lc: Row; customerName: string; refs: { key: string; invoice_no: string; sale_date: string; due: number }[] }> {
+): Promise<{ lc: Row; customerName: string; refs: SaleRef[] }> {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT * FROM letters_of_credit WHERE id = ?', args: [lcId] })
   if (!res.rows.length) throw new Error('LC not found')
@@ -519,14 +559,24 @@ async function outstandingSaleRefsForLc(
   )
   if (!saleIds.length) throw new Error("This LC's linked Trading deal has no sale invoice yet")
 
+  // The buyer comes back with each bill. An invoice belongs to exactly one
+  // customer, so grouping by ref still yields one name per row.
   const salesRes = await c.execute({
-    sql: `SELECT COALESCE(invoice_group, invoice_no) AS key, MIN(invoice_no) AS invoice_no, MIN(sale_date) AS sale_date,
-                 SUM(amount + gst_amount + round_off - tds_amount) AS due
-          FROM sales WHERE id IN (${saleIds.join(',')}) GROUP BY key`,
+    sql: `SELECT COALESCE(sl.invoice_group, sl.invoice_no) AS key, MIN(sl.invoice_no) AS invoice_no,
+                 MIN(sl.sale_date) AS sale_date, MIN(cu.name) AS customer_name,
+                 SUM(sl.amount + sl.gst_amount + sl.round_off - sl.tds_amount) AS due
+          FROM sales sl LEFT JOIN customers cu ON cu.id = sl.customer_id
+          WHERE sl.id IN (${saleIds.join(',')}) GROUP BY key`,
     args: []
   })
   const bills = toPlain(salesRes)
-    .map((s) => ({ key: String(s.key || '').trim(), invoice_no: String(s.invoice_no || ''), sale_date: String(s.sale_date || ''), due: round2(n(s.due)) }))
+    .map((s) => ({
+      key: String(s.key || '').trim(),
+      invoice_no: String(s.invoice_no || ''),
+      sale_date: String(s.sale_date || ''),
+      customer_name: String(s.customer_name || '').trim(),
+      due: round2(n(s.due))
+    }))
     .filter((s) => s.key)
   if (!bills.length) throw new Error("This LC's linked Trading deal has no sale invoice yet")
 
@@ -592,26 +642,24 @@ export async function postLcPaymentIn(
   const c = getClient()
   const date = String(dateIn || todayISO()).slice(0, 10)
   assertNotFuture(date, 'The date the payment was received')
+  // Worked out before the voucher is written, because the credits have to
+  // follow the bills: a deal resold to two buyers credits two debtors, each
+  // for what its own invoices took.
+  const { takes, byParty } = planReceipt(outstanding, value, customerName)
   const je = await postJournal({
     date,
     vchType: 'RECEIPT',
     vchNo: String(lc.lc_no || ''),
-    narration: `LC ${lc.lc_no} — payment IN of ${value.toFixed(2)} received from ${customerName}`,
+    narration:
+      `LC ${lc.lc_no} — payment IN of ${value.toFixed(2)} received from ` +
+      (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(', ') : byParty[0]?.party || customerName),
     companyId: n(lc.company_id) || undefined,
     lines: [
       { account: bankAcc, group: 'Bank Accounts', dr: value },
-      { account: customerName, group: 'Sundry Debtors', cr: value }
+      ...byParty.map((b) => ({ account: b.party, group: 'Sundry Debtors', cr: b.amount }))
     ]
   })
-  // Biggest outstanding bill first, the way one lump receipt naturally clears
-  // the largest dues before spilling onto the next.
-  let remaining = value
-  for (const o of [...outstanding].sort((a, b) => b.due - a.due)) {
-    if (remaining <= 0.005) break
-    const take = round2(Math.min(remaining, o.due))
-    await allocAgainst(je.id, customerName, o.key, take)
-    remaining -= take
-  }
+  for (const t of takes) await allocAgainst(je.id, t.party, t.key, t.amount)
   await c.execute({
     sql: 'INSERT INTO lc_payment_ins (lc_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, ?)',
     args: [lcId, date, value, je.id]
@@ -633,7 +681,7 @@ export async function postLcPaymentIn(
 
 async function outstandingSaleRefsForBd(
   bdId: number
-): Promise<{ bd: Row; customerName: string; refs: { key: string; invoice_no: string; sale_date: string; due: number }[] }> {
+): Promise<{ bd: Row; customerName: string; refs: SaleRef[] }> {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT * FROM bill_discountings WHERE id = ?', args: [bdId] })
   if (!res.rows.length) throw new Error('Discounted bill not found')
@@ -680,10 +728,13 @@ async function outstandingSaleRefsForBd(
   )
   if (!saleIds.length) throw new Error("This bill's linked Trading deal has no sale invoice yet")
 
+  // Same as the LC side: each bill names the buyer that owes it.
   const salesRes = await c.execute({
-    sql: `SELECT COALESCE(invoice_group, invoice_no) AS key, MIN(invoice_no) AS invoice_no, MIN(sale_date) AS sale_date,
-                 SUM(amount + gst_amount + round_off - tds_amount) AS due
-          FROM sales WHERE id IN (${saleIds.join(',')}) GROUP BY key`,
+    sql: `SELECT COALESCE(sl.invoice_group, sl.invoice_no) AS key, MIN(sl.invoice_no) AS invoice_no,
+                 MIN(sl.sale_date) AS sale_date, MIN(cu.name) AS customer_name,
+                 SUM(sl.amount + sl.gst_amount + sl.round_off - sl.tds_amount) AS due
+          FROM sales sl LEFT JOIN customers cu ON cu.id = sl.customer_id
+          WHERE sl.id IN (${saleIds.join(',')}) GROUP BY key`,
     args: []
   })
   const bills = toPlain(salesRes)
@@ -691,6 +742,7 @@ async function outstandingSaleRefsForBd(
       key: String(x.key || '').trim(),
       invoice_no: String(x.invoice_no || ''),
       sale_date: String(x.sale_date || ''),
+      customer_name: String(x.customer_name || '').trim(),
       due: round2(n(x.due))
     }))
     .filter((x) => x.key)
@@ -759,24 +811,23 @@ export async function postBdPaymentIn(
   const c = getClient()
   const date = String(dateIn || todayISO()).slice(0, 10)
   assertNotFuture(date, 'The date the payment was received')
+  // See the LC side: one credit line per debtor, each for what its own bills
+  // actually took, worked out before the voucher is written.
+  const { takes, byParty } = planReceipt(outstanding, value, customerName)
   const je = await postJournal({
     date,
     vchType: 'RECEIPT',
     vchNo: String(bd.bd_no || ''),
-    narration: `Bill Discounting ${bd.bd_no} — payment IN of ${value.toFixed(2)} received from ${customerName}`,
+    narration:
+      `Bill Discounting ${bd.bd_no} — payment IN of ${value.toFixed(2)} received from ` +
+      (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(', ') : byParty[0]?.party || customerName),
     companyId: n(bd.company_id) || undefined,
     lines: [
       { account: 'BANK A/C', group: 'Bank Accounts', dr: value },
-      { account: customerName, group: 'Sundry Debtors', cr: value }
+      ...byParty.map((b) => ({ account: b.party, group: 'Sundry Debtors', cr: b.amount }))
     ]
   })
-  let remaining = value
-  for (const o of [...outstanding].sort((a, b) => b.due - a.due)) {
-    if (remaining <= 0.005) break
-    const take = round2(Math.min(remaining, o.due))
-    await allocAgainst(je.id, customerName, o.key, take)
-    remaining -= take
-  }
+  for (const t of takes) await allocAgainst(je.id, t.party, t.key, t.amount)
   await c.execute({
     sql: 'INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, ?)',
     args: [bdId, date, value, je.id]
