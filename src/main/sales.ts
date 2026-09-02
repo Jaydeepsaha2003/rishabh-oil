@@ -1,7 +1,7 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
 import { getCurrentUser } from './currentUser'
-import { deleteJournalByRef, postSaleJournal } from './journal'
+import { deleteJournalByRef, postJournal, postSaleJournal, repostJournal } from './journal'
 import { getActiveCompanyId } from './company'
 import { getSetting } from './repos'
 import { productStockAvailable, stockMap } from './stock'
@@ -220,6 +220,158 @@ async function postCustomerReceivable(
 // Cr GST OUTPUT A/C (output gst), and — for a FOR delivery — Dr Freight
 // Outward / Cr Transporter, so freight actually lands in the books instead of
 // only the informal transporter/customer ledgers postSaleFreight maintains.
+// ONE VOUCHER PER INVOICE.
+//
+// An invoice is one or more `sales` rows sharing an invoice_group — different
+// products, or the same product in different rate bands. Each row used to post
+// a SALE voucher of its own, so a two-line invoice appeared twice in the
+// customer's ledger under one Bill Ref and read as a double posting. The money
+// was never doubled (each voucher carried its own line's share) but no reader
+// could tell that from the ledger.
+//
+// This posts the invoice: the customer debited once for the whole bill, and one
+// credit line per SALE account involved — which is what a sales voucher looks
+// like in Tally, and what makes the ledger legible.
+//
+// The voucher is rewritten in place wherever one already exists, because
+// voucher numbers here are positional (see voucherCodeMap): a fresh entry lands
+// at the end of the sequence and shifts every voucher after the old one. Where
+// several entries exist for one invoice — every multi-line invoice, before this
+// — the EARLIEST keeps the number and the rest are dropped.
+export async function postSaleInvoiceJournal(saleId: number, reuseEntryId?: number): Promise<void> {
+  const c = getClient()
+  const seed = await c.execute({
+    sql: 'SELECT id, invoice_group, company_id FROM sales WHERE id = ?',
+    args: [n(saleId)]
+  })
+  if (!seed.rows.length) return
+  const seedRow = seed.rows[0] as unknown as Row
+  const group = seedRow.invoice_group ? String(seedRow.invoice_group) : null
+
+  // Every line of the invoice, with what it sells and what it withheld.
+  const rowsRes = group
+    ? await c.execute({
+        sql: `SELECT s.*, p.code AS product_code, p.name AS product_name, cu.name AS customer_master
+              FROM sales s LEFT JOIN products p ON p.id = s.product_id
+              LEFT JOIN customers cu ON cu.id = s.customer_id
+              WHERE s.invoice_group = ? ORDER BY s.id`,
+        args: [group]
+      })
+    : await c.execute({
+        sql: `SELECT s.*, p.code AS product_code, p.name AS product_name, cu.name AS customer_master
+              FROM sales s LEFT JOIN products p ON p.id = s.product_id
+              LEFT JOIN customers cu ON cu.id = s.customer_id
+              WHERE s.id = ?`,
+        args: [n(saleId)]
+      })
+  const rows = toPlain(rowsRes)
+  if (!rows.length) return
+  const first = rows[0]
+
+  // Which vouchers exist for this invoice today. The earliest is the one whose
+  // number the invoice has always had, so that is the one kept.
+  const ids = rows.map((r) => n(r.id))
+  const priorRes = await c.execute(
+    `SELECT id FROM journal_entries WHERE sale_id IN (${ids.join(',')}) ORDER BY id`
+  )
+  const priorIds = priorRes.rows.map((r) => n((r as unknown as Row).id)).filter(Boolean)
+  const target = n(reuseEntryId) || priorIds[0] || 0
+
+  const taxable = round2(rows.reduce((t, r) => t + n(r.amount), 0))
+  const gst = round2(rows.reduce((t, r) => t + n(r.gst_amount), 0))
+  const ro = round2(rows.reduce((t, r) => t + n(r.round_off), 0))
+  const tds = round2(rows.reduce((t, r) => t + n(r.tds_amount), 0))
+  const freight = round2(rows.reduce((t, r) => t + n(r.transport_amount), 0))
+
+  if (taxable <= 0 && gst <= 0) {
+    for (const id of priorIds) await deleteJournalEntryById(id)
+    return
+  }
+
+  let customerName = String(first.customer_master || first.customer || '').trim()
+  if (!customerName) customerName = 'CASH CUSTOMER A/C'
+  let transporterName = ''
+  if (freight > 0 && first.transporter_id) {
+    const t = await c.execute({ sql: 'SELECT name FROM transporters WHERE id = ?', args: [n(first.transporter_id)] })
+    transporterName = t.rows.length ? String(t.rows[0].name).trim() : ''
+  }
+  const hasFreight = freight > 0 && !!transporterName
+  const deducted = !!first.deduct_freight && hasFreight
+
+  // One credit line per SALE account. Two lines of the same product collapse
+  // into one line, as they would on the invoice itself; two products keep
+  // their own accounts, which is the whole reason to post per invoice.
+  const bySaleAcc = new Map<string, number>()
+  for (const r of rows) {
+    const code = String(r.product_code || r.product_name || 'FG').toUpperCase()
+    const acc = `${code} SALE A/C`
+    bySaleAcc.set(acc, round2((bySaleAcc.get(acc) || 0) + n(r.amount)))
+  }
+
+  // The DEBTOR is the residual of the other lines, and it has to be, because a
+  // sale row's `amount` is qty x rate and can carry more than two decimals.
+  // Rounding the grand total is then not the same number as adding up the
+  // per-account rounded totals — they differ by a paisa on seven real invoices
+  // here. Deriving the debtor from lines that are ALL already at two decimals
+  // makes the voucher balance exactly, instead of relying on repostJournal's
+  // 0.01 tolerance to wave a broken one through and drag the trial balance
+  // with it.
+  //
+  //   custDr = (sale accounts + GST + round off cr + freight payable)
+  //          - (TDS + round off dr + freight outward)
+  const saleLines = Array.from(bySaleAcc, ([account, cr]) => ({ account, group: 'Sales Accounts', cr }))
+  const saleAccounts = round2(saleLines.reduce((t, l) => t + l.cr, 0))
+  const freightOutward = hasFreight ? freight : 0
+  const freightPayable = hasFreight && !deducted ? freight : 0
+  const roCr = ro > 0 ? ro : 0
+  const roDr = ro < 0 ? -ro : 0
+  const custDr = round2(
+    saleAccounts + gst + roCr + freightPayable - tds - roDr - freightOutward
+  )
+
+  const lines = [
+    { account: customerName, group: 'Sundry Debtors', dr: custDr },
+    ...saleLines,
+    { account: 'GST OUTPUT A/C', group: 'Duties & Taxes', cr: gst },
+    { account: 'ROUND OFF A/C', group: 'Indirect Expenses', cr: roCr, dr: roDr }
+  ]
+  if (tds > 0.004) lines.push({ account: 'TDS RECEIVABLE A/C', group: 'Deposits (Asset)', dr: tds })
+  if (hasFreight) {
+    lines.push({ account: 'FREIGHT OUTWARD A/C', group: 'Direct Expenses', dr: freightOutward })
+    if (!deducted) lines.push({ account: 'FREIGHT PAYABLE A/C', group: 'Current Liabilities', cr: freightPayable })
+  }
+
+  const args = {
+    date: String(first.sale_date),
+    vchType: 'SALE',
+    vchNo: first.invoice_no ? String(first.invoice_no) : null,
+    // The voucher is filed under the invoice's FIRST line, so deleting that
+    // line has to hand the voucher on rather than take it down — see deleteSale.
+    saleId: n(first.id),
+    companyId: n(first.company_id) || undefined,
+    lines
+  }
+
+  if (target) {
+    await repostJournal(target, args)
+    for (const id of priorIds) if (id !== target) await deleteJournalEntryById(id)
+    return
+  }
+  await postJournal(args)
+}
+
+// One entry and its lines, by id. deleteJournalByRef works off the source
+// document; the strays this collapses are found by id instead.
+async function deleteJournalEntryById(entryId: number): Promise<void> {
+  const c = getClient()
+  await c.execute({
+    sql: 'DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)',
+    args: [n(entryId)]
+  })
+  await c.execute({ sql: 'DELETE FROM journal_lines WHERE entry_id = ?', args: [n(entryId)] })
+  await c.execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [n(entryId)] })
+}
+
 async function postSaleEntry(
   saleId: number,
   v: Row,
@@ -252,20 +404,22 @@ async function postSaleEntry(
     const t = await getClient().execute({ sql: 'SELECT name FROM transporters WHERE id = ?', args: [n(v.transporter_id)] })
     transporterName = t.rows.length ? String(t.rows[0].name) : null
   }
-  await postSaleJournal({
-    saleId,
-    date: String(v.sale_date),
-    invoiceNo: v.invoice_no ? String(v.invoice_no) : null,
-    productCode: code,
-    customerName,
-    amount: taxable,
-    gst,
-    roundOff,
-    freightAmount,
-    transporterName,
-    deductFreight: !!v.deduct_freight,
-    tds
-  }).catch((e) => console.error('[journal] sale post failed:', (e as Error).message))
+  // The voucher belongs to the INVOICE, not to this line. Saving any line
+  // re-posts the whole invoice from what is in the database, so a three-line
+  // invoice ends up with one voucher no matter which order its lines were
+  // written in. Every figure is read back off the rows, so the arguments
+  // gathered above are only still used for the free-text fallbacks.
+  void code
+  void customerName
+  void transporterName
+  void taxable
+  void gst
+  void roundOff
+  void freightAmount
+  void tds
+  await postSaleInvoiceJournal(saleId).catch((e) =>
+    console.error('[journal] sale post failed:', (e as Error).message)
+  )
 }
 
 // Re-post one sale's voucher from what is already stored on it.
@@ -1549,11 +1703,37 @@ export async function deleteSale(id: number): Promise<{ id: number }> {
   const c = getClient()
   // Reverse the linked auto-production first (releases the raw it consumed).
   await deleteSaleProductions(id)
-  await deleteJournalByRef('sale_id', id)
+  // The invoice's voucher is filed under its first line. Removing that line
+  // from a multi-line invoice must HAND THE VOUCHER ON to a surviving line,
+  // not take it down — dropping it and posting a fresh one would give the
+  // invoice a new number and shift every voucher after it. Only when the last
+  // line goes does the voucher go with it.
+  const own = await c.execute({ sql: 'SELECT invoice_group FROM sales WHERE id = ?', args: [id] })
+  const grp = own.rows[0] ? (own.rows[0] as unknown as Row).invoice_group : null
+  let survivor = 0
+  if (grp) {
+    const rest = await c.execute({
+      sql: 'SELECT id FROM sales WHERE invoice_group = ? AND id != ? ORDER BY id LIMIT 1',
+      args: [String(grp), id]
+    })
+    survivor = rest.rows.length ? n((rest.rows[0] as unknown as Row).id) : 0
+  }
+  if (survivor) {
+    await c.execute({ sql: 'UPDATE journal_entries SET sale_id = ? WHERE sale_id = ?', args: [survivor, id] })
+  } else {
+    await deleteJournalByRef('sale_id', id)
+  }
   await c.execute({ sql: 'DELETE FROM payment_allocations WHERE sale_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM customer_ledger WHERE sale_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM transporter_ledger WHERE sale_id = ?', args: [id] })
   await c.execute({ sql: 'DELETE FROM sales WHERE id = ?', args: [id] })
+  // What is left of the invoice is re-posted, so the voucher it kept now
+  // states the reduced bill rather than the one that included this line.
+  if (survivor) {
+    await postSaleInvoiceJournal(survivor).catch((e) =>
+      console.error('[journal] invoice re-post after line delete failed:', (e as Error).message)
+    )
+  }
   return { id }
 }
 
@@ -1636,6 +1816,14 @@ export async function updateSaleInvoice(group: string, v: Row): Promise<{ group:
     .filter((r) => r.received_qty != null)
     .map((r) => ({ product_id: n(r.product_id), packaging_id: n(r.packaging_id), qty: n(r.received_qty), used: false }))
 
+  // NOTE on voucher numbers: this edit deletes every line and builds them
+  // again, so the invoice's voucher goes with its last line and the rebuilt
+  // invoice is posted a fresh one at the end of the numbering. That is what
+  // editing an invoice has always done here. Holding the old id across the
+  // rebuild would mean detaching the entry first and leaving an orphan
+  // voucher behind on any failure mid-way, which is worse than a changed
+  // number — so it is left as it is, deliberately. Saving a single line, and
+  // deleting one line of several, both keep the number (see deleteSale).
   for (const r of existing.rows) await deleteSale(Number(r.id))
   const ids: number[] = []
   for (let i = 0; i < items.length; i++) {

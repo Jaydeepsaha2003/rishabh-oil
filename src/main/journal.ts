@@ -468,7 +468,17 @@ export async function postSaleJournal(v: {
   tds?: number
   companyId?: number
 }): Promise<void> {
-  await deleteJournalByRef('sale_id', v.saleId)
+  // The sale's EXISTING voucher, if it has one. It is rewritten in place
+  // rather than deleted and re-inserted, because voucher numbers here are
+  // positional: voucherCodeMap() orders a company's entries by id and numbers
+  // them 1..n per prefix, so a fresh entry lands at the end of the sequence
+  // with a new number and shifts every voucher after the old one. Editing a
+  // sale used to do exactly that to its own SALE number.
+  const prior = await getClient().execute({
+    sql: 'SELECT id FROM journal_entries WHERE sale_id = ? ORDER BY id',
+    args: [v.saleId]
+  })
+  const priorIds = prior.rows.map((r) => n((r as unknown as Row).id)).filter(Boolean)
   const taxable = n(v.amount)
   const gst = n(v.gst)
   // Round off shifts the customer's net: +ve rounds the invoice up (customer
@@ -476,7 +486,11 @@ export async function postSaleJournal(v: {
   const ro = n(v.roundOff)
   const freight = n(v.freightAmount)
   const transporterName = String(v.transporterName || '').trim()
-  if (taxable <= 0 && gst <= 0) return
+  // Nothing left to post — the voucher goes, as it did before.
+  if (taxable <= 0 && gst <= 0) {
+    await deleteJournalByRef('sale_id', v.saleId)
+    return
+  }
   // Freight deducted from the invoice: the customer pays the truck, so their
   // bill drops by it and we never owe the transporter for it.
   //
@@ -509,14 +523,25 @@ export async function postSaleJournal(v: {
       lines.push({ account: 'FREIGHT PAYABLE A/C', group: 'Current Liabilities', cr: freight })
     }
   }
-  await postJournal({
+  const args = {
     date: v.date,
     vchType: 'SALE',
     vchNo: v.invoiceNo,
     saleId: v.saleId,
     companyId: v.companyId,
     lines
-  })
+  }
+  if (priorIds.length) {
+    // More than one entry against a single sale should not happen; if it ever
+    // did, the earliest keeps the number and the strays go.
+    for (const extra of priorIds.slice(1)) {
+      await getClient().execute({ sql: 'DELETE FROM journal_lines WHERE entry_id = ?', args: [extra] })
+      await getClient().execute({ sql: 'DELETE FROM journal_entries WHERE id = ?', args: [extra] })
+    }
+    await repostJournal(priorIds[0], args)
+    return
+  }
+  await postJournal(args)
 }
 
 // One-time (idempotent) backfill: post journal vouchers for documents created
@@ -583,11 +608,28 @@ export async function backfillJournal(): Promise<void> {
     }).catch(() => {})
   }
 
+  // One voucher per INVOICE, and the "already posted" test has to be per
+  // invoice too.
+  //
+  // This used to ask whether each sales ROW had a voucher of its own. Since a
+  // sale voucher now covers the whole invoice and is filed under its first
+  // line, every other line of a multi-line invoice looked unposted — so on the
+  // next start this backfill cheerfully wrote a fresh two-line voucher for each
+  // of them, double-counting the revenue and the debtor and quietly undoing the
+  // consolidation. It asks about the INVOICE now, and posts the invoice's total
+  // rather than one line's.
   const sales = await c.execute(`
-    SELECT s.id, s.sale_date, s.invoice_no, s.customer, s.amount, s.company_id, p.code, p.name
+    SELECT MIN(s.id) AS id, MIN(s.sale_date) AS sale_date, MIN(s.invoice_no) AS invoice_no,
+           MIN(s.customer) AS customer, SUM(s.amount) AS amount, MIN(s.company_id) AS company_id,
+           MIN(p.code) AS code, MIN(p.name) AS name
     FROM sales s
     LEFT JOIN products p ON p.id = s.product_id
-    WHERE NOT EXISTS (SELECT 1 FROM journal_entries je WHERE je.sale_id = s.id)
+    WHERE NOT EXISTS (
+      SELECT 1 FROM journal_entries je
+      JOIN sales s2 ON s2.id = je.sale_id
+      WHERE COALESCE(s2.invoice_group, 'L' || s2.id) = COALESCE(s.invoice_group, 'L' || s.id)
+    )
+    GROUP BY COALESCE(s.invoice_group, 'L' || s.id)
   `)
   for (const r of sales.rows) {
     await postSaleJournal({
