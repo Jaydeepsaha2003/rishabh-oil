@@ -100,6 +100,14 @@ const NBFC_FIELDS: FieldDef[] = [
   { key: 'interest_days', label: 'Interest days (default tenor)', type: 'number', default: 0 },
   { key: 'tds_pct', label: 'TDS % on interest', type: 'number', default: 0 },
   { key: 'days_year', label: 'Days in year (360 / 365)', type: 'number', default: 360 },
+  // Which end of the tenor earns interest. Stated as what is true when it is
+  // ON, so the switch reads as a sentence rather than as a setting name.
+  {
+    key: 'days_incl_start',
+    label: 'Interest counts the payment received date',
+    type: 'switch',
+    default: false
+  },
   // What this NBFC has sanctioned. The limit lives here because this is who
   // sanctions it; the combined ceiling across every NBFC is set on the page.
   { key: 'sanctioned_limit', label: 'Sanctioned limit (₹)', type: 'number', default: 0 },
@@ -114,6 +122,11 @@ const NBFC_COLUMNS: ColumnDef[] = [
   { key: 'interest_days', label: 'Int days', align: 'right' },
   { key: 'tds_pct', label: 'TDS %', align: 'right' },
   { key: 'days_year', label: 'Yr basis', align: 'right' },
+  {
+    key: 'days_incl_start',
+    label: 'Receipt day',
+    value: (r) => (r.days_incl_start ? 'counted' : 'from next day')
+  },
   { key: 'active', label: 'Active', type: 'switch' }
 ]
 
@@ -141,7 +154,10 @@ function bdCalc(f: Row): {
   const invoice = n(f.invoice_amount)
   const from = String(f.payment_received_date || '').slice(0, 10)
   const to = String(f.maturity_date || '').slice(0, 10)
-  const intDays = from && to ? Math.max(0, (daysTo(to) ?? 0) - (daysTo(from) ?? 0)) : 0
+  // Mirrors bdCalc: with days_incl_start the receipt date earns interest too,
+  // so 1 to 30 September is 30 days rather than 29.
+  const intDays =
+    from && to ? Math.max(0, (daysTo(to) ?? 0) - (daysTo(from) ?? 0) + (f.days_incl_start ? 1 : 0)) : 0
   // Mirrors bdCalc: the margin is struck on the INVOICE being discounted and
   // what is left is sanctioned. A bill with no invoice value on record falls
   // back to the amount, which is the old behaviour exactly.
@@ -434,6 +450,7 @@ export function BillDiscounting({
       interest_pct: '',
       tds_pct: '',
       days_year: 360,
+      days_incl_start: false,
       interest_upfront: false,
       receivable_party_id: '',
       linked_order_ids: []
@@ -478,6 +495,7 @@ export function BillDiscounting({
       interest_pct: r.interest_pct ?? '',
       tds_pct: r.tds_pct ?? '',
       days_year: r.days_year ?? 360,
+      days_incl_start: !!r.days_incl_start,
       interest_upfront: !!r.interest_upfront,
       receivable_party_id: r.receivable_party_id ? String(r.receivable_party_id) : '',
       linked_order_ids: String(r.linked_order_ids_csv || '').split(',').filter(Boolean).map(Number),
@@ -534,6 +552,13 @@ export function BillDiscounting({
       if (n(nb.days_year) > 0 && n(nb.days_year) !== n(p?.days_year)) {
         next.days_year = nb.days_year
         applied.push(`${n(nb.days_year)}-day year`)
+      }
+      // A switch has no "unset" the way a rate of 0 has, so this always
+      // applies — and it is copied ONTO the bill, never read live from the
+      // NBFC, so editing the NBFC later cannot move a bill already recorded.
+      if (!!nb.days_incl_start !== !!p?.days_incl_start) {
+        next.days_incl_start = !!nb.days_incl_start
+        applied.push(nb.days_incl_start ? 'receipt date counted' : 'interest from the day after receipt')
       }
       // The tenor is one of the NBFC's terms too, so it applies on a switch like
       // the rates do — not only into a blank field. This is what moves Int.
@@ -611,6 +636,7 @@ export function BillDiscounting({
         interest_pct: Number(form.interest_pct) || 0,
         tds_pct: Number(form.tds_pct) || 0,
         days_year: Number(form.days_year) || 360,
+        days_incl_start: !!form.days_incl_start,
         interest_upfront: !!form.interest_upfront,
         // Only sent on a trading bill; a manufacturing bill has no round trip.
         receivable_party_id:
@@ -2041,6 +2067,18 @@ export function BillDiscounting({
                   </div>
                   <div className="flex flex-col justify-end gap-1.5">
                     <label className="flex h-10 cursor-pointer items-center gap-2.5 rounded-md border px-3">
+                      <Switch
+                        checked={!!form.days_incl_start}
+                        onCheckedChange={(v) => setForm((p) => ({ ...p, days_incl_start: v }))}
+                      />
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate text-sm font-medium">Count the receipt date</span>
+                        <InfoTip text="Whether the payment received date itself earns interest. Off, interest runs from the day after the money lands to maturity — 1 to 30 September is 29 days. On, both ends count and the same dates are 30 days. It is one of the NBFC's terms, set under Manage NBFCs and copied onto the bill when the NBFC is picked, so changing an NBFC never moves a bill already recorded." />
+                      </span>
+                    </label>
+                  </div>
+                  <div className="flex flex-col justify-end gap-1.5">
+                    <label className="flex h-10 cursor-pointer items-center gap-2.5 rounded-md border px-3">
                       <Switch checked={!!form.interest_upfront} onCheckedChange={(v) => setForm((p) => ({ ...p, interest_upfront: v }))} />
                       <span className="flex items-center gap-1.5">
                         <span className="text-sm font-medium">Interest upfront</span>
@@ -2173,7 +2211,11 @@ export function BillDiscounting({
               {preview && n(form.amount) > 0 && !!form.payment_received_date && (
                 <div className="grid grid-cols-2 gap-px rounded-lg border border-[#e5dfc8] bg-[#e5dfc8] p-px sm:grid-cols-4 md:grid-cols-8">
                   {([
-                    { label: 'Int. days', value: String(preview.intDays), tone: 'text-[#1a2c56]' },
+                    {
+                      label: form.days_incl_start ? 'Int. days (incl.)' : 'Int. days',
+                      value: String(preview.intDays),
+                      tone: 'text-[#1a2c56]'
+                    },
                     { label: 'Margin', value: formatINR(preview.marginAmount), tone: 'text-[#1a2c56]' },
                     { label: 'Sanctioned', value: formatINR(preview.sanctionedAmount), tone: 'text-[#1a2c56]' },
                     { label: 'Drawn', value: formatINR(preview.openAmount), tone: 'text-[#1a2c56]' },

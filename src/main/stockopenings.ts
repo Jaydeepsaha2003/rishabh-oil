@@ -65,7 +65,8 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
   const asOf = await stockOpeningDate(cid)
   const [saved, levels, rates, dupes] = await Promise.all([
     c.execute({
-      sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty, rate, as_of, note
+      sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
+                   COALESCE(adj_qty, 0) AS adj_qty, rate, as_of, note
             FROM stock_openings WHERE company_id = ?`,
       args: [cid]
     }),
@@ -82,6 +83,8 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
     const s = savedBy.get(id)
     const entered = s ? n(s.qty) : null
     const pp = s ? n(s.pp_qty) : null
+    // Signed: a correction that takes stock OFF the count is the ordinary case.
+    const adj = s ? n(s.adj_qty) : null
     // Movements SINCE the opening date, and nothing else.
     //
     // `opening` from a ranged read is everything before the range — the saved
@@ -92,7 +95,7 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
     // first time, rather than one already half-answered by the saved figure.
     const fromMovement = r3(n(p.stock) - n(p.opening))
     // What the register will read once the opening is applied.
-    const closing = r3(fromMovement + n(entered) + n(pp))
+    const closing = r3(fromMovement + n(entered) + n(pp) + n(adj))
     return {
       id,
       code: p.code,
@@ -101,11 +104,14 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
       material_type: p.material_type,
       active: p.active,
       // What is saved against this product today (null = never entered).
-      // Counted in two parts, the way the plant counts it: what is in the tank
-      // and what is already in process. The register opens at the total.
+      // Counted in three parts, the way the plant counts it: what is in the
+      // tank, what is already in process, and the correction between the dip
+      // and the card. The register opens at the total of all three.
       qty: entered,
       pp_qty: pp,
-      total: entered == null && pp == null ? null : r3(n(entered) + n(pp)),
+      adj_qty: adj,
+      total:
+        entered == null && pp == null && adj == null ? null : r3(n(entered) + n(pp) + n(adj)),
       rate: s && s.rate != null ? n(s.rate) : null,
       note: s?.note ?? null,
       // Movement-only closing: what the register would say with no opening at
@@ -117,17 +123,21 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
     }
   })
 
-  // Valued on the whole opening — tank plus in-process.
-  const totalValue = rows.reduce((t, r) => t + (n(r.qty) + n(r.pp_qty)) * n(r.rate), 0)
+  // Valued on the whole opening — tank, in-process and the correction.
+  const totalValue = rows.reduce(
+    (t, r) => t + (n(r.qty) + n(r.pp_qty) + n(r.adj_qty)) * n(r.rate),
+    0
+  )
   return {
     company_id: cid,
     as_of: asOf,
     books_from: (await getBooksFrom(cid)) || null,
     rows,
-    entered_count: rows.filter((r) => r.qty != null || r.pp_qty != null).length,
+    entered_count: rows.filter((r) => r.qty != null || r.pp_qty != null || r.adj_qty != null).length,
     total_raw: r3(rows.reduce((t, r) => t + n(r.qty), 0)),
     total_pp: r3(rows.reduce((t, r) => t + n(r.pp_qty), 0)),
-    total_qty: r3(rows.reduce((t, r) => t + n(r.qty) + n(r.pp_qty), 0)),
+    total_adj: r3(rows.reduce((t, r) => t + n(r.adj_qty), 0)),
+    total_qty: r3(rows.reduce((t, r) => t + n(r.qty) + n(r.pp_qty) + n(r.adj_qty), 0)),
     negative_count: rows.filter((r) => n(r.movement_closing) < -0.0005).length,
     still_negative: rows.filter((r) => n(r.closing) < -0.0005).length,
     total_value: r2(totalValue),
@@ -191,11 +201,13 @@ export async function saveStockOpenings(
   for (const raw of Array.isArray(rows) ? rows : []) {
     const pid = n(raw?.product_id ?? raw?.id)
     if (!pid) continue
-    // Blank means BOTH parts blank. A tank counted at nothing with work in
-    // process is still a real answer, so one figure alone keeps the row.
+    // Blank means EVERY part blank. A tank counted at nothing with work in
+    // process, or an adjustment on its own, is still a real answer — so one
+    // figure alone keeps the row.
     const rawBlank = raw?.qty === '' || raw?.qty == null
     const ppBlank = raw?.pp_qty === '' || raw?.pp_qty == null
-    const blank = rawBlank && ppBlank
+    const adjBlank = raw?.adj_qty === '' || raw?.adj_qty == null
+    const blank = rawBlank && ppBlank && adjBlank
     if (blank) {
       const res = await c.execute({
         sql: 'DELETE FROM stock_openings WHERE company_id = ? AND product_id = ?',
@@ -206,18 +218,20 @@ export async function saveStockOpenings(
     }
     const qty = n(raw.qty)
     const pp = n(raw.pp_qty)
+    const adj = n(raw.adj_qty)
     const rate = raw?.rate === '' || raw?.rate == null ? null : n(raw.rate)
     await c.execute({
-      sql: `INSERT INTO stock_openings (company_id, product_id, as_of, qty, pp_qty, rate, note, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      sql: `INSERT INTO stock_openings (company_id, product_id, as_of, qty, pp_qty, adj_qty, rate, note, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(company_id, product_id) DO UPDATE SET
               as_of = excluded.as_of,
               qty = excluded.qty,
               pp_qty = excluded.pp_qty,
+              adj_qty = excluded.adj_qty,
               rate = excluded.rate,
               note = excluded.note,
               updated_at = datetime('now')`,
-      args: [cid, pid, date, qty, pp, rate, raw?.note ? String(raw.note).trim() : null]
+      args: [cid, pid, date, qty, pp, adj, rate, raw?.note ? String(raw.note).trim() : null]
     })
     saved++
   }
@@ -238,7 +252,8 @@ async function seedOpeningDayCount(companyId: number, date: string): Promise<voi
   const c = getClient()
   const rows = toPlain(
     await c.execute({
-      sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty, rate
+      sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
+                   COALESCE(adj_qty, 0) AS adj_qty, rate
             FROM stock_openings WHERE company_id = ? AND as_of = ?`,
       args: [companyId, date]
     })
@@ -253,7 +268,19 @@ async function seedOpeningDayCount(companyId: number, date: string): Promise<voi
                 pp_qty = excluded.pp_qty,
                 rate = COALESCE(excluded.rate, stock_counts.rate),
                 note = 'Opening stock'`,
-        args: [companyId, date, n(r.product_id), n(r.qty), n(r.pp_qty), r.rate == null ? null : n(r.rate)]
+        // The correction rides on the tank figure here rather than getting a
+        // column of its own: what this sheet has to say is what was PHYSICALLY
+        // there, and the corrected tank figure is that. Splitting it out again
+        // would only invite a second reconciliation of a number already
+        // reconciled.
+        args: [
+          companyId,
+          date,
+          n(r.product_id),
+          r3(n(r.qty) + n(r.adj_qty)),
+          n(r.pp_qty),
+          r.rate == null ? null : n(r.rate)
+        ]
       })
       // A database whose stock_counts lacks the unique key this relies on would
       // otherwise fail the whole save; the opening itself is already stored.

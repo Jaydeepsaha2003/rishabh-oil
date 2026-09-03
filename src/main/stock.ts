@@ -209,9 +209,10 @@ export async function stockLevels(
   // opening to bring forward yet.
   const openingBalance = async (): Promise<Map<number, number>> => {
     const args: (string | number)[] = [...cidList]
-    // Raw + PP (work in process): the register opens at the TOTAL that was
-    // counted, not at the tank figure alone.
-    let sql = `SELECT product_id AS pid, SUM(qty + COALESCE(pp_qty, 0)) AS q
+    // Raw + PP (work in process) + the count's own adjustment: the register
+    // opens at the TOTAL that was counted, not at the tank figure alone.
+    let sql = `SELECT product_id AS pid,
+                      SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q
                FROM stock_openings WHERE company_id IN (${ph})`
     if (to) {
       sql += ' AND as_of <= ?'

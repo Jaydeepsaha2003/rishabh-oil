@@ -827,11 +827,16 @@ function OpeningStock({
   onCompanyChange?: (id: string) => void
 }): React.JSX.Element {
   const [data, setData] = useState<Row | null>(null)
-  // An opening is counted in two parts, the way the plant counts it: what is
-  // in the tank (Raw) and what is already in process (PP / WIP). The register
-  // opens at the TOTAL, and the Day close screen uses the same two columns, so
-  // the opening and the first physical count are the same shape.
-  const [draft, setDraft] = useState<Record<number, { qty: string; pp: string; rate: string }>>({})
+  // An opening is counted in three parts, the way the plant counts it: what is
+  // in the tank (Raw), what is already in process (PP / WIP), and the
+  // correction between the dip and the stock card (Adj). The register opens at
+  // the TOTAL of all three, and the Day close screen shows that same total as
+  // the physical count for the opening date.
+  //
+  // Adj is signed. It exists so a disagreement can be stated without editing
+  // the figure that was actually measured — oil sitting in a line rather than
+  // a vessel, a drum counted twice, a dip that reads short of the card.
+  const [draft, setDraft] = useState<Record<number, { qty: string; pp: string; adj: string; rate: string; note: string }>>({})
   const [asOf, setAsOf] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -852,12 +857,14 @@ function OpeningStock({
       const d = await window.api.stockOpening.list()
       setData(d)
       setAsOf(String(d.as_of || d.books_from || ''))
-      const next: Record<number, { qty: string; pp: string; rate: string }> = {}
+      const next: Record<number, { qty: string; pp: string; adj: string; rate: string; note: string }> = {}
       for (const r of (d.rows as Row[]) || []) {
         next[Number(r.id)] = {
           qty: r.qty == null ? '' : String(r.qty),
           pp: r.pp_qty == null || Number(r.pp_qty) === 0 ? '' : String(r.pp_qty),
-          rate: r.rate == null ? '' : String(r.rate)
+          adj: r.adj_qty == null || Number(r.adj_qty) === 0 ? '' : String(r.adj_qty),
+          rate: r.rate == null ? '' : String(r.rate),
+          note: r.note == null ? '' : String(r.note)
         }
       }
       setDraft(next)
@@ -873,19 +880,21 @@ function OpeningStock({
   const rows: Row[] = useMemo(() => ((data?.rows as Row[]) || []), [data])
 
   // What the register will close at for a row, given what is typed right now.
-  // The opening a row contributes: Raw + PP together.
+  // The opening a row contributes: Raw + PP + Adj together.
   const openingOf = useCallback(
     (id: number): number => {
       const d = draft[id]
       if (!d) return 0
-      return (Number(d.qty) || 0) + (Number(d.pp) || 0)
+      return (Number(d.qty) || 0) + (Number(d.pp) || 0) + (Number(d.adj) || 0)
     },
     [draft]
   )
+  // Any one of the three is an answer. An adjustment on its own is a real
+  // statement about a product whose tank genuinely opened at nothing.
   const answeredOf = useCallback(
     (id: number): boolean => {
       const d = draft[id]
-      return !!d && (d.qty !== '' || d.pp !== '')
+      return !!d && (d.qty !== '' || d.pp !== '' || d.adj !== '')
     },
     [draft]
   )
@@ -895,10 +904,17 @@ function OpeningStock({
     [openingOf]
   )
 
-  const setField = (id: number, key: 'qty' | 'pp' | 'rate', value: string): void => {
+  const setField = (id: number, key: 'qty' | 'pp' | 'adj' | 'rate' | 'note', value: string): void => {
     setDraft((p) => ({
       ...p,
-      [id]: { qty: p[id]?.qty ?? '', pp: p[id]?.pp ?? '', rate: p[id]?.rate ?? '', [key]: value }
+      [id]: {
+        qty: p[id]?.qty ?? '',
+        pp: p[id]?.pp ?? '',
+        adj: p[id]?.adj ?? '',
+        rate: p[id]?.rate ?? '',
+        note: p[id]?.note ?? '',
+        [key]: value
+      }
     }))
   }
 
@@ -918,6 +934,7 @@ function OpeningStock({
     let stillShort = 0
     let raw = 0
     let pp = 0
+    let adj = 0
     for (const r of rows) {
       const id = Number(r.id)
       const d = draft[id]
@@ -926,19 +943,24 @@ function OpeningStock({
         value += openingOf(id) * (Number(d?.rate) || 0)
         raw += Number(d?.qty) || 0
         pp += Number(d?.pp) || 0
+        adj += Number(d?.adj) || 0
       }
       if (projected(r) < -0.0005) stillShort++
     }
-    return { entered, value, stillShort, raw, pp, total: raw + pp }
+    return { entered, value, stillShort, raw, pp, adj, total: raw + pp + adj }
   }, [rows, draft, projected, answeredOf, openingOf])
 
   const dirty = useMemo(() => {
     for (const r of rows) {
-      const d = draft[Number(r.id)] || { qty: '', pp: '', rate: '' }
+      const d = draft[Number(r.id)] || { qty: '', pp: '', adj: '', rate: '', note: '' }
       const wasQty = r.qty == null ? '' : String(r.qty)
       const wasPp = r.pp_qty == null || Number(r.pp_qty) === 0 ? '' : String(r.pp_qty)
+      const wasAdj = r.adj_qty == null || Number(r.adj_qty) === 0 ? '' : String(r.adj_qty)
       const wasRate = r.rate == null ? '' : String(r.rate)
-      if (d.qty !== wasQty || d.pp !== wasPp || d.rate !== wasRate) return true
+      const wasNote = r.note == null ? '' : String(r.note)
+      if (d.qty !== wasQty || d.pp !== wasPp || d.adj !== wasAdj || d.rate !== wasRate || d.note !== wasNote) {
+        return true
+      }
     }
     return false
   }, [rows, draft])
@@ -951,7 +973,9 @@ function OpeningStock({
         product_id: Number(r.id),
         qty: draft[Number(r.id)]?.qty ?? '',
         pp_qty: draft[Number(r.id)]?.pp ?? '',
-        rate: draft[Number(r.id)]?.rate ?? ''
+        adj_qty: draft[Number(r.id)]?.adj ?? '',
+        rate: draft[Number(r.id)]?.rate ?? '',
+        note: draft[Number(r.id)]?.note ?? ''
       }))
       const res = await window.api.stockOpening.save(payload, asOf)
       toast.success(
@@ -1145,7 +1169,11 @@ function OpeningStock({
               label: 'Opening total',
               tip: 'The tank figure plus the work already in process. The register opens at this total, and the Day close screen shows the same total as the physical count for this date.',
               value: <span className="text-[#1a2c56]">{formatNum(stats.total)}</span>,
-              note: `${formatNum(stats.raw)} raw + ${formatNum(stats.pp)} in process`
+              note:
+                `${formatNum(stats.raw)} raw + ${formatNum(stats.pp)} in process` +
+                (Math.abs(stats.adj) > 0.0005
+                  ? ` ${stats.adj < 0 ? '−' : '+'} ${formatNum(Math.abs(stats.adj))} adjusted`
+                  : '')
             },
             {
               label: 'Answered',
@@ -1318,12 +1346,17 @@ function OpeningStock({
                 </span>
               </span>
             </div>
+            {/* w-full alone let the browser squeeze nine columns into
+                whatever width it had, so on a laptop the figures crushed
+                together instead of scrolling. A minimum width makes the card
+                slide sideways instead — it still fills a wide screen, and the
+                Note column takes any slack there is. */}
             <div className="overflow-x-auto">
-              <table className="ruled-cols w-full bg-[#fffdf4] text-[13px]">
+              <table className="ruled-cols w-full min-w-[1200px] bg-[#fffdf4] text-[13px]">
                 <thead>
                   <tr className="border-b border-[#e0d8bd] bg-[#faf6e8] text-left text-[10px] uppercase tracking-widest text-muted-foreground">
-                    <th className="px-3 py-2">Product</th>
-                    <th className="w-[140px] px-3 py-2 text-right">
+                    <th className="pin-col min-w-[190px] px-3 py-2">Product</th>
+                    <th className="w-[110px] px-3 py-2 text-right">
                       <span className="inline-flex items-center gap-1">
                         Moved since
                         <InfoTip text="Everything that has happened to this product SINCE the opening date — received, produced, consumed, sold, packed. Movements before that date are deliberately left out: that morning is the fresh start. They are still in the Book Stock register if you widen the period by hand. Negative here is exactly the hole the opening has to fill." />
@@ -1335,28 +1368,40 @@ function OpeningStock({
                         <InfoTip text="What was physically in the tanks that morning. Leave it blank if it has not been counted yet; enter 0 to state that it genuinely opened at nothing. The two are different, and only the second shows on the register." />
                       </span>
                     </th>
-                    <th className="w-[120px] px-3 py-2 text-right">
+                    <th className="w-[110px] px-3 py-2 text-right">
                       <span className="inline-flex items-center gap-1">
                         PP (WIP)
-                        <InfoTip text="Work already in process that morning — in the refinery, in a tanker on site, packed but not yet counted as finished. Counted separately from the tank, and the register opens at Raw + PP." />
+                        <InfoTip text="Work already in process that morning — in the refinery, in a tanker on site, packed but not yet counted as finished. Counted separately from the tank, and the register opens at Raw + PP + Adj." />
                       </span>
                     </th>
-                    <th className="w-[120px] bg-[#f4efdd] px-3 py-2 text-right">
+                    <th className="w-[110px] px-3 py-2 text-right">
+                      <span className="inline-flex items-center gap-1">
+                        Adj. MT
+                        <InfoTip text="The correction between what was counted and what the stock card says — signed, so −2 takes two off the opening and +2 adds two. It is here so a disagreement can be stated without editing the figure that was actually measured: oil in a line rather than a vessel, a drum counted twice, a dip reading short of the card. It counts into the Total exactly like Raw and PP do." />
+                      </span>
+                    </th>
+                    <th className="w-[100px] bg-[#f4efdd] px-3 py-2 text-right">
                       <span className="inline-flex items-center gap-1">
                         Total
-                        <InfoTip text="Raw + PP. This is the figure the register actually opens at, and the same figure the Day close screen shows as the physical count for the opening date." />
+                        <InfoTip text="Raw + PP + Adj. This is the figure the register actually opens at, and the same figure the Day close screen shows as the physical count for the opening date." />
                       </span>
                     </th>
-                    <th className="w-[150px] px-3 py-2 text-right">
+                    <th className="w-[140px] px-3 py-2 text-right">
                       <span className="inline-flex items-center gap-1">
                         Rate
                         <InfoTip text="Cost per unit, needed only if the opening is to carry a value as well as a quantity. The chip beside the box offers the weighted-average cost the register already uses for this product." />
                       </span>
                     </th>
-                    <th className="w-[160px] px-3 py-2 text-right">
+                    <th className="w-[130px] px-3 py-2 text-right">
                       <span className="inline-flex items-center gap-1">
                         Closes at
                         <InfoTip text="Total + everything moved since the opening date — what the register will read once this is saved. This is the figure that decides whether the entry is right: drive it to nil or above." />
+                      </span>
+                    </th>
+                    <th className="min-w-[160px] px-3 py-2 text-left">
+                      <span className="inline-flex items-center gap-1">
+                        Note
+                        <InfoTip text="Why this row reads the way it does — which tank was dipped, who counted it, what the adjustment is for. It is saved with the opening and is the only place that reasoning survives; a figure with no explanation is one nobody can check a year later. A note needs a figure to hang on: a row with a note but no Raw, PP or Adj is not an opening, so it is not kept." />
                       </span>
                     </th>
                   </tr>
@@ -1364,7 +1409,7 @@ function OpeningStock({
                 <tbody>
                   {catRows.map((r) => {
                     const id = Number(r.id)
-                    const d = draft[id] || { qty: '', pp: '', rate: '' }
+                    const d = draft[id] || { qty: '', pp: '', adj: '', rate: '', note: '' }
                     const proj = projected(r)
                     const short = Number(r.shortfall)
                     const answered = answeredOf(id)
@@ -1374,10 +1419,12 @@ function OpeningStock({
                         key={id}
                         className={cn(
                           'border-t border-[#f0ead2] transition-colors hover:bg-[#fbf6e4]',
-                          answered && 'bg-emerald-50/40'
+                          // row-answered is read by .pin-col in main.css, which
+                          // has to repaint the tint opaquely — see the note there.
+                          answered && 'row-answered bg-emerald-50/40'
                         )}
                       >
-                        <td className="px-3 py-1.5">
+                        <td className="pin-col px-3 py-1.5">
                           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                             {/* A tick beside what is done, so a long sheet shows
                                 its own progress as it is worked down. */}
@@ -1439,6 +1486,30 @@ function OpeningStock({
                             />
                           </div>
                         </td>
+                        <td className="px-3 py-1.5">
+                          <div className="flex items-center justify-end">
+                            {/* The only quantity box on this sheet that takes a
+                                minus sign — a correction that takes stock OFF
+                                the count is the ordinary case, so the filter
+                                has to let one through. */}
+                            <input
+                              inputMode="decimal"
+                              placeholder="0"
+                              className={cn(
+                                'doc-ref h-8 w-[84px] rounded-md border bg-white px-2 text-right text-[13px] tabular-nums outline-none placeholder:text-muted-foreground/50 focus:border-[#1a2c56] focus:ring-1 focus:ring-[#1a2c56]/20',
+                                (Number(d.adj) || 0) < 0 && 'text-rose-700'
+                              )}
+                              value={d.adj}
+                              onChange={(e) =>
+                                setField(
+                                  id,
+                                  'adj',
+                                  e.target.value.replace(/[^0-9.-]/g, '').replace(/(?!^)-/g, '')
+                                )
+                              }
+                            />
+                          </div>
+                        </td>
                         <td
                           className={cn(
                             'whitespace-nowrap bg-[#faf6e8] px-3 py-1.5 text-right font-semibold tabular-nums',
@@ -1481,6 +1552,16 @@ function OpeningStock({
                           ) : answered ? (
                             <div className="text-[10.5px] font-normal text-emerald-600">accounted for</div>
                           ) : null}
+                        </td>
+                        <td className="px-3 py-1.5">
+                          <input
+                            className="h-8 w-full min-w-[140px] rounded-md border bg-white px-2 text-[12.5px] outline-none placeholder:text-muted-foreground/50 focus:border-[#1a2c56] focus:ring-1 focus:ring-[#1a2c56]/20"
+                            placeholder={
+                              (Number(d.adj) || 0) !== 0 ? 'why the adjustment?' : 'tank, counter, anything worth recording'
+                            }
+                            value={d.note}
+                            onChange={(e) => setField(id, 'note', e.target.value)}
+                          />
                         </td>
                       </tr>
                     )

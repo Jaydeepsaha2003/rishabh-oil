@@ -105,6 +105,46 @@
   border-left-color: rgba(26, 44, 86, 0.15);
 }
 
+/* A wide count sheet on a narrow screen.
+   ---------------------------------------------------------------------------
+   The opening-stock sheet is nine columns and will not fit a laptop, so it
+   slides sideways inside its own card. The product name is the one column that
+   must never slide away with it: scrolled right to type a note, the reader
+   otherwise cannot tell which row they are in.
+
+   Opaque out of necessity — a translucent row tint would let the columns
+   sliding beneath it show through, which reads as a rendering fault. So every
+   state the row can be in is painted here explicitly rather than inherited.
+   The ::after is the column's own right-hand rule, which travels with it. */
+.pin-col {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: #fffdf4;
+}
+thead .pin-col {
+  z-index: 3;
+  background: #faf6e8;
+}
+tr:hover .pin-col {
+  background: #fbf6e4;
+}
+tr.row-answered .pin-col {
+  background: #edf6ee;
+}
+tr.row-answered:hover .pin-col {
+  background: #e6f3e9;
+}
+.pin-col::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(26, 44, 86, 0.12);
+}
+
 /* The same idea for the stock registers, which are slate and white rather than
    the cream of the accounting ledgers — a parchment rule on a slate table reads
    as a mistake. Deliberately faint: on a nine-column register the job of a rule

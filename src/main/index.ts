@@ -132,6 +132,21 @@ app.whenReady().then(async () => {
       })
   }).catch((e) => console.error('[stock] opening pp column failed:', e))
 
+  // A third part to an opening count: the correction.
+  //
+  // A tank dip and a stock card disagree, oil is in a line rather than a
+  // vessel, a drum was counted twice. Rather than editing the counted figure —
+  // which loses what was actually measured — the difference is stated on its
+  // own, signed, and the register opens at all three added up. Nil by default,
+  // so every opening already entered keeps the total it was saved with.
+  await runOnce('stock_openings_adj_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE stock_openings ADD COLUMN adj_qty REAL NOT NULL DEFAULT 0')
+      .catch((e) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+  }).catch((e) => console.error('[stock] opening adjustment column failed:', e))
+
   // How a recipe is CLASSIFIED, as distinct from what it makes.
   //
   // Two recipes can both output DALDA and be entirely different jobs: one built
@@ -243,6 +258,24 @@ app.whenReady().then(async () => {
     if (cols.has('interest_adj')) return
     await c.execute('ALTER TABLE letters_of_credit ADD COLUMN interest_adj REAL NOT NULL DEFAULT 0')
   }).catch((e) => console.error('[lc] interest-adjustment column failed:', e))
+
+  // Whether a discounted bill's interest counts the payment received date
+  // itself. Both ends of that question are real conventions and NBFCs differ,
+  // so it is one of their negotiated terms — kept on the NBFC as the default
+  // AND on each bill, the way days_year already is, so changing an NBFC's
+  // terms never moves the interest on a bill already recorded.
+  //
+  // Nil by default, which is the behaviour every existing bill was posted
+  // with: interest from the day after the receipt to maturity.
+  await runOnce('bd_days_incl_start_v1', async () => {
+    const c = getClient()
+    for (const table of ['nbfcs', 'bill_discountings']) {
+      const info = await c.execute({ sql: `PRAGMA table_info('${table}')`, args: [] })
+      const cols = new Set(info.rows.map((r) => String((r as unknown as Record<string, unknown>).name)))
+      if (cols.has('days_incl_start')) continue
+      await c.execute(`ALTER TABLE ${table} ADD COLUMN days_incl_start INTEGER NOT NULL DEFAULT 0`)
+    }
+  }).catch((e) => console.error('[bd] receipt-date basis column failed:', e))
 
   // Index work for installs that are already past the migration-count mark, so
   // it cannot be added to that list and be run. Keyed by name, so it happens

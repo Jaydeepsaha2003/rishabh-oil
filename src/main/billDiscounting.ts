@@ -55,7 +55,15 @@ export function bdCalc(bd: Row): {
   const invoice = n(bd.invoice_amount)
   const from = String(bd.payment_received_date || '').slice(0, 10)
   const to = String(bd.maturity_date || '').slice(0, 10)
-  const intDays = from && to ? Math.max(0, daysBetween(from, to)) : 0
+  // Does the receipt date itself earn interest?
+  //
+  // Both answers are real conventions and NBFCs differ, so it is a term like
+  // the rate is. Off — the default, and what every bill already on the books
+  // was posted with — interest runs from the day AFTER the money lands to
+  // maturity: 1 to 30 September is 29 days. On, both ends count and the same
+  // two dates are 30 days.
+  const inclStart = bd.days_incl_start ? 1 : 0
+  const intDays = from && to ? Math.max(0, daysBetween(from, to) + inclStart) : 0
 
   // The margin is the NBFC's hold-back on the INVOICE it is discounting, so it
   // is struck on the invoice value and what is left is the sanctioned amount:
@@ -306,6 +314,7 @@ const BD_COLS = [
   'maturity_date',
   'margin_pct',
   'days_year',
+  'days_incl_start',
   'interest_pct',
   'tds_pct',
   'interest_upfront',
@@ -314,7 +323,7 @@ const BD_COLS = [
 
 function bdArgs(v: Row): (string | number | null)[] {
   return BD_COLS.map((k) => {
-    if (k === 'interest_upfront') return v[k] ? 1 : 0
+    if (k === 'interest_upfront' || k === 'days_incl_start') return v[k] ? 1 : 0
     if (k === 'days_year') return n(v[k]) || 360
     if (['amount', 'margin_pct', 'interest_pct', 'tds_pct'].includes(k)) return n(v[k])
     // Optional, and left empty by anyone who does not track it — so blank has
