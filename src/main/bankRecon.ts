@@ -242,7 +242,8 @@ export async function suggestBankLineMatch(lineId: number): Promise<Row | null> 
   //    open amount), and repayments (incl. maturity charges) for an amount
   //    match near the line's date.
   const lcRes = await c.execute(
-    `SELECT id, lc_no, charges, opened_date, open_date, amount, interest_pct, usance_days, interest_upfront, interest_excl_charges
+    `SELECT id, lc_no, charges, opened_date, open_date, amount, interest_pct, usance_days,
+            interest_upfront, interest_excl_charges, interest_adj
      FROM letters_of_credit WHERE lc_no IS NOT NULL AND lc_no != ''`
   )
   for (const lc of toPlain(lcRes)) {

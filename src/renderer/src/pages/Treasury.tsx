@@ -161,7 +161,11 @@ function PayableBreakdown({ l, children }: { l: Row; children: React.ReactNode }
   const upfront = !!l.interest_upfront
   const rate = n(l.interest_pct)
   const days = n(l.usance_days)
-  const interest = upfront ? 0 : Math.round(((amount * rate * days) / (100 * 365)) * 100) / 100
+  // The base the LEDGER used, not the open amount: this popover exists to
+  // explain a voucher, and recomputing from the open amount made it contradict
+  // the very figure it was explaining on any LC with an adjusted base.
+  const base = lcInterestBaseOf(l)
+  const interest = upfront ? 0 : lcInterestOf(l)
   const charges = upfront ? 0 : Math.round(n(l.charges) * 100) / 100
   // What the bank actually released, when it has released anything. The
   // expectation below it is only that — an expectation — and where the two
@@ -222,8 +226,16 @@ function PayableBreakdown({ l, children }: { l: Row; children: React.ReactNode }
               {/* The sum itself, so the rate and the day count can be checked
                   against the bank's own working rather than guessed at. */}
               <div className="doc-ref pl-2 text-[10.5px] text-muted-foreground/70">
-                {formatINR(amount)} × {rate}% × {days} ÷ 365
+                {formatINR(base)} × {rate}% × {days} ÷ 365
               </div>
+              {/* Where the base is not the open amount, say what it is — two
+                  LCs at the same rate on the same amount otherwise carry
+                  different interest for no reason the reader can see. */}
+              {Math.abs(base - amount) > 0.005 && (
+                <div className="pl-2 text-[10.5px] leading-snug text-muted-foreground/70">
+                  on {String(l.interest_basis || 'an adjusted base')} — {lcInterestBaseWorking(l)}
+                </div>
+              )}
               <div className="flex items-baseline justify-between gap-3">
                 <span className="text-muted-foreground">less Bank charges</span>
                 <span className="tabular-nums text-rose-700">− {formatINR(charges)}</span>
@@ -315,9 +327,46 @@ function DateLine({
 // with the commission taken off first. Mirrors lcInterest() in the main process
 // exactly; the form previewing one figure while the ledger posts another is the
 // whole reason this is a function and not three copies of the arithmetic.
+// The figure interest is actually struck on: the open amount, less the
+// commission where the bank funds the credit net of it, then plus or minus
+// whatever adjustment the bank's own advice shows. An open amount of 100 with
+// an adjustment of -2 accrues on 98.
+//
+// The adjustment moves THIS. The margin, the facility limit and the exposure
+// outstanding all stay on the open amount; the interest and its vouchers
+// follow, and so does an auto-raised bill, which is sized at what the bank
+// actually released.
+function lcInterestBaseOf(v: Row): number {
+  const gross = v?.interest_excl_charges ? round2(n(v.amount) - n(v.charges)) : n(v.amount)
+  return Math.max(0, round2(gross + n(v.interest_adj)))
+}
+
 function lcInterestOf(v: Row): number {
-  const base = v?.interest_excl_charges ? Math.max(0, n(v.amount) - n(v.charges)) : n(v.amount)
-  return round2((base * n(v.interest_pct) * n(v.usance_days)) / (100 * 365))
+  return round2((lcInterestBaseOf(v) * n(v.interest_pct) * n(v.usance_days)) / (100 * 365))
+}
+
+// Interest over a stated number of days rather than the whole usance — what
+// pre-closure needs, for the days elapsed and for the days that will not
+// happen.
+function lcInterestOfDays(v: Row, days: number): number {
+  return round2((lcInterestBaseOf(v) * n(v.interest_pct) * n(days)) / (100 * 365))
+}
+
+// The chain that produced the base, for a read-out: "1,00,000 - 3,360 - 2 =
+// 96,638". Only the parts that are actually in play appear.
+function lcInterestBaseWorking(v: Row): string {
+  const amount = n(v.amount)
+  const chg = round2(n(v.charges))
+  const adj = round2(n(v.interest_adj))
+  const parts = [fmtPlain(amount)]
+  if (v?.interest_excl_charges && Math.abs(chg) > 0.005) parts.push(`- ${fmtPlain(chg)}`)
+  if (Math.abs(adj) > 0.005) parts.push(`${adj < 0 ? '-' : '+'} ${fmtPlain(Math.abs(adj))}`)
+  if (parts.length === 1) return ''
+  return `${parts.join(' ')} = ${fmtPlain(lcInterestBaseOf(v))}`
+}
+
+function fmtPlain(v: number): string {
+  return v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 // The LC already wearing this number, if there is one. Matched the way the
@@ -595,7 +644,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
             interest_pct: l.interest_pct || '',
             charges: l.charges || '',
             interest_upfront: !!l.interest_upfront,
-            interest_excl_charges: !!l.interest_excl_charges
+            interest_excl_charges: !!l.interest_excl_charges,
+            interest_adj: l.interest_adj == null || n(l.interest_adj) === 0 ? '' : String(l.interest_adj)
           }
     )
     setStageError(null)
@@ -717,7 +767,10 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     const pendingDays = expiryDate
       ? Math.max(0, Math.round((new Date(`${expiryDate}T00:00:00`).getTime() - new Date(`${precloseDate}T00:00:00`).getTime()) / 86400000))
       : 0
-    const prematureInterest = round2((openAmount * n(l.interest_pct) * pendingDays) / (100 * 365))
+    // On the same base the interest was charged on — an LC whose interest was
+    // struck on an adjusted figure must be rebated on that figure too, or the
+    // reversal does not undo what was posted.
+    const prematureInterest = lcInterestOfDays(l, pendingDays)
     setPrecloseForm({
       preclose_date: precloseDate,
       premature_interest: String(prematureInterest),
@@ -764,7 +817,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     const days = interestStart
       ? Math.max(0, Math.round((new Date(`${precloseDate}T00:00:00`).getTime() - new Date(`${interestStart}T00:00:00`).getTime()) / 86400000))
       : 0
-    const interest = round2((openAmount * n(precloseRow.interest_pct) * days) / (100 * 365))
+    const interest = lcInterestOfDays(precloseRow, days)
     const charges = round2(n(precloseRow.charges))
     // Pending days: what's left of the ORIGINAL term (preclose date ->
     // maturity) that will never actually happen — an extra cost on top of
@@ -774,7 +827,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     const pendingDays = expiryDate
       ? Math.max(0, Math.round((new Date(`${expiryDate}T00:00:00`).getTime() - new Date(`${precloseDate}T00:00:00`).getTime()) / 86400000))
       : 0
-    const prematureInterest = round2((openAmount * n(precloseRow.interest_pct) * pendingDays) / (100 * 365))
+    const prematureInterest = lcInterestOfDays(precloseRow, pendingDays)
     const margin = round2((openAmount * n(precloseRow.margin_pct)) / 100)
     return { openAmount, days, interest, charges, pendingDays, prematureInterest, margin }
   }, [precloseRow, precloseForm.preclose_date])
@@ -831,7 +884,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     const days = from != null && to != null ? to - from : null
     const interestPct = n(stageForm.interest_pct)
     const charges = n(stageForm.charges)
-    const base = stageForm.interest_excl_charges ? Math.max(0, round2(amount - charges)) : amount
+    // One rule, shared with the LC form and the main process.
+    const base = lcInterestBaseOf({ ...stageForm, amount })
     const interest = days != null ? round2((base * interestPct * days) / (100 * 365)) : 0
     const upfront = !!stageForm.interest_upfront
     const netAvailable = upfront ? amount : round2(amount - interest - charges)
@@ -839,8 +893,18 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     // amount — a straight percentage of the credit limit itself, not of
     // whichever invoices happen to be linked to it.
     const margin = round2((amount * n(stageForm.margin_pct)) / 100)
-    return { amount, days, interest, charges, margin, netAvailable, upfront }
-  }, [stageRow, stageForm.payment_received_date, stageForm.expiry_date, stageForm.margin_pct, stageForm.interest_pct, stageForm.charges, stageForm.interest_upfront, stageForm.interest_excl_charges])
+    return {
+      amount,
+      days,
+      interest,
+      charges,
+      margin,
+      netAvailable,
+      upfront,
+      base,
+      working: lcInterestBaseWorking({ ...stageForm, amount })
+    }
+  }, [stageRow, stageForm.payment_received_date, stageForm.expiry_date, stageForm.margin_pct, stageForm.interest_pct, stageForm.charges, stageForm.interest_upfront, stageForm.interest_excl_charges, stageForm.interest_adj])
 
   // Mirrors the backend rule (assertHasLinkedInvoice in lc.ts): an LC past
   // Application must name the invoice(s) it covers — UNLESS the supplier has
@@ -2844,6 +2908,21 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <Input type="number" value={stageForm.charges ?? ''} onChange={(e) => setStageForm((p) => ({ ...p, charges: e.target.value }))} />
                           </div>
                         </div>
+                        {/* The bank's advice does not always charge interest on
+                            the amount the credit was opened at. Signed, and it
+                            moves the interest base only. */}
+                        <div className="mt-3 flex flex-col gap-1.5">
+                          <Label className="flex items-center gap-1.5">
+                            Adj. amount (₹)
+                            <InfoTip text="Where the bank charges interest on something other than the open amount, put the difference here — signed, so −2 on an open amount of 100 charges interest on 98. It moves the interest base ONLY: the open amount, the margin and the facility limit are untouched. What does follow is the interest and the vouchers carrying it — less interest means the bank released more, so an auto-raised bill is resized to match. A bill you entered yourself, or one linked to an invoice, is left exactly as recorded." />
+                          </Label>
+                          <Input
+                            type="number"
+                            placeholder="0.00"
+                            value={stageForm.interest_adj ?? ''}
+                            onChange={(e) => setStageForm((p) => ({ ...p, interest_adj: e.target.value }))}
+                          />
+                        </div>
                         <div className="mt-3 flex items-center gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
                           <Switch checked={!!stageForm.interest_upfront} onCheckedChange={(v) => setStageForm((p) => ({ ...p, interest_upfront: v }))} />
                           <div className="text-[12px] font-semibold">Interest &amp; charges paid upfront</div>
@@ -2876,6 +2955,13 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           <div>
                             <div className="text-[10px] uppercase tracking-wide text-sky-700">Open amount</div>
                             <div className="text-[16px] font-semibold tabular-nums text-sky-950">{formatINR(stagePreview.amount)}</div>
+                            {/* Only when interest is struck on something else,
+                                so the reader can tell the two apart. */}
+                            {!!stagePreview.working && (
+                              <div className="text-[10px] leading-snug text-sky-700/80">
+                                interest on {formatINR(stagePreview.base)}
+                              </div>
+                            )}
                           </div>
                           <div>
                             <div className="text-[10px] uppercase tracking-wide text-sky-700">{stagePreview.upfront ? 'Interest (upfront)' : '− Interest'}</div>
@@ -3296,7 +3382,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         .reduce((s, o) => s + n(o.net_amount), 0)
                     )
                     return (
-                      <div className="flex flex-col gap-1.5 sm:col-span-2">
+                      <div className="flex flex-col gap-1.5">
                         <Label className="flex items-center gap-1.5">
                           Open amount (₹) <span className="text-red-600">*</span>
                           {hasInvoices && (
@@ -3350,6 +3436,56 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       </div>
                     )
                   })()}
+                  {/* The adjustment the bank's own advice implies.
+                      -------------------------------------------------------
+                      An LC opened at 100 is not always charged interest on
+                      100: the bank part-cancels, rounds, or corrects on its
+                      statement. Rather than editing the open amount — which
+                      would move the margin, the facility limit and the
+                      exposure with it — the difference is stated here and
+                      applies to the interest base alone.
+
+                      Saving re-posts the vouchers the interest sits on: the
+                      settlement journal, the upfront-interest journal and the
+                      party's fee adjustment (see syncLcVouchers in lc.ts). */}
+                  {/* Beside the open amount, because it is read against it —
+                      and the five lines that used to explain it sit behind the
+                      (i). The rule is worth reading once; after that it is
+                      five lines between the reader and the field. What stays
+                      on screen is the arithmetic, which changes as they type
+                      and is the part actually worth checking. */}
+                  <div className="flex flex-col gap-1.5">
+                    <Label className="flex items-center gap-1.5">
+                      Adj. amount (₹)
+                      <InfoTip text="Where the bank charges interest on something other than the open amount, put the difference here — signed, so −2 on an open amount of 100 charges interest on 98. It moves the interest base ONLY: the open amount, the margin and the facility limit are untouched. What does follow is the interest and the vouchers carrying it — less interest means the bank released more, so an auto-raised bill is resized to match. A bill you entered yourself, or one linked to an invoice, is left exactly as recorded." />
+                    </Label>
+                    <Input
+                      type="number"
+                      placeholder="0.00"
+                      value={lcForm.interest_adj ?? ''}
+                      onChange={(e) => setLcForm((p) => ({ ...p, interest_adj: e.target.value }))}
+                    />
+                  </div>
+                  {/* Full width, under BOTH the fields it is derived from — it
+                      is read against the open amount as much as against the
+                      adjustment. Boxed into one column, the working wrapped
+                      onto three lines to say what fits comfortably on one, and
+                      the label sat above a figure it belongs beside. */}
+                  {n(lcForm.amount) > 0 && (
+                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 sm:col-span-2">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-sky-700">
+                        Interest charged on
+                      </span>
+                      <span className="text-[15px] font-bold tabular-nums text-sky-950">
+                        {formatINR(lcInterestBaseOf(lcForm))}
+                      </span>
+                      {!!lcInterestBaseWorking(lcForm) && (
+                        <span className="doc-ref ml-auto text-[11px] tabular-nums text-sky-700/80">
+                          {lcInterestBaseWorking(lcForm)}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {(() => {
                     const stage = String(lcForm.stage || 'application')
                     // daysTo(x) = x − today, so this difference cancels "today"
@@ -3459,7 +3595,6 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   <div className="mt-1.5 pl-11 text-[11px] leading-snug text-muted-foreground">
                     {(() => {
                       const amt = n(lcForm.amount)
-                      const chg = round2(n(lcForm.charges))
                       const excl = !!lcForm.interest_excl_charges
                       if (!(amt > 0)) {
                         return excl
@@ -3469,13 +3604,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       const full = lcInterestOf({ ...lcForm, interest_excl_charges: false })
                       const less = lcInterestOf({ ...lcForm, interest_excl_charges: true })
                       const saved = round2(full - less)
+                      const working = lcInterestBaseWorking(lcForm)
                       return (
                         <>
                           Interest is worked out on{' '}
                           <b className="text-foreground">
-                            {excl
-                              ? `${formatINR(amt)} − ${formatINR(chg)} = ${formatINR(Math.max(0, amt - chg))}`
-                              : formatINR(amt)}
+                            {working || formatINR(amt)}
                           </b>
                           {saved > 0.005 && (
                             <>
@@ -3654,7 +3788,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           has to open the LC to know why two LCs at the same
                           rate carry different interest. */}
                       <div className="text-[10.5px] text-muted-foreground">
-                        on {dRow.interest_excl_charges ? 'amount − charges' : 'open amount'}
+                        on {String(dRow.interest_basis || (dRow.interest_excl_charges ? 'amount − charges' : 'open amount'))}
                       </div>
                     </div>
                     <div><div className="text-muted-foreground">Charges</div><div className="font-medium tabular-nums">{formatINR(dRow.charges)}</div></div>

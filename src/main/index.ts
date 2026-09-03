@@ -232,6 +232,18 @@ app.whenReady().then(async () => {
     )
   }).catch((e) => console.error('[lc] interest-base column failed:', e))
 
+  // The bank's interest is not always struck on the amount the credit was
+  // opened at. This column carries that difference — signed, nil by default,
+  // so nothing already posted moves until somebody enters one. See
+  // lcInterestBase in lcInterest.ts.
+  await runOnce('lc_interest_adj_v1', async () => {
+    const c = getClient()
+    const info = await c.execute({ sql: "PRAGMA table_info('letters_of_credit')", args: [] })
+    const cols = new Set(info.rows.map((r) => String((r as unknown as Record<string, unknown>).name)))
+    if (cols.has('interest_adj')) return
+    await c.execute('ALTER TABLE letters_of_credit ADD COLUMN interest_adj REAL NOT NULL DEFAULT 0')
+  }).catch((e) => console.error('[lc] interest-adjustment column failed:', e))
+
   // Index work for installs that are already past the migration-count mark, so
   // it cannot be added to that list and be run. Keyed by name, so it happens
   // exactly once per database and costs nothing on every launch after.

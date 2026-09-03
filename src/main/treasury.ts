@@ -2,7 +2,7 @@ import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
 import { getActiveCompanyId } from './company'
 import { postJournal, repostJournal } from './journal'
-import { lcInterest, lcInterestBasis } from './lcInterest'
+import { lcInterest, lcInterestBasis, lcInterestBaseIsCustom } from './lcInterest'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -267,7 +267,7 @@ export async function postLcUpfrontInterest(lcId: number, dateIn?: string): Prom
     vchNo: String(lc.lc_no || ''),
     narration:
       `LC ${lc.lc_no} — interest ${interest.toFixed(2)} and charges ${charges.toFixed(2)} paid upfront from the bank, per its statement` +
-      (lc.interest_excl_charges ? ` (interest on ${lcInterestBasis(lc)})` : ''),
+      (lcInterestBaseIsCustom(lc) ? ` (interest on ${lcInterestBasis(lc)})` : ''),
     companyId: n(lc.company_id) || undefined,
     lines: [
       { account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest },
@@ -937,7 +937,8 @@ export async function settleLcBillsCombined(
   const res = await c.execute({
     sql: `SELECT i.*, l.lc_no, l.bank, l.our_bank_id, l.party_type, l.party_id, l.company_id,
                  l.amount AS lc_amount, l.charges AS lc_charges, l.interest_pct, l.usance_days,
-                 l.interest_upfront, l.interest_excl_charges, l.interest_journal_entry_id,
+                 l.interest_upfront, l.interest_excl_charges, l.interest_adj,
+                 l.interest_journal_entry_id,
                  s.name AS supplier_name, o.invoice_no
           FROM lc_issuances i
           JOIN letters_of_credit l ON l.id = i.lc_id
@@ -991,7 +992,8 @@ export async function settleLcBillsCombined(
       charges: b.lc_charges,
       interest_pct: b.interest_pct,
       usance_days: b.usance_days,
-      interest_excl_charges: b.interest_excl_charges
+      interest_excl_charges: b.interest_excl_charges,
+      interest_adj: b.interest_adj
     })
     const charges = round2(n(b.lc_charges))
     if (interest > 0.005) feeLines.push({ account: 'INTEREST A/C', group: 'Indirect Expenses', dr: interest })
@@ -1019,7 +1021,7 @@ export async function settleLcBillsCombined(
       const many = bills.length > 1 ? ` — ${bills.length} bills` : ''
       const kept = fees > 0.005 ? `, keeping ${fees.toFixed(2)} interest and commission` : ''
       // Only when the base is not the ordinary one — see lcInterest.ts.
-      const basis = fees > 0.005 && first.interest_excl_charges ? ` (interest on ${lcInterestBasis(first)})` : ''
+      const basis = fees > 0.005 && lcInterestBaseIsCustom(first) ? ` (interest on ${lcInterestBasis(first)})` : ''
       return `LC ${first.lc_no}${named}${many} matured — ${first.bank} paid ${party} ${total.toFixed(2)}${kept}${basis}`
     })(),
     companyId: n(first.company_id) || undefined,

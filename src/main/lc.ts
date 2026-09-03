@@ -414,7 +414,8 @@ const LC_COLS = [
   'payment_received_date',
   'opened_date',
   'interest_upfront',
-  'interest_excl_charges'
+  'interest_excl_charges',
+  'interest_adj'
 ]
 
 function lcArgs(v: Row): (string | number | null)[] {
@@ -431,7 +432,8 @@ function lcArgs(v: Row): (string | number | null)[] {
         k === 'usance_days' ||
         k === 'margin_pct' ||
         k === 'interest_upfront' ||
-        k === 'interest_excl_charges'
+        k === 'interest_excl_charges' ||
+        k === 'interest_adj'
       ) {
         return 0
       }
@@ -450,7 +452,10 @@ function lcArgs(v: Row): (string | number | null)[] {
       k === 'margin_pct' ||
       k === 'facility_id' ||
       k === 'receivable_party_id' ||
-      k === 'interest_upfront'
+      k === 'interest_upfront' ||
+      // Signed: a negative adjustment is the ordinary case, so this must not
+      // be floored or read as a string.
+      k === 'interest_adj'
     ) {
       return n(val)
     }

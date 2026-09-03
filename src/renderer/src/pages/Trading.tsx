@@ -99,7 +99,7 @@ function InvoiceLines({
 }): React.JSX.Element {
   return (
     <div className="rounded border border-[#e5dfc8] bg-[#fdfcf6]">
-      <div className="grid grid-cols-[2rem_1fr_7rem_8rem_2rem] items-center gap-2 border-b border-[#e5dfc8] px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+      <div className="grid grid-cols-[1.5rem_1fr_6rem_7.5rem_1.75rem] items-center gap-2 border-b border-[#e5dfc8] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
         <span>#</span>
         <span>{title} invoice no.</span>
         <span className="text-right">Qty</span>
@@ -107,7 +107,7 @@ function InvoiceLines({
         <span />
       </div>
       {rows.map((l, i) => (
-        <div key={i} className="grid grid-cols-[2rem_1fr_7rem_8rem_2rem] items-center gap-2 border-b border-dotted border-[#e5dfc8] px-2.5 py-1.5 last:border-0">
+        <div key={i} className="grid grid-cols-[1.5rem_1fr_6rem_7.5rem_1.75rem] items-center gap-2 border-b border-dotted border-[#e5dfc8] px-2.5 py-1 last:border-0">
           <span className="text-[11px] tabular-nums text-muted-foreground">{i + 1}</span>
           {(() => {
             // Each line of a deal becomes an invoice of its own, so a number
@@ -143,7 +143,7 @@ function InvoiceLines({
             type="button"
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-muted-foreground hover:text-red-600"
+            className="h-6 w-6 text-muted-foreground hover:text-red-600"
             title="Remove this invoice"
             onClick={() => onRemove(i)}
           >
@@ -151,7 +151,7 @@ function InvoiceLines({
           </Button>
         </div>
       ))}
-      <div className="flex items-center justify-between gap-2 bg-[#f5f2e4] px-2.5 py-1.5">
+      <div className="flex items-center justify-between gap-2 bg-[#f5f2e4] px-2.5 py-1">
         {/* Blue: one more line on THIS grid. The same colour as the column
             headers above it, so it reads as belonging to this table. */}
         <Button
@@ -264,10 +264,11 @@ function Fact({ label, value, hint }: { label: string; value: string; hint?: str
   return (
     <div className="min-w-0">
       <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="truncate font-semibold tabular-nums text-[#1a2c56]">
-        {value}
-        {hint && <span className="ml-1 text-[11px] font-normal text-muted-foreground">({hint})</span>}
-      </div>
+      <div className="truncate text-[13px] font-semibold tabular-nums text-[#1a2c56]">{value}</div>
+      {/* Under the value, not beside it. Inline, a long figure and its hint
+          together overran the column, and the hint was the half that got cut —
+          "Net receivable ₹7,32,66,111.00 (TDS…" told the reader nothing. */}
+      {hint && <div className="truncate text-[10.5px] text-muted-foreground">{hint}</div>}
     </div>
   )
 }
@@ -1189,116 +1190,141 @@ export function Trading(): React.JSX.Element {
                           repeated ? 'border-rose-400' : 'border-[#d9d2b8]'
                         )}
                       >
-                        <div className="flex flex-wrap items-center gap-2 rounded-t border-b border-emerald-200 bg-emerald-50/80 px-3 py-1.5">
-                          <span className="rounded bg-emerald-700 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-widest text-white">
+                        {/* The picker IS the heading.
+                            ---------------------------------------------------
+                            This strip used to print the buyer's name and then
+                            a full-width field below offered the same name
+                            again — one row of the card spent repeating the row
+                            above it, on a card that is repeated per buyer. The
+                            field lives here now, and the three tax numbers sit
+                            on one line with their labels beside them rather
+                            than stacked over them. Three buyers is three of
+                            these, so every row saved is saved three times. */}
+                        <div
+                          className={cn(
+                            'flex flex-wrap items-center gap-2 rounded-t border-b px-2.5 py-2',
+                            repeated ? 'border-rose-300 bg-rose-50/70' : 'border-emerald-200 bg-emerald-50/80'
+                          )}
+                        >
+                          <span className="shrink-0 rounded bg-emerald-700 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-widest text-white">
                             Buyer {pi + 1}
                           </span>
-                          <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-emerald-900">
-                            {name || 'no customer picked yet'}
-                          </span>
-                          {c && c.invoiceCount > 0 && (
-                            <span className="shrink-0 text-[11px] font-medium tabular-nums text-emerald-800">
-                              {c.invoiceCount} invoice{c.invoiceCount === 1 ? '' : 's'} · {formatNum(c.qty)}{' '}
-                              {form.uom || 'MT'} · {formatINR(c.amount)}
-                            </span>
-                          )}
-                          {parties().length > 1 && (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7 shrink-0 text-muted-foreground hover:text-red-600"
-                              title="Remove this buyer and all of its invoices"
-                              onClick={() => removeParty(pi)}
+                          <Select
+                            value={String(sp?.customer_id || '')}
+                            onValueChange={(v) => chooseCustomer(pi, v)}
+                          >
+                            <SelectTrigger
+                              className={cn(
+                                'h-8 w-[17rem] border-emerald-300 bg-white text-[12px] font-semibold text-emerald-950',
+                                repeated && 'border-rose-400 focus-visible:ring-rose-300'
+                              )}
                             >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          )}
-                        </div>
-
-                        <div className="grid gap-4 p-3 md:grid-cols-3">
-                          <div className="flex flex-col gap-1.5 md:col-span-3">
-                            <Label>Customer *</Label>
-                            <Select
-                              value={String(sp?.customer_id || '')}
-                              onValueChange={(v) => chooseCustomer(pi, v)}
-                            >
-                              <SelectTrigger className={repeated ? 'border-rose-400 focus-visible:ring-rose-300' : ''}>
-                                <SelectValue placeholder="Select customer" />
-                              </SelectTrigger>
-                              <SelectContent className="max-h-64">
-                                {dealCustomers.length === 0 ? (
-                                  <div className="px-2 py-3 text-center text-[12px] text-muted-foreground">
-                                    No Trading customers yet — set a customer to Trading under Masters → Customers.
-                                  </div>
-                                ) : (
-                                  dealCustomers.map((cu) => (
-                                    <SelectItem key={String(cu.id)} value={String(cu.id)}>
-                                      {cu.name}
-                                    </SelectItem>
-                                  ))
-                                )}
-                              </SelectContent>
-                            </Select>
-                            {repeated && (
-                              <p className="text-[11px] text-rose-700">
-                                Already listed as buyer {dupOf + 1} — put all of that buyer&rsquo;s invoices under
-                                the one card, or the party&rsquo;s TDS slab is split in two.
-                              </p>
+                              {/* Falls back to the name from the FULL customer
+                                  list: a deal saved against a party since taken
+                                  off Trading is not in the options below, and
+                                  the field would otherwise read as empty. */}
+                              <SelectValue placeholder="Select customer">{name}</SelectValue>
+                            </SelectTrigger>
+                            <SelectContent className="max-h-64">
+                              {dealCustomers.length === 0 ? (
+                                <div className="px-2 py-3 text-center text-[12px] text-muted-foreground">
+                                  No Trading customers yet — set a customer to Trading under Masters → Customers.
+                                </div>
+                              ) : (
+                                dealCustomers.map((cu) => (
+                                  <SelectItem key={String(cu.id)} value={String(cu.id)}>
+                                    {cu.name}
+                                  </SelectItem>
+                                ))
+                              )}
+                            </SelectContent>
+                          </Select>
+                          <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                            {c && c.invoiceCount > 0 && (
+                              <span className="text-[11px] font-medium tabular-nums text-emerald-800">
+                                {c.invoiceCount} invoice{c.invoiceCount === 1 ? '' : 's'} · {formatNum(c.qty)}{' '}
+                                {form.uom || 'MT'} · {formatINR(c.amount)}
+                              </span>
                             )}
-                          </div>
-                          <div className="flex flex-col gap-1.5 md:col-span-3">
-                            <Label>Sale invoices *</Label>
-                            <InvoiceLines
-                              title="Sale"
-                              rows={Array.isArray(sp?.lines) ? (sp.lines as Row[]) : []}
-                              uom={String(form.uom || 'MT')}
-                              totalQty={c?.qty ?? 0}
-                              onChange={(i, k, v) => setPartyLine(pi, i, k, v)}
-                              onAdd={() => addPartyLine(pi)}
-                              onRemove={(i) => removePartyLine(pi, i)}
-                            />
-                          </div>
-                          <div className="flex flex-col gap-1.5">
-                            <Label>
-                              GST %{' '}
-                              {autoFields.has(partyKey(pi, 'gst_pct')) && (
-                                <span className="text-amber-700">(auto)</span>
-                              )}
-                            </Label>
-                            <Input
-                              type="number"
-                              className={autoFields.has(partyKey(pi, 'gst_pct')) ? AUTO_CLASS : ''}
-                              value={sp?.gst_pct ?? ''}
-                              onChange={(e) => setPartyField(pi, 'gst_pct', e.target.value)}
-                            />
-                          </div>
-                          <div className="flex flex-col gap-1.5">
-                            <Label>GST type</Label>
-                            <Select
-                              value={sp?.gst_type || 'CGST_SGST'}
-                              onValueChange={(v) => patchParty(pi, { gst_type: v })}
-                            >
-                              <SelectTrigger><SelectValue /></SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="CGST_SGST">CGST + SGST</SelectItem>
-                                <SelectItem value="IGST">IGST</SelectItem>
-                              </SelectContent>
-                            </Select>
-                          </div>
-                          <div className="flex flex-col gap-1.5">
-                            <Label>
-                              TDS %{' '}
-                              {autoFields.has(partyKey(pi, 'tds_pct')) && (
-                                <span className="text-amber-700">(auto)</span>
-                              )}
-                            </Label>
-                            <Input
-                              type="number"
-                              className={autoFields.has(partyKey(pi, 'tds_pct')) ? AUTO_CLASS : ''}
-                              value={sp?.tds_pct ?? ''}
-                              onChange={(e) => setPartyField(pi, 'tds_pct', e.target.value)}
-                            />
+                            {parties().length > 1 && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-muted-foreground hover:text-red-600"
+                                title="Remove this buyer and all of its invoices"
+                                onClick={() => removeParty(pi)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+                          </span>
+                        </div>
+                        {repeated && (
+                          <p className="border-b border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[11px] text-rose-700">
+                            Already listed as buyer {dupOf + 1} — put all of that buyer&rsquo;s invoices under the
+                            one card, or the party&rsquo;s TDS slab is split in two.
+                          </p>
+                        )}
+
+                        <div className="space-y-2 p-2.5">
+                          <InvoiceLines
+                            title="Sale"
+                            rows={Array.isArray(sp?.lines) ? (sp.lines as Row[]) : []}
+                            uom={String(form.uom || 'MT')}
+                            totalQty={c?.qty ?? 0}
+                            onChange={(i, k, v) => setPartyLine(pi, i, k, v)}
+                            onAdd={() => addPartyLine(pi)}
+                            onRemove={(i) => removePartyLine(pi, i)}
+                          />
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                            <div className="flex items-center gap-1.5">
+                              <Label className="whitespace-nowrap">
+                                GST %{' '}
+                                {autoFields.has(partyKey(pi, 'gst_pct')) && (
+                                  <span className="text-amber-700">(auto)</span>
+                                )}
+                              </Label>
+                              <Input
+                                type="number"
+                                className={cn(
+                                  'h-8 w-[4.5rem] text-right tabular-nums',
+                                  autoFields.has(partyKey(pi, 'gst_pct')) && AUTO_CLASS
+                                )}
+                                value={sp?.gst_pct ?? ''}
+                                onChange={(e) => setPartyField(pi, 'gst_pct', e.target.value)}
+                              />
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <Label className="whitespace-nowrap">GST type</Label>
+                              <Select
+                                value={sp?.gst_type || 'CGST_SGST'}
+                                onValueChange={(v) => patchParty(pi, { gst_type: v })}
+                              >
+                                <SelectTrigger className="h-8 w-[9.5rem] text-[12px]"><SelectValue /></SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="CGST_SGST">CGST + SGST</SelectItem>
+                                  <SelectItem value="IGST">IGST</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <Label className="whitespace-nowrap">
+                                TDS %{' '}
+                                {autoFields.has(partyKey(pi, 'tds_pct')) && (
+                                  <span className="text-amber-700">(auto)</span>
+                                )}
+                              </Label>
+                              <Input
+                                type="number"
+                                className={cn(
+                                  'h-8 w-[4.5rem] text-right tabular-nums',
+                                  autoFields.has(partyKey(pi, 'tds_pct')) && AUTO_CLASS
+                                )}
+                                value={sp?.tds_pct ?? ''}
+                                onChange={(e) => setPartyField(pi, 'tds_pct', e.target.value)}
+                              />
+                            </div>
                           </div>
                         </div>
 
@@ -1307,7 +1333,7 @@ export function Trading(): React.JSX.Element {
                             document in hand, not against a deal-wide total
                             that belongs to nobody. */}
                         {!!c && c.invoiceCount > 0 && (
-                          <div className="grid gap-x-4 gap-y-1.5 rounded-b border-t border-[#e5dfc8] bg-[#f7f2e2] px-3 py-2 sm:grid-cols-3 lg:grid-cols-5">
+                          <div className="grid gap-x-4 gap-y-1.5 rounded-b border-t border-[#e5dfc8] bg-[#f7f2e2] px-2.5 py-1.5 sm:grid-cols-3 lg:grid-cols-5">
                             <Fact label="Taxable" value={formatINR(c.amount)} />
                             <Fact label={`GST ${formatNum(sp?.gst_pct)}%`} value={formatINR(c.gstAmount)} />
                             <div className="min-w-0">
@@ -1319,7 +1345,7 @@ export function Trading(): React.JSX.Element {
                                 placeholder="0.00"
                                 title="Rounds this buyer's invoice to whole rupees. Clear it to go back to the automatic value."
                                 className={cn(
-                                  'mt-0.5 h-7 w-24 bg-white text-right text-[13px] tabular-nums',
+                                  'h-6 w-20 bg-white px-1.5 text-right text-[12px] tabular-nums',
                                   sp?.round_off_manual && 'border-amber-300 bg-amber-50 focus-visible:ring-amber-400'
                                 )}
                                 value={String(sp?.round_off ?? '')}
