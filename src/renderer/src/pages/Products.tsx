@@ -22,6 +22,21 @@ const baseFields: FieldDef[] = [
       { value: 'waste', label: 'Waste' }
     ]
   },
+  // How this product is counted. MT for anything weighed — which is
+  // everything the mill refines and packs — and PCS for an item that comes in
+  // countable units, like a carton. A PCS product is not offered as a
+  // production output: a recipe yields tonnes, and a carton is not made on the
+  // refining line.
+  {
+    key: 'uom',
+    label: 'Measuring unit',
+    type: 'select',
+    default: 'MT',
+    options: [
+      { value: 'MT', label: 'MT — weighed' },
+      { value: 'PCS', label: 'PCS — counted' }
+    ]
+  },
   { key: 'active', label: 'Active', type: 'switch', default: true }
 ]
 
@@ -30,6 +45,7 @@ const columns: ColumnDef[] = [
   { key: 'code', label: 'Code' },
   { key: 'material_type', label: 'Category', type: 'select' },
   { key: 'category', label: 'Sub-category', type: 'select' },
+  { key: 'uom', label: 'Unit', type: 'select' },
   { key: 'active', label: 'Active', type: 'switch' },
   { key: 'created_at', label: 'Created', type: 'date' }
 ]
@@ -43,7 +59,7 @@ export function Products(): React.JSX.Element {
   )
   return (
     <>
-      <PageHeader title="Products" subtitle="Raw oils, intermediates and finished products" hint="The master catalog. Raw oils are bought via bargains; intermediates and finished goods are built from formulations and tracked in stock." />
+      <PageHeader title="Products" subtitle="Raw oils, intermediates and finished products" hint="The master catalog. Raw oils are bought via bargains; intermediates and finished goods are built from formulations and tracked in stock. The measuring unit says how a product is counted — MT for anything weighed, PCS for a countable item like a carton; only MT products can be a production output." />
       <div className="px-4 py-6">
         <EntityManager
           table="products"

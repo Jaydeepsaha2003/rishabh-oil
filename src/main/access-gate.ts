@@ -71,6 +71,10 @@ const CHANNEL_RULES: Record<string, Rule> = {
   trading: { module: 'trading', label: 'Trading', table: 'trading_deals', dateCol: 'deal_date' },
   stockCount: { module: 'stock', label: 'Stock' },
   skuStock: { module: 'stock', label: 'Stock' },
+  // The packed shelf's opening count, open to everyone for the same reason
+  // stockOpening is: it is counted by the people on the floor, and until it
+  // is in, every SKU that has shipped reads negative. See assertAllowed.
+  skuOpening: { module: 'stock', label: 'Stock' },
   formulations: { module: 'formulation', label: 'Formulations' },
   // The recipe sub-category master. Governed by the Formulation grant, since
   // renaming or retiring one reclassifies every recipe pointing at it.
@@ -281,7 +285,7 @@ export async function assertAllowed(channel: string, args: unknown): Promise<voi
   // meant the person holding the count sheet could not enter it. It is also
   // exempt from the books-start window below, because it is the entry that
   // DEFINES that start date.
-  if (ns === 'stockOpening') return
+  if (ns === 'stockOpening' || ns === 'skuOpening') return
   await assertOnOrAfterBooksStart(rule, op, args)
   const user = await currentAccessUser()
   if (!user) return

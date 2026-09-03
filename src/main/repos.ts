@@ -13,7 +13,7 @@ const TABLES: Record<string, string[]> = {
   nbfcs: ['name', 'finance_type', 'tds_pct', 'interest_pct', 'interest_days', 'days_year', 'days_incl_start', 'sanctioned_limit', 'note', 'active', 'company_id'],
   categories: ['name', 'applies_to', 'note', 'active'],
   oil_types: ['code', 'name', 'active'],
-  products: ['code', 'name', 'category', 'material_type', 'active'],
+  products: ['code', 'name', 'category', 'material_type', 'uom', 'active'],
   suppliers: [
     'name',
     'supplier_type',

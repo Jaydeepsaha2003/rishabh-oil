@@ -175,6 +175,11 @@ export interface Api {
     save: (rows: Row[], asOf: string, companyId?: number) => Promise<{ saved: number; cleared: number }>
     date: (companyId?: number) => Promise<string>
   }
+  skuOpening: {
+    list: (asOf?: string) => Promise<Row>
+    date: () => Promise<string>
+    save: (rows: Row[], asOf: string) => Promise<{ saved: number; cleared: number }>
+  }
   skuStock: {
     breakdown: (date?: string | { from?: string; to?: string }) => Promise<Row[]>
     list: (date?: string | { from?: string; to?: string }) => Promise<Row[]>

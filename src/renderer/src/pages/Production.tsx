@@ -96,7 +96,17 @@ export function Production(): React.JSX.Element {
 
   useLiveRefresh(load)
 
-  const outputs = products.filter((p) => p.category === 'finished' || p.category === 'intermediate')
+  // What a run can produce: a finished or intermediate product that is
+  // WEIGHED. A recipe yields tonnes off the refining line, so a product counted
+  // in pieces — a carton, a pouch — has no business being offered here. It was,
+  // which is how CARTON,POUCH,500MLX32,DALDA came to sit in this list beside
+  // the oils. Anything with no unit on record is MT, which is the default and
+  // what every product already carried.
+  const outputs = products.filter(
+    (p) =>
+      (p.category === 'finished' || p.category === 'intermediate') &&
+      String(p.uom || 'MT').toUpperCase() !== 'PCS'
+  )
 
   const recipesFor = (productId: unknown): Row[] =>
     formulations.filter((x) => String(x.product_id) === String(productId ?? ''))

@@ -242,6 +242,14 @@ const api = {
     date: (companyId?: number): Promise<string> =>
       ipcRenderer.invoke('stockOpening:date', { companyId })
   },
+  // The packed shelf's opening count — what was in packs the morning the
+  // books began. Mirrors stockOpening, which does the same for the tanks.
+  skuOpening: {
+    list: (asOf?: string): Promise<Row> => ipcRenderer.invoke('skuOpening:list', { asOf }),
+    date: (): Promise<string> => ipcRenderer.invoke('skuOpening:date'),
+    save: (rows: Row[], asOf: string): Promise<{ saved: number; cleared: number }> =>
+      ipcRenderer.invoke('skuOpening:save', { rows, asOf })
+  },
   skuStock: {
     breakdown: (date?: string | { from?: string; to?: string }): Promise<Row[]> => ipcRenderer.invoke('skuStock:breakdown', { date }),
     // A single date is the day sheet; { from, to } is a period.

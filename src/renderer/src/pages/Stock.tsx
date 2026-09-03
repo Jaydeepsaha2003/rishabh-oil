@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowRightLeft, Building2, CalendarRange, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
+import { AlertTriangle, ArrowRightLeft, Boxes, Building2, CalendarRange, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -232,6 +232,32 @@ function MiniStat({
       <div className="mt-0.5 text-[15px] font-semibold tabular-nums">{value}</div>
       {hint && <div className="text-[10px] tabular-nums opacity-60">{hint}</div>}
     </div>
+  )
+}
+
+// One figure on a strip: label, number, and the unfiltered total when the
+// number above is a subtotal.
+//
+// It replaces a card. Three cards across a 1,800px page gave "PACKED IN 0" a
+// 590px box, which is not emphasis — it is distance. On one strip the same
+// three figures are read in a glance instead of a sweep.
+function Figure({
+  label,
+  value,
+  hint,
+  tone
+}: {
+  label: string
+  value: string
+  hint?: string
+  tone: string
+}): React.JSX.Element {
+  return (
+    <span className="flex flex-wrap items-baseline gap-x-1.5">
+      <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">{label}</span>
+      <span className={cn('text-[14px] font-bold tabular-nums', tone)}>{value}</span>
+      {hint && <span className="text-[10.5px] tabular-nums text-muted-foreground">{hint}</span>}
+    </span>
   )
 }
 
@@ -2338,6 +2364,394 @@ function SkuMultiSelect({
   )
 }
 
+// Packs on the shelf the morning the books began.
+// -----------------------------------------------------------------------------
+// The tanks got this first, on the Book Stock side. The packed shelf needed it
+// for the same reason and it reads the same way: state what was counted, and
+// every figure after it is worked forward from that rather than from the whole
+// history. Movements before the counted morning are superseded — still listed
+// against their SKU, simply not arithmetic any more.
+function SkuOpeningStock({ onSaved }: { onSaved: () => void }): React.JSX.Element {
+  const [data, setData] = useState<Row | null>(null)
+  const [draft, setDraft] = useState<Record<number, { qty: string; note: string }>>({})
+  const [asOf, setAsOf] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [search, setSearch] = useState('')
+
+  // `seed` distinguishes the first read from a re-read: only the first sets the
+  // date and fills the draft, so changing the date recomputes "moved since"
+  // without wiping what is being typed.
+  const load = useCallback(async (asOfOverride?: string): Promise<void> => {
+    const seed = asOfOverride == null
+    if (seed) setLoading(true)
+    try {
+      const d = await window.api.skuOpening.list(asOfOverride)
+      setData(d)
+      if (seed) {
+        // No count struck yet: default to the day the TANKS were counted, so
+        // the two halves of one stocktake do not drift apart by accident.
+        setAsOf(String(d.as_of || (await window.api.stockOpening.date().catch(() => '')) || ''))
+        const next: Record<number, { qty: string; note: string }> = {}
+        for (const r of (d.rows as Row[]) || []) {
+          next[Number(r.id)] = {
+            qty: r.qty == null ? '' : String(r.qty),
+            note: r.note == null ? '' : String(r.note)
+          }
+        }
+        setDraft(next)
+      }
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      if (seed) setLoading(false)
+    }
+  }, [])
+  useEffect(() => { void load() }, [load])
+  useLiveRefresh(load)
+
+  // Moving the date re-asks "what has moved since?" straight away, so the
+  // shortfall on every row is the one for the morning actually being counted.
+  useEffect(() => {
+    if (!asOf) return
+    void load(asOf)
+  }, [asOf, load])
+
+  const rows: Row[] = useMemo(() => ((data?.rows as Row[]) || []), [data])
+  const answeredOf = useCallback((id: number): boolean => (draft[id]?.qty ?? '') !== '', [draft])
+  const projected = useCallback(
+    (r: Row): number => Number(r.movement_closing) + (Number(draft[Number(r.id)]?.qty) || 0),
+    [draft]
+  )
+
+  const setField = (id: number, key: 'qty' | 'note', value: string): void => {
+    setDraft((p) => ({ ...p, [id]: { qty: p[id]?.qty ?? '', note: p[id]?.note ?? '', [key]: value } }))
+  }
+
+  const stats = useMemo(() => {
+    let entered = 0
+    let pcs = 0
+    let stillShort = 0
+    for (const r of rows) {
+      const id = Number(r.id)
+      if (answeredOf(id)) {
+        entered++
+        pcs += Number(draft[id]?.qty) || 0
+      }
+      if (projected(r) < -0.0005) stillShort++
+    }
+    return { entered, pcs, stillShort }
+  }, [rows, draft, answeredOf, projected])
+
+  const dirty = useMemo(() => {
+    for (const r of rows) {
+      const d = draft[Number(r.id)] || { qty: '', note: '' }
+      if (d.qty !== (r.qty == null ? '' : String(r.qty))) return true
+      if (d.note !== (r.note == null ? '' : String(r.note))) return true
+    }
+    return false
+  }, [rows, draft])
+
+  const shown = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return rows
+    return rows.filter(
+      (r) =>
+        String(r.name || '').toLowerCase().includes(q) ||
+        String(r.product_name || '').toLowerCase().includes(q)
+    )
+  }, [rows, search])
+
+  async function save(): Promise<void> {
+    if (!asOf) return void toast.error('Pick the date this count was taken')
+    setSaving(true)
+    try {
+      const payload = rows.map((r) => ({
+        packaging_id: Number(r.id),
+        qty: draft[Number(r.id)]?.qty ?? '',
+        note: draft[Number(r.id)]?.note ?? ''
+      }))
+      const res = await window.api.skuOpening.save(payload, asOf)
+      toast.success(
+        `Packed opening saved — ${res.saved} ${res.saved === 1 ? 'SKU' : 'SKUs'}` +
+          (res.cleared ? `, ${res.cleared} cleared` : '')
+      )
+      await load()
+      onSaved()
+    } catch (e) {
+      toast.error(errText(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading && !data) {
+    return <div className="py-16 text-center text-sm text-muted-foreground">Reading the shelf…</div>
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="overflow-hidden rounded-xl border border-[#d9d2b8] shadow-sm">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-4 bg-gradient-to-r from-[#1a2c56] to-[#2c4a8c] px-6 py-5">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/15 ring-1 ring-inset ring-white/20">
+            <Boxes className="h-5 w-5 text-white" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <h3 className="text-[16px] font-bold leading-tight text-white">Packs brought forward</h3>
+              <InfoTip
+                className="text-white/60 hover:text-white"
+                text="What was already in packs on the shelf the morning the books began. The packed register works every balance out from packing entries and dispatches, so packs made before that morning would otherwise be counted twice — once in this count and once in their own entry. Once this is struck, nothing before it is packed-SKU arithmetic any more."
+              />
+            </div>
+            <p className="mt-1 text-[12px] leading-relaxed text-white/65">
+              Counted in pieces, per SKU — the shelf's own opening.
+            </p>
+          </div>
+          <div className="shrink-0 rounded-xl bg-white/[0.08] p-3.5 ring-1 ring-inset ring-white/15">
+            <div className="mb-1.5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-white/55">
+              <span>Counted on <span className="text-amber-300">*</span></span>
+              <InfoTip
+                className="text-white/45 hover:text-white"
+                text="The morning the shelf was counted. Nothing before it is reconciled against these figures. It defaults to the day the tanks were counted, because the two halves of one stocktake belong on the same date."
+              />
+            </div>
+            <div
+              className={cn(
+                'w-[11.5rem] [&_button]:h-10 [&_button]:text-[13px] [&_button]:font-semibold [&_button]:text-white [&_button:hover]:bg-white/20',
+                asOf
+                  ? '[&_button]:border-white/20 [&_button]:bg-white/10'
+                  : '[&_button]:border-amber-300 [&_button]:bg-amber-400/20'
+              )}
+            >
+              <DatePicker value={asOf} onChange={setAsOf} />
+            </div>
+            <div className="mt-2.5 text-[10.5px] leading-snug text-white/50">
+              the packed register opens from this day
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-px border-t border-[#d9d2b8] bg-[#e6dfc4] lg:grid-cols-4">
+          {[
+            {
+              label: 'Opening pieces',
+              tip: 'Every SKU\u2019s counted pieces, added up. This is what the packed register opens at.',
+              value: <span className="text-[#1a2c56]">{formatNum(stats.pcs)}</span>,
+              note: 'across every SKU counted'
+            },
+            {
+              label: 'Answered',
+              tip: 'How many SKUs have a count entered. A blank is not nought: blank means not counted yet and stays off the register entirely.',
+              value: (
+                <span
+                  className={cn(
+                    stats.entered === 0
+                      ? 'text-amber-700'
+                      : stats.entered === rows.length
+                        ? 'text-emerald-700'
+                        : 'text-[#1a2c56]'
+                  )}
+                >
+                  {stats.entered}
+                  <span className="text-[15px] font-semibold text-muted-foreground"> / {rows.length}</span>
+                </span>
+              ),
+              note: `${Math.max(0, rows.length - stats.entered)} still blank`
+            },
+            {
+              label: 'Below zero',
+              tip: 'SKUs the register would carry as a negative. The first counts them on movements since the counted morning alone — each has shipped more than was packed, which is the hole this count fills. The second counts how many would STILL be negative with what is typed, and is the one to drive to nil.',
+              value: (
+                <span className="flex items-baseline gap-2">
+                  <span className={cn(Number(data?.negative_count) ? 'text-rose-700' : 'text-emerald-700')}>
+                    {Number(data?.negative_count ?? 0)}
+                  </span>
+                  <span className="text-[15px] font-normal text-muted-foreground">→</span>
+                  <span className={cn(stats.stillShort ? 'text-rose-700' : 'text-emerald-700')}>
+                    {stats.stillShort}
+                  </span>
+                </span>
+              ),
+              note: 'to begin with → with what is typed'
+            },
+            {
+              label: 'Counted on',
+              tip: 'The morning this count belongs to. Every packed figure is worked forward from it.',
+              value: <span className="text-[#1a2c56]">{asOf ? formatDate(asOf) : '—'}</span>,
+              note: data?.as_of ? 'already struck' : 'not struck yet'
+            }
+          ].map((k) => (
+            <div key={k.label} className="bg-[#fffdf4] px-5 py-4">
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                  {k.label}
+                </span>
+                <InfoTip text={k.tip} />
+              </div>
+              <div className="mt-1.5 text-[22px] font-bold leading-none tabular-nums">{k.value}</div>
+              <div className="mt-2 text-[10.5px] leading-snug text-muted-foreground">{k.note}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-[#e0d8bd] bg-white px-4 py-3 shadow-sm">
+        <Input
+          placeholder="Find an SKU…"
+          className="h-10 w-64 text-[13px]"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <span className="text-[12px] font-semibold text-[#1a2c56]">
+          {stats.entered} of {rows.length} counted
+        </span>
+        <div className="ml-auto flex items-center gap-2">
+          {dirty && (
+            <span className="flex items-center gap-1.5 rounded-md bg-amber-100 px-2.5 py-1 text-[11.5px] font-semibold text-amber-900">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+              Unsaved changes
+            </span>
+          )}
+          <Button onClick={save} disabled={saving || !dirty} className="h-10 bg-[#1a2c56] px-5 hover:bg-[#24407e]">
+            {saving ? 'Saving…' : 'Save packed opening'}
+          </Button>
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-xl border border-[#d9d2b8] shadow-sm">
+        <div className="overflow-x-auto">
+          <table className="ruled-cols w-full min-w-[900px] bg-[#fffdf4] text-[13px]">
+            <thead>
+              <tr className="border-b border-[#e0d8bd] bg-[#faf6e8] text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                <th className="pin-col min-w-[220px] px-3 py-2">SKU</th>
+                <th className="w-[110px] px-3 py-2 text-right">Pack</th>
+                <th className="w-[130px] px-3 py-2 text-right">
+                  <span className="inline-flex items-center gap-1">
+                    Moved since
+                    <InfoTip text="Packed in less dispatched SINCE the counted morning. Movements before it are deliberately left out — that morning is the fresh start. Negative here is exactly the hole this count has to fill." />
+                  </span>
+                </th>
+                <th className="w-[130px] bg-[#f4efdd] px-3 py-2 text-right">
+                  <span className="inline-flex items-center gap-1">
+                    Opening (pcs)
+                    <InfoTip text="Pieces physically on the shelf that morning. Leave it blank if the SKU has not been counted; enter 0 to state that it genuinely had none. The two are different, and only the second shows on the register." />
+                  </span>
+                </th>
+                <th className="w-[140px] px-3 py-2 text-right">
+                  <span className="inline-flex items-center gap-1">
+                    Closes at
+                    <InfoTip text="Opening + everything moved since — what the packed register will read once this is saved. This is the figure that decides whether the entry is right: drive it to nil or above." />
+                  </span>
+                </th>
+                <th className="min-w-[160px] px-3 py-2 text-left">
+                  <span className="inline-flex items-center gap-1">
+                    Note
+                    <InfoTip text="Why this row reads the way it does — which rack was counted, who counted it. Saved with the opening; a note needs a figure to hang on, so a row with only a note is not kept." />
+                  </span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((r) => {
+                const id = Number(r.id)
+                const d = draft[id] || { qty: '', note: '' }
+                const answered = answeredOf(id)
+                const proj = projected(r)
+                const short = Number(r.shortfall)
+                return (
+                  <tr
+                    key={id}
+                    className={cn(
+                      'border-t border-[#f0ead2] transition-colors hover:bg-[#fbf6e4]',
+                      answered && 'row-answered bg-emerald-50/40'
+                    )}
+                  >
+                    <td className="pin-col px-3 py-1.5">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        {answered ? (
+                          <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                        ) : (
+                          <span className="h-3.5 w-3.5 shrink-0" />
+                        )}
+                        <span className="font-medium text-[#1a2c56]">{String(r.name)}</span>
+                        {r.product_name ? (
+                          <span className="rounded bg-[#f1ecd9] px-1.5 text-[10.5px] text-muted-foreground">
+                            {String(r.product_name)}
+                          </span>
+                        ) : null}
+                        {short > 0.0005 && !answered && (
+                          <Badge variant="destructive" className="text-[10px]">Short</Badge>
+                        )}
+                      </div>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-right text-[12px] text-muted-foreground">
+                      {Number(r.unit_size) > 0
+                        ? `${formatNum(r.unit_size)} ${String(r.unit_uom || '')}`.trim()
+                        : `${formatNum(r.base_per_pouch)} ${String(r.base_uom || '')}`.trim()}
+                    </td>
+                    <td
+                      className={cn(
+                        'whitespace-nowrap px-3 py-1.5 text-right tabular-nums',
+                        Number(r.movement_closing) < -0.0005
+                          ? 'font-semibold text-rose-700'
+                          : 'text-muted-foreground'
+                      )}
+                    >
+                      {formatNum(r.movement_closing)}
+                    </td>
+                    <td className="bg-[#faf6e8] px-3 py-1.5">
+                      <div className="flex items-center justify-end gap-1.5">
+                        {short > 0.0005 && d.qty === '' && (
+                          <button
+                            type="button"
+                            title="The smallest count that clears the shortfall"
+                            className="shrink-0 rounded border px-1.5 py-0.5 text-[10.5px] text-rose-700 hover:bg-rose-50"
+                            onClick={() => setField(id, 'qty', String(short))}
+                          >
+                            {formatNum(short)}
+                          </button>
+                        )}
+                        <input
+                          inputMode="decimal"
+                          className="doc-ref h-8 w-[84px] rounded-md border bg-white px-2 text-right text-[13px] tabular-nums outline-none focus:border-[#1a2c56] focus:ring-1 focus:ring-[#1a2c56]/20"
+                          value={d.qty}
+                          onChange={(e) => setField(id, 'qty', e.target.value.replace(/[^0-9.]/g, ''))}
+                        />
+                      </div>
+                    </td>
+                    <td
+                      className={cn(
+                        'whitespace-nowrap px-3 py-1.5 text-right font-bold tabular-nums',
+                        proj < -0.0005 ? 'text-rose-700' : answered ? 'text-emerald-700' : 'text-muted-foreground'
+                      )}
+                    >
+                      {formatNum(proj)}
+                      {proj < -0.0005 ? (
+                        <div className="text-[10.5px] font-normal text-rose-600">still short {formatNum(-proj)}</div>
+                      ) : answered ? (
+                        <div className="text-[10.5px] font-normal text-emerald-600">accounted for</div>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <input
+                        className="h-8 w-full min-w-[140px] rounded-md border bg-white px-2 text-[12.5px] outline-none placeholder:text-muted-foreground/50 focus:border-[#1a2c56] focus:ring-1 focus:ring-[#1a2c56]/20"
+                        placeholder="rack, counter, anything worth recording"
+                        value={d.note}
+                        onChange={(e) => setField(id, 'note', e.target.value)}
+                      />
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // Packed finished stock per SKU (packaging). A lightweight, manually-maintained
 // count: add packs in / remove, and it's reduced automatically by dispatched
 // PACKED sales of that SKU. on-hand = packed in − packed sold (in units).
@@ -2384,6 +2798,10 @@ function SkuStock(): React.JSX.Element {
   // dispatched = closing) over a different number of days, which is why the
   // whole page keeps reading `dayMode` — derived below — rather than growing a
   // second set of branches that could disagree with the first.
+  // Which half of the packed screen is being read: the moving register, or the
+  // count it starts from. Same arrangement as Book Stock, because it is the
+  // same pair of jobs.
+  const [skuView, setSkuView] = useState<'register' | 'opening'>('register')
   const [spanMode, setSpanMode] = useState<'day' | 'range' | 'all'>('day')
   const [date, setDate] = useState(todayISO())
   const [skuRange, setSkuRange] = useState({ from: '', to: '' })
@@ -2664,9 +3082,41 @@ function SkuStock(): React.JSX.Element {
   }
 
   return (
-    <div className="space-y-3">
-      {/* Controls: period, search, and the count-sheet round trip */}
+    <div className="space-y-2">
+      {/* Three thin rows, not six tall ones.
+          ---------------------------------------------------------------------
+          Every level of this screen used to claim a line of its own — the view
+          toggle, the period, the filters, then three stat cards a third of the
+          page wide, then the alert. Each was legible and the stack was not:
+          six bands of chrome before a single figure of stock.
+
+          So they are grouped by what the reader is doing, and each group is one
+          strip: WHICH VIEW AND WHEN (with its actions), WHAT IS IN VIEW, and
+          WHAT IT COMES TO (with the warning that belongs to it). */}
       <div className="flex flex-wrap items-center gap-2">
+        <div className="inline-flex shrink-0 rounded-lg border p-0.5">
+          {(
+            [
+              ['register', 'Register'],
+              ['opening', 'Opening stock']
+            ] as const
+          ).map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setSkuView(k)}
+              className={cn(
+                'rounded-md px-3 py-1 text-[12.5px] font-semibold transition',
+                skuView === k ? 'bg-[#1a2c56] text-white' : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {skuView === 'register' && (
+          <>
+        <span className="mx-0.5 hidden h-6 w-px shrink-0 bg-border sm:block" />
         <div className="inline-flex rounded-lg border p-0.5">
           {(
             [
@@ -2724,10 +3174,11 @@ function SkuStock(): React.JSX.Element {
         )}
         {spanMode === 'day' && (
           <div className="flex items-center gap-1.5 text-[13px]">
-            <span className="text-muted-foreground">Date</span>
             {/* Reading a day-wise register means walking day by day, and going
                 through the calendar for each step is the slow way round.
-                Forward stops at today, since there is no stock after it. */}
+                Forward stops at today, since there is no stock after it. The
+                word "Date" is gone: a calendar between two arrows is not
+                mistakable for anything else. */}
             <Button
               variant="outline"
               size="icon"
@@ -2759,25 +3210,6 @@ function SkuStock(): React.JSX.Element {
             </Button>
           </div>
         )}
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search SKU or product…"
-          className="h-8 w-48 text-[13px]"
-        />
-        <SkuMultiSelect
-          skus={rows}
-          value={skuPick}
-          onChange={(v) => {
-            allPicked.current = v.length === rows.length
-            setSkuPick(v)
-          }}
-        />
-        <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-muted-foreground">
-          <Switch checked={hideEmpty} onCheckedChange={setHideEmpty} />
-          Hide untouched
-        </label>
-
         <div className="ml-auto flex items-center gap-2">
           <input
             ref={fileRef}
@@ -2835,6 +3267,43 @@ function SkuStock(): React.JSX.Element {
             rows={shown}
           />
         </div>
+          </>
+        )}
+      </div>
+
+      {skuView === 'opening' ? (
+        <SkuOpeningStock onSaved={() => void load()} />
+      ) : (
+      <>
+      {/* Row 2: what is in view. Quieter than the row above it on purpose —
+          these narrow the list, they do not change what is being asked. */}
+      <div className="flex flex-wrap items-center gap-2 border-t pt-2">
+        <Input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search SKU or product…"
+          className="h-8 w-52 text-[13px]"
+        />
+        <SkuMultiSelect
+          skus={rows}
+          value={skuPick}
+          onChange={(v) => {
+            allPicked.current = v.length === rows.length
+            setSkuPick(v)
+          }}
+        />
+        <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-muted-foreground">
+          <Switch checked={hideEmpty} onCheckedChange={setHideEmpty} />
+          Hide untouched
+        </label>
+        {/* The SKU count was a stat card of its own, which spent a fifth of the
+            band on a number nobody reconciles. It belongs beside the filters
+            that change it. */}
+        <span className="ml-auto text-[12px] text-muted-foreground">
+          {shown.length === rows.length
+            ? `${rows.length} SKUs`
+            : `${shown.length} of ${rows.length} SKUs`}
+        </span>
       </div>
 
       {/* The band totals WHAT IS ON SCREEN. It used to total every SKU in the
@@ -2851,47 +3320,45 @@ function SkuStock(): React.JSX.Element {
         const part = shown.length !== rows.length
         const all = (v: string): string | undefined => (part ? `of ${v}` : undefined)
         return (
-          <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-5">
-            <MiniStat
-              label="SKUs"
-              value={`${shown.length}${part ? ` / ${rows.length}` : ''}`}
-              hint={part ? 'filtered' : undefined}
-              tone="slate"
-            />
-            <MiniStat
+          // Three figures on ONE strip. Pieces and tonnes are two readings of a
+          // single closing balance so they sit together, the SKU count moved up
+          // beside the filters that change it, and the below-zero warning rides
+          // here rather than claiming a band of its own — it is a fact about
+          // these very figures.
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border bg-muted/20 px-3.5 py-2">
+            <Figure
               label={dayMode ? 'Packed in' : 'Packed (total)'}
               value={formatNum(sum(shown, inOf))}
               hint={all(formatNum(sum(rows, inOf)))}
-              tone="emerald"
+              tone="text-emerald-700"
             />
-            <MiniStat
+            <span className="hidden h-4 w-px bg-border sm:block" />
+            <Figure
               label={dayMode ? 'Dispatched' : 'Sold (packed)'}
               value={formatNum(sum(shown, outOf))}
               hint={all(formatNum(sum(rows, outOf)))}
-              tone="rose"
+              tone="text-rose-700"
             />
-            <MiniStat
-              label={dayMode ? 'Closing (pcs)' : 'On hand (pcs)'}
-              value={formatNum(sum(shown, handOf))}
-              hint={all(formatNum(totalOnHand))}
-              tone="sky"
+            <span className="hidden h-4 w-px bg-border sm:block" />
+            <Figure
+              label={dayMode ? 'Closing' : 'On hand'}
+              value={`${formatNum(sum(shown, handOf))} pcs · ${formatNum(shownMT)} MT`}
+              hint={all(`${formatNum(totalOnHand)} pcs · ${formatNum(totalMT)} MT`)}
+              tone="text-sky-800"
             />
-            <MiniStat
-              label={dayMode ? 'Closing (MT)' : 'On hand (MT)'}
-              value={`${formatNum(shownMT)} MT`}
-              hint={all(`${formatNum(totalMT)} MT`)}
-              tone="violet"
-            />
+            {negatives > 0 && (
+              <span className="ml-auto flex items-center gap-1.5 rounded-md bg-red-50 px-2 py-0.5 text-[11.5px] font-semibold text-red-800">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                {negatives} below zero
+                <InfoTip
+                  className="text-red-700 hover:text-red-900"
+                  text="More has been dispatched than was ever packed in. Either the packing was never entered, or the shelf was never counted. Open the SKU with the sliders icon to see the entries behind it, or strike an opening count on the Opening stock tab if the packs predate the books."
+                />
+              </span>
+            )}
           </div>
         )
       })()}
-
-      {negatives > 0 && (
-        <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800">
-          <b>{negatives}</b> SKU{negatives === 1 ? '' : 's'} below zero — more dispatched than packed. Check the packing
-          entries for those rows.
-        </div>
-      )}
 
       <div className="rounded-xl border bg-card shadow-sm">
         <Table
@@ -3170,6 +3637,8 @@ function SkuStock(): React.JSX.Element {
           ? 'Day wise: opening (brought forward) + packed in on this date − dispatched on this date = closing. Rows with movement on the day are tinted. Closing (MT) = pieces × pack size (1 L counted as 1 KG). Use the sliders icon for one SKU, or Count sheet → Upload closing to set the whole day at once.'
           : 'All time: packs added − packs sold on dispatched PACKED sales = on hand. On hand (MT) = pieces × pack size (1 L counted as 1 KG).'}
       </p>
+      </>
+      )}
 
       <Dialog open={!!adjustRow} onOpenChange={(o) => !o && setAdjustRow(null)}>
         {/* Wider and scrollable: it now carries the entry list as well as the

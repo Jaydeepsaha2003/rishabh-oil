@@ -40,6 +40,37 @@ function span(when?: SkuWhen): { from: string | null; to: string | null; ranged:
   return { from: from || null, to: to || null, ranged: !!(from || to) }
 }
 
+// The morning the packed shelf was counted, for this company.
+//
+// Day zero for every packed figure, exactly as the bulk register has one: a
+// counted shelf already accounts for every pack made and every pack sold before
+// it, so adding those movements on top would count them twice. Nothing before
+// this date is packed-SKU arithmetic any more — the entries are not deleted and
+// are still listed against their SKU, they are simply superseded by the count.
+//
+// Empty when the shelf has never been counted, and then nothing changes: the
+// register carries its whole history forward the way it always did.
+export async function skuOpeningDate(companyId?: number): Promise<string> {
+  const cid = n(companyId) || getActiveCompanyId()
+  const res = await getClient()
+    .execute({
+      sql: 'SELECT MIN(as_of) AS d FROM sku_openings WHERE company_id = ?',
+      args: [cid]
+    })
+    .catch(() => null)
+  const d = res?.rows?.[0] ? (res.rows[0] as unknown as Row).d : null
+  return d ? String(d).slice(0, 10) : ''
+}
+
+async function skuOpeningMap(cid: number): Promise<Map<number, number>> {
+  const m = new Map<number, number>()
+  const res = await getClient()
+    .execute({ sql: 'SELECT packaging_id, qty FROM sku_openings WHERE company_id = ?', args: [cid] })
+    .catch(() => null)
+  for (const r of res ? toPlain(res) : []) m.set(n(r.packaging_id), n(r.qty))
+  return m
+}
+
 // Packed finished stock, one row per packaging (SKU). On-hand is a lightweight,
 // manually-maintained count that is interlinked with sales: every dispatched
 // PACKED sale of a packaging reduces its on-hand automatically.
@@ -53,23 +84,42 @@ export async function listSkuStock(when?: SkuWhen): Promise<Row[]> {
   const cid = getActiveCompanyId()
   const { from, to, ranged } = span(when)
   const round = (x: number): number => Math.round((x + Number.EPSILON) * 1e6) / 1e6
+  // Day zero, and what the shelf was counted at on it. See skuOpeningDate.
+  const floor = await skuOpeningDate(cid)
+  const openings = floor ? await skuOpeningMap(cid) : new Map<number, number>()
 
   // The date predicates are BUILT rather than null-guarded. `? IS NULL OR ...`
   // triples the arguments and, worse, quietly does the wrong thing for a
   // one-ended range: "up to the 15th" has nothing before it, so its opening is
   // nil, where a null guard would hand back every row ever entered.
   const args: (string | number | null)[] = []
+  // Everything since day zero — the running balance a no-period view shows.
+  const sinceFloor = (col: string): string => {
+    if (!floor) return ''
+    args.push(floor)
+    return `AND substr(${col}, 1, 10) >= ?`
+  }
   const before = (col: string): string => {
     if (!ranged) return '' // all-time: opening is unused, and this is what it always returned
     if (!from) return 'AND 1 = 0'
+    const parts: string[] = []
+    // Bounded below by day zero as well: the counted shelf already embodies
+    // whatever happened before that morning.
+    if (floor) {
+      args.push(floor)
+      parts.push(`AND substr(${col}, 1, 10) >= ?`)
+    }
     args.push(from)
-    return `AND substr(${col}, 1, 10) < ?`
+    parts.push(`AND substr(${col}, 1, 10) < ?`)
+    return parts.join(' ')
   }
   const within = (col: string): string => {
     if (!ranged) return 'AND 1 = 0' // all-time reads `added`/`sold` instead
     const parts: string[] = []
-    if (from) {
-      args.push(from)
+    // A period asked for from before day zero still begins at day zero.
+    const lo = floor && (!from || from < floor) ? floor : from
+    if (lo) {
+      args.push(lo)
       parts.push(`AND substr(${col}, 1, 10) >= ?`)
     }
     if (to) {
@@ -80,7 +130,9 @@ export async function listSkuStock(when?: SkuWhen): Promise<Row[]> {
   }
   // Assembled in the order the SQL below consumes them.
   args.push(cid)
+  const sinceAdj = sinceFloor('adj_date')
   args.push(cid)
+  const sinceSale = sinceFloor('s.sale_date')
   args.push(cid)
   const beforeAdj = before('adj_date')
   args.push(cid)
@@ -98,10 +150,12 @@ export async function listSkuStock(when?: SkuWhen): Promise<Row[]> {
            -- name typed on the SKU. Used to filter the packed-stock list.
            COALESCE(pr.name, pk.product_label) AS product_name,
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
-                     WHERE packaging_id = pk.id AND company_id = ?), 0) AS added,
+                     WHERE packaging_id = pk.id AND company_id = ?
+                       ${sinceAdj}), 0) AS added,
            COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
                      WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
-                       AND s.status = 'done' AND s.company_id = ?), 0) AS sold,
+                       AND s.status = 'done' AND s.company_id = ?
+                       ${sinceSale}), 0) AS sold,
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
                      WHERE packaging_id = pk.id AND company_id = ?
                        ${beforeAdj}), 0) AS added_before,
@@ -127,10 +181,14 @@ export async function listSkuStock(when?: SkuWhen): Promise<Row[]> {
   // either way, so it is simply always done.
   const runs = await negativeRuns(cid, to)
   return toPlain(res).map((r) => {
-    const opening = round(n(r.added_before) - n(r.sold_before))
+    // What the shelf was counted at on day zero, if it ever was.
+    const brought = openings.get(n(r.id)) || 0
+    const opening = round(brought + n(r.added_before) - n(r.sold_before))
     const addedOn = round(n(r.added_on))
     const soldOn = round(n(r.sold_on))
-    const onHand = ranged ? round(opening + addedOn - soldOn) : round(n(r.added) - n(r.sold))
+    const onHand = ranged
+      ? round(opening + addedOn - soldOn)
+      : round(brought + n(r.added) - n(r.sold))
     const run = onHand < -1e-6 ? runs.get(n(r.id)) : undefined
     return {
       ...r,
@@ -139,6 +197,9 @@ export async function listSkuStock(when?: SkuWhen): Promise<Row[]> {
       sold_on: soldOn,
       // Day view: closing for that date. Otherwise the running balance.
       on_hand: onHand,
+      // The part of the opening that was COUNTED rather than derived from
+      // movements, so the sheet can show what it is answering against.
+      opening_brought: round(brought),
       negative_since: run?.negative_since ?? null,
       negative_trigger: run?.negative_trigger ?? null
     }
@@ -222,7 +283,11 @@ async function negativeRuns(cid: number, upto: string | null): Promise<Map<numbe
 export async function skuMovementBreakdown(when?: SkuWhen): Promise<Row[]> {
   const c = getClient()
   const cid = getActiveCompanyId()
-  const { from, to } = span(when)
+  const { from: asked, to } = span(when)
+  // Day zero applies here as well, or the hover would list packs from before
+  // the shelf was counted against a cell that correctly leaves them out.
+  const floor = await skuOpeningDate(cid)
+  const from = floor && (!asked || asked < floor) ? floor : asked
 
   // Exactly the period the register is showing. A hover that covered a
   // different stretch from the cell it explains is the same fault the bulk
@@ -277,6 +342,125 @@ export async function skuMovementBreakdown(when?: SkuWhen): Promise<Row[]> {
   for (const r of toPlain(disp)) slot(n(r.sku)).dispatch.push(r)
   for (const r of toPlain(packed)) slot(n(r.sku)).packed_in.push(r)
   return Array.from(bySku.values())
+}
+
+// The opening sheet for the packed shelf: every SKU with what it is counted at
+// on the opening morning, what has moved since, and what that leaves.
+//
+// Deliberately the same shape as the bulk opening sheet, because it is the same
+// job: state what was there, then let the register work forward from it. The
+// figure that matters while typing is `closing` — whether the opening being
+// entered actually clears the negative it is there to clear.
+export async function listSkuOpenings(companyId?: number, asOfIn?: string): Promise<Row> {
+  const cid = n(companyId) || getActiveCompanyId()
+  const c = getClient()
+  // The date being CONSIDERED, which is not always the one on file: while the
+  // sheet is being filled in there is nothing on file yet, and "moved since"
+  // has to answer for the morning in the date box or it is answering a question
+  // nobody asked. Falls back to what is saved once it is.
+  const asOf = String(asOfIn || '').slice(0, 10) || (await skuOpeningDate(cid))
+  const saved = await skuOpeningMap(cid)
+  const notes = new Map<number, string>()
+  const savedRows = await c
+    .execute({ sql: 'SELECT packaging_id, note FROM sku_openings WHERE company_id = ?', args: [cid] })
+    .catch(() => null)
+  for (const r of savedRows ? toPlain(savedRows) : []) {
+    if (r.note) notes.set(n(r.packaging_id), String(r.note))
+  }
+
+  // Movements SINCE the opening morning, and nothing else — the same rule the
+  // register itself now applies. With no opening date yet there is nothing to
+  // count from, so this reads the whole history and the sheet says so.
+  const moved = await c.execute({
+    sql: `SELECT pk.id,
+                 COALESCE((SELECT SUM(a.delta) FROM sku_adjustments a
+                           WHERE a.packaging_id = pk.id AND a.company_id = ?
+                             AND (? = '' OR substr(a.adj_date, 1, 10) >= ?)), 0) AS packed_in,
+                 COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
+                           WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
+                             AND s.status = 'done' AND s.company_id = ?
+                             AND (? = '' OR substr(s.sale_date, 1, 10) >= ?)), 0) AS dispatched
+          FROM packagings pk WHERE pk.active = 1`,
+    args: [cid, asOf, asOf, cid, asOf, asOf]
+  })
+  const movedBy = new Map<number, Row>()
+  for (const r of toPlain(moved)) movedBy.set(n(r.id), r)
+
+  const skus = await c.execute({
+    sql: `SELECT pk.id, pk.name, pk.pouches_per_box, pk.base_per_pouch, pk.base_uom,
+                 pk.unit_size, pk.unit_uom, pk.box_label, pk.pouch_label,
+                 COALESCE(pr.name, pk.product_label) AS product_name
+          FROM packagings pk LEFT JOIN products pr ON pr.id = pk.product_id
+          WHERE pk.active = 1 ORDER BY pk.name COLLATE NOCASE ASC`,
+    args: []
+  })
+  const round = (x: number): number => Math.round((x + Number.EPSILON) * 1e6) / 1e6
+  const rows = toPlain(skus).map((p) => {
+    const id = n(p.id)
+    const mv = movedBy.get(id)
+    const fromMovement = round(n(mv?.packed_in) - n(mv?.dispatched))
+    const entered = saved.has(id) ? n(saved.get(id)) : null
+    return {
+      ...p,
+      qty: entered,
+      note: notes.get(id) ?? null,
+      // What the shelf reads with no opening at all. Negative here is exactly
+      // the hole an opening figure is there to fill.
+      movement_closing: fromMovement,
+      shortfall: fromMovement < 0 ? round(-fromMovement) : 0,
+      closing: round(fromMovement + n(entered))
+    }
+  })
+  return {
+    company_id: cid,
+    as_of: asOf,
+    rows,
+    entered_count: rows.filter((r) => r.qty != null).length,
+    total_qty: round(rows.reduce((t, r) => t + n(r.qty), 0)),
+    negative_count: rows.filter((r) => n(r.movement_closing) < -0.0005).length,
+    still_negative: rows.filter((r) => n(r.closing) < -0.0005).length
+  }
+}
+
+// Save the whole sheet in one go. A blank quantity REMOVES the row rather than
+// storing nought: "nothing on the shelf that morning" and "not counted yet"
+// are different statements, and only the first belongs on the register.
+export async function saveSkuOpenings(
+  rows: Row[],
+  asOf: string,
+  companyId?: number
+): Promise<{ saved: number; cleared: number }> {
+  const cid = n(companyId) || getActiveCompanyId()
+  const date = String(asOf || '').slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Pick the date this opening is counted on')
+  const c = getClient()
+  let saved = 0
+  let cleared = 0
+  for (const raw of Array.isArray(rows) ? rows : []) {
+    const pid = n(raw?.packaging_id ?? raw?.id)
+    if (!pid) continue
+    const blank = raw?.qty === '' || raw?.qty == null
+    if (blank) {
+      const res = await c.execute({
+        sql: 'DELETE FROM sku_openings WHERE company_id = ? AND packaging_id = ?',
+        args: [cid, pid]
+      })
+      if (Number(res.rowsAffected) > 0) cleared++
+      continue
+    }
+    await c.execute({
+      sql: `INSERT INTO sku_openings (company_id, packaging_id, as_of, qty, note, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(company_id, packaging_id) DO UPDATE SET
+              as_of = excluded.as_of,
+              qty = excluded.qty,
+              note = excluded.note,
+              updated_at = datetime('now')`,
+      args: [cid, pid, date, n(raw.qty), raw?.note ? String(raw.note).trim() : null]
+    })
+    saved++
+  }
+  return { saved, cleared }
 }
 
 // Add (delta > 0) or remove (delta < 0) packed units for one SKU, logged by

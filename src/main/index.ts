@@ -147,6 +147,60 @@ app.whenReady().then(async () => {
       })
   }).catch((e) => console.error('[stock] opening adjustment column failed:', e))
 
+  // How a product is MEASURED.
+  //
+  // Everything the mill makes is weighed, so MT is the default and every
+  // product already on the books is one. A packaging item is not: a carton is a
+  // carton, and counting it in tonnes is how it ended up on the production tab
+  // beside the oils. Stated on the product rather than guessed from its
+  // category, because the category says what a thing IS and this says how it
+  // is counted — a mill could perfectly well weigh a by-product and count a
+  // tin.
+  await runOnce('products_uom_v1', async () => {
+    const c = getClient()
+    await c
+      .execute("ALTER TABLE products ADD COLUMN uom TEXT NOT NULL DEFAULT 'MT'")
+      .catch((e) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+    // The DEFAULT backfills every existing row to MT. This is the one that is
+    // counted rather than weighed; matched by its exact name so the statement
+    // is simply a no-op on a database that has no such product.
+    await c.execute({
+      sql: "UPDATE products SET uom = 'PCS' WHERE TRIM(name) = ? AND uom <> 'PCS'",
+      args: ['CARTON,POUCH,500MLX32,DALDA']
+    })
+  }).catch((e) => console.error('[products] measuring-unit column failed:', e))
+
+  // Packs on the shelf the morning the books began.
+  //
+  // The bulk register got this first: a counted opening is a BALANCE, and
+  // movements before it are superseded by the count rather than added to it.
+  // The packed shelf had no such figure, so it carried its whole history
+  // forward — which is right until somebody counts the shelf, and wrong the
+  // moment they do.
+  //
+  // Kept apart from stock_openings on purpose: that table is keyed by PRODUCT
+  // and holds tonnes in the tank, this one is keyed by PACKAGING and holds
+  // pieces on the shelf. Oil already in jars on the opening morning was never
+  // in the tank, so the two figures do not overlap and must not share a row.
+  await runOnce('sku_openings_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS sku_openings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER NOT NULL DEFAULT 1,
+      packaging_id INTEGER NOT NULL REFERENCES packagings(id),
+      as_of TEXT NOT NULL,
+      qty REAL NOT NULL DEFAULT 0,
+      note TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(company_id, packaging_id)
+    )`)
+    await c
+      .execute('CREATE INDEX IF NOT EXISTS idx_sku_openings_co ON sku_openings(company_id)')
+      .catch(() => {})
+  }).catch((e) => console.error('[stock] packed-SKU opening table failed:', e))
+
   // How a recipe is CLASSIFIED, as distinct from what it makes.
   //
   // Two recipes can both output DALDA and be entirely different jobs: one built
