@@ -13,3 +13,13 @@ release/
 _*.cjs
 _*.js
 src/main/_*.ts
+
+# Web server: build output, local SQLite data, and dev logs
+/out/web/
+/out/server/
+/.server-data/
+/data/
+web*.log
+web*.err
+weblite.log
+weblite.err
