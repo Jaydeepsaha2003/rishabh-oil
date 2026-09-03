@@ -1,9 +1,9 @@
 # Hosting the web version on Hostinger
 
-The desktop app and the website are the same codebase and are deployed by two
+The desktop app and the website are the same codebase, deployed by two
 completely separate mechanisms. Nothing here affects the desktop app or the
-update your clients receive — see **Why the desktop app is unaffected** at the
-end, which is the part worth reading twice.
+update your clients receive — see **Why the desktop app is unaffected**, which
+is the part worth reading twice.
 
 ---
 
@@ -14,14 +14,20 @@ end, which is the part worth reading twice.
 | Built by | `electron-vite build` + `electron-builder` | `npm run web:build` |
 | Triggered by | pushing a **`v*` tag** → GitHub Actions | a deploy on Hostinger |
 | Ships to | `Jaydeepsaha2003/rishabh-oil-releases` | your Hostinger Node app |
-| Database | Turso (cloud) | **Turso (cloud) — the same one** |
+| Database | **Turso** (cloud) | **SQLite** (`rishabh.db`, a local file) |
 | Front end | Electron window | browser |
 
 Both read the **same `src/main/*` business logic** — every rule, every query.
-(Of the 46 files there, five do import Electron — `index.ts`, `ipc.ts`,
+(Of the 46 files there, five import Electron — `index.ts`, `ipc.ts`,
 `config.ts`, `updater.ts`, `backup.ts` — and all five are plumbing. No business
 module does.) The only difference is how a call reaches it: Electron IPC on the
 desktop, `POST /api/invoke` on the web. Nothing is forked, so nothing can drift.
+
+> **The one thing to be clear about.** These are two separate databases, so they
+> hold two separate sets of books. An entry made on a staff PC does not appear
+> on the website, and an entry made on the website does not appear in the
+> desktop app. See **Keeping the website fresh** for what can and cannot be done
+> about that.
 
 ---
 
@@ -41,57 +47,86 @@ npm install
 npm run web:build
 ```
 
-`web:build` does two things: bundles the server (`out/server/index.cjs`) and
-builds the browser front end (`out/web/`). Neither is in the repository, because
-build output does not belong in version control — so **this step is required on
-every deploy**, not just the first.
+`web:build` bundles the server (`out/server/index.cjs`) and builds the browser
+front end (`out/web/`). Neither is in the repository, because build output does
+not belong in version control — so **this step is required on every deploy**,
+not just the first.
 
-### 3. Set the environment — the same database the desktop uses
+### 3. Put the database where a deploy cannot wipe it
+
+This matters more than anything else on this page. Keep the file **outside** the
+application root, so re-cloning or redeploying cannot delete your books:
+
+```bash
+mkdir -p /home/<user>/rishabh-data
+```
+
+### 4. Set the environment
 
 In hPanel's Node.js app environment variables (preferred — they survive
-deploys), or a `.env` file in the application root. Use the **same two values**
-already in your desktop `.env`:
+deploys), or a `.env` file in the application root:
 
 ```
-TURSO_DATABASE_URL=libsql://rishabh-oil-<your-org>.turso.io
-TURSO_AUTH_TOKEN=<your token>
+TURSO_DATABASE_URL=file:/home/<user>/rishabh-data/rishabh.db
 PORT=3000
 ```
+
+The variable keeps its old name because it is simply *the database URL* — a
+`file:` scheme means local SQLite. Reusing the name is what let the switch
+happen without touching a line of the data layer. Leave `TURSO_AUTH_TOKEN`
+unset: a file needs no token.
 
 `PORT` is usually supplied by Hostinger; the app reads it if set and falls back
 to 3000.
 
-**One database, both front ends.** An entry made on a staff PC appears on the
-website, and an entry made on the website appears in the desktop app. There is
-nothing to sync and nothing to reconcile, because there is only one copy.
+### 5. Load your data
 
-That is not an accident of configuration — it is the only arrangement that can
-work. The desktop app is *itself* a database client: `src/main/db.ts` connects
-each staff PC straight to the database over HTTPS, with no server in between. A
-SQLite file on Hostinger's disk is on Hostinger's disk, and those PCs cannot
-reach it. Sharing therefore requires a database reachable over the network, and
-Turso already is one.
+Run this **once**, from a machine that has the Turso credentials (your own PC is
+easiest):
 
-A local SQLite file remains supported and is genuinely faster — but only for a
-website whose data stands alone. See **The SQLite alternative** below.
+```bash
+npm run web:seed -- --out rishabh.db
+```
 
-### 4. Start it
+It copies every table, column, index and row — 79 tables — counts both ends and
+**exits non-zero on any mismatch**, because a partial copy of a company's books
+must not look like a success. Then upload the file to
+`/home/<user>/rishabh-data/rishabh.db`.
+
+Copying the schema from Turso is also what makes the file complete. The `runOnce`
+migrations in `src/main/index.ts` created `stock_openings`, `sku_openings`,
+`gate_entry_sales`, `bd_payment_ins`, `bd_linked_orders` and `products.uom`, and
+they run at Electron startup — which the server does not execute. A database
+built from nothing would be missing all six. Seeding from Turso is therefore the
+supported way to create the website's database.
+
+### 6. Start it
 
 Restart the app in hPanel. The log should read:
 
 ```
 [web] connecting to the database…
 [db] schema ready
+[web] local SQLite: WAL, busy_timeout 5s, foreign keys on
 [web] listening on http://localhost:3000
 [web] 260 channels registered
 ```
 
-(A `file:` URL adds one more line: `[web] local SQLite: WAL, busy_timeout 5s,
-foreign keys on`.)
+`260 channels registered` proves the whole business layer came across, and the
+`local SQLite` line confirms it is on the file rather than the cloud. Point any
+uptime check at `/api/health`, which answers without touching the database.
 
-`260 channels registered` is the line that proves the whole business layer came
-across. `/api/health` returns JSON without touching the database, which is what
-to point an uptime check at.
+The server sets four pragmas on every start, and only for a `file:` URL:
+
+- **`journal_mode = WAL`** — readers carry on during a write. Without it one
+  reader blocks every writer.
+- **`busy_timeout = 5000`** — SQLite serialises writers; without a timeout the
+  second one fails instantly with `SQLITE_BUSY`. With it, it waits its turn,
+  which for millisecond writes is indistinguishable from never colliding.
+- **`synchronous = NORMAL`** — safe under WAL. The failure mode is losing the
+  last transaction on a power cut, not a corrupt file.
+- **`foreign_keys = ON`** — declared throughout the schema, but SQLite ignores
+  them unless asked, per connection.
 
 ---
 
@@ -108,52 +143,55 @@ application root, and nothing in the build writes to it.
 
 ---
 
-## Backups
+## Backups — now yours
 
-Turso keeps its own backups and supports point-in-time restore, which is one of
-the reasons it wins for shared data. Two caveats worth knowing:
-
-- **Restore is command-line only.** There is no phpMyAdmin equivalent. If
-  something goes badly wrong, recovering needs a developer — the mill owner
-  cannot do it self-serve from a control panel.
-- **Turso is a vendor outside Hostinger.** A lapsed account or a billing problem
-  takes down the desktop app *and* the website together, and it is not something
-  Hostinger support can help with.
-
-So keep a copy you own. This is now a one-command full export:
+Turso kept backups for you. A local file does not, and the daily dump in
+`src/main/backup.ts` is triggered from Electron startup, so **the web server
+never runs it**. Put this on a cron:
 
 ```bash
-npm run web:seed -- --out backups/rishabh-2026-09-04.db
+sqlite3 /home/<user>/rishabh-data/rishabh.db ".backup '/home/<user>/backups/rishabh-$(date +%F).db'"
 ```
 
-That produces a complete, openable SQLite file — every table, column, index and
-row, with both ends counted and a non-zero exit on any mismatch. Run it on a
-schedule from any machine with the credentials. A company's accounting system
-should not have exactly one copy.
+Use `.backup`, not `cp`: under WAL a plain copy can catch a write in flight and
+produce a file that opens but is subtly wrong. This is a company's accounting
+system, and it should never have exactly one copy.
 
 ---
 
-## The SQLite alternative
+## Keeping the website fresh
 
-If you ever want the website to stand on its own — no vendor, no network hop,
-faster queries — point it at a file instead:
+The desktop writes to Turso and the website writes to its own file, so the two
+drift apart from the moment both are in use. What is possible, honestly:
+
+**A scheduled refresh — desktop changes reach the website.**
+
+```bash
+npm run web:seed -- --out /home/<user>/rishabh-data/rishabh.db --force
+```
+
+On a nightly cron this pulls everything the desktop has recorded. But `--force`
+**replaces the file**, so anything entered on the website since the last refresh
+is discarded. That makes this workable only if the website is treated as
+read-only — a place to look at the books, not to enter them.
+
+**True two-way sharing is not available on the installed client.** A libSQL
+embedded replica — a local SQLite file that syncs with Turso — would give
+exactly that, and it was tested. Turso rejects it:
 
 ```
-TURSO_DATABASE_URL=file:/home/<user>/rishabh-data/rishabh.db
+you are using a client with a deprecated version of sync, that is not
+supported in this platform. Please upgrade your client
 ```
 
-Keep that path **outside** the application root so a redeploy cannot delete it,
-and seed it with `npm run web:seed -- --out <path>`. The server then sets WAL, a
-5-second busy timeout and foreign keys on every start.
+Upgrading `@libsql/client` changes `package-lock.json` and therefore the desktop
+installer's dependency tree, so it is a deliberate decision rather than a
+detail. If two-way sharing becomes the priority, that is the path — or point the
+website at Turso as well, which needs nothing but the URL.
 
-Two things to accept if you do:
-
-1. **The data is the website's alone.** The desktop app cannot open a `file:`
-   URL at all — `src/main/db.ts` imports `@libsql/client/web`, which refuses any
-   scheme but `libsql:`/`https:`/`ws:`. So desktop and website would be two
-   separate sets of books.
-2. **Backups become entirely yours**, with `sqlite3 <db> ".backup '<dest>'"` on a cron —
-   `cp` can catch a write mid-flight, `.backup` cannot.
+**So decide which one is the book of record before staff use both.** Two sets of
+books that each look authoritative is worse than one set that is merely
+inconvenient to reach.
 
 ---
 
@@ -184,17 +222,11 @@ reasons you can check rather than take on trust:
    only happens under the web server. On the desktop there is no context and
    they fall through to the module variable, exactly as before. This was
    necessary: those two were process-global, and on a server one person's
-   company switch would have redirected everyone else's writes.
+   company switch would have redirected everyone else's writes and
+   mis-attributed the audit trail.
 
-6. **The desktop reaches the database exactly as it always did.** Sharing one
-   Turso database changes nothing about how the desktop app connects — it was
-   already a direct client of it. The website simply becomes a second front end
-   on the same data.
-
-One honest cost of sharing: every statement is an HTTP round trip, and the code
-issues 867 individual `.execute()` calls with no batching — `journal.ts` inserts
-one row per journal line. So the website is slower against Turso than against a
-local file, most noticeably on screens that loop over rows. At this size (79
-tables, ~7,900 rows) it is comfortable; worth revisiting if the books grow by an
-order of magnitude, and batching those loops is the fix rather than changing
-database.
+6. **The database switch is server-only.** `src/main/db.ts` still imports
+   `@libsql/client/web`, which cannot open a `file:` URL at all — it refuses any
+   scheme but `libsql:`/`https:`/`ws:`. Only `scripts/build-server.mjs` aliases
+   that import to the file-capable client, and the desktop build never runs that
+   script. The desktop physically cannot end up on the website's database.
