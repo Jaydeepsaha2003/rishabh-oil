@@ -2366,15 +2366,54 @@ function SkuStock(): React.JSX.Element {
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The hand entries behind the SKU being updated. Loaded with the dialog,
+  // because the dialog is where they were made and where a wrong one has to be
+  // findable — an on-hand of 1,548 with no sight of the entries behind it is a
+  // figure nobody can check.
+  const [adjLog, setAdjLog] = useState<Row[]>([])
+  const [adjLogLoading, setAdjLogLoading] = useState(false)
 
-  // Day register: pick a date to see/update that day's pieces (opening b/f +
-  // packed in − dispatched = closing). "All time" shows running totals.
-  const [dayMode, setDayMode] = useState(true)
+  // Which period the register is read over.
+  //
+  //   'day'   — one date, walked with the arrows: the mill's own daily sheet,
+  //             and what Count sheet / Upload closing are keyed to.
+  //   'range' — From..To, for "what moved this month".
+  //   'all'   — running totals since the beginning.
+  //
+  // 'day' and 'range' are the same arithmetic (opening b/f + packed in −
+  // dispatched = closing) over a different number of days, which is why the
+  // whole page keeps reading `dayMode` — derived below — rather than growing a
+  // second set of branches that could disagree with the first.
+  const [spanMode, setSpanMode] = useState<'day' | 'range' | 'all'>('day')
   const [date, setDate] = useState(todayISO())
+  const [skuRange, setSkuRange] = useState({ from: '', to: '' })
+  const dayMode = spanMode !== 'all'
+  // Count sheet and Upload closing set ONE day's closing, so over a range they
+  // act on its last day — the date the closing figure belongs to.
+  const sheetDate =
+    spanMode === 'day' ? date : spanMode === 'range' ? skuRange.to || todayISO() : todayISO()
+
+  // A period broadcast to the stock screens (Alt+F2) seeds the range, so the
+  // dates are already there when Range is picked. The MODE is left alone: the
+  // day sheet is the workflow this page is built around, and switching it out
+  // from under the reader on load would be a surprise.
+  const globalRangeSku = useGlobalDateRange()
+  useEffect(() => {
+    if (!globalRangeAppliesTo(globalRangeSku, 'stock')) return
+    if (!globalRangeSku.from && !globalRangeSku.to) return
+    setSkuRange({ from: globalRangeSku.from, to: globalRangeSku.to })
+  }, [globalRangeSku.version]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async () => {
     setLoading(true)
-    const when = dayMode ? date : undefined
+    // The SAME period object goes to both, so the hover can never cover a
+    // different stretch from the cell it explains.
+    const when =
+      spanMode === 'day'
+        ? date
+        : spanMode === 'range'
+          ? { from: skuRange.from, to: skuRange.to }
+          : undefined
     const [list, breakdown] = await Promise.all([
       window.api.skuStock.list(when),
       // The workings behind the figures, for the hover. Asked for once for the
@@ -2384,7 +2423,7 @@ function SkuStock(): React.JSX.Element {
     setRows(list)
     setParts(new Map(breakdown.map((b) => [Number(b.sku), b])))
     setLoading(false)
-  }, [dayMode, date])
+  }, [spanMode, date, skuRange.from, skuRange.to])
   useEffect(() => { load() }, [load])
   useLiveRefresh(load)
 
@@ -2406,12 +2445,68 @@ function SkuStock(): React.JSX.Element {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const totalMT = useMemo(() => rows.reduce((s, r) => s + skuMT(r), 0), [rows])
 
+  const loadAdjLog = useCallback(async (pid: number): Promise<void> => {
+    if (!pid) return
+    setAdjLogLoading(true)
+    try {
+      setAdjLog(await window.api.skuStock.adjustments(pid))
+    } catch {
+      setAdjLog([])
+    } finally {
+      setAdjLogLoading(false)
+    }
+  }, [])
+
+  // Removing an entry moves the plant tank as well as the shelf when it was a
+  // PACKING entry, so the confirmation says so — that is the half people do not
+  // expect, and it is the half that put DALDA at -3.583.
+  async function removeAdj(a: Row): Promise<void> {
+    if (!adjustRow) return
+    const pcs = Number(a.delta) || 0
+    const mt = Number(a.mt) || 0
+    const packing = String(a.kind) === 'packing'
+    const label = pieceLabel(adjustRow).toLowerCase()
+    if (
+      !window.confirm(
+        `Remove this ${packing ? 'packing' : 'correction'} entry — ` +
+          `${pcs < 0 ? '−' : '+'}${formatNum(Math.abs(pcs))} ${label} on ${formatDate(a.adj_date)}?` +
+          (packing && Math.abs(mt) > 0.0005
+            ? `\n\n${formatNum(Math.abs(mt))} MT goes back to the plant tank.`
+            : '\n\nThis only moves pieces on the shelf; no oil moves.')
+      )
+    ) {
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      await window.api.skuStock.deleteAdjustment(Number(a.id))
+      toast.success('Entry removed')
+      const pid = Number(adjustRow.id)
+      await loadAdjLog(pid)
+      // The dialog's own "On hand" read-out is derived from the row, so the row
+      // has to be refreshed too or it keeps quoting the figure it opened with.
+      const fresh = await window.api.skuStock.list(
+        spanMode === 'day' ? date : spanMode === 'range' ? { from: skuRange.from, to: skuRange.to } : undefined
+      )
+      setRows(fresh)
+      const mine = fresh.find((r) => Number(r.id) === pid)
+      if (mine) setAdjustRow(mine)
+      void load()
+    } catch (e) {
+      setError(errText(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
   function openAdjust(row: Row): void {
     setAdjustRow(row)
+    void loadAdjLog(Number(row.id))
     // Default the entry to the day being viewed, so day-wise updates land there.
     // Counted in cases by default: that is how packed output comes off the line,
     // and it is what was being typed into a field that meant pieces.
-    setAdjustForm({ mode: 'add', kind: 'packing', amount: '', note: '', date: dayMode ? date : todayISO() })
+    setAdjustForm({ mode: 'add', kind: 'packing', amount: '', note: '', date: sheetDate })
     setError(null)
   }
 
@@ -2501,7 +2596,7 @@ function SkuStock(): React.JSX.Element {
     try {
       await downloadSkuCountExcel(
         shown.map((r) => ({ ...r, pack_label: unitLabel(r) })),
-        dayMode ? date : todayISO(),
+        sheetDate,
         skuMT
       )
       toast.success('Count sheet downloaded — only the Counted column is editable')
@@ -2521,7 +2616,7 @@ function SkuStock(): React.JSX.Element {
         toast.error('No counted rows found — use the downloaded count sheet')
         return
       }
-      const when = dayMode ? date : todayISO()
+      const when = sheetDate
       let applied = 0
       let unchanged = 0
       const missing: string[] = []
@@ -2573,28 +2668,61 @@ function SkuStock(): React.JSX.Element {
       {/* Controls: period, search, and the count-sheet round trip */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="inline-flex rounded-lg border p-0.5">
-          <button
-            type="button"
-            onClick={() => setDayMode(true)}
-            className={cn(
-              'rounded-md px-3 py-1 text-[13px] font-medium transition',
-              dayMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
-            )}
-          >
-            Day wise
-          </button>
-          <button
-            type="button"
-            onClick={() => setDayMode(false)}
-            className={cn(
-              'rounded-md px-3 py-1 text-[13px] font-medium transition',
-              !dayMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
-            )}
-          >
-            All time
-          </button>
+          {(
+            [
+              ['day', 'Day wise'],
+              ['range', 'Range'],
+              ['all', 'All time']
+            ] as const
+          ).map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => {
+                // Picking Range with nothing in it would read as all-time and
+                // look broken, so it opens on the month the viewed day sits in.
+                if (k === 'range' && !skuRange.from && !skuRange.to) {
+                  setSkuRange({ from: `${date.slice(0, 7)}-01`, to: date })
+                }
+                setSpanMode(k)
+              }}
+              className={cn(
+                'rounded-md px-3 py-1 text-[13px] font-medium transition',
+                spanMode === k ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {label}
+            </button>
+          ))}
         </div>
-        {dayMode && (
+        {spanMode === 'range' && (
+          <div className="flex flex-wrap items-center gap-1.5 text-[13px]">
+            <span className="text-muted-foreground">From</span>
+            <DatePicker
+              value={skuRange.from}
+              max={skuRange.to || todayISO()}
+              onChange={(v) => setSkuRange((p) => ({ ...p, from: v || '' }))}
+              className="w-36"
+            />
+            <span className="text-muted-foreground">To</span>
+            <DatePicker
+              value={skuRange.to}
+              min={skuRange.from || undefined}
+              max={todayISO()}
+              onChange={(v) => setSkuRange((p) => ({ ...p, to: v || '' }))}
+              className="w-36"
+            />
+            {/* Opening is what the shelf held the morning the period began, so
+                say which morning that is rather than leaving "Opening" to mean
+                whatever the reader assumes. */}
+            <span className="text-[11px] text-muted-foreground">
+              {skuRange.from
+                ? `opening as at ${formatDate(skuRange.from)}`
+                : 'opening at nil — no start date set'}
+            </span>
+          </div>
+        )}
+        {spanMode === 'day' && (
           <div className="flex items-center gap-1.5 text-[13px]">
             <span className="text-muted-foreground">Date</span>
             {/* Reading a day-wise register means walking day by day, and going
@@ -2673,9 +2801,15 @@ function SkuStock(): React.JSX.Element {
             <Upload className="h-4 w-4" /> {importing ? 'Uploading…' : 'Upload closing'}
           </Button>
           <ExcelButton
-            filename={`packed-sku-stock-${dayMode ? date : todayISO()}`}
+            filename={`packed-sku-stock-${spanMode === 'range' ? `${skuRange.from || 'start'}-to-${skuRange.to || todayISO()}` : sheetDate}`}
             sheetName="Packed SKU stock"
-            title={`Packed SKU stock${dayMode ? ` — ${formatDate(date)}` : ''}`}
+            title={`Packed SKU stock${
+              spanMode === 'day'
+                ? ` — ${formatDate(date)}`
+                : spanMode === 'range'
+                  ? ` — ${formatDate(skuRange.from || '')} to ${formatDate(skuRange.to || todayISO())}`
+                  : ''
+            }`}
             columns={
               dayMode
                 ? [
@@ -2947,7 +3081,7 @@ function SkuStock(): React.JSX.Element {
                             onHand < -1e-6
                               ? r.negative_since
                                 ? `= ${asCases(onHand)} — below zero since ${formatDate(r.negative_since)}` +
-                                  `${daysApart(String(r.negative_since), dayMode ? date : todayISO()) > 0 ? `, ${daysApart(String(r.negative_since), dayMode ? date : todayISO())} days now` : ' — today'}` +
+                                  `${daysApart(String(r.negative_since), sheetDate) > 0 ? `, ${daysApart(String(r.negative_since), sheetDate)} days now` : ' — today'}` +
                                   `. Every figure since carries the same error forward.`
                                 : `= ${asCases(onHand)} — below zero, so more has gone out than was ever packed in`
                               : `= ${asCases(onHand)} · ${formatNum(skuMT(r))} MT`
@@ -3038,7 +3172,9 @@ function SkuStock(): React.JSX.Element {
       </p>
 
       <Dialog open={!!adjustRow} onOpenChange={(o) => !o && setAdjustRow(null)}>
-        <DialogContent>
+        {/* Wider and scrollable: it now carries the entry list as well as the
+            form, and a 14-entry SKU should not push Save off the screen. */}
+        <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Update packed stock — {adjustRow?.name}</DialogTitle>
           </DialogHeader>
@@ -3181,11 +3317,102 @@ function SkuStock(): React.JSX.Element {
                   )}
                 </div>
                 {error && <p className="text-sm text-red-600">{error}</p>}
+
+                {/* What is already on this SKU.
+                    ---------------------------------------------------------
+                    Each row says whether it moved OIL or only pieces, because
+                    those are different acts and the difference is invisible
+                    otherwise: a +1,000 packing followed by a −1,000 correction
+                    nets to nil on the shelf and still leaves the plant tank 15
+                    MT down. Deleting the packing entry is what puts that back.
+
+                    Dispatches are not listed. They are sale lines, undone by
+                    editing the invoice — showing them here with a bin beside
+                    them would offer a deletion this screen must not perform. */}
+                <div className="overflow-hidden rounded-lg border">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/40 px-3 py-1.5">
+                    <span className="text-[10.5px] font-bold uppercase tracking-wide text-[#334155]">
+                      Entries on this SKU
+                    </span>
+                    <span className="text-[11px] text-[#475569]">
+                      {adjLog.length} hand {adjLog.length === 1 ? 'entry' : 'entries'} · dispatches live on the
+                      invoice
+                    </span>
+                  </div>
+                  <div className="max-h-60 overflow-y-auto">
+                    {adjLogLoading ? (
+                      <div className="px-3 py-6 text-center text-[12px] text-[#475569]">Reading the entries…</div>
+                    ) : adjLog.length === 0 ? (
+                      <div className="px-3 py-6 text-center text-[12px] text-[#475569]">
+                        Nothing has been entered by hand against this SKU yet.
+                      </div>
+                    ) : (
+                      adjLog.map((a) => {
+                        const pcs = Number(a.delta) || 0
+                        const mt = Number(a.mt) || 0
+                        const packing = String(a.kind) === 'packing'
+                        return (
+                          <div
+                            key={String(a.id)}
+                            className="flex items-start gap-2 border-b px-3 py-2 last:border-0"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                                <span className="text-[12px] font-semibold tabular-nums text-[#0b1728]">
+                                  {formatDate(a.adj_date)}
+                                </span>
+                                <span
+                                  className={cn(
+                                    'text-[12.5px] font-bold tabular-nums',
+                                    pcs < 0 ? 'text-rose-700' : 'text-emerald-700'
+                                  )}
+                                >
+                                  {pcs < 0 ? '−' : '+'}
+                                  {formatNum(Math.abs(pcs))} {pieceLabel(adjustRow)}
+                                </span>
+                                <Badge
+                                  variant={packing ? 'default' : 'warning'}
+                                  className="text-[9.5px] uppercase"
+                                >
+                                  {packing ? 'Packing' : 'Correction'}
+                                </Badge>
+                                <span className="text-[11px] font-medium text-[#475569]">
+                                  {!packing
+                                    ? 'shelf only — no oil moved'
+                                    : mt > 0.0005
+                                      ? `−${formatNum(mt)} MT from the plant tank`
+                                      : mt < -0.0005
+                                        ? `+${formatNum(-mt)} MT back to the plant tank`
+                                        : 'no oil moved'}
+                                </span>
+                              </div>
+                              <div className="truncate text-[11px] text-[#475569]">
+                                {String(a.created_by || 'unknown')}
+                                {a.created_at ? ` · ${String(a.created_at).slice(0, 16).replace('T', ' ')}` : ''}
+                                {a.note ? ` · “${String(a.note)}”` : ''}
+                              </div>
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 shrink-0 text-muted-foreground hover:text-red-600"
+                              title="Remove this entry"
+                              disabled={saving}
+                              onClick={() => void removeAdj(a)}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        )
+                      })
+                    )}
+                  </div>
+                </div>
               </div>
             )
           })()}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setAdjustRow(null)} disabled={saving}>Cancel</Button>
+            <Button variant="outline" onClick={() => setAdjustRow(null)} disabled={saving}>Close</Button>
             <Button onClick={saveAdjust} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
           </DialogFooter>
         </DialogContent>

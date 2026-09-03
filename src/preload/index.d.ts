@@ -176,8 +176,10 @@ export interface Api {
     date: (companyId?: number) => Promise<string>
   }
   skuStock: {
-    breakdown: (date?: string) => Promise<Row[]>
-    list: (date?: string) => Promise<Row[]>
+    breakdown: (date?: string | { from?: string; to?: string }) => Promise<Row[]>
+    list: (date?: string | { from?: string; to?: string }) => Promise<Row[]>
+    adjustments: (id: number) => Promise<Row[]>
+    deleteAdjustment: (id: number) => Promise<{ id: number; packaging_id: number }>
     adjust: (
       id: number,
       delta: number,

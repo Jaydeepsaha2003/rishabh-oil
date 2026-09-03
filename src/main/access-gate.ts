@@ -97,6 +97,10 @@ const READ_OPS = new Set([
 function actionFor(op: string): Action {
   if (op === 'create' || op === 'record' || op === 'issue' || op === 'transfer' || op === 'createInvoice') return 'create'
   if (op === 'delete' || op === 'remove' || op === 'removeInvoice' || op === 'deleteEntry' || op === 'deleteTransfer' ||
+      // Removing a packed-stock entry is a deletion, not an edit. Without this
+      // it fell through to 'edit' and anyone who could enter packing could also
+      // delete somebody else's.
+      op === 'deleteAdjustment' ||
       op === 'deleteIssuance' || op === 'removeIssuance') return 'delete'
   return 'edit'
 }

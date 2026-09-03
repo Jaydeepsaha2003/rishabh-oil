@@ -243,8 +243,13 @@ const api = {
       ipcRenderer.invoke('stockOpening:date', { companyId })
   },
   skuStock: {
-    breakdown: (date?: string): Promise<Row[]> => ipcRenderer.invoke('skuStock:breakdown', { date }),
-    list: (date?: string): Promise<Row[]> => ipcRenderer.invoke('skuStock:list', { date }),
+    breakdown: (date?: string | { from?: string; to?: string }): Promise<Row[]> => ipcRenderer.invoke('skuStock:breakdown', { date }),
+    // A single date is the day sheet; { from, to } is a period.
+    list: (date?: string | { from?: string; to?: string }): Promise<Row[]> => ipcRenderer.invoke('skuStock:list', { date }),
+    // The hand entries behind one SKU, and removing one of them.
+    adjustments: (id: number): Promise<Row[]> => ipcRenderer.invoke('skuStock:adjustments', { id }),
+    deleteAdjustment: (id: number): Promise<{ id: number; packaging_id: number }> =>
+      ipcRenderer.invoke('skuStock:deleteAdjustment', { id }),
     adjust: (
       id: number,
       delta: number,
