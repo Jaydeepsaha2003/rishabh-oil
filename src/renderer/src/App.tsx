@@ -448,7 +448,7 @@ function App(): React.JSX.Element {
         {view === 'categories' && <Categories />}
         {view === 'formulation' && <Formulation />}
         {view === 'production' && <Production />}
-        {view === 'stock' && <Stock />}
+        {view === 'stock' && <Stock onCompanyChange={switchCompany} />}
         {view === 'salesBargains' && <SalesBargains onOpenSale={(id) => openRecord('sales', id)} />}
         {view === 'sales' && (
           <Sales

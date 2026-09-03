@@ -811,7 +811,21 @@ function STOCK_TABLE_COLS(ranged: boolean): { l: string; r?: boolean; tone?: str
 // applied. Typing a quantity and being told "still short 412.7" is the whole
 // job; a bare list of empty boxes would leave the storekeeper guessing.
 // ---------------------------------------------------------------------------
-function OpeningStock(): React.JSX.Element {
+// Switching company remounts every page — App keys <main> on the active
+// company so every screen refetches. That is what we want for the data, but it
+// also resets which Stock view was open, and a reader who switched company
+// FROM the opening sheet wants the other company's opening sheet, not the
+// register. The switcher leaves this one-shot note behind; Stock honours it
+// once on mount and clears it.
+const RESUME_OPENING = 'stock.resumeOpening'
+
+function OpeningStock({
+  companies,
+  onCompanyChange
+}: {
+  companies: Row[]
+  onCompanyChange?: (id: string) => void
+}): React.JSX.Element {
   const [data, setData] = useState<Row | null>(null)
   // An opening is counted in two parts, the way the plant counts it: what is
   // in the tank (Raw) and what is already in process (PP / WIP). The register
@@ -952,6 +966,61 @@ function OpeningStock(): React.JSX.Element {
     }
   }
 
+  // Whose tanks these are. Taken from the payload rather than a separate
+  // lookup, so the name on screen is the company the save will actually write
+  // into — the two cannot disagree.
+  const cid = Number(data?.company_id || 0)
+  // Only companies still in use can be switched to, same as the sidebar: this
+  // makes one active, and reviving a closed company is not a stock decision.
+  const switchable = useMemo(() => companies.filter((c) => c.active), [companies])
+
+  // Switching discards this sheet and rebuilds it for the other company, so
+  // anything typed and unsaved would go with it. Say so before it happens.
+  function switchTo(v: string): void {
+    if (!onCompanyChange || Number(v) === cid) return
+    if (
+      dirty &&
+      !window.confirm(
+        'Switch company? The figures typed on this sheet are not saved yet, and switching discards them.'
+      )
+    ) {
+      return
+    }
+    try {
+      sessionStorage.setItem(RESUME_OPENING, '1')
+    } catch {
+      // no storage on this device — the reader lands on the register instead
+    }
+    onCompanyChange(v)
+  }
+
+  // The one thing worth saying about the struck-on date, if anything at all:
+  // it is not set, the ledger has no start of its own to agree with, or the two
+  // disagree. Resolved here so the banner shows a single footer line rather
+  // than three conditional blocks stacked beside the field.
+  const dateNote = useMemo((): { text: string; tip: string } | null => {
+    if (!asOf) {
+      return {
+        text: 'Pick this date first',
+        tip: 'This is the morning the books officially begin. Nothing before it is reconciled against these figures, and every register opens its default period from this day — so it has to be set before an opening can be saved.'
+      }
+    }
+    const from = data?.books_from ? String(data.books_from).slice(0, 10) : ''
+    if (!from) {
+      return {
+        text: 'Ledger start not set',
+        tip: 'The ledger has no start date set yet (Accounts → Opening balances). Pick the morning the tanks were counted — ideally the same day the accounts begin, so stock and the ledger agree about when the books open.'
+      }
+    }
+    if (from !== asOf) {
+      return {
+        text: `Ledger begins ${formatDate(from)}`,
+        tip: 'Stock and the ledger normally open on the same morning. A different date here is allowed — a mill may dip its tanks on another day — but the two figures then describe two different moments.'
+      }
+    }
+    return null
+  }, [asOf, data])
+
   const clashes = (data?.name_clashes as Row[]) || []
 
   if (loading && !data) {
@@ -968,115 +1037,182 @@ function OpeningStock(): React.JSX.Element {
           explaining WHY are worth reading once; after that they are four lines
           between the reader and the work. */}
       <div className="overflow-hidden rounded-xl border border-[#d9d2b8] shadow-sm">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-3 bg-gradient-to-r from-[#1a2c56] to-[#2c4a8c] px-5 py-4">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/15">
-            <Layers className="h-4 w-4 text-white" />
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-4 bg-gradient-to-r from-[#1a2c56] to-[#2c4a8c] px-6 py-5">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/15 ring-1 ring-inset ring-white/20">
+            <Layers className="h-5 w-5 text-white" />
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
-              <h3 className="text-[15px] font-bold text-white">Stock brought forward</h3>
+              <h3 className="text-[16px] font-bold leading-tight text-white">Stock brought forward</h3>
               <InfoTip
                 className="text-white/60 hover:text-white"
                 text="The register works out every balance from movements — purchases in, production, dispatches out. Anything already in the tanks before the books opened was never a movement, so it has to be told once. Until it is, oil consumed since that morning reads as stock the mill never had, which is what puts a product below zero."
               />
             </div>
-            <p className="mt-0.5 text-[11.5px] text-white/70">
+            <p className="mt-1 text-[12px] leading-relaxed text-white/65">
               What was in the tanks the morning the books began.
             </p>
           </div>
-          <div className="flex shrink-0 items-center gap-2.5">
-            <div className="text-right">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-white/60">
-                Struck on <span className="text-amber-300">*</span>
+
+          {/* The two settings everything on this screen hangs on — whose tanks,
+              and which morning — grouped in their own panel as proper labelled
+              fields. They used to run along the same row as the title with
+              their labels beside them and a caption stacked under each, four
+              text runs deep in the space of one. */}
+          <div className="shrink-0 rounded-xl bg-white/[0.08] p-3.5 ring-1 ring-inset ring-white/15">
+            <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
+              {!!onCompanyChange && !!cid && switchable.length > 1 && (
+                <>
+                  <div>
+                    <div className="mb-1.5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-white/55">
+                      Counting for
+                      <InfoTip
+                        className="text-white/45 hover:text-white"
+                        text="Whose tanks are being counted. Each company keeps its own opening — one company's figures are never read into another's register. Switching here switches the whole app, exactly as the sidebar does."
+                      />
+                    </div>
+                    <Select value={String(cid)} onValueChange={switchTo}>
+                      <SelectTrigger
+                        title="Switch company"
+                        className="h-10 w-[15rem] border-white/20 bg-white/10 text-[13px] font-semibold text-white hover:bg-white/20 [&>svg]:opacity-70"
+                      >
+                        <span className="flex min-w-0 items-center gap-2">
+                          <Building2 className="h-4 w-4 shrink-0 text-white/60" />
+                          <SelectValue placeholder="Select company" />
+                        </span>
+                      </SelectTrigger>
+                      <SelectContent className="min-w-[15rem]">
+                        {switchable.map((c) => (
+                          <SelectItem key={String(c.id)} value={String(c.id)}>{c.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="h-10 w-px self-end bg-white/15" />
+                </>
+              )}
+              <div>
+                <div className="mb-1.5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-white/55">
+                  <span>Struck on <span className="text-amber-300">*</span></span>
+                  <InfoTip
+                    className="text-white/45 hover:text-white"
+                    text="The morning the books officially begin. Nothing before it is reconciled against these figures, and every register opens its default period from this day."
+                  />
+                </div>
+                <div
+                  className={cn(
+                    'w-[11.5rem] [&_button]:h-10 [&_button]:text-[13px] [&_button]:font-semibold [&_button]:text-white [&_button:hover]:bg-white/20',
+                    asOf
+                      ? '[&_button]:border-white/20 [&_button]:bg-white/10'
+                      : '[&_button]:border-amber-300 [&_button]:bg-amber-400/20'
+                  )}
+                >
+                  <DatePicker value={asOf} onChange={setAsOf} />
+                </div>
               </div>
-              {!asOf ? (
-                <div className="flex items-center gap-1 text-[11px] font-semibold text-amber-200">
-                  Pick this date first
-                  <InfoTip
-                    className="text-amber-200/70 hover:text-amber-100"
-                    text="This is the morning the books officially begin. Nothing before it is reconciled against these figures, and every register opens its default period from this day — so it has to be set before an opening can be saved."
-                  />
-                </div>
-              ) : !data?.books_from ? (
-                <div className="flex items-center gap-1 text-[11px] text-amber-200">
-                  Ledger start not set
-                  <InfoTip
-                    className="text-amber-200/70 hover:text-amber-100"
-                    text="The ledger has no start date set yet (Accounts → Opening balances). Pick the morning the tanks were counted — ideally the same day the accounts begin, so stock and the ledger agree about when the books open."
-                  />
-                </div>
-              ) : String(data.books_from).slice(0, 10) !== asOf ? (
-                <div className="flex items-center gap-1 text-[11px] text-amber-200">
-                  Ledger begins {formatDate(String(data.books_from))}
-                  <InfoTip
-                    className="text-amber-200/70 hover:text-amber-100"
-                    text="Stock and the ledger normally open on the same morning. A different date here is allowed — a mill may dip its tanks on another day — but the two figures then describe two different moments."
-                  />
-                </div>
-              ) : null}
             </div>
-            <div className="flex flex-col gap-1">
-              <div
-                className={cn(
-                  'w-[168px] [&_button]:h-9 [&_button]:text-white [&_button:hover]:bg-white/20',
-                  asOf
-                    ? '[&_button]:border-white/25 [&_button]:bg-white/10'
-                    : '[&_button]:border-amber-300 [&_button]:bg-amber-400/20'
-                )}
-              >
-                <DatePicker value={asOf} onChange={setAsOf} />
-              </div>
-              <span className="text-[10px] leading-snug text-white/55">
-                every register opens from this day
-              </span>
+
+            {/* One footer for the notes those fields used to carry stacked
+                underneath them — the warning, if there is one, first. */}
+            <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] leading-snug">
+              {!!dateNote && (
+                <>
+                  <span className="flex items-center gap-1 font-semibold text-amber-200">
+                    <AlertTriangle className="h-3 w-3 shrink-0" />
+                    {dateNote.text}
+                    <InfoTip className="text-amber-200/70 hover:text-amber-100" text={dateNote.tip} />
+                  </span>
+                  <span className="text-white/25">·</span>
+                </>
+              )}
+              <span className="text-white/50">every register opens from this day</span>
             </div>
           </div>
         </div>
 
-        {/* The figures, on the same card as the heading they belong to. The
-            opening's own arithmetic comes first — Raw + PP is the total the
-            register will open at, so it is worth seeing added up. */}
-        <div className="grid grid-cols-2 divide-x divide-[#e0d8bd] border-t border-[#d9d2b8] bg-[#fffdf4] lg:grid-cols-5">
+        {/* The figures those settings produce. Four cells, not five: the two
+            below-zero counts are one question asked twice — how many were
+            short, how many still are — so they read as a movement rather than
+            as two unrelated numbers. Each cell now has room for its value AND
+            a line of small print saying what the value is made of, which is
+            what the long uppercase labels were straining to do on their own.
+
+            The grid's own gap draws the dividers, so they land correctly at
+            every breakpoint instead of only at the widest one. */}
+        <div className="grid grid-cols-2 gap-px border-t border-[#d9d2b8] bg-[#e6dfc4] lg:grid-cols-4">
           {[
             {
-              label: 'Raw + PP = total',
-              value: `${formatNum(stats.raw)} + ${formatNum(stats.pp)} = ${formatNum(stats.total)}`,
-              tone: 'text-[#1a2c56]',
-              tip: 'The tank figure plus the work already in process, and their total. The register opens at the total, and the Day close screen shows the same total as the physical count for this date.'
+              label: 'Opening total',
+              tip: 'The tank figure plus the work already in process. The register opens at this total, and the Day close screen shows the same total as the physical count for this date.',
+              value: <span className="text-[#1a2c56]">{formatNum(stats.total)}</span>,
+              note: `${formatNum(stats.raw)} raw + ${formatNum(stats.pp)} in process`
             },
             {
               label: 'Answered',
-              value: `${stats.entered} / ${rows.length}`,
-              tone: stats.entered === rows.length ? 'text-emerald-700' : 'text-[#1a2c56]',
-              tip: 'How many products have an opening entered — Raw or PP counts. A blank is not the same as zero: blank means not yet counted and stays off the register entirely.'
+              tip: 'How many products have an opening entered — Raw or PP counts. A blank is not the same as zero: blank means not yet counted and stays off the register entirely.',
+              value: (
+                <span
+                  className={cn(
+                    stats.entered === 0
+                      ? 'text-amber-700'
+                      : stats.entered === rows.length
+                        ? 'text-emerald-700'
+                        : 'text-[#1a2c56]'
+                  )}
+                >
+                  {stats.entered}
+                  <span className="text-[15px] font-semibold text-muted-foreground"> / {rows.length}</span>
+                </span>
+              ),
+              note: (
+                <span className="block">
+                  <span className="mb-1.5 flex h-1.5 overflow-hidden rounded-full bg-[#e6dfc4]">
+                    <span
+                      className={cn(
+                        'h-full rounded-full transition-all',
+                        stats.entered === rows.length ? 'bg-emerald-500' : 'bg-[#2c4a8c]'
+                      )}
+                      style={{ width: `${rows.length ? Math.round((stats.entered / rows.length) * 100) : 0}%` }}
+                    />
+                  </span>
+                  {rows.length - stats.entered > 0
+                    ? `${rows.length - stats.entered} still blank`
+                    : 'every product counted'}
+                </span>
+              )
             },
             {
-              label: 'Below zero to begin with',
-              value: String(data?.negative_count ?? 0),
-              tone: Number(data?.negative_count) ? 'text-rose-700' : 'text-emerald-700',
-              tip: 'Products already negative from movements SINCE the opening date alone. Each one has been consumed or dispatched more than it was booked in — the hole an opening figure is here to fill. Anything before the opening date is not counted.'
-            },
-            {
-              label: 'Still below zero',
-              value: String(stats.stillShort),
-              tone: stats.stillShort ? 'text-rose-700' : 'text-emerald-700',
-              tip: 'How many would still close negative with what is typed right now. This is the number to drive to nil: while it is above zero, something is still unaccounted for.'
+              label: 'Below zero',
+              tip: 'Products the register would carry as a negative balance. The first number counts them on movements since the opening date alone — each has been consumed or dispatched more than it was booked in, which is the hole an opening figure is here to fill. The second counts how many would STILL close negative with what is typed right now, and is the one to drive to nil.',
+              value: (
+                <span className="flex items-baseline gap-2">
+                  <span className={cn(Number(data?.negative_count) ? 'text-rose-700' : 'text-emerald-700')}>
+                    {Number(data?.negative_count ?? 0)}
+                  </span>
+                  <span className="text-[15px] font-normal text-muted-foreground">→</span>
+                  <span className={cn(stats.stillShort ? 'text-rose-700' : 'text-emerald-700')}>
+                    {stats.stillShort}
+                  </span>
+                </span>
+              ),
+              note: 'to begin with → with what is typed'
             },
             {
               label: 'Opening value',
-              value: formatINR(stats.value),
-              tone: 'text-[#1a2c56]',
-              tip: '(Raw + PP) × rate, summed. Only needed if the opening is to be posted to the ledger as well as the stock register; leave the rates blank otherwise.'
+              tip: '(Raw + PP) × rate, summed. Only needed if the opening is to be posted to the ledger as well as the stock register; leave the rates blank otherwise.',
+              value: <span className="text-[#1a2c56]">{formatINR(stats.value)}</span>,
+              note: stats.value > 0 ? 'what the ledger would open at' : 'rates are optional — leave them blank to skip'
             }
           ].map((k) => (
-            <div key={k.label} className="px-4 py-3">
+            <div key={k.label} className="bg-[#fffdf4] px-5 py-4">
               <div className="flex items-center gap-1">
                 <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
                   {k.label}
                 </span>
                 <InfoTip text={k.tip} />
               </div>
-              <div className={cn('mt-0.5 text-[19px] font-bold tabular-nums', k.tone)}>{k.value}</div>
+              <div className="mt-1.5 text-[22px] font-bold leading-none tabular-nums">{k.value}</div>
+              <div className="mt-2 text-[10.5px] leading-snug text-muted-foreground">{k.note}</div>
             </div>
           ))}
         </div>
@@ -1087,7 +1223,7 @@ function OpeningStock(): React.JSX.Element {
           why merging would be wrong, is behind the (i) — it is the same
           sentence every time and does not need re-reading on every visit. */}
       {clashes.length > 0 && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-2">
           <span className="flex items-center gap-1.5 text-[12px] font-bold text-amber-900">
             <AlertTriangle className="h-3.5 w-3.5" />
             {clashes.length === 1 ? 'One product name is' : `${clashes.length} product names are`} used twice
@@ -1099,7 +1235,7 @@ function OpeningStock(): React.JSX.Element {
           {clashes.map((cl) => (
             <span
               key={String(cl.key)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-[11.5px]"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-white px-2.5 py-0.5 text-[11px]"
               title={`ids ${(cl.ids as number[]).join(' and ')}`}
             >
               <span className="font-semibold text-amber-900">{String(cl.names?.[0] ?? cl.key)}</span>
@@ -1115,10 +1251,10 @@ function OpeningStock(): React.JSX.Element {
       )}
 
       {/* --------------------------------------------------------- filters */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-[#e0d8bd] bg-white px-4 py-3 shadow-sm">
         <Input
           placeholder="Find a product…"
-          className="h-9 w-56 text-[13px]"
+          className="h-10 w-64 text-[13px]"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -1147,7 +1283,7 @@ function OpeningStock(): React.JSX.Element {
               Unsaved changes
             </span>
           )}
-          <Button onClick={save} disabled={saving || !dirty} className="h-9 bg-[#1a2c56] hover:bg-[#24407e]">
+          <Button onClick={save} disabled={saving || !dirty} className="h-10 bg-[#1a2c56] px-5 hover:bg-[#24407e]">
             {saving ? 'Saving…' : 'Save opening stock'}
           </Button>
         </div>
@@ -3832,10 +3968,24 @@ function Transfers(): React.JSX.Element {
   )
 }
 
-export function Stock(): React.JSX.Element {
+export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => void }): React.JSX.Element {
   const [stockGroup, setStockGroup] = useState<'book' | 'actual'>('book')
   const [tab, setTab] = useState('raw')
   const [bookView, setBookView] = useState<'register' | 'opening'>('register')
+  // Honour the note the opening sheet's company switcher left behind, so a
+  // switch made there comes back to the opening sheet for the other company
+  // instead of dropping the reader on the register. Runs once, then clears —
+  // ordinary navigation to Stock still opens on the register.
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem(RESUME_OPENING) !== '1') return
+      sessionStorage.removeItem(RESUME_OPENING)
+      setStockGroup('book')
+      setBookView('opening')
+    } catch {
+      // no storage — nothing to resume
+    }
+  }, [])
   const [rows, setRows] = useState<Row[]>([])
   const [breakdown, setBreakdown] = useState<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[] }>>({})
   const [range, setRange] = useState({ from: '', to: '' })
@@ -3964,7 +4114,7 @@ export function Stock(): React.JSX.Element {
           </div>
         )}
         {stockGroup === 'book' && bookView === 'opening' ? (
-          <OpeningStock />
+          <OpeningStock companies={companies} onCompanyChange={onCompanyChange} />
         ) : (
         <Tabs value={tab} onValueChange={setTab}>
           {stockGroup !== 'book' && (
