@@ -1141,8 +1141,20 @@ const MIGRATIONS = [
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
   'ALTER TABLE orders ADD COLUMN round_off_manual INTEGER NOT NULL DEFAULT 0',
-  'DROP TABLE IF EXISTS bd_entries',
-  'DROP TABLE IF EXISTS bd_parties',
+  // These two used to retire the old party+entries tracker. They are NO-OPS
+  // now, and must stay no-ops, because the NAME bd_parties was later reused
+  // for a completely different table — the party links on a discounted bill,
+  // created by runOnce('bd_parties_v1'). Migrations replay from whatever index
+  // a database has reached, so leaving the DROP here meant one replay wiped
+  // the live table while the runOnce marker said "already created" and never
+  // brought it back. That is exactly how Bill Discounting (and, through a
+  // shared Promise.all, the whole LC screen) went blank.
+  //
+  // Kept as statements rather than deleted so every later migration keeps its
+  // index — the list is applied BY COUNT, so removing entries would silently
+  // skip real work on databases already past this point.
+  'SELECT 1 /* was: DROP TABLE IF EXISTS bd_entries */',
+  'SELECT 1 /* was: DROP TABLE IF EXISTS bd_parties */',
   `CREATE TABLE IF NOT EXISTS nbfcs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     company_id INTEGER NOT NULL DEFAULT 1,

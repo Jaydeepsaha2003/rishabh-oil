@@ -23,12 +23,28 @@ export function GlobalDateRangeProvider({ children }: { children: React.ReactNod
 
   useEffect(() => {
     let active = true
-    window.api.settings.all().then((all) => {
+    void (async () => {
+      const all = await window.api.settings.all().catch(() => ({}) as Record<string, string>)
       if (!active) return
       const f = all.global_date_from || ''
       const t = all.global_date_to || ''
-      if (f || t) setRangeState({ from: f, to: t, version: 1, scope: 'all' })
-    })
+      if (f || t) {
+        setRangeState({ from: f, to: t, version: 1, scope: 'all' })
+        return
+      }
+      // Nothing chosen yet: the books officially begin on the day the OPENING
+      // STOCK was struck, so that is where the default period starts. Anything
+      // before it is deliberately out of view — those movements predate the
+      // figures the register is reconciled against and would only read as
+      // phantom stock.
+      const from = await window.api.stockOpening.date().catch(() => '')
+      if (!active || !from) return
+      const y = Number(String(from).slice(0, 4))
+      const m = Number(String(from).slice(5, 7))
+      // To the end of the financial year that opening falls in (Apr-Mar).
+      const endYear = m >= 4 ? y + 1 : y
+      setRangeState({ from: String(from).slice(0, 10), to: `${endYear}-03-31`, version: 1, scope: 'all' })
+    })()
     return () => {
       active = false
     }

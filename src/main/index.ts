@@ -54,7 +54,23 @@ function createWindow(): void {
 
 app.whenReady().then(async () => {
   await initDb()
-  await backfillJournal().catch((e) => console.error('[journal] backfill failed:', e))
+  // ONCE, not on every launch.
+  //
+  // This posts vouchers for documents created before the journal engine
+  // existed. It ran on every single startup, and because it asks "does this
+  // document have a voucher?", every start was a fresh chance to re-post
+  // anything that momentarily did not — which is how consolidating a
+  // multi-line invoice onto one voucher kept being undone: the next start saw
+  // the invoice's other lines as unposted and wrote a voucher for each,
+  // double-counting the revenue and the debtor. It happened repeatedly,
+  // because electron-vite restarts the main process on any file change under
+  // src/main.
+  //
+  // A catch-up job for historical rows only needs to run once, and runOnce
+  // records nothing if it throws, so a genuine failure still retries.
+  await runOnce('journal_backfill_v1', () => backfillJournal()).catch((e) =>
+    console.error('[journal] backfill failed:', e)
+  )
   await backfillSalesGst().catch((e) => console.error('[sales] GST backfill failed:', e))
   await backfillSalesRoundOff().catch((e) => console.error('[sales] round-off backfill failed:', e))
   await restateStaleSalesRoundOff().catch((e) => console.error('[sales] round-off restatement failed:', e))
@@ -102,6 +118,19 @@ app.whenReady().then(async () => {
     )`)
     await c.execute('CREATE INDEX IF NOT EXISTS idx_stock_openings_co ON stock_openings(company_id)')
   }).catch((e) => console.error('[stock] opening-stock table failed:', e))
+
+  // An opening is counted the way the plant counts: what is in the tank, plus
+  // what is already in process (PP / WIP). They are two separate figures on the
+  // count sheet and the total is what the register opens at — the same shape
+  // the Day close screen already uses, so the two agree by construction.
+  await runOnce('stock_openings_pp_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE stock_openings ADD COLUMN pp_qty REAL NOT NULL DEFAULT 0')
+      .catch((e) => {
+        // Already there on a database that has had this column added by hand.
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+  }).catch((e) => console.error('[stock] opening pp column failed:', e))
 
   // How a recipe is CLASSIFIED, as distinct from what it makes.
   //
@@ -313,6 +342,94 @@ app.whenReady().then(async () => {
   // than one party. The bill keeps its PRIMARY party in the column it always
   // had, so every register, voucher and ledger posting is untouched, and this
   // table holds all of them, the primary included.
+  // Bill Discounting's tables, restored for a database that never got them.
+  //
+  // bill_discountings sits in the MIDDLE of the migration list, and that list
+  // is applied by COUNT — so an install whose count was already past that
+  // point never ran it, and Bill Discounting has been querying a table that
+  // was not there. bd_parties has the same problem from the other direction:
+  // a migration replay dropped it (the name was reused, see db.ts) while its
+  // own runOnce marker said it existed.
+  //
+  // Under its own key so it runs regardless of those older markers, and every
+  // statement is idempotent, so it is harmless where the tables are fine.
+  await runOnce('bd_tables_repair_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS bill_discountings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER NOT NULL DEFAULT 1,
+      bd_no TEXT,
+      nbfc_id INTEGER REFERENCES nbfcs(id),
+      finance_type TEXT NOT NULL DEFAULT 'PID',
+      party_type TEXT NOT NULL DEFAULT 'supplier',
+      party_id INTEGER,
+      purpose TEXT NOT NULL DEFAULT 'manufacturing',
+      amount REAL NOT NULL DEFAULT 0,
+      payment_received_date TEXT,
+      maturity_date TEXT,
+      margin_pct REAL NOT NULL DEFAULT 0,
+      interest_pct REAL NOT NULL DEFAULT 0,
+      tds_pct REAL NOT NULL DEFAULT 0,
+      interest_upfront INTEGER NOT NULL DEFAULT 0,
+      days_year REAL NOT NULL DEFAULT 360,
+      status TEXT NOT NULL DEFAULT 'open',
+      repaid_date TEXT,
+      repaid_amount REAL,
+      journal_entry_id INTEGER,
+      repay_journal_entry_id INTEGER,
+      margin_release_journal_entry_id INTEGER,
+      receivable_party_id INTEGER,
+      invoice_amount REAL,
+      note TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`)
+    // Columns the migration list adds after the table. Swallowed one by one:
+    // "duplicate column" is the expected answer where the table is already
+    // complete, and runOnce records nothing if the block throws.
+    for (const sql of [
+      'ALTER TABLE bill_discountings ADD COLUMN days_year REAL NOT NULL DEFAULT 360',
+      'ALTER TABLE bill_discountings ADD COLUMN invoice_amount REAL',
+      'ALTER TABLE bill_discountings ADD COLUMN receivable_party_id INTEGER'
+    ]) {
+      await c.execute(sql).catch(() => {})
+    }
+    for (const sql of [
+      'CREATE INDEX IF NOT EXISTS idx_bd_company ON bill_discountings(company_id)',
+      'CREATE INDEX IF NOT EXISTS idx_bd_nbfc ON bill_discountings(nbfc_id)',
+      'CREATE INDEX IF NOT EXISTS idx_bd_company_status ON bill_discountings(company_id, status)'
+    ]) {
+      await c.execute(sql).catch(() => {})
+    }
+    await c.execute(`CREATE TABLE IF NOT EXISTS bd_repayments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bd_id INTEGER NOT NULL REFERENCES bill_discountings(id),
+      repay_date TEXT NOT NULL,
+      amount REAL NOT NULL DEFAULT 0,
+      journal_entry_id INTEGER,
+      note TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_bd_repay_bd ON bd_repayments(bd_id)').catch(() => {})
+
+    // The party links, whose name a migration had been dropping.
+    await c.execute(`CREATE TABLE IF NOT EXISTS bd_parties (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bd_id INTEGER NOT NULL REFERENCES bill_discountings(id),
+      party_type TEXT NOT NULL,
+      party_id INTEGER NOT NULL,
+      amount REAL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(bd_id, party_id)
+    )`)
+    await c.execute('ALTER TABLE bd_parties ADD COLUMN amount REAL').catch(() => {})
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_bd_parties_bd ON bd_parties(bd_id)').catch(() => {})
+    // Any bill already on file gets its own party as a link, so both read paths
+    // agree. IGNORE, so a bill that already has links is left alone.
+    await c.execute(`INSERT OR IGNORE INTO bd_parties (bd_id, party_type, party_id)
+      SELECT id, party_type, party_id FROM bill_discountings WHERE party_id IS NOT NULL`).catch(() => {})
+
+    console.log('[bd] tables checked/restored')
+  }).catch((e) => console.error('[bd] table repair failed:', e))
   await runOnce('bd_parties_v1', async () => {
     const c = getClient()
     await c.execute(`CREATE TABLE IF NOT EXISTS bd_parties (

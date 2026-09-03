@@ -178,15 +178,51 @@ function Select({ value, onValueChange, disabled, children, searchable, showChec
         return
       }
       // A plain page has no dialog boundary to portal against, so the panel
-      // stays inline (positioned relative to its own trigger via CSS) — it
-      // only needs to know whether to drop down or flip up, and how tall it
-      // can be either way, measured against the actual window.
-      setPortal(null)
+      // normally stays inline, positioned relative to its own trigger.
+      //
+      // EXCEPT when something above it CLIPS. A card with overflow-hidden —
+      // used to keep a coloured header strip inside its rounded corners — cuts
+      // an inline panel off at the card's edge, which reads as the list
+      // "hiding" the moment it opens. That has been hit on the trading buyer
+      // card and the production sheet, so it is detected here rather than left
+      // for the next card to rediscover.
+      //
+      // Only overflow HIDDEN/CLIP counts. A scrollable ancestor (the app's own
+      // <main>, overflow-y:auto) is deliberately ignored: panels have always
+      // sat inline inside it and do so correctly, and treating it as a clipper
+      // would change positioning on every page in the app.
       const spaceBelow = window.innerHeight - t.bottom
       const spaceAbove = t.top
       const openUp = dirRef.current ?? (spaceBelow < 240 && spaceAbove > spaceBelow)
       dirRef.current = openUp
       const maxH = Math.max(120, Math.min(320, (openUp ? spaceAbove : spaceBelow) - 12))
+
+      let clipped = false
+      for (let el = wrap.parentElement; el && el !== document.body; el = el.parentElement) {
+        const st = getComputedStyle(el)
+        if (/hidden|clip/.test(st.overflowY) || /hidden|clip/.test(st.overflowX)) {
+          clipped = true
+          break
+        }
+      }
+      if (clipped) {
+        // Fixed to the viewport, at the trigger's own rectangle, so no
+        // ancestor can cut it off.
+        setInlineFlip(null)
+        setPortal({
+          target: document.body,
+          listMaxH: maxH,
+          style: {
+            position: 'fixed',
+            left: t.left,
+            minWidth: t.width,
+            maxWidth: Math.max(t.width, window.innerWidth - t.left - 8),
+            ...(openUp ? { top: t.top - 4, transform: 'translateY(-100%)' } : { top: t.bottom + 4 })
+          }
+        })
+        return
+      }
+      setPortal(null)
       setInlineFlip({ openUp, maxH })
     }
     recompute()

@@ -238,7 +238,9 @@ const api = {
   stockOpening: {
     list: (companyId?: number): Promise<Row> => ipcRenderer.invoke('stockOpening:list', { companyId }),
     save: (rows: Row[], asOf: string, companyId?: number): Promise<{ saved: number; cleared: number }> =>
-      ipcRenderer.invoke('stockOpening:save', { rows, asOf, companyId })
+      ipcRenderer.invoke('stockOpening:save', { rows, asOf, companyId }),
+    date: (companyId?: number): Promise<string> =>
+      ipcRenderer.invoke('stockOpening:date', { companyId })
   },
   skuStock: {
     breakdown: (date?: string): Promise<Row[]> => ipcRenderer.invoke('skuStock:breakdown', { date }),
@@ -289,6 +291,8 @@ const api = {
     items: (id: number): Promise<Row[]> => ipcRenderer.invoke('production:items', { id }),
     create: (values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('production:create', { values }),
+    update: (id: number, values: Row): Promise<{ id: number }> =>
+      ipcRenderer.invoke('production:update', { id, values }),
     remove: (id: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('production:delete', { id })
   },

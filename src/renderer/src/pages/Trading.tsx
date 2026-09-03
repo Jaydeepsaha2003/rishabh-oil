@@ -227,6 +227,38 @@ function BuyersCell({ parties, uom }: { parties: Row[]; uom: string }): React.JS
   )
 }
 
+// What a buyer's TDS was actually struck on.
+//
+// Two buyers on one deal, same rate, wildly different TDS, and nothing on
+// screen saying why — that is the question this answers. The slab is a
+// PER-YEAR allowance on the party's master: while it lasts, nothing is
+// withheld, and only turnover past it carries the rate. Whether the allowance
+// applies at all is its own switch on the master, so a party can carry a slab
+// and still be withheld on the full value — which looks like a bug until the
+// screen says so out loud.
+function tdsBasis(
+  taxable: number,
+  master: Row | undefined,
+  prior: number
+): { base: number; slabLeft: number; exempt: boolean; hasSlab: boolean; note: string } {
+  const threshold = n(master?.tds_threshold)
+  const exempt = !!master?.tds_above_only && threshold > 0
+  const slabLeft = exempt ? Math.max(0, round2(threshold - prior)) : 0
+  const base = exempt ? Math.max(0, round2(taxable - slabLeft)) : taxable
+  const hasSlab = threshold > 0
+  let note = ''
+  if (exempt && slabLeft > 0.005) {
+    note = `first ${formatINR(slabLeft)} of the year exempt, so charged on ${formatINR(base)}`
+  } else if (exempt) {
+    note = `the ${formatINR(threshold)} yearly slab is already used up, so charged on the whole value`
+  } else if (hasSlab) {
+    note = `charged on the whole value — this buyer's master does not exempt its ${formatINR(threshold)} slab`
+  } else {
+    note = 'charged on the whole value — no slab set on this buyer'
+  }
+  return { base, slabLeft, exempt, hasSlab, note }
+}
+
 // A labelled figure in the expanded deal's summary strip.
 function Fact({ label, value, hint }: { label: string; value: string; hint?: string }): React.JSX.Element {
   return (
@@ -1302,13 +1334,27 @@ export function Trading(): React.JSX.Element {
                               value={formatINR(c.netReceivable)}
                               hint={c.tdsAmount > 0.005 ? `TDS ${formatINR(c.tdsAmount)}` : undefined}
                             />
-                            {!!c.master?.tds_above_only && n(c.master?.tds_threshold) > 0 && (
-                              <p className="text-[11px] text-muted-foreground sm:col-span-3 lg:col-span-5">
-                                No TDS below ₹{formatNum(c.master.tds_threshold)} a year —{' '}
-                                {formatINR(n(salePriors[String(sp?.customer_id || '')]))} already billed to this
-                                buyer, so its slab applies from there.
-                              </p>
-                            )}
+                            {n(sp?.tds_pct) > 0 && (() => {
+                              const b = tdsBasis(c.amount, c.master, n(salePriors[String(sp?.customer_id || '')]))
+                              return (
+                                <p
+                                  className={cn(
+                                    'sm:col-span-3 lg:col-span-5 text-[11px] leading-snug',
+                                    b.hasSlab && !b.exempt ? 'text-amber-800' : 'text-muted-foreground'
+                                  )}
+                                >
+                                  <b>TDS {formatNum(sp?.tds_pct)}%</b> on {formatINR(b.base)} ={' '}
+                                  <b>{formatINR(c.tdsAmount)}</b> — {b.note}.
+                                  {b.exempt && (
+                                    <>
+                                      {' '}
+                                      {formatINR(n(salePriors[String(sp?.customer_id || '')]))} already billed to this
+                                      buyer this year.
+                                    </>
+                                  )}
+                                </p>
+                              )
+                            })()}
                           </div>
                         )}
                       </div>
@@ -1446,7 +1492,19 @@ export function Trading(): React.JSX.Element {
                             <span className="min-w-0 truncate text-[10px] text-muted-foreground">
                               {c.invoiceCount} inv · {formatNum(c.qty)} {form.uom || 'MT'}
                               {n(sp?.gst_pct) > 0 && ` · GST ${formatNum(sp?.gst_pct)}%`}
-                              {c.tdsAmount > 0.005 && ` · TDS ${formatINR(c.tdsAmount)}`}
+                              {/* The slab is named right beside the figure it
+                                  changes: two buyers at the same rate can owe
+                                  very different TDS, and this is the reason. */}
+                              {c.tdsAmount > 0.005 &&
+                                (() => {
+                                  const b = tdsBasis(
+                                    c.amount,
+                                    c.master,
+                                    n(salePriors[String(sp?.customer_id || '')])
+                                  )
+                                  const tag = b.exempt && b.slabLeft > 0.005 ? 'after slab' : 'full value'
+                                  return ` · TDS ${formatINR(c.tdsAmount)} (${tag})`
+                                })()}
                             </span>
                             <span className="shrink-0 text-[12.5px] font-bold tabular-nums text-[#1a2c56]">
                               {formatINR(c.netReceivable)}

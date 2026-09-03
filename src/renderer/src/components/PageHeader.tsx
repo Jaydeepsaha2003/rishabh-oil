@@ -8,11 +8,16 @@ interface Props {
   subtitle?: string
   hint?: string
   actions?: React.ReactNode
+  // Sits to the LEFT of the title, before it — for a Back button on a form
+  // page, where "back" belongs at the start of the line the eye reads first,
+  // not filed among the actions on the right.
+  leading?: React.ReactNode
 }
 
-export function PageHeader({ title, subtitle, hint, actions }: Props): React.JSX.Element {
+export function PageHeader({ title, subtitle, hint, actions, leading }: Props): React.JSX.Element {
   return (
     <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b bg-background/80 px-4 py-4 pr-20 backdrop-blur">
+      {leading && <div className="flex shrink-0 items-center self-center">{leading}</div>}
       <div>
         <div className="flex items-center gap-1.5">
           <h2 className="text-xl font-semibold tracking-tight">{title}</h2>

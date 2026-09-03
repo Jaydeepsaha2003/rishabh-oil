@@ -173,6 +173,7 @@ export interface Api {
   stockOpening: {
     list: (companyId?: number) => Promise<Row>
     save: (rows: Row[], asOf: string, companyId?: number) => Promise<{ saved: number; cleared: number }>
+    date: (companyId?: number) => Promise<string>
   }
   skuStock: {
     breakdown: (date?: string) => Promise<Row[]>
@@ -212,6 +213,7 @@ export interface Api {
     list: (forModule?: string) => Promise<Row[]>
     items: (id: number) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
+    update: (id: number, values: Row) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ id: number }>
   }
   sales: {

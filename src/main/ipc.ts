@@ -68,7 +68,7 @@ import {
   createStockTransfer,
   deleteStockTransfer
 } from './stock'
-import { listStockOpenings, saveStockOpenings } from './stockopenings'
+import { listStockOpenings, saveStockOpenings, stockOpeningDate } from './stockopenings'
 import {
   listFormulationSubcategories,
   saveFormulationSubcategory,
@@ -114,6 +114,7 @@ import {
   listProduction,
   getProductionItems,
   createProduction,
+  updateProduction,
   deleteProduction
 } from './production'
 import {
@@ -358,7 +359,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^stockCount:previous$|^stockOpening:list$|^formulationSubcategory:list$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -641,6 +642,11 @@ export function registerIpc(): void {
   handle('stockOpening:save', (_e, { rows, asOf, companyId }: { rows: Row[]; asOf: string; companyId?: number }) =>
     saveStockOpenings(rows, asOf, companyId)
   )
+  // Just the date, for the app's default period. The full sheet is far too
+  // heavy to fetch at startup for one string.
+  handle('stockOpening:date', (_e, { companyId }: { companyId?: number } = {}) =>
+    stockOpeningDate(companyId)
+  )
   handle('stockCount:history', (_e, { from, to }: { from: string; to: string }) => stockCountHistory(from, to))
   handle('skuStock:breakdown', (_e, { date }: { date?: string } = {}) => skuMovementBreakdown(date))
   handle('skuStock:list', (_e, args?: { date?: string }) => listSkuStock(args?.date))
@@ -692,6 +698,7 @@ export function registerIpc(): void {
   handle('production:list', (_e, args?: { forModule?: string }) => listProduction(args?.forModule))
   handle('production:items', (_e, { id }: { id: number }) => getProductionItems(id))
   handle('production:create', (_e, { values }: { values: Row }) => createProduction(values))
+  handle('production:update', (_e, { id, values }: { id: number; values: Row }) => updateProduction(id, values))
   handle('production:delete', (_e, { id }: { id: number }) => deleteProduction(id))
 
   // The unload desk's grant hands back its own thin row set — the money columns

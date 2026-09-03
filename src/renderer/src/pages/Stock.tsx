@@ -813,11 +813,23 @@ function STOCK_TABLE_COLS(ranged: boolean): { l: string; r?: boolean; tone?: str
 // ---------------------------------------------------------------------------
 function OpeningStock(): React.JSX.Element {
   const [data, setData] = useState<Row | null>(null)
-  const [draft, setDraft] = useState<Record<number, { qty: string; rate: string }>>({})
+  // An opening is counted in two parts, the way the plant counts it: what is
+  // in the tank (Raw) and what is already in process (PP / WIP). The register
+  // opens at the TOTAL, and the Day close screen uses the same two columns, so
+  // the opening and the first physical count are the same shape.
+  const [draft, setDraft] = useState<Record<number, { qty: string; pp: string; rate: string }>>({})
   const [asOf, setAsOf] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [onlyGaps, setOnlyGaps] = useState(true)
+  // No filter tab. One sheet, every product, worked top to bottom.
+  //
+  // It used to open on a "Needs an answer" tab whose count (products already
+  // below zero) never matched the rows on screen, because rows already filled
+  // in were kept visible too. Two tabs, a count that disagreed with the list,
+  // and a sheet that changed shape as it was worked down — for a screen whose
+  // whole job is "go through the products and type what was in the tank".
+  // Products that still need an opening carry a Short badge on the row, which
+  // is where the reader is already looking.
   const [search, setSearch] = useState('')
 
   const load = useCallback(async (): Promise<void> => {
@@ -826,10 +838,11 @@ function OpeningStock(): React.JSX.Element {
       const d = await window.api.stockOpening.list()
       setData(d)
       setAsOf(String(d.as_of || d.books_from || ''))
-      const next: Record<number, { qty: string; rate: string }> = {}
+      const next: Record<number, { qty: string; pp: string; rate: string }> = {}
       for (const r of (d.rows as Row[]) || []) {
         next[Number(r.id)] = {
           qty: r.qty == null ? '' : String(r.qty),
+          pp: r.pp_qty == null || Number(r.pp_qty) === 0 ? '' : String(r.pp_qty),
           rate: r.rate == null ? '' : String(r.rate)
         }
       }
@@ -846,17 +859,33 @@ function OpeningStock(): React.JSX.Element {
   const rows: Row[] = useMemo(() => ((data?.rows as Row[]) || []), [data])
 
   // What the register will close at for a row, given what is typed right now.
-  const projected = useCallback(
-    (r: Row): number => {
-      const q = draft[Number(r.id)]?.qty
-      const entered = q === '' || q == null ? 0 : Number(q) || 0
-      return Number(r.movement_closing) + entered
+  // The opening a row contributes: Raw + PP together.
+  const openingOf = useCallback(
+    (id: number): number => {
+      const d = draft[id]
+      if (!d) return 0
+      return (Number(d.qty) || 0) + (Number(d.pp) || 0)
+    },
+    [draft]
+  )
+  const answeredOf = useCallback(
+    (id: number): boolean => {
+      const d = draft[id]
+      return !!d && (d.qty !== '' || d.pp !== '')
     },
     [draft]
   )
 
-  const setField = (id: number, key: 'qty' | 'rate', value: string): void => {
-    setDraft((p) => ({ ...p, [id]: { qty: p[id]?.qty ?? '', rate: p[id]?.rate ?? '', [key]: value } }))
+  const projected = useCallback(
+    (r: Row): number => Number(r.movement_closing) + openingOf(Number(r.id)),
+    [openingOf]
+  )
+
+  const setField = (id: number, key: 'qty' | 'pp' | 'rate', value: string): void => {
+    setDraft((p) => ({
+      ...p,
+      [id]: { qty: p[id]?.qty ?? '', pp: p[id]?.pp ?? '', rate: p[id]?.rate ?? '', [key]: value }
+    }))
   }
 
   const shown = useMemo(() => {
@@ -865,35 +894,37 @@ function OpeningStock(): React.JSX.Element {
       if (q && !String(r.name || '').toLowerCase().includes(q) && !String(r.code || '').toLowerCase().includes(q)) {
         return false
       }
-      if (!onlyGaps) return true
-      // Worth showing: it is short, or somebody has already answered for it.
-      const d = draft[Number(r.id)]
-      return Number(r.shortfall) > 0.0005 || (d && d.qty !== '')
+      return true
     })
-  }, [rows, search, onlyGaps, draft])
+  }, [rows, search])
 
   const stats = useMemo(() => {
     let entered = 0
     let value = 0
     let stillShort = 0
+    let raw = 0
+    let pp = 0
     for (const r of rows) {
-      const d = draft[Number(r.id)]
-      const has = d && d.qty !== ''
-      if (has) {
+      const id = Number(r.id)
+      const d = draft[id]
+      if (answeredOf(id)) {
         entered++
-        value += (Number(d.qty) || 0) * (Number(d.rate) || 0)
+        value += openingOf(id) * (Number(d?.rate) || 0)
+        raw += Number(d?.qty) || 0
+        pp += Number(d?.pp) || 0
       }
       if (projected(r) < -0.0005) stillShort++
     }
-    return { entered, value, stillShort }
-  }, [rows, draft, projected])
+    return { entered, value, stillShort, raw, pp, total: raw + pp }
+  }, [rows, draft, projected, answeredOf, openingOf])
 
   const dirty = useMemo(() => {
     for (const r of rows) {
-      const d = draft[Number(r.id)] || { qty: '', rate: '' }
+      const d = draft[Number(r.id)] || { qty: '', pp: '', rate: '' }
       const wasQty = r.qty == null ? '' : String(r.qty)
+      const wasPp = r.pp_qty == null || Number(r.pp_qty) === 0 ? '' : String(r.pp_qty)
       const wasRate = r.rate == null ? '' : String(r.rate)
-      if (d.qty !== wasQty || d.rate !== wasRate) return true
+      if (d.qty !== wasQty || d.pp !== wasPp || d.rate !== wasRate) return true
     }
     return false
   }, [rows, draft])
@@ -905,6 +936,7 @@ function OpeningStock(): React.JSX.Element {
       const payload = rows.map((r) => ({
         product_id: Number(r.id),
         qty: draft[Number(r.id)]?.qty ?? '',
+        pp_qty: draft[Number(r.id)]?.pp ?? '',
         rate: draft[Number(r.id)]?.rate ?? ''
       }))
       const res = await window.api.stockOpening.save(payload, asOf)
@@ -954,8 +986,18 @@ function OpeningStock(): React.JSX.Element {
           </div>
           <div className="flex shrink-0 items-center gap-2.5">
             <div className="text-right">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-white/60">Struck on</div>
-              {!data?.books_from ? (
+              <div className="text-[10px] font-bold uppercase tracking-widest text-white/60">
+                Struck on <span className="text-amber-300">*</span>
+              </div>
+              {!asOf ? (
+                <div className="flex items-center gap-1 text-[11px] font-semibold text-amber-200">
+                  Pick this date first
+                  <InfoTip
+                    className="text-amber-200/70 hover:text-amber-100"
+                    text="This is the morning the books officially begin. Nothing before it is reconciled against these figures, and every register opens its default period from this day — so it has to be set before an opening can be saved."
+                  />
+                </div>
+              ) : !data?.books_from ? (
                 <div className="flex items-center gap-1 text-[11px] text-amber-200">
                   Ledger start not set
                   <InfoTip
@@ -973,26 +1015,46 @@ function OpeningStock(): React.JSX.Element {
                 </div>
               ) : null}
             </div>
-            <div className="w-[168px] [&_button]:h-9 [&_button]:border-white/25 [&_button]:bg-white/10 [&_button]:text-white [&_button:hover]:bg-white/20">
-              <DatePicker value={asOf} onChange={setAsOf} />
+            <div className="flex flex-col gap-1">
+              <div
+                className={cn(
+                  'w-[168px] [&_button]:h-9 [&_button]:text-white [&_button:hover]:bg-white/20',
+                  asOf
+                    ? '[&_button]:border-white/25 [&_button]:bg-white/10'
+                    : '[&_button]:border-amber-300 [&_button]:bg-amber-400/20'
+                )}
+              >
+                <DatePicker value={asOf} onChange={setAsOf} />
+              </div>
+              <span className="text-[10px] leading-snug text-white/55">
+                every register opens from this day
+              </span>
             </div>
           </div>
         </div>
 
-        {/* The four figures, on the same card as the heading they belong to. */}
-        <div className="grid grid-cols-2 divide-x divide-[#e0d8bd] border-t border-[#d9d2b8] bg-[#fffdf4] lg:grid-cols-4">
+        {/* The figures, on the same card as the heading they belong to. The
+            opening's own arithmetic comes first — Raw + PP is the total the
+            register will open at, so it is worth seeing added up. */}
+        <div className="grid grid-cols-2 divide-x divide-[#e0d8bd] border-t border-[#d9d2b8] bg-[#fffdf4] lg:grid-cols-5">
           {[
+            {
+              label: 'Raw + PP = total',
+              value: `${formatNum(stats.raw)} + ${formatNum(stats.pp)} = ${formatNum(stats.total)}`,
+              tone: 'text-[#1a2c56]',
+              tip: 'The tank figure plus the work already in process, and their total. The register opens at the total, and the Day close screen shows the same total as the physical count for this date.'
+            },
             {
               label: 'Answered',
               value: `${stats.entered} / ${rows.length}`,
               tone: stats.entered === rows.length ? 'text-emerald-700' : 'text-[#1a2c56]',
-              tip: 'How many products have an opening quantity entered. A blank is not the same as zero — blank means not yet counted and stays off the register entirely.'
+              tip: 'How many products have an opening entered — Raw or PP counts. A blank is not the same as zero: blank means not yet counted and stays off the register entirely.'
             },
             {
               label: 'Below zero to begin with',
               value: String(data?.negative_count ?? 0),
               tone: Number(data?.negative_count) ? 'text-rose-700' : 'text-emerald-700',
-              tip: 'Products whose balance is already negative from movements alone. Each one is a product the mill has consumed or dispatched more of than it ever booked in — the hole an opening figure is here to fill.'
+              tip: 'Products already negative from movements SINCE the opening date alone. Each one has been consumed or dispatched more than it was booked in — the hole an opening figure is here to fill. Anything before the opening date is not counted.'
             },
             {
               label: 'Still below zero',
@@ -1004,7 +1066,7 @@ function OpeningStock(): React.JSX.Element {
               label: 'Opening value',
               value: formatINR(stats.value),
               tone: 'text-[#1a2c56]',
-              tip: 'Quantity × rate, summed. Only needed if the opening is to be posted to the ledger as well as the stock register; leave the rates blank otherwise.'
+              tip: '(Raw + PP) × rate, summed. Only needed if the opening is to be posted to the ledger as well as the stock register; leave the rates blank otherwise.'
             }
           ].map((k) => (
             <div key={k.label} className="px-4 py-3">
@@ -1060,26 +1122,23 @@ function OpeningStock(): React.JSX.Element {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <div className="inline-flex rounded-lg border bg-card p-0.5">
-          {([
-            { k: true, label: 'Needs an answer', n: rows.filter((r) => Number(r.shortfall) > 0.0005).length },
-            { k: false, label: 'Every product', n: rows.length }
-          ] as const).map((o) => (
-            <button
-              key={String(o.k)}
-              type="button"
-              onClick={() => setOnlyGaps(o.k)}
-              className={cn(
-                'rounded-md px-3 py-1.5 text-[12px] font-semibold transition-colors',
-                onlyGaps === o.k ? 'bg-[#1a2c56] text-white' : 'text-muted-foreground hover:text-foreground'
-              )}
-            >
-              {o.label}
-              <span className={cn('ml-1.5 tabular-nums', onlyGaps === o.k ? 'text-white/70' : 'opacity-60')}>
-                {o.n}
+        {/* A statement of where the sheet stands, not a control. */}
+        <div className="flex items-center gap-2 text-[12px]">
+          <span className="font-semibold text-[#1a2c56]">
+            {stats.entered} of {rows.length} filled in
+          </span>
+          {(() => {
+            const need = rows.filter((r) => Number(r.shortfall) > 0.0005 && !answeredOf(Number(r.id))).length
+            return need ? (
+              <span className="rounded-md bg-rose-100 px-2 py-0.5 font-semibold text-rose-800">
+                {need} still short
               </span>
-            </button>
-          ))}
+            ) : (
+              <span className="rounded-md bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-800">
+                nothing short
+              </span>
+            )
+          })()}
         </div>
         <div className="ml-auto flex items-center gap-2">
           {dirty && (
@@ -1128,16 +1187,28 @@ function OpeningStock(): React.JSX.Element {
                 <thead>
                   <tr className="border-b border-[#e0d8bd] bg-[#faf6e8] text-left text-[10px] uppercase tracking-widest text-muted-foreground">
                     <th className="px-3 py-2">Product</th>
-                    <th className="w-[130px] px-3 py-2 text-right">
+                    <th className="w-[140px] px-3 py-2 text-right">
                       <span className="inline-flex items-center gap-1">
-                        Book now
-                        <InfoTip text="What the register closes at from movements alone, with no opening figure. Negative here is exactly the hole an opening has to fill." />
+                        Moved since
+                        <InfoTip text="Everything that has happened to this product SINCE the opening date — received, produced, consumed, sold, packed. Movements before that date are deliberately left out: that morning is the fresh start. They are still in the Book Stock register if you widen the period by hand. Negative here is exactly the hole the opening has to fill." />
                       </span>
                     </th>
-                    <th className="w-[168px] px-3 py-2 text-right">
+                    <th className="w-[150px] px-3 py-2 text-right">
                       <span className="inline-flex items-center gap-1">
-                        Opening qty
+                        Raw
                         <InfoTip text="What was physically in the tanks that morning. Leave it blank if it has not been counted yet; enter 0 to state that it genuinely opened at nothing. The two are different, and only the second shows on the register." />
+                      </span>
+                    </th>
+                    <th className="w-[120px] px-3 py-2 text-right">
+                      <span className="inline-flex items-center gap-1">
+                        PP (WIP)
+                        <InfoTip text="Work already in process that morning — in the refinery, in a tanker on site, packed but not yet counted as finished. Counted separately from the tank, and the register opens at Raw + PP." />
+                      </span>
+                    </th>
+                    <th className="w-[120px] bg-[#f4efdd] px-3 py-2 text-right">
+                      <span className="inline-flex items-center gap-1">
+                        Total
+                        <InfoTip text="Raw + PP. This is the figure the register actually opens at, and the same figure the Day close screen shows as the physical count for the opening date." />
                       </span>
                     </th>
                     <th className="w-[150px] px-3 py-2 text-right">
@@ -1149,7 +1220,7 @@ function OpeningStock(): React.JSX.Element {
                     <th className="w-[160px] px-3 py-2 text-right">
                       <span className="inline-flex items-center gap-1">
                         Closes at
-                        <InfoTip text="What the register will read once this opening is saved. This is the figure that decides whether the entry is right: drive it to nil or above." />
+                        <InfoTip text="Total + everything moved since the opening date — what the register will read once this is saved. This is the figure that decides whether the entry is right: drive it to nil or above." />
                       </span>
                     </th>
                   </tr>
@@ -1157,10 +1228,11 @@ function OpeningStock(): React.JSX.Element {
                 <tbody>
                   {catRows.map((r) => {
                     const id = Number(r.id)
-                    const d = draft[id] || { qty: '', rate: '' }
+                    const d = draft[id] || { qty: '', pp: '', rate: '' }
                     const proj = projected(r)
                     const short = Number(r.shortfall)
-                    const answered = d.qty !== ''
+                    const answered = answeredOf(id)
+                    const rowTotal = openingOf(id)
                     return (
                       <tr
                         key={id}
@@ -1214,11 +1286,30 @@ function OpeningStock(): React.JSX.Element {
                             )}
                             <input
                               inputMode="decimal"
-                              className="doc-ref h-8 w-[92px] rounded-md border bg-white px-2 text-right text-[13px] tabular-nums outline-none focus:border-[#1a2c56] focus:ring-1 focus:ring-[#1a2c56]/20"
+                              className="doc-ref h-8 w-[84px] rounded-md border bg-white px-2 text-right text-[13px] tabular-nums outline-none focus:border-[#1a2c56] focus:ring-1 focus:ring-[#1a2c56]/20"
                               value={d.qty}
                               onChange={(e) => setField(id, 'qty', e.target.value.replace(/[^0-9.]/g, ''))}
                             />
                           </div>
+                        </td>
+                        <td className="px-3 py-1.5">
+                          <div className="flex items-center justify-end">
+                            <input
+                              inputMode="decimal"
+                              placeholder="0"
+                              className="doc-ref h-8 w-[84px] rounded-md border bg-white px-2 text-right text-[13px] tabular-nums outline-none placeholder:text-muted-foreground/50 focus:border-[#1a2c56] focus:ring-1 focus:ring-[#1a2c56]/20"
+                              value={d.pp}
+                              onChange={(e) => setField(id, 'pp', e.target.value.replace(/[^0-9.]/g, ''))}
+                            />
+                          </div>
+                        </td>
+                        <td
+                          className={cn(
+                            'whitespace-nowrap bg-[#faf6e8] px-3 py-1.5 text-right font-semibold tabular-nums',
+                            answered ? 'text-[#1a2c56]' : 'text-muted-foreground/60'
+                          )}
+                        >
+                          {answered ? formatNum(rowTotal) : '—'}
                         </td>
                         <td className="px-3 py-1.5">
                           <div className="flex items-center justify-end gap-1.5">
@@ -1267,9 +1358,7 @@ function OpeningStock(): React.JSX.Element {
 
       {!shown.length && (
         <div className="rounded-md border border-dashed py-12 text-center text-sm text-muted-foreground">
-          {onlyGaps
-            ? 'No product is short. Switch to “Every product” to enter an opening anyway.'
-            : 'No product matches that search.'}
+          No product matches that search.
         </div>
       )}
 

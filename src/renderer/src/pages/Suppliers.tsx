@@ -29,9 +29,14 @@ const baseFields: FieldDef[] = [
   { key: 'gstin', label: 'GSTIN', type: 'text' },
   { key: 'state', label: 'State', type: 'text' },
   { key: 'gst_pct', label: 'GST %', type: 'number', default: 0 },
-  { key: 'tds_pct', label: 'TDS %', type: 'number', default: 0 },
-  { key: 'tds_threshold', label: 'TDS slab threshold (₹/FY)', type: 'number', default: 0 },
-  { key: 'tds_above_only', label: 'No TDS below the slab', type: 'switch', default: false },
+  // Withholding defaults, so a new party is set up the way every real one here
+  // already is: 0.1% on turnover past a 50,00,000 slab for the financial year,
+  // with the slab actually exempt. Left at 0/0/off, a party silently withheld
+  // nothing until somebody remembered to fill all three in — and getting the
+  // switch wrong is invisible until an invoice is a few thousand rupees out.
+  { key: 'tds_pct', label: 'TDS %', type: 'number', default: 0.1 },
+  { key: 'tds_threshold', label: 'TDS slab threshold (₹/FY)', type: 'number', default: 5000000 },
+  { key: 'tds_above_only', label: 'No TDS below the slab', type: 'switch', default: true },
   { key: 'adds_interest', label: 'Adds interest on invoice', type: 'switch', default: false },
   { key: 'interest_pct', label: 'Interest %', type: 'number', default: 0, enabledWhen: (f) => !!f.adds_interest },
   { key: 'interest_days', label: 'Interest days', type: 'number', default: 0, enabledWhen: (f) => !!f.adds_interest },

@@ -268,6 +268,16 @@ export async function assertAllowed(channel: string, args: unknown): Promise<voi
   const rule = CHANNEL_RULES[ns]
   if (!rule || !op) return
   if (READ_OPS.has(op)) return
+
+  // Opening stock is open to everyone, on purpose.
+  //
+  // It is the one figure the whole register stands on, it is counted by the
+  // people on the floor rather than by whoever holds the Stock edit right, and
+  // until it is in every product reads negative. Gating it behind a permission
+  // meant the person holding the count sheet could not enter it. It is also
+  // exempt from the books-start window below, because it is the entry that
+  // DEFINES that start date.
+  if (ns === 'stockOpening') return
   await assertOnOrAfterBooksStart(rule, op, args)
   const user = await currentAccessUser()
   if (!user) return

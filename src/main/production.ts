@@ -218,7 +218,17 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
   }
   const consumption = lines.filter((l) => l.kind === 'input')
 
-  // Block production that would drive any component's stock negative.
+  // A batch whose inputs are short is RECORDED, not refused.
+  //
+  // It used to throw, which sounds prudent but made the ordinary case
+  // impossible: a mill entering a month of runs has no opening tank figures in
+  // yet, so the first batch is always "short" and nothing can be entered at
+  // all. It also contradicted the entry sheet, which shows the projected
+  // shortfall before you save and says it can still be recorded.
+  //
+  // The shortage is not hidden — the sheet shows it in amber beforehand, the
+  // Stock register shows a negative balance in red with the date it went
+  // under, and it is logged here. Same reasoning as deleteProduction.
   if (consumption.length) {
     const [levels, names] = await Promise.all([
       stockMap(),
@@ -233,7 +243,7 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
       const detail = short
         .map((s) => `${nameOf.get(s.product_id) || 'component'} (need ${s.qty.toFixed(3)}, have ${Math.max(s.avail, 0).toFixed(3)})`)
         .join('; ')
-      throw new Error(`Not enough input stock to produce this batch: ${detail}. Produce or purchase those first.`)
+      console.warn(`[production] batch recorded with short inputs: ${detail}`)
     }
   }
 
@@ -254,6 +264,73 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
 
 // Does this product have an active formulation (recipe)? A finished good with a
 // formulation is treated as made-to-order: dispatching it consumes its inputs.
+// Alter a run that has already been recorded.
+//
+// Rebuilt rather than patched: the recipe decides every line, so a changed
+// quantity or a different recipe means a new set of lines. The id is kept, so
+// anything already pointing at this run still finds it.
+//
+// Like deleteProduction, this does NOT refuse a change that leaves a product
+// short — correcting a wrongly typed batch should not require unpicking the
+// dispatches behind it. The resulting shortage goes to the log, and the Stock
+// register shows it in red.
+export async function updateProduction(id: number, v: Row): Promise<{ id: number }> {
+  const c = getClient()
+  const cur = await c.execute({ sql: 'SELECT id FROM production WHERE id = ?', args: [n(id)] })
+  if (!cur.rows.length) throw new Error('Production run not found')
+
+  const productId = n(v.product_id)
+  const qty = n(v.qty)
+  if (!productId) throw new Error('Select a product to produce')
+  if (qty <= 0) throw new Error('Production quantity must be greater than zero')
+
+  let fid = n(v.formulation_id)
+  if (fid) {
+    const owner = await c.execute({ sql: 'SELECT product_id FROM formulations WHERE id = ?', args: [fid] })
+    if (!owner.rows.length || Number(owner.rows[0].product_id) !== productId) {
+      throw new Error("That recipe doesn't belong to the selected product")
+    }
+  } else {
+    const fRes = await c.execute({
+      sql: 'SELECT id FROM formulations WHERE product_id = ? ORDER BY id DESC LIMIT 1',
+      args: [productId]
+    })
+    fid = fRes.rows.length ? Number(fRes.rows[0].id) : 0
+  }
+
+  const lines: { product_id: number; qty: number; kind: string }[] = []
+  if (fid) {
+    const items = await c.execute({
+      sql: 'SELECT product_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct, byproduct_product_id FROM formulation_items WHERE formulation_id = ?',
+      args: [fid]
+    })
+    lines.push(...expandRecipe(toPlain(items), qty))
+  }
+
+  await c.execute({
+    sql: `UPDATE production SET prod_date = ?, product_id = ?, qty = ?, uom = ?, note = ?, formulation_id = ?
+           WHERE id = ?`,
+    args: [v.prod_date, productId, qty, v.uom || 'MT', v.note || null, fid || null, n(id)]
+  })
+  await c.execute({ sql: 'DELETE FROM production_items WHERE production_id = ?', args: [n(id)] })
+  for (const l of lines) {
+    await c.execute({
+      sql: 'INSERT INTO production_items (production_id, product_id, qty, kind) VALUES (?, ?, ?, ?)',
+      args: [n(id), l.product_id, l.qty, l.kind]
+    })
+  }
+
+  const left = await productStockAvailable(productId)
+  if (left < -1e-6) {
+    const nameRow = await c.execute({ sql: 'SELECT name FROM products WHERE id = ?', args: [productId] })
+    console.warn(
+      `[production] run ${id} altered — ${String(nameRow.rows[0]?.name || 'product')} is now short by ` +
+        `${(Math.round(-left * 1000) / 1000).toFixed(3)}.`
+    )
+  }
+  return { id: n(id) }
+}
+
 export async function productHasFormulation(productId: number): Promise<boolean> {
   const r = await getClient().execute({
     sql: 'SELECT 1 FROM formulations WHERE product_id = ? AND active = 1 LIMIT 1',
@@ -328,32 +405,24 @@ export async function deleteProduction(id: number): Promise<{ id: number }> {
   const cur = await c.execute({ sql: 'SELECT product_id FROM production WHERE id = ?', args: [id] })
   if (!cur.rows.length) return { id }
   const productId = Number(cur.rows[0].product_id)
-  // Removing this run takes its output back out of stock. If the output has
-  // since been sold or consumed by a later production, that would go negative.
-  // (Reversing the consumption only adds raw stock back, so it's always safe.)
+  // Deleting a run is ALLOWED even when it leaves the product short.
+  //
+  // It used to be refused whenever the output had already been dispatched or
+  // eaten by a later batch, which is the common case while a month's runs are
+  // still being entered: a wrongly typed batch could not be taken out until
+  // every dispatch behind it was reversed first. Correcting an entry should
+  // not require unpicking the documents downstream of it.
+  //
+  // What the shortage becomes is written to the log, and the Stock register
+  // shows a negative balance in red with the date it went under — so the
+  // consequence stays visible instead of being enforced here.
   const without = await productStockAvailable(productId, { excludeProductionId: id })
   if (without < -1e-6) {
-    // Say which of the two situations this actually is.
-    //
-    // The old message always blamed "a later batch", which sent the reader
-    // hunting for something that need not exist. When the balance is ALREADY
-    // negative the cause is the opposite: more has been dispatched than was
-    // ever produced, and this run is one of the few things holding the figure
-    // up. Deleting it does not fix that, it deepens it.
-    const withIt = await productStockAvailable(productId)
     const nameRow = await c.execute({ sql: 'SELECT name FROM products WHERE id = ?', args: [productId] })
-    const label = String(nameRow.rows[0]?.name || 'this product')
-    const q3 = (v: number): string => (Math.round(v * 1000) / 1000).toLocaleString('en-IN')
-    if (withIt < -1e-6) {
-      throw new Error(
-        `${label} is already short by ${q3(-withIt)} — more has been dispatched than was ever produced. ` +
-          `Deleting this run removes ${q3(withIt - without)} more of it and takes the shortage to ${q3(-without)}. ` +
-          'Enter the production that is missing, or the stock this product opened with, rather than removing what is here.'
-      )
-    }
-    throw new Error(
-      `Can't delete this run — ${q3(withIt - without)} of its output has already been sold or used in a later batch, ` +
-        `so removing it would leave ${label} short by ${q3(-without)}. Reverse those first.`
+    const label = String(nameRow.rows[0]?.name || 'product')
+    console.warn(
+      `[production] run ${id} deleted — ${label} is now short by ${(Math.round(-without * 1000) / 1000).toFixed(3)}. ` +
+        'Enter the missing production or the opening stock to clear it.'
     )
   }
   await c.execute({ sql: 'DELETE FROM production_items WHERE production_id = ?', args: [id] })
