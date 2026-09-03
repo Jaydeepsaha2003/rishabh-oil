@@ -23,3 +23,5 @@ web*.log
 web*.err
 weblite.log
 weblite.err
+webshared.log
+webshared.err

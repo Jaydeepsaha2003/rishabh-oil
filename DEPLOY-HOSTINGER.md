@@ -14,11 +14,13 @@ end, which is the part worth reading twice.
 | Built by | `electron-vite build` + `electron-builder` | `npm run web:build` |
 | Triggered by | pushing a **`v*` tag** → GitHub Actions | a deploy on Hostinger |
 | Ships to | `Jaydeepsaha2003/rishabh-oil-releases` | your Hostinger Node app |
-| Database | Turso (cloud) | `data/rishabh.db` (local SQLite) |
+| Database | Turso (cloud) | **Turso (cloud) — the same one** |
 | Front end | Electron window | browser |
 
-Both read the **same `src/main/*` business logic** — 38 modules, every rule,
-every query. The only difference is how a call reaches it: Electron IPC on the
+Both read the **same `src/main/*` business logic** — every rule, every query.
+(Of the 46 files there, five do import Electron — `index.ts`, `ipc.ts`,
+`config.ts`, `updater.ts`, `backup.ts` — and all five are plumbing. No business
+module does.) The only difference is how a call reaches it: Electron IPC on the
 desktop, `POST /api/invoke` on the web. Nothing is forked, so nothing can drift.
 
 ---
@@ -44,61 +46,48 @@ builds the browser front end (`out/web/`). Neither is in the repository, because
 build output does not belong in version control — so **this step is required on
 every deploy**, not just the first.
 
-### 3. Put the database somewhere a deploy cannot wipe
-
-This matters more than anything else on this page. Keep the file **outside** the
-application root, so re-cloning or redeploying cannot delete your books:
-
-```bash
-mkdir -p /home/<user>/rishabh-data
-```
-
-### 4. Set the environment
+### 3. Set the environment — the same database the desktop uses
 
 In hPanel's Node.js app environment variables (preferred — they survive
-deploys), or a `.env` file in the application root:
+deploys), or a `.env` file in the application root. Use the **same two values**
+already in your desktop `.env`:
 
 ```
-TURSO_DATABASE_URL=file:/home/<user>/rishabh-data/rishabh.db
+TURSO_DATABASE_URL=libsql://rishabh-oil-<your-org>.turso.io
+TURSO_AUTH_TOKEN=<your token>
 PORT=3000
 ```
 
 `PORT` is usually supplied by Hostinger; the app reads it if set and falls back
-to 3000. Note the variable is still named `TURSO_DATABASE_URL` — it is simply
-the database URL, and a `file:` scheme means local SQLite. Reusing the existing
-name is what let the switch happen without touching a line of the data layer.
+to 3000.
 
-### 5. Load your data
+**One database, both front ends.** An entry made on a staff PC appears on the
+website, and an entry made on the website appears in the desktop app. There is
+nothing to sync and nothing to reconcile, because there is only one copy.
 
-Run this **once**, from a machine that has the Turso credentials (your own PC is
-easiest):
+That is not an accident of configuration — it is the only arrangement that can
+work. The desktop app is *itself* a database client: `src/main/db.ts` connects
+each staff PC straight to the database over HTTPS, with no server in between. A
+SQLite file on Hostinger's disk is on Hostinger's disk, and those PCs cannot
+reach it. Sharing therefore requires a database reachable over the network, and
+Turso already is one.
 
-```bash
-npm run web:seed -- --out /path/to/rishabh.db
-```
+A local SQLite file remains supported and is genuinely faster — but only for a
+website whose data stands alone. See **The SQLite alternative** below.
 
-It copies every table, column, index and row — 79 tables — counts both ends and
-**fails loudly on any mismatch**. Then upload that file to
-`/home/<user>/rishabh-data/rishabh.db`.
-
-Copying the schema from Turso also brings across the tables and columns created
-by the `runOnce` migrations in `src/main/index.ts` (`stock_openings`,
-`sku_openings`, `gate_entry_sales`, `bd_payment_ins`, `bd_linked_orders`,
-`products.uom`). Those run at Electron startup, which the server does not
-execute — so a database built from nothing would be missing them. Seeding from
-Turso is therefore the supported way to create the website's database.
-
-### 6. Start it
+### 4. Start it
 
 Restart the app in hPanel. The log should read:
 
 ```
 [web] connecting to the database…
 [db] schema ready
-[web] local SQLite: WAL, busy_timeout 5s, foreign keys on
 [web] listening on http://localhost:3000
 [web] 260 channels registered
 ```
+
+(A `file:` URL adds one more line: `[web] local SQLite: WAL, busy_timeout 5s,
+foreign keys on`.)
 
 `260 channels registered` is the line that proves the whole business layer came
 across. `/api/health` returns JSON without touching the database, which is what
@@ -119,21 +108,52 @@ application root, and nothing in the build writes to it.
 
 ---
 
-## Backups — your responsibility now
+## Backups
 
-Turso kept backups for you. A local SQLite file does not.
+Turso keeps its own backups and supports point-in-time restore, which is one of
+the reasons it wins for shared data. Two caveats worth knowing:
 
-The desktop app writes a full SQL dump daily (`src/main/backup.ts`), but that is
-triggered from Electron startup, so **the web server does not run it**. Until
-that is wired up, back the file up on a schedule:
+- **Restore is command-line only.** There is no phpMyAdmin equivalent. If
+  something goes badly wrong, recovering needs a developer — the mill owner
+  cannot do it self-serve from a control panel.
+- **Turso is a vendor outside Hostinger.** A lapsed account or a billing problem
+  takes down the desktop app *and* the website together, and it is not something
+  Hostinger support can help with.
+
+So keep a copy you own. This is now a one-command full export:
 
 ```bash
-# WAL mode means the file must be copied consistently — .backup does that safely,
-# where cp can catch a write in progress.
-sqlite3 /home/<user>/rishabh-data/rishabh.db ".backup '/home/<user>/backups/rishabh-$(date +%F).db'"
+npm run web:seed -- --out backups/rishabh-2026-09-04.db
 ```
 
-This is a company's accounting system. A cron job for that line is not optional.
+That produces a complete, openable SQLite file — every table, column, index and
+row, with both ends counted and a non-zero exit on any mismatch. Run it on a
+schedule from any machine with the credentials. A company's accounting system
+should not have exactly one copy.
+
+---
+
+## The SQLite alternative
+
+If you ever want the website to stand on its own — no vendor, no network hop,
+faster queries — point it at a file instead:
+
+```
+TURSO_DATABASE_URL=file:/home/<user>/rishabh-data/rishabh.db
+```
+
+Keep that path **outside** the application root so a redeploy cannot delete it,
+and seed it with `npm run web:seed -- --out <path>`. The server then sets WAL, a
+5-second busy timeout and foreign keys on every start.
+
+Two things to accept if you do:
+
+1. **The data is the website's alone.** The desktop app cannot open a `file:`
+   URL at all — `src/main/db.ts` imports `@libsql/client/web`, which refuses any
+   scheme but `libsql:`/`https:`/`ws:`. So desktop and website would be two
+   separate sets of books.
+2. **Backups become entirely yours**, with `sqlite3 <db> ".backup '<dest>'"` on a cron —
+   `cp` can catch a write mid-flight, `.backup` cannot.
 
 ---
 
@@ -166,10 +186,15 @@ reasons you can check rather than take on trust:
    necessary: those two were process-global, and on a server one person's
    company switch would have redirected everyone else's writes.
 
-6. **The two run on different databases.** The desktop stays on Turso; the
-   website uses its own SQLite file. They cannot interfere with each other.
+6. **The desktop reaches the database exactly as it always did.** Sharing one
+   Turso database changes nothing about how the desktop app connects — it was
+   already a direct client of it. The website simply becomes a second front end
+   on the same data.
 
-That last point is also the trade-off to keep in mind: **the two are not the
-same data.** Entries made in the desktop app do not appear on the website, and
-re-seeding the website discards whatever it has recorded since. Decide which one
-is the book of record before staff use both.
+One honest cost of sharing: every statement is an HTTP round trip, and the code
+issues 867 individual `.execute()` calls with no batching — `journal.ts` inserts
+one row per journal line. So the website is slower against Turso than against a
+local file, most noticeably on screens that loop over rows. At this size (79
+tables, ~7,900 rows) it is comfortable; worth revisiting if the books grow by an
+order of magnitude, and batching those loops is the fix rather than changing
+database.
