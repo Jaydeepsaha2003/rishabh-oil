@@ -370,7 +370,7 @@ function CompanyPicker({
   )
 }
 
-function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange, companyPicker, companySplit = {}, stagePicker, companyIds = [] }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[] }>; label?: string; range: { from: string; to: string }; onRange: (r: { from: string; to: string }) => void; companyPicker?: React.ReactNode; companySplit?: Record<number, Row[]>; stagePicker?: React.ReactNode; companyIds?: number[] }): React.JSX.Element {
+function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange, companyPicker, companySplit = {}, stagePicker, companyIds = [], openingFrom = '' }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[] }>; label?: string; range: { from: string; to: string }; onRange: (r: { from: string; to: string }) => void; companyPicker?: React.ReactNode; companySplit?: Record<number, Row[]>; stagePicker?: React.ReactNode; companyIds?: number[]; openingFrom?: string }): React.JSX.Element {
   const ranged = !!(range.from || range.to)
   // A product with no opening, no movement and no closing balance is just noise
   // in a long list, so it can be folded away. Everything below — KPIs, section
@@ -588,6 +588,26 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
       {/* Period for the register: opening balance before it, flows within it. */}
       <span className="text-[11px] font-semibold text-muted-foreground">From</span>
       <div className="w-40"><DatePicker value={range.from} onChange={(v) => onRange({ ...range, from: v })} max={range.to || undefined} /></div>
+      {/* A From earlier than the opening changes nothing here, so say so
+          rather than leaving the reader to wonder why the figures did not
+          move. The count superseded whatever came before it — that is what
+          striking an opening means. */}
+      {!!openingFrom && (!range.from || range.from < openingFrom) && (
+        <span
+          className="flex items-center gap-1 rounded-md bg-amber-100 px-2 py-1 text-[10.5px] font-semibold text-amber-900"
+          title={`The opening stock was counted on ${formatDate(openingFrom)}, and a counted tank already accounts for everything bought and consumed before it. So the register starts there whatever From says — reaching back earlier would count those movements a second time. They are still on their own documents: the purchase, the dispatch, the production run.`}
+        >
+          <AlertTriangle className="h-3 w-3 shrink-0" />
+          register begins {formatDate(openingFrom)}
+          <button
+            type="button"
+            className="ml-0.5 underline underline-offset-2 hover:no-underline"
+            onClick={() => onRange({ ...range, from: openingFrom })}
+          >
+            set From
+          </button>
+        </span>
+      )}
       <span className="text-[11px] font-semibold text-muted-foreground">To</span>
       <div className="w-40"><DatePicker value={range.to} onChange={(v) => onRange({ ...range, to: v })} min={range.from || undefined} /></div>
       {ranged && (
@@ -4073,9 +4093,45 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
   const ranged = !!(range.from || range.to)
   // Alt+F2 broadcasts a period from anywhere.
   const globalRangeStock = useGlobalDateRange()
+
+  // The morning the opening stock was struck is where this page's period
+  // starts.
+  //
+  // Everything on the stock screens is reconciled against that count, so a
+  // period beginning earlier shows movements that predate every figure they
+  // would be checked against — stock the mill never had. That is exactly what
+  // an inherited period was doing here: a global 1 July on a book whose
+  // opening is struck 1 September, so two months of pre-opening movement led
+  // the register.
+  //
+  // A FLOOR on the inherited period, not a wall. A period picked on this page,
+  // or broadcast to this page by name (Alt+F2 scoped to Stock), is honoured
+  // exactly as asked — pre-opening movement is still there for anyone who
+  // deliberately goes looking, and the strip says so when they do.
+  const [openingFrom, setOpeningFrom] = useState('')
   useEffect(() => {
-    if (globalRangeAppliesTo(globalRangeStock, 'stock')) setRange({ from: globalRangeStock.from, to: globalRangeStock.to })
-  }, [globalRangeStock.version]) // eslint-disable-line react-hooks/exhaustive-deps
+    let live = true
+    void (async () => {
+      const d = await window.api.stockOpening.date().catch(() => '')
+      if (live && d) setOpeningFrom(String(d).slice(0, 10))
+    })()
+    return () => {
+      live = false
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!globalRangeAppliesTo(globalRangeStock, 'stock')) return
+    const asked = globalRangeStock.from
+    // Named for this page = deliberate, so nothing is raised.
+    const floor = globalRangeStock.scope === 'page' || !openingFrom ? '' : openingFrom
+    setRange({
+      from: floor && (!asked || asked < floor) ? floor : asked,
+      to: globalRangeStock.to
+    })
+    // openingFrom lands a moment after the period does, so this has to re-run
+    // when it arrives or the first paint keeps the unfloored dates.
+  }, [globalRangeStock.version, openingFrom]) // eslint-disable-line react-hooks/exhaustive-deps
   const [companies, setCompanies] = useState<Row[]>([])
   const [activeCid, setActiveCid] = useState(0)
   const [cids, setCids] = useState<number[]>([])
@@ -4207,13 +4263,13 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
             </TabsList>
           )}
           <TabsContent value="raw" className="mt-1">
-            <StockTable rows={byCat('raw')} breakdown={breakdown} label="raw" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} />
+            <StockTable rows={byCat('raw')} breakdown={breakdown} label="raw" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} openingFrom={openingFrom} />
           </TabsContent>
           <TabsContent value="intermediate" className="mt-1">
-            <StockTable rows={byCat('intermediate')} breakdown={breakdown} label="intermediate" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} />
+            <StockTable rows={byCat('intermediate')} breakdown={breakdown} label="intermediate" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} openingFrom={openingFrom} />
           </TabsContent>
           <TabsContent value="finished" className="mt-1">
-            <StockTable rows={byCat('finished')} breakdown={breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} />
+            <StockTable rows={byCat('finished')} breakdown={breakdown} label="finished" range={range} onRange={setRange} companyPicker={companyPicker} companySplit={companySplit} stagePicker={stagePicker} companyIds={cids} openingFrom={openingFrom} />
           </TabsContent>
           <TabsContent value="sku" className="mt-6">
             <SkuStock />

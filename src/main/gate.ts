@@ -68,6 +68,98 @@ export async function listGateEntries(): Promise<Row[]> {
   return toPlain(res)
 }
 
+// Every gate entry behind one purchase invoice or one sales invoice, with
+// enough on each row to answer "what actually came through the barrier" without
+// leaving the document being looked at.
+//
+// The links are not the same on the two sides, so both are offered:
+//   a purchase reaches its entries through its TANKERS (gate_entries.tanker_id
+//   -> purchase_tankers.order_id), because the vehicle is what the gate sees;
+//   a sale reaches them three ways — the entry names the sale outright, or the
+//   vehicle carried several invoices out (gate_entry_sales), or the entry and
+//   the sale share an invoice_group. All three are ORed, because a load can be
+//   recorded any of those ways depending on how it was entered.
+//
+// The Gate Entry day window still applies. It is an access control, not a
+// display preference, so a document opened from Purchase or Sales must not
+// become a way around it — but the count of what it hid comes back, so the
+// reader is told rather than shown a short list that looks complete. Same rule
+// the register uses: the window hides what is COMPLETED, never what is still
+// outstanding in the yard.
+export async function gateEntriesFor(args: {
+  orderId?: number
+  saleIds?: number[]
+  invoiceGroup?: string
+}): Promise<{ rows: Row[]; hidden: number; window_from: string }> {
+  const orderId = n(args?.orderId)
+  const saleIds = (args?.saleIds || []).map(n).filter((x) => x > 0)
+  const group = String(args?.invoiceGroup || '').trim()
+  const where: string[] = []
+  const bind: (string | number)[] = []
+  if (orderId) {
+    where.push('g.tanker_id IN (SELECT id FROM purchase_tankers WHERE order_id = ?)')
+    bind.push(orderId)
+  }
+  if (saleIds.length) {
+    const ph = saleIds.map(() => '?').join(', ')
+    where.push(`g.sale_id IN (${ph})`)
+    bind.push(...saleIds)
+    where.push(
+      `EXISTS (SELECT 1 FROM gate_entry_sales gs WHERE gs.gate_entry_id = g.id AND gs.sale_id IN (${ph}))`
+    )
+    bind.push(...saleIds)
+  }
+  if (group) {
+    where.push("g.invoice_group = ? AND COALESCE(g.invoice_group, '') <> ''")
+    bind.push(group)
+  }
+  // Nothing to match on would otherwise select the whole register.
+  if (!where.length) return { rows: [], hidden: 0, window_from: '' }
+
+  const res = await getClient().execute({
+    args: bind,
+    sql: `
+    SELECT g.*, p.code AS oil_code, p.name AS oil_name,
+           b.bargain_no,
+           COALESCE(ds.name, s.name, dc.name) AS party_name,
+           dc.name AS gate_customer_name,
+           pt.tanker_no AS purchase_tanker_no,
+           pt.loaded_qty AS tanker_loaded_qty,
+           pt.order_id AS purchase_order_id,
+           o.invoice_no AS purchase_invoice_no,
+           t.name AS transporter_name,
+           src.name AS source_name,
+           (SELECT COUNT(*) FROM gate_entry_sales gs WHERE gs.gate_entry_id = g.id) AS sale_count,
+           (SELECT GROUP_CONCAT(x.invoice_no, ', ') FROM gate_entry_sales gs
+              JOIN sales x ON x.id = gs.sale_id WHERE gs.gate_entry_id = g.id) AS sale_invoices,
+           COALESCE(sl.invoice_no, (SELECT invoice_no FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_invoice,
+           COALESCE(sl.customer,  (SELECT customer  FROM sales WHERE invoice_group = g.invoice_group LIMIT 1)) AS sale_customer
+    FROM gate_entries g
+    LEFT JOIN products p ON p.id = g.oil_type_id
+    LEFT JOIN purchase_tankers pt ON pt.id = g.tanker_id
+    LEFT JOIN orders o ON o.id = pt.order_id
+    LEFT JOIN bargains b ON b.id = pt.bargain_id
+    LEFT JOIN transporters t ON t.id = pt.transporter_id
+    LEFT JOIN sources src ON src.id = pt.source_id
+    LEFT JOIN suppliers s ON s.id = pt.supplier_id
+    LEFT JOIN suppliers ds ON ds.id = g.supplier_id
+    LEFT JOIN customers dc ON dc.id = g.customer_id
+    LEFT JOIN sales sl ON sl.id = g.sale_id
+    WHERE ${where.join(' OR ')}
+    ORDER BY g.entry_date DESC, g.id DESC
+  `
+  })
+  const all = toPlain(res)
+  const from = await visibleFrom('gateEntry')
+  if (!from) return { rows: all, hidden: 0, window_from: '' }
+  // Same rule as the register: an entry still waiting on the yard is never
+  // hidden, however old it is.
+  const rows = all.filter(
+    (r) => String(r.entry_date || '') >= from || String(r.status || '') !== 'completed'
+  )
+  return { rows, hidden: all.length - rows.length, window_from: from }
+}
+
 // Continuous gate-entry number per direction: GE/0001 inbound, GO/0001
 // outbound (used as a default; the gateman can overwrite it with the physical
 // gate-register number).

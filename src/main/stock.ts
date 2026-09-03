@@ -173,6 +173,8 @@ export async function stockLevels(
     }
   } as const
 
+  const floor = await openingFloor(cidList)
+
   const slice = async (
     src: { base: string; date: string; group: string },
     kind: 'period' | 'opening'
@@ -181,12 +183,21 @@ export async function stockLevels(
     let sql = src.base
     const args: (string | number)[] = [...cidList]
     if (kind === 'opening') {
+      // Nothing to bring forward: the period starts at day zero (or before it),
+      // so the counted balance IS the opening and no movement precedes it.
+      if (floor && from <= floor) return new Map()
       sql += ` AND ${src.date} < ?`
       args.push(from)
-    } else {
-      if (from) {
+      if (floor) {
         sql += ` AND ${src.date} >= ?`
-        args.push(from)
+        args.push(floor)
+      }
+    } else {
+      // A period asked for from before day zero still begins at day zero.
+      const lo = floor && (!from || from < floor) ? floor : from
+      if (lo) {
+        sql += ` AND ${src.date} >= ?`
+        args.push(lo)
       }
       if (to) {
         sql += ` AND ${src.date} <= ?`
@@ -366,6 +377,44 @@ async function productStockForCompany(companyId: number, productId: number): Pro
   return rec + prod + byProd + tIn - cons - sld - tOut + retIn - retOut
 }
 
+// Day zero for every stock figure.
+// -----------------------------------------------------------------------------
+// A counted opening is a BALANCE, not a movement. 163.46 MT of CPO in the tank
+// on 1 September already embodies every drum bought and every litre consumed
+// before that morning — that is what counting a tank means. Adding those
+// earlier movements on top of it counts them twice.
+//
+// That is exactly what the register was doing: CPO's opening read 417.285
+// against a count sheet that says 163.46, and CPO-BUNGE read 544 against a
+// sheet where it was never counted at all. The difference in both cases was
+// pre-opening movement brought forward a second time.
+//
+// So movements dated before the opening are not stock arithmetic any more.
+// They are not deleted and are still on their own documents — the purchase, the
+// dispatch, the production run — they are simply superseded by the count, which
+// is the whole point of striking one.
+//
+// This lives at module level because the hover has to answer the question the
+// same way the cell does. It did not, and that is why MAHUWA's Receipt read 0
+// while its tooltip listed five suppliers and 159.675 MT: all five landed in
+// July and August, before the books opened.
+//
+// Applied only when EVERY selected company has an opening of its own: rolling
+// two companies together must never cut one company's history short with the
+// other's later start date. A company with no opening keeps its full history.
+async function openingFloor(cidList: number[]): Promise<string> {
+  if (!cidList.length) return ''
+  const ph = cidList.map(() => '?').join(', ')
+  const res = await getClient().execute({
+    sql: `SELECT COUNT(DISTINCT company_id) AS cos, MIN(as_of) AS first
+          FROM stock_openings WHERE company_id IN (${ph})`,
+    args: [...cidList]
+  })
+  const r = res.rows[0] as unknown as Row | undefined
+  if (!r || Number(r.cos) !== cidList.length || !r.first) return ''
+  return String(r.first).slice(0, 10)
+}
+
 // Party-wise breakdown per product for the active company: who we RECEIVED
 // each raw product from (suppliers, on received purchases) and who we
 // DISPATCHED each product to (customers, on done stock-tracked sales). Used for
@@ -379,10 +428,15 @@ export async function stockPartyBreakdown(
   if (!cidList.length) cidList.push(getActiveCompanyId())
   const ph = cidList.map(() => '?').join(', ')
   const multi = cidList.length > 1
-  // The split must cover the SAME period the register shows, or the hover would
-  // contradict the row it belongs to. Dates match stockLevels exactly.
-  const from = String(range?.from || '')
+  // The split must cover the SAME period the register shows, or the hover
+  // contradicts the row it belongs to. Dates match stockLevels exactly — and
+  // that includes its floor: with no range asked for, stockLevels still begins
+  // at the counted opening, so this has to as well. Reading the range alone was
+  // how a cell showing 0 came to have a tooltip listing 159.675 MT.
+  const asked = String(range?.from || '')
   const to = String(range?.to || '')
+  const floor = await openingFloor(cidList)
+  const from = floor && (!asked || asked < floor) ? floor : asked
   const bounds = (dateExpr: string): { sql: string; args: string[] } => {
     const parts: string[] = []
     const args: string[] = []
@@ -432,12 +486,23 @@ export async function stockPartyBreakdown(
       qty: Number(r.qty) || 0
     })
 
+  // A PACKED sale of a finished good leaves from the SKU shelf, not from the
+  // bulk tank — the oil came out of the tank earlier, as packing, and is
+  // already in the Packed column. Counting it here too would dispatch the same
+  // oil twice, which is why the register's own `sold` source excludes it.
+  //
+  // The hover did not, and that is why DALDA's Dispatch cell read 0 while its
+  // tooltip listed 51.05 MT: those were packed sales the cell had correctly
+  // left out. Same exclusion, verbatim, so the two cannot drift again.
   const disp = await c.execute({
     sql: `SELECT s.product_id AS pid, COALESCE(cu.name, s.customer, 'Unknown') AS party, co.name AS company, SUM(s.qty) AS qty
           FROM sales s
           LEFT JOIN customers cu ON cu.id = s.customer_id
           LEFT JOIN companies co ON co.id = s.company_id
-          WHERE s.status = 'done' AND COALESCE(s.affects_stock, 1) = 1 AND s.company_id IN (${ph}) ${dispB.sql}
+          LEFT JOIN packagings pk ON pk.id = s.packaging_id
+          WHERE s.status = 'done' AND COALESCE(s.affects_stock, 1) = 1 AND s.company_id IN (${ph})
+            AND NOT (COALESCE(s.sale_type, 'LOOSE') = 'PACKED' AND pk.product_id IS NOT NULL)
+            ${dispB.sql}
           GROUP BY s.product_id, COALESCE(cu.name, s.customer), s.company_id
           HAVING SUM(s.qty) > 0
           ORDER BY qty DESC`,

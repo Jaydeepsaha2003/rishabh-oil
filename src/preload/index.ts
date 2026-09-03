@@ -372,6 +372,9 @@ const api = {
     nextNo: (direction?: 'in' | 'out'): Promise<string> => ipcRenderer.invoke('gate:nextNo', { direction }),
     dispatchableSales: (): Promise<Row[]> => ipcRenderer.invoke('gate:dispatchableSales'),
     partyCategories: (): Promise<Row[]> => ipcRenderer.invoke('gate:partyCategories'),
+    // Every gate entry behind one purchase or one sales invoice.
+    forRecord: (q: { orderId?: number; saleIds?: number[]; invoiceGroup?: string }): Promise<{ rows: Row[]; hidden: number; window_from: string }> =>
+      ipcRenderer.invoke('gate:forRecord', q),
     create: (values: Row): Promise<{ id: number }> => ipcRenderer.invoke('gate:create', { values }),
     update: (id: number, values: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('gate:update', { id, values }),

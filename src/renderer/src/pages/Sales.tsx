@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Download, History, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Tags, Trash2, Truck, Upload, ListChecks} from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, DoorOpen, Download, History, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Tags, Trash2, Truck, Upload, ListChecks} from 'lucide-react'
 import { moduleScope } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
 import { loadUser } from '@/lib/session'
@@ -27,6 +27,7 @@ import {
 import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { ColumnFilter } from '@/components/ui/column-filter'
 import { RowActions } from '@/components/ui/row-actions'
+import { GateEntriesDialog } from '@/components/GateEntriesDialog'
 import { HistoryDialog, useHistoryDialog } from '@/components/HistoryDialog'
 import {
   Table,
@@ -1342,6 +1343,11 @@ function SalesTab({
   // manual step) but drops out of the Gate Out picker and the "Produce more"
   // demand calc. Doesn't touch stock or the journal.
   const [rejectInv, setRejectInv] = useState<{ group: string; first: Row; lines: Row[] } | null>(null)
+  // The invoice whose barrier events are being read. A sale reaches its gate
+  // entries three ways — the entry names the sale, the vehicle carried several
+  // invoices out, or the two share an invoice_group — so every line's id AND
+  // the group go across, and the main process ORs them.
+  const [gateInv, setGateInv] = useState<{ group: string; first: Row; lines: Row[] } | null>(null)
   const [rejectReason, setRejectReason] = useState('')
   const [rejecting, setRejecting] = useState(false)
   async function saveReject(): Promise<void> {
@@ -1780,6 +1786,7 @@ function SalesTab({
                                     }
                                   ]
                                 : []),
+                              { label: 'Gate entries — what left the barrier', icon: DoorOpen, onClick: () => setGateInv(inv) },
                               { label: 'Edit invoice', icon: Pencil, onClick: () => openEditInvoice(inv) },
                               { label: 'History — who did what', icon: History, onClick: () => openHistory(inv) },
                               { label: 'Delete invoice', icon: Trash2, danger: true, onClick: () => delInvoice(inv) }
@@ -3002,6 +3009,17 @@ function SalesTab({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <GateEntriesDialog
+        open={!!gateInv}
+        onClose={() => setGateInv(null)}
+        heading={`Invoice ${String(gateInv?.first?.invoice_no || '')}`}
+        subheading={String(gateInv?.first?.customer_name || gateInv?.first?.customer || '') || undefined}
+        query={{
+          saleIds: (gateInv?.lines || []).map((l) => Number(l.id)).filter((x) => x > 0),
+          invoiceGroup: String(gateInv?.first?.invoice_group || '') || undefined
+        }}
+      />
 
       <Dialog open={!!rejectInv} onOpenChange={(o) => !o && !rejecting && setRejectInv(null)}>
         <DialogContent className="max-w-sm">

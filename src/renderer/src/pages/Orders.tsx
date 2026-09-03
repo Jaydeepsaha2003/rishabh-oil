@@ -20,6 +20,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { ColumnFilter } from '@/components/ui/column-filter'
 import { RowActions } from '@/components/ui/row-actions'
+import { GateEntriesDialog } from '@/components/GateEntriesDialog'
 import { HistoryDialog, useHistoryDialog } from '@/components/HistoryDialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -299,6 +300,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     { qty: number; balance: number; mode: 'new' | 'existing' | 'expand'; diffRate: boolean; rate: string; targetBargainId: string } | null
   >(null)
   const [detailRow, setDetailRow] = useState<Row | null>(null)
+  // The purchase whose barrier events are being read. A purchase reaches its
+  // gate entries through its TANKERS, so this passes the order id and lets the
+  // main process walk that link.
+  const [gateOrder, setGateOrder] = useState<Row | null>(null)
   const [viewTankerRow, setViewTankerRow] = useState<Row | null>(null)
   // Tanker-count + quantity report, grouped by product/oil.
   const [reportOpen, setReportOpen] = useState(false)
@@ -3547,6 +3552,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                             <RowActions
                               actions={[
                                 { label: 'View details', icon: Eye, onClick: () => setDetailRow(row) },
+                                { label: 'Gate entries — what came through the barrier', icon: DoorOpen, onClick: () => setGateOrder(row) },
                                 { label: 'Edit purchase', icon: Pencil, onClick: () => openEditPurchase(row) },
                                 { label: 'History — who did what', icon: History, onClick: () => openHistory(row) },
                                 { label: 'Delete purchase', icon: Trash2, danger: true, onClick: () => deletePurchase(row) }
@@ -4738,6 +4744,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           })()}
         </DialogContent>
       </Dialog>
+
+      <GateEntriesDialog
+        open={!!gateOrder}
+        onClose={() => setGateOrder(null)}
+        heading={`Purchase ${String(gateOrder?.invoice_no || '')}`}
+        subheading={String(gateOrder?.supplier_name || gateOrder?.supplier || '') || undefined}
+        query={{ orderId: Number(gateOrder?.id) || 0 }}
+      />
 
       <Dialog open={!!detailRow} onOpenChange={(open) => !open && setDetailRow(null)}>
         {/* min-w-0 down this whole chain, not just max-w-2xl on the dialog

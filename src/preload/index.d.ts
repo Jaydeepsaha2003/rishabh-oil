@@ -261,6 +261,7 @@ export interface Api {
     nextNo: (direction?: 'in' | 'out') => Promise<string>
     dispatchableSales: () => Promise<Row[]>
     partyCategories: () => Promise<Row[]>
+    forRecord: (q: { orderId?: number; saleIds?: number[]; invoiceGroup?: string }) => Promise<{ rows: Row[]; hidden: number; window_from: string }>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
     complete: (id: number, gross: number, tare: number) => Promise<{ id: number }>
