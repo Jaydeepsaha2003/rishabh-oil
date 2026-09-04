@@ -3,6 +3,10 @@ name: Deploy web to Hostinger
 on:
   push:
     branches: [web-deploy]
+  # Lets a run be re-triggered by hand (gh workflow run / the Actions tab)
+  # without needing a new commit — the whole point being to test the deploy
+  # itself, not to manufacture a change just to have something to push.
+  workflow_dispatch:
 
 jobs:
   deploy:
