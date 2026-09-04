@@ -1549,6 +1549,9 @@ function SalesTab({
                     c.key === 'qty' && 'w-[110px] text-right',
                     c.key === 'net' && 'w-[140px] text-right',
                     c.key === 'freight' && 'w-[130px]',
+                    // Capped so a long item list wraps inside its own column
+                    // instead of stretching the row past one screen.
+                    __WEB__ && c.key === 'items' && 'w-[260px]',
                     // The desk has four columns and no Actions, so Dispatch
                     // carries the only control and is pulled to the right —
                     // otherwise Items stretches and leaves a lane of white
@@ -1658,7 +1661,7 @@ function SalesTab({
                       </TableCell>
                       <TableCell className="align-top">
                         <div className="text-sm">{inv.lines.length} item{inv.lines.length > 1 ? 's' : ''}</div>
-                        <div className="truncate text-xs text-muted-foreground" title={inv.lines.map((r) => r.product_name).join(', ')}>
+                        <div className={cn('text-xs text-muted-foreground', __WEB__ ? 'whitespace-normal break-words' : 'truncate')} title={inv.lines.map((r) => r.product_name).join(', ')}>
                           {inv.lines.map((r) => r.product_name).join(', ')}
                         </div>
                       </TableCell>
@@ -4432,20 +4435,24 @@ export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?
         actions={
           salesAdd?.formOpen || unloadOnly ? undefined : (
             <>
-              <Button
-                size="sm"
-                variant={needs.length === 0 ? 'outline' : rawShort > 0 ? 'destructive' : 'default'}
-                onClick={() => setNeedsOpen(true)}
-                className={cn(needs.length > 0 && rawShort > 0 && 'animate-pulse')}
-              >
-                <AlertTriangle className="h-4 w-4" />
-                Production needs
-                {needs.length > 0 && (
-                  <span className="ml-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-white/25 px-1.5 text-xs font-bold">
-                    {needs.length}
-                  </span>
-                )}
-              </Button>
+              {/* Production needs is off the website's header — the desk asked
+                  for it gone from both widths there. The desktop app keeps it. */}
+              {!__WEB__ && (
+                <Button
+                  size="sm"
+                  variant={needs.length === 0 ? 'outline' : rawShort > 0 ? 'destructive' : 'default'}
+                  onClick={() => setNeedsOpen(true)}
+                  className={cn(needs.length > 0 && rawShort > 0 && 'animate-pulse')}
+                >
+                  <AlertTriangle className="h-4 w-4" />
+                  Production needs
+                  {needs.length > 0 && (
+                    <span className="ml-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-white/25 px-1.5 text-xs font-bold">
+                      {needs.length}
+                    </span>
+                  )}
+                </Button>
+              )}
               <Button
                 size="sm"
                 onClick={() => salesAdd?.open()}
