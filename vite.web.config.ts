@@ -14,6 +14,9 @@ export default defineConfig({
   // nested entry would 404 on every request.
   root: resolve(__dirname, 'src/web'),
   plugins: [react()],
+  // The one flag a shared page can read to fork its own rendering (see
+  // Sales.tsx) without forking the file — false in electron.vite.config.ts.
+  define: { __WEB__: 'true' },
   resolve: {
     alias: {
       // The renderer's own alias, unchanged.

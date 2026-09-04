@@ -4,6 +4,8 @@ import { AlertTriangle, ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronLe
 import { moduleScope } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
 import { loadUser } from '@/lib/session'
+import { useIsMobile } from '@/lib/useIsMobile'
+import { SalesMobile } from './SalesMobile'
 
 // The unloading desk: a user granted the 'unload' scope on Sales reaches this
 // page to record one thing — what a delivery actually weighed in at. The rows
@@ -4360,6 +4362,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
 // ---------------- page ----------------
 
 export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?: number | null; onFocusHandled?: () => void; onBack?: () => void; backLabel?: string } = {}): React.JSX.Element {
+  const isMobile = useIsMobile()
   const [needs, setNeeds] = useState<Row[]>([])
   const [needsOpen, setNeedsOpen] = useState(false)
   const [salesAdd, setSalesAdd] = useState<{ open: () => void; canAdd: boolean; formOpen: boolean } | null>(null)
@@ -4376,6 +4379,12 @@ export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?
   const rawShort = needs.filter((n) => n.raw_short).length
   const totalProduce = needs.reduce((s, n) => s + (Number(n.shortfall) || 0), 0)
   const unloadOnly = UNLOAD_DESK()
+
+  // Website, phone width, the normal Sales role — the design_handoff_erp_sales_mobile
+  // build. False on the desktop app (__WEB__ is a build-time constant, compiled
+  // out entirely there — see electron.vite.config.ts) and on the restricted
+  // unloading desk, which keeps its own simplified view.
+  if (__WEB__ && isMobile && !unloadOnly) return <SalesMobile />
 
   return (
     <>

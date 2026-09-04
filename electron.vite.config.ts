@@ -16,6 +16,9 @@ export default defineConfig({
         '@': resolve(__dirname, 'src/renderer/src')
       }
     },
+    // False here, true in vite.web.config.ts — the one flag a shared page can
+    // read to fork its own rendering (see Sales.tsx) without forking the file.
+    define: { __WEB__: 'false' },
     plugins: [react()],
     build: {
       rollupOptions: {
