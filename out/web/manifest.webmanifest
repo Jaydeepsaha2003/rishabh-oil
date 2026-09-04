@@ -1,0 +1,31 @@
+{
+  "name": "Rishabh Oil — Database Management Software",
+  "short_name": "Rishabh Oil",
+  "description": "Oil mill ERP — purchases, production, stock, sales and treasury.",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#F1F5EF",
+  "theme_color": "#0B3D2E",
+  "icons": [
+    {
+      "src": "/brand-icon?size=192",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/brand-icon?size=512",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/brand-icon?size=512",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

@@ -16856,6 +16856,29 @@ function startHttpServer({ port, webRoot }) {
     if (path === "/api/health") {
       return json(res, 200, { ok: true, at: (/* @__PURE__ */ new Date()).toISOString() });
     }
+    if (path === "/brand-icon") {
+      try {
+        const fn = handlers.get("settings:get");
+        const ctx = { userId: null, username: "", companyId: 0, ip: clientIp(req) };
+        const raw = fn ? await runInRequestContext(ctx, () => Promise.resolve(fn({}, { key: "brand_logo" }))) : null;
+        const url2 = String(raw || "");
+        const m = /^data:([^;,]+);base64,(.+)$/i.exec(url2);
+        if (m) {
+          const body = Buffer.from(m[2], "base64");
+          res.writeHead(200, {
+            "content-type": m[1],
+            "content-length": body.length,
+            // Short: a logo changes rarely, but when it does the installed
+            // app should pick it up without waiting a day.
+            "cache-control": "public, max-age=300"
+          });
+          return res.end(body);
+        }
+      } catch {
+      }
+      if (serveStatic(res, webRoot, "brand-default.png")) return;
+      return json(res, 404, { error: "No brand icon set" });
+    }
     if (path === "/api/invoke") {
       if (req.method !== "POST") return json(res, 405, { error: "Use POST" });
       let payload;
