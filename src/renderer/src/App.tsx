@@ -32,6 +32,7 @@ import { Approvals } from './pages/Approvals'
 import { NotificationBell } from './components/NotificationBell'
 import { GlobalDateRangeDialog } from './components/GlobalDateRangeDialog'
 import { GlobalDateRangeProvider } from './lib/globalDateRange'
+import { CompanyProvider } from './lib/companyContext'
 import { clearUser, loadUser, saveUser, type AppUser } from './lib/session'
 import { useLiveRefresh } from './lib/useLiveRefresh'
 import { MODULES, canAccess } from './lib/modules'
@@ -90,7 +91,17 @@ type CompanyRow = Record<string, any>
 function App(): React.JSX.Element {
   const [user, setUser] = useState<AppUser | null>(() => loadUser())
   const [booting, setBooting] = useState(false)
-  const [page, setPage] = useState<Page>('dashboard')
+  // On the website, the URL is the source of truth for which page loads —
+  // a refresh on /sales has to stay on Sales, not bounce to the dashboard.
+  // Desktop has no such URL (file://) so it always starts at 'dashboard',
+  // same as before.
+  const [page, setPage] = useState<Page>(() => {
+    if (__WEB__) {
+      const seg = window.location.pathname.replace(/^\/+/, '')
+      if (seg) return seg as Page
+    }
+    return 'dashboard'
+  })
   const [dbState, setDbState] = useState<'checking' | 'ok' | 'setup' | 'offline'>('checking')
   const [companies, setCompanies] = useState<CompanyRow[]>([])
   const [companyId, setCompanyId] = useState<number>(0)
@@ -104,12 +115,9 @@ function App(): React.JSX.Element {
   // Gateway with the ledger you were reading forgotten. It hands over where it
   // was on the way out, and gets it back on the way in.
   const [accountsResume, setAccountsResume] = useState<{ screen: string; ledgerId: number | null; companyId?: number } | null>(null)
-  // The icon rail is a desktop navigation pattern — on the website at phone
-  // width, pages either bring their own full-screen mobile UI (see
-  // SalesMobile) or aren't there yet, but either way the rail has nowhere to
-  // live at that width and would just eat the one screen the user has.
+  // On the website at phone width, Sidebar renders a tap-to-open trigger
+  // instead of the desktop hover-to-expand rail — see its `mobile` prop.
   const isMobile = useIsMobile()
-  const showSidebar = !(__WEB__ && isMobile)
 
   // Opens a document from somewhere else — a ledger line, a bargain — and
   // remembers enough to come back.
@@ -182,6 +190,27 @@ function App(): React.JSX.Element {
 
   // Human label of the page a drill-through came from (for the Back button).
   const backLabel = returnTo ? MODULES.find((m) => m.key === returnTo)?.label || 'previous page' : ''
+
+  // Website only: keep the address bar in step with `page`, so the current
+  // screen is a real, shareable, refreshable URL rather than in-memory state
+  // that a reload always resets to the dashboard.
+  useEffect(() => {
+    if (!__WEB__) return
+    const path = `/${page}`
+    if (window.location.pathname !== path) window.history.pushState({ page }, '', path)
+  }, [page])
+
+  // Browser back/forward — read the URL the user landed on and follow it,
+  // rather than leaving the app showing a page the address bar disagrees with.
+  useEffect(() => {
+    if (!__WEB__) return
+    function onPopState(): void {
+      const seg = window.location.pathname.replace(/^\/+/, '')
+      if (seg) setPage(seg as Page)
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
 
   // Alt+F2 (Tally's period-change key) — works from anywhere in the app, not
   // just one page, since every date-range filter listens for the same broadcast.
@@ -410,21 +439,21 @@ function App(): React.JSX.Element {
   const view = allowed.includes(page) ? page : (allowed[0] as Page)
 
   return (
+    <CompanyProvider value={{ companies, companyId, onCompanyChange: switchCompany }}>
     <GlobalDateRangeProvider>
     <div className="flex h-screen flex-col overflow-hidden bg-muted/30 text-foreground">
       <UpdateTopBar />
       <div className="flex flex-1 overflow-hidden">
-      {showSidebar && (
-        <Sidebar
-          page={view}
-          onNavigate={navigate}
-          user={user}
-          onLogout={handleLogout}
-          companies={companies}
-          companyId={companyId}
-          onCompanyChange={switchCompany}
-        />
-      )}
+      <Sidebar
+        page={view}
+        onNavigate={navigate}
+        user={user}
+        onLogout={handleLogout}
+        companies={companies}
+        companyId={companyId}
+        onCompanyChange={switchCompany}
+        mobile={__WEB__ && isMobile}
+      />
       <main key={companyId} className="relative flex-1 overflow-auto">
         {view === 'dashboard' && <Dashboard onNavigate={setPage} />}
         {view === 'bargains' && <Bargains onOpenOrder={(id) => openRecord('orders', id)} />}
@@ -483,6 +512,7 @@ function App(): React.JSX.Element {
       <Toaster richColors position="bottom-right" />
     </div>
     </GlobalDateRangeProvider>
+    </CompanyProvider>
   )
 }
 

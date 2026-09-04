@@ -1,10 +1,20 @@
 import { useEffect, useState } from 'react'
 import { cn } from '@/lib/utils'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
 // Live database connection indicator. It pings on mount and then every 20s, and
 // also whenever Windows reports the network coming back, so a dropped Turso
 // connection is visible rather than only surfacing as a failed save.
-export function DbStatus({ className }: { className?: string }): React.JSX.Element {
+export function DbStatus({
+  className,
+  // Just the coloured dot, with the label moved to a hover tooltip — for
+  // tight header clusters where the full pill (icon + text) doesn't fit or
+  // isn't worth the width. The pill stays the default everywhere else.
+  dotOnly = false
+}: {
+  className?: string
+  dotOnly?: boolean
+}): React.JSX.Element {
   const [state, setState] = useState<'checking' | 'ok' | 'offline' | 'error'>('checking')
   const [detail, setDetail] = useState('')
 
@@ -38,6 +48,19 @@ export function DbStatus({ className }: { className?: string }): React.JSX.Eleme
     offline: { dot: 'bg-amber-500', text: 'text-amber-700', label: 'No internet' },
     error: { dot: 'bg-red-500', text: 'text-red-700', label: 'Database unreachable' }
   }[state]
+
+  if (dotOnly) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-card', className)}>
+            <span className={cn('h-2 w-2 rounded-full', look.dot, state === 'ok' && 'animate-pulse')} />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>{detail || look.label}</TooltipContent>
+      </Tooltip>
+    )
+  }
 
   return (
     <span

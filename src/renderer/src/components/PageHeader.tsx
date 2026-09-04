@@ -2,6 +2,8 @@ import * as React from 'react'
 import { DbStatus } from '@/components/DbStatus'
 import { UpdateBadge } from '@/components/UpdateBadge'
 import { InfoTip } from '@/components/ui/tooltip'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { useCompany } from '@/lib/companyContext'
 
 interface Props {
   title: string
@@ -12,6 +14,28 @@ interface Props {
   // page, where "back" belongs at the start of the line the eye reads first,
   // not filed among the actions on the right.
   leading?: React.ReactNode
+}
+
+// The active company, switchable from any page's header — not just the
+// sidebar's own picker, which on mobile sits behind a tap to open the whole
+// overlay. Reads from CompanyProvider (see App.tsx) instead of taking props,
+// so every page that already renders <PageHeader> gets it for free.
+function HeaderCompanySwitcher(): React.JSX.Element | null {
+  const { companies, companyId, onCompanyChange } = useCompany()
+  const active = companies.filter((c) => c.active)
+  if (active.length <= 1) return null
+  return (
+    <Select value={String(companyId || '')} onValueChange={onCompanyChange}>
+      <SelectTrigger className="h-8 w-auto min-w-[7rem] max-w-[10rem] gap-1.5 text-xs">
+        <SelectValue placeholder="Company" />
+      </SelectTrigger>
+      <SelectContent>
+        {active.map((c) => (
+          <SelectItem key={String(c.id)} value={String(c.id)}>{String(c.name)}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
 }
 
 export function PageHeader({ title, subtitle, hint, actions, leading }: Props): React.JSX.Element {
@@ -27,7 +51,8 @@ export function PageHeader({ title, subtitle, hint, actions, leading }: Props): 
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <UpdateBadge />
-        <DbStatus />
+        <DbStatus dotOnly />
+        <HeaderCompanySwitcher />
         {actions}
       </div>
     </div>

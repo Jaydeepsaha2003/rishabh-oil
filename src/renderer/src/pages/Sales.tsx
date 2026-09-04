@@ -1429,39 +1429,62 @@ function SalesTab({
   // tokens (T.forest / T.lime), applied to the desktop-width table only on the
   // web build. __WEB__ is compiled out on desktop, so the app there keeps its
   // existing navy/amber look untouched.
-  const tableHeaderClass = __WEB__ ? 'bg-[#0B3D2E] [&_th]:text-white' : 'bg-[#1a2c56] [&_th]:text-white'
-  const tableHeaderRowClass = __WEB__ ? 'border-b-2 border-[#0B3D2E]/30' : 'border-b-2 border-[#1a2c56]/30'
+  const tableHeaderClass = __WEB__
+    ? 'bg-[#0B3D2E] [&_th]:h-[52px] [&_th]:text-[14px] [&_th]:font-extrabold [&_th]:text-white'
+    : 'bg-[#1a2c56] [&_th]:text-white'
+  const tableHeaderRowClass = __WEB__ ? 'border-0' : 'border-b-2 border-[#1a2c56]/30'
   const totalRowClass = __WEB__
-    ? 'border-b-2 border-[#C7F03F] bg-[#F1F5EF] hover:bg-[#F1F5EF]'
+    ? 'border-b-2 border-[#C7F03F] bg-[#F1F5EF] hover:bg-[#F1F5EF] [&_td]:h-[50px]'
     : 'border-b-2 border-amber-400 bg-amber-50 hover:bg-amber-50'
-  const totalTextClass = __WEB__ ? 'text-[#12280B]' : 'text-amber-900'
-  const totalMutedTextClass = __WEB__ ? 'text-[#3F5A12]' : 'text-amber-800/70'
+  const totalTextClass = __WEB__ ? 'text-[#0A1F17]' : 'text-amber-900'
+  const totalMutedTextClass = __WEB__ ? 'text-[#5A6B62]' : 'text-amber-800/70'
+  const tableCardClass = __WEB__
+    ? 'overflow-x-auto rounded-[4px] border border-[#D6E2D6] bg-white'
+    : 'overflow-x-auto rounded-lg border bg-card'
+  // Mono for every number the handoff calls out — dates, invoice nos, qty, money.
+  const monoCell = __WEB__ ? 'font-mono' : ''
 
   return (
     <div>
       {!formPage && (
       <>
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <div className="relative w-full sm:w-72">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+      <div
+        className={cn(
+          'mb-4 flex flex-wrap items-center gap-3',
+          // Sales Desktop handoff: white filter bar, 14px gap, taller controls.
+          __WEB__ && 'gap-3.5 rounded-[4px] border border-[#D6E2D6] bg-white px-5 py-3.5'
+        )}
+      >
+        <div className={cn('relative w-full sm:w-72', __WEB__ && 'sm:w-[340px]')}>
+          <Search className={cn('pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2', __WEB__ ? 'text-[#8AA096]' : 'text-muted-foreground')} />
           <Input
             type="search"
-            className="h-9 pl-8"
+            className={cn('h-9 pl-8', __WEB__ && 'h-11 rounded-[4px] border-[#C3D2C6] pl-9 text-sm')}
             placeholder="Search invoice no, customer, product…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+          <span
+            className={cn(
+              'shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70',
+              __WEB__ && 'text-[10.5px] font-extrabold tracking-[.13em] text-[#5A6B62]'
+            )}
+          >
             Date
           </span>
-          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
-          <span className="shrink-0 text-[10px] text-muted-foreground">to</span>
-          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} min={dateFrom || undefined} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
+          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className={cn('h-8 w-[9.5rem] shrink-0 text-[11px]', __WEB__ && 'h-11 rounded-[4px] border-[#C3D2C6] font-mono text-[13.5px]')} />
+          <span className={cn('shrink-0 text-[10px] text-muted-foreground', __WEB__ && 'text-[12.5px] font-semibold text-[#5A6B62]')}>to</span>
+          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} min={dateFrom || undefined} className={cn('h-8 w-[9.5rem] shrink-0 text-[11px]', __WEB__ && 'h-11 rounded-[4px] border-[#C3D2C6] font-mono text-[13.5px]')} />
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+          <span
+            className={cn(
+              'shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70',
+              __WEB__ && 'text-[10.5px] font-extrabold tracking-[.13em] text-[#5A6B62]'
+            )}
+          >
             Product type
           </span>
           <MultiSelectFilter
@@ -1469,14 +1492,14 @@ function SalesTab({
             value={productType}
             onApply={setProductType}
             allLabel="All product types"
-            className="h-9 w-[11.5rem] text-[12px]"
+            className={cn('h-9 w-[11.5rem] text-[12px]', __WEB__ && 'h-11 w-[230px] rounded-[4px] border-[#C3D2C6] text-[13.5px] font-bold')}
           />
         </div>
         {!unloadOnly && (
           <Button
             variant="outline"
             size="sm"
-            className="h-9 shrink-0 text-[12px]"
+            className={cn('h-9 shrink-0 text-[12px]', __WEB__ && 'h-11 rounded-[4px] border-[#C3D2C6] px-3.5 text-[13.5px] font-bold text-[#33473E]')}
             title="Which numbers the KRFL / KRFIN series has skipped, between the lowest and highest actually used"
             onClick={() => {
               setGapsOpen(true)
@@ -1511,7 +1534,7 @@ function SalesTab({
         />
         )}
       </div>
-      <div className="overflow-x-auto rounded-lg border bg-card">
+      <div className={tableCardClass}>
         <Table className={unloadOnly ? 'min-w-[720px]' : 'min-w-[1040px]'}>
           {/* The dark fill belongs on the THEAD, not the row: TableHeader
               carries [&_tr:hover]:bg-transparent (so a header never lights up
@@ -1565,10 +1588,10 @@ function SalesTab({
                 </TableCell>
                 <TableCell />
                 <TableCell />
-                <TableCell className={cn('text-right font-semibold tabular-nums', totalTextClass)}>
+                <TableCell className={cn('text-right font-semibold tabular-nums', monoCell, totalTextClass, __WEB__ && 'text-[14.5px] font-bold')}>
                   {formatNum(filteredInvoices.reduce((t, inv) => t + (Number(inv.qty) || 0), 0))}
                 </TableCell>
-                <TableCell className={cn('text-right font-semibold tabular-nums', totalTextClass)}>
+                <TableCell className={cn('text-right font-semibold tabular-nums', monoCell, totalTextClass, __WEB__ && 'text-[15px] font-bold tracking-[-0.02em]')}>
                   {formatINR(filteredInvoices.reduce((t, inv) => t + (Number(inv.net) || 0), 0))}
                 </TableCell>
                 <TableCell />
@@ -1615,7 +1638,7 @@ function SalesTab({
                         <div className="flex items-center gap-1.5">
                           {unloadOnly ? null : isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                           <div>
-                            <div className="flex items-center gap-1.5 whitespace-nowrap">
+                            <div className={cn('flex items-center gap-1.5 whitespace-nowrap', monoCell, __WEB__ && 'text-[14px] font-semibold')}>
                               {formatDate(inv.first.sale_date)}
                               {inv.first.rejected_at && (
                                 <Badge variant="destructive" className="gap-1 px-1.5 py-0 text-[10px]">
@@ -1623,12 +1646,12 @@ function SalesTab({
                                 </Badge>
                               )}
                             </div>
-                            <div className="truncate text-xs text-muted-foreground">{inv.first.invoice_no || '—'}</div>
+                            <div className={cn('truncate text-xs text-muted-foreground', monoCell, __WEB__ && 'text-[12.5px] text-[#7C9188]')}>{inv.first.invoice_no || '—'}</div>
                           </div>
                         </div>
                       </TableCell>
                       <TableCell className="align-top">
-                        <div className="truncate font-medium" title={inv.first.customer || ''}>{inv.first.customer || '—'}</div>
+                        <div className={cn('truncate font-medium', __WEB__ && 'text-[14.5px] font-bold tracking-[-0.015em]')} title={inv.first.customer || ''}>{inv.first.customer || '—'}</div>
                         {inv.first.rejected_at && (
                           <div className="mt-0.5 flex items-center gap-1 text-[11px] text-rose-700" title={inv.first.rejected_reason || ''}>
                             <Ban className="h-3 w-3 shrink-0" /> <span className="truncate">{inv.first.rejected_reason}</span>
@@ -1643,8 +1666,8 @@ function SalesTab({
                       </TableCell>
                       {!unloadOnly && (
                         <>
-                      <TableCell className="align-top text-right tabular-nums">{formatNum(inv.qty)}</TableCell>
-                      <TableCell className="align-top text-right tabular-nums">{formatINR(inv.net)}</TableCell>
+                      <TableCell className={cn('align-top text-right tabular-nums', monoCell, __WEB__ && 'text-[14px] font-semibold')}>{formatNum(inv.qty)}</TableCell>
+                      <TableCell className={cn('align-top text-right tabular-nums', monoCell, __WEB__ && 'text-[14.5px] font-bold tracking-[-0.02em]')}>{formatINR(inv.net)}</TableCell>
                       <TableCell className="align-top">
                         {(() => {
                           // The tag itself, in three states: an Ex sale, a
@@ -4402,11 +4425,7 @@ export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?
     <>
       <PageHeader
         title={unloadOnly ? 'Unloading desk' : 'Sales'}
-        subtitle={
-          unloadOnly
-            ? 'FOR deliveries still out — record the quantity received'
-            : 'Finished-goods dispatches drawn against sales bargains'
-        }
+        subtitle={unloadOnly ? 'FOR deliveries still out — record the quantity received' : undefined}
         hint={
           unloadOnly
             ? 'Each delivery listed here has left the factory and is not yet unloaded. Open one, enter what the transporter actually delivered on every line, and it is marked unloaded.'
@@ -4429,7 +4448,15 @@ export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?
                   </span>
                 )}
               </Button>
-              <Button size="sm" onClick={() => salesAdd?.open()} disabled={!salesAdd?.canAdd}>
+              <Button
+                size="sm"
+                onClick={() => salesAdd?.open()}
+                disabled={!salesAdd?.canAdd}
+                // The default button is near-black, same as the forest header
+                // it'd sit on — no contrast. Lime is the theme's own accent
+                // for the one action that matters most (see SalesMobile).
+                className={cn(__WEB__ && !unloadOnly && 'bg-[#C7F03F] text-[#12280B] hover:bg-[#b3d936]')}
+              >
                 <Plus className="h-4 w-4" /> New sale
               </Button>
             </>

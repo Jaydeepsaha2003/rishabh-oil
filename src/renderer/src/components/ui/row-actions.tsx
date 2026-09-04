@@ -40,7 +40,7 @@ export function RowActions({ actions, label = 'More actions' }: { actions: RowAc
       </PopoverTrigger>
       {/* Sized to its content rather than a fixed width — a label like
           "Undo — back to Outside factory" would otherwise be cut off. */}
-      <PopoverContent align="end" className="w-auto min-w-[11rem] p-1">
+      <PopoverContent align="end" className="w-auto min-w-[11rem] p-1.5">
         {shown.map((a) => {
           const Icon = a.icon
           return (
@@ -54,12 +54,12 @@ export function RowActions({ actions, label = 'More actions' }: { actions: RowAc
                 a.onClick()
               }}
               className={cn(
-                'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm transition-colors',
+                'flex w-full items-center gap-2.5 rounded-lg px-4 py-2 text-left text-sm transition-colors',
                 a.disabled
                   ? 'cursor-not-allowed text-muted-foreground/50'
                   : a.danger
                     ? 'text-destructive hover:bg-destructive/10'
-                    : 'hover:bg-accent'
+                    : 'hover:bg-muted'
               )}
             >
               {Icon && <Icon className="h-4 w-4 shrink-0" />}
