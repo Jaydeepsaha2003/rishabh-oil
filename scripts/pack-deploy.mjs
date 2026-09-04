@@ -31,6 +31,51 @@ cpSync(join(root, 'out/server'), join(out, 'out/server'), { recursive: true })
 cpSync(join(root, 'out/web'), join(out, 'out/web'), { recursive: true })
 cpSync(join(root, 'server.js'), join(out, 'server.js'))
 
+// The instant-deploy workflow. Lives here (not just pasted onto the
+// web-deploy branch once) so it survives every future rebuild — this whole
+// folder gets deleted and rewritten from scratch each time (see rmSync
+// above), so anything not generated here would quietly disappear on the
+// next `npm run web:pack`.
+//
+// Triggers on a push to web-deploy — the branch this script's own output
+// gets committed to — not on push to main, so it fires exactly when a new
+// build is actually ready, never on ordinary desktop-side commits.
+mkdirSync(join(out, '.github/workflows'), { recursive: true })
+writeFileSync(
+  join(out, '.github/workflows/deploy-web.yml'),
+  `name: Deploy web to Hostinger
+
+on:
+  push:
+    branches: [web-deploy]
+  # Lets a run be re-triggered by hand (gh workflow run / the Actions tab)
+  # without needing a new commit — the whole point being to test the deploy
+  # itself, not to manufacture a change just to have something to push.
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pull and install on the server
+        env:
+          SSH_KEY: \${{ secrets.HOSTINGER_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -p 65002 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \\
+            u526752913@217.21.91.205 '
+              export PATH="/opt/alt/alt-nodejs22/root/usr/bin:$PATH"
+              cd /home/u526752913/domains/rrbridge.in/rishabh-web &&
+              git fetch origin web-deploy &&
+              git reset --hard origin/web-deploy &&
+              npm ci --no-audit --no-fund &&
+              (mkdir -p tmp && touch tmp/restart.txt || true)
+            '
+`
+)
+
 // The two packages the bundle leaves external, at the versions this build was
 // tested against. Nothing else: no react, no vite, no electron.
 const runtime = ['@libsql/client', 'exceljs']

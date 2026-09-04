@@ -867,6 +867,11 @@ export function GateEntry(): React.JSX.Element {
     const list = pending.filter(
       (r) => String(r.direction || 'in') === dir && !(dir === 'in' && r.awaiting_gross_out && r.gross_weight == null)
     )
+    // Dispatched invoices with zero gate-out entries against them — work
+    // that's still outstanding even though nothing is physically at the
+    // weighbridge yet. Only meaningful for Gate Out: a purchase (direction
+    // 'in') has no invoice-side equivalent to be "pending" against.
+    const noTanker = dir === 'out' ? sales.filter((s) => Number(s.gate_outs) === 0) : []
     return (
         <section>
           <div className="mb-2 flex items-center gap-2">
@@ -878,9 +883,43 @@ export function GateEntry(): React.JSX.Element {
             <Badge variant={list.length ? 'warning' : 'muted'} className="ml-1">{list.length}</Badge>
           </div>
           {list.length === 0 ? (
-            <div className="rounded-xl border border-dashed py-5 text-center text-sm text-muted-foreground">
-              No tankers waiting for weight.
-            </div>
+            noTanker.length > 0 ? (
+              <div className="space-y-2">
+                <div className="rounded-xl border border-dashed border-amber-300 bg-amber-50/60 px-4 py-3 text-[13px] text-amber-900">
+                  No tanker at the gate yet, but {noTanker.length} dispatched invoice{noTanker.length === 1 ? '' : 's'} still {noTanker.length === 1 ? 'needs' : 'need'} one recorded.
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                  {noTanker.map((s) => (
+                    <div
+                      key={String(s.invoice_group)}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-card px-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-[12.5px] font-medium">{String(s.customer || '—')}</div>
+                        <div className="truncate text-[11px] text-muted-foreground">
+                          {String(s.invoice_no || '')} · {formatNum(s.qty)} {String(s.uom || '')}
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 shrink-0 text-[11px]"
+                        onClick={() => {
+                          chooseSale(String(s.invoice_group))
+                          setOutFormOpen(true)
+                        }}
+                      >
+                        Record
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed py-5 text-center text-sm text-muted-foreground">
+                No tankers waiting for weight.
+              </div>
+            )
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {list.map((row) => {

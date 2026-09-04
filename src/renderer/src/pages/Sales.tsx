@@ -1425,6 +1425,18 @@ function SalesTab({
     }
   }
 
+  // Website table re-skin: same forest/lime theme as SalesMobile.tsx's design
+  // tokens (T.forest / T.lime), applied to the desktop-width table only on the
+  // web build. __WEB__ is compiled out on desktop, so the app there keeps its
+  // existing navy/amber look untouched.
+  const tableHeaderClass = __WEB__ ? 'bg-[#0B3D2E] [&_th]:text-white' : 'bg-[#1a2c56] [&_th]:text-white'
+  const tableHeaderRowClass = __WEB__ ? 'border-b-2 border-[#0B3D2E]/30' : 'border-b-2 border-[#1a2c56]/30'
+  const totalRowClass = __WEB__
+    ? 'border-b-2 border-[#C7F03F] bg-[#F1F5EF] hover:bg-[#F1F5EF]'
+    : 'border-b-2 border-amber-400 bg-amber-50 hover:bg-amber-50'
+  const totalTextClass = __WEB__ ? 'text-[#12280B]' : 'text-amber-900'
+  const totalMutedTextClass = __WEB__ ? 'text-[#3F5A12]' : 'text-amber-800/70'
+
   return (
     <div>
       {!formPage && (
@@ -1506,8 +1518,8 @@ function SalesTab({
               like a data row), and that descendant selector out-specifies any
               hover: class on the row itself — which made the row go
               transparent on hover and show the white card through it. */}
-          <TableHeader className="bg-[#1a2c56] [&_th]:text-white">
-            <TableRow className="border-b-2 border-[#1a2c56]/30">
+          <TableHeader className={tableHeaderClass}>
+            <TableRow className={tableHeaderRowClass}>
               {INV_COLUMNS.map((c) => (
                 <TableHead
                   key={c.key}
@@ -1544,19 +1556,19 @@ function SalesTab({
             {/* Totals for exactly the rows the filters left — sits under the
                 header so the figure is read before scrolling, not after. */}
             {!loading && !unloadOnly && filteredInvoices.length > 0 && (
-              <TableRow className="border-b-2 border-amber-400 bg-amber-50 hover:bg-amber-50">
-                <TableCell className="font-semibold text-amber-900">
+              <TableRow className={totalRowClass}>
+                <TableCell className={cn('font-semibold', totalTextClass)}>
                   Total
-                  <span className="ml-1.5 font-normal text-amber-800/70">
+                  <span className={cn('ml-1.5 font-normal', totalMutedTextClass)}>
                     ({filteredInvoices.length} invoice{filteredInvoices.length === 1 ? '' : 's'})
                   </span>
                 </TableCell>
                 <TableCell />
                 <TableCell />
-                <TableCell className="text-right font-semibold tabular-nums text-amber-900">
+                <TableCell className={cn('text-right font-semibold tabular-nums', totalTextClass)}>
                   {formatNum(filteredInvoices.reduce((t, inv) => t + (Number(inv.qty) || 0), 0))}
                 </TableCell>
-                <TableCell className="text-right font-semibold tabular-nums text-amber-900">
+                <TableCell className={cn('text-right font-semibold tabular-nums', totalTextClass)}>
                   {formatINR(filteredInvoices.reduce((t, inv) => t + (Number(inv.net) || 0), 0))}
                 </TableCell>
                 <TableCell />

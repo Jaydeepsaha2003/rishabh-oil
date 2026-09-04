@@ -36,6 +36,7 @@ import { clearUser, loadUser, saveUser, type AppUser } from './lib/session'
 import { useLiveRefresh } from './lib/useLiveRefresh'
 import { MODULES, canAccess } from './lib/modules'
 import { clearEntryWindows } from './lib/useEntryWindow'
+import { useIsMobile } from './lib/useIsMobile'
 
 // Full-width bar pinned above the sidebar+page area — visible on every page,
 // not just once the download finishes, so no one is caught mid-task on a
@@ -103,6 +104,12 @@ function App(): React.JSX.Element {
   // Gateway with the ledger you were reading forgotten. It hands over where it
   // was on the way out, and gets it back on the way in.
   const [accountsResume, setAccountsResume] = useState<{ screen: string; ledgerId: number | null; companyId?: number } | null>(null)
+  // The icon rail is a desktop navigation pattern — on the website at phone
+  // width, pages either bring their own full-screen mobile UI (see
+  // SalesMobile) or aren't there yet, but either way the rail has nowhere to
+  // live at that width and would just eat the one screen the user has.
+  const isMobile = useIsMobile()
+  const showSidebar = !(__WEB__ && isMobile)
 
   // Opens a document from somewhere else — a ledger line, a bargain — and
   // remembers enough to come back.
@@ -407,15 +414,17 @@ function App(): React.JSX.Element {
     <div className="flex h-screen flex-col overflow-hidden bg-muted/30 text-foreground">
       <UpdateTopBar />
       <div className="flex flex-1 overflow-hidden">
-      <Sidebar
-        page={view}
-        onNavigate={navigate}
-        user={user}
-        onLogout={handleLogout}
-        companies={companies}
-        companyId={companyId}
-        onCompanyChange={switchCompany}
-      />
+      {showSidebar && (
+        <Sidebar
+          page={view}
+          onNavigate={navigate}
+          user={user}
+          onLogout={handleLogout}
+          companies={companies}
+          companyId={companyId}
+          onCompanyChange={switchCompany}
+        />
+      )}
       <main key={companyId} className="relative flex-1 overflow-auto">
         {view === 'dashboard' && <Dashboard onNavigate={setPage} />}
         {view === 'bargains' && <Bargains onOpenOrder={(id) => openRecord('orders', id)} />}
