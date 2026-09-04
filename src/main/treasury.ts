@@ -1169,7 +1169,11 @@ export async function listLcRepayments(lcId: number): Promise<Row[]> {
 export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   const c = getClient()
   const res = await c.execute({
-    sql: `SELECT r.*, l.lc_no, l.company_id, l.bank, l.our_bank_id, l.amount AS lc_open_amount
+    sql: `SELECT r.*, l.lc_no, l.company_id, l.bank, l.our_bank_id, l.amount AS lc_open_amount,
+                 l.interest_upfront, l.interest_journal_entry_id AS lc_interest_journal_entry_id,
+                 l.interest_pct AS lc_interest_pct, l.usance_days AS lc_usance_days,
+                 l.charges AS lc_charges, l.interest_excl_charges AS lc_interest_excl_charges,
+                 l.interest_adj AS lc_interest_adj
           FROM lc_repayments r
           JOIN letters_of_credit l ON l.id = r.lc_id
           WHERE r.id = ?`,
@@ -1182,22 +1186,53 @@ export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
   await dropEntry(n(rep.journal_entry_id) || null)
   await dropEntry(n(rep.fee_journal_entry_id) || null)
 
-  // The LC's own interest and commission are NOT here. The bank kept them out
-  // of the credit when it paid the beneficiary, so they were posted then (see
-  // postLcFees) and are already sitting in the payable this settles.
+  // The LC's own interest and commission are NOT here — normally. The bank
+  // keeps them out of the credit when it pays the beneficiary, posted then
+  // (see settleLcBillsCombined) and already sitting in the payable this
+  // settles.
   //
-  // What can still belong to this voucher is anything the bank took ON THE DAY
-  // over and above the credit — a maturity charge, a commission keyed off the
-  // statement. Those are this event's cost.
+  // An UPFRONT LC works differently: its interest/charges are meant to be
+  // posted only once its bank statement line is reconciled
+  // (postLcUpfrontInterest) — deliberately, so the figure comes from what the
+  // bank's advice actually says rather than a guess at opening. But if that
+  // reconciliation never happens before the LC is repaid, that voucher never
+  // gets raised and the interest lands nowhere — the exact gap that lost
+  // interest on LC-5, LC-11 and LC-26. Repayment is the last point this can
+  // still be caught: an upfront LC whose interest_journal_entry_id is still
+  // empty here gets it folded into this voucher instead of losing it.
+  //
+  // The "or equals this repayment's own fee voucher" half of the check is for
+  // RE-posting: dropEntry just deleted that voucher above, so without it a
+  // second save of the same repayment would see the id fetched before the
+  // drop, believe the interest was already (still) posted elsewhere, and
+  // quietly drop it a second time.
+  const ownFeeJe = n(rep.fee_journal_entry_id) || null
+  const upfrontStillDue =
+    !!rep.interest_upfront && (!n(rep.lc_interest_journal_entry_id) || n(rep.lc_interest_journal_entry_id) === ownFeeJe)
+  const upfrontInterest = upfrontStillDue
+    ? lcInterest({
+        amount: n(rep.lc_open_amount),
+        interest_pct: n(rep.lc_interest_pct),
+        usance_days: n(rep.lc_usance_days),
+        interest_excl_charges: rep.lc_interest_excl_charges,
+        interest_adj: n(rep.lc_interest_adj)
+      })
+    : 0
+  const upfrontCharges = upfrontStillDue ? round2(n(rep.lc_charges)) : 0
+
+  // What can still belong to this voucher, beyond a rescued upfront interest:
+  // anything the bank took ON THE DAY over and above the credit — a maturity
+  // charge, a commission keyed off the statement. Those are this event's cost.
   const total = round2(n(rep.amount))
   const comm = round2(n(rep.comm_charges))
-  const extra = round2(n(rep.bank_charges))
-  const onTheDay = round2(comm + extra)
+  const extra = round2(n(rep.bank_charges) + upfrontCharges)
+  const onTheDay = round2(comm + extra + upfrontInterest)
   const date = String(rep.repay_date || todayISO()).slice(0, 10)
 
   let feeJe: number | null = null
   if (onTheDay > 0.004) {
     const lines: { account: string; group: string; dr?: number; cr?: number }[] = []
+    if (upfrontInterest > 0.005) lines.push({ account: 'INTEREST A/C', group: 'Indirect Expenses', dr: upfrontInterest })
     if (comm > 0.005) lines.push({ account: 'COMM. CHARGES A/C', group: 'Indirect Expenses', dr: comm })
     if (extra > 0.005) lines.push({ account: 'BANK CHARGES A/C', group: 'Indirect Expenses', dr: extra })
     lines.push({ account: payable, group: LC_PAYABLE_GROUP, cr: onTheDay })
@@ -1205,11 +1240,24 @@ export async function postLcRepaymentEntry(repaymentId: number): Promise<void> {
       date,
       vchType: 'JOURNAL',
       vchNo: rep.lc_no ? String(rep.lc_no) : null,
-      narration: `LC ${rep.lc_no} — ${rep.bank || 'the bank'} charged ${onTheDay.toFixed(2)} on settlement`,
+      narration: upfrontStillDue
+        ? `LC ${rep.lc_no} — ${rep.bank || 'the bank'} charged ${onTheDay.toFixed(2)} on settlement (interest never reconciled upfront, caught at repayment)`
+        : `LC ${rep.lc_no} — ${rep.bank || 'the bank'} charged ${onTheDay.toFixed(2)} on settlement`,
       companyId: n(rep.company_id) || undefined,
       lines
     })
     feeJe = je.id
+    if (upfrontStillDue) {
+      await c.execute({
+        sql: 'UPDATE letters_of_credit SET interest_journal_entry_id = ? WHERE id = ?',
+        args: [je.id, n(rep.lc_id)]
+      })
+    }
+  } else if (n(rep.lc_interest_journal_entry_id) === ownFeeJe && ownFeeJe) {
+    // The voucher just dropped was the one carrying this LC's interest, and
+    // nothing here replaces it (onTheDay rounds to nil) — leave the LC honestly
+    // marked as not yet posted rather than pointing at a deleted entry.
+    await c.execute({ sql: 'UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?', args: [n(rep.lc_id)] })
   }
 
   // One lump out of the account, exactly what the statement shows.
@@ -1286,12 +1334,23 @@ export async function saveLcRepayment(v: Row): Promise<{ id: number }> {
       // A repayment raises two vouchers — the fee journal and the payment —
       // so un-posting has to take both. Dropping only the payment would leave
       // the interest accrued against a liability nothing ever settles.
+      const oldFeeJe = n(prev.rows[0].fee_journal_entry_id) || null
       await dropEntry(n(prev.rows[0].journal_entry_id) || null)
-      await dropEntry(n(prev.rows[0].fee_journal_entry_id) || null)
+      await dropEntry(oldFeeJe)
       await c.execute({
         sql: 'UPDATE lc_repayments SET journal_entry_id = NULL, fee_journal_entry_id = NULL WHERE id = ?',
         args: [id]
       })
+      // If that fee voucher was also carrying a rescued upfront interest
+      // (postLcRepaymentEntry's fallback), un-posting must not leave the LC
+      // pointing at a voucher that no longer exists — it goes back to "not
+      // yet posted" so a later re-post or bank reconciliation can catch it.
+      if (oldFeeJe) {
+        await c.execute({
+          sql: 'UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ? AND interest_journal_entry_id = ?',
+          args: [lcId, oldFeeJe]
+        })
+      }
     }
   } else {
     const ins = await c.execute({

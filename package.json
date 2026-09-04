@@ -1,6 +1,6 @@
 {
   "name": "rishabh-oil",
-  "version": "0.3.176",
+  "version": "0.3.177",
   "description": "Oil production management system",
   "main": "./out/main/index.js",
   "author": "Rishabh Oil",
@@ -23,7 +23,8 @@
     "web:build": "npm run web:server && npm run web:client",
     "web:start": "node --env-file=.env out/server/index.cjs",
     "web:dev": "vite --config vite.web.config.ts",
-    "web:seed": "node --env-file=.env scripts/turso-to-sqlite.mjs"
+    "web:seed": "node --env-file=.env scripts/turso-to-sqlite.mjs",
+    "web:pack": "npm run web:build && node scripts/pack-deploy.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",

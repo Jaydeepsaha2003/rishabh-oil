@@ -756,8 +756,6 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                       )}
                       <PartyCell value={Number(r.received)} parties={breakdown[r.id as number]?.receipt || []} />
                       <TableCell className="text-right tabular-nums text-emerald-700">{Number(r.produced) ? formatNum(r.produced) : '—'}</TableCell>
-                      <TableCell className="text-right tabular-nums text-emerald-700">{Number(r.transferred_in) > 0 ? formatNum(r.transferred_in) : '—'}</TableCell>
-                      <TableCell className="text-right tabular-nums text-rose-700">{Number(r.transferred_out) > 0 ? formatNum(r.transferred_out) : '—'}</TableCell>
                       <TableCell className="text-right tabular-nums text-rose-700">{Number(r.consumed) ? formatNum(r.consumed) : '—'}</TableCell>
                       {/* Oil drawn out of the tank to be packed into SKUs. It is
                           the answer to "the DALDA left but nobody sold it" —
@@ -787,8 +785,6 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                     {ranged && <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('opening'))}</TableCell>}
                     <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('received'))}</TableCell>
                     <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('produced'))}</TableCell>
-                    <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('transferred_in'))}</TableCell>
-                    <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('transferred_out'))}</TableCell>
                     <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('consumed'))}</TableCell>
                     <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('packed_out'))}</TableCell>
                     <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('sold'))}</TableCell>
@@ -810,8 +806,6 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                   {ranged && <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.opening)}</TableCell>}
                   <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.received)}</TableCell>
                   <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.produced)}</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.transferred_in)}</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.transferred_out)}</TableCell>
                   <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.consumed)}</TableCell>
                   <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.packed_out)}</TableCell>
                   <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.sold)}</TableCell>
@@ -834,8 +828,6 @@ function STOCK_TABLE_COLS(ranged: boolean): { l: string; r?: boolean; tone?: str
     ...(ranged ? [{ l: 'Opening', r: true, tone: 'text-slate-700' }] : []),
     { l: 'Receipt', r: true, tone: 'text-emerald-700' },
     { l: 'Produced', r: true, tone: 'text-emerald-700' },
-    { l: 'Transfer in', r: true, tone: 'text-emerald-700' },
-    { l: 'Transfer out', r: true, tone: 'text-rose-700' },
     { l: 'Consumed', r: true, tone: 'text-rose-700' },
     { l: 'Packed', r: true, tone: 'text-rose-700' },
     { l: 'Dispatch', r: true, tone: 'text-rose-700' },

@@ -79,26 +79,34 @@ unset: a file needs no token.
 `PORT` is usually supplied by Hostinger; the app reads it if set and falls back
 to 3000.
 
-### 5. Load your data
+### 5. Your data — two ways to start
 
-Run this **once**, from a machine that has the Turso credentials (your own PC is
-easiest):
+**Option A — start empty and let the server build itself.** Point
+`TURSO_DATABASE_URL` at a `file:` path that does not exist yet and just start
+the app. `src/main/bootstrap.ts` (`runStartupTasks()`) is the exact sequence
+the desktop runs from `app.whenReady()` — the schema, every `runOnce`
+migration, and the same seed data (a default admin, baseline products,
+formulations and packagings) — so a brand-new file ends up as a working,
+loggable-into app with no manual step. It logs `[auth] seeded default admin
+(admin / admin123)` the first time; change that password immediately.
+
+**Option B — bring your existing books across.** Run this once, from a machine
+that has the Turso credentials (your own PC is easiest):
 
 ```bash
 npm run web:seed -- --out rishabh.db
 ```
 
 It copies every table, column, index and row — 79 tables — counts both ends and
-**exits non-zero on any mismatch**, because a partial copy of a company's books
-must not look like a success. Then upload the file to
-`/home/<user>/rishabh-data/rishabh.db`.
+**exits non-zero on any mismatch**. Upload the result to
+`/home/<user>/rishabh-data/rishabh.db`. `runStartupTasks()` runs against this
+file too on every boot — every migration is already marked done, so it costs
+one lookup per key and changes nothing.
 
-Copying the schema from Turso is also what makes the file complete. The `runOnce`
-migrations in `src/main/index.ts` created `stock_openings`, `sku_openings`,
-`gate_entry_sales`, `bd_payment_ins`, `bd_linked_orders` and `products.uom`, and
-they run at Electron startup — which the server does not execute. A database
-built from nothing would be missing all six. Seeding from Turso is therefore the
-supported way to create the website's database.
+Either way, the same function runs on every start, which is what makes a
+redeploy safe: a database it has seen before picks up only what's new since,
+and one it has never seen — including a file that was wiped or never uploaded
+— comes up as a working app instead of failing to start.
 
 ### 6. Start it
 

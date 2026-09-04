@@ -1,22 +1,22 @@
 import { join } from 'node:path'
-import { getClient, initDb } from '../main/db'
+import { getClient } from '../main/db'
+import { runStartupTasks } from '../main/bootstrap'
 import { registerIpc } from '../main/ipc'
 import { startHttpServer } from './http'
 
 // The web entry point.
 //
-// It does three things and no more: connect to the same Turso database, let
-// ipc.ts register its channels (into the shim's Map rather than Electron's), and
-// open an HTTP port. Every rule, every query and every permission check is
-// reached through those channels, which is why none of it is repeated here.
+// It does three things and no more: connect to the database, let ipc.ts
+// register its channels (into the shim's Map rather than Electron's), and open
+// an HTTP port. Every rule, every query and every permission check is reached
+// through those channels, which is why none of it is repeated here.
 //
-// It deliberately does NOT run the once-per-database migrations that live in
-// src/main/index.ts. Those are already applied — runOnce records a flag in the
-// database itself, and the desktop app has run them all against this same
-// database. Duplicating that block here would mean two copies of it to keep in
-// step, which is precisely the kind of drift this migration is meant to avoid.
-// Moving it into a shared bootstrap is a later, careful step, verified against
-// the desktop app afterwards.
+// runStartupTasks() (src/main/bootstrap.ts) is the exact same call the desktop
+// makes from app.whenReady() — same schema, same runOnce migrations, same
+// backfills. Sharing it rather than skipping it here is what lets a database
+// this server opens for the first time build itself from nothing (a freshly
+// uploaded, empty SQLite file), and one it has opened before pick up whatever
+// changed since, with no separate "web" migration path to fall out of step.
 async function main(): Promise<void> {
   const port = Number(process.env.PORT) || 3000
   // Hostinger runs the built app from the project root, so the compiled front
@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   const webRoot = process.env.WEB_ROOT || join(process.cwd(), 'out', 'web')
 
   console.log('[web] connecting to the database…')
-  await initDb()
+  await runStartupTasks()
   console.log('[web] schema ready')
 
   // A local SQLite file needs two things a cloud database does not, and both are
