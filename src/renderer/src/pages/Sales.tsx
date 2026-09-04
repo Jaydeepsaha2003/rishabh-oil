@@ -1439,10 +1439,8 @@ function SalesTab({
   const totalTextClass = __WEB__ ? 'text-[#0A1F17]' : 'text-amber-900'
   const totalMutedTextClass = __WEB__ ? 'text-[#5A6B62]' : 'text-amber-800/70'
   const tableCardClass = __WEB__
-    ? 'overflow-x-auto rounded-[4px] border border-[#D6E2D6] bg-white'
+    ? 'overflow-x-auto border-y border-[#D6E2D6] bg-white'
     : 'overflow-x-auto rounded-lg border bg-card'
-  // Mono for every number the handoff calls out — dates, invoice nos, qty, money.
-  const monoCell = __WEB__ ? 'font-mono' : ''
 
   return (
     <div>
@@ -1452,7 +1450,7 @@ function SalesTab({
         className={cn(
           'mb-4 flex flex-wrap items-center gap-3',
           // Sales Desktop handoff: white filter bar, 14px gap, taller controls.
-          __WEB__ && 'gap-3.5 rounded-[4px] border border-[#D6E2D6] bg-white px-5 py-3.5'
+          __WEB__ && 'gap-3.5 border-y border-[#D6E2D6] bg-white px-5 py-3.5'
         )}
       >
         <div className={cn('relative w-full sm:w-72', __WEB__ && 'sm:w-[340px]')}>
@@ -1474,9 +1472,9 @@ function SalesTab({
           >
             Date
           </span>
-          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className={cn('h-8 w-[9.5rem] shrink-0 text-[11px]', __WEB__ && 'h-11 rounded-[4px] border-[#C3D2C6] font-mono text-[13.5px]')} />
+          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className={cn('h-8 w-[9.5rem] shrink-0 text-[11px]', __WEB__ && 'h-11 rounded-[4px] border-[#C3D2C6] text-[13.5px]')} />
           <span className={cn('shrink-0 text-[10px] text-muted-foreground', __WEB__ && 'text-[12.5px] font-semibold text-[#5A6B62]')}>to</span>
-          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} min={dateFrom || undefined} className={cn('h-8 w-[9.5rem] shrink-0 text-[11px]', __WEB__ && 'h-11 rounded-[4px] border-[#C3D2C6] font-mono text-[13.5px]')} />
+          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} min={dateFrom || undefined} className={cn('h-8 w-[9.5rem] shrink-0 text-[11px]', __WEB__ && 'h-11 rounded-[4px] border-[#C3D2C6] text-[13.5px]')} />
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <span
@@ -1588,10 +1586,10 @@ function SalesTab({
                 </TableCell>
                 <TableCell />
                 <TableCell />
-                <TableCell className={cn('text-right font-semibold tabular-nums', monoCell, totalTextClass, __WEB__ && 'text-[14.5px] font-bold')}>
+                <TableCell className={cn('text-right font-semibold tabular-nums', totalTextClass, __WEB__ && 'text-[14.5px] font-bold')}>
                   {formatNum(filteredInvoices.reduce((t, inv) => t + (Number(inv.qty) || 0), 0))}
                 </TableCell>
-                <TableCell className={cn('text-right font-semibold tabular-nums', monoCell, totalTextClass, __WEB__ && 'text-[15px] font-bold tracking-[-0.02em]')}>
+                <TableCell className={cn('text-right font-semibold tabular-nums', totalTextClass, __WEB__ && 'text-[15px] font-bold tracking-[-0.02em]')}>
                   {formatINR(filteredInvoices.reduce((t, inv) => t + (Number(inv.net) || 0), 0))}
                 </TableCell>
                 <TableCell />
@@ -1638,7 +1636,7 @@ function SalesTab({
                         <div className="flex items-center gap-1.5">
                           {unloadOnly ? null : isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                           <div>
-                            <div className={cn('flex items-center gap-1.5 whitespace-nowrap', monoCell, __WEB__ && 'text-[14px] font-semibold')}>
+                            <div className={cn('flex items-center gap-1.5 whitespace-nowrap', __WEB__ && 'text-[14px] font-semibold')}>
                               {formatDate(inv.first.sale_date)}
                               {inv.first.rejected_at && (
                                 <Badge variant="destructive" className="gap-1 px-1.5 py-0 text-[10px]">
@@ -1646,7 +1644,7 @@ function SalesTab({
                                 </Badge>
                               )}
                             </div>
-                            <div className={cn('truncate text-xs text-muted-foreground', monoCell, __WEB__ && 'text-[12.5px] text-[#7C9188]')}>{inv.first.invoice_no || '—'}</div>
+                            <div className={cn('truncate text-xs text-muted-foreground', __WEB__ && 'text-[12.5px] text-[#7C9188]')}>{inv.first.invoice_no || '—'}</div>
                           </div>
                         </div>
                       </TableCell>
@@ -1666,8 +1664,8 @@ function SalesTab({
                       </TableCell>
                       {!unloadOnly && (
                         <>
-                      <TableCell className={cn('align-top text-right tabular-nums', monoCell, __WEB__ && 'text-[14px] font-semibold')}>{formatNum(inv.qty)}</TableCell>
-                      <TableCell className={cn('align-top text-right tabular-nums', monoCell, __WEB__ && 'text-[14.5px] font-bold tracking-[-0.02em]')}>{formatINR(inv.net)}</TableCell>
+                      <TableCell className={cn('align-top text-right tabular-nums', __WEB__ && 'text-[14px] font-semibold')}>{formatNum(inv.qty)}</TableCell>
+                      <TableCell className={cn('align-top text-right tabular-nums', __WEB__ && 'text-[14.5px] font-bold tracking-[-0.02em]')}>{formatINR(inv.net)}</TableCell>
                       <TableCell className="align-top">
                         {(() => {
                           // The tag itself, in three states: an Ex sale, a
@@ -4463,7 +4461,9 @@ export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?
           )
         }
       />
-      <div className="px-4 py-4">
+      {/* Website runs the register full-bleed — no side gutter, so the table
+          gets the whole width. The desktop app keeps its padded page. */}
+      <div className={__WEB__ ? 'py-4' : 'px-4 py-4'}>
         <SalesTab focusId={focusId} onFocusHandled={onFocusHandled} onRegister={setSalesAdd} onBack={onBack} backLabel={backLabel} />
       </div>
 
