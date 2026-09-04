@@ -2322,7 +2322,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <DatePicker min={minDate} value={form.order_date || ''} onChange={(v) => setForm((p) => ({ ...p, order_date: v }))} />
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label>Invoice rate *</Label>
+                    <Label>Bargain rate *</Label>
                     <Input type="number" step="0.01" value={form.invoice_rate ?? ''} onChange={(e) => setForm((p) => ({ ...p, invoice_rate: e.target.value, invoice_rate_touched: true }))} />
                   </div>
                   <div className="flex flex-col gap-1.5">
@@ -4878,7 +4878,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               <InfoTile icon={CalendarDays} label="Purchase date" value={formatDate(detailRow.order_date)} />
               <InfoTile icon={Truck} label="Tankers" value={detailRow.tanker_nos || '—'} />
               <InfoTile icon={Boxes} label="Total quantity" value={`${formatNum(detailRow.ordered_qty)} ${detailRow.uom}`} />
-              <InfoTile icon={IndianRupee} label="Invoice rate" value={`${formatINR(detailRow.invoice_rate)} / ${detailRow.uom}`} />
+              {/* The bargain rate, not invoice_rate — this summary already
+                  states it in the "Bargain & notes" note above, and the two
+                  can genuinely differ (a supplier billing above bargain with
+                  freight folded in). Showing invoice_rate under a "Bargain
+                  rate" label would misstate it whenever they don't match. */}
+              <InfoTile icon={IndianRupee} label="Bargain rate" value={`${formatINR(detailRow.bargain_rate)} / ${detailRow.uom}`} />
               {/* EX vs DLD decides who carries the shortage beyond tolerance —
                   the same flag the deductible column below is driven by, so
                   it's named here rather than left to be inferred from it. */}
