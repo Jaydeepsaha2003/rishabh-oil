@@ -1439,7 +1439,7 @@ function SalesTab({
   const totalTextClass = __WEB__ ? 'text-[#0A1F17]' : 'text-amber-900'
   const totalMutedTextClass = __WEB__ ? 'text-[#5A6B62]' : 'text-amber-800/70'
   const tableCardClass = __WEB__
-    ? 'overflow-x-auto border-y border-[#D6E2D6] bg-white'
+    ? 'overflow-x-auto rounded-l-[4px] border-y border-l border-[#D6E2D6] bg-white'
     : 'overflow-x-auto rounded-lg border bg-card'
 
   return (
@@ -1450,7 +1450,7 @@ function SalesTab({
         className={cn(
           'mb-4 flex flex-wrap items-center gap-3',
           // Sales Desktop handoff: white filter bar, 14px gap, taller controls.
-          __WEB__ && 'gap-3.5 border-y border-[#D6E2D6] bg-white px-5 py-3.5'
+          __WEB__ && 'gap-3.5 rounded-l-[4px] border-y border-l border-[#D6E2D6] bg-white px-5 py-3.5'
         )}
       >
         <div className={cn('relative w-full sm:w-72', __WEB__ && 'sm:w-[340px]')}>
@@ -4463,7 +4463,7 @@ export function Sales({ focusId, onFocusHandled, onBack, backLabel }: { focusId?
       />
       {/* Website runs the register full-bleed — no side gutter, so the table
           gets the whole width. The desktop app keeps its padded page. */}
-      <div className={__WEB__ ? 'py-4' : 'px-4 py-4'}>
+      <div className={__WEB__ ? 'py-4 pl-4' : 'px-4 py-4'}>
         <SalesTab focusId={focusId} onFocusHandled={onFocusHandled} onRegister={setSalesAdd} onBack={onBack} backLabel={backLabel} />
       </div>
 
