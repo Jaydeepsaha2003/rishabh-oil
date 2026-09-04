@@ -4906,7 +4906,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               // Deductible columns appear at all; each row then uses its own
               // condition (see condIsEx) for its own figure.
               const isEx = list.some((t) => condIsEx(t))
-              const invoiceRate = Number(detailRow.invoice_rate) || 0
+              // adjusted_rate, not the raw invoice_rate field — it's the rate
+              // that actually lands on the invoice per unit once interest and
+              // any rate adjustment are folded in (see orders.ts: "the rate
+              // actually charged"). The deductible itself is unaffected — it's
+              // priced at bargainRate regardless, deliberately.
+              const invoiceRate = Number(detailRow.adjusted_rate) || 0
               const rows = list.map((t) => tankerDeduct(t, detailRow))
               const anyPending = rows.some((r) => r.t.status !== 'empty')
               const tot = rows.reduce(
