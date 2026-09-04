@@ -1,0 +1,26 @@
+name: Deploy web to Hostinger
+
+on:
+  push:
+    branches: [web-deploy]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pull and install on the server
+        env:
+          SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -p 65002 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            u526752913@217.21.91.205 '
+              export PATH="/opt/alt/alt-nodejs22/root/usr/bin:$PATH"
+              cd /home/u526752913/domains/rrbridge.in/rishabh-web &&
+              git fetch origin web-deploy &&
+              git reset --hard origin/web-deploy &&
+              npm ci --no-audit --no-fund &&
+              (mkdir -p tmp && touch tmp/restart.txt || true)
+            '
