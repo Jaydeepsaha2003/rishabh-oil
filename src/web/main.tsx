@@ -16,3 +16,14 @@ import '@fontsource/ibm-plex-mono/500.css'
 import '@fontsource/ibm-plex-mono/600.css'
 import '@fontsource/ibm-plex-mono/700.css'
 import '../renderer/src/main'
+
+// Installable web app. The worker itself caches nothing (see public/sw.js) —
+// it exists so the browser offers "Install", and registering after load keeps
+// it off the critical path.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    void navigator.serviceWorker.register('/sw.js').catch(() => {
+      // An unsupported or blocked worker only costs the install prompt.
+    })
+  })
+}

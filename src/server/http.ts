@@ -160,6 +160,38 @@ export function startHttpServer({ port, webRoot }: ServerOptions): void {
       return json(res, 200, { ok: true, at: new Date().toISOString() })
     }
 
+    // The mill's own logo, uploaded under Settings and stored as a data URL in
+    // app_settings. It backs the favicon, the apple-touch icon and the PWA
+    // manifest's icons, so an installed app carries the mill's mark rather
+    // than a generic one. Unset (or unreadable) falls through to the bundled
+    // default so the manifest never points at a 404.
+    if (path === '/brand-icon') {
+      try {
+        const fn = handlers.get('settings:get')
+        // No session: the icon is fetched by the browser (favicon, manifest)
+        // before anyone signs in, and a logo is not private.
+        const ctx: RequestContext = { userId: null, username: '', companyId: 0, ip: clientIp(req) }
+        const raw = fn ? await runInRequestContext(ctx, () => Promise.resolve(fn({}, { key: 'brand_logo' }))) : null
+        const url = String(raw || '')
+        const m = /^data:([^;,]+);base64,(.+)$/i.exec(url)
+        if (m) {
+          const body = Buffer.from(m[2], 'base64')
+          res.writeHead(200, {
+            'content-type': m[1],
+            'content-length': body.length,
+            // Short: a logo changes rarely, but when it does the installed
+            // app should pick it up without waiting a day.
+            'cache-control': 'public, max-age=300'
+          })
+          return res.end(body)
+        }
+      } catch {
+        // fall through to the bundled default
+      }
+      if (serveStatic(res, webRoot, 'brand-default.png')) return
+      return json(res, 404, { error: 'No brand icon set' })
+    }
+
     if (path === '/api/invoke') {
       if (req.method !== 'POST') return json(res, 405, { error: 'Use POST' })
       let payload: Row

@@ -25,6 +25,7 @@ import {
   TableRow
 } from '@/components/ui/table'
 import { PageHeader } from '@/components/PageHeader'
+import { applyBrandFavicon } from '@/lib/brand'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import type { AppUser } from '@/lib/session'
@@ -668,14 +669,64 @@ function GeneralSettings({ isAdmin }: { isAdmin: boolean }): React.JSX.Element {
   // unless an admin explicitly relaxes it here.
   const [lcRequireInvoice, setLcRequireInvoice] = useState(true)
   const [saving, setSaving] = useState(false)
+  // The mill's own mark. Stored as a data URL so one setting covers the
+  // sidebar, the browser tab and the installed app's icon — see
+  // /brand-icon in src/server/http.ts and applyBrandFavicon().
+  const [logo, setLogo] = useState('')
+  const [logoBusy, setLogoBusy] = useState(false)
 
   useEffect(() => {
     window.api.settings.all().then((s) => {
       setShortage(s.allowed_shortage_pct ?? '0.2')
       setUom(s.default_uom ?? 'ton')
       setLcRequireInvoice(s.lc_require_linked_invoice !== '0')
+      setLogo(s.brand_logo ?? '')
     })
   }, [])
+
+  async function pickLogo(file: File | null): Promise<void> {
+    if (!file) return
+    // A square PNG a few hundred KB at most: it travels in every manifest and
+    // favicon request, and lands in one settings row.
+    if (!/^image\//.test(file.type)) {
+      toast.error('Pick an image file (PNG or JPG).')
+      return
+    }
+    if (file.size > 512 * 1024) {
+      toast.error('Logo must be under 512 KB — resize it and try again.')
+      return
+    }
+    setLogoBusy(true)
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const fr = new FileReader()
+        fr.onload = () => resolve(String(fr.result || ''))
+        fr.onerror = () => reject(new Error('Could not read that file'))
+        fr.readAsDataURL(file)
+      })
+      await window.api.settings.set('brand_logo', dataUrl)
+      setLogo(dataUrl)
+      applyBrandFavicon(dataUrl)
+      toast.success('Logo saved — it now shows in the sidebar, the browser tab and the installed app.')
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setLogoBusy(false)
+    }
+  }
+
+  async function clearLogo(): Promise<void> {
+    setLogoBusy(true)
+    try {
+      await window.api.settings.set('brand_logo', '')
+      setLogo('')
+      toast.success('Logo removed — the default mark is back.')
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setLogoBusy(false)
+    }
+  }
 
   async function save(): Promise<void> {
     setSaving(true)
@@ -711,6 +762,44 @@ function GeneralSettings({ isAdmin }: { isAdmin: boolean }): React.JSX.Element {
           <div className="flex flex-col gap-1.5">
             <Label>Default unit of measure</Label>
             <Input value={uom} onChange={(e) => setUom(e.target.value)} placeholder="ton" />
+          </div>
+        </div>
+      </Card>
+
+      <Card className="p-6">
+        <h3 className="mb-1 text-base font-medium">Brand logo</h3>
+        <p className="mb-4 text-xs text-muted-foreground">
+          Shown in the sidebar, on the browser tab, and as the app icon when the website is installed on a phone or
+          laptop. A square PNG works best; under 512 KB.
+        </p>
+        <div className="flex items-center gap-4">
+          <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-muted/30">
+            {logo ? (
+              <img src={logo} alt="Brand logo" className="h-full w-full object-contain" />
+            ) : (
+              <span className="text-[10px] text-muted-foreground">None</span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild variant="outline" size="sm" disabled={logoBusy}>
+              <label className="cursor-pointer">
+                {logo ? 'Replace logo' : 'Upload logo'}
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/svg+xml,image/webp"
+                  className="hidden"
+                  onChange={(e) => {
+                    void pickLogo(e.target.files?.[0] ?? null)
+                    e.target.value = ''
+                  }}
+                />
+              </label>
+            </Button>
+            {logo && (
+              <Button variant="outline" size="sm" onClick={() => void clearLogo()} disabled={logoBusy}>
+                Remove
+              </Button>
+            )}
           </div>
         </div>
       </Card>

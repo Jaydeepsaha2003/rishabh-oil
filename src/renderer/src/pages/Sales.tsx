@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, DoorOpen, Download, History, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Tags, Trash2, Truck, Upload, ListChecks} from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Ban, Building2, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, DoorOpen, Download, History, LogIn, LogOut, Maximize2, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Tags, Trash2, Truck, Upload, X, ListChecks} from 'lucide-react'
 import { moduleScope } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
 import { loadUser } from '@/lib/session'
@@ -1415,6 +1415,54 @@ function SalesTab({
     }
   }
 
+  // ---- Full-invoice drawer (website only) --------------------------------
+  // Read-only: it shows what the register already holds, plus the real audit
+  // trail behind the invoice — nothing here writes.
+  type DrawerInv = { group: string; first: Row; lines: Row[]; qty: number; net: number }
+  const [drawer, setDrawer] = useState<DrawerInv | null>(null)
+  const [activity, setActivity] = useState<{ what: string; when: string; kind: 'created' | 'in' | 'out' | 'edit' }[]>([])
+  const [activityLoading, setActivityLoading] = useState(false)
+
+  function openDrawer(inv: DrawerInv): void {
+    setDrawer(inv)
+    setActivity([])
+    setActivityLoading(true)
+    void (async () => {
+      try {
+        // Two real sources: the audit trail keyed by this invoice's group
+        // (created / edited / cancelled …) and the gate register's own in and
+        // out entries for it. Merged into one timeline, oldest first.
+        const api = window.api as unknown as Record<string, any>
+        const [hist, gate] = await Promise.all([
+          api.access?.entityHistory?.('Sale', { key: inv.group, limit: 100 }).catch(() => []) ?? [],
+          api.gate?.forRecord?.({ invoiceGroup: inv.group }).catch(() => ({ rows: [] })) ?? { rows: [] }
+        ])
+        const events: { what: string; when: string; kind: 'created' | 'in' | 'out' | 'edit' }[] = []
+        for (const h of (hist || []) as Row[]) {
+          const action = String(h.action || '')
+          events.push({
+            what: `${action}${h.username ? ` by ${h.username}` : ''}`,
+            when: String(h.created_at || ''),
+            kind: /^created/i.test(action) ? 'created' : 'edit'
+          })
+        }
+        for (const g of ((gate?.rows || []) as Row[])) {
+          const dir = String(g.direction || 'in') === 'out' ? 'out' : 'in'
+          const stamp = [String(g.entry_date || ''), String(g.entry_time || '')].filter(Boolean).join(' ')
+          events.push({
+            what: `Tanker gate ${dir}${g.tanker_no ? ` — ${g.tanker_no}` : ''}${g.gate_entry_no ? ` (${g.gate_entry_no})` : ''}`,
+            when: stamp,
+            kind: dir
+          })
+        }
+        events.sort((a, b) => String(a.when).localeCompare(String(b.when)))
+        setActivity(events)
+      } finally {
+        setActivityLoading(false)
+      }
+    })()
+  }
+
   async function restoreInvoice(inv: { group: string; first: Row }): Promise<void> {
     try {
       await window.api.sales.unrejectInvoice(inv.group)
@@ -1450,14 +1498,14 @@ function SalesTab({
         className={cn(
           'mb-4 flex flex-wrap items-center gap-3',
           // Sales Desktop handoff: white filter bar, 14px gap, taller controls.
-          __WEB__ && 'gap-3.5 rounded-l-[4px] border-y border-l border-[#D6E2D6] bg-white px-5 py-3.5'
+          __WEB__ && 'gap-2.5 rounded-l-[4px] border-y border-l border-[#D6E2D6] bg-white px-4 py-2.5'
         )}
       >
-        <div className={cn('relative w-full sm:w-72', __WEB__ && 'sm:w-[340px]')}>
+        <div className={cn('relative w-full sm:w-72', __WEB__ && 'min-w-[190px] max-w-[340px] flex-1 sm:w-auto')}>
           <Search className={cn('pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2', __WEB__ ? 'text-[#8AA096]' : 'text-muted-foreground')} />
           <Input
             type="search"
-            className={cn('h-9 pl-8', __WEB__ && 'h-11 rounded-[4px] border-[#C3D2C6] pl-9 text-sm')}
+            className={cn('h-9 pl-8', __WEB__ && 'h-9 rounded-[4px] border-[#C3D2C6] pl-9 text-[13px]')}
             placeholder="Search invoice no, customer, product…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -1472,9 +1520,9 @@ function SalesTab({
           >
             Date
           </span>
-          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className={cn('h-8 w-[9.5rem] shrink-0 text-[11px]', __WEB__ && 'h-11 rounded-[4px] border-[#C3D2C6] text-[13.5px]')} />
+          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className={cn('h-8 w-[9.5rem] shrink-0 text-[11px]', __WEB__ && 'h-9 w-[8.25rem] rounded-[4px] border-[#C3D2C6] text-[12.5px]')} />
           <span className={cn('shrink-0 text-[10px] text-muted-foreground', __WEB__ && 'text-[12.5px] font-semibold text-[#5A6B62]')}>to</span>
-          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} min={dateFrom || undefined} className={cn('h-8 w-[9.5rem] shrink-0 text-[11px]', __WEB__ && 'h-11 rounded-[4px] border-[#C3D2C6] text-[13.5px]')} />
+          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} min={dateFrom || undefined} className={cn('h-8 w-[9.5rem] shrink-0 text-[11px]', __WEB__ && 'h-9 w-[8.25rem] rounded-[4px] border-[#C3D2C6] text-[12.5px]')} />
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <span
@@ -1490,14 +1538,19 @@ function SalesTab({
             value={productType}
             onApply={setProductType}
             allLabel="All product types"
-            className={cn('h-9 w-[11.5rem] text-[12px]', __WEB__ && 'h-11 w-[230px] rounded-[4px] border-[#C3D2C6] text-[13.5px] font-bold')}
+            className={cn('h-9 w-[11.5rem] text-[12px]', __WEB__ && 'h-9 w-auto min-w-[150px] max-w-[230px] flex-1 rounded-[4px] border-[#C3D2C6] text-[12.5px] font-bold')}
           />
         </div>
         {!unloadOnly && (
           <Button
             variant="outline"
             size="sm"
-            className={cn('h-9 shrink-0 text-[12px]', __WEB__ && 'h-11 rounded-[4px] border-[#C3D2C6] px-3.5 text-[13.5px] font-bold text-[#33473E]')}
+            className={cn(
+              'h-9 shrink-0 text-[12px]',
+              // Alert red from the handoff's token table — the one control on
+              // the bar that reports something wrong with the numbering.
+              __WEB__ && 'h-9 rounded-[4px] border-transparent bg-[#D7263D] px-3 text-[12.5px] font-bold text-white hover:bg-[#bb1f33] hover:text-white'
+            )}
             title="Which numbers the KRFL / KRFIN series has skipped, between the lowest and highest actually used"
             onClick={() => {
               setGapsOpen(true)
@@ -1777,7 +1830,17 @@ function SalesTab({
                       </TableCell>
                       {!unloadOnly && (
                       <TableCell className="align-top text-right" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex justify-end">
+                        <div className="flex justify-end gap-1">
+                          {__WEB__ && (
+                            <button
+                              type="button"
+                              title="Open full invoice"
+                              onClick={() => openDrawer(inv)}
+                              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[3px] border border-[#D6E2D6] text-[#33473E] transition-colors hover:bg-[#EAF0E9]"
+                            >
+                              <Maximize2 className="h-4 w-4" />
+                            </button>
+                          )}
                           <RowActions
                             actions={[
                               ...(inv.first.rejected_at
@@ -3087,6 +3150,101 @@ function SalesTab({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Full-invoice drawer — the design handoff's right-side panel. Website
+          only; read-only, so nothing in here can change the invoice. */}
+      {__WEB__ && drawer && (
+        <div className="fixed inset-0 z-50 flex justify-end bg-[rgba(10,31,23,.42)]" onClick={() => setDrawer(null)}>
+          <div
+            className="flex h-full w-[560px] max-w-full flex-col bg-[#F1F5EF] shadow-[-16px_0_40px_rgba(10,31,23,.22)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex-none bg-[#0B3D2E] px-6 py-4 text-white">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2.5">
+                    <div className="text-2xl font-bold tracking-[-0.02em]">{String(drawer.first.invoice_no || '—')}</div>
+                    <span className="inline-flex items-center gap-1 rounded-[3px] bg-[#C7F03F] px-2 py-1 text-[10.5px] font-extrabold uppercase tracking-[.05em] text-[#12280B]">
+                      <Truck className="h-3.5 w-3.5" />
+                      {stageInfo(drawer.first).label}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 text-[13.5px] font-semibold text-[#8FBFA8]">
+                    {formatDate(drawer.first.sale_date)} · {String(drawer.first.customer || '—')}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setDrawer(null)}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[3px] bg-white/10 hover:bg-white/20"
+                  title="Close"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+              <div className="grid grid-cols-3 gap-2.5">
+                {[
+                  { k: 'Qty', v: formatNum(drawer.qty) },
+                  { k: 'Freight', v: String(drawer.first.freight_term || 'FREIGHT_ON_GOODS') !== 'DLD' ? 'EX' : 'DLD' },
+                  { k: 'Items', v: `${drawer.lines.length} item${drawer.lines.length > 1 ? 's' : ''}` }
+                ].map((st) => (
+                  <div key={st.k} className="rounded-[4px] border border-[#D6E2D6] bg-white p-3">
+                    <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#7C9188]">{st.k}</div>
+                    <div className="mt-1 text-[19px] font-bold">{st.v}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mb-2 mt-5 text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#7C9188]">Line items</div>
+              <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+                {drawer.lines.map((l, i) => (
+                  <div key={i} className="flex justify-between gap-3 border-b border-[#EAF0E9] p-3 last:border-0">
+                    <div className="min-w-0">
+                      {/* A packed line is sold as its SKU, not as the bulk oil
+                          behind it — name it that way when there is one. */}
+                      <div className="text-[13.5px] font-bold">{String(l.packaging_name || l.product_name || '—')}</div>
+                      <div className="mt-0.5 text-[11.5px] text-[#5A6B62]">
+                        {formatNum(l.qty)} × {formatINR(l.rate)}
+                      </div>
+                    </div>
+                    <div className="flex-none text-[14px] font-bold">
+                      {formatINR(Number(l.amount) || Number(l.qty) * Number(l.rate))}
+                    </div>
+                  </div>
+                ))}
+                <div className="flex items-baseline justify-between bg-[#C7F03F] px-3 py-3.5">
+                  <span className="text-[10.5px] font-extrabold uppercase tracking-[.08em] text-[#2E4A0B]">Invoice total</span>
+                  <span className="text-[19px] font-bold tracking-[-0.02em] text-[#12280B]">{formatINR(drawer.net)}</span>
+                </div>
+              </div>
+
+              <div className="mb-2 mt-5 text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#7C9188]">Activity</div>
+              <div className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-1.5">
+                {activityLoading ? (
+                  <div className="py-6 text-center text-[12.5px] text-[#7C9188]">Loading…</div>
+                ) : activity.length === 0 ? (
+                  <div className="py-6 text-center text-[12.5px] text-[#7C9188]">Nothing recorded against this invoice yet.</div>
+                ) : (
+                  activity.map((a, i) => {
+                    const Ico = a.kind === 'created' ? CheckCircle2 : a.kind === 'in' ? LogIn : a.kind === 'out' ? LogOut : Pencil
+                    return (
+                      <div key={i} className="flex gap-3 border-b border-[#EAF0E9] py-2.5 last:border-0">
+                        <Ico className="mt-0.5 h-[19px] w-[19px] shrink-0 text-[#12855A]" />
+                        <div className="min-w-0">
+                          <div className="text-[13px] font-bold">{a.what}</div>
+                          <div className="mt-0.5 text-[11.5px] font-semibold text-[#7C9188]">{a.when || '—'}</div>
+                        </div>
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

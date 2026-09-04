@@ -35,6 +35,7 @@ import {
 import { cn } from '@/lib/utils'
 import type { AppUser } from '@/lib/session'
 import { canAccess } from '@/lib/modules'
+import { useBrandLogo } from '@/lib/brand'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
@@ -144,6 +145,8 @@ export function Sidebar({
   // On mobile this only ever means "the overlay is open" — there's no
   // collapsed-but-visible rail state there, unlike desktop.
   const [expanded, setExpanded] = useState(false)
+  // The mill's uploaded mark, if there is one — it also sets the tab icon.
+  const brandLogo = useBrandLogo()
   const activeCompany = companies.find((c) => Number(c.id) === Number(companyId))
 
   const visibleGroups = GROUPS.map((g) => ({
@@ -303,7 +306,11 @@ export function Sidebar({
               __WEB__ ? 'bg-[#C7F03F] text-[#0B3D2E]' : 'bg-amber-500 text-white'
             )}
           >
-            <Droplets className="h-5 w-5" />
+            {brandLogo ? (
+              <img src={brandLogo} alt="" className="h-full w-full rounded-lg object-contain" />
+            ) : (
+              <Droplets className="h-5 w-5" />
+            )}
           </div>
           {expanded && (
             <div className="leading-tight">
