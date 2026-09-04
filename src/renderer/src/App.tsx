@@ -32,7 +32,7 @@ import { Approvals } from './pages/Approvals'
 import { NotificationBell } from './components/NotificationBell'
 import { GlobalDateRangeDialog } from './components/GlobalDateRangeDialog'
 import { GlobalDateRangeProvider } from './lib/globalDateRange'
-import { CompanyProvider } from './lib/companyContext'
+import { CompanyProvider, HeaderExtrasProvider } from './lib/companyContext'
 import { clearUser, loadUser, saveUser, type AppUser } from './lib/session'
 import { useLiveRefresh } from './lib/useLiveRefresh'
 import { MODULES, canAccess } from './lib/modules'
@@ -440,6 +440,7 @@ function App(): React.JSX.Element {
 
   return (
     <CompanyProvider value={{ companies, companyId, onCompanyChange: switchCompany }}>
+    <HeaderExtrasProvider value={{ bell: <NotificationBell user={user} onNavigate={(p) => navigate(p as Page)} /> }}>
     <GlobalDateRangeProvider>
     <div className="flex h-screen flex-col overflow-hidden bg-muted/30 text-foreground">
       <UpdateTopBar />
@@ -506,12 +507,12 @@ function App(): React.JSX.Element {
         {view === 'approvals' && <Approvals />}
         {view === 'settings' && <Settings user={user} />}
       </main>
-      <NotificationBell user={user} onNavigate={(p) => navigate(p as Page)} />
       </div>
       <GlobalDateRangeDialog open={periodOpen} onOpenChange={setPeriodOpen} currentPage={page} />
       <Toaster richColors position="bottom-right" />
     </div>
     </GlobalDateRangeProvider>
+    </HeaderExtrasProvider>
     </CompanyProvider>
   )
 }

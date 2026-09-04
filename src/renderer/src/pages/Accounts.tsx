@@ -31,6 +31,7 @@ import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { DbStatus } from '@/components/DbStatus'
 import { UpdateBadge } from '@/components/UpdateBadge'
+import { useHeaderExtras } from '@/lib/companyContext'
 import { FyPicker } from '@/components/FyPicker'
 import { errText, formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -440,6 +441,7 @@ export function Accounts({
   resume?: { screen: string; ledgerId: number | null; companyId?: number } | null
   onResumed?: () => void
 }): React.JSX.Element {
+  const { bell: headerBell } = useHeaderExtras()
   // Tally opens on Select Company — every report and voucher below is pinned
   // to this choice (F3 changes it), never silently the app-wide company.
   const [companies, setCompanies] = useState<Row[]>([])
@@ -4723,7 +4725,9 @@ export function Accounts({
           F4 Contra · F5 Payment · F6 Receipt · F7 Journal · Ctrl+A accept · Esc back / exit · the highlighted letter jumps to any
           section
         </span>
-        <span className="ml-auto flex items-center gap-2"><UpdateBadge /><DbStatus /></span>
+        {/* This page draws its own header rather than using PageHeader, so it
+            has to place the bell itself — see HeaderExtrasProvider. */}
+        <span className="ml-auto flex items-center gap-2"><UpdateBadge /><DbStatus />{headerBell}</span>
       </div>
       <div className="flex-1 px-2 pb-2">
         {!company ? (

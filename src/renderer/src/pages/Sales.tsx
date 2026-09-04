@@ -1897,7 +1897,94 @@ function SalesTab({
                       </TableCell>
                       )}
                     </TableRow>
-                    {!unloadOnly && isOpen && inv.lines.map((r) => {
+                    {/* Website: the handoff's expanded panel — one full-width
+                        row holding a line-items card and a side column, rather
+                        than the desktop app's line-per-row breakdown (which
+                        stays exactly as it was, below). */}
+                    {__WEB__ && !unloadOnly && isOpen && (() => {
+                      const bargainNo = String(inv.lines.find((r) => r.sales_bargain_no)?.sales_bargain_no || '')
+                      const bargain = bargainNo ? bargains.find((b) => String(b.bargain_no) === bargainNo) : undefined
+                      const bq = Number(bargain?.qty) || 0
+                      const sold = Number(bargain?.sold_qty) || 0
+                      const pct = bq > 0 ? Math.min(100, Math.round((sold / bq) * 100)) : null
+                      return (
+                        <TableRow className="hover:bg-transparent">
+                          <TableCell colSpan={colCount} className="border-b border-[#E4ECE3] bg-[#F7FAF6] p-0">
+                            <div className="flex flex-wrap gap-5 px-8 py-4">
+                              <div className="min-w-[320px] flex-1">
+                                <div className="mb-2 text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#7C9188]">
+                                  Line items
+                                </div>
+                                <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+                                  <div className="grid grid-cols-[1fr_120px_150px_160px] items-center bg-[#EAF0E9] text-[11px] font-extrabold uppercase tracking-[.08em] text-[#33473E]">
+                                    <div className="px-3 py-2.5">Product</div>
+                                    <div className="px-3 py-2.5 text-right">Qty</div>
+                                    <div className="px-3 py-2.5 text-right">Rate</div>
+                                    <div className="px-3 py-2.5 text-right">Amount</div>
+                                  </div>
+                                  {inv.lines.map((r) => (
+                                    <div
+                                      key={r.id as number}
+                                      className="grid grid-cols-[1fr_120px_150px_160px] items-center border-b border-[#EAF0E9] text-[13.5px] last:border-0"
+                                    >
+                                      <div className="truncate px-3 py-2.5 font-bold" title={String(r.packaging_name || r.product_name || '')}>
+                                        {String(r.packaging_name || r.product_name || '—')}
+                                      </div>
+                                      <div className="px-3 py-2.5 text-right tabular-nums">{formatNum(r.qty)}</div>
+                                      <div className="px-3 py-2.5 text-right tabular-nums text-[#5A6B62]">{formatINR(r.rate)}</div>
+                                      <div className="px-3 py-2.5 text-right font-bold tabular-nums">
+                                        {formatINR(Number(r.amount) + Number(r.gst_amount || 0))}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+
+                              <div className="flex w-[300px] flex-none flex-col gap-2.5">
+                                <div className="rounded-[4px] border border-[#D6E2D6] bg-white p-3">
+                                  <div className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#7C9188]">Bargain link</div>
+                                  <div className="mt-1.5 text-[14px] font-bold">{bargainNo || 'No bargain'}</div>
+                                  {pct != null && (
+                                    <>
+                                      <div className="mt-2.5 h-1.5 overflow-hidden rounded-sm bg-[#E4ECE3]">
+                                        <div className="h-full bg-[#12855A]" style={{ width: `${pct}%` }} />
+                                      </div>
+                                      <div className="mt-1.5 text-[11.5px] font-semibold text-[#5A6B62]">
+                                        {pct}% dispatched against bargain
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+
+                                {untracked && (
+                                  <div className="flex gap-2.5 rounded-[4px] border-l-4 border-[#C2700A] bg-[#FFEDD0] px-3 py-2.5">
+                                    <AlertTriangle className="mt-0.5 h-[19px] w-[19px] shrink-0 text-[#C2700A]" />
+                                    <div className="text-[11.5px] font-semibold leading-[1.4] text-[#7A5410]">
+                                      <b className="text-[#8A5300]">Off-stock dispatch.</b> No matching finished-goods stock at
+                                      dispatch time.
+                                    </div>
+                                  </div>
+                                )}
+
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    openDrawer(inv)
+                                  }}
+                                  className="flex h-[42px] items-center justify-center gap-2 rounded-[4px] bg-[#0B3D2E] text-[13px] font-extrabold tracking-[.03em] text-[#C7F03F] transition-colors hover:bg-[#0f4f3b]"
+                                >
+                                  <Maximize2 className="h-[18px] w-[18px]" />
+                                  OPEN FULL INVOICE
+                                </button>
+                              </div>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })()}
+
+                    {!__WEB__ && !unloadOnly && isOpen && inv.lines.map((r) => {
                       const inStock = stock[r.product_id as number]?.stock ?? 0
                       const sh = saleShortage(r, defaultShortagePct)
                       return (
@@ -2779,15 +2866,15 @@ function SalesTab({
 
             {!gapsBusy &&
               ((gaps?.series as Row[]) || []).map((sr) => (
-                <div key={String(sr.prefix)} className="rounded-md border">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/40 px-3 py-2">
-                    <span className="doc-ref text-[13px] font-bold">{String(sr.prefix)}</span>
+                <div key={String(sr.prefix)} className="overflow-hidden rounded-lg border">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b bg-muted/40 px-3.5 py-2.5">
+                    <span className="doc-ref text-[13.5px] font-bold">{String(sr.prefix)}</span>
                     <span className="text-[11.5px] tabular-nums text-muted-foreground">
                       {String(sr.used)} used · {String(sr.from)}–{String(sr.to)}
                     </span>
-                    <span className="flex items-center gap-1.5">
+                    <span className="ml-auto flex items-center gap-1.5">
                       {Number(sr.cancelled_count) > 0 && (
-                        <span className="rounded bg-amber-100 px-2 py-0.5 text-[11.5px] font-semibold tabular-nums text-amber-900">
+                        <span className="rounded px-2 py-0.5 text-[11.5px] font-semibold tabular-nums text-amber-900 bg-amber-100">
                           {String(sr.cancelled_count)} cancelled
                         </span>
                       )}
@@ -2815,12 +2902,12 @@ function SalesTab({
                           With one number per row the count column is always 1,
                           so it is gone — and so is the wording that used to
                           explain the grouping. */}
-                      <table className="ruled-cols w-full text-[12px]">
-                        <thead className="bg-muted/40 text-[10px] uppercase tracking-widest text-muted-foreground">
+                      <table className="w-full text-[12px]">
+                        <thead className="bg-muted/60 text-[10px] uppercase tracking-widest text-muted-foreground">
                           <tr>
-                            <th className="w-12 px-3 py-1.5 text-right">Sl.</th>
-                            <th className="px-3 py-1.5 text-left">Invoice no</th>
-                            <th className="w-[210px] px-3 py-1.5 text-right">Action</th>
+                            <th className="w-10 px-3 py-2 text-right font-semibold">Sl.</th>
+                            <th className="px-3 py-2 text-left font-semibold">Invoice no</th>
+                            <th className="w-[230px] px-3 py-2 text-right font-semibold">Action</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -2828,34 +2915,38 @@ function SalesTab({
                             .slice()
                             .sort((a, b) => a - b)
                             .map((num, i) => (
-                              <tr key={num} className="border-t">
-                                <td className="px-3 py-1 text-right tabular-nums text-muted-foreground">{i + 1}</td>
-                                <td className="doc-ref px-3 py-1 font-medium tabular-nums text-rose-800">
+                              <tr key={num} className="border-t transition-colors hover:bg-muted/30">
+                                <td className="px-3 py-1.5 text-right text-[11px] tabular-nums text-muted-foreground">{i + 1}</td>
+                                <td className="doc-ref px-3 py-1.5 font-semibold tabular-nums text-rose-800">
                                   {String(sr.prefix)}/{num}
                                 </td>
                                 {/* The two things anybody does about a gap: book
                                     the bill that belongs to it, or record that the
-                                    number was voided. */}
-                                <td className="px-3 py-1">
+                                    number was voided. Both stay on one line —
+                                    wrapped labels made the list twice as tall
+                                    and much harder to read down. */}
+                                <td className="px-3 py-1.5">
                                   <div className="flex justify-end gap-1.5">
                                     <button
                                       type="button"
-                                      className="rounded border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-800 hover:bg-sky-100"
+                                      className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-semibold text-emerald-800 transition-colors hover:bg-emerald-100"
                                       title={`Open a new invoice numbered ${sr.prefix}/${num}`}
                                       onClick={() => bookGap(String(sr.prefix), num)}
                                     >
-                                      Sales booking
+                                      <Plus className="h-3.5 w-3.5 shrink-0" />
+                                      Book
                                     </button>
                                     <button
                                       type="button"
-                                      className="rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-900 hover:bg-amber-100"
+                                      className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border border-amber-200 bg-amber-50 px-2.5 text-[11px] font-semibold text-amber-900 transition-colors hover:bg-amber-100"
                                       title={`Record ${sr.prefix}/${num} as cancelled, so it stops reading as missing`}
                                       onClick={() => {
                                         setVoidTarget({ prefix: String(sr.prefix), number: num })
                                         setVoidReason('')
                                       }}
                                     >
-                                      Cancel invoice
+                                      <Ban className="h-3.5 w-3.5 shrink-0" />
+                                      Cancelled
                                     </button>
                                   </div>
                                 </td>

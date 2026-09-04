@@ -162,7 +162,7 @@ export function NotificationBell({ user, onNavigate }: Props): React.JSX.Element
   }
 
   return (
-    <div ref={wrapRef} className="fixed right-4 top-4 z-40">
+    <div ref={wrapRef} className="relative">
       <button
         onClick={openPanel}
         title="Notifications"
