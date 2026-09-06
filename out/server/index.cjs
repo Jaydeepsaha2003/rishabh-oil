@@ -22,7 +22,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // src/server/index.ts
-var import_node_path4 = require("node:path");
+var import_node_path5 = require("node:path");
 
 // src/main/db.ts
 var import_web = require("@libsql/client");
@@ -3016,52 +3016,144 @@ async function addManualJournal(d) {
 // src/main/backup.ts
 var import_node_fs2 = require("node:fs");
 var import_node_path2 = require("node:path");
-function todayISO2() {
-  const d = /* @__PURE__ */ new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
+
+// src/main/dbsnapshot.ts
+var import_node_zlib = require("node:zlib");
 function lit(v) {
   if (v === null || v === void 0) return "NULL";
   if (typeof v === "number") return Number.isFinite(v) ? String(v) : "NULL";
   if (typeof v === "bigint") return String(v);
+  if (typeof v === "boolean") return v ? "1" : "0";
   if (v instanceof Uint8Array || v instanceof ArrayBuffer) {
     const buf = v instanceof ArrayBuffer ? new Uint8Array(v) : v;
     return `X'${Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("")}'`;
   }
   return `'${String(v).replace(/'/g, "''")}'`;
 }
+function idempotent(sql) {
+  return sql.replace(
+    /^\s*CREATE\s+(UNIQUE\s+|TEMP\s+|TEMPORARY\s+)?(TABLE|INDEX|VIEW|TRIGGER)\s+(?!IF\s+NOT\s+EXISTS)/i,
+    (_m, mod, kind) => `CREATE ${mod || ""}${kind} IF NOT EXISTS `
+  );
+}
+function internal(name) {
+  return name.startsWith("sqlite_") || name.startsWith("libsql_") || name === "_litestream_seq";
+}
+var ROWS_PER_INSERT = 200;
+var READ_PAGE = 2e3;
+var RID = "__snapshot_rowid";
+async function* readTable(c, table) {
+  let after = 0;
+  for (; ; ) {
+    let res;
+    try {
+      res = await c.execute({
+        sql: `SELECT rowid AS ${RID}, * FROM "${table}" WHERE rowid > ? ORDER BY rowid LIMIT ${READ_PAGE}`,
+        args: [after]
+      });
+    } catch {
+      const all = await c.execute(`SELECT * FROM "${table}"`);
+      if (all.rows.length) {
+        yield { columns: all.columns, rows: all.rows };
+      }
+      return;
+    }
+    if (!res.rows.length) return;
+    const columns = res.columns.filter((x) => x !== RID);
+    const rows = res.rows;
+    after = rows[rows.length - 1][RID];
+    yield { columns, rows };
+    if (res.rows.length < READ_PAGE) return;
+  }
+}
+async function dumpSql() {
+  const c = getClient();
+  const at = (/* @__PURE__ */ new Date()).toISOString();
+  const out = [
+    `-- Rishabh Oil database snapshot, taken ${at}`,
+    "-- Restore it from Settings -> Database on the website, or by hand:",
+    "--   sqlite3 restored.db < this-file.sql",
+    "PRAGMA foreign_keys=OFF;",
+    "BEGIN TRANSACTION;"
+  ];
+  const master = await c.execute(
+    `SELECT type, name, sql FROM sqlite_master
+      WHERE sql IS NOT NULL
+      ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 1 ELSE 2 END, name`
+  );
+  const tables = [];
+  for (const r of master.rows) {
+    const name = String(r.name);
+    if (internal(name)) continue;
+    out.push(`${idempotent(String(r.sql))};`);
+    if (String(r.type) === "table") tables.push(name);
+  }
+  let rows = 0;
+  for (const table of tables) {
+    let wrote = 0;
+    const at2 = out.length;
+    out.push("");
+    for await (const page of readTable(c, table)) {
+      wrote += page.rows.length;
+      const cols = page.columns.map((x) => `"${x}"`).join(", ");
+      for (let i = 0; i < page.rows.length; i += ROWS_PER_INSERT) {
+        const slice = page.rows.slice(i, i + ROWS_PER_INSERT);
+        const tuples = slice.map((row) => `(${page.columns.map((col) => lit(row[col])).join(", ")})`).join(",\n  ");
+        out.push(`INSERT INTO "${table}" (${cols}) VALUES
+  ${tuples};`);
+      }
+    }
+    if (wrote) out[at2] = `-- ${table}: ${wrote} rows`;
+    else out.splice(at2, 1);
+    rows += wrote;
+  }
+  try {
+    const seq = await c.execute("SELECT name, seq FROM sqlite_sequence");
+    if (seq.rows.length) {
+      out.push("-- AUTOINCREMENT high-water marks");
+      for (const r of seq.rows) {
+        out.push(
+          `DELETE FROM sqlite_sequence WHERE name = ${lit(r.name)}; INSERT INTO sqlite_sequence (name, seq) VALUES (${lit(r.name)}, ${lit(r.seq)});`
+        );
+      }
+    }
+  } catch {
+  }
+  out.push("COMMIT;");
+  const sql = out.join("\n");
+  return { sql, at, tables: tables.length, rows, bytes: Buffer.byteLength(sql, "utf8") };
+}
+function stamp() {
+  const d = /* @__PURE__ */ new Date();
+  const p = (n25) => String(n25).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+}
+async function snapshotGz() {
+  const snap = await dumpSql();
+  const buf = (0, import_node_zlib.gzipSync)(Buffer.from(snap.sql, "utf8"), { level: 9 });
+  return {
+    at: snap.at,
+    tables: snap.tables,
+    rows: snap.rows,
+    bytes: snap.bytes,
+    gz: buf.toString("base64"),
+    gzBytes: buf.length,
+    fileName: `rishabh-snapshot-${stamp()}.sql.gz`
+  };
+}
+
+// src/main/backup.ts
+function todayISO2() {
+  const d = /* @__PURE__ */ new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 async function dailyBackup(dirOverride) {
   const dir = dirOverride || (0, import_node_path2.join)(app.getPath("userData"), "backup");
   if (!(0, import_node_fs2.existsSync)(dir)) (0, import_node_fs2.mkdirSync)(dir, { recursive: true });
   const file = (0, import_node_path2.join)(dir, `rishabh-oil-backup-${todayISO2()}.sql`);
   if ((0, import_node_fs2.existsSync)(file)) return { file, skipped: true };
-  const c = getClient();
-  const out = [
-    `-- Rishabh Oil full backup, taken ${(/* @__PURE__ */ new Date()).toISOString()}`,
-    "-- Restore into an empty SQLite database: sqlite3 restored.db < thisfile.sql",
-    "PRAGMA foreign_keys=OFF;",
-    "BEGIN TRANSACTION;"
-  ];
-  const master = await c.execute(
-    "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'libsql_%' ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, name"
-  );
-  const tables = [];
-  for (const r of master.rows) {
-    out.push(`${String(r.sql).replace(/^CREATE TABLE /i, "CREATE TABLE IF NOT EXISTS ")};`);
-    if (String(r.type) === "table") tables.push(String(r.name));
-  }
-  for (const table of tables) {
-    const res = await c.execute(`SELECT * FROM "${table}"`);
-    if (!res.rows.length) continue;
-    const cols = res.columns.map((x) => `"${x}"`).join(", ");
-    out.push(`-- ${res.rows.length} rows`);
-    for (const row of res.rows) {
-      const vals = res.columns.map((col) => lit(row[col])).join(", ");
-      out.push(`INSERT INTO "${table}" (${cols}) VALUES (${vals});`);
-    }
-  }
-  out.push("COMMIT;");
-  (0, import_node_fs2.writeFileSync)(file, out.join("\n"), "utf-8");
+  const snap = await dumpSql();
+  (0, import_node_fs2.writeFileSync)(file, snap.sql, "utf-8");
   const keep = 7;
   const olds = (0, import_node_fs2.readdirSync)(dir).filter((f) => /^rishabh-oil-backup-\d{4}-\d{2}-\d{2}\.sql$/.test(f)).sort();
   for (const f of olds.slice(0, Math.max(0, olds.length - keep))) {
@@ -3070,7 +3162,7 @@ async function dailyBackup(dirOverride) {
     } catch {
     }
   }
-  console.log(`[backup] daily backup written: ${file}`);
+  console.log(`[backup] daily backup written: ${file} (${snap.rows} rows)`);
   return { file, skipped: false };
 }
 
@@ -16210,7 +16302,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^gate:forRecord$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^gate:forRecord$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -16228,6 +16320,27 @@ function registerIpc() {
   };
   handle("app:revision", () => getRevision());
   handle("db:ping", () => ping());
+  handle("db:snapshot", async () => {
+    const user = getCurrentUser();
+    const who = await getClient().execute({ sql: "SELECT role FROM users WHERE id = ? AND active = 1", args: [user.id] }).catch(() => null);
+    if (String(who?.rows[0]?.role || "") !== "admin") {
+      throw new Error("Only an administrator can download the database.");
+    }
+    const snap = await snapshotGz();
+    await logEvent(
+      user.id,
+      user.username,
+      machineIp(),
+      "Downloaded a database snapshot",
+      `${snap.rows.toLocaleString()} rows across ${snap.tables} tables \xB7 ${(snap.gzBytes / 1048576).toFixed(2)} MB`,
+      getActiveCompanyId(),
+      "Database",
+      null,
+      null
+    ).catch(() => {
+    });
+    return snap;
+  });
   handle("config:get", () => ({ url: getConfiguredUrl() }));
   handle("config:save", async (_e, { url, token }) => {
     saveStoredConfig(url, token);
@@ -16756,9 +16869,178 @@ function registerIpc() {
 
 // src/server/http.ts
 var import_node_http = require("node:http");
+var import_node_fs4 = require("node:fs");
+var import_node_path4 = require("node:path");
+var import_node_crypto = require("node:crypto");
+
+// src/server/dbrestore.ts
+var import_node_zlib2 = require("node:zlib");
 var import_node_fs3 = require("node:fs");
 var import_node_path3 = require("node:path");
-var import_node_crypto = require("node:crypto");
+var REQUIRED_TABLES = ["users", "products", "orders", "sales", "app_settings"];
+var KEEP_BACKUPS = 3;
+function configuredUrl() {
+  return String(process.env.MAIN_VITE_TURSO_DATABASE_URL || process.env.TURSO_DATABASE_URL || "");
+}
+function livePath() {
+  const url = configuredUrl();
+  if (!url.startsWith("file:")) return null;
+  return url.slice("file:".length);
+}
+function sizeOf(path) {
+  let total = 0;
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try {
+      total += (0, import_node_fs3.statSync)(path + suffix).size;
+    } catch {
+    }
+  }
+  return total;
+}
+function backupDir(live) {
+  const dir = (0, import_node_path3.join)((0, import_node_path3.dirname)(live), "replaced");
+  (0, import_node_fs3.mkdirSync)(dir, { recursive: true });
+  return dir;
+}
+function stamp2() {
+  return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
+}
+async function countAll(c) {
+  const names = await userTables(c);
+  if (!names.length) return { tables: 0, rows: 0 };
+  const union = names.map((n25) => `SELECT COUNT(*) AS k FROM "${n25}"`).join(" UNION ALL ");
+  const res = await c.execute(union);
+  let rows = 0;
+  for (const r of res.rows) rows += Number(r.k) || 0;
+  return { tables: names.length, rows };
+}
+async function userTables(c) {
+  const res = await c.execute(
+    `SELECT name FROM sqlite_master WHERE type = 'table'
+       AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'libsql_%'`
+  );
+  return res.rows.map((r) => String(r.name));
+}
+async function dbStatus() {
+  const live = livePath();
+  const counted = await countAll(getClient()).catch(() => ({ tables: 0, rows: 0 }));
+  if (!live) {
+    return { supported: false, path: null, bytes: 0, ...counted, restorePoints: [] };
+  }
+  const dir = (0, import_node_path3.join)((0, import_node_path3.dirname)(live), "replaced");
+  const points = (0, import_node_fs3.existsSync)(dir) ? (0, import_node_fs3.readdirSync)(dir).filter((f) => f.startsWith((0, import_node_path3.basename)(live) + ".")).map((f) => {
+    const st = (0, import_node_fs3.statSync)((0, import_node_path3.join)(dir, f));
+    return { name: f, bytes: st.size, at: st.mtime.toISOString() };
+  }).sort((a, b) => a.at < b.at ? 1 : -1) : [];
+  return { supported: true, path: live, bytes: sizeOf(live), ...counted, restorePoints: points };
+}
+function readSnapshot(buf) {
+  const gz = buf.length > 2 && buf[0] === 31 && buf[1] === 139;
+  let text;
+  try {
+    text = (gz ? (0, import_node_zlib2.gunzipSync)(buf) : buf).toString("utf8");
+  } catch {
+    throw new Error("That file is not readable \u2014 the download may have been cut short.");
+  }
+  if (!/CREATE\s+TABLE/i.test(text)) {
+    throw new Error("That is not a snapshot. Upload the .sql.gz file the app gives you.");
+  }
+  if (!/COMMIT\s*;\s*$/i.test(text)) {
+    throw new Error("The snapshot is incomplete \u2014 it ends mid-file. Download it again.");
+  }
+  const missing = REQUIRED_TABLES.filter(
+    (t) => !new RegExp(`CREATE\\s+TABLE(\\s+IF\\s+NOT\\s+EXISTS)?\\s+"?${t}"?\\b`, "i").test(text)
+  );
+  if (missing.length) {
+    throw new Error(`The snapshot has no ${missing.join(", ")} table \u2014 it is not this app's database.`);
+  }
+  if (!/INSERT\s+INTO/i.test(text)) {
+    throw new Error("The snapshot holds a schema but no data \u2014 nothing would be restored.");
+  }
+  return text;
+}
+function body(sql) {
+  const firstCreate = sql.search(/CREATE\s+TABLE/i);
+  if (firstCreate < 0) return sql;
+  const head = sql.slice(0, firstCreate).replace(/^\s*(PRAGMA\s+foreign_keys\s*=\s*OFF|BEGIN(\s+\w+)?\s+TRANSACTION)\s*;\s*$/gim, "");
+  const rest = sql.slice(firstCreate).replace(/\s*COMMIT\s*;\s*$/i, "\n");
+  return head + rest;
+}
+async function applyFilePragmas(c) {
+  await c.execute("PRAGMA busy_timeout = 5000").catch(() => {
+  });
+  await c.execute("PRAGMA journal_mode = WAL").catch(() => {
+  });
+  await c.execute("PRAGMA synchronous = NORMAL").catch(() => {
+  });
+  await c.execute("PRAGMA foreign_keys = ON").catch(() => {
+  });
+}
+async function restoreFromDump(buf) {
+  const started = Date.now();
+  const live = livePath();
+  if (!live) {
+    throw new Error(
+      "This site runs against a cloud database, not a local file, so there is nothing here to replace."
+    );
+  }
+  const sql = readSnapshot(buf);
+  const c = getClient();
+  const before = await countAll(c).catch(() => ({ tables: 0, rows: 0 }));
+  await c.execute("PRAGMA wal_checkpoint(TRUNCATE)").catch(() => {
+  });
+  const keptName = `${(0, import_node_path3.basename)(live)}.${stamp2()}`;
+  (0, import_node_fs3.copyFileSync)(live, (0, import_node_path3.join)(backupDir(live), keptName));
+  const existing = await c.execute(
+    `SELECT type, name FROM sqlite_master
+      WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'libsql_%'
+      ORDER BY CASE type WHEN 'trigger' THEN 0 WHEN 'view' THEN 1 WHEN 'index' THEN 2 ELSE 3 END`
+  );
+  const drops = existing.rows.map((r) => {
+    const kind = String(r.type).toUpperCase();
+    return kind === "TABLE" || kind === "VIEW" || kind === "INDEX" || kind === "TRIGGER" ? `DROP ${kind} IF EXISTS "${String(r.name)}";` : "";
+  }).filter(Boolean).join("\n");
+  await c.execute("PRAGMA foreign_keys = OFF").catch(() => {
+  });
+  try {
+    await c.executeMultiple(`BEGIN TRANSACTION;
+${drops}
+${body(sql)}
+COMMIT;`);
+  } catch (e) {
+    await c.execute("ROLLBACK").catch(() => {
+    });
+    await c.execute("PRAGMA foreign_keys = ON").catch(() => {
+    });
+    throw new Error(
+      `The snapshot could not be loaded (${e.message}). Nothing was changed \u2014 the database is exactly as it was.`
+    );
+  }
+  await c.execute("PRAGMA foreign_keys = ON").catch(() => {
+  });
+  await c.execute("PRAGMA wal_checkpoint(TRUNCATE)").catch(() => {
+  });
+  const after = await countAll(c);
+  await runStartupTasks();
+  try {
+    const dir = backupDir(live);
+    const olds = (0, import_node_fs3.readdirSync)(dir).filter((f) => f.startsWith((0, import_node_path3.basename)(live) + ".")).sort();
+    for (const f of olds.slice(0, Math.max(0, olds.length - KEEP_BACKUPS))) {
+      (0, import_node_fs3.rmSync)((0, import_node_path3.join)(dir, f), { force: true });
+    }
+  } catch {
+  }
+  return {
+    tables: after.tables,
+    rows: after.rows,
+    bytes: sizeOf(live),
+    replacedBackup: keptName,
+    tookMs: Date.now() - started,
+    before
+  };
+}
+
+// src/server/http.ts
 var sessions = /* @__PURE__ */ new Map();
 var SESSION_TTL_MS = 12 * 60 * 60 * 1e3;
 function sweepSessions() {
@@ -16794,8 +17076,25 @@ function readBody(req, limit = 8 * 1024 * 1024) {
     req.on("error", reject);
   });
 }
-function json(res, status, body, cookie) {
-  const payload = JSON.stringify(body);
+function readBinary(req, limit) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on("data", (c) => {
+      size += c.length;
+      if (size > limit) {
+        reject(new Error(`That file is larger than the ${Math.round(limit / 1048576)} MB limit`));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+function json(res, status, body2, cookie) {
+  const payload = JSON.stringify(body2);
   const headers = {
     "content-type": "application/json; charset=utf-8",
     "content-length": String(Buffer.byteLength(payload)),
@@ -16822,19 +17121,19 @@ var MIME = {
   ".map": "application/json; charset=utf-8"
 };
 function serveStatic(res, root, urlPath) {
-  const rel = (0, import_node_path3.normalize)(decodeURIComponent(urlPath)).replace(/^([/\\])+/, "");
+  const rel = (0, import_node_path4.normalize)(decodeURIComponent(urlPath)).replace(/^([/\\])+/, "");
   if (rel.split(/[/\\]/).includes("..")) return false;
-  const full = (0, import_node_path3.join)(root, rel);
-  if (!full.startsWith(root + import_node_path3.sep) && full !== root) return false;
-  if (!(0, import_node_fs3.existsSync)(full) || !(0, import_node_fs3.statSync)(full).isFile()) return false;
-  const ext = (0, import_node_path3.extname)(full).toLowerCase();
+  const full = (0, import_node_path4.join)(root, rel);
+  if (!full.startsWith(root + import_node_path4.sep) && full !== root) return false;
+  if (!(0, import_node_fs4.existsSync)(full) || !(0, import_node_fs4.statSync)(full).isFile()) return false;
+  const ext = (0, import_node_path4.extname)(full).toLowerCase();
   res.writeHead(200, {
     "content-type": MIME[ext] || "application/octet-stream",
     // Vite fingerprints its assets, so they are safe to cache hard; index.html
     // must not be, or a deploy never reaches anyone.
     "cache-control": rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-cache"
   });
-  (0, import_node_fs3.createReadStream)(full).pipe(res);
+  (0, import_node_fs4.createReadStream)(full).pipe(res);
   return true;
 }
 function applySessionEffect(channel, args, result, s) {
@@ -16856,6 +17155,28 @@ function applySessionEffect(channel, args, result, s) {
     if (Number.isFinite(id) && id > 0) s.companyId = id;
   }
 }
+function currentSession(req) {
+  sweepSessions();
+  const sid = readCookie(req, "sid");
+  if (!sid) return null;
+  const s = sessions.get(sid);
+  if (!s) return null;
+  s.seen = Date.now();
+  return s;
+}
+async function isAdmin(s) {
+  if (!s || !s.userId) return false;
+  try {
+    const r = await getClient().execute({
+      sql: "SELECT role FROM users WHERE id = ? AND active = 1",
+      args: [s.userId]
+    });
+    return String(r.rows[0]?.role || "") === "admin";
+  } catch {
+    return false;
+  }
+}
+var RESTORE_LIMIT = 256 * 1024 * 1024;
 function startHttpServer({ port, webRoot }) {
   const server = (0, import_node_http.createServer)(async (req, res) => {
     const url = new URL(req.url || "/", "http://localhost");
@@ -16871,20 +17192,86 @@ function startHttpServer({ port, webRoot }) {
         const url2 = String(raw || "");
         const m = /^data:([^;,]+);base64,(.+)$/i.exec(url2);
         if (m) {
-          const body = Buffer.from(m[2], "base64");
+          const body2 = Buffer.from(m[2], "base64");
           res.writeHead(200, {
             "content-type": m[1],
-            "content-length": body.length,
+            "content-length": body2.length,
             // Short: a logo changes rarely, but when it does the installed
             // app should pick it up without waiting a day.
             "cache-control": "public, max-age=300"
           });
-          return res.end(body);
+          return res.end(body2);
         }
       } catch {
       }
       if (serveStatic(res, webRoot, "brand-default.png")) return;
       return json(res, 404, { error: "No brand icon set" });
+    }
+    if (path === "/api/db/info") {
+      const s = currentSession(req);
+      if (!await isAdmin(s)) return json(res, 403, { error: "Administrators only" });
+      try {
+        return json(res, 200, { ok: true, result: await dbStatus() });
+      } catch (e) {
+        return json(res, 200, { ok: false, error: e.message });
+      }
+    }
+    if (path === "/api/db/snapshot") {
+      const s = currentSession(req);
+      if (!await isAdmin(s)) return json(res, 403, { error: "Administrators only" });
+      try {
+        const fn = handlers.get("db:snapshot");
+        if (!fn) throw new Error("This build has no snapshot channel");
+        const ctx = {
+          userId: s.userId,
+          username: s.username,
+          companyId: s.companyId,
+          ip: clientIp(req)
+        };
+        const snap = await runInRequestContext(
+          ctx,
+          () => Promise.resolve(fn({}, {}))
+        );
+        const body2 = Buffer.from(snap.gz, "base64");
+        res.writeHead(200, {
+          "content-type": "application/gzip",
+          "content-length": body2.length,
+          "content-disposition": `attachment; filename="${snap.fileName}"`,
+          "cache-control": "no-store"
+        });
+        return res.end(body2);
+      } catch (e) {
+        return json(res, 200, { ok: false, error: e.message });
+      }
+    }
+    if (path === "/api/db/restore") {
+      if (req.method !== "POST") return json(res, 405, { error: "Use POST" });
+      const s = currentSession(req);
+      if (!await isAdmin(s)) return json(res, 403, { error: "Administrators only" });
+      try {
+        const buf = await readBinary(req, RESTORE_LIMIT);
+        if (!buf.length) return json(res, 200, { ok: false, error: "No file was uploaded" });
+        const report = await restoreFromDump(buf);
+        await logEvent(
+          s.userId,
+          s.username,
+          clientIp(req),
+          "Restored the database",
+          `${report.rows.toLocaleString()} rows across ${report.tables} tables \xB7 previous copy kept as ${report.replacedBackup}`,
+          s.companyId,
+          "Database",
+          null,
+          null
+        ).catch(() => {
+        });
+        console.log(
+          `[web] database restored by ${s.username}: ${report.rows} rows, ${report.tables} tables, ${report.tookMs} ms`
+        );
+        return json(res, 200, { ok: true, result: report });
+      } catch (e) {
+        console.error("[web] restore failed:", e);
+        return json(res, 200, { ok: false, error: e.message || "Restore failed" });
+      }
     }
     if (path === "/api/invoke") {
       if (req.method !== "POST") return json(res, 405, { error: "Use POST" });
@@ -16942,24 +17329,14 @@ function startHttpServer({ port, webRoot }) {
 // src/server/index.ts
 async function main() {
   const port = Number(process.env.PORT) || 3e3;
-  const webRoot = process.env.WEB_ROOT || (0, import_node_path4.join)(process.cwd(), "out", "web");
+  const webRoot = process.env.WEB_ROOT || (0, import_node_path5.join)(process.cwd(), "out", "web");
   console.log("[web] connecting to the database\u2026");
   await runStartupTasks();
   console.log("[web] schema ready");
-  const url = String(
-    process.env.MAIN_VITE_TURSO_DATABASE_URL || process.env.TURSO_DATABASE_URL || ""
-  );
-  if (url.startsWith("file:")) {
-    const c = getClient();
-    await c.execute("PRAGMA busy_timeout = 5000").catch(() => {
-    });
-    await c.execute("PRAGMA journal_mode = WAL").catch(() => {
-    });
-    await c.execute("PRAGMA synchronous = NORMAL").catch(() => {
-    });
-    await c.execute("PRAGMA foreign_keys = ON").catch(() => {
-    });
-    console.log("[web] local SQLite: WAL, busy_timeout 5s, foreign keys on");
+  const live = livePath();
+  if (live) {
+    await applyFilePragmas(getClient());
+    console.log(`[web] local SQLite at ${live}: WAL, busy_timeout 5s, foreign keys on`);
   }
   registerIpc();
   startHttpServer({ port, webRoot });
