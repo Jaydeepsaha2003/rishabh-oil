@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, Pencil, Plus, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowDownLeft, ArrowLeft, Boxes, CalendarDays, CheckCircle2, Factory, Info, Pencil, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
   Select,
   SelectContent,
@@ -22,10 +23,12 @@ import {
   TableHeader,
   TableRow
 } from '@/components/ui/table'
+import { RowActions } from '@/components/ui/row-actions'
 import { PageHeader } from '@/components/PageHeader'
 import { ExcelButton } from '@/components/ExcelButton'
 import { formatDate, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { expandRecipe } from '@/lib/recipeMath'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { Pagination, usePaged } from '@/components/Pagination'
 import { useEntryWindow } from '@/lib/useEntryWindow'
@@ -44,6 +47,13 @@ const CAT_LABEL: Record<string, string> = {
   intermediate: 'Intermediate',
   finished: 'Finished'
 }
+
+// The register's chrome on the website. A sticky header composites each of
+// its own cells, so the forest is set on every one of them rather than on the
+// row alone.
+const PD_HEAD = __WEB__
+  ? '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&>th]:!h-auto [&>th]:!bg-[#0B3D2E] [&>th]:!py-2.5 [&>th]:!text-[11px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.1em] [&>th]:!text-white'
+  : ''
 
 export function Production(): React.JSX.Element {
   // How far back this user may date a new entry. The save is refused either
@@ -141,11 +151,22 @@ export function Production(): React.JSX.Element {
     patchRun(i, { items })
   }
 
+  // Called by both openers once their state is in place — anything typed
+  // after this counts as a change.
+  function markSheetClean(date: string, list: Row[]): void {
+    baselineRef.current = JSON.stringify({
+      d: date,
+      r: list.map((r) => [String(r.product_id ?? ''), String(r.formulation_id ?? ''), String(r.qty ?? '')])
+    })
+  }
+
   function openAdd(): void {
     setEditingId(null)
+    const first = blankRun()
     setSheetDate(todayISO())
-    setRuns([blankRun()])
+    setRuns([first])
     setResults({})
+    markSheetClean(todayISO(), [first])
     setBuilding(true)
   }
 
@@ -155,15 +176,16 @@ export function Production(): React.JSX.Element {
     setResults({})
     const fid = row.formulation_id ? Number(row.formulation_id) : null
     const items = fid ? await window.api.formulations.items(fid) : []
-    setRuns([
-      {
-        key: keyRef.current++,
-        product_id: String(row.product_id ?? ''),
-        formulation_id: fid,
-        qty: String(row.qty ?? ''),
-        items
-      }
-    ])
+    const only = {
+      key: keyRef.current++,
+      product_id: String(row.product_id ?? ''),
+      formulation_id: fid,
+      qty: String(row.qty ?? ''),
+      items
+    }
+    setRuns([only])
+    // An edit opens already filled in — that is not a change yet.
+    markSheetClean(String(row.prod_date || todayISO()).slice(0, 10), [only])
     setBuilding(true)
   }
 
@@ -183,20 +205,36 @@ export function Production(): React.JSX.Element {
       const items: Row[] = Array.isArray(r.items) ? r.items : []
       const consumes: Row[] = []
       const produces: Row[] = []
-      for (const it of items) {
-        const amt = (q * Number(it.qty)) / 100
-        const pid = Number(it.product_id)
-        if (String(it.kind) === 'input') {
-          consumes.push({ product_id: pid, name: it.product_name, pct: Number(it.qty), amt })
-          if (pid) {
-            bal[pid] = (bal[pid] ?? 0) - amt
-            touched.add(pid)
-          }
-        } else if (String(it.kind) === 'output' && pid) {
-          produces.push({ product_id: pid, name: it.product_name, amt })
+      // expandRecipe, not the raw percentages.
+      //
+      // This used to be `(q * it.qty) / 100`, which ignored the TOR multiplier,
+      // the recipe's dead loss, and the fatty acid an auto-calculated input
+      // recovers. A 100 MT batch on a 106.952% recipe previewed as drawing
+      // exactly 100 of CPO and recovering nothing, then posted 106.952 and a
+      // fatty-acid credit. Same function as the main process now, so the sheet
+      // shows what the save will actually write.
+      const nameOf = (pid: number): string =>
+        String(items.find((it) => Number(it.product_id) === pid)?.product_name ?? '') ||
+        String(products.find((pp) => Number(pp.id) === pid)?.name ?? `#${pid}`)
+      for (const line of expandRecipe(items, q)) {
+        const pid = Number(line.product_id)
+        if (!pid) continue
+        const amt = Number(line.qty) || 0
+        if (line.kind === 'input') {
+          const src = items.find((it) => Number(it.product_id) === pid && String(it.kind) === 'input')
+          consumes.push({ product_id: pid, name: nameOf(pid), pct: Number(src?.qty) || 0, amt })
+          bal[pid] = (bal[pid] ?? 0) - amt
+          touched.add(pid)
+        } else if (line.kind === 'output') {
+          produces.push({ product_id: pid, name: nameOf(pid), amt })
           bal[pid] = (bal[pid] ?? 0) + amt
           touched.add(pid)
         }
+        // A 'loss' line is deliberately NOT a stock movement. src/main/stock.ts
+        // counts only kind 'input' and 'output', so dead loss never appears in
+        // a balance — showing it here would put DEAD LOSS on the projection
+        // sinking further below zero on every run, which is not what the Stock
+        // register will say.
       }
       const outPid = Number(r.product_id)
       if (outPid && q > 0) {
@@ -215,6 +253,49 @@ export function Production(): React.JSX.Element {
     net.sort((a, b) => String(a.name).localeCompare(String(b.name)))
     return { perRun, net, short: net.filter((x) => x.after < -1e-9) }
   })()
+
+  // ------------------------------------------------------- unsaved changes
+  //
+  // What the sheet looked like when it opened. Comparing against a snapshot
+  // rather than "has anything been typed" is what makes this work for an
+  // EDIT, which opens already filled in — that is not a change yet.
+  const baselineRef = useRef('')
+  const sheetShape = JSON.stringify({
+    d: sheetDate,
+    r: runs.map((r) => [String(r.product_id ?? ''), String(r.formulation_id ?? ''), String(r.qty ?? '')])
+  })
+  const dirty = building && !saving && sheetShape !== baselineRef.current
+
+  // A browser refresh or a closed tab can only be intercepted here, and the
+  // dialog is the BROWSER's own — no page can replace it with its own modal.
+  // Leaving by the sheet's own Back button is ours, and that one asks
+  // properly (see the dialog at the foot of this file).
+  useEffect(() => {
+    if (!__WEB__ || !dirty) return
+    function onBeforeUnload(e: BeforeUnloadEvent): void {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [dirty])
+
+  const [leaveOpen, setLeaveOpen] = useState(false)
+  // Every way out of the sheet goes through here, so none of them can quietly
+  // drop a half-typed day's batches.
+  function leaveSheet(): void {
+    if (dirty) setLeaveOpen(true)
+    else setBuilding(false)
+  }
+  function discardAndLeave(): void {
+    setLeaveOpen(false)
+    baselineRef.current = ''
+    setBuilding(false)
+  }
+  async function saveAndLeave(): Promise<void> {
+    setLeaveOpen(false)
+    await save()
+  }
 
   const ready = runs.filter((r) => r.product_id && Number(r.qty) > 0)
 
@@ -296,26 +377,85 @@ export function Production(): React.JSX.Element {
   if (building) {
     return (
       <>
-        <PageHeader
-          leading={
-            <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setBuilding(false)}>
-              <ArrowLeft className="h-4 w-4" /> Back
-            </Button>
-          }
-          title={editingId ? 'Alter production run' : 'Record production'}
-          subtitle={
-            editingId
-              ? 'The recipe is re-applied from the quantity you set'
-              : "A day's batches, one row each — stock is drawn from each formula"
-          }
-        />
-        <div className="flex flex-col gap-4 px-4 py-5">
-          <Card className="p-4">
+        {/* The app keeps its page header. The website gets a bar of its own,
+            pinned: this sheet is several screens long once a few batches are
+            on it, Back is the only way out, and the date and the ready count
+            are what the whole sheet posts under — they belong where they stay
+            in view rather than in a card that scrolls away. */}
+        {!__WEB__ && (
+          <PageHeader
+            leading={
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={leaveSheet}>
+                <ArrowLeft className="h-4 w-4" /> Back
+              </Button>
+            }
+            title={editingId ? 'Alter production run' : 'Record production'}
+            subtitle={
+              editingId
+                ? 'The recipe is re-applied from the quantity you set'
+                : "A day's batches, one row each — stock is drawn from each formula"
+            }
+          />
+        )}
+        {__WEB__ && (
+          <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 bg-[#0B3D2E] px-5 py-3 text-white shadow-[0_8px_20px_-12px_rgba(10,31,23,0.55)]">
+            <div className="flex min-w-0 items-center gap-3.5">
+              <button
+                type="button"
+                className="inline-flex h-[38px] shrink-0 cursor-pointer items-center gap-2 rounded-[4px] border-[1.5px] border-[#C7F03F]/70 px-3.5 text-[13px] font-extrabold uppercase tracking-[.04em] text-[#C7F03F] transition-colors hover:bg-[#C7F03F] hover:text-[#12280B]"
+                onClick={leaveSheet}
+              >
+                <ArrowLeft className="h-[19px] w-[19px]" /> Back
+              </button>
+              <div className="min-w-0">
+                <div className="text-[16px] font-bold tracking-[-0.02em]">
+                  {editingId ? 'Alter production run' : 'Record production'}
+                </div>
+                <div className="mt-0.5 text-[12px] font-semibold text-[#8FBFA8]">
+                  {editingId
+                    ? 'The recipe is re-applied from the quantity you set'
+                    : "A day's batches, one row each — stock is drawn from each formula"}
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <span className="flex items-center gap-2 rounded-[3px] border border-white/15 bg-white/[0.08] px-3 py-2">
+                <CalendarDays className="h-[17px] w-[17px] shrink-0 text-[#8FBFA8]" />
+                <span className="text-[13px] font-bold tabular-nums">{formatDate(sheetDate)}</span>
+                {!editingId && <span className="text-[10.5px] font-semibold text-[#8FBFA8]">applies to every row</span>}
+              </span>
+              <span
+                className={cn(
+                  'flex items-center gap-2 rounded-[3px] border px-3 py-2 text-[12px] font-extrabold',
+                  ready.length
+                    ? 'border-[#C7F03F]/35 bg-[#C7F03F]/15 text-[#C7F03F]'
+                    : 'border-[#E2A84A]/50 bg-[#E2A84A]/20 text-[#F0C98A]'
+                )}
+              >
+                {ready.length ? <CheckCircle2 className="h-[17px] w-[17px]" /> : <AlertTriangle className="h-[17px] w-[17px]" />}
+                {editingId
+                  ? '1 run'
+                  : `${ready.length} batch${ready.length === 1 ? '' : 'es'} ready · ${formatNum(ready.reduce((t, r) => t + (Number(r.qty) || 0), 0))} MT`}
+              </span>
+            </div>
+          </div>
+        )}
+        <div className={cn('flex flex-col gap-4 px-4 py-5', __WEB__ && '!gap-3.5 !py-4')}>
+          {/* The date and the ready count moved into the bar above, so this
+              card is only the picker itself — and on the website it is not
+              needed at all. */}
+          <Card className={cn('p-4', __WEB__ && '!hidden')}>
             <div className="flex flex-wrap items-end gap-4">
               <div className="flex flex-col gap-1.5">
                 <Label>Date {!editingId && <span className="text-[10px] font-normal normal-case text-muted-foreground">(applies to every row)</span>}</Label>
                 <div className="w-48">
-                  <DatePicker min={minDate} value={sheetDate} onChange={(v) => setSheetDate(v)} />
+                  {/* No forward-dating. A batch is something that has been
+                      run — recording one for a future date takes stock out of
+                      the tanks on a day that has not happened, and every
+                      balance between now and then reads wrong until it does.
+                      A courtesy only: the main process refuses it whatever the
+                      form sends (see addProduction). */}
+                  <DatePicker min={minDate} max={todayISO()} value={sheetDate} onChange={(v) => setSheetDate(v)} />
                 </div>
               </div>
               {!editingId && (
@@ -330,8 +470,14 @@ export function Production(): React.JSX.Element {
           {/* No overflow-hidden: the product picker renders inline on a plain
               page, and clipping the card clipped the open list. The header and
               footer strips carry their own rounding instead. */}
-          <Card className="p-0">
-            <div className={cn(SHEET_COLS, 'items-center rounded-t-xl border-b bg-muted/40 px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground')}>
+          <Card
+            className={cn(
+              'p-0',
+              __WEB__ &&
+                '!rounded-[4px] !border-[#D6E2D6] !shadow-none [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[15px] [&_input]:!font-bold [&_input]:!tabular-nums [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=select-trigger]]:!font-bold'
+            )}
+          >
+            <div className={cn(SHEET_COLS, 'items-center rounded-t-xl border-b bg-muted/40 px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground', __WEB__ && '!rounded-t-[4px] !border-b-[#DCE7DB] !bg-[#EAF0E9] !px-3.5 !py-3 !text-[11.5px] !font-extrabold !tracking-[.09em] !text-[#33473E]')}>
               <span>#</span>
               <span>Product produced</span>
               <span>Recipe</span>
@@ -349,15 +495,30 @@ export function Production(): React.JSX.Element {
                   className={cn(
                     SHEET_COLS,
                     'items-start border-b px-3 py-2.5 last:border-0',
-                    err ? 'bg-red-50' : i % 2 === 1 && 'bg-muted/20'
+                    err ? 'bg-red-50' : i % 2 === 1 && 'bg-muted/20',
+                    // A row that was refused carries a red edge as well as a
+                    // tint — on a sheet of a dozen batches the tint alone is
+                    // easy to scroll past.
+                    __WEB__ && '!items-start !border-b-[#EAF0E9] !border-l-[3px] !px-3.5 !py-3.5',
+                    __WEB__ && (err ? '!border-l-[#B3261E] !bg-[#FDF3F2]' : '!border-l-transparent'),
+                    __WEB__ && !err && (i % 2 === 1 ? '!bg-[#FBFDFA]' : '!bg-white')
                   )}
                 >
-                  <span className="mt-1.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-muted text-[11px] font-semibold tabular-nums text-muted-foreground">
+                  <span
+                    className={cn(
+                      'mt-1.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-muted text-[11px] font-semibold tabular-nums text-muted-foreground',
+                      __WEB__ && '!mt-2 !h-[26px] !w-[26px] !text-[11.5px] !font-bold',
+                      __WEB__ && (err ? '!bg-[#F7E0DE] !text-[#8C2F26]' : '!bg-[#EAF0E9] !text-[#33473E]')
+                    )}
+                  >
                     {i + 1}
                   </span>
                   <div>
                     <Select value={String(r.product_id ?? '')} onValueChange={(v) => void chooseProduct(i, v)}>
-                      <SelectTrigger>
+                      {/* Amber while empty: it is the field every other
+                          column on the row waits on, so an unset one is a
+                          prompt rather than a blank. */}
+                      <SelectTrigger className={cn(__WEB__ && !r.product_id && '!border-[#E3C58C] !text-[#5A6B62]')}>
                         <SelectValue placeholder="Finished good or intermediate" />
                       </SelectTrigger>
                       <SelectContent className="max-h-64">
@@ -368,7 +529,12 @@ export function Production(): React.JSX.Element {
                         ))}
                       </SelectContent>
                     </Select>
-                    {err && <p className="mt-1 text-[11px] leading-snug text-red-700">{err}</p>}
+                    {err && (
+                      <p className={cn('mt-1 text-[11px] leading-snug text-red-700', __WEB__ && '!mt-2 !flex !items-start !gap-1.5 !text-[11.5px] !font-bold !leading-snug !text-[#8C2F26]')}>
+                        {__WEB__ && <AlertTriangle className="h-4 w-4 shrink-0 text-[#B3261E]" />}
+                        {err}
+                      </p>
+                    )}
                   </div>
                   <div>
                     {recipes.length > 1 ? (
@@ -376,7 +542,7 @@ export function Production(): React.JSX.Element {
                         value={String(r.formulation_id ?? '')}
                         onValueChange={(v) => void chooseRecipe(i, Number(v))}
                       >
-                        <SelectTrigger>
+                        <SelectTrigger className={cn(__WEB__ && !r.formulation_id && '!border-[#E3C58C] !text-[#5A6B62]')}>
                           <SelectValue placeholder="Choose a recipe" />
                         </SelectTrigger>
                         <SelectContent>
@@ -388,15 +554,25 @@ export function Production(): React.JSX.Element {
                         </SelectContent>
                       </Select>
                     ) : (
-                      <div className="flex h-9 items-center text-[12px] text-muted-foreground">
+                      <div className={cn('flex h-9 items-center text-[12px] text-muted-foreground', __WEB__ && '!h-11 !flex-col !items-start !justify-center')}>
                         {!r.product_id ? (
-                          <span className="italic opacity-70">pick a product first</span>
+                          <span className={cn('italic opacity-70', __WEB__ && '!text-[12px] !font-semibold !text-[#5A6B62]')}>pick a product first</span>
                         ) : recipes.length === 1 ? (
-                          <span className="truncate" title={String(recipes[0].name || '')}>
-                            {recipes[0].name || `Recipe #${recipes[0].id}`}
-                          </span>
+                          <>
+                            <span className={cn('truncate', __WEB__ && '!w-full !text-[12.5px] !font-extrabold !text-[#0A1F17]')} title={String(recipes[0].name || '')}>
+                              {recipes[0].name || `Recipe #${recipes[0].id}`}
+                            </span>
+                            {/* The multiplier the batch is struck on. It is
+                                what turns the quantity into the draw beside
+                                it, and the only recipe fact worth the row. */}
+                            {__WEB__ && (
+                              <span className="mt-1 text-[12.5px] font-bold tabular-nums text-[#33473E]">
+                                TOR {formatNum(recipes[0].tor)}%
+                              </span>
+                            )}
+                          </>
                         ) : (
-                          <span className="italic opacity-70">no recipe — nothing consumed</span>
+                          <span className={cn('italic opacity-70', __WEB__ && '!text-[12px] !font-semibold !text-[#5A6B62]')}>no recipe — nothing consumed</span>
                         )}
                       </div>
                     )}
@@ -419,15 +595,70 @@ export function Production(): React.JSX.Element {
                         setRuns((prev) => [...prev, blankRun()])
                       }}
                     />
-                    <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground">
+                    <span className={cn('pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground', __WEB__ && '!text-[11px] !font-bold !text-[#5A6B62]')}>
                       MT
                     </span>
                   </div>
-                  <div className="pt-1 text-[11px] leading-relaxed text-muted-foreground">
+                  <div className={cn('pt-1 text-[11px] leading-relaxed text-muted-foreground', __WEB__ && '!pt-0')}>
                     {!pr || !pr.consumes.length ? (
-                      <span className="italic opacity-70">
+                      <span className={cn('italic opacity-70', __WEB__ && '!flex !h-11 !items-center !text-[12px] !font-semibold !not-italic !text-[#5A6B62] !opacity-100')}>
                         {r.product_id ? 'nothing consumed' : 'shows once a product and a quantity are set'}
                       </span>
+                    ) : __WEB__ ? (
+                      (() => {
+                        // A bar per component, scaled against the largest draw
+                        // on this batch, and RED when the tank cannot cover it.
+                        // The figures alone said what came out; they never said
+                        // whether it was there to come out.
+                        const maxAmt = Math.max(1e-9, ...pr.consumes.map((cc) => Number(cc.amt) || 0))
+                        return (
+                          <>
+                            {pr.consumes.map((cc, k) => {
+                              const after = projection.net.find((x) => String(x.product_id) === String(cc.product_id))
+                              const short = after ? Number(after.after) < -1e-9 : false
+                              return (
+                                <div key={k} className="flex items-center gap-2.5 py-[3px]">
+                                  <span className="w-[78px] shrink-0 truncate text-[11.5px] font-bold text-[#33473E]" title={cc.name}>
+                                    {cc.name}
+                                  </span>
+                                  <span className="h-[5px] min-w-[24px] flex-1 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                                    <span
+                                      className="block h-full"
+                                      style={{
+                                        width: `${((Number(cc.amt) || 0) / maxAmt) * 100}%`,
+                                        background: short ? '#B3261E' : '#12855A'
+                                      }}
+                                    />
+                                  </span>
+                                  <span className="shrink-0 whitespace-nowrap text-[12.5px] font-bold tabular-nums">
+                                    {formatNum(cc.amt)}
+                                  </span>
+                                </div>
+                              )
+                            })}
+                            {/* Recovered by-product goes back IN. Netting it
+                                silently against the draws made a recipe look
+                                cheaper on stock than it is.
+                                The batch's OWN output is in `produces` too and
+                                is filtered out here — it is the thing being
+                                made, not something recovered alongside it. */}
+                            {(() => {
+                              const recovered = (pr.produces ?? []).filter(
+                                (pp) => String(pp.product_id) !== String(r.product_id)
+                              )
+                              if (!recovered.length) return null
+                              return (
+                                <div className="mt-1.5 flex items-center gap-2 border-t border-t-[#EAF0E9] pt-1.5">
+                                  <ArrowDownLeft className="h-[15px] w-[15px] shrink-0 text-[#0B6B45]" />
+                                  <span className="text-[11px] font-bold text-[#0B6B45]">
+                                    {recovered.map((pp) => `${pp.name} ${formatNum(pp.amt)}`).join(', ')} added back
+                                  </span>
+                                </div>
+                              )
+                            })()}
+                          </>
+                        )
+                      })()
                     ) : (
                       pr.consumes.map((cc, k) => (
                         <div key={k} className="flex items-baseline justify-between gap-2">
@@ -442,7 +673,7 @@ export function Production(): React.JSX.Element {
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="mt-1 h-7 w-7 text-muted-foreground hover:text-red-600"
+                      className={cn('mt-1 h-7 w-7 text-muted-foreground hover:text-red-600', __WEB__ && '!mt-2 !h-[30px] !w-[30px] !rounded-[3px] !border !border-[#F0D6D4] !bg-[#FDF3F2] !text-[#B3261E] hover:!bg-[#FBE9E7]')}
                       title="Remove this row"
                       onClick={() =>
                         setRuns((prev) => {
@@ -458,16 +689,16 @@ export function Production(): React.JSX.Element {
               )
             })}
             {!editingId && (
-              <div className="flex items-center justify-between gap-2 rounded-b-xl bg-muted/30 px-3 py-2">
+              <div className={cn('flex items-center justify-between gap-2 rounded-b-xl bg-muted/30 px-3 py-2', __WEB__ && '!flex-wrap !gap-3 !rounded-b-[4px] !border-t !border-t-[#E4ECE3] !bg-[#F7FAF6] !px-3.5 !py-3')}>
                 <Button
                   type="button"
                   size="sm"
-                  className="h-8 gap-1.5 bg-emerald-600 text-[12px] font-semibold text-white hover:bg-emerald-700"
+                  className={cn('h-8 gap-1.5 bg-emerald-600 text-[12px] font-semibold text-white hover:bg-emerald-700', __WEB__ && '!h-[38px] !gap-2 !rounded-[3px] !bg-[#0B3D2E] !px-3.5 !text-[12.5px] !font-extrabold !text-[#C7F03F] hover:!bg-[#0F4A38]')}
                   onClick={() => setRuns((prev) => [...prev, blankRun()])}
                 >
                   <Plus className="h-3.5 w-3.5" /> Add another batch
                 </Button>
-                <span className="text-[11px] text-muted-foreground">
+                <span className={cn('text-[11px] text-muted-foreground', __WEB__ && '!text-[11.5px] !font-semibold !text-[#5A6B62]')}>
                   {runs.length} row{runs.length === 1 ? '' : 's'} · they post in this order, so one batch
                   can feed the next
                 </span>
@@ -478,30 +709,71 @@ export function Production(): React.JSX.Element {
           {/* What the sheet does to the tanks as a whole. Walked in order, so a
               batch fed by one above it reads correctly instead of looking short. */}
           {projection.net.length > 0 && (
-            <Card className="p-0">
-              <div className="border-b px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Stock after the whole sheet
+            <Card
+              className={cn(
+                'p-0',
+                __WEB__ && '!overflow-hidden !rounded-[4px] !shadow-none',
+                // The card itself turns when something goes below zero — it is
+                // the one thing on this sheet that is a warning rather than a
+                // reading.
+                __WEB__ && (projection.short.length ? '!border-[#F0D6D4]' : '!border-[#D6E2D6]')
+              )}
+            >
+              <div
+                className={cn(
+                  'border-b px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground',
+                  __WEB__ && '!flex !flex-wrap !items-center !justify-between !gap-3 !px-4 !py-3 !text-[11px] !font-extrabold !tracking-[.14em]',
+                  __WEB__ &&
+                    (projection.short.length
+                      ? '!border-b-[#F0D6D4] !bg-[#FDF3F2] !text-[#8C2F26]'
+                      : '!border-b-[#E4ECE3] !bg-[#F7FAF6] !text-[#33473E]')
+                )}
+              >
+                <span className={cn(__WEB__ && '!flex !items-center !gap-2')}>
+                  {__WEB__ && <Boxes className="h-[18px] w-[18px]" />}
+                  Stock after the whole sheet
+                </span>
+                {__WEB__ && projection.short.length > 0 && (
+                  <span className="flex items-center gap-1.5 rounded-[2px] bg-[#B3261E] px-2.5 py-1.5 text-[11.5px] font-extrabold normal-case tracking-normal text-white">
+                    <AlertTriangle className="h-[15px] w-[15px]" />
+                    {projection.short.length} below zero
+                  </span>
+                )}
               </div>
-              <Table>
+              {/* A divider on every cell but the first, so the three money
+                  columns each have a rule to follow down. Set on the table so
+                  the header and the rows cannot line up differently. */}
+              <Table className={cn(__WEB__ && '[&_tr>*+*]:!border-l [&_tr>*+*]:!border-l-[#E4ECE3]')}>
                 <TableHeader>
-                  <TableRow>
+                  <TableRow className={cn(__WEB__ && '!border-b-[#DCE7DB] !bg-[#EAF0E9] hover:!bg-[#EAF0E9] [&>th]:!h-auto [&>th]:!py-3 [&>th]:!text-[11.5px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.09em] [&>th]:!text-[#33473E]')}>
                     <TableHead>Product</TableHead>
-                    <TableHead className="text-right">Now</TableHead>
-                    <TableHead className="text-right">Change</TableHead>
-                    <TableHead className="text-right">After</TableHead>
+                    <TableHead className="text-right">{__WEB__ ? 'Current stock' : 'Now'}</TableHead>
+                    {/* Effect, not "used": this column carries both directions
+                        — what a batch draws out AND what it puts back, the
+                        recovered fatty acid and the output itself included. */}
+                    <TableHead className="text-right">{__WEB__ ? 'Effect' : 'Change'}</TableHead>
+                    <TableHead className="text-right">{__WEB__ ? 'After production' : 'After'}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {projection.net.map((x) => {
                     const change = Number(x.after) - Number(x.before)
                     return (
-                      <TableRow key={x.product_id as number}>
-                        <TableCell className="font-medium">{x.name}</TableCell>
-                        <TableCell className="text-right tabular-nums">{formatNum(x.before)}</TableCell>
+                      <TableRow
+                        key={x.product_id as number}
+                        className={cn(
+                          __WEB__ && '!border-b-[#EAF0E9] !border-l-[3px] [&>td]:!py-2.5',
+                          __WEB__ && (Number(x.after) < -1e-9 ? '!border-l-[#B3261E] !bg-[#FDF7F6]' : '!border-l-transparent !bg-white')
+                        )}
+                      >
+                        <TableCell className={cn('font-medium', __WEB__ && '!text-[13px] !font-extrabold')}>{x.name}</TableCell>
+                        <TableCell className={cn('text-right tabular-nums', __WEB__ && '!whitespace-nowrap !text-[13px] !font-semibold', __WEB__ && (Number(x.before) < -1e-9 ? '!text-[#B3261E]' : '!text-[#33473E]'))}>{formatNum(x.before)}</TableCell>
                         <TableCell
                           className={cn(
                             'text-right tabular-nums',
-                            change < 0 ? 'text-red-700' : 'text-emerald-700'
+                            change < 0 ? 'text-red-700' : 'text-emerald-700',
+                            __WEB__ && '!whitespace-nowrap !text-[13px] !font-bold',
+                            __WEB__ && (change < 0 ? '!text-[#B3261E]' : '!text-[#0B6B45]')
                           )}
                         >
                           {change > 0 ? '+' : ''}
@@ -510,7 +782,9 @@ export function Production(): React.JSX.Element {
                         <TableCell
                           className={cn(
                             'text-right font-semibold tabular-nums',
-                            Number(x.after) < -1e-9 && 'text-red-600'
+                            Number(x.after) < -1e-9 && 'text-red-600',
+                            __WEB__ && '!whitespace-nowrap !text-[14px] !font-bold',
+                            __WEB__ && (Number(x.after) < -1e-9 ? '!text-[#B3261E]' : '!text-[#0A1F17]')
                           )}
                         >
                           {formatNum(x.after)}
@@ -521,19 +795,60 @@ export function Production(): React.JSX.Element {
                 </TableBody>
               </Table>
               {projection.short.length > 0 && (
-                <p className="border-t bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
-                  {projection.short.map((s) => s.name).join(', ')} would go below zero. It can still be
-                  recorded — the Stock register will show the shortage in red.
+                <p className={cn('border-t bg-amber-50 px-3 py-2 text-[11px] text-amber-900', __WEB__ && '!flex !items-start !gap-2.5 !border-t-[#F0E4CB] !bg-[#FFFBF2] !px-4 !py-3 !text-[12.5px] !font-bold !leading-relaxed !text-[#8A5300]')}>
+                  {__WEB__ && <AlertTriangle className="h-[19px] w-[19px] shrink-0 text-[#C2700A]" />}
+                  <span>
+                    {projection.short.map((sh) => sh.name).join(', ')} would go below zero. It can still be recorded —
+                    the Stock register will show the shortage in red.
+                  </span>
                 </p>
               )}
             </Card>
           )}
 
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setBuilding(false)} disabled={saving}>
+          {/* Pinned, and carrying what the sheet is about to do. Batches post
+              in the order listed, which matters when one feeds the next — and
+              that was written nowhere. */}
+          <div
+            className={cn(
+              'flex justify-end gap-2',
+              __WEB__ &&
+                '!sticky !bottom-0 !z-10 !items-center !gap-2.5 !rounded-[4px] !border !border-[#D6E2D6] !bg-white !px-4 !py-3.5 !shadow-[0_-6px_18px_-8px_rgba(10,31,23,0.28)]'
+            )}
+          >
+            {__WEB__ && (
+              <span
+                className={cn(
+                  'mr-auto flex items-center gap-2 text-[12px] font-bold',
+                  ready.length ? 'text-[#5A6B62]' : 'text-[#8A5300]'
+                )}
+              >
+                {ready.length ? (
+                  <CheckCircle2 className="h-[17px] w-[17px] shrink-0 text-[#12855A]" />
+                ) : (
+                  <AlertTriangle className="h-[17px] w-[17px] shrink-0 text-[#C2700A]" />
+                )}
+                {!ready.length
+                  ? 'Add at least one batch — a product and a quantity'
+                  : editingId
+                    ? 'The recipe re-applies from the quantity above; the run keeps its id.'
+                    : 'Batches post in the order listed — a later one can consume what an earlier one produced.'}
+              </span>
+            )}
+            <Button
+              variant="outline"
+              onClick={leaveSheet}
+              disabled={saving}
+              className={cn(__WEB__ && '!h-12 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-6 !text-[13px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
+            >
               Cancel
             </Button>
-            <Button onClick={save} disabled={saving || !ready.length}>
+            <Button
+              onClick={save}
+              disabled={saving || !ready.length}
+              className={cn(__WEB__ && '!h-12 !gap-2 !rounded-[4px] !bg-[#0B3D2E] !px-6 !text-[13px] !font-extrabold !uppercase !tracking-[.03em] !text-[#C7F03F] hover:!bg-[#0F4A38] disabled:!bg-[#C3D2C6] disabled:!text-[#F1F5EF]')}
+            >
+              {__WEB__ && !saving && <CheckCircle2 className="h-[19px] w-[19px]" />}
               {saving
                 ? 'Saving…'
                 : editingId
@@ -542,6 +857,62 @@ export function Production(): React.JSX.Element {
             </Button>
           </div>
         </div>
+
+        {/* Leaving with something typed and nothing saved.
+            A browser refresh cannot be caught with a dialog of our own — that
+            one is the browser's, raised by the beforeunload guard above. This
+            is for every exit the page itself owns: Back, and Cancel. */}
+        <Dialog open={leaveOpen} onOpenChange={(o) => !o && setLeaveOpen(false)}>
+          <DialogContent
+            className={cn(
+              'max-w-md',
+              __WEB__ && '!gap-0 !overflow-hidden !rounded-[4px] !border-0 !bg-[#F1F5EF] !p-0 [&>button]:!hidden'
+            )}
+          >
+            <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#0B3D2E] !px-5 !py-4 !text-left')}>
+              {__WEB__ && (
+                <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Production</div>
+              )}
+              <DialogTitle className={cn(__WEB__ && '!mt-1 !text-[19px] !font-bold !tracking-[-0.02em] !text-white')}>
+                Leave without recording?
+              </DialogTitle>
+            </DialogHeader>
+            <p className={cn('text-[12px] text-muted-foreground', __WEB__ && '!px-5 !py-4 !text-[13px] !font-semibold !leading-relaxed !text-[#33473E]')}>
+              {ready.length
+                ? `${ready.length} batch${ready.length === 1 ? '' : 'es'} on this sheet ${ready.length === 1 ? 'has' : 'have'} not been recorded. Nothing has been drawn from stock yet — leaving now discards ${ready.length === 1 ? 'it' : 'them'}.`
+                : 'This sheet has not been recorded. Nothing has been drawn from stock yet — leaving now discards what you have typed.'}
+            </p>
+            <DialogFooter className={cn('gap-2', __WEB__ && '!flex-wrap !border-t !border-t-[#D6E2D6] !bg-white !px-5 !py-3.5')}>
+              <Button
+                variant="outline"
+                onClick={() => setLeaveOpen(false)}
+                className={cn(__WEB__ && '!h-12 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-5 !text-[13px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
+              >
+                Keep editing
+              </Button>
+              <Button
+                variant="outline"
+                onClick={discardAndLeave}
+                className={cn(__WEB__ && '!h-12 !rounded-[4px] !border-[1.5px] !border-[#F0D6D4] !bg-[#FDF3F2] !px-5 !text-[13px] !font-extrabold !uppercase !tracking-[.03em] !text-[#B3261E] hover:!bg-[#FBE9E7]')}
+              >
+                Discard
+              </Button>
+              {/* Only offered when there is something recordable — a half-typed
+                  row cannot be saved, and a button that fails on click is worse
+                  than one that is not there. */}
+              {ready.length > 0 && (
+                <Button
+                  onClick={() => void saveAndLeave()}
+                  disabled={saving}
+                  className={cn(__WEB__ && '!h-12 !gap-2 !rounded-[4px] !bg-[#0B3D2E] !px-5 !text-[13px] !font-extrabold !uppercase !tracking-[.03em] !text-[#C7F03F] hover:!bg-[#0F4A38]')}
+                >
+                  {__WEB__ && <CheckCircle2 className="h-[18px] w-[18px]" />}
+                  Record {ready.length} batch{ready.length === 1 ? '' : 'es'}
+                </Button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </>
     )
   }
@@ -567,22 +938,41 @@ export function Production(): React.JSX.Element {
               ]}
               rows={rows}
             />
-            <Button size="sm" onClick={openAdd} disabled={outputs.length === 0}>
+            <Button
+              size="sm"
+              className={cn(__WEB__ && '!gap-2 !bg-[#C7F03F] !px-4 !font-extrabold !text-[#12280B] hover:!bg-[#B8E32E]')}
+              onClick={openAdd}
+              disabled={outputs.length === 0}
+            >
               <Plus className="h-4 w-4" />
               Record production
             </Button>
           </div>
         }
       />
-      <div className="px-4 py-6">
-        <div className="rounded-lg border bg-card">
-          <Table>
+      <div className={cn('px-4 py-6', __WEB__ && '!py-4')}>
+        {/* What recording a run does to stock. It was only in the header's ⓘ
+            tooltip, which is where a reader looks last — and this page moves
+            real quantities in and out of the tanks. */}
+        {__WEB__ && (
+          <div className="mb-3 flex items-start gap-2.5 rounded-[4px] border border-[#D6E2D6] bg-white px-4 py-3">
+            <Info className="h-[19px] w-[19px] shrink-0 text-[#5A6B62]" />
+            <span className="text-[12.5px] font-semibold leading-relaxed text-[#33473E]">
+              Recording a run consumes the formula&apos;s input products from stock and adds the produced output. The
+              formula must total 100%.
+            </span>
+          </div>
+        )}
+        <div className={cn('rounded-lg border bg-card', __WEB__ && '!overflow-x-auto !rounded-[4px] !border-[#D6E2D6] !bg-white')}>
+          <Table className={cn(__WEB__ && '!min-w-[840px]')}>
             <TableHeader>
-              <TableRow>
+              <TableRow className={cn(PD_HEAD)}>
                 <TableHead>Date</TableHead>
                 <TableHead>Product</TableHead>
                 <TableHead>Category</TableHead>
-                <TableHead className="text-right">Qty</TableHead>
+                <TableHead className="text-right">
+                  <span className={cn(__WEB__ && '!text-[#C7F03F]')}>Qty</span>
+                </TableHead>
                 <TableHead className="w-[60px] text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -595,54 +985,124 @@ export function Production(): React.JSX.Element {
                 </TableRow>
               ) : rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                    No production recorded yet.
+                  <TableCell colSpan={5} className={cn('py-10 text-center text-muted-foreground', __WEB__ && '!py-12')}>
+                    {__WEB__ ? (
+                      <span className="flex flex-col items-center gap-2.5">
+                        <Factory className="h-[30px] w-[30px] text-[#C3D2C6]" />
+                        <span className="text-[13px] font-bold text-[#5A6B62]">No production recorded yet.</span>
+                        <Button
+                          className="!mt-1 !h-[42px] !gap-2 !rounded-[4px] !bg-[#0B3D2E] !px-4 !text-[13px] !font-extrabold !text-[#C7F03F] hover:!bg-[#0F4A38]"
+                          onClick={openAdd}
+                          disabled={outputs.length === 0}
+                        >
+                          <Plus className="h-[19px] w-[19px]" /> Record the first batch
+                        </Button>
+                      </span>
+                    ) : (
+                      'No production recorded yet.'
+                    )}
                   </TableCell>
                 </TableRow>
               ) : (
-                paged.pageRows.map((row) => (
-                  <TableRow key={row.id as number}>
-                    <TableCell>{formatDate(row.prod_date)}</TableCell>
-                    <TableCell className="font-medium">
+                paged.pageRows.map((row, ri) => (
+                  <Fragment key={row.id as number}>
+                    {/* A day's batches band together under one date, with the
+                        day's own count and total. A mill runs several batches
+                        a day and the flat list repeated the date on every one
+                        of them without ever saying what the day came to. */}
+                    {__WEB__ &&
+                      (ri === 0 ||
+                        String(paged.pageRows[ri - 1].prod_date).slice(0, 10) !== String(row.prod_date).slice(0, 10)) && (
+                        <TableRow className="!border-b-[#DCE7DB] !bg-[#EFF5EC] hover:!bg-[#EFF5EC] [&>td]:!py-2">
+                          <TableCell className="!font-bold">
+                            <span className="flex items-center gap-2">
+                              <CalendarDays className="h-[17px] w-[17px] shrink-0 text-[#0B3D2E]" />
+                              <span className="text-[13px] tabular-nums">{formatDate(row.prod_date)}</span>
+                            </span>
+                          </TableCell>
+                          <TableCell className="!text-[11.5px] !font-bold !text-[#5A6B62]">
+                            {(() => {
+                              const day = paged.pageRows.filter(
+                                (r) => String(r.prod_date).slice(0, 10) === String(row.prod_date).slice(0, 10)
+                              )
+                              return `${day.length} batch${day.length === 1 ? '' : 'es'}`
+                            })()}
+                          </TableCell>
+                          <TableCell />
+                          <TableCell className="!text-right !text-[13px] !font-bold !tabular-nums">
+                            {(() => {
+                              const day = paged.pageRows.filter(
+                                (r) => String(r.prod_date).slice(0, 10) === String(row.prod_date).slice(0, 10)
+                              )
+                              return formatNum(day.reduce((t, r) => t + (Number(r.qty) || 0), 0))
+                            })()}{' '}
+                            <span className="text-[10px] font-semibold text-[#5A6B62]">{row.uom || 'MT'}</span>
+                          </TableCell>
+                          <TableCell />
+                        </TableRow>
+                      )}
+                  <TableRow
+                    className={cn(__WEB__ && '!border-b-[#EAF0E9] !bg-white hover:!bg-[#F7FAF6] [&>td]:!py-2.5')}
+                  >
+                    <TableCell className={cn(__WEB__ && '!text-[13.5px] !font-bold !tabular-nums !text-[#33473E]')}>
+                      {formatDate(row.prod_date)}
+                    </TableCell>
+                    <TableCell className={cn('font-medium', __WEB__ && '!text-[13.5px] !font-extrabold !text-[#0A1F17]')}>
                       {row.product_name}
                       {row.formulation_name && (
-                        <div className="text-xs font-normal text-muted-foreground">{row.formulation_name}</div>
+                        <div className={cn('text-xs font-normal text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12px] !font-bold !text-[#33473E]')}>
+                          {row.formulation_name}
+                        </div>
                       )}
                     </TableCell>
                     <TableCell>
-                      <Badge variant={row.product_category === 'finished' ? 'success' : 'secondary'}>
+                      <Badge
+                        variant={row.product_category === 'finished' ? 'success' : 'secondary'}
+                        className={cn(
+                          __WEB__ && '!rounded-[2px] !border !px-2 !py-1 !text-[10.5px] !font-extrabold !uppercase !tracking-[.06em]',
+                          __WEB__ &&
+                            (row.product_category === 'finished'
+                              ? '!border-[#BFE3CB] !bg-[#E9F5EE] !text-[#0B6B45]'
+                              : '!border-[#DCE7DB] !bg-[#EAF0E9] !text-[#33473E]')
+                        )}
+                      >
                         {CAT_LABEL[row.product_category] ?? row.product_category}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {formatNum(row.qty)} {row.uom}
+                    <TableCell className={cn('text-right tabular-nums', __WEB__ && '!whitespace-nowrap !text-[14px] !font-bold')}>
+                      {formatNum(row.qty)} <span className={cn(__WEB__ && '!text-[10.5px] !font-semibold !text-[#5A6B62]')}>{row.uom}</span>
                     </TableCell>
                     <TableCell className="text-right">
                       {/* A mistyped batch can be corrected rather than deleted
                           and re-entered — the recipe is re-applied from the
                           quantity you set, and the run keeps its id. */}
-                      <div className="flex justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
-                          title="Alter this run"
-                          onClick={() => void openEdit(row)}
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-destructive"
-                          title="Delete this run"
-                          onClick={() => del(row)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
+                      {__WEB__ ? (
+                        <div className="flex justify-end">
+                          <RowActions
+                            actions={[
+                              { label: 'Edit this run', icon: Pencil, onClick: () => void openEdit(row) },
+                              {
+                                label: 'Delete this run — returns its stock',
+                                icon: Trash2,
+                                danger: true,
+                                onClick: () => del(row)
+                              }
+                            ]}
+                          />
+                        </div>
+                      ) : (
+                        <div className="flex justify-end gap-1">
+                          <Button variant="ghost" size="icon" className="h-8 w-8" title="Edit this run" onClick={() => void openEdit(row)}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" title="Delete this run" onClick={() => del(row)}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      )}
                     </TableCell>
                   </TableRow>
+                  </Fragment>
                 ))
               )}
             </TableBody>

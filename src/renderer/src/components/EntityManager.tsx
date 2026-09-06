@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertCircle, Pencil, Plus, Trash2 } from 'lucide-react'
+import { AlertCircle, Check, CheckCircle2, Pencil, Plus, Trash2, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -33,9 +33,37 @@ import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { ExcelButton } from '@/components/ExcelButton'
 import { todayISO } from '@/lib/format'
 import { Pagination, usePaged } from '@/components/Pagination'
+import { useIsMobile } from '@/lib/useIsMobile'
 
 export type FieldType = 'text' | 'number' | 'switch' | 'select' | 'date' | 'creatable'
 export type ColumnType = FieldType
+
+// Chip colours for the values a master list's select column actually carries.
+// Anything not named here still gets a chip, in the neutral tone.
+const CHIP_TONES: Record<string, { bg: string; fg: string }> = {
+  purchase: { bg: '#EAF0E9', fg: '#33473E' },
+  sales: { bg: '#E9F5EE', fg: '#0B6B45' },
+  both: { bg: '#FFEDD0', fg: '#8A5300' },
+  // The party's side of the business. Two tones that read apart at a glance
+  // down a long list — the mill's own manufacturing in the house green, and
+  // trading in a cooler blue that belongs to nothing else here.
+  manufacturing: { bg: '#E9F5EE', fg: '#0B6B45' },
+  trading: { bg: '#E3EEF5', fg: '#255B7A' },
+  // How a packed SKU is made up: the container it ships in, and the unit it
+  // is measured in. A tone each, so a long SKU list can be read down the
+  // column rather than word by word.
+  box: { bg: '#EAF0E9', fg: '#33473E' },
+  pch: { bg: '#EDE7F6', fg: '#4B3C8C' },
+  pouch: { bg: '#EDE7F6', fg: '#4B3C8C' },
+  jar: { bg: '#E3EEF5', fg: '#255B7A' },
+  tin: { bg: '#FFEDD0', fg: '#8A5300' },
+  bag: { bg: '#F2ECE3', fg: '#6B5330' },
+  kg: { bg: '#E9F5EE', fg: '#0B6B45' },
+  mt: { bg: '#E9F5EE', fg: '#0B6B45' },
+  g: { bg: '#EAF0E9', fg: '#33473E' },
+  l: { bg: '#E3EEF5', fg: '#255B7A' },
+  ml: { bg: '#E3EEF5', fg: '#255B7A' }
+}
 
 // Format a stored date/datetime as DD/MM/YYYY.
 function fmtDate(v: unknown): string {
@@ -101,6 +129,8 @@ export function EntityManager({
   rowAction
 }: Props): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
+  // Phone width on the website swaps the register for cards — see below.
+  const isMobile = useIsMobile()
 
   // Names already taken, and the ones duplicated in the data as it stands.
   const norm = (v: unknown): string => String(v ?? '').trim().toLowerCase()
@@ -271,14 +301,67 @@ export function EntityManager({
     return String(v)
   }
 
+  // What a cell LOOKS like, as opposed to what it says. Kept apart from
+  // renderCell because that one's plain string is what the Excel export
+  // writes — a chip in a spreadsheet cell would be nonsense.
+  function renderCellNode(row: Row, col: ColumnDef): React.ReactNode {
+    const text = renderCell(row, col)
+    if (!__WEB__) return text
+    if (col.type === 'switch') {
+      const on = text === 'Yes'
+      return (
+        <span className={cn('inline-flex items-center gap-1.5 font-bold', on ? 'text-[#12855A]' : 'text-[#B3261E]')}>
+          {on ? <CheckCircle2 className="h-[18px] w-[18px]" /> : <XCircle className="h-[18px] w-[18px]" />}
+          {text}
+        </span>
+      )
+    }
+    if (col.type === 'select' && text !== '—') {
+      // Purchase / sales / both carry the handoff's own colours; any other
+      // select value still gets a chip, just a neutral one.
+      const tone =
+        CHIP_TONES[String(row[col.key] ?? '').trim().toLowerCase()] ?? { bg: '#EAF0E9', fg: '#33473E' }
+      return (
+        <span
+          className="inline-block rounded-[2px] px-[9px] py-1 text-[11.5px] font-extrabold uppercase tracking-[.05em]"
+          style={{ background: tone.bg, color: tone.fg }}
+        >
+          {text}
+        </span>
+      )
+    }
+    return text
+  }
+
   return (
-    <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
-      <div className="flex flex-wrap items-center gap-2 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
+    <div
+      className={cn(
+        // Website: the Categories handoff's card — a white sheet under a
+        // forest strip. Every master page draws through here, so they all
+        // move together. The desktop app keeps its Tally-styled cream card.
+        __WEB__
+          ? 'overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white'
+          : 'rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg'
+      )}
+    >
+      <div
+        className={cn(
+          'flex flex-wrap items-center gap-2 px-4 py-2',
+          __WEB__ ? cn('gap-3 bg-[#0B3D2E] px-[18px] py-4 text-white', isMobile && '!px-3 !py-3 [&>div.ml-auto]:!w-full [&>div.ml-auto]:!ml-0') : 'rounded-t-md bg-[#dce6f5] text-[#1a2c56]'
+        )}
+      >
         <div className="min-w-0">
-          <h3 className="text-[13px] font-bold uppercase tracking-widest">{title}</h3>
-          {description && <p className="text-[11px] text-[#1a2c56]/70">{description}</p>}
+          <h3 className={cn('text-[13px] font-bold uppercase tracking-widest', __WEB__ && 'text-[14px] font-extrabold tracking-[.14em]')}>{title}</h3>
+          {description && (
+            <p className={cn('text-[11px] text-[#1a2c56]/70', __WEB__ && '!mt-0.5 !text-[12.5px] !font-medium !text-[#8FBFA8]')}>{description}</p>
+          )}
         </div>
-        <span className="rounded bg-white/60 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums">
+        <span
+          className={cn(
+            'rounded bg-white/60 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums',
+            __WEB__ && '!rounded-[3px] !bg-[#C7F03F] !px-2.5 !py-1 !text-[13px] !font-extrabold !text-[#12280B]'
+          )}
+        >
           {shownRows.length}{search ? ` / ${rows.length}` : ''}
         </span>
         {(() => {
@@ -294,7 +377,13 @@ export function EntityManager({
         })()}
         <div className="ml-auto flex items-center gap-2">
           <Input
-            className="h-8 w-48 bg-white text-[13px]"
+            className={cn(
+              'h-8 w-48 bg-white text-[13px]',
+              // Sits on the forest strip, so it inverts: translucent fill,
+              // lime-tinted rim, white text.
+              __WEB__ &&
+                cn('!h-11 !rounded-[4px] !border-[rgba(199,240,63,.2)] !bg-white/10 !text-[13.5px] !text-white placeholder:!text-[#8FBFA8]', isMobile ? '!w-full !flex-1' : '!w-[280px]')
+            )}
             placeholder={`Search ${title.toLowerCase()}…`}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -319,29 +408,120 @@ export function EntityManager({
             rows={rows}
           />
           {!readOnly && (
-            <Button size="sm" className="bg-[#1a2c56] hover:bg-[#24407e]" title="Alt+N" onClick={openAdd}>
+            <Button
+              size="sm"
+              className={cn(
+                'bg-[#1a2c56] hover:bg-[#24407e]',
+                __WEB__ && '!h-11 !rounded-[4px] !bg-[#C7F03F] !px-[18px] !text-[14px] !font-extrabold !text-[#0B3D2E] hover:!bg-[#b3d936]'
+              )}
+              title="Alt+N"
+              onClick={openAdd}
+            >
               <Plus /> Add
             </Button>
           )}
         </div>
       </div>
 
+      {/* Phone width: a six-column register does not fit, and a sideways
+          scroll makes a master list unusable. One card per record instead —
+          the name as the heading, every other column as a labelled line. */}
+      {__WEB__ && isMobile ? (
+        <div className="bg-[#F1F5EF] p-3">
+          {loading ? (
+            <div className="py-10 text-center text-[13px] text-[#7C9188]">Loading…</div>
+          ) : paged.pageRows.length === 0 ? (
+            <div className="py-10 text-center text-[13px] text-[#7C9188]">
+              {rows.length === 0 ? 'No records yet.' : 'Nothing matches that search.'}
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {paged.pageRows.map((row) => (
+                <div
+                  key={row.id as number}
+                  onClick={() => !readOnly && openEdit(row)}
+                  className="rounded-[4px] border border-[#D6E2D6] border-l-[3px] border-l-[#12855A] bg-white p-3"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-[15px] font-bold tracking-[-0.01em]">
+                        {renderCell(row, columns[0])}
+                      </div>
+                      {isDuplicated(row) && (
+                        <div className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-red-700">
+                          <AlertCircle className="h-3.5 w-3.5 shrink-0" /> Duplicate name
+                        </div>
+                      )}
+                    </div>
+                    {!readOnly && (
+                      <div className="flex shrink-0 gap-1.5" onClick={(e) => e.stopPropagation()}>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="!h-9 !w-9 !rounded-[3px] !border-[#C3D2C6] !text-[#0B3D2E]"
+                          onClick={() => openEdit(row)}
+                          title="Edit"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="!h-9 !w-9 !rounded-[3px] !border !border-[#F0D6D4] !bg-[#FDF3F2] !text-[#B3261E]"
+                          onClick={() => del(row)}
+                          title="Delete"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                  {/* Everything after the name, as label / value lines. */}
+                  <div className="mt-2.5 space-y-1.5 border-t border-[#EAF0E9] pt-2.5">
+                    {columns.slice(1).map((c) => (
+                      <div key={c.key} className="flex items-center justify-between gap-3">
+                        <span className="shrink-0 text-[10px] font-extrabold uppercase tracking-[.1em] text-[#7C9188]">
+                          {c.label}
+                        </span>
+                        <span className="min-w-0 truncate text-right text-[13px] font-semibold">
+                          {renderCellNode(row, c)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
       <div>
         <Table className="text-[13px]">
           <TableHeader>
-            <TableRow className="bg-[#f1ecd9] hover:bg-[#f1ecd9]">
+            <TableRow
+              className={cn(
+                'bg-[#f1ecd9] hover:bg-[#f1ecd9]',
+                __WEB__ && '!border-b-[#D6E2D6] !bg-[#EAF0E9] hover:!bg-[#EAF0E9]'
+              )}
+            >
               {columns.map((c) => (
                 <TableHead
                   key={c.key}
                   className={cn(
                     'h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground',
+                    __WEB__ && '!h-[42px] !text-[11px] !font-extrabold !tracking-[.12em] !text-[#33473E]',
                     c.align === 'right' && 'text-right'
                   )}
                 >
                   {c.label}
                 </TableHead>
               ))}
-              <TableHead className="h-8 w-[90px] text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+              <TableHead
+                className={cn(
+                  'h-8 w-[90px] text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground',
+                  __WEB__ && '!h-[42px] !w-[200px] !text-[11px] !font-extrabold !tracking-[.12em] !text-[#33473E]'
+                )}
+              >
                 Actions
               </TableHead>
             </TableRow>
@@ -371,6 +551,7 @@ export function EntityManager({
                   key={row.id as number}
                   className={cn(
                     'border-b border-dotted border-[#e5dfc8] transition-colors hover:bg-amber-100/70',
+                    __WEB__ && '!border-solid !border-[#EAF0E9] hover:!bg-[#F7FAF6] [&>td]:!min-h-[56px] [&>td]:!py-3.5',
                     !readOnly && 'cursor-pointer'
                   )}
                   onClick={() => !readOnly && openEdit(row)}
@@ -379,7 +560,14 @@ export function EntityManager({
                   {columns.map((c) => (
                     <TableCell
                       key={c.key}
-                      className={cn('py-1.5', c.align === 'right' && 'text-right tabular-nums')}
+                      className={cn(
+                        'py-1.5',
+                        // The record's own name leads the row, and the date is
+                        // the other thing people scan down a master list for.
+                        __WEB__ && c.key === 'name' && '!text-[14.5px] !font-bold !tracking-[-0.01em]',
+                        __WEB__ && c.type === 'date' && '!text-[13px] !font-bold !text-[#5A6B62]',
+                        c.align === 'right' && 'text-right tabular-nums'
+                      )}
                     >
                       {c.key === 'name' && isDuplicated(row) ? (
                         <span className="inline-flex items-center gap-1.5">
@@ -392,7 +580,7 @@ export function EntityManager({
                           </span>
                         </span>
                       ) : (
-                        renderCell(row, c)
+                        renderCellNode(row, c)
                       )}
                     </TableCell>
                   ))}
@@ -415,18 +603,28 @@ export function EntityManager({
                             )}
                           </Button>
                         )}
+                        {/* The handoff gives Edit a label and Delete a tinted
+                            square — the destructive one shouldn't look like
+                            the everyday one. */}
                         <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
+                          variant={__WEB__ ? 'outline' : 'ghost'}
+                          size={__WEB__ ? 'sm' : 'icon'}
+                          className={cn(
+                            'h-8 w-8',
+                            __WEB__ && '!h-[34px] !w-auto gap-1.5 !rounded-[3px] !border-[#C3D2C6] !px-3 !text-[12.5px] !font-extrabold !text-[#0B3D2E]'
+                          )}
                           onClick={() => openEdit(row)}
                         >
                           <Pencil className="h-4 w-4" />
+                          {__WEB__ && 'Edit'}
                         </Button>
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-8 w-8 text-destructive"
+                          className={cn(
+                            'h-8 w-8 text-destructive',
+                            __WEB__ && '!h-[34px] !w-[34px] !rounded-[3px] !border !border-[#F0D6D4] !bg-[#FDF3F2] !text-[#B3261E] hover:!bg-[#f9e6e4]'
+                          )}
                           onClick={() => del(row)}
                         >
                           <Trash2 className="h-4 w-4" />
@@ -439,17 +637,67 @@ export function EntityManager({
             )}
           </TableBody>
         </Table>
-        <Pagination {...paged} label="records" className="rounded-b-md border-t border-[#d9d2b8] bg-[#fffdf4] px-3" />
       </div>
+      )}
+
+      <Pagination
+        {...paged}
+        label="records"
+        className={cn(
+          'rounded-b-md border-t border-[#d9d2b8] bg-[#fffdf4] px-3',
+          __WEB__ && '!rounded-none !border-t-0 !bg-white !px-[18px] !py-3.5',
+          __WEB__ && isMobile && '!flex-wrap !gap-2 !px-3'
+        )}
+      />
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="w-[calc(100vw-2rem)] max-w-2xl border-[#d9d2b8] bg-[#fffdf4]">
-          <DialogHeader className="-mx-6 -mt-6 mb-1 rounded-t-lg bg-[#dce6f5] px-6 py-2.5">
-            <DialogTitle className="text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]">
-              {editingId == null ? `Create ${title}` : `Alter ${title}`}
+        {/* Re-anchored to the right edge rather than replaced: this is still a
+            Radix dialog, so the focus trap holds and the custom Select still
+            finds its [role="dialog"] host to portal its menu into — a bespoke
+            drawer div would break every dropdown in this form. */}
+        <DialogContent
+          className={cn(
+            'w-[calc(100vw-2rem)] max-w-2xl border-[#d9d2b8] bg-[#fffdf4]',
+            __WEB__ &&
+              cn(
+                '!left-auto !right-0 !top-0 !flex !h-screen !max-w-none !translate-x-0 !translate-y-0 !flex-col !gap-0 !rounded-none !border-0 !bg-[#F1F5EF] !p-0 !shadow-[-16px_0_40px_rgba(10,31,23,.22)]',
+                isMobile ? '!w-full' : '!w-[520px]'
+              )
+          )}
+        >
+          <DialogHeader
+            className={cn(
+              '-mx-6 -mt-6 mb-1 rounded-t-lg bg-[#dce6f5] px-6 py-2.5',
+              __WEB__ && '!mx-0 !mt-0 !mb-0 flex-none !rounded-none !bg-[#0B3D2E] !px-[22px] !py-[18px] !text-left'
+            )}
+          >
+            {__WEB__ && (
+              <span className="text-[12px] font-extrabold uppercase tracking-[.14em] text-[#C7F03F]">
+                {editingId == null ? `New ${title.toLowerCase()}` : `Alter ${title.toLowerCase()}`}
+              </span>
+            )}
+            <DialogTitle
+              className={cn(
+                'text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]',
+                __WEB__ && '!mt-1 !text-[21px] !font-extrabold !normal-case !tracking-[-0.02em] !text-white'
+              )}
+            >
+              {__WEB__
+                ? editingId == null
+                  ? `Add a ${title.toLowerCase()}`
+                  : String(form.name || title)
+                : editingId == null
+                  ? `Create ${title}`
+                  : `Alter ${title}`}
             </DialogTitle>
           </DialogHeader>
-          <div className="grid max-h-[60vh] gap-3 overflow-y-auto py-2 pr-1">
+          <div
+            className={cn(
+              'grid max-h-[60vh] gap-3 overflow-y-auto py-2 pr-1',
+              __WEB__ &&
+                '!max-h-none min-h-0 flex-1 content-start !gap-[18px] bg-[#F1F5EF] !p-[22px] [&_input]:!h-[50px] [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[15px] [&_[data-slot=select-trigger]]:!h-[50px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=date-picker]]:!h-[50px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_label]:!text-[9.5px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62]'
+            )}
+          >
             {fields.map((fd) => {
               const fieldDisabled = fd.enabledWhen ? !fd.enabledWhen(form) : false
               return (
@@ -578,12 +826,27 @@ export function EntityManager({
             </p>
           )}
           {error && <p className="text-sm text-destructive">{error}</p>}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>
-              Cancel
+          <DialogFooter
+            className={cn(
+              __WEB__ && 'flex-none !justify-end gap-2.5 border-t border-[#D6E2D6] bg-white !px-[22px] !py-3.5'
+            )}
+          >
+            <Button
+              variant="outline"
+              className={cn(__WEB__ && '!h-12 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-5 !text-[13.5px] !font-extrabold !tracking-[.03em] !text-[#33473E]')}
+              onClick={() => setOpen(false)}
+              disabled={saving}
+            >
+              {__WEB__ ? 'CANCEL' : 'Cancel'}
             </Button>
-            <Button onClick={save} disabled={saving || nameBlocked} title={nameBlocked ? 'That name is already taken' : undefined}>
-              {saving ? 'Saving…' : 'Save'}
+            <Button
+              className={cn(__WEB__ && '!h-12 !rounded-[4px] !bg-[#0B3D2E] !px-6 !text-[13.5px] !font-extrabold !tracking-[.03em] !text-[#C7F03F] hover:!bg-[#0f4f3b]')}
+              onClick={save}
+              disabled={saving || nameBlocked}
+              title={nameBlocked ? 'That name is already taken' : undefined}
+            >
+              {__WEB__ && !saving && <Check className="h-5 w-5" />}
+              {saving ? 'Saving…' : __WEB__ ? 'SAVE' : 'Save'}
             </Button>
           </DialogFooter>
         </DialogContent>

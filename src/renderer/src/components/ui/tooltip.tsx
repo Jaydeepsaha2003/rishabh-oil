@@ -1,6 +1,6 @@
 import * as React from 'react'
 import * as TooltipPrimitive from '@radix-ui/react-tooltip'
-import { Info } from 'lucide-react'
+import { HelpCircle, Info } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const TooltipProvider = TooltipPrimitive.Provider
@@ -46,4 +46,25 @@ function InfoTip({ text, className }: { text: string; className?: string }): Rea
   )
 }
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider, InfoTip }
+// A "?" version of the same thing. Reach for this where the short line beside
+// it is the whole message and the tooltip is the long form of it — a reader
+// who already understands the line never has to open it. InfoTip's (i) reads
+// as "more context"; this reads as "explain this".
+function HelpTip({ text, className }: { text: string; className?: string }): React.JSX.Element {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label="Help"
+          className={cn('inline-flex shrink-0 text-muted-foreground transition-colors hover:text-foreground', className)}
+        >
+          <HelpCircle className="h-4 w-4" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-sm leading-relaxed">{text}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider, InfoTip, HelpTip }

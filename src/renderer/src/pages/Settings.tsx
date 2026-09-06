@@ -1134,9 +1134,12 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
     <>
       <PageHeader title="Settings" subtitle="Master data used across bargains and purchases" hint="Ports/sources (with transit days), the default allowed shortage %, users and access control. Changes here flow through to every module." />
       <div className="px-4 py-6">
-        <Tabs defaultValue="sources">
+        {/* Ports has its own entry under Masters in the sidebar, so the tab
+            here was a second door to the same list. Dropped on the website;
+            the desktop app still has it. */}
+        <Tabs defaultValue={__WEB__ ? 'general' : 'sources'}>
           <TabsList>
-            <TabsTrigger value="sources">Ports</TabsTrigger>
+            {!__WEB__ && <TabsTrigger value="sources">Ports</TabsTrigger>}
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="update">Software update</TabsTrigger>
             {isAdmin && <TabsTrigger value="companies">Companies</TabsTrigger>}
@@ -1144,16 +1147,18 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
             {isAdmin && <TabsTrigger value="access">Access</TabsTrigger>}
           </TabsList>
 
-          <TabsContent value="sources" className="mt-6">
-            <EntityManager
-              table="sources"
-              title="Port"
-              description="Delivery ports, each with its transit days."
-              fields={sourceFields}
-              columns={sourceColumns}
-              readOnly={!canWrite(user, 'settings')}
-            />
-          </TabsContent>
+          {!__WEB__ && (
+            <TabsContent value="sources" className="mt-6">
+              <EntityManager
+                table="sources"
+                title="Port"
+                description="Delivery ports, each with its transit days."
+                fields={sourceFields}
+                columns={sourceColumns}
+                readOnly={!canWrite(user, 'settings')}
+              />
+            </TabsContent>
+          )}
           <TabsContent value="general" className="mt-6">
             <GeneralSettings isAdmin={isAdmin} />
           </TabsContent>
@@ -1165,7 +1170,14 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
               <EntityManager
                 table="companies"
                 title="Company"
-                description="Each company keeps its own bargains, purchases, sales, stock and account books. Switch the working company from the sidebar. Masters and Gate Entry are shared."
+                // The sentence ran the full width of the strip and pushed the
+                // count and the search onto their own lines. Dropped on the
+                // website; the desktop app keeps the explanation.
+                description={
+                  __WEB__
+                    ? undefined
+                    : 'Each company keeps its own bargains, purchases, sales, stock and account books. Switch the working company from the sidebar. Masters and Gate Entry are shared.'
+                }
                 fields={companyFields}
                 columns={companyColumns}
               />

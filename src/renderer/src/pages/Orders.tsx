@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  Undo2, ArrowLeft, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, DoorOpen, Eye,
+  Undo2, ArrowLeft, ArrowRight, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, CheckCircle2, ChevronDown, Clock, DoorOpen, Eye, MinusCircle, Package,
   FileText, History, IndianRupee, Pencil, Plus, ScrollText, Search, Trash2, Truck, type LucideIcon } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { FyPicker } from '@/components/FyPicker'
@@ -114,7 +114,34 @@ function tankerDelay(row: Row): { label: string; tone: string } | null {
 
 function StatusBadge({ status }: { status: string }): React.JSX.Element {
   const variant = status === 'empty' || status === 'received' ? 'success' : status === 'loaded' ? 'warning' : 'secondary'
-  return <Badge variant={variant}>{TANKER_LABEL[status] ?? (status === 'received' ? 'Completed' : status)}</Badge>
+  const label = TANKER_LABEL[status] ?? (status === 'received' ? 'Completed' : status)
+  if (__WEB__) {
+    // The handoff's stage chip: a bordered pill with an icon that says where
+    // the tanker physically is. "To be loaded" is the one stage nothing has
+    // happened in yet, so it stays neutral; everything from Loaded onwards is
+    // green, because the tanker is moving.
+    const started = status !== 'supplier_factory'
+    const Ico =
+      status === 'empty' || status === 'received'
+        ? CheckCircle2
+        : status === 'transit'
+          ? Truck
+          : status === 'supplier_factory'
+            ? Clock
+            : Package
+    return (
+      <span
+        className={cn(
+          'inline-flex items-center gap-1.5 rounded-[2px] border px-2.5 py-[5px] text-[12px] font-extrabold tracking-[.03em]',
+          started ? 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]' : 'border-[#C3D2C6] bg-[#EAF0E9] text-[#33473E]'
+        )}
+      >
+        <Ico className="h-4 w-4 shrink-0" />
+        {label}
+      </span>
+    )
+  }
+  return <Badge variant={variant}>{label}</Badge>
 }
 
 // Movement-overview columns. Confirming loading jumps straight to transit, so
@@ -171,11 +198,24 @@ function MoneyRow({ label, value, strong, title }: { label: string; value: strin
 // of as a stack of plain label/value lines.
 function InfoTile({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }): React.JSX.Element {
   return (
-    <div className="flex items-start gap-2 rounded-lg border bg-muted/30 px-3 py-2">
-      <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+    // The website stacks the icon+label over the value rather than putting the
+    // icon beside both — at two tiles to a row the value gets the full width,
+    // which is what a supplier name or a tanker list actually needs.
+    <div
+      className={cn(
+        'flex items-start gap-2 rounded-lg border bg-muted/30 px-3 py-2',
+        __WEB__ && '!flex-col !gap-1.5 !rounded-[4px] !border-[#D6E2D6] !bg-white !px-3.5 !py-3'
+      )}
+    >
+      <div className={cn(__WEB__ && 'flex items-center gap-1.5')}>
+        <Icon className={cn('mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground', __WEB__ && '!mt-0 !h-4 !w-4 !text-[#8AA096]')} />
+        {__WEB__ && (
+          <span className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#7C9188]">{label}</span>
+        )}
+      </div>
       <div className="min-w-0">
-        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
-        <div className="truncate text-sm font-medium" title={value}>{value}</div>
+        {!__WEB__ && <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>}
+        <div className={cn('truncate text-sm font-medium', __WEB__ && '!text-[15px] !font-bold !tracking-[-0.01em]')} title={value}>{value}</div>
       </div>
     </div>
   )
@@ -191,6 +231,43 @@ function Fact({ label, value }: { label: string; value: string }): React.JSX.Ele
       <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="truncate text-sm" title={value}>{value}</div>
     </div>
+  )
+}
+
+// Small-caps field label on the Purchase entries filter card. Named rather
+// than repeated inline because it has to stay identical across DATE,
+// CATEGORY and the receipt-date toggle — a label a shade off its neighbours
+// is the thing that makes a filter bar look assembled rather than designed.
+const PO_LABEL = '!text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#5A6B62]'
+
+// The tanker group bands ("Loaded & received within…" / "Loaded outside…")
+// collapse on the website. The band stays a <div> rather than becoming a
+// <button> so the desktop app's markup and styling are untouched — it gets
+// the button's keyboard and screen-reader behaviour from these props instead,
+// and on desktop it gets nothing at all.
+function groupToggleProps(open: boolean, toggle: () => void): React.HTMLAttributes<HTMLDivElement> {
+  if (!__WEB__) return {}
+  return {
+    role: 'button',
+    tabIndex: 0,
+    'aria-expanded': open,
+    onClick: toggle,
+    onKeyDown: (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        toggle()
+      }
+    }
+  }
+}
+
+function GroupChevron({ open, tone }: { open: boolean; tone: string }): React.JSX.Element | null {
+  if (!__WEB__) return null
+  return (
+    <ChevronDown
+      className={cn('ml-auto h-4 w-4 shrink-0 transition-transform', !open && '-rotate-90')}
+      style={{ color: tone }}
+    />
   )
 }
 
@@ -241,6 +318,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const [pivotEnd, setPivotEnd] = useState(todayISO())
   // Clicking a pivot count filters the tanker list below to that oil × stage.
   const [pivotSel, setPivotSel] = useState<{ oil: string; stage: string } | null>(null)
+  // Collapse state for the two tanker group cards. Website only — the desktop
+  // app renders both open with no toggle, exactly as it always has.
+  const [tmInOpen, setTmInOpen] = useState(true)
+  const [tmOutOpen, setTmOutOpen] = useState(true)
+  // The stage summary cards start closed: the matrix right below them carries
+  // the same numbers broken down by oil, so they are a glance, not the page.
+  const [kpiOpen, setKpiOpen] = useState(false)
   // Category filter for the whole tab — the pivot and the tanker list below it.
   // Empty = every category.
   const [tmCategory, setTmCategory] = useState<string[]>([])
@@ -592,7 +676,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // and the out-of-range one below it, so the two stay visually identical.
   function renderTankerRow(row: Row): React.JSX.Element {
     const next = nextTankerStage(row.status)
-    return <TableRow key={row.id}>
+    // Compact rows: the handoff drew these at 72px, but with three lines of
+    // detail in the first cell they were already tall enough — the extra
+    // padding just cost a tanker or two off the visible list.
+    return <TableRow key={row.id} className={cn(__WEB__ && '[&>td]:!py-2')}>
       <TableCell><div className={cn('font-medium', !String(row.tanker_no || '').trim() && 'italic text-muted-foreground')}>{String(row.tanker_no || '').trim() || 'No number yet'}</div><div className="text-xs text-muted-foreground">{row.status === 'supplier_factory' ? `Entered ${formatDate(row.loaded_date)}` : `Loaded ${formatDate(row.loaded_date)}`}</div>{!!row.gate_entry_no && (
           <div className="mt-0.5 text-[11px] text-sky-700">
             Gate {row.gate_entry_no}
@@ -607,7 +694,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           </div>
         )}</TableCell>
       <TableCell>
-        <div>{row.supplier_name}</div>
+        <div className={cn(__WEB__ && 'text-[14px] font-extrabold text-[#0B3D2E]')}>{row.supplier_name}</div>
         <div className="text-xs text-muted-foreground">
           {row.bargain_no}
           {row.extra_bargain_no && (
@@ -617,9 +704,21 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           )}
         </div>
       </TableCell>
-      <TableCell className="text-right tabular-nums">{Number(row.loaded_qty) > 0 ? `${formatNum(row.loaded_qty)} ${row.uom}` : 'Not loaded'}</TableCell>
-      <TableCell>{row.payment_mode === 'pending' ? <span className="text-muted-foreground">Not decided</span> : row.payment_mode === 'supplier_finance' ? <Badge variant="warning">Supplier financed</Badge> : <Badge variant="muted">Paid by us</Badge>}</TableCell>
-      <TableCell>{row.invoice_no || <span className="text-muted-foreground">Not entered</span>}</TableCell>
+      {/* Loaded qty, payment and invoice all say the same thing when they are
+          empty: this step has not happened yet. So an unfilled one steps back
+          to grey rather than shouting in the same weight as a real figure. */}
+      <TableCell
+        className={cn(
+          'text-right tabular-nums',
+          __WEB__ && (Number(row.loaded_qty) > 0 ? '!text-[15px] !font-bold' : '!text-[15px] !text-[#A8B8AE]')
+        )}
+      >
+        {Number(row.loaded_qty) > 0 ? `${formatNum(row.loaded_qty)} ${row.uom}` : 'Not loaded'}
+      </TableCell>
+      <TableCell>{row.payment_mode === 'pending' ? <span className={cn('text-muted-foreground', __WEB__ && '!text-[12px] !font-extrabold !text-[#A8B8AE]')}>Not decided</span> : row.payment_mode === 'supplier_finance' ? <Badge variant="warning" className={cn(__WEB__ && '!rounded-[2px] !border-0 !bg-[#FFEDD0] !px-2.5 !py-[5px] !text-[12px] !font-extrabold !tracking-[.03em] !text-[#8A5300]')}>Supplier financed</Badge> : <Badge variant="muted" className={cn(__WEB__ && '!rounded-[2px] !border-0 !bg-[#EAF0E9] !px-2.5 !py-[5px] !text-[12px] !font-extrabold !tracking-[.03em] !text-[#33473E]')}>Paid by us</Badge>}</TableCell>
+      <TableCell className={cn(__WEB__ && (row.invoice_no ? '!text-[13.5px] !font-bold' : ''))}>
+        {row.invoice_no || <span className={cn('text-muted-foreground', __WEB__ && '!text-[13.5px] !text-[#A8B8AE]')}>Not entered</span>}
+      </TableCell>
       <TableCell>
         <StatusBadge status={row.status} />
         {(() => {
@@ -633,7 +732,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       <TableCell className="text-right">
         <div className="flex items-center justify-end gap-1">
           {next && (
-            <Button size="sm" variant="outline" onClick={() => openTankerAction(row)}>
+            <Button
+              size="sm"
+              variant="outline"
+              className={cn(
+                // The one action on the row that moves the tanker on. The
+                // handoff fills it forest/lime, but repeated down every row
+                // that turns the Action column into a wall of dark blocks —
+                // so it wears a light green tint instead, which still reads
+                // as the row's one button without shouting over the data.
+                __WEB__ && '!h-[34px] !gap-1.5 !rounded-[3px] !border-[#BFE3CB] !bg-[#E9F5EE] !px-3.5 !text-[12.5px] !font-extrabold !tracking-[.02em] !text-[#0B6B45] hover:!bg-[#DCEFE4] hover:!text-[#0B3D2E]'
+              )}
+              onClick={() => openTankerAction(row)}
+            >
+              {__WEB__ && <ArrowRight className="h-4 w-4" />}
               {TANKER_LABEL[next]}
             </Button>
           )}
@@ -667,9 +779,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   }
 
   function tankerTableHeader(): React.JSX.Element {
-    return <TableHeader><TableRow className="bg-muted/60">
-      <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Tanker</TableHead><TableHead className="text-[10px] font-semibold uppercase tracking-wide">Supplier / bargain</TableHead><TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Loaded qty</TableHead>
-      <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Payment</TableHead><TableHead className="text-[10px] font-semibold uppercase tracking-wide">Invoice</TableHead><TableHead className="text-[10px] font-semibold uppercase tracking-wide">Stage</TableHead><TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Action</TableHead>
+    // One rule for all seven headings on the website — the handoff's
+    // #EAF0E9 strip in wide-tracked small caps. Drawn tighter than the
+    // handoff's 40px: these headings repeat above every group card, so the
+    // height is paid several times down the page.
+    const th = cn(
+      'text-[10px] font-semibold uppercase tracking-wide',
+      __WEB__ && '!h-8 !py-0 !text-[10.5px] !font-extrabold !tracking-[.1em] !text-[#33473E]'
+    )
+    return <TableHeader><TableRow className={cn('bg-muted/60', __WEB__ && '!border-b-[#D6E2D6] !bg-[#EAF0E9] hover:!bg-[#EAF0E9]')}>
+      <TableHead className={th}>Tanker</TableHead><TableHead className={th}>Supplier / bargain</TableHead><TableHead className={cn(th, 'text-right')}>Loaded qty</TableHead>
+      <TableHead className={th}>Payment</TableHead><TableHead className={th}>Invoice</TableHead><TableHead className={th}>Stage</TableHead><TableHead className={cn(th, 'text-right')}>Action</TableHead>
     </TableRow></TableHeader>
   }
   // A tanker's governing EX/DLD condition — its own choice when one was made
@@ -703,6 +823,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // category. Both narrow the list the page shows and exports.
   const [poFrom, setPoFrom] = useState('')
   const [poTo, setPoTo] = useState('')
+  // Free text over the entries register. Sits with the date and category
+  // rules rather than after the column filters, so the column dropdowns
+  // offer values from what the search left — the same way they already
+  // narrow to what the date range left.
+  const [poSearch, setPoSearch] = useState('')
   // Empty = every category.
   const [poCategory, setPoCategory] = useState<string[]>([])
   // ON by default: also pull in a purchase whose invoice date is outside the
@@ -844,10 +969,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // Rows that pass every filter EXCEPT this column's own — so each dropdown
   // lists the values still reachable given the other filters, the way Excel
   // narrows its lists, instead of always offering the whole table.
-  function poColOptions(key: string): { value: string; label: string }[] {
+  function poColOptions(key: string): { value: string; label: string; count: number }[] {
     const col = PO_COLUMNS.find((c) => c.key === key)
     if (!col) return []
-    const seen = new Set<string>()
+    // Counted, not just collected — the panel shows how many rows sit behind
+    // each value, and the walk that finds the values is already doing the work.
+    const seen = new Map<string, number>()
     for (const r of poBaseRows) {
       let ok = true
       for (const other of PO_COLUMNS) {
@@ -855,15 +982,23 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         const sel = poCols[other.key]
         if (sel?.length && !sel.includes(other.of(r))) { ok = false; break }
       }
-      if (ok) seen.add(col.of(r))
+      if (ok) {
+        const v = col.of(r)
+        seen.set(v, (seen.get(v) || 0) + 1)
+      }
     }
-    return Array.from(seen)
+    return Array.from(seen.keys())
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-      .map((v) => ({ value: v, label: v || '(blank)' }))
+      .map((v) => ({ value: v, label: v || '(blank)', count: seen.get(v) || 0 }))
   }
 
   // Everything the date/category/trading rules allow — the pool the column
   // filters then narrow, and the pool their dropdowns are built from.
+  const poTerms = useMemo(
+    () => poSearch.trim().toLowerCase().split(/\s+/).filter(Boolean),
+    [poSearch]
+  )
+
   const poBaseRows = useMemo(
     () =>
       rows
@@ -894,9 +1029,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           // it does not belong in this register.
           if (Number(r.is_trading) === 1) return false
           if (poCategory.length && !poCategory.includes(String(r.product_category || ''))) return false
+          if (poTerms.length) {
+            const hay = [r.invoice_no, r.supplier_name, r.oil_code, r.oil_name, r.product_category, r.tanker_nos]
+              .join(' ')
+              .toLowerCase()
+            // Every term has to match somewhere, so "deepchand 510" narrows
+            // instead of widening — the way anyone types two things they
+            // remember about an invoice.
+            if (!poTerms.every((t) => hay.includes(t))) return false
+          }
           return true
         }),
-    [rows, tankers, poFrom, poTo, poCategory, poIncludeReceipt]
+    [rows, tankers, poFrom, poTo, poCategory, poIncludeReceipt, poTerms]
   )
 
   const filteredOrders = useMemo(
@@ -2203,7 +2347,16 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               <Button variant="outline" size="sm" onClick={() => setLoadingOpen(true)}>
                 <Truck className="h-4 w-4" /> Send tankers to supplier
               </Button>
-              <Button size="sm" onClick={openNewPurchase}>
+              <Button
+                size="sm"
+                // The page's primary action, so it wears the theme's own
+                // accent rather than the default near-black — which on the
+                // website read as just another dark control. Height comes
+                // from PageHeader's cluster rule, so it matches its
+                // neighbours; the colour is what makes it primary.
+                className={cn(__WEB__ && '!rounded-[4px] !bg-[#C7F03F] !px-4 !text-[13px] !font-extrabold !text-[#0B3D2E] hover:!bg-[#b3d936]')}
+                onClick={openNewPurchase}
+              >
                 <Plus className="h-4 w-4" /> New purchase
               </Button>
             </div>
@@ -3147,13 +3300,49 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         <div className="px-4 pb-6 pt-3">
           <Tabs value={tab} onValueChange={setTab}>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-              <TabsList>
-              <TabsTrigger value="tankers">Tanker movement</TabsTrigger>
+              {/* Website: the handoff's underline tabs — a bar under the live
+                  one rather than a pill, with the count as a chip beside the
+                  label. The desktop app keeps the pill list. */}
+              <TabsList
+                className={cn(
+                  __WEB__ &&
+                    '!h-auto !gap-6 !rounded-none !border-b !border-[#D6E2D6] !bg-transparent !p-0 [&>button]:!h-[52px] [&>button]:!rounded-none [&>button]:!border-b-[3px] [&>button]:!border-transparent [&>button]:!bg-transparent [&>button]:!px-0 [&>button]:!text-[14.5px] [&>button]:!font-semibold [&>button]:!text-[#5A6B62] [&>button]:!shadow-none [&>button[data-state=active]]:!border-[#0B3D2E] [&>button[data-state=active]]:!font-extrabold [&>button[data-state=active]]:!text-[#0A1F17]'
+                )}
+              >
+              <TabsTrigger value="tankers">
+                Tanker movement
+                {/* The count the page is actually showing — the two group
+                    cards below always add up to exactly this. It used to be
+                    the whole register for the active company, which ignored
+                    the date range, the category, the strip's own company
+                    picker and the search box, so it sat there disagreeing
+                    with every number underneath it. Rendered even at 0, so a
+                    filter that matches nothing says so instead of the badge
+                    quietly vanishing. */}
+                {__WEB__ && (
+                  <span
+                    title="Tankers matching the filters below"
+                    className={cn(
+                      'ml-2 rounded-[2px] px-1.5 py-[3px] text-[12px] font-extrabold',
+                      tab === 'tankers' ? 'bg-[#0B3D2E] text-[#C7F03F]' : 'bg-[#EAF0E9] text-[#33473E]'
+                    )}
+                  >
+                    {visibleTankers.length}
+                  </span>
+                )}
+              </TabsTrigger>
               <TabsTrigger value="purchases">Purchase entries</TabsTrigger>
               <TabsTrigger value="unmapped">
                 Unmapped invoices
                 {unmapped.length > 0 && (
-                  <span className="ml-1.5 rounded-full bg-red-500 px-1.5 text-[10px] font-semibold text-white">
+                  <span
+                    className={cn(
+                      'ml-1.5 rounded-full bg-red-500 px-1.5 text-[10px] font-semibold text-white',
+                      // On the website the count reads as a chip like the
+                      // others, not an alert pip.
+                      __WEB__ && '!ml-2 !rounded-[2px] !bg-[#FFEDD0] !px-1.5 !py-[3px] !text-[12px] !font-extrabold !text-[#8A5300]'
+                    )}
+                  >
                     {unmapped.length}
                   </span>
                 )}
@@ -3161,19 +3350,39 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               </TabsList>
               {/* Filters live on the tab row, for the entries tab only. */}
               {tab === 'purchases' && (
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-card px-2.5 py-1">
+                <div
+                  className={cn(
+                    'flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-card px-2.5 py-1',
+                    // The handoff's filter card. One height for every control
+                    // on it — the pickers arrive at 28px and 32px otherwise —
+                    // with the Switch excluded, since it is a button too and
+                    // a 36px-tall toggle is a different control entirely.
+                    __WEB__ &&
+                      '!w-full !gap-x-3 !gap-y-2 !rounded-[4px] !border-[#D6E2D6] !bg-white !px-[18px] !py-3 [&_input]:!h-9 [&_input]:!rounded-[4px] [&_input]:!border-input [&_input]:!text-[12.5px] [&_button:not([role=switch])]:!h-9 [&_button:not([role=switch])]:!rounded-[4px] [&_button:not([role=switch])]:!text-[12.5px] [&_[data-slot=date-picker]]:!h-9 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[12.5px]'
+                  )}
+                >
+                  <div className={cn('relative w-full sm:w-64', __WEB__ && 'sm:!w-72')}>
+                    <Search className={cn('pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground', __WEB__ && '!left-3 !h-4 !w-4 !text-[#8AA096]')} />
+                    <Input
+                      type="search"
+                      className={cn('h-8 pl-8 text-[11px]', __WEB__ && '!pl-9')}
+                      placeholder="Search invoice, supplier, product, tanker…"
+                      value={poSearch}
+                      onChange={(e) => setPoSearch(e.target.value)}
+                    />
+                  </div>
                   <div className="flex shrink-0 items-center gap-1.5">
-                    <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+                    <span className={cn('shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70', __WEB__ && PO_LABEL)}>
                       Date
                     </span>
                     <FyPicker from={poFrom} to={poTo} onRange={(f, t) => { setPoFrom(f); setPoTo(t) }} className="h-8 w-28 shrink-0 text-[11px]" />
                     <DatePicker value={poFrom} onChange={(v) => setPoFrom(v || '')} max={poTo || undefined} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
-                    <span className="shrink-0 text-[10px] text-muted-foreground">to</span>
+                    <span className={cn('shrink-0 text-[10px] text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !text-[#5A6B62]')}>to</span>
                     <DatePicker value={poTo} onChange={(v) => setPoTo(v || '')} min={poFrom || undefined} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
                   </div>
                   <div className="h-5 border-l" />
                   <div className="flex shrink-0 items-center gap-1.5">
-                    <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+                    <span className={cn('shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70', __WEB__ && PO_LABEL)}>
                       Category
                     </span>
                     <MultiSelectFilter
@@ -3187,17 +3396,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   <div className="h-5 shrink-0 border-l" />
                   <div className="flex shrink-0 items-center gap-1.5" title="When on, a purchase also shows if a tanker on it was received in this window — even if the invoice itself was raised outside it.">
                     <Switch checked={poIncludeReceipt} onCheckedChange={setPoIncludeReceipt} className="shrink-0" />
-                    <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+                    <span className={cn('shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70', __WEB__ && PO_LABEL)}>
                       Include by receipt date
                     </span>
                   </div>
-                  {(poFrom || poTo || poCategory.length > 0) && (
+                  {(poFrom || poTo || poCategory.length > 0 || poSearch) && (
                     <>
                       <div className="h-5 shrink-0 border-l" />
                       <button
                         type="button"
-                        className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
-                        onClick={() => { setPoFrom(''); setPoTo(''); setPoCategory([]) }}
+                        className={cn(
+                          'shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground',
+                          __WEB__ && '!px-3 !text-[12.5px] !font-extrabold !tracking-[.06em] !text-[#0B6B45] hover:!text-[#0B3D2E]'
+                        )}
+                        onClick={() => { setPoFrom(''); setPoTo(''); setPoCategory([]); setPoSearch('') }}
                       >
                         Clear
                       </button>
@@ -3208,16 +3420,42 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             </div>
 
             <TabsContent value="tankers" className="space-y-5">
-              <div className="overflow-hidden rounded-xl border bg-card">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
-                  <div>
-                    <h3 className="font-medium">Tanker movement by oil type</h3>
-                    <p className="text-xs text-muted-foreground">
+              <div className={cn('overflow-hidden rounded-xl border bg-card', __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !bg-white')}>
+                {/* Title and filters share one line, controls pushed right —
+                    the strip below the heading cost two rows of height for
+                    something the eye reads as part of the same header. */}
+                <div
+                  className={cn(
+                    'flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3',
+                    __WEB__ && '!items-center !gap-x-5 !gap-y-3 !border-[#EAF0E9] !px-[18px] !py-3'
+                  )}
+                >
+                  <div className={cn(__WEB__ && 'shrink-0')}>
+                    <h3 className={cn('font-medium', __WEB__ && '!text-[17px] !font-extrabold !tracking-[-0.02em]')}>
+                      Tanker movement by oil type
+                    </h3>
+                    <p className={cn('text-xs text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12px] !font-medium !text-[#5A6B62]')}>
                       Status as of {formatDate(pivotEnd)} · each tanker in its current stage · hover a count for tankers &amp; qty
                     </p>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="relative w-full sm:w-60">
+                  <div
+                    className={cn(
+                      'flex flex-wrap items-center gap-2',
+                      // One height for every control on the row, and the
+                      // labels to one size — a search, a select and a date
+                      // picker each default differently otherwise.
+                      __WEB__ &&
+                        // flex-1 with a zero basis, so the group stays on the
+                        // heading's line and wraps *within itself* when the
+                        // window narrows — at its natural width the parent's
+                        // flex-wrap would drop the whole strip to line two.
+                        // gap-y is halved because the zero-height break item
+                        // sits on a wrap line of its own, so the row gap is
+                        // paid twice between the two visible rows.
+                        '!ml-auto !justify-end !gap-x-2 !gap-y-1 sm:!min-w-0 sm:!flex-1 [&_input]:!h-8 [&_input]:!rounded-[4px] [&_input]:!border-input [&_input]:!bg-white [&_input]:!text-[12px] [&_[data-slot=select-trigger]]:!h-8 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-input [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12px] [&_[data-slot=date-picker]]:!h-8 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-input [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[12px] [&>span]:!text-[10px] [&>span]:!font-extrabold [&>span]:!tracking-[.1em] [&>span]:!text-[#5A6B62] [&>button]:!h-8 [&>button]:!rounded-[4px] [&>button]:!text-[12px]'
+                    )}
+                  >
+                    <div className={cn('relative w-full sm:w-60', __WEB__ && 'sm:!w-56')}>
                       <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                       <Input
                         type="search"
@@ -3227,7 +3465,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         onChange={(e) => setMoveSearch(e.target.value)}
                       />
                     </div>
-                    <div className="h-5 shrink-0 border-l" />
+                    <div className={cn('h-5 shrink-0 border-l', __WEB__ && '!hidden')} />
                     <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
                       Company
                     </span>
@@ -3241,7 +3479,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         ))}
                       </SelectContent>
                     </Select>
-                    <div className="h-5 shrink-0 border-l" />
+                    {/* A deliberate line break rather than letting flex-wrap
+                        decide: a full-basis, zero-height item can share a line
+                        with nothing, so search + company stay up beside the
+                        heading and category + the date range always start a
+                        second row. Renders as an inert hidden div on desktop,
+                        which keeps its single-row strip intact. */}
+                    <div className={__WEB__ ? 'h-0 w-full' : 'hidden'} />
+                    <div className={cn('h-5 shrink-0 border-l', __WEB__ && '!hidden')} />
                     <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
                       Category
                     </span>
@@ -3252,10 +3497,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       allLabel="All categories"
                       className="h-8 w-[10.5rem] text-[11px]"
                     />
-                    <div className="h-5 shrink-0 border-l" />
+                    <div className={cn('h-5 shrink-0 border-l', __WEB__ && '!hidden')} />
                     <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">From</span>
                     <DatePicker max={pivotEnd} value={pivotStart} onChange={(v) => setPivotStart(v || todayISO())} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
-                    <Label className="text-xs text-muted-foreground">To</Label>
+                    {/* Sits between the two date pickers, so it wants the same
+                        caps treatment the sibling FROM/COMPANY labels get —
+                        those are spans and this one is a Label, which the
+                        container's [&>span] rule cannot reach. */}
+                    <Label className={cn('text-xs text-muted-foreground', __WEB__ && '!text-[10px] !font-extrabold !uppercase !tracking-[.1em] !text-[#5A6B62]')}>To</Label>
                     <DatePicker min={pivotStart} max={todayISO()} value={pivotEnd} onChange={(v) => setPivotEnd(v || todayISO())} className="h-8 w-[9.5rem] shrink-0 text-[11px]" />
                     {(pivotStart !== monthStartISO() || pivotEnd !== todayISO()) && (
                       <Button variant="ghost" size="sm" onClick={() => { setPivotStart(monthStartISO()); setPivotEnd(todayISO()) }}>This month</Button>
@@ -3292,11 +3541,72 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     />
                   </div>
                 </div>
+                {/* Stage cards — the handoff's summary strip above the matrix.
+                    Counts and quantities are the pivot's own, totalled across
+                    oils, so these can never disagree with the table below.
+                    A stage with nothing in it greys out rather than
+                    disappearing: "none in transit" is worth seeing. */}
+                {__WEB__ && (
+                  <div className="border-b border-[#EAF0E9]">
+                    <button
+                      type="button"
+                      aria-expanded={kpiOpen}
+                      onClick={() => setKpiOpen((o) => !o)}
+                      className="flex w-full items-center gap-1.5 px-[18px] py-2 text-[11px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62] hover:bg-[#F7FAF6]"
+                    >
+                      <ChevronDown className={cn('h-4 w-4 shrink-0 text-[#12855A] transition-transform', !kpiOpen && '-rotate-90')} />
+                      Stage summary
+                      <span className="ml-1 rounded-[2px] bg-[#EAF0E9] px-1.5 py-[2px] text-[11px] font-extrabold tracking-normal text-[#33473E]">
+                        {visibleTankers.length}
+                      </span>
+                    </button>
+                    {kpiOpen && (
+                      <div className="flex flex-wrap gap-2 px-[18px] pb-[18px] pt-1">
+                        {PIVOT_STAGES.map((s) => {
+                          const count = pivot.totals[s.key] || 0
+                          const qty = pivot.rows.reduce((t, r) => t + (r.cells[s.key]?.qty || 0), 0)
+                          const live = count > 0
+                          const accent = s.key === 'supplier_factory' ? '#C2700A' : s.key === 'empty' ? '#0B3D2E' : '#12855A'
+                          return (
+                            <div
+                              key={s.key}
+                              className={cn(
+                                'flex min-w-[150px] flex-1 flex-col gap-2 rounded-[4px] border p-3.5',
+                                live ? 'border-[#D6E2D6] bg-white' : 'border-[#E4ECE3] bg-[#F7FAF6]'
+                              )}
+                              style={{ borderTop: `3px solid ${live ? accent : '#E4ECE3'}` }}
+                            >
+                              <div className="text-[10.5px] font-extrabold uppercase leading-[1.25] tracking-[.1em] text-[#33473E]">
+                                {s.label}
+                              </div>
+                              <div className="flex items-baseline gap-1.5">
+                                <span
+                                  className={cn('text-[30px] font-bold leading-none tracking-[-0.04em] tabular-nums', live ? 'text-[#0A1F17]' : 'text-[#C3D2C6]')}
+                                >
+                                  {count}
+                                </span>
+                                <span className="text-[11.5px] font-semibold text-[#7C9188]">
+                                  {count === 1 ? 'tanker' : 'tankers'}
+                                </span>
+                              </div>
+                              <div className={cn('text-[11.5px] font-semibold tabular-nums', live ? 'text-[#5A6B62]' : 'text-[#C3D2C6]')}>
+                                {qty > 0 ? `${formatNum(qty)} MT` : '— MT'}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <Table className="text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:h-9 [&_th]:px-3">
-                  <TableHeader className="bg-amber-50"><TableRow>
-                    <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Oil type</TableHead>
-                    {PIVOT_STAGES.map((s) => <TableHead key={s.key} className="text-center text-[10px] font-semibold uppercase tracking-wide text-amber-900">{s.label}</TableHead>)}
-                    <TableHead className="text-center text-[10px] font-semibold uppercase tracking-wide text-amber-900">Total</TableHead>
+                  {/* The handoff puts this matrix under a forest header with
+                      the Total column picked out in lime — the one column the
+                      eye should land on. */}
+                  <TableHeader className={cn('bg-amber-50', __WEB__ && '!bg-[#0B3D2E]')}><TableRow className={cn(__WEB__ && 'hover:!bg-[#0B3D2E]')}>
+                    <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!h-9 !text-[11px] !font-extrabold !tracking-[.1em] !text-[#DCEFE4]')}>Oil type</TableHead>
+                    {PIVOT_STAGES.map((s) => <TableHead key={s.key} className={cn('text-center text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!h-9 !text-[11px] !font-extrabold !tracking-[.1em] !text-[#DCEFE4]')}>{s.label}</TableHead>)}
+                    <TableHead className={cn('text-center text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!h-9 !text-[11px] !font-extrabold !tracking-[.1em] !text-[#C7F03F]')}>Total</TableHead>
                   </TableRow></TableHeader>
                   <TableBody>
                     {pivot.rows.length === 0 ? (
@@ -3308,7 +3618,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     ) : (
                       <>
                         {pivot.rows.map((row) => (
-                          <TableRow key={row.label}>
+                          <TableRow key={row.label} className={cn(__WEB__ && '[&>td]:!h-9 [&>td]:!py-1')}>
                             <TableCell className="font-medium">{row.label}</TableCell>
                             {PIVOT_STAGES.map((s) => {
                               const cell = row.cells[s.key]
@@ -3352,12 +3662,30 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                             <TableCell className="text-center font-semibold tabular-nums">{row.total}</TableCell>
                           </TableRow>
                         ))}
-                        <TableRow className="bg-muted/40">
-                          <TableCell className="font-semibold">Total</TableCell>
+                        <TableRow
+                          className={cn(
+                            'bg-muted/40',
+                            __WEB__ && '!border-t-2 !border-t-[#C7F03F] !bg-[#F1F5EF] hover:!bg-[#F1F5EF] [&>td]:!h-[42px] [&>td]:!text-[14px]'
+                          )}
+                        >
+                          <TableCell className={cn('font-semibold', __WEB__ && '!text-[13.5px] !font-extrabold')}>Total</TableCell>
                           {PIVOT_STAGES.map((s) => (
-                            <TableCell key={s.key} className="text-center font-semibold tabular-nums">{pivot.totals[s.key] || 0}</TableCell>
+                            <TableCell
+                              key={s.key}
+                              className={cn(
+                                'text-center font-semibold tabular-nums',
+                                // A zero is a fact, not a figure to read — it
+                                // steps back so the live counts carry the row.
+                                __WEB__ && '!font-bold',
+                                __WEB__ && !(pivot.totals[s.key] || 0) && '!text-[#8AA096]'
+                              )}
+                            >
+                              {pivot.totals[s.key] || 0}
+                            </TableCell>
                           ))}
-                          <TableCell className="text-center font-semibold tabular-nums">{pivot.grand}</TableCell>
+                          <TableCell className={cn('text-center font-semibold tabular-nums', __WEB__ && '!font-bold !text-[#0B3D2E]')}>
+                            {pivot.grand}
+                          </TableCell>
                         </TableRow>
                       </>
                     )}
@@ -3374,64 +3702,104 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   </Button>
                 </div>
               )}
-              <div className="overflow-hidden rounded-xl border bg-card">
+              <div className={cn('overflow-hidden rounded-xl border bg-card', __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !bg-white')}>
                 {/* This card + the "Loaded outside" one below it split the
                     SAME pivot total between them by loaded date — their two
                     badge counts always add up to the pivot's grand total,
                     never more. */}
                 {!pivotSel && (
-                  <div className="flex items-center gap-1.5 border-b bg-emerald-50 px-3 py-2">
-                    <CalendarDays className="h-3.5 w-3.5 text-emerald-600" />
-                    <span className="text-xs font-semibold text-emerald-800">
+                  <div
+                    {...groupToggleProps(tmInOpen, () => setTmInOpen((o) => !o))}
+                    className={cn(
+                      'flex items-center gap-1.5 border-b bg-emerald-50 px-3 py-2',
+                      // The handoff's group header: a coloured left edge, the
+                      // title, and the count as a chip. On the website the
+                      // whole band is the collapse toggle. Drawn well under
+                      // the handoff's 56px — it repeats twice down the page
+                      // and is a divider, not a heading anyone reads twice.
+                      __WEB__ && '!min-h-[38px] !gap-2 !border-l-4 !border-l-[#C7F03F] !border-b-[#0B3D2E] !bg-[#0B3D2E] !px-[18px] !py-1.5 !cursor-pointer !select-none hover:!bg-[#0F4A38]'
+                    )}
+                  >
+                    <CalendarDays className={cn('h-3.5 w-3.5 text-emerald-600', __WEB__ && '!h-4 !w-4 !text-[#C7F03F]')} />
+                    <span className={cn('text-xs font-semibold text-emerald-800', __WEB__ && '!text-[13.5px] !font-extrabold !tracking-[-0.01em] !text-white')}>
                       Loaded & received within {formatDate(pivotStart)} – {formatDate(pivotEnd)}
                     </span>
-                    <Badge variant="success" className="text-[10px]">{inLoadedRangeTankers.length}</Badge>
+                    <Badge
+                      variant="success"
+                      className={cn('text-[10px]', __WEB__ && '!rounded-[2px] !border-0 !bg-[#C7F03F]/20 !px-2 !py-0 !text-[11.5px] !font-extrabold !text-[#C7F03F]')}
+                    >
+                      {inLoadedRangeTankers.length}
+                    </Badge>
+                    <GroupChevron open={tmInOpen} tone="#8FBFA8" />
                   </div>
                 )}
-                <Table className="text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:h-9 [&_th]:px-3">
-                  {tankerTableHeader()}
-                  <TableBody>
-                    {loading ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
-                      : inLoadedRangeTankers.length === 0 ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">{tankers.length === 0 ? 'No tankers yet. Add the first loaded tanker.' : pivotSel ? 'No tankers match the selected cell.' : 'No tankers in this date range.'}</TableCell></TableRow>
-                        : tankerPaged.pageRows.map(renderTankerRow)}
-                  </TableBody>
-                </Table>
-                <Pagination {...tankerPaged} label="tankers" className="border-t px-3" />
+                {/* Forced open when a pivot cell is selected: that hides the
+                    band above, which is the only way back out of a collapse. */}
+                {(!__WEB__ || !!pivotSel || tmInOpen) && (
+                  <>
+                    <Table className="text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:h-9 [&_th]:px-3">
+                      {tankerTableHeader()}
+                      <TableBody>
+                        {loading ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+                          : inLoadedRangeTankers.length === 0 ? <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">{tankers.length === 0 ? 'No tankers yet. Add the first loaded tanker.' : pivotSel ? 'No tankers match the selected cell.' : 'No tankers in this date range.'}</TableCell></TableRow>
+                            : tankerPaged.pageRows.map(renderTankerRow)}
+                      </TableBody>
+                    </Table>
+                    <Pagination {...tankerPaged} label="tankers" className="border-t px-3" />
+                  </>
+                )}
               </div>
               {/* The rest of the SAME pivot-counted set — received in this
                   window, but loaded before/after it. Not a wider historical
                   query: card above + this card always total the pivot's own
                   grand total, no more. */}
               {outOfRangeTankers.length > 0 && (
-                <div className="overflow-hidden rounded-xl border bg-card">
-                  <div className="flex items-center gap-1.5 border-b bg-amber-50 px-3 py-2">
-                    <CalendarDays className="h-3.5 w-3.5 text-amber-600" />
-                    <span className="text-xs font-semibold text-amber-800">
+                <div className={cn('overflow-hidden rounded-xl border bg-card', __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !bg-white')}>
+                  <div
+                    {...groupToggleProps(tmOutOpen, () => setTmOutOpen((o) => !o))}
+                    className={cn(
+                      'flex items-center gap-1.5 border-b bg-amber-50 px-3 py-2',
+                      __WEB__ && '!min-h-[38px] !gap-2 !border-l-4 !border-l-[#C2700A] !border-b-[#0B3D2E] !bg-[#0B3D2E] !px-[18px] !py-1.5 !cursor-pointer !select-none hover:!bg-[#0F4A38]'
+                    )}
+                  >
+                    <CalendarDays className={cn('h-3.5 w-3.5 text-amber-600', __WEB__ && '!h-4 !w-4 !text-[#E9A23B]')} />
+                    <span className={cn('text-xs font-semibold text-amber-800', __WEB__ && '!text-[13.5px] !font-extrabold !tracking-[-0.01em] !text-white')}>
                       Loaded outside {formatDate(pivotStart)} – {formatDate(pivotEnd)}
                     </span>
-                    <Badge variant="warning" className="text-[10px]">{outOfRangeTankers.length}</Badge>
+                    <Badge
+                      variant="warning"
+                      className={cn('text-[10px]', __WEB__ && '!rounded-[2px] !border-0 !bg-[#E9A23B]/20 !px-2 !py-0 !text-[11.5px] !font-extrabold !text-[#F0C083]')}
+                    >
+                      {outOfRangeTankers.length}
+                    </Badge>
+                    <GroupChevron open={tmOutOpen} tone="#8FBFA8" />
                   </div>
-                  <Table className="text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:h-9 [&_th]:px-3">
-                    {tankerTableHeader()}
-                    <TableBody>{outOfRangePaged.pageRows.map(renderTankerRow)}</TableBody>
-                  </Table>
-                  <Pagination {...outOfRangePaged} label="tankers" className="border-t px-3" />
+                  {(!__WEB__ || tmOutOpen) && (
+                    <>
+                      <Table className="text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:h-9 [&_th]:px-3">
+                        {tankerTableHeader()}
+                        <TableBody>{outOfRangePaged.pageRows.map(renderTankerRow)}</TableBody>
+                      </Table>
+                      <Pagination {...outOfRangePaged} label="tankers" className="border-t px-3" />
+                    </>
+                  )}
                 </div>
               )}
             </TabsContent>
 
             <TabsContent value="purchases">
-              <div className="overflow-hidden rounded-xl border bg-card">
+              <div className={cn('overflow-hidden rounded-xl border bg-card', __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !bg-white')}>
                 <Table className="text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3">
                   {/* Dark fill on the THEAD, not the row — see Sales.tsx. */}
-                  <TableHeader className="bg-[#1a2c56] [&_th]:text-white"><TableRow className="border-b-2 border-[#1a2c56]/30">
+                  <TableHeader className={cn('bg-[#1a2c56] [&_th]:text-white', __WEB__ && '!bg-[#0B3D2E]')}><TableRow className={cn('border-b-2 border-[#1a2c56]/30', __WEB__ && '!border-b-0 hover:!bg-[#0B3D2E]')}>
                     {PO_COLUMNS.map((c) => (
                       <TableHead
                         key={c.key}
                         className={cn(
                           c.key === 'tanker_count' && 'text-center',
                           (c.key === 'ordered_qty' || c.key === 'net_amount') && 'text-right',
-                          c.key === 'shortage' && 'w-[130px]'
+                          c.key === 'shortage' && 'w-[130px]',
+                          __WEB__ && '!h-10 !text-[12.5px] !font-extrabold !tracking-[-0.01em]'
                         )}
                       >
                         <ColumnFilter
@@ -3444,29 +3812,36 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         />
                       </TableHead>
                     ))}
-                    <TableHead className="text-right">Actions</TableHead>
+                    <TableHead className={cn('text-right', __WEB__ && '!h-10 !text-[12.5px] !font-extrabold !tracking-[-0.01em]')}>Actions</TableHead>
                   </TableRow></TableHeader>
                   <TableBody>
                     {/* Totals for exactly the rows the filters left — sits under
                         the header so the figure is read before scrolling. */}
                     {!loading && filteredOrders.length > 0 && (
-                      <TableRow className="border-b-2 border-amber-400 bg-amber-50 hover:bg-amber-50">
-                        <TableCell className="font-semibold text-amber-900">
+                      <TableRow
+                        className={cn(
+                          'border-b-2 border-amber-400 bg-amber-50 hover:bg-amber-50',
+                          // Lime rule and a pale ground on the website: the
+                          // totals band the handoff puts under the header.
+                          __WEB__ && '!border-b-2 !border-b-[#C7F03F] !bg-[#F1F5EF] hover:!bg-[#F1F5EF] [&>td]:!h-[44px] [&>td]:!text-[13.5px] [&>td]:!text-[#0A1F17]'
+                        )}
+                      >
+                        <TableCell className={cn('font-semibold text-amber-900', __WEB__ && '!font-extrabold !text-[#0A1F17]')}>
                           Total
-                          <span className="ml-1.5 font-normal text-amber-800/70">
+                          <span className={cn('ml-1.5 font-normal text-amber-800/70', __WEB__ && '!font-semibold !text-[#5A6B62]')}>
                             ({filteredOrders.length} invoice{filteredOrders.length === 1 ? '' : 's'})
                           </span>
                         </TableCell>
                         <TableCell />
                         <TableCell />
                         <TableCell />
-                        <TableCell className="text-center font-semibold tabular-nums text-amber-900">
+                        <TableCell className={cn('text-center font-semibold tabular-nums text-amber-900', __WEB__ && '!font-bold !text-[#0A1F17]')}>
                           {filteredOrders.reduce((t, r) => t + (Number(r.tanker_count) || 0), 0)}
                         </TableCell>
-                        <TableCell className="text-right font-semibold tabular-nums text-amber-900">
+                        <TableCell className={cn('text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!font-bold !text-[#0A1F17]')}>
                           {formatNum(filteredOrders.reduce((t, r) => t + (Number(r.ordered_qty) || 0), 0))}
                         </TableCell>
-                        <TableCell className="text-right font-semibold tabular-nums text-amber-900">
+                        <TableCell className={cn('text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[14px] !font-bold !tracking-[-0.02em] !text-[#0A1F17]')}>
                           {formatINR(filteredOrders.reduce((t, r) => t + (Number(r.net_amount) || 0), 0))}
                         </TableCell>
                         <TableCell />
@@ -3476,10 +3851,21 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     )}
                     {loading ? <TableRow><TableCell colSpan={10} className="py-10 text-center text-muted-foreground">Loading…</TableCell></TableRow>
                       : filteredOrders.length === 0 ? <TableRow><TableCell colSpan={10} className="py-10 text-center text-muted-foreground">{rows.length ? 'No purchase entry matches these filters.' : 'No purchase entries yet.'}</TableCell></TableRow>
-                        : orderPaged.pageRows.map((row) => <TableRow key={row.id} className="hover:bg-amber-50">
+                        : orderPaged.pageRows.map((row) => <TableRow
+                          key={row.id}
+                          // Amber left edge on anything still in process, so the
+                          // open work is findable down a long page without
+                          // reading the Status column on every row.
+                          style={__WEB__ && row.status !== 'received' ? { borderLeft: '3px solid #C2700A' } : undefined}
+                          // The whole row opens the detail drawer. The Freight
+                          // and Actions cells stop the click themselves, so a
+                          // popover or the ⋮ menu still does its own thing.
+                          onClick={__WEB__ ? () => setDetailRow(row) : undefined}
+                          className={cn('hover:bg-amber-50', __WEB__ && '!cursor-pointer !border-b-[#EAF0E9] hover:!bg-[#F7FAF6] [&>td]:!py-2 [&>td]:!text-[13px]')}
+                        >
                           <TableCell>
-                            <div className="font-medium">{row.invoice_no}</div>
-                            <div className="text-[11px] text-muted-foreground">{formatDate(row.order_date)}</div>
+                            <div className={cn('font-medium', __WEB__ && '!text-[13.5px] !font-bold !tracking-[-0.01em]')}>{row.invoice_no}</div>
+                            <div className={cn('text-[11px] text-muted-foreground', __WEB__ && '!mt-0.5 !text-[11.5px] !font-medium !text-[#7C9188]')}>{formatDate(row.order_date)}</div>
                             {row._shownForReceipt && (
                               <div
                                 className="text-[10px] text-sky-600"
@@ -3489,12 +3875,26 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                               </div>
                             )}
                           </TableCell>
-                          <TableCell>{row.supplier_name}</TableCell>
-                          <TableCell className="uppercase text-muted-foreground">{row.product_category || '—'}</TableCell>
-                          <TableCell className="font-medium">{row.oil_code || row.oil_name || '—'}</TableCell>
-                          <TableCell className="text-center"><Badge variant="secondary">{row.tanker_count || 0}</Badge></TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNum(row.ordered_qty)} {row.uom}</TableCell>
-                          <TableCell className="text-right font-medium tabular-nums">{formatINR(row.net_amount)}</TableCell>
+                          <TableCell className={cn(__WEB__ && '!text-[13.5px] !font-bold')}>{row.supplier_name}</TableCell>
+                          <TableCell className={cn('uppercase text-muted-foreground', __WEB__ && '!text-inherit')}>
+                            {__WEB__ ? (
+                              <span className="rounded-[2px] bg-[#EAF0E9] px-2 py-1 text-[11.5px] font-extrabold uppercase tracking-[.05em] text-[#33473E]">
+                                {row.product_category || '—'}
+                              </span>
+                            ) : (row.product_category || '—')}
+                          </TableCell>
+                          <TableCell className={cn('font-medium', __WEB__ && '!text-[13.5px] !font-bold')}>{row.oil_code || row.oil_name || '—'}</TableCell>
+                          <TableCell className="text-center">
+                            {__WEB__ ? (
+                              <span className="inline-flex h-6 min-w-[30px] items-center justify-center rounded-[2px] border border-[#C3D2C6] px-1.5 text-[12.5px] font-bold tabular-nums">
+                                {row.tanker_count || 0}
+                              </span>
+                            ) : <Badge variant="secondary">{row.tanker_count || 0}</Badge>}
+                          </TableCell>
+                          <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[13.5px] !font-semibold')}>
+                            {formatNum(row.ordered_qty)} <span className={cn(__WEB__ && '!text-[11.5px] !font-medium !text-[#7C9188]')}>{row.uom}</span>
+                          </TableCell>
+                          <TableCell className={cn('text-right font-medium tabular-nums', __WEB__ && '!text-[13.5px] !font-bold !tracking-[-0.02em]')}>{formatINR(row.net_amount)}</TableCell>
                           <TableCell onClick={(e) => e.stopPropagation()}>
                             {(() => {
                               const f = poFreight(row)
@@ -3514,7 +3914,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                           ? 'bg-rose-100 text-rose-700 ring-1 ring-rose-300 hover:bg-rose-200'
                                           : label.startsWith('EX')
                                             ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
-                                            : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+                                            : 'bg-slate-200 text-slate-700 hover:bg-slate-300',
+                                        // Same chip shape as Category, with the
+                                        // debit-note and EX cases keeping their
+                                        // own colour — that distinction is the
+                                        // point of the column.
+                                        __WEB__ && '!rounded-[2px] !px-2 !py-1 !text-[11px] !font-extrabold !tracking-[.06em]',
+                                        __WEB__ && !due && !label.startsWith('EX') && '!bg-[#EAF0E9] !text-[#33473E] hover:!bg-[#DFE9DE]',
+                                        __WEB__ && !due && label.startsWith('EX') && '!bg-[#FFEDD0] !text-[#8A5300] hover:!bg-[#FBE2B8]'
                                       )}
                                     >
                                       {label}
@@ -3544,11 +3951,31 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                             })()}
                           </TableCell>
                           <TableCell>
-                            <Badge variant={row.status === 'received' ? 'success' : 'warning'}>
-                              {row.status === 'received' ? 'Completed' : 'In process'}
-                            </Badge>
+                            {__WEB__ ? (
+                              (() => {
+                                const done = row.status === 'received'
+                                const Icon = done ? CheckCircle2 : Clock
+                                return (
+                                  <span
+                                    className={cn(
+                                      'inline-flex items-center gap-1.5 rounded-[2px] border px-2.5 py-1 text-[12px] font-extrabold',
+                                      done
+                                        ? 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]'
+                                        : 'border-[#F0D9AE] bg-[#FFEDD0] text-[#8A5300]'
+                                    )}
+                                  >
+                                    <Icon className="h-3.5 w-3.5" />
+                                    {done ? 'Completed' : 'In process'}
+                                  </span>
+                                )
+                              })()
+                            ) : (
+                              <Badge variant={row.status === 'received' ? 'success' : 'warning'}>
+                                {row.status === 'received' ? 'Completed' : 'In process'}
+                              </Badge>
+                            )}
                           </TableCell>
-                          <TableCell><div className="flex justify-end">
+                          <TableCell onClick={(e) => e.stopPropagation()}><div className="flex justify-end">
                             <RowActions
                               actions={[
                                 { label: 'View details', icon: Eye, onClick: () => setDetailRow(row) },
@@ -3562,7 +3989,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         </TableRow>)}
                   </TableBody>
                 </Table>
-                <Pagination {...orderPaged} label="invoices" className="border-t px-3" />
+                <Pagination {...orderPaged} label="invoices" className={cn('border-t px-3', __WEB__ && '!border-t-[#EAF0E9] !px-[18px] !py-2.5')} />
               </div>
             </TabsContent>
 
@@ -4759,27 +5186,52 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             content's own preferred width), so the wide nowrap tanker table
             deep inside was pushing every ancestor open past the dialog's
             edge instead of triggering its own overflow-x-auto scrollbar. */}
-        <DialogContent className="max-h-[85vh] w-[calc(100vw-2rem)] max-w-4xl min-w-0 overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex flex-wrap items-center gap-2">
-              <span>Purchase {detailRow?.invoice_no}</span>
-              {detailRow && (
+        <DialogContent
+          className={cn(
+            'max-h-[85vh] w-[calc(100vw-2rem)] max-w-4xl min-w-0 overflow-y-auto',
+            // A right-hand drawer on the website rather than a centred box:
+            // the panel is a tall stack of cards, which reads better in a
+            // column against the edge than as a wide dialog floating over the
+            // register. Header and footer are pinned; only the middle scrolls.
+            __WEB__ &&
+              '!bottom-0 !left-auto !right-0 !top-0 !h-screen !max-h-screen !w-[660px] !max-w-[95vw] !translate-x-0 !translate-y-0 !grid-rows-[auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!right-5 [&>button]:!top-5 [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100'
+          )}
+        >
+          <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#0B3D2E] !px-[22px] !py-4 !text-left')}>
+            {__WEB__ && (
+              <div className="text-[12px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Purchase</div>
+            )}
+            <DialogTitle className={cn('flex flex-wrap items-center gap-2', __WEB__ && '!mt-1.5 !gap-2.5')}>
+              <span className={cn(__WEB__ && '!text-[22px] !font-bold !tracking-[-0.02em] !text-white')}>
+                {__WEB__ ? detailRow?.invoice_no : `Purchase ${detailRow?.invoice_no}`}
+              </span>
+              {detailRow && (__WEB__ ? (
+                <span
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-[3px] px-2.5 py-1 text-[11px] font-extrabold uppercase tracking-[.05em]',
+                    detailRow.status === 'received' ? 'bg-[#C7F03F] text-[#12280B]' : 'bg-[#FFEDD0] text-[#8A5300]'
+                  )}
+                >
+                  {detailRow.status === 'received' ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Clock className="h-3.5 w-3.5" />}
+                  {detailRow.status === 'received' ? 'Completed' : 'In process'}
+                </span>
+              ) : (
                 <Badge variant={detailRow.status === 'received' ? 'success' : 'warning'} className="text-[10px]">
                   {detailRow.status === 'received' ? 'Completed' : 'In process'}
                 </Badge>
-              )}
+              ))}
             </DialogTitle>
           </DialogHeader>
-          {detailRow && <div className="grid min-w-0 gap-3">
+          {detailRow && <div className={cn('grid min-w-0 gap-3', __WEB__ && '!min-h-0 !content-start !gap-3.5 !overflow-y-auto !px-[22px] !py-[18px]')}>
             {/* The bargain this invoice was drawn against, and everything
                 written against it. A note explaining why a bargain's quantity
                 moved is the reason the invoice looks the way it does, and it
                 used to be readable only from the bargain register. */}
             {!!bargainNotes?.length && (
-              <div className="rounded-xl border">
-                <div className="flex items-center gap-1.5 border-b bg-amber-50 px-3 py-2">
-                  <ScrollText className="h-3.5 w-3.5 text-amber-700" />
-                  <span className="text-xs font-semibold text-amber-900">
+              <div className={cn('rounded-xl border', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#D6E2D6] !border-l-4 !border-l-[#C2700A] !bg-white')}>
+                <div className={cn('flex items-center gap-1.5 border-b bg-amber-50 px-3 py-2', __WEB__ && '!gap-2 !border-b-[#F0E4CB] !bg-[#FFFBF2] !px-3.5 !py-2.5')}>
+                  <ScrollText className={cn('h-3.5 w-3.5 text-amber-700', __WEB__ && '!h-[18px] !w-[18px] !text-[#C2700A]')} />
+                  <span className={cn('text-xs font-semibold text-amber-900', __WEB__ && '!text-[11px] !font-extrabold !uppercase !tracking-[.12em] !text-[#8A5300]')}>
                     Bargain{bargainNotes.length > 1 ? 's' : ''} &amp; notes
                   </span>
                 </div>
@@ -4845,10 +5297,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               const carriers = poCarriers(detailRow)
               if (!carriers.length) return null
               return (
-                <div className="rounded-xl border">
-                  <div className="flex items-center gap-1.5 border-b bg-slate-50 px-3 py-2">
-                    <Truck className="h-3.5 w-3.5 text-slate-500" />
-                    <span className="text-xs font-semibold text-slate-700">Transporter</span>
+                <div className={cn('rounded-xl border', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#D6E2D6] !bg-white')}>
+                  <div className={cn('flex items-center gap-1.5 border-b bg-slate-50 px-3 py-2', __WEB__ && '!gap-2 !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-3.5 !py-2.5')}>
+                    <Truck className={cn('h-3.5 w-3.5 text-slate-500', __WEB__ && '!h-[18px] !w-[18px] !text-[#33473E]')} />
+                    <span className={cn('text-xs font-semibold text-slate-700', __WEB__ && '!text-[11px] !font-extrabold !uppercase !tracking-[.12em] !text-[#33473E]')}>Transporter</span>
                   </div>
                   <div className="divide-y">
                     {carriers.map((cr, i) => (
@@ -4873,7 +5325,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 </div>
               )
             })()}
-            <div className="grid grid-cols-3 gap-2">
+            <div className={cn('grid grid-cols-3 gap-2', __WEB__ && '!grid-cols-2 !gap-2.5')}>
               <InfoTile icon={Building2} label="Supplier" value={detailRow.supplier_name || '—'} />
               <InfoTile icon={CalendarDays} label="Purchase date" value={formatDate(detailRow.order_date)} />
               <InfoTile icon={Truck} label="Tankers" value={detailRow.tanker_nos || '—'} />
@@ -4889,11 +5341,16 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   it's named here rather than left to be inferred from it. */}
               <InfoTile icon={FileText} label="Condition" value={invoiceCondition(detailRow)} />
             </div>
-            <div className="flex items-center justify-between rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-500 px-4 py-3 text-white shadow-sm">
-              <span className="flex items-center gap-1.5 text-sm font-medium text-indigo-50">
-                <IndianRupee className="h-4 w-4" /> Net amount
+            <div
+              className={cn(
+                'flex items-center justify-between rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-500 px-4 py-3 text-white shadow-sm',
+                __WEB__ && '!rounded-[4px] !bg-[#C7F03F] !bg-none !px-[18px] !py-4 !text-[#12280B] !shadow-none'
+              )}
+            >
+              <span className={cn('flex items-center gap-1.5 text-sm font-medium text-indigo-50', __WEB__ && '!gap-2 !text-[12px] !font-extrabold !uppercase !tracking-[.1em] !text-[#2E4A0B]')}>
+                <IndianRupee className={cn('h-4 w-4', __WEB__ && '!h-5 !w-5')} /> Net amount
               </span>
-              <span className="text-lg font-bold tabular-nums">{formatINR(detailRow.net_amount)}</span>
+              <span className={cn('text-lg font-bold tabular-nums', __WEB__ && '!text-[24px] !font-bold !tracking-[-0.035em] !text-[#12280B]')}>{formatINR(detailRow.net_amount)}</span>
             </div>
             {detailRow.remarks && (
               <p className="rounded-lg bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
@@ -4930,6 +5387,166 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 { loaded: 0, rec: 0, shortage: 0, allowed: 0, deductibleValue: 0 }
               )
               const totDeductible = isEx && tot.shortage > tot.allowed ? tot.shortage - tot.allowed : null
+              // The website draws one card per tanker instead of the wide
+              // table: in a 660px drawer that table could only ever be a
+              // horizontal scroll, and the figures that matter — shortage
+              // against allowance — are a comparison, which reads better as a
+              // bar than as two columns the eye has to hop between.
+              if (__WEB__) {
+                return (
+                  <div className="min-w-0">
+                    <div className="mb-2 text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#7C9188]">
+                      Tanker-wise shortage
+                    </div>
+                    <div className="flex flex-col gap-2.5">
+                      {rows.map((r) => {
+                        const ex = condIsEx(r.t)
+                        // Two different questions, and they were being asked
+                        // as one. `exceeds` is arithmetic — did the shortage
+                        // pass the tolerance. `over` is money — does anyone
+                        // owe for it, which only happens on an EX bargain.
+                        // On DLD they diverge, and reading `deductible != null`
+                        // as "within tolerance" made a DLD tanker that WAS
+                        // over its allowance claim the opposite.
+                        const exceeds = r.shortage != null && r.shortage > r.allowedAmt + 1e-9
+                        const over = ex && exceeds
+                        // Nothing weighed yet leaves the bar empty rather than
+                        // full — an unmeasured tanker is not a perfect one.
+                        const pct =
+                          r.shortage == null ? 0 : r.allowedAmt > 0 ? Math.min(100, (r.shortage / r.allowedAmt) * 100) : r.shortage > 0 ? 100 : 0
+                        return (
+                          <div key={r.t.id as number} className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+                            <div className="flex items-center justify-between gap-3 border-b border-[#EAF0E9] px-3.5 py-3">
+                              <div className="min-w-0">
+                                <div className="text-[15px] font-bold">{r.t.tanker_no}</div>
+                                {r.t.transporter_name && (
+                                  <div className="mt-0.5 text-[12px] font-medium text-[#7C9188]">{r.t.transporter_name}</div>
+                                )}
+                                {r.t.gate_entry_no && (
+                                  <div className="mt-0.5 flex items-center gap-1.5 text-[12px] font-bold text-[#0B6B45]">
+                                    <CheckCircle2 className="h-3.5 w-3.5" /> Gate {r.t.gate_entry_no}
+                                  </div>
+                                )}
+                              </div>
+                              <span
+                                className={cn(
+                                  'shrink-0 rounded-[2px] px-2.5 py-1 text-[11px] font-extrabold tracking-[.06em]',
+                                  condIsEx(r.t) ? 'bg-[#FFEDD0] text-[#8A5300]' : 'bg-[#E3EEF5] text-[#255B7A]'
+                                )}
+                                title={
+                                  String(r.t.condition ?? '').trim()
+                                    ? 'Set on this tanker when it was sent to the supplier'
+                                    : `From the bargain (${r.t.bargain_no || 'its bargain'}) — not overridden on this tanker`
+                                }
+                              >
+                                {condIsEx(r.t) ? 'EX' : 'DLD'}
+                              </span>
+                            </div>
+                            {(r.t.loaded_date || r.t.empty_date) && (
+                              <div className="grid grid-cols-2 border-b border-[#EAF0E9]">
+                                <div className="border-r border-[#EAF0E9] px-3.5 py-2.5">
+                                  <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#7C9188]">Loaded</div>
+                                  <div className="mt-1 text-[13.5px] font-semibold tabular-nums">{r.t.loaded_date ? formatDate(r.t.loaded_date) : '—'}</div>
+                                </div>
+                                <div className="px-3.5 py-2.5">
+                                  <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#7C9188]">Received</div>
+                                  <div className="mt-1 text-[13.5px] font-semibold tabular-nums">{r.t.empty_date ? formatDate(r.t.empty_date) : '—'}</div>
+                                </div>
+                              </div>
+                            )}
+                            <div className="grid grid-cols-4 border-b border-[#EAF0E9]">
+                              {[
+                                { k: `Loaded ${detailRow.uom || 'MT'}`, v: formatNum(r.loaded), tone: '' },
+                                { k: 'Received', v: r.rec != null ? formatNum(r.rec) : '—', tone: '' },
+                                { k: 'Shortage', v: r.shortage != null ? formatNum(r.shortage) : '—', tone: over ? 'text-[#B3261E]' : '' },
+                                { k: 'Allowed', v: formatNum(r.allowedAmt), tone: 'text-[#5A6B62]' }
+                              ].map((c, i) => (
+                                <div key={c.k} className={cn('px-3 py-3', i < 3 && 'border-r border-[#EAF0E9]')}>
+                                  <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#7C9188]">{c.k}</div>
+                                  <div className={cn('mt-1 text-[15px] font-bold tabular-nums', c.tone)}>{c.v}</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="border-b border-[#EAF0E9] px-3.5 py-3">
+                              <div className="h-2 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                                <div
+                                  className={cn('h-full', over ? 'bg-[#B3261E]' : ex ? 'bg-[#12855A]' : 'bg-[#8AA096]')}
+                                  style={{ width: `${pct}%` }}
+                                />
+                              </div>
+                              {/* The tolerance verdict is an EX story: on a DLD
+                                  bargain the supplier delivers to our gate and
+                                  shortage is never charged back, so quoting an
+                                  allowance there implies a deduction that does
+                                  not exist either way it lands. */}
+                              <div
+                                className={cn(
+                                  'mt-2 flex items-center gap-1.5 rounded-[3px] border px-2.5 py-2 text-[12px] font-bold',
+                                  r.shortage == null || !ex
+                                    ? 'border-[#E4ECE3] bg-[#F7FAF6] text-[#5A6B62]'
+                                    : over
+                                      ? 'border-[#F0D6D4] bg-[#FDF3F2] text-[#B3261E]'
+                                      : 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]'
+                                )}
+                              >
+                                {r.shortage == null ? (
+                                  <><Clock className="h-4 w-4 shrink-0" /> Not weighed yet.</>
+                                ) : !ex ? (
+                                  <>
+                                    <Truck className="h-4 w-4 shrink-0" />
+                                    DLD — {formatNum(r.shortage)} {detailRow.uom || 'MT'} not charged to transporter
+                                  </>
+                                ) : over ? (
+                                  <><AlertTriangle className="h-4 w-4 shrink-0" /> Shortage {formatNum(r.shortage)} {detailRow.uom || 'MT'} exceeds the {formatNum(r.allowedAmt)} {detailRow.uom || 'MT'} allowance</>
+                                ) : (
+                                  <><CheckCircle2 className="h-4 w-4 shrink-0" /> Within the {formatNum(r.allowedAmt)} {detailRow.uom || 'MT'} allowance</>
+                                )}
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2">
+                              <div className="border-r border-[#EAF0E9] px-3.5 py-3">
+                                <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#7C9188]">Bargain rate</div>
+                                <div className="mt-1 text-[14px] font-bold tabular-nums">{formatINR(r.bargainRate)}</div>
+                                {r.extraQty > 0 && (
+                                  <div className="mt-1 text-[11.5px] font-medium text-[#7C9188]">
+                                    {formatNum(r.primaryQty)} @ {formatINR(r.primaryRate)} + {formatNum(r.extraQty)} @ {formatINR(r.extraRate)}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="px-3.5 py-3">
+                                <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#7C9188]">Invoice rate</div>
+                                <div className="mt-1 text-[14px] font-bold tabular-nums">{formatINR(invoiceRate)}</div>
+                              </div>
+                            </div>
+                            {r.deductible != null && (
+                              <div className="flex items-center justify-between gap-3 border-t border-[#F0D6D4] bg-[#FDF3F2] px-3.5 py-3">
+                                <span className="flex items-center gap-2 text-[12px] font-extrabold uppercase tracking-[.06em] text-[#B3261E]">
+                                  <MinusCircle className="h-[18px] w-[18px]" />
+                                  Deductible {formatNum(r.deductible)} {detailRow.uom || 'MT'}
+                                </span>
+                                <span className="text-[17px] font-bold tracking-[-0.02em] tabular-nums text-[#B3261E]">
+                                  {r.deductibleValue != null ? formatINR(r.deductibleValue) : '—'}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                    {isEx && totDeductible != null && rows.length > 1 && (
+                      <div className="mt-2.5 flex items-start gap-2.5 rounded-[4px] border border-[#F0D6D4] border-l-4 border-l-[#B3261E] bg-[#FDF3F2] px-3.5 py-3 text-[12.5px] font-semibold leading-relaxed text-[#8C2F26]">
+                        <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-[#B3261E]" />
+                        <div>
+                          <span className="font-extrabold">
+                            {formatNum(totDeductible)} {detailRow.uom || 'MT'} deductible across this invoice — {formatINR(tot.deductibleValue)}
+                          </span>{' '}
+                          — shortage beyond the allowed tolerance, valued at each tanker&apos;s own bargain rate; deduct from what&apos;s owed to the supplier.
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              }
               return (
                 <div className="min-w-0">
                   <div className="min-w-0 overflow-hidden rounded-xl border">
@@ -5063,6 +5680,34 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               )
             })()}
           </div>}
+          {/* Pinned footer. Three real actions the row menu already offers —
+              nothing new is invented here, this panel just puts them where
+              you end up after reading the invoice. */}
+          {__WEB__ && detailRow && (
+            <div className="flex gap-2.5 border-t border-[#D6E2D6] bg-white px-[22px] py-3.5">
+              <button
+                type="button"
+                onClick={() => { const r = detailRow; setDetailRow(null); openEditPurchase(r) }}
+                className="flex h-11 flex-1 items-center justify-center gap-2 rounded-[4px] border-[1.5px] border-[#0B3D2E] text-[13px] font-extrabold uppercase tracking-[.03em] text-[#0B3D2E] transition-colors hover:bg-[#EAF0E9]"
+              >
+                <Pencil className="h-[18px] w-[18px]" /> Edit
+              </button>
+              <button
+                type="button"
+                onClick={() => { const r = detailRow; setDetailRow(null); setGateOrder(r) }}
+                className="flex h-11 flex-1 items-center justify-center gap-2 rounded-[4px] border-[1.5px] border-[#0B3D2E] text-[13px] font-extrabold uppercase tracking-[.03em] text-[#0B3D2E] transition-colors hover:bg-[#EAF0E9]"
+              >
+                <DoorOpen className="h-[18px] w-[18px]" /> Gate entries
+              </button>
+              <button
+                type="button"
+                onClick={() => { const r = detailRow; setDetailRow(null); openHistory(r) }}
+                className="flex h-11 flex-[1.2] items-center justify-center gap-2 rounded-[4px] bg-[#0B3D2E] text-[13px] font-extrabold uppercase tracking-[.03em] text-[#C7F03F] transition-colors hover:bg-[#0F4A38]"
+              >
+                <History className="h-[18px] w-[18px]" /> History
+              </button>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

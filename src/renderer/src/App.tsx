@@ -29,6 +29,7 @@ import { Banks } from './pages/Banks'
 import { Brokers } from './pages/Brokers'
 import { Packaging } from './pages/Packaging'
 import { Approvals } from './pages/Approvals'
+import { Companies } from './pages/Companies'
 import { NotificationBell } from './components/NotificationBell'
 import { GlobalDateRangeDialog } from './components/GlobalDateRangeDialog'
 import { GlobalDateRangeProvider } from './lib/globalDateRange'
@@ -222,8 +223,19 @@ function App(): React.JSX.Element {
         setPeriodOpen(true)
       }
     }
+    // The same dialog, opened by clicking a page's period control instead of
+    // knowing the shortcut. A window event rather than threading a setter
+    // down through every page's props for the one page that needs it: the
+    // pages with their own From/To inputs never have to ask.
+    function onOpen(): void {
+      setPeriodOpen(true)
+    }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('open-period', onOpen)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('open-period', onOpen)
+    }
   }, [])
 
   // On launch, test the (auto-configured) connection. No internet → a friendly
@@ -504,6 +516,7 @@ function App(): React.JSX.Element {
         {view === 'banks' && <Banks />}
         {view === 'brokers' && <Brokers />}
         {view === 'packaging' && <Packaging />}
+        {view === 'companies' && <Companies />}
         {view === 'approvals' && <Approvals />}
         {view === 'settings' && <Settings user={user} />}
       </main>

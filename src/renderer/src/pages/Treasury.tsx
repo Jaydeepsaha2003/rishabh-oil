@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   AlertTriangle,
+  ArrowUpRight,
   Banknote,
   CalendarClock,
   CalendarRange,
@@ -19,6 +20,7 @@ import {
   Percent,
   Plus,
   RotateCcw,
+  SlidersHorizontal,
   Trash2,
   Users
 } from 'lucide-react'
@@ -53,6 +55,14 @@ type Row = Record<string, any>
 
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
 const round2 = (v: number): number => Math.round(v * 100) / 100
+
+// The six cells under the facility bar. Centred text is right when a cell
+// is a lone KPI tile; in a row of six it makes every figure start at a
+// different x, so they cannot be compared down the row. Left-aligned on the
+// website, and the label small caps over the money.
+const LIMIT_CELL = __WEB__ ? '!bg-white !px-3.5 !py-3 !text-left' : ''
+const LIMIT_K = __WEB__ ? '!text-[9px] !font-extrabold !tracking-[.12em] !text-[#5A6B62]' : ''
+const LIMIT_V = __WEB__ ? '!mt-1 !whitespace-nowrap !text-[14.5px] !font-bold !text-[#0A1F17]' : ''
 
 function daysTo(date: unknown): number | null {
   const s = String(date || '').slice(0, 10)
@@ -132,6 +142,54 @@ function StageBadge({ stage }: { stage: string }): React.JSX.Element {
 // carries a dotted BOTTOM divider, and `border-style` isn't a per-side
 // Tailwind utility — `border-dotted` there would flatten this left border's
 // style too, so it's pinned back to solid with an explicit arbitrary property.
+// The register's chrome on the website. Named because the header row, its
+// cells and the totals band have to agree, and a sticky header composites
+// each of its own cells over whatever is behind it — a translucent tint
+// there renders as a pale block, not as the header's colour.
+// The LC form's step cards on the website: a tinted title strip over a white
+// body, every control in them at one height. Named because the three sections
+// have to stay identical, and because the dialog sets the field size once for
+// all of them rather than each field carrying its own.
+const LC_DIALOG = __WEB__
+  ? '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none'
+  : ''
+const LC_SECTION_HEAD = __WEB__
+  ? '!mb-0 !gap-2 !border-b !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-4 !py-3 !text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#0A1F17]'
+  : ''
+const LC_FIELDS = __WEB__
+  ? '[&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.12em] [&_label]:!text-[#5A6B62] [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[13px] [&_input]:!font-semibold [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-11 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!text-[13.5px]'
+  : ''
+
+// A row of preview figures: hairline cells, label small caps over the money,
+// left-aligned so the column can be read downwards.
+// The four figures on an LC card. Same shape as the register's cells: label
+// in small caps over the money, so a card and a row read alike.
+const CARD_CELLS =
+  '!gap-2 [&>div]:!rounded-[4px] [&>div]:!px-3 [&>div]:!py-2.5 [&>div>div:first-child]:!text-[9px] [&>div>div:first-child]:!font-extrabold [&>div>div:first-child]:!uppercase [&>div>div:first-child]:!tracking-[.11em] [&>div>div:first-child]:!text-[#5A6B62] [&>div>div:last-child]:!mt-1 [&>div>div:last-child]:!whitespace-nowrap [&>div>div:last-child]:!text-[13px] [&>div>div:last-child]:!font-bold'
+
+const PREVIEW_CELLS =
+  '!gap-px !bg-[#E4ECE3] !text-left [&>div]:!bg-white [&>div]:!px-3.5 [&>div]:!py-3 [&>div>div:first-child]:!text-[9px] [&>div>div:first-child]:!font-extrabold [&>div>div:first-child]:!tracking-[.12em] [&>div>div:first-child]:!text-[#5A6B62] [&>div>div:last-child]:!mt-1 [&>div>div:last-child]:!whitespace-nowrap [&>div>div:last-child]:!text-[14.5px] [&>div>div:last-child]:!font-bold'
+
+const TRACKER_HEAD =
+  __WEB__
+    ? '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&>th]:!h-auto [&>th]:!bg-[#0B3D2E] [&>th]:!py-2.5 [&>th]:!text-[9.5px] [&>th]:!font-extrabold [&>th]:!tracking-[.13em] [&>th]:!text-white'
+    : ''
+const LC_HEAD =
+  __WEB__
+    ? '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&>th]:!h-auto [&>th]:!bg-[#0B3D2E] [&>th]:!py-2.5 [&>th]:!text-[9.5px] [&>th]:!font-extrabold [&>th]:!tracking-[.13em] [&>th]:!text-white [&_button]:!uppercase [&_button]:!tracking-[.13em] [&_button]:!text-white'
+    : ''
+const LC_TOTAL =
+  __WEB__
+    ? '!border-b-2 !border-b-[#C7F03F] !bg-[#EFF5EC] hover:!bg-[#EFF5EC] [&>td]:!py-3 [&>td]:!text-[#0A1F17]'
+    : ''
+
+// Stage colour on the left edge only, on the app's own palette.
+const STAGE_MARK_WEB: Record<string, string> = {
+  application: '!border-l-[#8FA79B]',
+  open: '!border-l-[#C2700A]',
+  payment_received: '!border-l-[#12855A]'
+}
+
 const STAGE_ROW_TONE: Record<string, { row: string; hover: string }> = {
   // Slate, matching the badge — the border and the chip are two readings of the
   // same fact and must not disagree.
@@ -1298,13 +1356,18 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   // Options come from the rows the other two column filters leave, so ticking
   // one column never removes a value another column is still offering.
   const colOptions = useMemo(() => {
+    // Counted as well as collected, so the filter panel can show how many LCs
+    // sit behind each value — the same walk already visits every row.
     const uniq = (rows: Row[], get: (l: Row) => string, label?: (v: string) => string) => {
-      const set = new Set<string>()
-      for (const r of rows) set.add(get(r))
-      return [...set]
+      const counts = new Map<string, number>()
+      for (const r of rows) {
+        const v = get(r)
+        counts.set(v, (counts.get(v) || 0) + 1)
+      }
+      return [...counts.keys()]
         .filter((v) => v !== '')
         .sort()
-        .map((v) => ({ value: v, label: label ? label(v) : v }))
+        .map((v) => ({ value: v, label: label ? label(v) : v, count: counts.get(v) || 0 }))
     }
     const byParty = (rows: Row[]) =>
       lcPartyCol.length ? rows.filter((l) => lcPartyCol.includes(String(l.supplier_name || ''))) : rows
@@ -1687,14 +1750,15 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   onClick={() => setExpandedAlert(a.key)}
                   className={cn(
                     'flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-bold uppercase tracking-wide transition-colors hover:brightness-95',
-                    a.tone
+                    a.tone,
+                    __WEB__ && '!h-[38px] !rounded-[3px] !px-3.5 !text-[12px] !font-extrabold !tracking-[.05em]'
                   )}
                 >
                   <a.icon className="h-3.5 w-3.5" /> {a.label}
                   <ChevronRight className="h-3.5 w-3.5 opacity-60" />
                 </button>
               ))}
-              {tabAlerts.length > 0 && tab === 'lc' && <div className="h-4 w-px bg-[#e5dfc8]" />}
+              {tabAlerts.length > 0 && tab === 'lc' && <div className={cn('h-4 w-px bg-[#e5dfc8]', __WEB__ && '!h-6 !bg-[#C3D2C6]')} />}
               {tab === 'lc' && (
                 <>
                     {/* One dropdown rather than four chips — they were mutually
@@ -1710,7 +1774,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           : undefined
                       }
                     >
-                      <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      <span className={cn('text-[10px] font-semibold uppercase tracking-wide text-muted-foreground', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.13em] !text-[#5A6B62]')}>
                         Due
                       </span>
                       <Select
@@ -1721,7 +1785,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         <SelectTrigger
                           className={cn(
                             'h-8 w-[9.5rem] text-[11px] font-semibold uppercase tracking-wide',
-                            lcDuePeriod !== 'all' && 'border-[#1a2c56] bg-[#1a2c56] text-white'
+                            lcDuePeriod !== 'all' && 'border-[#1a2c56] bg-[#1a2c56] text-white',
+                            __WEB__ && '!h-[38px] !w-[10.5rem] !rounded-[4px] !border-[#C3D2C6] !text-[12px] !font-bold !normal-case !tracking-normal',
+                            __WEB__ && lcDuePeriod !== 'all' && '!border-[#0B3D2E] !bg-[#0B3D2E] !text-white'
                           )}
                         >
                           <SelectValue />
@@ -1735,7 +1801,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         </SelectContent>
                       </Select>
                     </span>
-                    <div className="h-4 w-px bg-[#e5dfc8]" />
+                    <div className={cn('h-4 w-px bg-[#e5dfc8]', __WEB__ && '!h-6 !bg-[#C3D2C6]')} />
                     {(['manufacturing', 'trading'] as const).map((p) => (
                       <button
                         key={p}
@@ -1743,13 +1809,18 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         onClick={() => setLcPurposeFilter(lcPurposeFilter === p ? null : p)}
                         className={cn(
                           'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide capitalize transition-colors',
-                          lcPurposeFilter === p ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
+                          lcPurposeFilter === p ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50',
+                          __WEB__ && '!h-[38px] !rounded-[4px] !px-3.5 !text-[12px] !font-extrabold !tracking-[.04em]',
+                          __WEB__ &&
+                            (lcPurposeFilter === p
+                              ? '!border-[#0B3D2E] !bg-[#0B3D2E] !text-white'
+                              : '!border-[#C3D2C6] !bg-white !text-[#33473E] hover:!bg-[#F7FAF6]')
                         )}
                       >
                         {p}
                       </button>
                     ))}
-                    <div className="h-4 w-px bg-[#e5dfc8]" />
+                    <div className={cn('h-4 w-px bg-[#e5dfc8]', __WEB__ && '!h-6 !bg-[#C3D2C6]')} />
                     {(
                       [
                         // Named for what it now shows — a chip labelled "All" that
@@ -1771,18 +1842,35 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         }}
                         className={cn(
                           'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
-                          lcStatusFilter === p.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
+                          lcStatusFilter === p.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50',
+                          __WEB__ && '!h-[38px] !rounded-[4px] !px-3.5 !text-[12px] !font-extrabold !tracking-[.04em]',
+                          __WEB__ &&
+                            (lcStatusFilter === p.key
+                              ? '!border-[#0B3D2E] !bg-[#0B3D2E] !text-white'
+                              : '!border-[#C3D2C6] !bg-white !text-[#33473E] hover:!bg-[#F7FAF6]')
                         )}
                       >
                         {p.label}
                       </button>
                     ))}
-                    <div className="ml-auto flex gap-1 rounded-md border border-[#d9d2b8] bg-white p-0.5">
-                      <Button size="icon" variant={lcView === 'cards' ? 'default' : 'ghost'} className="h-7 w-7" title="Card view" onClick={() => setLcView('cards')}>
-                        <LayoutGrid className="h-3.5 w-3.5" />
+                    <div className={cn('ml-auto flex gap-1 rounded-md border border-[#d9d2b8] bg-white p-0.5', __WEB__ && '!gap-[3px] !rounded-[4px] !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px]')}>
+                      <Button
+                        size="icon"
+                        variant={lcView === 'cards' ? 'default' : 'ghost'}
+                        className={cn('h-7 w-7', __WEB__ && '!h-8 !w-8 !rounded-[2px]', __WEB__ && (lcView === 'cards' ? '!bg-[#0B3D2E] !text-white' : '!bg-transparent !text-[#5A6B62] hover:!bg-white/70'))}
+                        title="Card view"
+                        onClick={() => setLcView('cards')}
+                      >
+                        <LayoutGrid className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4')} />
                       </Button>
-                      <Button size="icon" variant={lcView === 'table' ? 'default' : 'ghost'} className="h-7 w-7" title="Table view" onClick={() => setLcView('table')}>
-                        <List className="h-3.5 w-3.5" />
+                      <Button
+                        size="icon"
+                        variant={lcView === 'table' ? 'default' : 'ghost'}
+                        className={cn('h-7 w-7', __WEB__ && '!h-8 !w-8 !rounded-[2px]', __WEB__ && (lcView === 'table' ? '!bg-[#0B3D2E] !text-white' : '!bg-transparent !text-[#5A6B62] hover:!bg-white/70'))}
+                        title="Table view"
+                        onClick={() => setLcView('table')}
+                      >
+                        <List className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4')} />
                       </Button>
                     </div>
                 </>
@@ -1791,19 +1879,50 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
           )}
 
           <TabsContent value="tracker" className="mt-4">
-            <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
-              <div className="flex flex-wrap items-center gap-2 rounded-t-md bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2 text-white shadow-sm">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/15"><CalendarClock className="h-3.5 w-3.5" /></span>
-                <span className="text-[13px] font-bold uppercase tracking-widest">Payment Tracker</span>
-                <span className="text-[11px] text-white/60">every LC bill and discounted bill, one due-date list</span>
-                <label className="ml-auto flex cursor-pointer items-center gap-1.5 text-[11px]">
-                  <input type="checkbox" className="h-3.5 w-3.5" checked={trackerShowSettled} onChange={(e) => setTrackerShowSettled(e.target.checked)} />
+            <div className={cn('rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#D6E2D6] !bg-white !shadow-none')}>
+              <div
+                className={cn(
+                  'flex flex-wrap items-center gap-2 rounded-t-md bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2 text-white shadow-sm',
+                  __WEB__ && '!gap-2.5 !rounded-none !border-b !border-b-[#E4ECE3] !bg-[#F7FAF6] !bg-none !px-4 !py-3 !text-[#0A1F17] !shadow-none'
+                )}
+              >
+                <span className={cn('flex h-6 w-6 items-center justify-center rounded-full bg-white/15', __WEB__ && '!h-7 !w-7 !rounded-[3px] !bg-[#EAF0E9]')}>
+                  <CalendarClock className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4 !text-[#0B3D2E]')} />
+                </span>
+                <span className={cn('text-[13px] font-bold uppercase tracking-widest', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.14em]')}>Payment Tracker</span>
+                <span className={cn('text-[11px] text-white/60', __WEB__ && '!text-[12px] !font-semibold !text-[#5A6B62]')}>every LC bill and discounted bill, one due-date list</span>
+                {/* How much is actually owed on this list. It is a due-date
+                    list of money and the only way to know the size of it was
+                    to add the rows up. Overdue is broken out because that is
+                    the half somebody has to act on today. */}
+                {__WEB__ && (() => {
+                  const live = tracker.filter((x) => !x.settled)
+                  if (live.length === 0) return null
+                  const due = live.reduce((a, x) => a + n(x.amount), 0)
+                  const late = live.filter((x) => x.overdue)
+                  const lateSum = late.reduce((a, x) => a + n(x.amount), 0)
+                  return (
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-[3px] border border-[#C3D2C6] bg-white px-2.5 py-1.5 text-[12px] font-bold tabular-nums text-[#0A1F17]">
+                        {live.length} outstanding · {formatINR(due)}
+                      </span>
+                      {late.length > 0 && (
+                        <span className="rounded-[3px] border border-[#F0D6D4] bg-[#FDF3F2] px-2.5 py-1.5 text-[12px] font-bold tabular-nums text-[#B3261E]">
+                          {late.length} overdue · {formatINR(lateSum)}
+                        </span>
+                      )}
+                    </span>
+                  )
+                })()}
+                <label className={cn('ml-auto flex cursor-pointer items-center gap-1.5 text-[11px]', __WEB__ && '!gap-2 !rounded-[3px] !border !border-[#C3D2C6] !bg-white !px-3 !py-2 !text-[12px] !font-bold !text-[#33473E]')}>
+                  <input type="checkbox" className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4 !accent-[#0B3D2E]')} checked={trackerShowSettled} onChange={(e) => setTrackerShowSettled(e.target.checked)} />
                   Show settled
                 </label>
               </div>
-              <Table className="text-[13px]">
+              <div className={cn(__WEB__ && 'overflow-x-auto')}>
+              <Table className={cn('text-[13px]', __WEB__ && '!min-w-[900px]')}>
                 <TableHeader>
-                  <TableRow className="bg-[#f1ecd9] hover:bg-[#f1ecd9]">
+                  <TableRow className={cn('bg-[#f1ecd9] hover:bg-[#f1ecd9]', TRACKER_HEAD)}>
                     <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Kind</TableHead>
                     <TableHead className="h-8 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Reference · party</TableHead>
                     <TableHead className="h-8 text-right text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Amount</TableHead>
@@ -1824,27 +1943,64 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       )
                     }
                     return rows.map((r) => (
-                      <TableRow key={`${r.kind}-${r.ref}-${r.due_date}-${r.amount}`} className="border-b border-dotted border-[#e5dfc8]">
+                      <TableRow
+                        key={`${r.kind}-${r.ref}-${r.due_date}-${r.amount}`}
+                        className={cn(
+                          'border-b border-dotted border-[#e5dfc8]',
+                          // A due-date list wants its state on the left edge:
+                          // overdue in red, settled in green, the rest neutral.
+                          // Scanning a Status column at the far right of the
+                          // row was the only way to find the late ones.
+                          __WEB__ && '!border-b-[#EAF0E9] !border-solid !border-l-[3px] hover:!bg-[#F7FAF6] [&>td]:!py-2.5',
+                          __WEB__ && (r.settled ? '!border-l-[#12855A]' : r.overdue ? '!border-l-[#B3261E] !bg-[#FDF3F2]' : '!border-l-[#C2700A]')
+                        )}
+                      >
                         <TableCell>
-                          <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase', r.kind === 'lc_bill' ? 'bg-sky-100 text-sky-800' : 'bg-indigo-100 text-indigo-800')}>
+                          <span
+                            className={cn(
+                              'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase',
+                              r.kind === 'lc_bill' ? 'bg-sky-100 text-sky-800' : 'bg-indigo-100 text-indigo-800',
+                              __WEB__ && '!whitespace-nowrap !rounded-[2px] !px-2 !py-1 !text-[10px] !font-extrabold !tracking-[.06em]',
+                              __WEB__ && (r.kind === 'lc_bill' ? '!bg-[#EAF0E9] !text-[#33473E]' : '!bg-[#EAF6EC] !text-[#0B6B45]')
+                            )}
+                          >
                             {r.kind_label}
                           </span>
                         </TableCell>
                         <TableCell>
-                          <div className="font-semibold">{r.ref} {r.party ? `· ${r.party}` : ''}</div>
-                          {r.detail && <div className="text-[11px] text-muted-foreground">{r.detail}</div>}
+                          <div className={cn('font-semibold', __WEB__ && '!text-[13px] !font-bold !text-[#0A1F17]')}>{r.ref} {r.party ? `· ${r.party}` : ''}</div>
+                          {r.detail && <div className={cn('text-[11px] text-muted-foreground', __WEB__ && '!mt-0.5 !text-[11.5px] !font-semibold !text-[#5A6B62]')}>{r.detail}</div>}
                         </TableCell>
-                        <TableCell className="text-right font-medium tabular-nums">{formatINR(r.amount)}</TableCell>
+                        <TableCell className={cn('text-right font-medium tabular-nums', __WEB__ && '!whitespace-nowrap !text-[13.5px] !font-bold')}>{formatINR(r.amount)}</TableCell>
                         <TableCell>
-                          <div className="tabular-nums">{r.due_date ? formatDate(r.due_date) : '—'}</div>
+                          <div className={cn('tabular-nums', __WEB__ && '!whitespace-nowrap !text-[13px] !font-bold')}>{r.due_date ? formatDate(r.due_date) : '—'}</div>
                           {!r.settled && r.days_left != null && (
-                            <div className={cn('text-[10px]', r.overdue ? 'font-semibold text-red-600' : 'text-muted-foreground')}>
+                            <div
+                              className={cn(
+                                'text-[10px]',
+                                r.overdue ? 'font-semibold text-red-600' : 'text-muted-foreground',
+                                __WEB__ && '!mt-0.5 !text-[11px] !font-bold',
+                                __WEB__ && (r.overdue ? '!text-[#B3261E]' : '!text-[#5A6B62]')
+                              )}
+                            >
                               {r.overdue ? `${Math.abs(r.days_left)}D overdue` : `${r.days_left}D left`}
                             </div>
                           )}
                         </TableCell>
                         <TableCell>
-                          <Badge variant={r.settled ? 'success' : r.overdue ? 'destructive' : 'warning'} className="uppercase">
+                          <Badge
+                            variant={r.settled ? 'success' : r.overdue ? 'destructive' : 'warning'}
+                            className={cn(
+                              'uppercase',
+                              __WEB__ && '!whitespace-nowrap !rounded-[2px] !border !px-2 !py-1 !text-[10px] !font-extrabold !tracking-[.06em]',
+                              __WEB__ &&
+                                (r.settled
+                                  ? '!border-[#BFE3CB] !bg-[#EAF6EC] !text-[#0B6B45]'
+                                  : r.overdue
+                                    ? '!border-[#F0D6D4] !bg-white !text-[#B3261E]'
+                                    : '!border-[#F0D9AE] !bg-[#FFFBF2] !text-[#8A5300]')
+                            )}
+                          >
                             {r.settled ? 'settled' : r.overdue ? 'overdue' : 'outstanding'}
                           </Badge>
                         </TableCell>
@@ -1853,22 +2009,34 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   })()}
                 </TableBody>
               </Table>
+              </div>
             </div>
           </TabsContent>
 
           <TabsContent value="lc" className="mt-4 space-y-3">
             {lcLimit && (
-              <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
-                <div className="flex items-center gap-2 rounded-t-md bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2 text-white shadow-sm">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/15"><Landmark className="h-3.5 w-3.5" /></span>
-                  <span className="text-[13px] font-bold uppercase tracking-widest">LC Facility Limit</span>
+              <div className={cn('rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#D6E2D6] !bg-white !shadow-none')}>
+                <div
+                  className={cn(
+                    'flex items-center gap-2 rounded-t-md bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2 text-white shadow-sm',
+                    __WEB__ &&
+                      '!flex-wrap !gap-2.5 !rounded-none !border-b !border-b-[#E4ECE3] !bg-[#F7FAF6] !bg-none !px-4 !py-3 !text-[#0A1F17] !shadow-none'
+                  )}
+                >
+                  <span className={cn('flex h-6 w-6 items-center justify-center rounded-full bg-white/15', __WEB__ && '!h-7 !w-7 !rounded-[3px] !bg-[#EAF0E9]')}>
+                    <Landmark className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4 !text-[#0B3D2E]')} />
+                  </span>
+                  <span className={cn('text-[13px] font-bold uppercase tracking-widest', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.14em]')}>LC Facility Limit</span>
                   {/* Counts only LCs still HOLDING limit — a preclosed one has
                       been wound up and no longer consumes the facility, so it
                       is out of Utilised/Available and out of this count too.
                       That's why this can read lower than the LC count in the
                       page header, which is every LC on record. */}
                   <span
-                    className="rounded-full bg-white/15 px-2.5 py-0.5 text-[13px] font-semibold tabular-nums"
+                    className={cn(
+                      'rounded-full bg-white/15 px-2.5 py-0.5 text-[13px] font-semibold tabular-nums',
+                      __WEB__ && '!rounded-[2px] !bg-[#EAF0E9] !px-2 !py-1 !text-[11px] !font-bold !text-[#33473E]'
+                    )}
                     title={
                       `${lcLimit.lc_count} LC${n(lcLimit.lc_count) === 1 ? '' : 's'} still holding limit` +
                       (n(lcs.length) > n(lcLimit.lc_count)
@@ -1884,33 +2052,117 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     from={lcKpiFrom}
                     to={lcKpiTo}
                     onChange={(f, t) => { setLcKpiFrom(f); setLcKpiTo(t) }}
-                    className="ml-auto h-7 border-white/30 bg-white/10 px-2 text-[11px] text-white hover:bg-white/20 hover:text-white"
+                    className={cn(
+                      'ml-auto h-7 border-white/30 bg-white/10 px-2 text-[11px] text-white hover:bg-white/20 hover:text-white',
+                      __WEB__ && '!h-[34px] !rounded-[3px] !border-[#C3D2C6] !bg-white !px-3 !text-[12px] !font-bold !text-[#0A1F17] hover:!bg-[#F7FAF6] hover:!text-[#0A1F17]'
+                    )}
                   />
                   <Button
                     size="sm"
                     variant="outline"
-                    className="h-7 border-white/30 bg-white/10 px-2 text-xs text-white hover:bg-white/20 hover:text-white"
+                    className={cn(
+                      'h-7 border-white/30 bg-white/10 px-2 text-xs text-white hover:bg-white/20 hover:text-white',
+                      __WEB__ && '!h-[34px] !gap-1.5 !rounded-[3px] !border-[#0B3D2E] !bg-white !px-3 !text-[12px] !font-extrabold !text-[#0B3D2E] hover:!bg-[#EAF0E9] hover:!text-[#0B3D2E]'
+                    )}
                     onClick={openLcLimit}
                   >
+                    {__WEB__ && <SlidersHorizontal className="h-4 w-4" />}
                     Edit limit
                   </Button>
                 </div>
-                <div className="grid grid-cols-2 gap-px bg-[#e5dfc8] p-px sm:grid-cols-3 lg:grid-cols-6">
-                  <div className="bg-[#fffdf4] px-3 py-2.5 text-center">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Fixed</div>
-                    <div className="text-[15px] font-bold tabular-nums text-[#1a2c56]">{formatINR(lcLimit.fixed_limit)}</div>
+                {/* How much of the facility is gone, said once and large.
+                    It was a line of 11px small caps under six equal cells —
+                    "Utilised X of Y" — so the single number that decides
+                    whether another LC can be opened at all was the quietest
+                    thing on the card. The bar is drawn forest against lime
+                    headroom, and a facility nearly gone says so in words. */}
+                {__WEB__ && (() => {
+                  const total = n(lcLimit.total_limit)
+                  const used = n(lcLimit.utilized)
+                  const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0
+                  const over = n(lcLimit.available) < 0
+                  const tight = !over && pct >= 90
+                  return (
+                    <div className="flex flex-wrap items-center gap-x-5 gap-y-4 px-4 py-4">
+                      <div className="min-w-[300px] flex-1">
+                        <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+                          <span className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">Utilised</span>
+                          <span className="whitespace-nowrap text-[23px] font-bold leading-none tracking-[-0.035em] tabular-nums">
+                            {formatINR(used)}
+                          </span>
+                          <span className="text-[12px] font-bold text-[#5A6B62]">of {formatINR(total)}</span>
+                        </div>
+                        <div className="mt-2.5 flex h-3 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                          <div className="h-full" style={{ width: `${pct}%`, background: over ? '#B3261E' : '#0B3D2E' }} />
+                          <div className="h-full flex-1" style={{ background: over ? '#F0D6D4' : '#C7F03F' }} />
+                        </div>
+                        {(over || tight) && (
+                          <div className="mt-2 flex items-center gap-2">
+                            <AlertTriangle className={cn('h-[17px] w-[17px] shrink-0', over ? 'text-[#B3261E]' : 'text-[#C2700A]')} />
+                            <span className={cn('text-[12px] font-bold', over ? 'text-[#8C2F26]' : 'text-[#8A5300]')}>
+                              {over
+                                ? `Over the facility by ${formatINR(Math.abs(n(lcLimit.available)))} — no headroom left.`
+                                : `${pct.toFixed(1)}% of the facility is drawn — ${formatINR(lcLimit.available)} headroom left.`}
+                            </span>
+                          </div>
+                        )}
+                        {(lcLimit.period_from || lcLimit.period_to) && (
+                          <div className="mt-2 text-[11.5px] font-semibold text-[#5A6B62]">
+                            LCs opened {formatDate(lcLimit.period_from)} to {formatDate(lcLimit.period_to)}
+                          </div>
+                        )}
+                      </div>
+                      <div
+                        className={cn(
+                          'min-w-[200px] rounded-[4px] border border-l-4 px-4 py-3',
+                          over ? 'border-[#F0D6D4] border-l-[#B3261E] bg-[#FDF3F2]' : 'border-[#BFE3CB] border-l-[#12855A] bg-[#F4FBF6]'
+                        )}
+                      >
+                        <div className={cn('text-[9.5px] font-extrabold uppercase tracking-[.13em]', over ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}>
+                          Available
+                        </div>
+                        <div
+                          className={cn(
+                            'mt-1 whitespace-nowrap text-[21px] font-bold leading-none tracking-[-0.035em] tabular-nums',
+                            over ? 'text-[#B3261E]' : 'text-[#0B6B45]'
+                          )}
+                        >
+                          {formatINR(lcLimit.available)}
+                        </div>
+                      </div>
+                      {lcStageFilter && (
+                        <button
+                          type="button"
+                          onClick={() => setLcStageFilter(null)}
+                          className="h-9 shrink-0 rounded-[3px] border border-[#C3D2C6] bg-white px-3 text-[12px] font-extrabold uppercase tracking-[.04em] text-[#33473E] transition-colors hover:bg-[#F7FAF6]"
+                        >
+                          Clear stage filter
+                        </button>
+                      )}
+                    </div>
+                  )
+                })()}
+                <div
+                  className={cn(
+                    'grid grid-cols-2 gap-px bg-[#e5dfc8] p-px sm:grid-cols-3 lg:grid-cols-6',
+                    __WEB__ && '!gap-px !border-t !border-t-[#E4ECE3] !bg-[#E4ECE3] !p-0'
+                  )}
+                >
+                  <div className={cn('bg-[#fffdf4] px-3 py-2.5 text-center', LIMIT_CELL)}>
+                    <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-muted-foreground', LIMIT_K)}>Fixed</div>
+                    <div className={cn('text-[15px] font-bold tabular-nums text-[#1a2c56]', LIMIT_V)}>{formatINR(lcLimit.fixed_limit)}</div>
                   </div>
-                  <div className="bg-[#fffdf4] px-3 py-2.5 text-center">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <div className={cn('bg-[#fffdf4] px-3 py-2.5 text-center', LIMIT_CELL)}>
+                    <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-muted-foreground', LIMIT_K)}>
                       Convertible {!lcLimit.convertible_enabled && <span className="text-muted-foreground/60">(off)</span>}
                     </div>
-                    <div className={cn('text-[15px] font-bold tabular-nums', lcLimit.convertible_enabled ? 'text-[#1a2c56]' : 'text-muted-foreground/50 line-through')}>
+                    <div className={cn('text-[15px] font-bold tabular-nums', lcLimit.convertible_enabled ? 'text-[#1a2c56]' : 'text-muted-foreground/50 line-through', LIMIT_V, !lcLimit.convertible_enabled && __WEB__ && '!text-[#8FA79B]')}>
                       {formatINR(lcLimit.convertible_limit)}
                     </div>
                   </div>
-                  <div className="bg-[#1a2c56] px-3 py-2.5 text-center">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-white/70">Total LC Limit</div>
-                    <div className="text-[15px] font-bold tabular-nums text-white">{formatINR(lcLimit.total_limit)}</div>
+                  <div className={cn('bg-[#1a2c56] px-3 py-2.5 text-center', LIMIT_CELL, __WEB__ && '!bg-[#0B3D2E]')}>
+                    <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-white/70', LIMIT_K, __WEB__ && '!text-[#8FBFA8]')}>Total LC Limit</div>
+                    <div className={cn('text-[15px] font-bold tabular-nums text-white', LIMIT_V, __WEB__ && '!text-[#C7F03F]')}>{formatINR(lcLimit.total_limit)}</div>
                   </div>
                   <button
                     type="button"
@@ -1918,11 +2170,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     title="Click to filter the list below to Application-stage LCs"
                     className={cn(
                       'bg-amber-50 px-3 py-2.5 text-center transition-colors hover:bg-amber-100',
-                      lcStageFilter === 'application' && 'ring-2 ring-inset ring-amber-600'
+                      lcStageFilter === 'application' && 'ring-2 ring-inset ring-amber-600',
+                      LIMIT_CELL,
+                      __WEB__ && '!bg-[#FFFBF2] hover:!bg-[#FFEDD0]',
+                      __WEB__ && lcStageFilter === 'application' && '!ring-2 !ring-inset !ring-[#C2700A]'
                     )}
                   >
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-800">Application</div>
-                    <div className="text-[15px] font-bold tabular-nums text-amber-900">{formatINR(lcLimit.application)}</div>
+                    <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-800', LIMIT_K, __WEB__ && '!text-[#8A5300]')}>Application</div>
+                    <div className={cn('text-[15px] font-bold tabular-nums text-amber-900', LIMIT_V, __WEB__ && '!text-[#8A5300]')}>{formatINR(lcLimit.application)}</div>
                   </button>
                   <button
                     type="button"
@@ -1930,11 +2185,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     title="Click to filter the list below to Open-stage LCs"
                     className={cn(
                       'bg-sky-50 px-3 py-2.5 text-center transition-colors hover:bg-sky-100',
-                      lcStageFilter === 'open' && 'ring-2 ring-inset ring-sky-600'
+                      lcStageFilter === 'open' && 'ring-2 ring-inset ring-sky-600',
+                      LIMIT_CELL,
+                      __WEB__ && '!bg-[#F1F5EF] hover:!bg-[#EAF0E9]',
+                      __WEB__ && lcStageFilter === 'open' && '!ring-2 !ring-inset !ring-[#0B3D2E]'
                     )}
                   >
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-sky-800">Open</div>
-                    <div className="text-[15px] font-bold tabular-nums text-sky-900">{formatINR(lcLimit.open)}</div>
+                    <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-sky-800', LIMIT_K, __WEB__ && '!text-[#33473E]')}>Open</div>
+                    <div className={cn('text-[15px] font-bold tabular-nums text-sky-900', LIMIT_V, __WEB__ && '!text-[#0A1F17]')}>{formatINR(lcLimit.open)}</div>
                   </button>
                   <button
                     type="button"
@@ -1942,14 +2200,17 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     title="Click to filter the list below to Payment received-stage LCs"
                     className={cn(
                       'bg-emerald-50 px-3 py-2.5 text-center transition-colors hover:bg-emerald-100',
-                      lcStageFilter === 'payment_received' && 'ring-2 ring-inset ring-emerald-600'
+                      lcStageFilter === 'payment_received' && 'ring-2 ring-inset ring-emerald-600',
+                      LIMIT_CELL,
+                      __WEB__ && '!bg-[#F4FBF6] hover:!bg-[#EAF6EC]',
+                      __WEB__ && lcStageFilter === 'payment_received' && '!ring-2 !ring-inset !ring-[#12855A]'
                     )}
                   >
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800">Payment received</div>
-                    <div className="text-[15px] font-bold tabular-nums text-emerald-900">{formatINR(lcLimit.payment_received)}</div>
+                    <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-emerald-800', LIMIT_K, __WEB__ && '!text-[#0B6B45]')}>Payment received</div>
+                    <div className={cn('text-[15px] font-bold tabular-nums text-emerald-900', LIMIT_V, __WEB__ && '!text-[#0B6B45]')}>{formatINR(lcLimit.payment_received)}</div>
                   </button>
                 </div>
-                <div className="flex items-center justify-between gap-3 border-t border-dashed border-[#e5dfc8] px-4 py-2.5">
+                <div className={cn('flex items-center justify-between gap-3 border-t border-dashed border-[#e5dfc8] px-4 py-2.5', __WEB__ && '!hidden')}>
                   <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     Utilised {formatINR(lcLimit.utilized)} of {formatINR(lcLimit.total_limit)}
                     {(lcLimit.period_from || lcLimit.period_to) && (
@@ -1976,24 +2237,45 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
 
             {lcView === 'cards' ? (
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                <Card className="flex items-center justify-center border-dashed p-6">
-                  <Button className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application', our_bank_id: activeBank || '' })}>
+                <Card className={cn('flex items-center justify-center border-dashed p-6', __WEB__ && '!rounded-[4px] !border-[#A9BFB2] !bg-white !shadow-none')}>
+                  <Button
+                    className={cn(
+                      'bg-[#1a2c56] hover:bg-[#24407e]',
+                      __WEB__ && '!h-12 !gap-2.5 !rounded-[4px] !bg-[#0B3D2E] !px-5 !text-[13px] !font-extrabold !uppercase !tracking-[.04em] !text-[#C7F03F] hover:!bg-[#0F4A38]'
+                    )}
+                    onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application', our_bank_id: activeBank || '' })}
+                  >
                     <Plus className="h-4 w-4" /> Open new LC
                   </Button>
                 </Card>
                 {lcsFiltered.length === 0 ? (
-                  <Card className="p-6 text-center text-sm text-muted-foreground md:col-span-2 xl:col-span-2">Nothing in this due-period bucket.</Card>
+                  <Card className={cn('p-6 text-center text-sm text-muted-foreground md:col-span-2 xl:col-span-2', __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !bg-white !text-[13px] !font-semibold !text-[#5A6B62] !shadow-none')}>Nothing in this due-period bucket.</Card>
                 ) : (
                   lcsFiltered.map((l) => {
                     const pct = n(l.amount) > 0 ? Math.min(100, (n(l.utilized) / n(l.amount)) * 100) : 0
-                    const barTone = pct >= 95 ? 'bg-rose-500' : pct >= 75 ? 'bg-amber-500' : 'bg-sky-600'
+                    const barTone = __WEB__
+                      ? pct >= 95
+                        ? 'bg-[#B3261E]'
+                        : pct >= 75
+                          ? 'bg-[#C2700A]'
+                          : 'bg-[#0B3D2E]'
+                      : pct >= 95
+                        ? 'bg-rose-500'
+                        : pct >= 75
+                          ? 'bg-amber-500'
+                          : 'bg-sky-600'
                     const tone = STAGE_ROW_TONE[String(l.stage || 'application')] || STAGE_ROW_TONE.application
                     return (
                       <Card
                         key={String(l.id)}
-                        className={cn('flex flex-col gap-3 overflow-hidden border-l-4 p-0 [border-left-style:solid]', tone.row)}
+                        className={cn(
+                          'flex flex-col gap-3 overflow-hidden border-l-4 p-0 [border-left-style:solid]',
+                          tone.row,
+                          __WEB__ && '!gap-0 !rounded-[4px] !border-[#D6E2D6] !border-l-[4px] !bg-white !shadow-none',
+                          __WEB__ && (STAGE_MARK_WEB[String(l.stage || 'application')] || STAGE_MARK_WEB.application)
+                        )}
                       >
-                        <div className="flex flex-col gap-3 p-4 pb-0">
+                        <div className={cn('flex flex-col gap-3 p-4 pb-0', __WEB__ && '!gap-3 !p-4')}>
                           <div className="flex items-start justify-between gap-2">
                             <div>
                               <div className="flex flex-wrap items-center gap-1.5">
@@ -2020,26 +2302,49 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               )}
                             </div>
                           </div>
-                          <div className="rounded-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-3 text-center shadow-sm">
-                            <div className="text-[10px] font-semibold uppercase tracking-widest text-white/60">LC amount</div>
-                            <div className="text-2xl font-bold tabular-nums text-white">{formatINR(l.amount)}</div>
+                          <div className={cn('rounded-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-3 text-center shadow-sm', __WEB__ && '!rounded-[4px] !bg-[#0B3D2E] !bg-none !px-4 !py-3.5 !text-left !shadow-none')}>
+                            <div className={cn('text-[10px] font-semibold uppercase tracking-widest text-white/60', __WEB__ && '!text-[9.5px] !font-extrabold !tracking-[.13em] !text-[#8FBFA8]')}>LC amount</div>
+                            <div className={cn('text-2xl font-bold tabular-nums text-white', __WEB__ && '!mt-1 !text-[23px] !leading-none !tracking-[-0.035em]')}>{formatINR(l.amount)}</div>
                           </div>
-                          <div className="grid grid-cols-2 gap-2 text-[11px]">
-                            <div className="rounded-md border border-[#e5dfc8] bg-white px-2.5 py-1.5">
+                          {/* Four figures on the app's own colours, and every
+                              label small caps over the money so the pairs read
+                              alike. Available and Outstanding only take a tint
+                              when there is something to say — a zero balance
+                              tinted green claims a state it has not reached. */}
+                          <div className={cn('grid grid-cols-2 gap-2 text-[11px]', __WEB__ && CARD_CELLS)}>
+                            <div className={cn('rounded-md border border-[#e5dfc8] bg-white px-2.5 py-1.5', __WEB__ && '!border-[#E4ECE3] !bg-[#F7FAF6]')}>
                               <div className="text-muted-foreground">Utilised</div>
-                              <div className="font-semibold tabular-nums text-[#1a2c56]">{formatINR(l.utilized)}</div>
+                              <div className={cn('font-semibold tabular-nums text-[#1a2c56]', __WEB__ && '!text-[#0A1F17]')}>{formatINR(l.utilized)}</div>
                             </div>
-                            <div className={cn('rounded-md border px-2.5 py-1.5', n(l.available) <= 0 ? 'border-rose-200 bg-rose-50' : 'border-emerald-200 bg-emerald-50')}>
+                            <div
+                              className={cn(
+                                'rounded-md border px-2.5 py-1.5',
+                                n(l.available) <= 0 ? 'border-rose-200 bg-rose-50' : 'border-emerald-200 bg-emerald-50',
+                                __WEB__ && (n(l.available) <= 0 ? '!border-[#F0D6D4] !bg-[#FDF3F2]' : '!border-[#BFE3CB] !bg-[#F4FBF6]')
+                              )}
+                            >
                               <div className="text-muted-foreground">Available</div>
-                              <div className={cn('font-semibold tabular-nums', n(l.available) <= 0 ? 'text-rose-600' : 'text-emerald-700')}>{formatINR(l.available)}</div>
+                              <div className={cn('font-semibold tabular-nums', n(l.available) <= 0 ? 'text-rose-600' : 'text-emerald-700', __WEB__ && (n(l.available) <= 0 ? '!text-[#B3261E]' : '!text-[#0B6B45]'))}>{formatINR(l.available)}</div>
                             </div>
-                            <div className={cn('rounded-md border px-2.5 py-1.5', n(l.repaid) > 0 ? 'border-emerald-200 bg-emerald-50' : 'border-[#e5dfc8] bg-white')}>
+                            <div
+                              className={cn(
+                                'rounded-md border px-2.5 py-1.5',
+                                n(l.repaid) > 0 ? 'border-emerald-200 bg-emerald-50' : 'border-[#e5dfc8] bg-white',
+                                __WEB__ && (n(l.repaid) > 0 ? '!border-[#BFE3CB] !bg-[#F4FBF6]' : '!border-[#E4ECE3] !bg-[#F7FAF6]')
+                              )}
+                            >
                               <div className="text-muted-foreground">Repaid</div>
-                              <div className={cn('font-semibold tabular-nums', n(l.repaid) > 0 ? 'text-emerald-700' : 'text-[#1a2c56]')}>{formatINR(l.repaid)}</div>
+                              <div className={cn('font-semibold tabular-nums', n(l.repaid) > 0 ? 'text-emerald-700' : 'text-[#1a2c56]', __WEB__ && (n(l.repaid) > 0 ? '!text-[#0B6B45]' : '!text-[#8FA79B]'))}>{formatINR(l.repaid)}</div>
                             </div>
-                            <div className={cn('rounded-md border px-2.5 py-1.5', n(l.outstanding) > 0 ? 'border-amber-200 bg-amber-50' : 'border-[#e5dfc8] bg-white')}>
+                            <div
+                              className={cn(
+                                'rounded-md border px-2.5 py-1.5',
+                                n(l.outstanding) > 0 ? 'border-amber-200 bg-amber-50' : 'border-[#e5dfc8] bg-white',
+                                __WEB__ && (n(l.outstanding) > 0 ? '!border-[#F0D9AE] !bg-[#FFFBF2]' : '!border-[#E4ECE3] !bg-[#F7FAF6]')
+                              )}
+                            >
                               <div className="text-muted-foreground">Outstanding</div>
-                              <div className={cn('font-semibold tabular-nums', n(l.outstanding) > 0 ? 'text-amber-800' : 'text-[#1a2c56]')}>{formatINR(l.outstanding)}</div>
+                              <div className={cn('font-semibold tabular-nums', n(l.outstanding) > 0 ? 'text-amber-800' : 'text-[#1a2c56]', __WEB__ && (n(l.outstanding) > 0 ? '!text-[#8A5300]' : '!text-[#8FA79B]'))}>{formatINR(l.outstanding)}</div>
                             </div>
                           </div>
                           <div>
@@ -2047,8 +2352,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               <span>Utilisation</span>
                               <span className="tabular-nums">{pct.toFixed(0)}%</span>
                             </div>
-                            <div className="h-2.5 overflow-hidden rounded-full bg-muted">
-                              <div className={cn('h-2.5 rounded-full transition-all', barTone)} style={{ width: `${pct}%` }} />
+                            <div className={cn('h-2.5 overflow-hidden rounded-full bg-muted', __WEB__ && '!h-3 !rounded-[2px] !bg-[#EAF0E9]')}>
+                              <div className={cn('h-2.5 rounded-full transition-all', barTone, __WEB__ && '!h-full !rounded-none')} style={{ width: `${pct}%` }} />
                             </div>
                           </div>
                           <div className="flex items-center justify-between text-[11px] text-muted-foreground">
@@ -2061,23 +2366,32 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             )}
                           </div>
                         </div>
-                        <div className="flex flex-wrap gap-1.5 border-t border-dashed border-[#e5dfc8] px-4 py-3">
+                        <div className={cn('flex flex-wrap gap-1.5 border-t border-dashed border-[#e5dfc8] px-4 py-3', __WEB__ && '!mt-auto !gap-2 !border-t-[#EAF0E9] !border-solid !bg-[#F7FAF6] !px-4 !py-3')}>
                           {(() => {
                             const next = nextLcStage(String(l.stage || 'application'))
                             if (!next) return null
                             return (
-                              <Button size="sm" className="h-7 bg-[#1a2c56] px-2 text-xs hover:bg-[#24407e]" onClick={() => openStageAdvance(l)}>
+                              <Button
+                                size="sm"
+                                className={cn('h-7 bg-[#1a2c56] px-2 text-xs hover:bg-[#24407e]', __WEB__ && '!h-9 !rounded-[3px] !bg-[#0B3D2E] !px-3 !text-[12px] !font-extrabold !text-[#C7F03F] hover:!bg-[#0F4A38]')}
+                                onClick={() => openStageAdvance(l)}
+                              >
                                 Mark {STAGE_LABEL[next]}
                               </Button>
                             )
                           })()}
-                          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => void openLcDetail(Number(l.id))}>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className={cn('h-7 px-2 text-xs', __WEB__ && '!h-9 !rounded-[3px] !border-[#C3D2C6] !bg-white !px-3 !text-[12px] !font-bold !text-[#33473E] hover:!bg-[#EAF0E9]')}
+                            onClick={() => void openLcDetail(Number(l.id))}
+                          >
                             <ChevronRight className="h-3.5 w-3.5" /> Details
                           </Button>
                           {canMarkPaymentIn(l) && (
                             <Button
                               size="sm"
-                              className="h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700"
+                              className={cn('h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700', __WEB__ && '!h-9 !rounded-[3px] !bg-[#0B6B45] !px-3 !text-[12px] !font-extrabold hover:!bg-[#0A5D3C]')}
                               title="Record the customer's payment for the resale — independent of whether the bank side has been preclosed yet"
                               onClick={() => void openPaymentIn(l)}
                             >
@@ -2088,7 +2402,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <Button
                               size="sm"
                               variant="outline"
-                              className="h-7 px-2 text-xs"
+                              className={cn('h-7 px-2 text-xs', __WEB__ && '!h-9 !rounded-[3px] !border-[#C3D2C6] !bg-white !px-3 !text-[12px] !font-bold !text-[#33473E] hover:!bg-[#EAF0E9]')}
                               title={isLcPastMaturity(l) ? 'Repay this LC now that it has matured' : 'Wind this LC up before its natural maturity'}
                               onClick={() => openPreclose(l)}
                             >
@@ -2114,14 +2428,24 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 )}
               </div>
             ) : (
-            <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
-              <div className="flex items-center gap-2 rounded-t-md bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2 text-white shadow-sm">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/15"><Banknote className="h-3.5 w-3.5" /></span>
-                <span className="text-[13px] font-bold uppercase tracking-widest">Letters of Credit</span>
+            <div className={cn('rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#D6E2D6] !bg-white !shadow-none')}>
+              <div
+                className={cn(
+                  'flex items-center gap-2 rounded-t-md bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2 text-white shadow-sm',
+                  __WEB__ && '!flex-wrap !gap-2.5 !rounded-none !border-b !border-b-[#E4ECE3] !bg-[#F7FAF6] !bg-none !px-4 !py-3 !text-[#0A1F17] !shadow-none'
+                )}
+              >
+                <span className={cn('flex h-6 w-6 items-center justify-center rounded-full bg-white/15', __WEB__ && '!h-7 !w-7 !rounded-[3px] !bg-[#EAF0E9]')}>
+                  <Banknote className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4 !text-[#0B3D2E]')} />
+                </span>
+                <span className={cn('text-[13px] font-bold uppercase tracking-widest', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.14em]')}>Letters of Credit</span>
                 <Button
                   size="sm"
                   variant="outline"
-                  className="ml-auto gap-1.5 border-white/30 bg-white/10 text-white hover:bg-white/20 hover:text-white"
+                  className={cn(
+                    'ml-auto gap-1.5 border-white/30 bg-white/10 text-white hover:bg-white/20 hover:text-white',
+                    __WEB__ && '!h-[34px] !rounded-[3px] !border-[#C3D2C6] !bg-white !px-3 !text-[12px] !font-bold !text-[#0A1F17] hover:!bg-[#F7FAF6] hover:!text-[#0A1F17]'
+                  )}
                   disabled={lcExporting || lcsFiltered.length === 0}
                   onClick={() => void downloadLcRegister()}
                 >
@@ -2130,14 +2454,21 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 {/* The one primary action on this bar — amber against the navy
                     so it reads as the thing to click, rather than blending
                     into a header that is now the same colour it used to be. */}
-                <Button size="sm" className="bg-amber-400 font-semibold text-[#1a2c56] shadow-sm hover:bg-amber-300" onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application', our_bank_id: activeBank || '' })}>
+                <Button
+                  size="sm"
+                  className={cn(
+                    'bg-amber-400 font-semibold text-[#1a2c56] shadow-sm hover:bg-amber-300',
+                    __WEB__ && '!h-[34px] !gap-1.5 !rounded-[3px] !bg-[#0B3D2E] !px-3.5 !text-[12px] !font-extrabold !text-[#C7F03F] !shadow-none hover:!bg-[#0F4A38]'
+                  )}
+                  onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application', our_bank_id: activeBank || '' })}
+                >
                   <Plus className="h-4 w-4" /> Open new LC
                 </Button>
               </div>
               <div className="overflow-x-auto">
-              <Table className="ruled-cols text-[13px]">
+              <Table className={cn('ruled-cols text-[13px]', __WEB__ && '!min-w-[1340px]')}>
                 <TableHeader className="sticky top-0 z-10">
-                  <TableRow className="border-b-2 border-[#1a2c56]/20 bg-[#dce6f5] hover:bg-[#dce6f5]">
+                  <TableRow className={cn('border-b-2 border-[#1a2c56]/20 bg-[#dce6f5] hover:bg-[#dce6f5]', LC_HEAD)}>
                     <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
                       <ColumnFilter label="LC no · bank" options={colOptions.bank} value={lcBankCol} onApply={setLcBankCol} />
                     </TableHead>
@@ -2164,10 +2495,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       className="h-9 w-[165px] min-w-[165px] whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]"
                       title="What reaches the beneficiary — the open amount less the interest and commission the bank keeps"
                     >
-                      Payment rec
+                      {/* Lime, like the balance column on every other register:
+                          this is the figure the register exists to report. */}
+                      <span className={cn(__WEB__ && '!text-[#C7F03F]')}>Payment rec</span>
                     </TableHead>
                     <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
-                      Actions
+                      <span className={cn(__WEB__ && '!text-white')}>Actions</span>
                     </TableHead>
                   </TableRow>
                 </TableHeader>
@@ -2176,27 +2509,27 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       the header so the figure is read before scrolling. Sums the
                       sanctioned Limit and what is still Available across them. */}
                   {lcsFiltered.length > 0 && (
-                    <TableRow className="border-b-2 border-amber-400 bg-amber-50 hover:bg-amber-50">
-                      <TableCell className="whitespace-nowrap font-semibold text-amber-900">
+                    <TableRow className={cn('border-b-2 border-amber-400 bg-amber-50 hover:bg-amber-50', LC_TOTAL)}>
+                      <TableCell className={cn('whitespace-nowrap font-semibold text-amber-900', __WEB__ && '!text-[12px] !font-extrabold !uppercase !tracking-[.06em] !text-[#0A1F17]')}>
                         Total
-                        <span className="ml-1.5 font-normal text-amber-800/70">
-                          ({lcsFiltered.length} LC{lcsFiltered.length === 1 ? '' : 's'})
+                        <span className={cn('ml-1.5 font-normal text-amber-800/70', __WEB__ && '!font-semibold !normal-case !tracking-normal !text-[#5A6B62]')}>
+                          · {lcsFiltered.length} LC{lcsFiltered.length === 1 ? '' : 's'}
                         </span>
                       </TableCell>
                       <TableCell />
                       <TableCell />
                       <TableCell />
                       <TableCell />
-                      <TableCell className="whitespace-nowrap text-right font-semibold tabular-nums text-amber-900">
+                      <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[13.5px] !font-bold !text-[#0A1F17]')}>
                         {(() => {
                           const t = lcsFiltered.reduce((a2, l) => a2 + n(l.preclose_premature_interest), 0)
                           return t > 0.004 ? formatINR(t) : ''
                         })()}
                       </TableCell>
-                      <TableCell className="whitespace-nowrap text-right font-semibold tabular-nums text-amber-900">
+                      <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[13.5px] !font-bold !text-[#0A1F17]')}>
                         {formatINR(lcsFiltered.reduce((t, l) => t + n(l.amount), 0))}
                       </TableCell>
-                      <TableCell className="whitespace-nowrap text-right font-semibold tabular-nums text-amber-900">
+                      <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[13.5px] !font-bold !text-[#0A1F17]')}>
                         {formatINR(lcsFiltered.reduce((t, l) => t + n(l.paid_to_party ?? l.paid_expected), 0))}
                       </TableCell>
                       <TableCell />
@@ -2218,7 +2551,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               // White row background — the stage-colored left
                               // border alone carries the coding, so text stays
                               // at full contrast instead of sitting on a tint.
-                              'bg-white'
+                              'bg-white',
+                              __WEB__ && '!border-b-[#EAF0E9] !border-solid !border-l-[3px] !bg-white hover:!bg-[#F7FAF6] [&>td]:!py-2.5',
+                              __WEB__ && (STAGE_MARK_WEB[String(l.stage || 'application')] || STAGE_MARK_WEB.application)
                             )}
                             onClick={() => void openLcDetail(Number(l.id))}
                           >
@@ -2528,9 +2863,31 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       })()}
 
       <Dialog open={lcLimitOpen} onOpenChange={(o) => !o && setLcLimitOpen(false)}>
-        <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>LC facility limit</DialogTitle></DialogHeader>
-          <div className="grid gap-3">
+        <DialogContent
+          className={cn(
+            'max-w-md',
+            __WEB__ &&
+              '!max-w-lg !grid-rows-[auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-[4px] !border-0 !bg-[#F1F5EF] !p-0 [&>button]:!right-5 [&>button]:!top-5 [&>button]:!text-white [&>button]:!opacity-90'
+          )}
+        >
+          <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#0B3D2E] !px-5 !py-4 !text-left')}>
+            {__WEB__ && (
+              <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Treasury</div>
+            )}
+            <DialogTitle className={cn(__WEB__ && '!mt-1 !text-[19px] !font-bold !tracking-[-0.02em] !text-white')}>LC facility limit</DialogTitle>
+            {__WEB__ && (
+              <p className="mt-1 text-[12px] font-semibold text-[#8FBFA8]">
+                What the bank has sanctioned. Every LC opened draws against it.
+              </p>
+            )}
+          </DialogHeader>
+          <div
+            className={cn(
+              'grid gap-3',
+              __WEB__ &&
+                '!min-h-0 !content-start !gap-3.5 !overflow-y-auto !p-4 [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.12em] [&_label]:!text-[#5A6B62] [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[13px] [&_input]:!font-semibold [&_input]:!tabular-nums [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[13px]'
+            )}
+          >
             {/* The limit is sanctioned against one of OUR accounts, so it is
                 always saved against a bank rather than the company as a whole. */}
             <div className="grid gap-1.5">
@@ -2549,17 +2906,39 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               <Label>Fixed limit (₹) *</Label>
               <Input type="number" value={lcLimitForm.fixed_limit ?? ''} onChange={(e) => setLcLimitForm({ ...lcLimitForm, fixed_limit: e.target.value })} />
             </div>
-            <div className="flex items-center justify-between rounded-md border px-3 py-2">
-              <div>
-                <Label>Convertible limit</Label>
-                <p className="text-[10px] text-muted-foreground">When on, this adds to the Fixed limit to make the total.</p>
+            {/* The switch and the field it governs, in one box. They were two
+                separate rows, so a disabled amount box sat under a switch that
+                had nothing visibly to do with it — and the box turns green
+                when the limit is live, which is the state the total depends on. */}
+            <div
+              className={cn(
+                'flex items-center justify-between rounded-md border px-3 py-2',
+                __WEB__ && '!flex-col !items-stretch !gap-3 !rounded-[4px] !p-4',
+                __WEB__ && (lcLimitForm.convertible_enabled ? '!border-[#BFE3CB] !bg-[#F4FBF6]' : '!border-[#D6E2D6] !bg-white')
+              )}
+            >
+              <div className={cn(__WEB__ && '!flex !items-start !justify-between !gap-3')}>
+                <div className="min-w-0">
+                  <Label className={cn(__WEB__ && '!text-[11px] !font-extrabold !normal-case !tracking-normal !text-[#0A1F17]')}>Convertible limit</Label>
+                  <p className={cn('text-[10px] text-muted-foreground', __WEB__ && '!mt-1 !text-[11.5px] !font-semibold !leading-relaxed !text-[#5A6B62]')}>When on, this adds to the Fixed limit to make the total.</p>
+                </div>
+                <Switch
+                  checked={!!lcLimitForm.convertible_enabled}
+                  onCheckedChange={(v) => setLcLimitForm({ ...lcLimitForm, convertible_enabled: v })}
+                />
               </div>
-              <Switch
-                checked={!!lcLimitForm.convertible_enabled}
-                onCheckedChange={(v) => setLcLimitForm({ ...lcLimitForm, convertible_enabled: v })}
-              />
+              <div className={cn('grid gap-1.5', !__WEB__ && 'hidden')}>
+                <Label>Convertible limit (₹)</Label>
+                <Input
+                  type="number"
+                  disabled={!lcLimitForm.convertible_enabled}
+                  value={lcLimitForm.convertible_limit ?? ''}
+                  onChange={(e) => setLcLimitForm({ ...lcLimitForm, convertible_limit: e.target.value })}
+                  className={cn(__WEB__ && !lcLimitForm.convertible_enabled && '!bg-[#F1F5EF] !text-[#8FA79B]')}
+                />
+              </div>
             </div>
-            <div className="grid gap-1.5">
+            <div className={cn('grid gap-1.5', __WEB__ && '!hidden')}>
               <Label>Convertible limit (₹)</Label>
               <Input
                 type="number"
@@ -2568,45 +2947,79 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 onChange={(e) => setLcLimitForm({ ...lcLimitForm, convertible_limit: e.target.value })}
               />
             </div>
-            <div className="flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Total LC limit</span>
-              <span className="text-[15px] font-bold tabular-nums">
+            {/* The sum the two fields above make, said in the forest the
+                facility card uses for the same figure — this is what the
+                register will measure every LC against. */}
+            <div className={cn('flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2', __WEB__ && '!flex-wrap !gap-2.5 !rounded-[4px] !border-0 !bg-[#0B3D2E] !px-4 !py-3.5')}>
+              <span className={cn('text-[11px] font-semibold uppercase tracking-wide text-muted-foreground', __WEB__ && '!text-[9.5px] !font-extrabold !tracking-[.13em] !text-[#8FBFA8]')}>Total LC limit</span>
+              <span className={cn('text-[15px] font-bold tabular-nums', __WEB__ && '!ml-auto !whitespace-nowrap !text-[21px] !tracking-[-0.035em] !text-[#C7F03F]')}>
                 {formatINR(n(lcLimitForm.fixed_limit) + (lcLimitForm.convertible_enabled ? n(lcLimitForm.convertible_limit) : 0))}
               </span>
             </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setLcLimitOpen(false)} disabled={lcLimitSaving}>Cancel</Button>
-            <Button onClick={() => void saveLcLimitForm()} disabled={lcLimitSaving}>{lcLimitSaving ? 'Saving…' : 'Save'}</Button>
+          <DialogFooter className={cn(__WEB__ && '!border-t !border-t-[#D6E2D6] !bg-white !px-5 !py-3.5')}>
+            <Button
+              variant="outline"
+              onClick={() => setLcLimitOpen(false)}
+              disabled={lcLimitSaving}
+              className={cn(__WEB__ && '!h-12 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-6 !text-[13.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void saveLcLimitForm()}
+              disabled={lcLimitSaving}
+              className={cn(__WEB__ && '!h-12 !rounded-[4px] !bg-[#0B3D2E] !px-7 !text-[13.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#C7F03F] hover:!bg-[#0F4A38]')}
+            >
+              {lcLimitSaving ? 'Saving…' : 'Save limit'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Preclose an LC — wind it up before its natural maturity */}
       <Dialog open={!!precloseRow} onOpenChange={(o) => !o && setPrecloseRow(null)}>
-        <DialogContent className="max-w-3xl max-h-[88vh] overflow-y-auto p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100">
-          <div className="flex items-center gap-3 bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-6 py-4 text-white">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/15">
+        <DialogContent
+          className={cn(
+            'max-w-3xl max-h-[88vh] overflow-y-auto p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100',
+            __WEB__ &&
+              '!grid-rows-[auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-[4px] !border-0 !bg-[#F1F5EF] [&>button]:!right-5 [&>button]:!top-5'
+          )}
+        >
+          <div
+            className={cn(
+              'flex items-center gap-3 bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-6 py-4 text-white',
+              __WEB__ && '!bg-[#0B3D2E] !bg-none !px-5 !py-4'
+            )}
+          >
+            <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/15', __WEB__ && '!rounded-[4px]')}>
               <Landmark className="h-5 w-5" />
             </div>
-            <div>
-              <DialogTitle className="text-[16px] font-bold text-white">
+            <div className="min-w-0">
+              {/* Winding an LC up early and repaying a matured one are two
+                  different acts on one screen, so the eyebrow says which. */}
+              {__WEB__ && (
+                <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">
+                  {precloseRow && isLcPastMaturity(precloseRow) ? 'Repayment' : 'Premature closure'}
+                </div>
+              )}
+              <DialogTitle className={cn('text-[16px] font-bold text-white', __WEB__ && '!mt-1 !text-[19px] !tracking-[-0.02em]')}>
                 {precloseRow && isLcPastMaturity(precloseRow) ? 'Repay' : 'Preclose'} LC {precloseRow?.lc_no || '(pending no.)'}
               </DialogTitle>
-              <p className="text-[12px] text-white/70">
+              <p className={cn('text-[12px] text-white/70', __WEB__ && '!mt-1 !text-[12px] !font-semibold !text-[#8FBFA8]')}>
                 {precloseRow && isLcPastMaturity(precloseRow)
                   ? 'Repay this LC now that it has matured.'
                   : "Wind this LC up before its natural maturity."}
               </p>
             </div>
           </div>
-          <div className="grid gap-4 p-6">
-            <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
-              <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><CalendarClock className="h-3 w-3 text-[#1a2c56]" /></span>
+          <div className={cn('grid gap-4 p-6', __WEB__ && '!min-h-0 !content-start !gap-3.5 !overflow-y-auto !p-4')}>
+            <section className={cn('rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm', LC_DIALOG, LC_FIELDS)}>
+              <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', LC_SECTION_HEAD)}>
+                <span className={cn('flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10', __WEB__ && '!h-6 !w-6 !rounded-[3px] !bg-[#EAF0E9]')}><CalendarClock className="h-3 w-3 text-[#1a2c56]" /></span>
                 Pre-closure date
               </h3>
-              <div className="grid gap-1.5 sm:max-w-xs">
+              <div className={cn('grid gap-1.5 sm:max-w-xs', __WEB__ && '!p-4')}>
                 <Label>Date <span className="text-red-600">*</span></Label>
                 <DatePicker
                   value={String(precloseForm.preclose_date || '')}
@@ -2617,51 +3030,51 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
             </section>
 
             {preclosePreview && (
-              <div className="rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm">
-                <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-sky-900">
-                  <Banknote className="h-3.5 w-3.5" /> Recalculated over the actual period
+              <div className={cn('rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#D6E2D6] !bg-white !bg-none !p-0 !shadow-none')}>
+                <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-sky-900', __WEB__ && '!mb-0 !gap-2 !border-b !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-4 !py-3 !text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#0A1F17]')}>
+                  <Banknote className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4 !text-[#0B3D2E]')} /> Recalculated over the actual period
                   <InfoTip text="This corrects the margin/interest/charges voucher already posted for this LC to the shorter period actually used — a separate entry from the repayment below." />
-                  <span className="ml-auto flex items-center gap-1 rounded-full bg-sky-700 px-2.5 py-1 text-[11px] font-bold normal-case tracking-normal text-white">
+                  <span className={cn('ml-auto flex items-center gap-1 rounded-full bg-sky-700 px-2.5 py-1 text-[11px] font-bold normal-case tracking-normal text-white', __WEB__ && '!rounded-[2px] !bg-[#EAF0E9] !px-2 !py-1 !text-[#33473E]')}>
                     <CalendarClock className="h-3 w-3" /> {preclosePreview.days} interest days
                   </span>
                 </h3>
-                <div className="grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
+                <div className={cn('grid grid-cols-2 gap-3 text-center sm:grid-cols-4', __WEB__ && PREVIEW_CELLS)}>
                   <div>
                     <div className="text-[10px] uppercase tracking-wide text-sky-700">LC Open Amount</div>
-                    <div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(preclosePreview.openAmount)}</div>
+                    <div className={cn('text-[15px] font-semibold tabular-nums text-sky-950', __WEB__ && '!text-[#0A1F17]')}>{formatINR(preclosePreview.openAmount)}</div>
                   </div>
                   <div>
                     <div className="text-[10px] uppercase tracking-wide text-sky-700">Interest</div>
-                    <div className="text-[15px] font-semibold tabular-nums text-rose-700">{formatINR(preclosePreview.interest)}</div>
+                    <div className={cn('text-[15px] font-semibold tabular-nums text-rose-700', __WEB__ && '!text-[#B3261E]')}>{formatINR(preclosePreview.interest)}</div>
                   </div>
                   <div>
                     <div className="text-[10px] uppercase tracking-wide text-sky-700">Charges</div>
-                    <div className="text-[15px] font-semibold tabular-nums text-rose-700">{formatINR(preclosePreview.charges)}</div>
+                    <div className={cn('text-[15px] font-semibold tabular-nums text-rose-700', __WEB__ && '!text-[#B3261E]')}>{formatINR(preclosePreview.charges)}</div>
                   </div>
                   <div>
                     <div className="text-[10px] uppercase tracking-wide text-sky-700">Margin</div>
-                    <div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(preclosePreview.margin)}</div>
+                    <div className={cn('text-[15px] font-semibold tabular-nums text-sky-950', __WEB__ && '!text-[#0A1F17]')}>{formatINR(preclosePreview.margin)}</div>
                   </div>
                 </div>
               </div>
             )}
 
             {preclosePreview && preclosePreview.pendingDays > 0 && (
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
-                <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-emerald-900">
-                  <AlertTriangle className="h-3.5 w-3.5" /> Premature closure — interest rebate
+              <div className={cn('rounded-xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm', LC_FIELDS, __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#BFE3CB] !bg-white !p-0 !shadow-none')}>
+                <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-emerald-900', __WEB__ && '!mb-0 !gap-2 !border-b !border-b-[#BFE3CB] !bg-[#F4FBF6] !px-4 !py-3 !text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#0B6B45]')}>
+                  <AlertTriangle className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4')} /> Premature closure — interest rebate
                   <InfoTip text="Interest for the pending days was already deducted from what the supplier was paid, over the full planned term. Since those days won't actually happen, this comes back as a rebate — either to your own account, or passed on to the supplier." />
-                  <span className="ml-auto flex items-center gap-1 rounded-full bg-emerald-700 px-2.5 py-1 text-[11px] font-bold normal-case tracking-normal text-white">
+                  <span className={cn('ml-auto flex items-center gap-1 rounded-full bg-emerald-700 px-2.5 py-1 text-[11px] font-bold normal-case tracking-normal text-white', __WEB__ && '!rounded-[2px] !bg-[#EAF6EC] !px-2 !py-1 !text-[#0B6B45]')}>
                     <CalendarClock className="h-3 w-3" /> {preclosePreview.pendingDays} pending days
                   </span>
                 </h3>
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
                   <div className="flex flex-col gap-1.5">
                     <Label className="flex flex-wrap items-center gap-1.5">
                       Premature interest (₹)
                       <button
                         type="button"
-                        className="text-[10px] font-medium text-teal-700 underline-offset-2 hover:underline"
+                        className={cn('text-[10px] font-medium text-teal-700 underline-offset-2 hover:underline', __WEB__ && '!rounded-[2px] !border !border-[#BFE3CB] !bg-[#F4FBF6] !px-1.5 !py-0.5 !text-[10px] !font-extrabold !normal-case !tracking-normal !text-[#0B6B45] hover:!bg-[#EAF6EC] hover:!no-underline')}
                         onClick={() => setPrecloseForm((p) => ({ ...p, premature_interest: String(preclosePreview.prematureInterest) }))}
                       >
                         Use calculated ({formatINR(preclosePreview.prematureInterest)})
@@ -2683,7 +3096,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
                           precloseForm.premature_interest_direction !== 'pay_to_party'
                             ? 'border-emerald-500 bg-emerald-100 text-emerald-900'
-                            : 'border-[#e5dfc8] text-muted-foreground hover:bg-muted/40'
+                            : 'border-[#e5dfc8] text-muted-foreground hover:bg-muted/40',
+                          __WEB__ && '!h-11 !rounded-[4px] !text-[12px] !font-extrabold !tracking-[.04em]',
+                          __WEB__ &&
+                            (precloseForm.premature_interest_direction !== 'pay_to_party'
+                              ? '!border-[#12855A] !bg-[#0B6B45] !text-white'
+                              : '!border-[#C3D2C6] !bg-white !text-[#33473E] hover:!bg-[#F7FAF6]')
                         )}
                       >
                         Credit to us
@@ -2695,7 +3113,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
                           precloseForm.premature_interest_direction === 'pay_to_party'
                             ? 'border-amber-500 bg-amber-50 text-amber-800'
-                            : 'border-[#e5dfc8] text-muted-foreground hover:bg-muted/40'
+                            : 'border-[#e5dfc8] text-muted-foreground hover:bg-muted/40',
+                          __WEB__ && '!h-11 !rounded-[4px] !text-[12px] !font-extrabold !tracking-[.04em]',
+                          __WEB__ &&
+                            (precloseForm.premature_interest_direction === 'pay_to_party'
+                              ? '!border-[#C2700A] !bg-[#C2700A] !text-white'
+                              : '!border-[#C3D2C6] !bg-white !text-[#33473E] hover:!bg-[#F7FAF6]')
                         )}
                       >
                         Pay to party
@@ -2711,15 +3134,15 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               </div>
             )}
 
-            <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
-              <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><Percent className="h-3 w-3 text-[#1a2c56]" /></span>
+            <section className={cn('rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm', LC_DIALOG, LC_FIELDS)}>
+              <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', LC_SECTION_HEAD)}>
+                <span className={cn('flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10', __WEB__ && '!h-6 !w-6 !rounded-[3px] !bg-[#EAF0E9]')}><Percent className="h-3 w-3 text-[#1a2c56]" /></span>
                 Repayment to bank
               </h3>
               <p className="mb-3 text-[11px] text-muted-foreground">
                 Preclosing is a repayment, just like Log Repayment — the bank still wants its full open amount back.
               </p>
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
                 <div className="flex flex-col gap-1.5">
                   <Label>Open amount (LC)</Label>
                   <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm text-muted-foreground">
@@ -2746,7 +3169,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         <p className="mb-2 text-[11px] font-medium text-amber-900">
                           This is {formatINR(excess)} over the open amount — split that between commission and bank charges below.
                         </p>
-                        <div className="grid gap-3 sm:grid-cols-2">
+                        <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
                           <div className="flex flex-col gap-1.5">
                             <Label>Comm. charges (₹)</Label>
                             <Input
@@ -2791,9 +3214,20 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
 
             {precloseError && <p className="text-sm text-destructive">{precloseError}</p>}
           </div>
-          <DialogFooter className="px-6 pb-6">
-            <Button variant="outline" onClick={() => setPrecloseRow(null)} disabled={precloseSaving}>Cancel</Button>
-            <Button onClick={() => void savePreclose()} disabled={precloseSaving}>
+          <DialogFooter className={cn('px-6 pb-6', __WEB__ && '!border-t !border-t-[#D6E2D6] !bg-white !px-5 !py-3.5 !pb-3.5')}>
+            <Button
+              variant="outline"
+              onClick={() => setPrecloseRow(null)}
+              disabled={precloseSaving}
+              className={cn(__WEB__ && '!h-12 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-6 !text-[13.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void savePreclose()}
+              disabled={precloseSaving}
+              className={cn(__WEB__ && '!h-12 !rounded-[4px] !bg-[#0B3D2E] !px-7 !text-[13.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#C7F03F] hover:!bg-[#0F4A38]')}
+            >
               {precloseSaving ? 'Saving…' : precloseRow && isLcPastMaturity(precloseRow) ? 'Repay LC' : 'Preclose LC'}
             </Button>
           </DialogFooter>
@@ -3003,22 +3437,46 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
 
       {/* New / edit LC */}
       <Dialog open={!!lcForm} onOpenChange={(o) => !o && setLcForm(null)}>
-        <DialogContent className="max-w-5xl max-h-[88vh] overflow-y-auto p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100">
-          <div className="flex items-center gap-3 rounded-t-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-6 py-4 text-white">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/15">
+        <DialogContent
+          className={cn(
+            'max-w-5xl max-h-[88vh] overflow-y-auto p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100',
+            // Header and footer pinned, only the middle scrolls — the form
+            // runs past a screen and Save used to be at the bottom of it.
+            __WEB__ &&
+              '!grid-rows-[auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-[4px] !border-0 !bg-[#F1F5EF] [&>button]:!right-5 [&>button]:!top-5'
+          )}
+        >
+          <div
+            className={cn(
+              'flex items-center gap-3 rounded-t-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-6 py-4 text-white',
+              __WEB__ && '!rounded-none !bg-[#0B3D2E] !bg-none !px-5 !py-4'
+            )}
+          >
+            <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/15', __WEB__ && '!h-10 !w-10 !rounded-[4px]')}>
               <Landmark className="h-5 w-5" />
             </div>
-            <div>
-              <DialogTitle className="text-[16px] font-bold text-white">
-                {lcForm?.id ? `Alter LC ${lcForm.lc_no || '(pending no.)'}` : 'Open a letter of credit'}
+            <div className="min-w-0">
+              {/* The kind above the name, as the detail drawers do: "Letter of
+                  credit / Open new LC" reads as a heading, where one line
+                  running them together read as a sentence. */}
+              {__WEB__ && (
+                <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Letter of credit</div>
+              )}
+              <DialogTitle className={cn('text-[16px] font-bold text-white', __WEB__ && '!mt-1 !text-[19px] !font-bold !tracking-[-0.02em]')}>
+                {lcForm?.id ? `Alter LC ${lcForm.lc_no || '(pending no.)'}` : __WEB__ ? 'Open new LC' : 'Open a letter of credit'}
               </DialogTitle>
-              <p className="text-[12px] text-white/70">Track the LC from application through to payment received.</p>
+              <p className={cn('text-[12px] text-white/70', __WEB__ && '!mt-1 !text-[12px] !font-semibold !text-[#8FBFA8]')}>
+                Track the LC from application through to payment received.
+              </p>
             </div>
             {!!activeCompany && (
               <Select value={String(activeCompany)} onValueChange={onCompanyChange}>
                 <SelectTrigger
                   title="Switch company"
-                  className="ml-auto mr-8 h-auto w-auto shrink-0 gap-1.5 rounded-full border-0 bg-white/15 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-white/90 shadow-none hover:bg-white/25 [&>svg]:h-3 [&>svg]:w-3 [&>svg]:opacity-80"
+                  className={cn(
+                    'ml-auto mr-8 h-auto w-auto shrink-0 gap-1.5 rounded-full border-0 bg-white/15 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-white/90 shadow-none hover:bg-white/25 [&>svg]:h-3 [&>svg]:w-3 [&>svg]:opacity-80',
+                    __WEB__ && '!mr-10 !rounded-[3px] !border !border-white/20 !px-3 !py-2 !text-[11.5px] !font-bold !text-white'
+                  )}
                 >
                   <SelectValue placeholder="Select company" />
                 </SelectTrigger>
@@ -3033,13 +3491,13 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
             )}
           </div>
           {lcForm && (
-            <div className="grid gap-4 p-6 lg:grid-cols-2">
-              <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
-                <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
-                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><Landmark className="h-3 w-3 text-[#1a2c56]" /></span>
+            <div className={cn('grid gap-4 p-6 lg:grid-cols-2', __WEB__ && '!min-h-0 !content-start !gap-3.5 !overflow-y-auto !p-4')}>
+              <section className={cn('rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm', LC_DIALOG, LC_FIELDS)}>
+                <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', LC_SECTION_HEAD)}>
+                  <span className={cn('flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10', __WEB__ && '!h-6 !w-6 !rounded-[3px] !bg-[#EAF0E9]')}><Landmark className="h-3 w-3 text-[#1a2c56]" /></span>
                   LC & stage
                 </h3>
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
                   <div className="flex flex-col gap-1.5">
                     <Label>LC no {String(lcForm.stage || 'application') !== 'application' && <span className="text-red-600">*</span>}</Label>
                     {(() => {
@@ -3163,12 +3621,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 </div>
               </section>
 
-              <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
-                <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
-                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><Users className="h-3 w-3 text-[#1a2c56]" /></span>
+              <section className={cn('rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm', LC_DIALOG, LC_FIELDS)}>
+                <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', LC_SECTION_HEAD)}>
+                  <span className={cn('flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10', __WEB__ && '!h-6 !w-6 !rounded-[3px] !bg-[#EAF0E9]')}><Users className="h-3 w-3 text-[#1a2c56]" /></span>
                   Party & purpose
                 </h3>
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
                   <div className="flex flex-col gap-1.5">
                     <Label>Purpose <span className="text-red-600">*</span></Label>
                     <Select
@@ -3367,12 +3825,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 )}
               </section>
 
-              <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
-                <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
-                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><CalendarRange className="h-3 w-3 text-[#1a2c56]" /></span>
+              <section className={cn('rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm', LC_DIALOG, LC_FIELDS)}>
+                <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', LC_SECTION_HEAD)}>
+                  <span className={cn('flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10', __WEB__ && '!h-6 !w-6 !rounded-[3px] !bg-[#EAF0E9]')}><CalendarRange className="h-3 w-3 text-[#1a2c56]" /></span>
                   Amount & validity
                 </h3>
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
                   {(() => {
                     const linkedIds: number[] = Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []
                     const hasInvoices = linkedIds.length > 0
@@ -3554,9 +4012,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 </div>
               </section>
 
-              <section className="rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm">
-                <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
-                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10"><Percent className="h-3 w-3 text-[#1a2c56]" /></span>
+              <section className={cn('rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm', LC_DIALOG, LC_FIELDS)}>
+                <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', LC_SECTION_HEAD)}>
+                  <span className={cn('flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10', __WEB__ && '!h-6 !w-6 !rounded-[3px] !bg-[#EAF0E9]')}><Percent className="h-3 w-3 text-[#1a2c56]" /></span>
                   Margin, interest & charges
                 </h3>
                 <div className="grid gap-3 sm:grid-cols-3">
@@ -3639,30 +4097,31 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 // unless both are being paid upfront from the bank instead.
                 const netAvailable = upfront ? openAmount : round2(openAmount - interest - charges)
                 return (
-                  <div className="rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm lg:col-span-2">
-                    <h3 className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-sky-900">
-                      <Banknote className="h-3.5 w-3.5" /> Back-calculated from the open amount
-                      <span className="ml-auto flex items-center gap-1 rounded-full bg-sky-700 px-2.5 py-1 text-[11px] font-bold normal-case tracking-normal text-white">
+                  <div className={cn('rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm lg:col-span-2', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#BFE3CB] !bg-white !bg-none !p-0 !shadow-none')}>
+                    <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-sky-900', __WEB__ && '!mb-0 !gap-2 !border-b !border-b-[#BFE3CB] !bg-[#F4FBF6] !px-4 !py-3 !text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#0B6B45]')}>
+                      {__WEB__ ? <ArrowUpRight className="h-4 w-4" /> : <Banknote className="h-3.5 w-3.5" />}
+                      {__WEB__ ? 'What will reach the supplier' : 'Back-calculated from the open amount'}
+                      <span className={cn('ml-auto flex items-center gap-1 rounded-full bg-sky-700 px-2.5 py-1 text-[11px] font-bold normal-case tracking-normal text-white', __WEB__ && '!rounded-[2px] !bg-[#EAF6EC] !px-2 !py-1 !text-[11px] !text-[#0B6B45]')}>
                         <CalendarClock className="h-3 w-3" /> {n(lcForm.usance_days) || 0} interest days
                       </span>
                     </h3>
-                    <div className="grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
-                      <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Open amount</div><div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(openAmount)}</div></div>
+                    <div className={cn('grid grid-cols-2 gap-3 text-center sm:grid-cols-4', __WEB__ && '!gap-px !bg-[#E4ECE3] !text-left [&>div]:!bg-white [&>div]:!px-3.5 [&>div]:!py-3 [&>div>div:first-child]:!text-[9px] [&>div>div:first-child]:!font-extrabold [&>div>div:first-child]:!tracking-[.12em] [&>div>div:first-child]:!text-[#5A6B62] [&>div>div:last-child]:!mt-1 [&>div>div:last-child]:!whitespace-nowrap [&>div>div:last-child]:!text-[14.5px] [&>div>div:last-child]:!font-bold')}>
+                      <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Open amount</div><div className={cn('text-[15px] font-semibold tabular-nums text-sky-950', __WEB__ && '!text-[#0A1F17]')}>{formatINR(openAmount)}</div></div>
                       <div>
                         <div className="text-[10px] uppercase tracking-wide text-sky-700">{upfront ? 'Interest (upfront)' : '− Interest'}</div>
-                        <div className={cn('text-[15px] font-semibold tabular-nums', upfront ? 'text-sky-950' : 'text-rose-700')}>{formatINR(interest)}</div>
+                        <div className={cn('text-[15px] font-semibold tabular-nums', upfront ? 'text-sky-950' : 'text-rose-700', __WEB__ && (upfront ? '!text-[#0A1F17]' : '!text-[#B3261E]'))}>{formatINR(interest)}</div>
                       </div>
                       <div>
                         <div className="text-[10px] uppercase tracking-wide text-sky-700">{upfront ? 'Charges (upfront)' : '− Charges'}</div>
-                        <div className={cn('text-[15px] font-semibold tabular-nums', upfront ? 'text-sky-950' : 'text-rose-700')}>{formatINR(charges)}</div>
+                        <div className={cn('text-[15px] font-semibold tabular-nums', upfront ? 'text-sky-950' : 'text-rose-700', __WEB__ && (upfront ? '!text-[#0A1F17]' : '!text-[#B3261E]'))}>{formatINR(charges)}</div>
                       </div>
-                      <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Margin</div><div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(margin)}</div></div>
+                      <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Margin</div><div className={cn('text-[15px] font-semibold tabular-nums text-sky-950', __WEB__ && '!text-[#0A1F17]')}>{formatINR(margin)}</div></div>
                     </div>
-                    <div className="mt-3 flex items-center justify-between rounded-lg bg-white/70 px-4 py-2.5">
-                      <span className="text-[11px] font-medium uppercase tracking-wide text-sky-800">
+                    <div className={cn('mt-3 flex items-center justify-between rounded-lg bg-white/70 px-4 py-2.5', __WEB__ && '!mt-0 !flex-wrap !gap-2.5 !rounded-none !border-t !border-t-[#BFE3CB] !bg-[#EAF6EC] !px-4 !py-3.5')}>
+                      <span className={cn('text-[11px] font-medium uppercase tracking-wide text-sky-800', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.1em] !text-[#0B6B45]')}>
                         {upfront ? 'Net available = open amount (interest & charges paid upfront)' : 'Net available = open amount − interest − charges'}
                       </span>
-                      <span className="text-xl font-bold tabular-nums text-[#1a2c56]">{formatINR(netAvailable)}</span>
+                      <span className={cn('text-xl font-bold tabular-nums text-[#1a2c56]', __WEB__ && '!ml-auto !whitespace-nowrap !text-[21px] !tracking-[-0.035em] !text-[#0B6B45]')}>{formatINR(netAvailable)}</span>
                     </div>
                   </div>
                 )
@@ -3671,9 +4130,21 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               <div className="flex flex-col gap-1.5 lg:col-span-2"><Label>Note</Label><Input value={lcForm.note ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, note: e.target.value }))} /></div>
             </div>
           )}
-          <DialogFooter className="border-t border-[#e5dfc8] bg-muted/20 px-6 py-4">
-            <Button variant="outline" onClick={() => setLcForm(null)}>Cancel</Button>
-            <Button disabled={busy} className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={() => void saveLc()}>{busy ? 'Saving…' : 'Save LC'}</Button>
+          <DialogFooter className={cn('border-t border-[#e5dfc8] bg-muted/20 px-6 py-4', __WEB__ && '!border-t-[#D6E2D6] !bg-white !px-5 !py-3.5')}>
+            <Button
+              variant="outline"
+              onClick={() => setLcForm(null)}
+              className={cn(__WEB__ && '!h-12 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-6 !text-[13.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={busy}
+              className={cn('bg-[#1a2c56] hover:bg-[#24407e]', __WEB__ && '!h-12 !rounded-[4px] !bg-[#0B3D2E] !px-7 !text-[13.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#C7F03F] hover:!bg-[#0F4A38]')}
+              onClick={() => void saveLc()}
+            >
+              {busy ? 'Saving…' : lcForm?.id ? 'Save changes' : 'Open LC'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -3710,17 +4181,40 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       </Dialog>
 
       <Dialog open={lcDetailId != null} onOpenChange={(o) => !o && setLcDetailId(null)}>
-        <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+        <DialogContent
+          className={cn(
+            'max-h-[85vh] max-w-3xl overflow-y-auto',
+            // A drawer against the edge on the website, like the Purchases and
+            // Trading detail views: this is a tall stack of blocks about one
+            // LC, which reads better in a column than as a wide box floating
+            // over the register it came from.
+            __WEB__ &&
+              '!bottom-0 !left-auto !right-0 !top-0 !h-screen !max-h-screen !w-[760px] !max-w-[95vw] !min-w-0 !translate-x-0 !translate-y-0 !grid-rows-[auto_minmax(0,1fr)] !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!right-5 [&>button]:!top-5 [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100'
+          )}
+        >
           {(() => {
             const dRow = lcDetailId != null ? lcs.find((x) => Number(x.id) === lcDetailId) : null
             if (!dRow) return null
             const pct = n(dRow.amount) > 0 ? Math.min(100, (n(dRow.utilized) / n(dRow.amount)) * 100) : 0
-            const barTone = pct >= 95 ? 'bg-rose-500' : pct >= 75 ? 'bg-amber-500' : 'bg-sky-600'
+            const barTone = __WEB__
+              ? pct >= 95
+                ? 'bg-[#B3261E]'
+                : pct >= 75
+                  ? 'bg-[#C2700A]'
+                  : 'bg-[#0B3D2E]'
+              : pct >= 95
+                ? 'bg-rose-500'
+                : pct >= 75
+                  ? 'bg-amber-500'
+                  : 'bg-sky-600'
             return (
               <>
-                <DialogHeader>
-                  <DialogTitle className="flex flex-wrap items-center gap-1.5 pr-6">
-                    <span className={cn('doc-ref', !dRow.lc_no && 'italic text-muted-foreground')}>{dRow.lc_no || 'Pending LC no'}</span>
+                <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#0B3D2E] !px-5 !py-4 !text-left')}>
+                  {__WEB__ && (
+                    <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Letter of credit</div>
+                  )}
+                  <DialogTitle className={cn('flex flex-wrap items-center gap-1.5 pr-6', __WEB__ && '!mt-2 !gap-2 !pr-10')}>
+                    <span className={cn('doc-ref', !dRow.lc_no && 'italic text-muted-foreground', __WEB__ && '!text-[19px] !font-bold !tracking-[-0.02em] !text-white', __WEB__ && !dRow.lc_no && '!text-[#8FBFA8]')}>{dRow.lc_no || 'Pending LC no'}</span>
                     <DuplicateNoBadge lcs={lcs} l={dRow} />
                     <StageBadge stage={String(dRow.stage || 'application')} />
                     <ClosureBadge l={dRow} withDate />
@@ -3736,32 +4230,33 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     )}
                   </DialogTitle>
                 </DialogHeader>
-                <div className="space-y-4">
-                  <div className="flex flex-wrap items-center gap-3 text-[12px] font-medium text-foreground">
-                    <span className="flex items-center gap-1.5"><Landmark className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> {dRow.bank}</span>
-                    <span className="flex items-center gap-1.5"><Users className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> {dRow.supplier_name || '—'}</span>
-                    {dRow.fd_no && <span>FD {dRow.fd_no}</span>}
+                <div className={cn('space-y-4', __WEB__ && '!min-h-0 !space-y-3.5 !overflow-y-auto !px-5 !py-4 [&>*]:!shrink-0')}>
+                  <div className={cn('flex flex-wrap items-center gap-3 text-[12px] font-medium text-foreground', __WEB__ && '!gap-2.5 !rounded-[4px] !border !border-[#D6E2D6] !bg-white !px-4 !py-3 !text-[13px] !font-bold !text-[#0A1F17]')}>
+                    <span className="flex items-center gap-1.5"><Landmark className={cn('h-3.5 w-3.5 shrink-0 text-muted-foreground', __WEB__ && '!h-4 !w-4 !text-[#5A6B62]')} /> {dRow.bank}</span>
+                    {__WEB__ && <span className="h-4 w-px bg-[#DCE7DB]" />}
+                    <span className="flex items-center gap-1.5"><Users className={cn('h-3.5 w-3.5 shrink-0 text-muted-foreground', __WEB__ && '!h-4 !w-4 !text-[#5A6B62]')} /> {dRow.supplier_name || '—'}</span>
+                    {dRow.fd_no && <span className={cn(__WEB__ && '!text-[#5A6B62]')}>FD {dRow.fd_no}</span>}
                   </div>
-                  <div className="rounded-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-3 text-center shadow-sm">
-                    <div className="text-[10px] font-semibold uppercase tracking-widest text-white/60">LC amount</div>
-                    <div className="text-2xl font-bold tabular-nums text-white">{formatINR(dRow.amount)}</div>
+                  <div className={cn('rounded-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-3 text-center shadow-sm', __WEB__ && '!rounded-[4px] !bg-[#0B3D2E] !bg-none !px-4 !py-3.5 !text-left !shadow-none')}>
+                    <div className={cn('text-[10px] font-semibold uppercase tracking-widest text-white/60', __WEB__ && '!text-[9.5px] !font-extrabold !tracking-[.13em] !text-[#8FBFA8]')}>LC amount</div>
+                    <div className={cn('text-2xl font-bold tabular-nums text-white', __WEB__ && '!mt-1 !text-[26px] !leading-none !tracking-[-0.035em]')}>{formatINR(dRow.amount)}</div>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
-                    <div className="rounded-md border border-[#e5dfc8] bg-white px-2.5 py-1.5">
+                  <div className={cn('grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4', __WEB__ && CARD_CELLS)}>
+                    <div className={cn('rounded-md border border-[#e5dfc8] bg-white px-2.5 py-1.5', __WEB__ && '!border-[#E4ECE3] !bg-[#F7FAF6]')}>
                       <div className="text-muted-foreground">Utilised</div>
-                      <div className="font-semibold tabular-nums text-[#1a2c56]">{formatINR(dRow.utilized)}</div>
+                      <div className={cn('font-semibold tabular-nums text-[#1a2c56]', __WEB__ && '!text-[#0A1F17]')}>{formatINR(dRow.utilized)}</div>
                     </div>
-                    <div className={cn('rounded-md border px-2.5 py-1.5', n(dRow.available) <= 0 ? 'border-rose-200 bg-rose-50' : 'border-emerald-200 bg-emerald-50')}>
+                    <div className={cn('rounded-md border px-2.5 py-1.5', n(dRow.available) <= 0 ? 'border-rose-200 bg-rose-50' : 'border-emerald-200 bg-emerald-50', __WEB__ && (n(dRow.available) <= 0 ? '!border-[#F0D6D4] !bg-[#FDF3F2]' : '!border-[#BFE3CB] !bg-[#F4FBF6]'))}>
                       <div className="text-muted-foreground">Available</div>
-                      <div className={cn('font-semibold tabular-nums', n(dRow.available) <= 0 ? 'text-rose-600' : 'text-emerald-700')}>{formatINR(dRow.available)}</div>
+                      <div className={cn('font-semibold tabular-nums', n(dRow.available) <= 0 ? 'text-rose-600' : 'text-emerald-700', __WEB__ && (n(dRow.available) <= 0 ? '!text-[#B3261E]' : '!text-[#0B6B45]'))}>{formatINR(dRow.available)}</div>
                     </div>
-                    <div className={cn('rounded-md border px-2.5 py-1.5', n(dRow.repaid) > 0 ? 'border-emerald-200 bg-emerald-50' : 'border-[#e5dfc8] bg-white')}>
+                    <div className={cn('rounded-md border px-2.5 py-1.5', n(dRow.repaid) > 0 ? 'border-emerald-200 bg-emerald-50' : 'border-[#e5dfc8] bg-white', __WEB__ && (n(dRow.repaid) > 0 ? '!border-[#BFE3CB] !bg-[#F4FBF6]' : '!border-[#E4ECE3] !bg-[#F7FAF6]'))}>
                       <div className="text-muted-foreground">Repaid</div>
-                      <div className={cn('font-semibold tabular-nums', n(dRow.repaid) > 0 ? 'text-emerald-700' : 'text-[#1a2c56]')}>{formatINR(dRow.repaid)}</div>
+                      <div className={cn('font-semibold tabular-nums', n(dRow.repaid) > 0 ? 'text-emerald-700' : 'text-[#1a2c56]', __WEB__ && (n(dRow.repaid) > 0 ? '!text-[#0B6B45]' : '!text-[#8FA79B]'))}>{formatINR(dRow.repaid)}</div>
                     </div>
-                    <div className={cn('rounded-md border px-2.5 py-1.5', n(dRow.outstanding) > 0 ? 'border-amber-200 bg-amber-50' : 'border-[#e5dfc8] bg-white')}>
+                    <div className={cn('rounded-md border px-2.5 py-1.5', n(dRow.outstanding) > 0 ? 'border-amber-200 bg-amber-50' : 'border-[#e5dfc8] bg-white', __WEB__ && (n(dRow.outstanding) > 0 ? '!border-[#F0D9AE] !bg-[#FFFBF2]' : '!border-[#E4ECE3] !bg-[#F7FAF6]'))}>
                       <div className="text-muted-foreground">Outstanding</div>
-                      <div className={cn('font-semibold tabular-nums', n(dRow.outstanding) > 0 ? 'text-amber-800' : 'text-[#1a2c56]')}>{formatINR(dRow.outstanding)}</div>
+                      <div className={cn('font-semibold tabular-nums', n(dRow.outstanding) > 0 ? 'text-amber-800' : 'text-[#1a2c56]', __WEB__ && (n(dRow.outstanding) > 0 ? '!text-[#8A5300]' : '!text-[#8FA79B]'))}>{formatINR(dRow.outstanding)}</div>
                     </div>
                   </div>
                   <div>
@@ -3773,7 +4268,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       <div className={cn('h-2.5 rounded-full transition-all', barTone)} style={{ width: `${pct}%` }} />
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg border border-[#e5dfc8] bg-white p-3 text-[11px] sm:grid-cols-4">
+                  <div className={cn('grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg border border-[#e5dfc8] bg-white p-3 text-[11px] sm:grid-cols-4', __WEB__ && '!gap-px !overflow-hidden !rounded-[4px] !border-[#D6E2D6] !bg-[#E4ECE3] !p-0 [&>div]:!bg-white [&>div]:!px-3.5 [&>div]:!py-3')}>
                     <div><div className="text-muted-foreground">Application</div><div className="font-medium tabular-nums">{formatDate(dRow.open_date)}</div></div>
                     <div><div className="text-muted-foreground">Open</div><div className="font-medium tabular-nums">{formatDate(dRow.opened_date)}</div></div>
                     <div><div className="text-muted-foreground">Payment received</div><div className="font-medium tabular-nums">{formatDate(dRow.payment_received_date)}</div></div>
@@ -3795,12 +4290,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <div><div className="text-muted-foreground">Int. days</div><div className="font-medium tabular-nums">{n(dRow.usance_days) > 0 ? n(dRow.usance_days) : '—'}</div></div>
                   </div>
                   <div className="border-t border-[#e5dfc8] pt-1 [&>div]:px-0 [&>div]:sm:px-0">{lcExpanded(dRow)}</div>
-                  <div className="flex flex-wrap gap-1.5 border-t border-dashed border-[#e5dfc8] pt-3">
+                  <div className={cn('flex flex-wrap gap-1.5 border-t border-dashed border-[#e5dfc8] pt-3', __WEB__ && '!gap-2 !rounded-[4px] !border !border-[#D6E2D6] !border-solid !bg-white !p-3.5')}>
                     {(() => {
                       const next = nextLcStage(String(dRow.stage || 'application'))
                       if (!next) return null
                       return (
-                        <Button size="sm" className="h-7 bg-[#1a2c56] px-2 text-xs hover:bg-[#24407e]" onClick={() => { setLcDetailId(null); openStageAdvance(dRow) }}>
+                        <Button size="sm" className={cn('h-7 bg-[#1a2c56] px-2 text-xs hover:bg-[#24407e]', __WEB__ && '!h-10 !rounded-[4px] !bg-[#0B3D2E] !px-3.5 !text-[12px] !font-extrabold !uppercase !tracking-[.04em] !text-[#C7F03F] hover:!bg-[#0F4A38]')} onClick={() => { setLcDetailId(null); openStageAdvance(dRow) }}>
                           Mark {STAGE_LABEL[next]}
                         </Button>
                       )
@@ -3826,10 +4321,10 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         {isLcPastMaturity(dRow) ? 'Repay' : 'Preclose'}
                       </Button>
                     )}
-                    <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => { setLcDetailId(null); setLcForm({ ...dRow }) }}>
+                    <Button size="sm" variant="outline" className={cn('h-7 px-2 text-xs', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3.5 !text-[12px] !font-bold !text-[#33473E] hover:!bg-[#EAF0E9]')} onClick={() => { setLcDetailId(null); setLcForm({ ...dRow }) }}>
                       <Pencil className="h-3.5 w-3.5" /> Edit
                     </Button>
-                    <Button size="sm" variant="outline" className="h-7 px-2 text-xs text-destructive" onClick={() => { setLcDetailId(null); requestDeleteLc(dRow) }}>
+                    <Button size="sm" variant="outline" className={cn('h-7 px-2 text-xs text-destructive', __WEB__ && '!h-10 !rounded-[4px] !border-[#F0D6D4] !bg-[#FDF3F2] !px-3.5 !text-[12px] !font-bold !text-[#B3261E] hover:!bg-[#FBE9E7]')} onClick={() => { setLcDetailId(null); requestDeleteLc(dRow) }}>
                       <Trash2 className="h-3.5 w-3.5" /> Delete
                     </Button>
                   </div>
@@ -3844,10 +4339,37 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
 
       {/* Log / post an LC repayment */}
       <Dialog open={!!repayForm} onOpenChange={(o) => !o && setRepayForm(null)}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader><DialogTitle>Alter repayment</DialogTitle></DialogHeader>
+        <DialogContent
+          className={cn(
+            'max-w-lg',
+            __WEB__ &&
+              '!max-w-2xl !grid-rows-[auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-[4px] !border-0 !bg-[#F1F5EF] !p-0 [&>button]:!right-5 [&>button]:!top-5 [&>button]:!text-white [&>button]:!opacity-90'
+          )}
+        >
+          {/* The other Treasury dialogs carry a forest header naming what is
+              being altered; this one opened straight onto a bare title, so it
+              read as a different product. */}
+          <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#0B3D2E] !px-5 !py-4 !text-left')}>
+            {__WEB__ && (
+              <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Letter of credit</div>
+            )}
+            <DialogTitle className={cn(__WEB__ && '!mt-1 !text-[19px] !font-bold !tracking-[-0.02em] !text-white')}>
+              Alter repayment
+            </DialogTitle>
+            {__WEB__ && (
+              <p className="mt-1 text-[12px] font-semibold text-[#8FBFA8]">
+                What was paid back to the bank, and whether it is posted to the books.
+              </p>
+            )}
+          </DialogHeader>
           {repayForm && (
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div
+              className={cn(
+                'grid gap-3 sm:grid-cols-2',
+                __WEB__ &&
+                  '!min-h-0 !content-start !gap-3.5 !overflow-y-auto !p-4 [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.12em] [&_label]:!text-[#5A6B62] [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[13px] [&_input]:!font-semibold [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-11 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!text-[13.5px]'
+              )}
+            >
               <div className="flex flex-col gap-1.5 sm:col-span-2">
                 <Label>Related party <span className="text-[10px] font-normal text-muted-foreground">(optional — for reference only, not posted)</span></Label>
                 <Select value={repayForm.party_id ? String(repayForm.party_id) : ''} onValueChange={(v) => setRepayForm((p) => ({ ...p, party_id: v }))}>
@@ -3859,7 +4381,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label>Open amount (LC)</Label>
-                <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm text-muted-foreground">
+                <div className={cn('flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm text-muted-foreground', __WEB__ && '!h-11 !rounded-[4px] !border-[#DCE7DB] !bg-[#F1F5EF] !text-[13.5px] !font-bold !tabular-nums !text-[#5A6B62]')}>
                   {formatINR(n(repayForm.open_amount))}
                 </div>
               </div>
@@ -3867,7 +4389,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 <Label>Repayment amount (₹) *</Label>
                 <Input type="number" value={repayForm.amount ?? ''} onChange={(e) => setRepayForm((p) => ({ ...p, amount: e.target.value }))} />
                 {n(repayForm.amount) > 0 && n(repayForm.amount) < n(repayForm.open_amount) - 0.005 && (
-                  <span className="text-[10px] font-medium text-rose-600">Cannot be less than the open amount</span>
+                  <span className={cn('text-[10px] font-medium text-rose-600', __WEB__ && '!text-[11px] !font-bold !text-[#B3261E]')}>Cannot be less than the open amount</span>
                 )}
               </div>
               <div className="flex flex-col gap-1.5"><Label>Date</Label><DatePicker value={String(repayForm.repay_date || '')} onChange={(v) => setRepayForm((p) => ({ ...p, repay_date: v }))} /></div>
@@ -3877,8 +4399,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 const splitTotal = round2(n(repayForm.comm_charges) + n(repayForm.bank_charges))
                 const splitOff = Math.abs(splitTotal - excess) > 0.005
                 return (
-                  <div className="rounded-md border border-amber-300 bg-amber-50 p-3 sm:col-span-2">
-                    <p className="mb-2 text-[11px] font-medium text-amber-900">
+                  <div className={cn('rounded-md border border-amber-300 bg-amber-50 p-3 sm:col-span-2', __WEB__ && '!rounded-[4px] !border-[#F0D9AE] !border-l-[3px] !border-l-[#C2700A] !bg-[#FFFBF2] !p-4')}>
+                    <p className={cn('mb-2 text-[11px] font-medium text-amber-900', __WEB__ && '!mb-3 !text-[12px] !font-bold !leading-relaxed !text-[#8A5300]')}>
                       This repayment is {formatINR(excess)} over the open amount — split that excess between commission and bank charges below.
                     </p>
                     <div className="grid gap-3 sm:grid-cols-2">
@@ -3892,7 +4414,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       </div>
                     </div>
                     {splitOff && (
-                      <span className="mt-1.5 block text-[10px] font-medium text-rose-600">
+                      <span className={cn('mt-1.5 block text-[10px] font-medium text-rose-600', __WEB__ && '!text-[11px] !font-bold !text-[#B3261E]')}>
                         Comm. + Bank charges must add up to {formatINR(excess)} (currently {formatINR(splitTotal)})
                       </span>
                     )}
@@ -3902,7 +4424,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               {n(repayForm.amount) > 0 && (
                 <div className="flex flex-col gap-1.5">
                   <Label>Total debited from bank</Label>
-                  <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm font-medium">
+                  <div className={cn('flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm font-medium', __WEB__ && '!h-11 !rounded-[4px] !border-[#DCE7DB] !bg-[#F1F5EF] !text-[13.5px] !font-bold !tabular-nums !text-[#0A1F17]')}>
                     {formatINR(n(repayForm.amount))}
                   </div>
                 </div>
@@ -3910,7 +4432,13 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               <div className="flex flex-col gap-1.5 sm:col-span-2">
                 <Label>Bank document / payment letter <span className="text-[10px] font-normal text-muted-foreground">(optional)</span></Label>
                 <div className="flex items-center gap-2">
-                  <Button type="button" variant="outline" size="sm" onClick={() => void pickRepaymentDocument()}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className={cn(__WEB__ && '!h-11 !shrink-0 !rounded-[4px] !border-[#C3D2C6] !px-3.5 !text-[12px] !font-extrabold !uppercase !tracking-[.04em] !text-[#33473E]')}
+                    onClick={() => void pickRepaymentDocument()}
+                  >
                     <Paperclip className="h-3.5 w-3.5" /> Attach file
                   </Button>
                   {repayForm.document_path ? (
@@ -3918,25 +4446,56 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       {String(repayForm.document_path).split(/[\\/]/).pop()}
                     </span>
                   ) : (
-                    <span className="text-[11px] text-muted-foreground">No file attached — you can save without one</span>
+                    <span className={cn('text-[11px] text-muted-foreground', __WEB__ && '!text-[11.5px] !font-semibold !text-[#5A6B62]')}>No file attached — you can save without one</span>
                   )}
                 </div>
               </div>
               <div className="flex flex-col gap-1.5 sm:col-span-2"><Label>Note</Label><Input value={repayForm.note ?? ''} onChange={(e) => setRepayForm((p) => ({ ...p, note: e.target.value }))} /></div>
-              <label className="flex cursor-pointer items-center gap-2 text-[13px] sm:col-span-2">
+              {/* The one control here that moves money. As a bare checkbox
+                  on a line of 13px text it read like a preference; boxed, and
+                  turning green when it is on, it reads as the decision it is
+                  — the footer's own label changes with it. */}
+              <label
+                className={cn(
+                  'flex cursor-pointer items-center gap-2 text-[13px] sm:col-span-2',
+                  __WEB__ && '!items-start !gap-3 !rounded-[4px] !border !p-4 !text-[12.5px] !font-semibold !leading-relaxed',
+                  __WEB__ && (repayForm.posted ? '!border-[#BFE3CB] !bg-[#F4FBF6] !text-[#0B6B45]' : '!border-[#D6E2D6] !bg-white !text-[#33473E]')
+                )}
+              >
                 <input
                   type="checkbox"
-                  className="h-4 w-4"
+                  className={cn('h-4 w-4', __WEB__ && '!mt-0.5 !h-[18px] !w-[18px] !shrink-0 !accent-[#0B6B45]')}
                   checked={!!repayForm.posted}
                   onChange={(e) => setRepayForm((p) => ({ ...p, posted: e.target.checked }))}
                 />
-                Post to the books now — Dr LC Repayment (+ Maturity charges) / Cr Bank
+                <span>
+                  {__WEB__ ? <span className="font-extrabold">Post to the books now</span> : 'Post to the books now'}
+                  {__WEB__ ? (
+                    <span className="mt-0.5 block text-[11.5px] font-semibold text-[#5A6B62]">
+                      Dr LC Repayment (+ Maturity charges) / Cr Bank
+                    </span>
+                  ) : (
+                    ' — Dr LC Repayment (+ Maturity charges) / Cr Bank'
+                  )}
+                </span>
               </label>
             </div>
           )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRepayForm(null)}>Cancel</Button>
-            <Button disabled={busy} onClick={() => void saveRepayment()}>{busy ? 'Saving…' : repayForm?.posted ? 'Save & post' : 'Save as draft'}</Button>
+          <DialogFooter className={cn(__WEB__ && '!border-t !border-t-[#D6E2D6] !bg-white !px-5 !py-3.5')}>
+            <Button
+              variant="outline"
+              onClick={() => setRepayForm(null)}
+              className={cn(__WEB__ && '!h-12 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-6 !text-[13.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={busy}
+              onClick={() => void saveRepayment()}
+              className={cn(__WEB__ && '!h-12 !rounded-[4px] !bg-[#0B3D2E] !px-7 !text-[13.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#C7F03F] hover:!bg-[#0F4A38]')}
+            >
+              {busy ? 'Saving…' : repayForm?.posted ? 'Save & post' : 'Save as draft'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

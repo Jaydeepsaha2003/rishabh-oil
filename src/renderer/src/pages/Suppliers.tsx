@@ -62,7 +62,7 @@ const TYPE_DEFAULTS: Record<string, Record<string, number | boolean>> = {
 const baseColumns: ColumnDef[] = [
   { key: 'name', label: 'Name' },
   { key: 'supplier_type', label: 'Type' },
-  { key: 'business_type', label: 'Trading/Mfg' },
+  { key: 'business_type', label: 'Trading/Mfg', type: 'select' },
   { key: 'gst_pct', label: 'GST %', align: 'right' },
   { key: 'tds_pct', label: 'TDS %', align: 'right' },
   { key: 'credit_period_days', label: 'Credit days', align: 'right' },

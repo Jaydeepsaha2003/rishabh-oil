@@ -23,22 +23,14 @@ import {
   Calendar,
   Package,
   Truck,
-  Receipt,
-  Handshake,
-  MoreHorizontal,
-  MoreVertical,
-  ArrowLeft,
   ArrowRight,
   ChevronRight,
   Plus,
   Minus,
   X,
   CheckCircle2,
-  Circle,
-  Printer,
-  Share2,
   Pencil,
-  Ban,
+  Circle,
   User,
   ClipboardCheck
 } from 'lucide-react'
@@ -72,8 +64,12 @@ const T = {
   alert: '#D7263D'
 } as const
 
-const mono: React.CSSProperties = { fontFamily: "'IBM Plex Mono', monospace" }
-const sans: React.CSSProperties = { fontFamily: "'Manrope Variable', Manrope, system-ui, sans-serif" }
+// The website's Sales screens use the app's own type, not the handoff's
+// Manrope + IBM Plex Mono — the desktop register reads in the app font and a
+// phone showing the same invoice in a different face looked like a different
+// product. Kept as empty style objects so the call sites stay put.
+const mono: React.CSSProperties = {}
+const sans: React.CSSProperties = {}
 
 // ---------------------------------------------------------------------------
 // Data shaping — real rows from sales.list(), grouped into invoices the same
@@ -192,7 +188,6 @@ export function SalesMobile(): React.JSX.Element {
   const [products, setProducts] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
-  const [actionsOpen, setActionsOpen] = useState(false)
 
   const [query, setQuery] = useState('')
   const [filtersOpen, setFiltersOpen] = useState(false)
@@ -259,11 +254,8 @@ export function SalesMobile(): React.JSX.Element {
     return (
       <DetailScreen
         inv={selected}
-        actionsOpen={actionsOpen}
-        toggleActions={() => setActionsOpen((v) => !v)}
         onBack={() => {
           setScreen('list')
-          setActionsOpen(false)
         }}
       />
     )
@@ -303,7 +295,6 @@ export function SalesMobile(): React.JSX.Element {
       totalCount={invoices.length}
       onOpen={(key) => {
         setSelectedKey(key)
-        setActionsOpen(false)
         setScreen('detail')
       }}
       onNew={() => setScreen('new')}
@@ -338,12 +329,31 @@ function ListScreen(props: {
   return (
     <div style={{ ...sans, height: '100%', display: 'flex', flexDirection: 'column', background: T.surface, color: T.ink, overflow: 'hidden' }}>
       <div style={{ background: T.forest, color: '#fff', padding: '10px 16px 0', flex: 'none' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-          <div>
-            <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.03em', lineHeight: 1.1 }}>Sales</div>
-            <div style={{ fontSize: 11.5, color: T.greenMuted, marginTop: 3, fontWeight: 500 }}>Finished-goods dispatches</div>
-          </div>
+        {/* Only this row is inset — the sidebar's tap-to-open button sits in
+            the top-left corner and the title has to clear it. The search and
+            the range chips below run the full width. */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingLeft: 44 }}>
+          <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.03em', lineHeight: 1.1 }}>Sales</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/* New sale lives here now rather than in a bar along the bottom —
+                one tap from the list, and the list keeps the whole screen. */}
+            <div
+              onClick={props.onNew}
+              title="New sale"
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 3,
+                background: T.lime,
+                color: T.forest,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer'
+              }}
+            >
+              <Icon as={Plus} size={21} color={T.forest} />
+            </div>
             <div
               style={{
                 width: 34,
@@ -518,7 +528,9 @@ function ListScreen(props: {
         </div>
       </div>
 
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 14px 96px' }}>
+      {/* 20px at the foot, not 96 — that clearance existed to keep the list
+          clear of the floating New sale button, which is now in the header. */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 14px 20px' }}>
         {props.loading ? (
           <div style={{ textAlign: 'center', padding: '32px 0', color: T.inkFaint, fontSize: 13 }}>Loading…</div>
         ) : rows.length === 0 ? (
@@ -535,58 +547,11 @@ function ListScreen(props: {
         </div>
       </div>
 
-      <div style={{ flex: 'none', background: T.forest, display: 'flex', alignItems: 'stretch', position: 'relative' }}>
-        {[
-          { label: 'Sales', icon: Receipt, active: true },
-          { label: 'Bargains', icon: Handshake, active: false },
-          { label: 'Stock', icon: Package, active: false },
-          { label: 'More', icon: MoreHorizontal, active: false }
-        ].map((t) => (
-          <div
-            key={t.label}
-            style={{
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 3,
-              padding: '9px 0 10px',
-              minHeight: 56,
-              borderTop: `3px solid ${t.active ? T.lime : 'transparent'}`
-            }}
-          >
-            <Icon as={t.icon} size={22} color={t.active ? T.lime : T.greenDim} />
-            <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: t.active ? T.lime : T.greenDim }}>
-              {t.label}
-            </span>
-          </div>
-        ))}
-        <div
-          onClick={props.onNew}
-          style={{
-            position: 'absolute',
-            right: 14,
-            top: -64,
-            height: 52,
-            padding: '0 18px',
-            borderRadius: 4,
-            background: T.lime,
-            color: T.forest,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            fontSize: 14,
-            fontWeight: 800,
-            letterSpacing: '.02em',
-            boxShadow: '0 6px 18px rgba(11,61,46,.28)',
-            cursor: 'pointer'
-          }}
-        >
-          <Icon as={Plus} size={22} />
-          NEW SALE
-        </div>
-      </div>
+      {/* Nothing along the bottom. The handoff had a tab bar here (Sales /
+          Bargains / Stock / More) offering three destinations this screen
+          doesn't have, and later a New sale bar — both were taking a strip of
+          a phone screen permanently. New sale is a + in the header instead,
+          and navigation belongs to the sidebar. */}
     </div>
   )
 }
@@ -666,37 +631,92 @@ function InvoiceCard({ r, onOpen }: { r: Invoice; onOpen: () => void }): React.J
 // ---------------------------------------------------------------------------
 function DetailScreen({
   inv,
-  actionsOpen,
-  toggleActions,
   onBack
 }: {
   inv: Invoice
-  actionsOpen: boolean
-  toggleActions: () => void
   onBack: () => void
 }): React.JSX.Element {
-  const actions = [
-    { label: 'Edit sale', icon: Pencil },
-    { label: 'Print invoice', icon: Printer },
-    { label: 'Mark dispatched', icon: Truck },
-    { label: 'Cancel invoice', icon: Ban }
-  ]
+  // The ⋮ sheet is gone with its four placeholder actions (Edit sale, Print
+  // invoice, Mark dispatched, Cancel invoice). None of them did anything —
+  // they only closed the sheet. Print has no implementation anywhere in the
+  // app; Edit needs a form this screen doesn't have; and Mark dispatched and
+  // Cancel both write to live invoices, so they want the desktop's guard
+  // rails (a cancellation reason, the freight and stock prompts) rather than
+  // a one-tap version of themselves on a phone.
+
+  // The same trail the desktop drawer shows: the audit log keyed by this
+  // invoice's group, plus the gate register's own in/out entries. Same two
+  // sources, same merge — so a phone and a laptop tell the same story.
+  const [activity, setActivity] = useState<{ what: string; when: string; kind: 'created' | 'in' | 'out' | 'edit' }[]>([])
+  const [activityOpen, setActivityOpen] = useState(true)
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      const api = (window as unknown as { api: Record<string, any> }).api
+      const group = s(inv.lines[0]?.invoice_group)
+      if (!group) return
+      const [hist, gate] = await Promise.all([
+        api.access?.entityHistory?.('Sale', { key: group, limit: 100 }).catch(() => []) ?? [],
+        api.gate?.forRecord?.({ invoiceGroup: group }).catch(() => ({ rows: [] })) ?? { rows: [] }
+      ])
+      if (!alive) return
+      const out: { what: string; when: string; kind: 'created' | 'in' | 'out' | 'edit' }[] = []
+      for (const h of (hist || []) as Row[]) {
+        const action = s(h.action)
+        out.push({
+          what: `${action}${h.username ? ` by ${s(h.username)}` : ''}`,
+          when: s(h.created_at),
+          kind: /^created/i.test(action) ? 'created' : 'edit'
+        })
+      }
+      for (const g of ((gate?.rows || []) as Row[])) {
+        const dir = s(g.direction) === 'out' ? 'out' : 'in'
+        out.push({
+          what: `Tanker gate ${dir}${g.tanker_no ? ` — ${s(g.tanker_no)}` : ''}`,
+          when: [s(g.entry_date), s(g.entry_time)].filter(Boolean).join(' '),
+          kind: dir
+        })
+      }
+      out.sort((a, b) => a.when.localeCompare(b.when))
+      setActivity(out)
+    })()
+    return () => {
+      alive = false
+    }
+  }, [inv.key])
 
   return (
     <div style={{ ...sans, display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: T.card }}>
-      <div style={{ flex: 'none', background: T.forest, color: '#fff', padding: '8px 10px 16px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div onClick={onBack} style={{ height: 44, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 5, fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
-            <Icon as={ArrowLeft} size={22} />
-            Sales
-          </div>
-          <div onClick={toggleActions} style={{ width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
-            <Icon as={MoreVertical} size={24} />
+      <div style={{ flex: 'none', background: T.forest, color: '#fff', padding: '6px 8px 11px' }}>
+        {/* No "← Sales" control here. It sat in the top-left corner, which is
+            where the sidebar's own tap-to-open button is fixed — the two
+            overlapped and the word read as "ales". The ✕ closes back to the
+            list, so nothing is lost by dropping it. */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', minHeight: 38 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            {/* Closes back to the list — the drawer on the desktop has the
+                same ✕ in the same corner. */}
+            <div
+              onClick={onBack}
+              title="Close"
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 3,
+                background: 'rgba(255,255,255,.1)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer'
+              }}
+            >
+              <Icon as={X} size={19} />
+            </div>
           </div>
         </div>
-        <div style={{ padding: '6px 8px 0' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
-            <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.02em', ...mono }}>{inv.invoiceNo}</div>
+        <div style={{ padding: '4px 8px 0' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.02em', ...mono }}>{inv.invoiceNo}</div>
             <div
               style={{
                 display: 'flex',
@@ -705,94 +725,132 @@ function DetailScreen({
                 background: T.lime,
                 color: T.limeText,
                 borderRadius: 3,
-                padding: '4px 9px',
-                fontSize: 10.5,
+                padding: '3px 7px',
+                fontSize: 10,
                 fontWeight: 800,
                 textTransform: 'uppercase',
                 letterSpacing: '.05em'
               }}
             >
-              <Icon as={Truck} size={15} color={T.limeText} />
+              <Icon as={Truck} size={14} color={T.limeText} />
               {inv.dispatched ? 'Dispatched' : 'Pending'}
             </div>
           </div>
-          <div style={{ fontSize: 13.5, color: T.greenMuted, marginTop: 5, fontWeight: 600 }}>
+          <div style={{ fontSize: 12.5, color: T.greenMuted, marginTop: 3, fontWeight: 600 }}>
             {fmtDate(inv.date)} · {inv.customer}
           </div>
         </div>
       </div>
 
-      {actionsOpen && (
-        <div style={{ flex: 'none', background: T.forestDeep, color: '#fff' }}>
-          {actions.map((a) => (
-            <div
-              key={a.label}
-              onClick={toggleActions}
-              style={{ padding: '13px 20px', fontSize: 14, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 11, borderTop: '1px solid rgba(255,255,255,.07)', cursor: 'pointer' }}
-            >
-              <Icon as={a.icon} size={20} color={T.lime} />
-              {a.label}
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', background: T.surface, padding: '10px 12px 16px' }}>
+        {/* Three cards, same set the desktop drawer shows. */}
+        <div style={{ display: 'flex', gap: 7 }}>
+          {[
+            { k: 'Qty', v: fmtQty(inv.qty) },
+            { k: 'Freight', v: inv.freightTerm },
+            { k: 'Items', v: `${inv.itemCount} item${inv.itemCount > 1 ? 's' : ''}` }
+          ].map((st) => (
+            <div key={st.k} style={{ flex: 1, minWidth: 0, background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, padding: '8px 9px' }}>
+              <div style={{ fontSize: 9, letterSpacing: '.12em', textTransform: 'uppercase', color: T.inkFaint, fontWeight: 800 }}>{st.k}</div>
+              <div style={{ fontSize: 15.5, fontWeight: 700, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{st.v}</div>
             </div>
           ))}
         </div>
-      )}
-
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', background: T.surface, padding: '14px 16px 20px' }}>
-        <div style={{ display: 'flex', gap: 9 }}>
-          <div style={{ flex: 1, background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, padding: '11px 12px' }}>
-            <div style={{ fontSize: 9.5, letterSpacing: '.12em', textTransform: 'uppercase', color: T.inkFaint, fontWeight: 800 }}>Qty</div>
-            <div style={{ fontSize: 19, fontWeight: 700, marginTop: 4, ...mono }}>{fmtQty(inv.qty)}</div>
-          </div>
-          <div style={{ flex: 1, background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, padding: '11px 12px' }}>
-            <div style={{ fontSize: 9.5, letterSpacing: '.12em', textTransform: 'uppercase', color: T.inkFaint, fontWeight: 800 }}>Freight</div>
-            <div style={{ fontSize: 19, fontWeight: 700, marginTop: 4 }}>{inv.freightTerm}</div>
-          </div>
-        </div>
 
         {inv.offStock && (
-          <div style={{ background: T.warnFill, borderLeft: `4px solid ${T.warnRule}`, borderRadius: 4, padding: '11px 12px', marginTop: 9, display: 'flex', gap: 9, alignItems: 'flex-start' }}>
-            <Icon as={AlertTriangle} size={20} color={T.warnRule} />
-            <div>
-              <div style={{ fontSize: 12.5, fontWeight: 800, color: T.warnText, letterSpacing: '.01em' }}>Off-stock dispatch</div>
-              <div style={{ fontSize: 11.5, color: T.warnText2, marginTop: 2, fontWeight: 500, lineHeight: 1.4 }}>
-                Dispatched without matching finished-goods stock.
-              </div>
+          <div style={{ background: T.warnFill, borderLeft: `4px solid ${T.warnRule}`, borderRadius: 4, padding: '8px 10px', marginTop: 8, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <Icon as={AlertTriangle} size={17} color={T.warnRule} />
+            <div style={{ fontSize: 11, color: T.warnText2, fontWeight: 600, lineHeight: 1.35 }}>
+              <b style={{ color: T.warnText }}>Off-stock dispatch.</b> No matching finished-goods stock at dispatch time.
             </div>
           </div>
         )}
 
-        <div style={{ fontSize: 9.5, letterSpacing: '.14em', textTransform: 'uppercase', color: T.inkFaint, fontWeight: 800, margin: '18px 0 8px' }}>Line items</div>
+        <div style={{ fontSize: 9, letterSpacing: '.14em', textTransform: 'uppercase', color: T.inkFaint, fontWeight: 800, margin: '12px 0 6px' }}>Line items</div>
         <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, overflow: 'hidden' }}>
           {inv.lines.map((li, i) => (
-            <div key={i} style={{ padding: 12, borderBottom: `1px solid ${T.divider}`, display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+            <div key={i} style={{ padding: '8px 10px', borderBottom: `1px solid ${T.divider}`, display: 'flex', justifyContent: 'space-between', gap: 9 }}>
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 13.5, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s(li.product_name)}</div>
-                <div style={{ fontSize: 11.5, color: T.inkMuted, marginTop: 2, ...mono }}>
+                {/* Packed lines are sold as their SKU, same as the desktop. */}
+                <div style={{ fontSize: 12.5, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {s(li.packaging_name) || s(li.product_name)}
+                </div>
+                <div style={{ fontSize: 10.5, color: T.inkMuted, marginTop: 1, ...mono }}>
                   {fmtQty(n(li.qty))} × {fmtINR(n(li.rate))}
                 </div>
               </div>
-              <div style={{ fontSize: 13.5, fontWeight: 700, ...mono, flex: 'none' }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, ...mono, flex: 'none' }}>
                 {fmtINR(n(li.amount) + n(li.gst_amount) + n(li.round_off) - n(li.tds_amount))}
               </div>
             </div>
           ))}
-          <div style={{ padding: 13, background: T.lime, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-            <span style={{ fontSize: 10.5, fontWeight: 800, color: T.limeTextAlt, textTransform: 'uppercase', letterSpacing: '.08em' }}>Invoice total</span>
-            <span style={{ fontSize: 18, fontWeight: 700, color: T.limeText, ...mono, letterSpacing: '-0.02em' }}>{fmtINR(inv.total)}</span>
+          <div style={{ padding: '9px 10px', background: T.lime, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+            <span style={{ fontSize: 10, fontWeight: 800, color: T.limeTextAlt, textTransform: 'uppercase', letterSpacing: '.08em' }}>Invoice total</span>
+            <span style={{ fontSize: 16, fontWeight: 700, color: T.limeText, ...mono, letterSpacing: '-0.02em' }}>{fmtINR(inv.total)}</span>
           </div>
         </div>
+
+        {/* Collapsible: the trail grows with every edit and gate movement, and
+            on a phone a long one buries everything above it. */}
+        <div
+          onClick={() => setActivityOpen((v) => !v)}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            margin: '12px 0 6px',
+            cursor: 'pointer',
+            userSelect: 'none'
+          }}
+        >
+          <span style={{ fontSize: 9, letterSpacing: '.14em', textTransform: 'uppercase', color: T.inkFaint, fontWeight: 800 }}>
+            Activity
+          </span>
+          {activity.length > 0 && (
+            <span style={{ fontSize: 9.5, fontWeight: 800, color: T.inkFaint, background: T.chipFill, borderRadius: 2, padding: '1px 5px' }}>
+              {activity.length}
+            </span>
+          )}
+          <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', transform: activityOpen ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }}>
+            <Icon as={ChevronRight} size={16} color={T.inkFaint} />
+          </span>
+        </div>
+        {activityOpen && (
+        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, padding: '2px 10px' }}>
+          {activity.length === 0 ? (
+            <div style={{ padding: '14px 0', textAlign: 'center', fontSize: 11.5, color: T.inkFaint }}>
+              Nothing recorded against this invoice yet.
+            </div>
+          ) : (
+            activity.map((a, i) => (
+              <div
+                key={i}
+                style={{
+                  display: 'flex',
+                  gap: 9,
+                  padding: '8px 0',
+                  borderBottom: i === activity.length - 1 ? 'none' : `1px solid ${T.divider}`
+                }}
+              >
+                <Icon
+                  as={a.kind === 'created' ? CheckCircle2 : a.kind === 'in' ? ArrowRight : a.kind === 'out' ? Truck : Pencil}
+                  size={17}
+                  color={T.green}
+                />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700 }}>{a.what}</div>
+                  <div style={{ fontSize: 10.5, color: T.inkFaint, fontWeight: 600, marginTop: 1, ...mono }}>{a.when || '—'}</div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+        )}
       </div>
 
-      <div style={{ flex: 'none', background: T.card, borderTop: `1px solid ${T.border}`, padding: '10px 16px 12px', display: 'flex', gap: 9 }}>
-        <div style={{ flex: 1, height: 50, borderRadius: 4, border: `1.5px solid ${T.forest}`, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 13.5, fontWeight: 800, color: T.forest, letterSpacing: '.03em' }}>
-          <Icon as={Printer} size={20} color={T.forest} />
-          PRINT
-        </div>
-        <div style={{ flex: 1.4, height: 50, borderRadius: 4, background: T.forest, color: T.lime, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 13.5, fontWeight: 800, letterSpacing: '.03em' }}>
-          <Icon as={Share2} size={20} color={T.lime} />
-          SHARE INVOICE
-        </div>
-      </div>
+      {/* No PRINT / SHARE INVOICE bar. The handoff drew one, but neither
+          action exists on this screen — they were buttons that did nothing,
+          taking up the most valuable strip on a phone. */}
     </div>
   )
 }

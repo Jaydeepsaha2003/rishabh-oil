@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  Ban, ChevronLeft, ChevronRight, ClipboardList, RotateCcw,
+  Ban, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, RotateCcw,
   LogIn, LogOut, Pencil, Scale, Trash2, Truck } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Badge } from '@/components/ui/badge'
@@ -207,6 +207,10 @@ export function GateEntry(): React.JSX.Element {
     })
   }, [rows, gFrom, gTo, gCats, gDir, gKind, gStatus, gSearch])
   const paged = usePaged(filteredRows)
+  // Summary tiles start closed: the register below carries the same rows,
+  // and this tab is opened to find an entry far more often than to read a
+  // total.
+  const [kpiOpen, setKpiOpen] = useState(false)
   const [tankers, setTankers] = useState<Row[]>([])
   const [suppliers, setSuppliers] = useState<Row[]>([])
   // Every active party, both sides — the manual-vehicle picker spans them.
@@ -240,7 +244,10 @@ export function GateEntry(): React.JSX.Element {
 
   function modeToggle(mode: 'with' | 'without', set: (m: 'with' | 'without') => void, pending: number): React.JSX.Element {
     return (
-      <div className="mb-3 inline-flex rounded-lg border border-[#d9d2b8] bg-[#f1ecd9] p-0.5">
+      <div className={cn(
+        'mb-3 inline-flex rounded-lg border border-[#d9d2b8] bg-[#f1ecd9] p-0.5',
+        __WEB__ && '!gap-0.5 !rounded-[4px] !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px]'
+      )}>
         {(['with', 'without'] as const).map((m) => (
           <button
             key={m}
@@ -248,12 +255,21 @@ export function GateEntry(): React.JSX.Element {
             onClick={() => set(m)}
             className={cn(
               'cursor-pointer rounded-md px-3.5 py-1.5 text-[12px] font-semibold transition-colors',
-              mode === m ? 'bg-[#1a2c56] text-white' : 'text-muted-foreground hover:text-foreground'
+              mode === m ? 'bg-[#1a2c56] text-white' : 'text-muted-foreground hover:text-foreground',
+              __WEB__ && '!h-[34px] !rounded-[2px] !px-3.5 !text-[12.5px]',
+              __WEB__ && (mode === m ? '!bg-[#0B3D2E] !font-extrabold !text-white' : '!font-bold !text-[#5A6B62] hover:!text-[#0A1F17]')
             )}
           >
             {m === 'with' ? 'With weighment' : 'Without weighment'}
             {m === 'with' && pending > 0 && (
-              <span className={cn('ml-1.5 rounded-full px-1.5 text-[10px]', mode === m ? 'bg-white/20' : 'bg-amber-200 text-amber-900')}>
+              <span
+                className={cn(
+                  'ml-1.5 rounded-full px-1.5 text-[10px]',
+                  mode === m ? 'bg-white/20' : 'bg-amber-200 text-amber-900',
+                  __WEB__ && '!rounded-[2px] !px-1.5 !py-[2px] !text-[11px] !font-extrabold !tabular-nums',
+                  __WEB__ && (mode === m ? '!bg-[#C7F03F]/20 !text-[#C7F03F]' : '!bg-[#DCE7DB] !text-[#33473E]')
+                )}
+              >
                 {pending}
               </span>
             )}
@@ -801,18 +817,29 @@ export function GateEntry(): React.JSX.Element {
   // the tab supplies the direction.
   function quickEntry(dir: 'in' | 'out'): React.JSX.Element {
     return (
-        <section className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white">
-          <div className="mb-3 flex items-center gap-2 border-b border-dotted border-[#e5dfc8] pb-1.5">
+        <section
+          className={cn(
+            'rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white',
+            __WEB__ &&
+              '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-12 [&_input]:!rounded-[4px] [&_input]:!text-[14px] [&_input]:!font-semibold [&_[data-slot=select-trigger]]:!h-12 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-12 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[14px]'
+          )}
+        >
+          <div
+            className={cn(
+              'mb-3 flex items-center gap-2 border-b border-dotted border-[#e5dfc8] pb-1.5',
+              __WEB__ && '!mb-0 !gap-2.5 !border-b !border-solid !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[18px] !py-3'
+            )}
+          >
             <div className="flex h-7 w-7 items-center justify-center rounded-md bg-slate-200 text-slate-700">
               <ClipboardList className="h-4 w-4" />
             </div>
-            <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Without weighment — quick entry</h3>
+            <h3 className={cn('text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!text-[12px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]')}>Without weighment — quick entry</h3>
             <InfoTip text="The plain gate-register line: which vehicle, who it is with, and what it carries. It completes on the spot — no weighment, no invoice, and it touches no stock or purchase." />
             <span className="ml-auto rounded bg-slate-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-slate-700">
               {dir === 'in' ? 'Coming in' : 'Going out'}
             </span>
           </div>
-          <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4">
+          <div className={cn('grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4', __WEB__ && '!gap-x-4 !gap-y-4 !p-[18px]')}>
             <div className="flex min-w-0 flex-col gap-1">
               <Label>Vehicle number *</Label>
               <Input
@@ -846,8 +873,34 @@ export function GateEntry(): React.JSX.Element {
               <Label>Date</Label>
               <DatePicker min={minDate} value={quick.entry_date || ''} onChange={(v) => setQuick((p) => ({ ...p, entry_date: v }))} />
             </div>
+            {/* The action joins the field row, as it does on the two cards
+                above — same forest button, same height. It was slate, which
+                is not a colour this page uses anywhere else. */}
+            {__WEB__ && (
+              <div className="flex min-w-0 flex-col gap-1">
+                <Label className="!opacity-0" aria-hidden>
+                  .
+                </Label>
+                <Button
+                  className="!h-12 !w-full !gap-2 !rounded-[4px] !bg-[#0B6B45] !text-[13px] !font-extrabold !uppercase !tracking-[.04em] !text-white hover:!bg-[#0A5D3C]"
+                  onClick={() => void recordQuick(dir)}
+                  disabled={savingQuick}
+                >
+                  <ClipboardList className="h-[18px] w-[18px]" />
+                  {savingQuick ? 'Saving…' : 'Log entry'}
+                </Button>
+              </div>
+            )}
           </div>
-          <div className="mt-4 flex items-center justify-end gap-3">
+          {/* The note stays — it is the one thing that tells a clerk this
+              card behaves differently from the weighment ones — but it sits
+              under the row rather than beside a button that has moved. */}
+          {__WEB__ && (
+            <div className="border-t border-t-[#EAF0E9] px-[18px] py-2.5 text-[11.5px] font-semibold text-[#5A6B62]">
+              Completes immediately — nothing waits for weighment.
+            </div>
+          )}
+          <div className={cn('mt-4 flex items-center justify-end gap-3', __WEB__ && '!hidden')}>
             <span className="text-[11px] text-muted-foreground">Completes immediately — nothing waits for weighment.</span>
             <Button className="h-8 bg-slate-800 px-4 text-[13px] font-semibold hover:bg-slate-900" onClick={() => void recordQuick(dir)} disabled={savingQuick}>
               <ClipboardList className="h-4 w-4" />
@@ -875,12 +928,22 @@ export function GateEntry(): React.JSX.Element {
     return (
         <section>
           <div className="mb-2 flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-100 text-amber-700">
-              <Scale className="h-4 w-4" />
+            <div className={cn('flex h-7 w-7 items-center justify-center rounded-md bg-amber-100 text-amber-700', __WEB__ && '!h-8 !w-8 !rounded-[3px] !bg-[#FFEDD0] !text-[#C2700A]')}>
+              <Scale className={cn('h-4 w-4', __WEB__ && '!h-[19px] !w-[19px]')} />
             </div>
-            <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Waiting for weighment</h3>
+            <h3 className={cn('text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!text-[12px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]')}>Waiting for weighment</h3>
             <InfoTip text="Enter the weighbridge Gross and Tare; the net (gross − tare) is calculated and completes the entry." />
-            <Badge variant={list.length ? 'warning' : 'muted'} className="ml-1">{list.length}</Badge>
+            <Badge
+              variant={list.length ? 'warning' : 'muted'}
+              className={cn('ml-1', __WEB__ && '!rounded-[2px] !border-0 !bg-[#FFEDD0] !px-2.5 !py-1 !text-[12.5px] !font-extrabold !tabular-nums !text-[#8A5300]')}
+            >
+              {list.length}
+            </Badge>
+            {__WEB__ && list.length > 0 && (
+              <span className="ml-auto text-[12px] font-bold text-[#5A6B62]">
+                Gross taken · tare weight still needed on {list.length === 1 ? 'it' : `all ${list.length}`}
+              </span>
+            )}
           </div>
           {list.length === 0 ? (
             noTanker.length > 0 ? (
@@ -921,7 +984,7 @@ export function GateEntry(): React.JSX.Element {
               </div>
             )
           ) : (
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className={cn('grid gap-3 sm:grid-cols-2 xl:grid-cols-4', __WEB__ && '!gap-3 xl:!grid-cols-3')}>
               {list.map((row) => {
                 // One accent per direction, carried through the whole card —
                 // not just the little icon badge — so a grid of these reads
@@ -934,22 +997,31 @@ export function GateEntry(): React.JSX.Element {
                   key={row.id}
                   className={cn(
                     'flex flex-col rounded-xl border border-l-4 border-slate-200 bg-card shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md',
-                    dirColor.border
+                    dirColor.border,
+                    // The left mark carries the state, not the direction: green
+                    // once the pair is complete, amber while a weight is still
+                    // owed. The IN / OUT badge already says which way it went.
+                    // A stronger outline than the page's usual #D6E2D6: these
+                    // cards sit on white, three to a row, and at the lighter
+                    // weight the eye could not tell where one ended and the
+                    // next began.
+                    __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#C3D2C6] !bg-white !shadow-[0_1px_2px_rgba(10,31,23,.05)] !transition-none hover:!translate-y-0 hover:!border-[#8FBFA8]',
+                    __WEB__ && (storedWeights(row).gross !== '' && storedWeights(row).tare !== '' ? '!border-l-[#12855A]' : '!border-l-[#C2700A]')
                   )}
                 >
                   {/* Identity strip: vehicle + direction, never wrapping. */}
-                  <div className={cn('flex items-center gap-2 rounded-tr-xl border-b px-3 py-2', dirColor.headerBg, dirColor.headerBorder)}>
-                    <span className={cn('inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md', dirColor.icon)}>
-                      {row.direction === 'out' ? <LogOut className="h-3.5 w-3.5" /> : <LogIn className="h-3.5 w-3.5" />}
+                  <div className={cn('flex items-center gap-2 rounded-tr-xl border-b px-3 py-2', dirColor.headerBg, dirColor.headerBorder, __WEB__ && '!gap-2.5 !rounded-none !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-3.5 !py-3')}>
+                    <span className={cn('inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md', dirColor.icon, __WEB__ && '!h-auto !w-auto !bg-transparent !text-[#0B6B45]')}>
+                      {row.direction === 'out' ? <LogOut className={cn('h-3.5 w-3.5', __WEB__ && '!h-[19px] !w-[19px]')} /> : <LogIn className={cn('h-3.5 w-3.5', __WEB__ && '!h-[19px] !w-[19px]')} />}
                     </span>
-                    <span className="truncate text-[13.5px] font-bold tracking-wide">{row.tanker_no}</span>
-                    <span className={cn('ml-auto shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wide', dirColor.badge)}>
+                    <span className={cn('truncate text-[13.5px] font-bold tracking-wide', __WEB__ && '!text-[16px] !tracking-[-0.01em]')}>{row.tanker_no}</span>
+                    <span className={cn('ml-auto shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wide', dirColor.badge, __WEB__ && '!rounded-[2px] !bg-[#0B3D2E] !px-2.5 !py-1 !text-[10.5px] !font-extrabold !tracking-[.08em] !text-[#C7F03F]')}>
                       {row.direction === 'out' ? 'OUT' : 'IN'}
                     </span>
                   </div>
 
-                  <div className="flex flex-1 flex-col px-3 pb-3 pt-2">
-                    <div className="truncate text-[12.5px] font-medium" title={String(row.direction === 'out' ? row.sale_customer || '' : row.supplier_name || '')}>
+                  <div className={cn('flex flex-1 flex-col px-3 pb-3 pt-2', __WEB__ && '!px-3.5 !pb-3.5 !pt-3')}>
+                    <div className={cn('truncate text-[12.5px] font-medium', __WEB__ && '!text-[13.5px] !font-extrabold !tracking-[-0.01em]')} title={String(row.direction === 'out' ? row.sale_customer || '' : row.supplier_name || '')}>
                       {row.direction === 'out'
                         ? (row.sale_invoice || row.sale_customer
                             ? <>{row.sale_customer || '—'}{row.sale_invoice ? <span className="text-muted-foreground"> · {row.sale_invoice}</span> : ''}</>
@@ -960,6 +1032,24 @@ export function GateEntry(): React.JSX.Element {
                         sentence — each its own colour so the three read as
                         distinct facts (identity, kind, claim) rather than one
                         flat grey row. */}
+                    {__WEB__ ? (
+                      // The handoff runs these as a chip row rather than three
+                      // coloured tiles — four colours competing on a card this
+                      // small made the tare box, which is the thing to fill in,
+                      // no louder than the metadata around it.
+                      <div className="mt-3 flex flex-wrap items-center gap-2 rounded-[3px] border border-[#E4ECE3] bg-[#F7FAF6] px-2.5 py-2">
+                        <span className="rounded-[2px] bg-white px-2 py-1 text-[11.5px] font-bold tabular-nums text-[#33473E]">
+                          {String(row.gate_entry_no || '—')}
+                        </span>
+                        <span className="rounded-[2px] bg-white px-2 py-1 text-[11px] font-extrabold tracking-[.05em] text-[#33473E]">
+                          {String(row.rec_type || 'OIL')}
+                        </span>
+                        <span className="text-[11.5px] font-semibold tabular-nums text-[#5A6B62]">{formatDate(row.entry_date)}</span>
+                        <span className="ml-auto text-[11.5px] font-bold tabular-nums text-[#5A6B62]">
+                          Dis {dispatchLabel(row, row.uom)}
+                        </span>
+                      </div>
+                    ) : (
                     <div className="mt-1.5 grid grid-cols-3 gap-1 text-center">
                       {[
                         { l: 'Gate no', v: String(row.gate_entry_no || '—'), cls: 'bg-slate-100 text-slate-700' },
@@ -972,6 +1062,7 @@ export function GateEntry(): React.JSX.Element {
                         </div>
                       ))}
                     </div>
+                    )}
                     {(() => {
                       const w = storedWeights(row)
                       const hasG = w.gross !== '' && Number(w.gross) > 0
@@ -993,22 +1084,36 @@ export function GateEntry(): React.JSX.Element {
                               label through to a filled box, so which is which
                               — and which is already entered — reads at a
                               glance instead of two identical white inputs. */}
-                          <div className="mt-2.5 grid grid-cols-2 gap-x-2 gap-y-0.5">
+                          <div
+                            className={cn(
+                              'mt-2.5 grid grid-cols-2 gap-x-2 gap-y-0.5',
+                              // Boxed as one block: Gross and Tare are a pair
+                              // that produces a single number, and two loose
+                              // inputs on a white card did not say so.
+                              __WEB__ &&
+                                '!mt-3 !gap-x-3 !gap-y-2 !rounded-[3px] !border !border-[#E4ECE3] !p-3'
+                            )}
+                          >
                             <label
-                              className="truncate text-[9px] font-semibold uppercase tracking-wide text-sky-700"
+                              className={cn('truncate text-[9px] font-semibold uppercase tracking-wide text-sky-700', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.11em] !text-[#5A6B62]')}
                               title={row.direction === 'out' ? 'Gross — loaded, at exit' : 'Gross — loaded, at arrival'}
                             >
                               Gross <span className="font-normal normal-case text-muted-foreground">({row.uom}, loaded)</span>
                             </label>
                             <label
-                              className="truncate text-[9px] font-semibold uppercase tracking-wide text-amber-700"
+                              className={cn('truncate text-[9px] font-semibold uppercase tracking-wide text-amber-700', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.11em] !text-[#5A6B62]')}
                               title={row.direction === 'out' ? 'Tare — empty, at arrival' : 'Tare — empty, at exit'}
                             >
                               Tare <span className="font-normal normal-case text-muted-foreground">({row.uom}, empty)</span>
                             </label>
                             <Input
                               type="number"
-                              className={cn('h-8 text-right tabular-nums', hasG ? 'border-emerald-300 bg-emerald-50/60 font-semibold text-emerald-900' : 'border-sky-200 focus-visible:ring-sky-400')}
+                              className={cn(
+                                'h-8 text-right tabular-nums',
+                                hasG ? 'border-emerald-300 bg-emerald-50/60 font-semibold text-emerald-900' : 'border-sky-200 focus-visible:ring-sky-400',
+                                __WEB__ && '!h-12 !rounded-[4px] !text-[17px] !font-bold',
+                                __WEB__ && (hasG ? '!border-[#C3D2C6] !bg-white !text-[#0A1F17]' : '!border-[#E3C58C] !bg-white')
+                              )}
                               placeholder="0.000"
                               value={w.gross}
                               onChange={(e) => setW('gross', e.target.value)}
@@ -1016,7 +1121,12 @@ export function GateEntry(): React.JSX.Element {
                             />
                             <Input
                               type="number"
-                              className={cn('h-8 text-right tabular-nums', hasT ? 'border-emerald-300 bg-emerald-50/60 font-semibold text-emerald-900' : 'border-amber-200 focus-visible:ring-amber-400')}
+                              className={cn(
+                                'h-8 text-right tabular-nums',
+                                hasT ? 'border-emerald-300 bg-emerald-50/60 font-semibold text-emerald-900' : 'border-amber-200 focus-visible:ring-amber-400',
+                                __WEB__ && '!h-12 !rounded-[4px] !text-[17px] !font-bold',
+                                __WEB__ && (hasT ? '!border-[#C3D2C6] !bg-white !text-[#0A1F17]' : '!border-[#E3C58C] !bg-white')
+                              )}
                               placeholder="0.000"
                               value={w.tare}
                               onChange={(e) => setW('tare', e.target.value)}
@@ -1030,15 +1140,15 @@ export function GateEntry(): React.JSX.Element {
                               known, so it needs the same NA option everything
                               else already gets here. */}
                           {(!isOil || row.direction === 'out') && (
-                            <div className="mt-1.5 flex flex-col gap-0.5">
+                            <div className={cn('mt-1.5 flex flex-col gap-0.5', __WEB__ && '!mt-2.5 !gap-2 !rounded-[3px] !border !border-[#E4ECE3] !p-3')}>
                               <label
-                                className="truncate text-[9px] font-semibold uppercase tracking-wide text-rose-700"
+                                className={cn('truncate text-[9px] font-semibold uppercase tracking-wide text-rose-700', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.11em] !text-[#5A6B62]')}
                                 title="The quantity the challan declares — or NA when it gives none"
                               >
                                 Dis. qty <span className="font-normal normal-case text-muted-foreground">({row.uom}, per challan)</span>
                               </label>
                               <Input
-                                className="h-8 border-rose-200 text-right tabular-nums focus-visible:ring-rose-400"
+                                className={cn('h-8 border-rose-200 text-right tabular-nums focus-visible:ring-rose-400', __WEB__ && '!h-12 !rounded-[4px] !border-[#C3D2C6] !text-[15px] !font-bold')}
                                 placeholder="0.000 or NA"
                                 value={w.dispatch}
                                 onChange={(e) => setW('dispatch', cleanDispatch(e.target.value))}
@@ -1048,16 +1158,18 @@ export function GateEntry(): React.JSX.Element {
                           )}
                           {/* One figure saves and waits; both complete. */}
                           {(hasG || hasT) && !both && (
-                            <div className="mt-1.5 flex items-center gap-1.5 rounded-lg bg-amber-100 px-2 py-1.5 text-[10.5px] font-semibold text-amber-900">
-                              <Scale className="h-3 w-3 shrink-0" />
+                            <div className={cn('mt-1.5 flex items-center gap-1.5 rounded-lg bg-amber-100 px-2 py-1.5 text-[10.5px] font-semibold text-amber-900', __WEB__ && '!mt-3 !gap-2 !rounded-[3px] !border !border-[#F0E4CB] !bg-[#FFFBF2] !px-2.5 !py-2.5 !text-[12px] !font-bold !text-[#8A5300]')}>
+                              <Scale className={cn('h-3 w-3 shrink-0', __WEB__ && '!h-[17px] !w-[17px] !text-[#C2700A]')} />
                               {hasG ? 'Gross recorded — waiting for the tare weight' : 'Tare recorded — waiting for the gross weight'}
                             </div>
                           )}
-                          <div className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-dotted border-amber-200 pt-2.5">
+                          <div className={cn('mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-dotted border-amber-200 pt-2.5', __WEB__ && '!mt-3 !border-t !border-solid !border-t-[#E4ECE3] !pt-3')}>
                             <span
                               className={cn(
                                 'inline-flex items-baseline gap-1 rounded-md px-2 py-1 text-[12px]',
-                                ready ? 'bg-emerald-100 font-bold text-emerald-800' : 'bg-slate-100 text-muted-foreground'
+                                ready ? 'bg-emerald-100 font-bold text-emerald-800' : 'bg-slate-100 text-muted-foreground',
+                                __WEB__ && '!rounded-[3px] !px-2.5 !py-1.5 !text-[13px]',
+                                __WEB__ && (ready ? '!bg-[#DFF0C4] !text-[#12280B]' : '!bg-[#F7FAF6] !text-[#5A6B62]')
                               )}
                             >
                               <span className="text-[9px] font-semibold uppercase tracking-wide opacity-70">Net</span>
@@ -1078,7 +1190,7 @@ export function GateEntry(): React.JSX.Element {
                               <Button
                                 size="sm"
                                 variant="outline"
-                                className="h-8 border-rose-300 px-2 text-[11px] text-rose-700 hover:bg-rose-50"
+                                className={cn('h-8 border-rose-300 px-2 text-[11px] text-rose-700 hover:bg-rose-50', __WEB__ && '!h-10 !rounded-[4px] !border-[1.5px] !border-[#F0D6D4] !bg-[#FDF3F2] !px-3.5 !text-[12.5px] !font-extrabold !text-[#B3261E] hover:!bg-[#FBE9E7]')}
                                 title="This tanker will never be weighed — the party refused it and it went elsewhere"
                                 onClick={() => openReject(row)}
                               >
@@ -1099,7 +1211,9 @@ export function GateEntry(): React.JSX.Element {
                                 size="sm"
                                 className={cn(
                                   'h-8 font-semibold',
-                                  ready ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-sky-600 hover:bg-sky-700'
+                                  ready ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-sky-600 hover:bg-sky-700',
+                                  __WEB__ && '!h-10 !rounded-[4px] !px-4 !text-[12.5px] !font-extrabold',
+                                  __WEB__ && (ready ? '!bg-[#0B3D2E] !text-[#C7F03F] hover:!bg-[#0F4A38]' : '!bg-[#33473E] !text-white hover:!bg-[#0B3D2E]')
                                 )}
                                 disabled={!hasG && !hasT}
                                 title={
@@ -1217,62 +1331,105 @@ export function GateEntry(): React.JSX.Element {
       <div className="w-full px-4 py-5">
         <Tabs value={tab} onValueChange={setTab}>
           <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-            <TabsList className="bg-gradient-to-r from-[#0b1530] to-[#152449] p-1 text-white/60">
+            <TabsList
+              className={cn(
+                'bg-gradient-to-r from-[#0b1530] to-[#152449] p-1 text-white/60',
+                __WEB__ && '!gap-0.5 !rounded-[4px] !bg-[#0B3D2E] !bg-none !p-1 [&>button]:!h-9 [&>button]:!gap-2 [&>button]:!rounded-[2px] [&>button]:!px-3.5 [&>button]:!text-[13px] [&>button]:!font-extrabold [&>button]:!text-[#8FBFA8] [&>button:hover]:!text-white'
+              )}
+            >
               <TabsTrigger
                 value="in"
-                className="data-[state=active]:bg-emerald-700 data-[state=active]:text-white data-[state=active]:shadow-md"
+                className={cn(
+                  'data-[state=active]:bg-emerald-700 data-[state=active]:text-white data-[state=active]:shadow-md',
+                  __WEB__ && 'data-[state=active]:!bg-[#C7F03F] data-[state=active]:!text-[#12280B] data-[state=active]:!shadow-none'
+                )}
               >
                 Gate in
                 {pendingIn > 0 && (
-                  <span className="ml-1.5 rounded-full bg-amber-500 px-1.5 text-[10px] font-semibold text-amber-950">
+                  <span className={cn('ml-1.5 rounded-full bg-amber-500 px-1.5 text-[10px] font-semibold text-amber-950', __WEB__ && '!ml-0 !rounded-[2px] !px-1.5 !py-[2px] !text-[11.5px] !font-extrabold !tabular-nums', __WEB__ && (tab === 'in' ? '!bg-[#0B3D2E]/15 !text-[#12280B]' : '!bg-white/[.12] !text-[#DCEFE4]'))}>
                     {pendingIn}
                   </span>
                 )}
               </TabsTrigger>
               <TabsTrigger
                 value="out"
-                className="data-[state=active]:bg-sky-700 data-[state=active]:text-white data-[state=active]:shadow-md"
+                className={cn(
+                  'data-[state=active]:bg-sky-700 data-[state=active]:text-white data-[state=active]:shadow-md',
+                  __WEB__ && 'data-[state=active]:!bg-[#C7F03F] data-[state=active]:!text-[#12280B] data-[state=active]:!shadow-none'
+                )}
               >
                 Gate out
                 {pendingOut > 0 && (
-                  <span className="ml-1.5 rounded-full bg-amber-500 px-1.5 text-[10px] font-semibold text-amber-950">
+                  <span className={cn('ml-1.5 rounded-full bg-amber-500 px-1.5 text-[10px] font-semibold text-amber-950', __WEB__ && '!ml-0 !rounded-[2px] !px-1.5 !py-[2px] !text-[11.5px] !font-extrabold !tabular-nums', __WEB__ && (tab === 'out' ? '!bg-[#0B3D2E]/15 !text-[#12280B]' : '!bg-white/[.12] !text-[#DCEFE4]'))}>
                     {pendingOut}
                   </span>
                 )}
               </TabsTrigger>
               <TabsTrigger
                 value="view"
-                className="data-[state=active]:bg-amber-700 data-[state=active]:text-white data-[state=active]:shadow-md"
+                className={cn(
+                  'data-[state=active]:bg-amber-700 data-[state=active]:text-white data-[state=active]:shadow-md',
+                  __WEB__ && 'data-[state=active]:!bg-[#C7F03F] data-[state=active]:!text-[#12280B] data-[state=active]:!shadow-none'
+                )}
               >
                 Entries
                 {filteredRows.length > 0 && (
-                  <span className="ml-1.5 rounded-full bg-white/20 px-1.5 text-[10px] font-semibold text-white">
+                  <span className={cn('ml-1.5 rounded-full bg-white/20 px-1.5 text-[10px] font-semibold text-white', __WEB__ && '!ml-0 !rounded-[2px] !px-1.5 !py-[2px] !text-[11.5px] !font-extrabold !tabular-nums', __WEB__ && (tab === 'view' ? '!bg-[#0B3D2E]/15 !text-[#12280B]' : '!bg-white/[.12] !text-[#DCEFE4]'))}>
                     {filteredRows.length}
                   </span>
                 )}
               </TabsTrigger>
               <TabsTrigger
                 value="rejected"
-                className="data-[state=active]:bg-rose-700 data-[state=active]:text-white data-[state=active]:shadow-md"
+                className={cn(
+                  'data-[state=active]:bg-rose-700 data-[state=active]:text-white data-[state=active]:shadow-md',
+                  // Rejected keeps red rather than the lime the other three
+                  // share — it is the one tab that reports a problem.
+                  __WEB__ && 'data-[state=active]:!bg-[#B3261E] data-[state=active]:!text-white data-[state=active]:!shadow-none'
+                )}
               >
                 Rejected
                 {rejectedRows.length > 0 && (
-                  <span className="ml-1.5 rounded-full bg-rose-400 px-1.5 text-[10px] font-semibold text-rose-950">
+                  <span className={cn('ml-1.5 rounded-full bg-rose-400 px-1.5 text-[10px] font-semibold text-rose-950', __WEB__ && '!ml-0 !rounded-[2px] !px-1.5 !py-[2px] !text-[11.5px] !font-extrabold !tabular-nums', __WEB__ && (tab === 'rejected' ? '!bg-white/20 !text-white' : '!bg-white/[.12] !text-[#DCEFE4]'))}>
                     {rejectedRows.length}
                   </span>
                 )}
               </TabsTrigger>
             </TabsList>
+            {/* Pipeline readout — the three numbers the gate is actually
+                run by, off the same arrays the tab counts use. */}
+            {__WEB__ && tab !== 'view' && (
+              <div className="ml-auto flex flex-wrap items-center gap-x-5 gap-y-2">
+                {[
+                  { k: 'at gate', v: pending.length, Icon: Truck, color: '#0B6B45' },
+                  { k: 'awaiting tare', v: pending.filter((r) => r.gross_weight != null && r.tare_weight == null).length, Icon: Scale, color: '#C2700A' },
+                  { k: 'rejected today', v: rejectedRows.filter((r) => String(r.rejected_at || '').slice(0, 10) === todayISO()).length, Icon: Ban, color: '#B3261E' }
+                ].map((st) => (
+                  <div key={st.k} className="flex items-center gap-2">
+                    <st.Icon className="h-[18px] w-[18px] shrink-0" style={{ color: st.color }} />
+                    <span className="text-[15px] font-bold tabular-nums">{st.v}</span>
+                    <span className="text-[11.5px] font-bold text-[#5A6B62]">{st.k}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             {tab === 'view' && (
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-[#d9d2b8] bg-[#fffdf4] px-2.5 py-1 shadow-sm">
-                <div className="flex shrink-0 items-center gap-0.5 rounded-md bg-[#e5dfc8]/60 p-0.5">
+              <div
+                className={cn(
+                  'flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-[#d9d2b8] bg-[#fffdf4] px-2.5 py-1 shadow-sm',
+                  __WEB__ &&
+                    '!w-full !gap-x-2.5 !gap-y-2 !rounded-[4px] !border-[#D6E2D6] !bg-white !px-4 !py-3 !shadow-none [&_input]:!h-10 [&_input]:!rounded-[4px] [&_input]:!border-input [&_input]:!text-[13px] [&_[data-slot=date-picker]]:!h-10 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-input [&_[data-slot=date-picker]]:!text-[12.5px]'
+                )}
+              >
+                <div className={cn('flex shrink-0 items-center gap-0.5 rounded-md bg-[#e5dfc8]/60 p-0.5', __WEB__ && '!gap-0.5 !rounded-[4px] !border !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px]')}>
                   {(['ALL', 'in', 'out'] as const).map((d) => (
                     <button
                       key={d}
                       type="button"
                       className={cn(
                         'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide transition',
-                        gDir === d ? 'bg-[#1a2c56] text-white shadow-sm' : 'text-[#1a2c56]/70 hover:text-[#1a2c56]'
+                        gDir === d ? 'bg-[#1a2c56] text-white shadow-sm' : 'text-[#1a2c56]/70 hover:text-[#1a2c56]',
+                        __WEB__ && '!h-8 !rounded-[2px] !px-3 !text-[12px] !font-extrabold', __WEB__ && (gDir === d ? '!bg-[#0B3D2E] !text-white !shadow-none' : '!bg-transparent !text-[#5A6B62] hover:!text-[#0A1F17]')
                       )}
                       onClick={() => setGDir(d)}
                     >
@@ -1280,8 +1437,8 @@ export function GateEntry(): React.JSX.Element {
                     </button>
                   ))}
                 </div>
-                <div className="h-5 shrink-0 border-l border-[#d9d2b8]" />
-                <div className="flex shrink-0 items-center gap-0.5 rounded-md bg-[#e5dfc8]/60 p-0.5">
+                <div className={cn('h-5 shrink-0 border-l border-[#d9d2b8]', __WEB__ && '!hidden')} />
+                <div className={cn('flex shrink-0 items-center gap-0.5 rounded-md bg-[#e5dfc8]/60 p-0.5', __WEB__ && '!gap-0.5 !rounded-[4px] !border !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px]')}>
                   {(['ALL', 'normal', 'quick'] as const).map((k) => (
                     <button
                       key={k}
@@ -1289,7 +1446,8 @@ export function GateEntry(): React.JSX.Element {
                       title={k === 'quick' ? 'No document, no weighment, no stock' : k === 'normal' ? 'Went through the full weighbridge' : undefined}
                       className={cn(
                         'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide transition',
-                        gKind === k ? 'bg-[#1a2c56] text-white shadow-sm' : 'text-[#1a2c56]/70 hover:text-[#1a2c56]'
+                        gKind === k ? 'bg-[#1a2c56] text-white shadow-sm' : 'text-[#1a2c56]/70 hover:text-[#1a2c56]',
+                        __WEB__ && '!h-8 !rounded-[2px] !px-3 !text-[12px] !font-extrabold', __WEB__ && (gKind === k ? '!bg-[#0B3D2E] !text-white !shadow-none' : '!bg-transparent !text-[#5A6B62] hover:!text-[#0A1F17]')
                       )}
                       onClick={() => setGKind(k)}
                     >
@@ -1297,19 +1455,19 @@ export function GateEntry(): React.JSX.Element {
                     </button>
                   ))}
                 </div>
-                <div className="h-5 shrink-0 border-l border-[#d9d2b8]" />
+                <div className={cn('h-5 shrink-0 border-l border-[#d9d2b8]', __WEB__ && '!hidden')} />
                 <div className="relative shrink-0">
                   <Input
                     type="search"
-                    className="h-7 w-52 pl-2 text-[11px]"
+                    className={cn('h-7 w-52 pl-2 text-[11px]', __WEB__ && '!w-[16rem] !pl-3')}
                     placeholder="Search gate no, vehicle, party…"
                     value={gSearch}
                     onChange={(e) => setGSearch(e.target.value)}
                   />
                 </div>
-                <div className="h-5 shrink-0 border-l border-[#d9d2b8]" />
+                <div className={cn('h-5 shrink-0 border-l border-[#d9d2b8]', __WEB__ && '!hidden')} />
                 <div className="flex shrink-0 items-center gap-1.5">
-                  <div className="inline-flex shrink-0 overflow-hidden rounded-md border border-[#d9d2b8]">
+                  <div className={cn('inline-flex shrink-0 overflow-hidden rounded-md border border-[#d9d2b8]', __WEB__ && '!gap-0.5 !rounded-[4px] !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px]')}>
                     {(
                       [
                         ['day', 'Day'],
@@ -1325,7 +1483,8 @@ export function GateEntry(): React.JSX.Element {
                           'px-2 py-1 text-[10px] font-semibold uppercase tracking-wide transition',
                           gMode === m
                             ? 'bg-[#1a2c56] text-white'
-                            : 'bg-white text-[#1a2c56]/70 hover:bg-[#f1ecd9]'
+                            : 'bg-white text-[#1a2c56]/70 hover:bg-[#f1ecd9]',
+                          __WEB__ && '!h-8 !rounded-[2px] !px-3 !text-[12px] !font-extrabold', __WEB__ && (gMode === m ? '!bg-[#0B3D2E] !text-white !shadow-none' : '!bg-transparent !text-[#5A6B62] hover:!text-[#0A1F17]')
                         )}
                       >
                         {label}
@@ -1382,9 +1541,9 @@ export function GateEntry(): React.JSX.Element {
                     </span>
                   )}
                 </div>
-                <div className="h-5 shrink-0 border-l border-[#d9d2b8]" />
+                <div className={cn('h-5 shrink-0 border-l border-[#d9d2b8]', __WEB__ && '!hidden')} />
                 <div className="flex shrink-0 items-center gap-1.5">
-                  <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-[#1a2c56]/70">
+                  <span className={cn('shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-[#1a2c56]/70', __WEB__ && '!text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#5A6B62]')}>
                     Category
                   </span>
                   <MultiSelectFilter
@@ -1392,15 +1551,15 @@ export function GateEntry(): React.JSX.Element {
                     value={gCats}
                     onApply={setGCats}
                     allLabel="All categories"
-                    className="h-7 w-[10.5rem] shrink-0 text-[11px]"
+                    className={cn('h-7 w-[10.5rem] shrink-0 text-[11px]', __WEB__ && '!h-10 !w-[11rem] !rounded-[4px] !text-[12.5px]')}
                   />
                 </div>
                 {(gFrom || gTo || gCats.length > 0 || gDir !== 'ALL' || gKind !== 'ALL' || gStatus.length > 0 || gSearch) && (
                   <>
-                    <div className="h-5 shrink-0 border-l border-[#d9d2b8]" />
+                    <div className={cn('h-5 shrink-0 border-l border-[#d9d2b8]', __WEB__ && '!hidden')} />
                     <button
                       type="button"
-                      className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-rose-700 hover:text-rose-900"
+                      className={cn('shrink-0 text-[10px] font-semibold uppercase tracking-wide text-rose-700 hover:text-rose-900', __WEB__ && '!px-2 !text-[11.5px] !font-extrabold !tracking-[.05em] !text-[#0B6B45] hover:!text-[#0B3D2E]')}
                       // Clearing the dates has to put the mode back too, or the
                       // control would still read "Day" over an unfiltered list.
                       onClick={() => { setGMode('all'); setGFrom(''); setGTo(''); setGCats([]); setGDir('ALL'); setGKind('ALL'); setGStatus([]); setGSearch('') }}
@@ -1417,12 +1576,23 @@ export function GateEntry(): React.JSX.Element {
         {modeToggle(inMode, setInMode, pendingIn)}
         {inMode === 'without' ? quickEntry('in') : (<>
         {/* Tanker IN */}
-        <section className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white">
-          <div className="mb-3 flex items-center gap-2 border-b border-dotted border-[#e5dfc8] pb-1.5">
-            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-100 text-emerald-700">
+        <section
+          className={cn(
+            'rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white',
+            __WEB__ &&
+              '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-12 [&_input]:!rounded-[4px] [&_input]:!text-[14px] [&_input]:!font-semibold [&_[data-slot=select-trigger]]:!h-12 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-12 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[14px]'
+          )}
+        >
+          <div
+            className={cn(
+              'mb-3 flex items-center gap-2 border-b border-dotted border-[#e5dfc8] pb-1.5',
+              __WEB__ && '!mb-0 !gap-2.5 !border-b !border-solid !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[18px] !py-3'
+            )}
+          >
+            <div className={cn('flex h-7 w-7 items-center justify-center rounded-md bg-emerald-100 text-emerald-700', __WEB__ && '!h-8 !w-8 !rounded-[3px] !bg-[#EAF0E9] !text-[#0B3D2E]')}>
               <Truck className="h-4 w-4" />
             </div>
-            <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Tanker in</h3>
+            <h3 className={cn('text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!text-[12px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]')}>Tanker in</h3>
             <InfoTip text="Record a tanker the moment it arrives — pick it from the list or type the number manually. Weight is entered later under Waiting for weighment." />
             {/* Direct MNC stock arrives on the party's own vehicle: nothing to
                 pick from our tanker list, so the number is typed and the party
@@ -1457,7 +1627,7 @@ export function GateEntry(): React.JSX.Element {
               <InfoTip text="ON: the goods come straight from a direct-purchase party (BUNGE and the like) on their own vehicle. No tanker to select — type the number and name the party." />
             </label>
           </div>
-          <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className={cn('grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4', __WEB__ && '!gap-x-4 !gap-y-4 !p-[18px]')}>
             {arrival.is_direct_mnc ? (
               <div className="flex min-w-0 flex-col gap-1">
                 <Label>MNC / party *</Label>
@@ -1627,8 +1797,30 @@ export function GateEntry(): React.JSX.Element {
               <Label>Date</Label>
               <DatePicker min={minDate} value={arrival.entry_date || ''} onChange={(v) => setArrival((p) => ({ ...p, entry_date: v }))} />
             </div>
+            {/* The action takes the fourth column of the last row rather than
+                a row of its own. The row ended at Date with an empty quarter
+                beside it and the button banished to a strip below, which cost
+                a band of height on the screen a gate clerk lives on — and put
+                the thing they press furthest from the last thing they type.
+                An empty label keeps it sitting on the same baseline as the
+                fields; the desktop keeps its own footer strip. */}
+            {__WEB__ && (
+              <div className="flex min-w-0 flex-col gap-1">
+                <Label className="!opacity-0" aria-hidden>
+                  .
+                </Label>
+                <Button
+                  className="!h-12 !w-full !gap-2 !rounded-[4px] !bg-[#0B6B45] !text-[13px] !font-extrabold !uppercase !tracking-[.04em] !text-white hover:!bg-[#0A5D3C]"
+                  onClick={recordArrival}
+                  disabled={savingArrival}
+                >
+                  <Truck className="h-[18px] w-[18px]" />
+                  {savingArrival ? 'Saving…' : isMisc(arrival.rec_type) ? 'Record entry' : 'Tanker received'}
+                </Button>
+              </div>
+            )}
           </div>
-          <div className="mt-4 flex justify-end">
+          <div className={cn('mt-4 flex justify-end', __WEB__ && '!hidden')}>
             <Button className="h-8 bg-emerald-600 px-4 text-[13px] font-semibold hover:bg-emerald-700" onClick={recordArrival} disabled={savingArrival}>
               <Truck className="h-4 w-4" />
               {savingArrival ? 'Saving…' : isMisc(arrival.rec_type) ? 'Record entry' : 'Tanker received'}
@@ -1645,12 +1837,24 @@ export function GateEntry(): React.JSX.Element {
         {modeToggle(outMode, setOutMode, pendingOut)}
         {outMode === 'without' ? quickEntry('out') : (<>
         {/* Gate OUT — sale dispatch leaving the factory */}
-        <section className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white">
-          <div className={cn("flex items-center gap-2", outFormOpen && "mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5")}>
-            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-sky-100 text-sky-700">
+        <section
+          className={cn(
+            'rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white',
+            __WEB__ &&
+              '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-12 [&_input]:!rounded-[4px] [&_input]:!text-[14px] [&_input]:!font-semibold [&_[data-slot=select-trigger]]:!h-12 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-12 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[14px]'
+          )}
+        >
+          <div
+            className={cn(
+              'flex items-center gap-2',
+              outFormOpen && 'mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5',
+              __WEB__ && '!mb-0 !gap-2.5 !border-b !border-solid !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[18px] !py-3 !pb-3'
+            )}
+          >
+            <div className={cn('flex h-7 w-7 items-center justify-center rounded-md bg-sky-100 text-sky-700', __WEB__ && '!h-8 !w-8 !rounded-[3px] !bg-[#EAF0E9] !text-[#0B3D2E]')}>
               <LogOut className="h-4 w-4" />
             </div>
-            <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Gate out</h3>
+            <h3 className={cn('text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!text-[12px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]')}>Gate out</h3>
             <InfoTip text="Record a sale tanker here — even the moment it arrives EMPTY for loading, before the invoice is ready (pick the party + a reason). It stays in the weighing queue below: enter its Tare (empty) weight now, then come back and enter the Gross (loaded) weight once it leaves — either order, either first. Net = Gross − Tare completes it." />
             <label className="ml-auto flex cursor-pointer items-center gap-2">
               <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -1660,7 +1864,7 @@ export function GateEntry(): React.JSX.Element {
             </label>
           </div>
           {outFormOpen && (<>
-          <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className={cn('grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4', __WEB__ && '!gap-x-4 !gap-y-4 !p-[18px]')}>
             <div className="flex min-w-0 flex-col gap-1 sm:col-span-2 lg:col-span-1">
               <Label>
                 Sale invoice (dispatched){' '}
@@ -1794,8 +1998,25 @@ export function GateEntry(): React.JSX.Element {
               <Label>Date</Label>
               <DatePicker min={minDate} value={gateOut.entry_date || ''} onChange={(v) => setGateOut((p) => ({ ...p, entry_date: v }))} />
             </div>
+            {/* Same as Gate in: the action takes the empty cell at the end of
+                the last row instead of a strip of its own below it. */}
+            {__WEB__ && (
+              <div className="flex min-w-0 flex-col gap-1">
+                <Label className="!opacity-0" aria-hidden>
+                  .
+                </Label>
+                <Button
+                  className="!h-12 !w-full !gap-2 !rounded-[4px] !bg-[#0B6B45] !text-[13px] !font-extrabold !uppercase !tracking-[.04em] !text-white hover:!bg-[#0A5D3C]"
+                  onClick={recordGateOut}
+                  disabled={savingOut}
+                >
+                  <LogOut className="h-[18px] w-[18px]" />
+                  {savingOut ? 'Saving…' : 'Record tanker'}
+                </Button>
+              </div>
+            )}
           </div>
-          <div className="mt-4 flex justify-end">
+          <div className={cn('mt-4 flex justify-end', __WEB__ && '!hidden')}>
             <Button className="h-8 bg-sky-600 px-4 text-[13px] font-semibold hover:bg-sky-700" onClick={recordGateOut} disabled={savingOut}>
               <LogOut className="h-4 w-4" />
               {savingOut ? 'Saving…' : 'Record tanker'}
@@ -1805,8 +2026,18 @@ export function GateEntry(): React.JSX.Element {
         </section>
 
         {awaitingGross.length > 0 && (
-          <section className="rounded-md border border-amber-300 bg-amber-50 p-4 shadow-sm">
-            <div className="mb-3 flex items-center gap-2 border-b border-dotted border-amber-300 pb-1.5">
+          <section
+            className={cn(
+              'rounded-md border border-amber-300 bg-amber-50 p-4 shadow-sm',
+              // One height for every control in this card, set here rather
+              // than on each field: the two pickers, the date and the weight
+              // box each carried their own size, so a row of four came out at
+              // three different heights. Matches the Gate in / Gate out cards.
+              __WEB__ &&
+                '!rounded-[4px] !border-[#F0D9AE] !bg-[#FFFBF2] !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-12 [&_input]:!rounded-[4px] [&_input]:!bg-white [&_input]:!text-[14px] [&_input]:!font-semibold [&_[data-slot=select-trigger]]:!h-12 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-12 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[14px]'
+            )}
+          >
+            <div className={cn('mb-3 flex items-center gap-2 border-b border-dotted border-amber-300 pb-1.5', __WEB__ && '!mb-0 !border-b-[#F0D9AE] !border-solid !px-[18px] !py-3')}>
               <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-100 text-amber-700">
                 <Scale className="h-4 w-4" />
               </div>
@@ -1814,7 +2045,7 @@ export function GateEntry(): React.JSX.Element {
               <InfoTip text="Vehicles weighed Tare-only at Gate In and flagged as being for sale. Pick one, link the sale invoice it is carrying, say when it left and enter its Gross weight — it completes on the spot. No dispatch quantity is asked for: the invoice already says what is on board." />
               <Badge variant="warning" className="ml-1">{awaitingGross.length}</Badge>
             </div>
-            <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4">
+            <div className={cn('grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4', __WEB__ && '!gap-x-4 !gap-y-4 !p-[18px] lg:!grid-cols-[1fr_1fr_1fr_1fr_auto]')}>
               <div className="flex min-w-0 flex-col gap-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Vehicle</Label>
                 <Select value={grossPickId} onValueChange={setGrossPickId}>
@@ -1909,24 +2140,46 @@ export function GateEntry(): React.JSX.Element {
               </div>
               <div className="flex min-w-0 flex-col gap-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Gross weight *</Label>
-                <div className="flex gap-2">
+                <div className={cn('flex gap-2', __WEB__ && '!block')}>
                   <Input
                     type="number"
-                    className="h-8 bg-white text-[13px]"
+                    className={cn('h-8 bg-white text-[13px]', __WEB__ && '!w-full')}
                     placeholder="0.000"
                     value={grossPickValue}
                     onChange={(e) => setGrossPickValue(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && void saveAwaitingGross()}
                   />
+                  {/* On the app the button shares the weight box's row. On the
+                      website it moves to a cell of its own beside it — sharing
+                      left the weight field short by the width of a button, and
+                      the button itself half the height of everything around
+                      it. See the Gate in card, which does the same. */}
+                  {!__WEB__ && (
+                    <Button
+                      className="h-8 shrink-0 bg-amber-600 px-3 text-[12px] hover:bg-amber-700"
+                      disabled={!grossPickId || !grossPickInvoices.length || !grossPickOutDate || grossPickSaving}
+                      onClick={() => void saveAwaitingGross()}
+                    >
+                      {grossPickSaving ? 'Saving…' : 'Complete'}
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {__WEB__ && (
+                <div className="flex min-w-0 flex-col gap-1">
+                  <Label className="!opacity-0" aria-hidden>
+                    .
+                  </Label>
                   <Button
-                    className="h-8 shrink-0 bg-amber-600 px-3 text-[12px] hover:bg-amber-700"
+                    className="!h-12 !w-full !gap-2 !rounded-[4px] !bg-[#C2700A] !px-5 !text-[13px] !font-extrabold !uppercase !tracking-[.04em] !text-white hover:!bg-[#A85F08] disabled:!bg-[#E4C79A] disabled:!text-white"
                     disabled={!grossPickId || !grossPickInvoices.length || !grossPickOutDate || grossPickSaving}
                     onClick={() => void saveAwaitingGross()}
                   >
+                    <Scale className="h-[18px] w-[18px]" />
                     {grossPickSaving ? 'Saving…' : 'Complete'}
                   </Button>
                 </div>
-              </div>
+              )}
             </div>
           </section>
         )}
@@ -1936,14 +2189,102 @@ export function GateEntry(): React.JSX.Element {
           </TabsContent>
 
           <TabsContent value="view">
-        {/* History */}
-        <section className="overflow-hidden rounded-xl border bg-card shadow-sm">
-          <div className="flex items-center gap-2 bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2.5 text-white">
-            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/15"><ClipboardList className="h-3.5 w-3.5" /></span>
-            <span className="text-[13px] font-bold uppercase tracking-widest">Gate register</span>
+        {/* Summary tiles. Every figure is read off filteredRows — the same
+            array the register below is drawn from — so a tile can never state
+            something the table under it contradicts, and all four move with
+            the filters rather than reporting the whole database. */}
+        {__WEB__ && (
+          <div className="mb-3 overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+            <button
+              type="button"
+              aria-expanded={kpiOpen}
+              onClick={() => setKpiOpen((o) => !o)}
+              className="flex w-full items-center gap-1.5 px-3.5 py-2 text-[11px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62] transition-colors hover:bg-[#F7FAF6]"
+            >
+              <ChevronDown className={cn('h-4 w-4 shrink-0 text-[#12855A] transition-transform', !kpiOpen && '-rotate-90')} />
+              Summary
+              <span className="ml-1 rounded-[2px] bg-[#EAF0E9] px-1.5 py-[2px] text-[11px] font-extrabold tabular-nums tracking-normal text-[#33473E]">
+                {filteredRows.length} entries
+              </span>
+            </button>
+            {kpiOpen && (
+          <div className="grid gap-2.5 px-3.5 pb-3.5 pt-1 sm:grid-cols-2 xl:grid-cols-4">
+            {(() => {
+              const pendingWt = filteredRows.filter((r) => r.status === 'pending' && !r.rejected_at).length
+              const rejected = filteredRows.filter((r) => !!r.rejected_at).length
+              // The single worst gap between what the challan claimed and what
+              // the weighbridge found — the one row worth opening first.
+              let worst: { v: number; row: Row | null } = { v: 0, row: null }
+              for (const r of filteredRows) {
+                if (Number(r.dispatch_na) === 1) continue
+                const d = Math.abs(Number(r.dispatch_qty || 0) - Number(r.received_qty || 0))
+                if (Number(r.received_qty || 0) > 0 && d > worst.v) worst = { v: d, row: r }
+              }
+              return [
+                { k: 'Entries', v: String(filteredRows.length), unit: '', sub: 'matching these filters', accent: '#0B3D2E' },
+                { k: 'Pending weighment', v: String(pendingWt), unit: '', sub: 'gross taken, tare due', accent: '#C2700A' },
+                { k: 'Rejected', v: String(rejected), unit: '', sub: 'turned away at the gate', accent: '#B3261E' },
+                {
+                  k: 'Largest difference',
+                  v: worst.row ? formatNum(worst.v) : '—',
+                  unit: worst.row ? String(worst.row.uom || 'MT') : '',
+                  sub: worst.row
+                    ? `${String(worst.row.gate_entry_no || '')} · ${String(worst.row.rec_type || 'OIL')}`
+                    : 'nothing weighed in this range',
+                  accent: '#C7F03F'
+                }
+              ]
+            })().map((k) => (
+              <div
+                key={k.k}
+                className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3"
+                style={{ borderTop: `3px solid ${k.accent}` }}
+              >
+                <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">{k.k}</div>
+                <div className="mt-1 flex items-baseline gap-1.5">
+                  <span className="text-[23px] font-bold leading-none tracking-[-0.035em] tabular-nums">{k.v}</span>
+                  {k.unit && <span className="text-[11px] font-bold text-[#5A6B62]">{k.unit}</span>}
+                </div>
+                <div className="mt-1 truncate text-[11.5px] font-semibold text-[#5A6B62]" title={k.sub}>{k.sub}</div>
+              </div>
+            ))}
           </div>
-          <Table className="text-[13px] [&_td]:border-r [&_td]:border-slate-100 [&_td:last-child]:border-r-0 [&_th]:border-r [&_th]:border-slate-200 [&_th:last-child]:border-r-0">
-            <TableHeader><TableRow>
+            )}
+          </div>
+        )}
+        {/* History */}
+        <section className={cn('overflow-hidden rounded-xl border bg-card shadow-sm', __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !bg-white !shadow-none')}>
+          <div
+            className={cn(
+              'flex items-center gap-2 bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2.5 text-white',
+              __WEB__ && '!gap-2.5 !bg-[#0B3D2E] !bg-none !px-4 !py-3'
+            )}
+          >
+            <span className={cn('flex h-6 w-6 items-center justify-center rounded-full bg-white/15', __WEB__ && '!h-auto !w-auto !bg-transparent !text-[#C7F03F]')}>
+              <ClipboardList className={cn('h-3.5 w-3.5', __WEB__ && '!h-[19px] !w-[19px]')} />
+            </span>
+            <span className={cn('text-[13px] font-bold uppercase tracking-widest', __WEB__ && '!text-[12px] !font-extrabold !tracking-[.14em]')}>Gate register</span>
+            {__WEB__ && (
+              <span className="rounded-[2px] bg-[#C7F03F]/[.16] px-2 py-[3px] text-[12px] font-extrabold tabular-nums text-[#C7F03F]">
+                {filteredRows.length}
+              </span>
+            )}
+          </div>
+          <Table
+            className={cn(
+              'text-[13px] [&_td]:border-r [&_td]:border-slate-100 [&_td:last-child]:border-r-0 [&_th]:border-r [&_th]:border-slate-200 [&_th:last-child]:border-r-0',
+              // Nothing wraps: a gate number split over two lines and a
+              // stacked date are the two things this register is scanned for.
+              __WEB__ &&
+                '!min-w-[1320px] [&_td]:!whitespace-nowrap [&_td]:!border-r-[#F1F5EF] [&_th]:!whitespace-nowrap [&_th]:!border-r-[#DCE7DB]'
+            )}
+          >
+            <TableHeader
+              className={cn(
+                __WEB__ &&
+                  '!bg-[#EAF0E9] [&_th]:!h-10 [&_th]:!text-[10.5px] [&_th]:!font-extrabold [&_th]:!uppercase [&_th]:!tracking-[.1em] [&_th]:!text-[#33473E]'
+              )}
+            ><TableRow className={cn(__WEB__ && '!border-b-[#D6E2D6] hover:!bg-[#EAF0E9]')}>
               <TableHead>Gate entry</TableHead>
               <TableHead>In / Out</TableHead>
               <TableHead>Rec type</TableHead>

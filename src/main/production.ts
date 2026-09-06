@@ -3,6 +3,10 @@ import { getClient } from './db'
 import { getActiveCompanyId } from './company'
 import { stockMap, productStockAvailable } from './stock'
 import { visibleFromFor } from './access-gate'
+// One copy of the recipe arithmetic, shared with the entry sheet in the
+// renderer. It used to live only here, so the sheet previewed one set of
+// numbers and this posted another.
+import { expandRecipe, recipeTor } from '../renderer/src/lib/recipeMath'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -31,121 +35,9 @@ function n(v: unknown): number {
 //
 // A recipe with no by-products and no loss comes out at exactly 100%, which is
 // how every recipe behaved before any of this existed.
-function uniformRecipeTor(items: Row[]): number {
-  const kindOf = (it: Row): string => String(it.kind || 'input')
-  const sum = (kind: string): number =>
-    items.filter((it) => kindOf(it) === kind).reduce((s, it) => s + n(it.qty), 0)
-  const lossPct = sum('output') + sum('loss')
-  // A recipe claiming to lose everything (or more) has no sane answer; leave
-  // it at 100% rather than dividing by zero or going negative.
-  if (lossPct <= 0 || lossPct >= 100) return 100
-  return (100 * 100) / (100 - lossPct)
-}
-
-// A single input's own fatty-acid loss — FFA% x (1 + loss multiplier%) +
-// moisture% — as a % of THAT INPUT's own quantity, not of the output.
-function inputFattyAcidPct(it: Row): number {
-  const ffa = n(it.ffa_pct)
-  const lossMultiplier = n(it.loss_multiplier_pct)
-  const moisture = n(it.moisture_pct)
-  return ffa * (1 + lossMultiplier / 100) + moisture
-}
-
-// A single input's OWN TOR multiplier, when a blend mixes raw oils of
-// differing quality and each needs its own answer rather than one shared
-// across the whole blend — e.g. SHEA at 23% FFA needs far more raw material
-// per unit of output than RPS at 0.15% FFA does. Dead loss is NOT per-input —
-// it's the recipe's own shared 'loss' line total, the same standing
-// assumption for every ingredient (see sharedDeadLossPct below).
-// multiplier = 1 / (1 - (FFA% x (1 + loss multiplier%) + moisture%) - dead loss%)
-function inputTorMultiplier(it: Row, sharedDeadLossPct: number): number {
-  const yieldPct = 100 - inputFattyAcidPct(it) - sharedDeadLossPct
-  // No sane answer if this ingredient claims to lose everything (or more).
-  if (yieldPct <= 0) return 1
-  return 100 / yieldPct
-}
-
-// The recipe's total oil required, per 100 of output. When every input shares
-// one recipe-wide loss (the original model), this is exactly the uniform
-// TOR. When one or more inputs carry their own auto-calculated multiplier
-// (a blend of differing-quality raw oils), each of those takes its own share
-// x its own multiplier instead of the shared one, and the total is the sum —
-// a recipe with no such inputs collapses back to the plain uniform figure.
-export function recipeTor(items: Row[]): number {
-  const kindOf = (it: Row): string => String(it.kind || 'input')
-  const inputs = items.filter((it) => kindOf(it) === 'input')
-  const blend = inputs.reduce((s, it) => s + n(it.qty), 0)
-  const uniformTor = uniformRecipeTor(items)
-  if (blend <= 0) return uniformTor
-  const sharedDeadLossPct = items.filter((it) => kindOf(it) === 'loss').reduce((s, it) => s + n(it.qty), 0)
-  const total = inputs.reduce((s, it) => {
-    const mult = it.auto_calc ? inputTorMultiplier(it, sharedDeadLossPct) : uniformTor / 100
-    return s + n(it.qty) * mult
-  }, 0)
-  return total
-}
-
-// Turn a recipe into the real quantities for one batch. Input lines are shares
-// of the blend and total 100% (100% CPO, or 70/30 of two oils); each takes its
-// own share x its own TOR multiplier when it has one (see recipeTor above),
-// or the recipe's shared multiplier otherwise. By-products and loss are
-// percentages of the input, riding on the recipe's shared multiplier either way.
-//
-// The fatty acid an auto-calculated input throws off is a REAL by-product,
-// not just a yield reduction — whichever product that input names
-// (byproduct_product_id) gets a synthetic output line for it, merged by
-// product with anything else already landing there (a manual by-product line
-// pointing at the same product, or another input recovering into it too).
-export function expandRecipe(
-  items: Row[],
-  outputQty: number
-): { product_id: number; qty: number; kind: string }[] {
-  const kindOf = (it: Row): string => String(it.kind || 'input')
-  const blend = items
-    .filter((it) => kindOf(it) === 'input')
-    .reduce((s, it) => s + n(it.qty), 0)
-  const uniformTor = uniformRecipeTor(items)
-  // A loss or manual by-product line is a % OF THE INPUT, so it has to ride
-  // on what the recipe ACTUALLY draws in — recipeTor, not the uniform
-  // figure. Those two only coincide when no input carries its own
-  // auto-calculated multiplier; once one does (a blend of differing-quality
-  // raw oils), uniformTor is the wrong, smaller number and understates the
-  // loss (e.g. 1.01% instead of the correct 1.2375 on a 123.75% TOR).
-  const tor = recipeTor(items)
-  const sharedDeadLossPct = items.filter((it) => kindOf(it) === 'loss').reduce((s, it) => s + n(it.qty), 0)
-
-  const lines = items.map((it) => {
-    const kind = kindOf(it)
-    let pct: number
-    if (kind === 'input') {
-      // Guard a malformed recipe whose blend doesn't total 100 — scale by the
-      // share it actually has rather than dividing by zero.
-      const mult = it.auto_calc ? inputTorMultiplier(it, sharedDeadLossPct) : uniformTor / 100
-      pct = blend > 0 ? n(it.qty) * mult : 0
-    } else {
-      // Off the input, so it rides on the recipe's real total TOR.
-      pct = (tor * n(it.qty)) / 100
-    }
-    return { product_id: Number(it.product_id), qty: (outputQty * pct) / 100, kind }
-  })
-
-  const byproductAdds = new Map<number, number>()
-  for (const it of items) {
-    if (kindOf(it) !== 'input' || !it.auto_calc || !n(it.byproduct_product_id)) continue
-    const mult = inputTorMultiplier(it, sharedDeadLossPct)
-    const pct = blend > 0 ? n(it.qty) * mult : 0
-    const inputQty = (outputQty * pct) / 100
-    const fattyAcidQty = (inputQty * inputFattyAcidPct(it)) / 100
-    const pid = n(it.byproduct_product_id)
-    byproductAdds.set(pid, (byproductAdds.get(pid) || 0) + fattyAcidQty)
-  }
-  for (const [pid, qty] of byproductAdds) {
-    const existing = lines.find((l) => l.kind === 'output' && l.product_id === pid)
-    if (existing) existing.qty += qty
-    else lines.push({ product_id: pid, qty, kind: 'output' })
-  }
-  return lines
-}
+// Re-exported so callers already importing them from this module keep
+// working; the implementations now live in lib/recipeMath.
+export { expandRecipe, recipeTor }
 
 export async function listProduction(forModule?: string): Promise<Row[]> {
   // Bounded to what this user may see. The bound goes in the SQL so the older
@@ -188,6 +80,19 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
   const qty = n(v.qty)
   if (!productId) throw new Error('Select a product to produce')
   if (qty <= 0) throw new Error('Production quantity must be greater than zero')
+
+  // A batch cannot be dated in the future.
+  //
+  // Production consumes its components from stock the moment it is saved,
+  // so a forward-dated batch draws raw material out of the tanks on a day
+  // that has not happened and leaves every balance between now and then
+  // reading wrong. The date picker greys those days out, but that is a
+  // courtesy — this is the rule, and it applies to an edit as much as to a
+  // new batch, or a saved run could simply be moved forward afterwards.
+  const prodDay = String(v.prod_date || '').slice(0, 10)
+  if (prodDay && prodDay > new Date().toISOString().slice(0, 10)) {
+    throw new Error('Production cannot be dated in the future')
+  }
 
   // Resolve the recipe first so we can check raw/intermediate stock BEFORE
   // writing anything — production consumes each component (its % of the output).
@@ -283,6 +188,19 @@ export async function updateProduction(id: number, v: Row): Promise<{ id: number
   const qty = n(v.qty)
   if (!productId) throw new Error('Select a product to produce')
   if (qty <= 0) throw new Error('Production quantity must be greater than zero')
+
+  // A batch cannot be dated in the future.
+  //
+  // Production consumes its components from stock the moment it is saved,
+  // so a forward-dated batch draws raw material out of the tanks on a day
+  // that has not happened and leaves every balance between now and then
+  // reading wrong. The date picker greys those days out, but that is a
+  // courtesy — this is the rule, and it applies to an edit as much as to a
+  // new batch, or a saved run could simply be moved forward afterwards.
+  const prodDay = String(v.prod_date || '').slice(0, 10)
+  if (prodDay && prodDay > new Date().toISOString().slice(0, 10)) {
+    throw new Error('Production cannot be dated in the future')
+  }
 
   let fid = n(v.formulation_id)
   if (fid) {

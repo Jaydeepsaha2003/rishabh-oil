@@ -14,11 +14,17 @@ interface Props {
   value: string
   onChange: (value: string) => void
   className?: string
+  // Off where the picker sits inside a form that is about to be saved —
+  // creating a master record as a side effect of filling in a field is a
+  // surprise, and the UOM list belongs to Masters. The inline add stays for
+  // the screens that opt into it.
+  allowAdd?: boolean
 }
 
-// UOM picker backed by the `uoms` master. Lists only saved UOMs; the user can
-// add a new one inline, which is persisted and then becomes selectable.
-export function UomSelect({ value, onChange, className }: Props): React.JSX.Element {
+// UOM picker backed by the `uoms` master. Lists only saved UOMs; where
+// `allowAdd` is on, a new one can be added inline, which is persisted and then
+// becomes selectable.
+export function UomSelect({ value, onChange, className, allowAdd = true }: Props): React.JSX.Element {
   const [uoms, setUoms] = useState<Row[]>([])
   const [adding, setAdding] = useState(false)
   const [draft, setDraft] = useState('')
@@ -102,11 +108,13 @@ export function UomSelect({ value, onChange, className }: Props): React.JSX.Elem
             {u.name}
           </SelectItem>
         ))}
-        <SelectItem value={ADD} className="text-primary">
-          <span className="inline-flex items-center gap-1.5">
-            <Plus className="h-3.5 w-3.5" /> Add new UOM…
-          </span>
-        </SelectItem>
+        {allowAdd && (
+          <SelectItem value={ADD} className="text-primary">
+            <span className="inline-flex items-center gap-1.5">
+              <Plus className="h-3.5 w-3.5" /> Add new UOM…
+            </span>
+          </SelectItem>
+        )}
       </SelectContent>
     </Select>
   )

@@ -1,7 +1,16 @@
-import { Check, ChevronDown } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import {
+  FILTER_PANEL_CLASS,
+  FilterPanelEmpty,
+  FilterPanelFooter,
+  FilterPanelHeader,
+  FilterPanelRow,
+  FilterPanelSearch,
+  FilterPanelSectionLabel
+} from '@/components/ui/filter-panel'
 
 // A filter dropdown that narrows a register by several categories at once.
 //
@@ -21,9 +30,10 @@ export function MultiSelectFilter({
   value,
   onApply,
   allLabel,
+  label,
   className
 }: {
-  options: { value: string; label: string }[]
+  options: { value: string; label: string; count?: number }[]
   value: string[]
   // Called on every tick now, not on a button. The name is kept so no caller
   // has to change.
@@ -32,14 +42,37 @@ export function MultiSelectFilter({
   // an empty/full selection both mean "no filter", same as a plain Select's
   // "ALL ..." option.
   allLabel: string
+  // Names the panel's header ("Filter category"). Falls back to allLabel with
+  // its leading "All" stripped, so the 20-odd existing callers get a sensible
+  // heading without being touched.
+  label?: string
   className?: string
 }): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
   const picked = new Set(value)
+
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return options
+    return options.filter((o) => o.label.toLowerCase().includes(q))
+  }, [options, query])
+
+  const allShownTicked = shown.length > 0 && shown.every((o) => picked.has(o.value))
 
   function toggle(v: string): void {
     const next = new Set(picked)
     if (next.has(v)) next.delete(v)
     else next.add(v)
+    onApply(Array.from(next))
+  }
+
+  // Acts on the searched subset, like the column funnel — and doubles as
+  // "untick these" once they are all already ticked.
+  function toggleAllShown(): void {
+    const next = new Set(picked)
+    if (allShownTicked) for (const o of shown) next.delete(o.value)
+    else for (const o of shown) next.add(o.value)
     onApply(Array.from(next))
   }
 
@@ -51,7 +84,7 @@ export function MultiSelectFilter({
         : `${value.length} selected`
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={(o) => { setOpen(o); if (!o) setQuery('') }}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -64,60 +97,41 @@ export function MultiSelectFilter({
           <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-56 p-0">
-        <div className="max-h-64 overflow-y-auto p-1">
+      <PopoverContent align="start" className={FILTER_PANEL_CLASS}>
+        <FilterPanelHeader label={label || allLabel.replace(/^all\s+/i, '')} onClose={() => setOpen(false)} />
+        <FilterPanelSearch value={query} onChange={setQuery} />
+        <div className="max-h-60 overflow-y-auto">
           {options.length === 0 ? (
-            <div className="px-2 py-3 text-center text-xs text-muted-foreground">No options.</div>
+            <FilterPanelEmpty>No options.</FilterPanelEmpty>
           ) : (
-            options.map((o) => {
-              const checked = picked.has(o.value)
-              return (
-                <button
-                  key={o.value}
-                  type="button"
-                  onClick={() => toggle(o.value)}
-                  className={cn(
-                    'flex w-full items-center gap-2.5 rounded-sm px-2 py-1.5 text-left text-sm normal-case',
-                    checked ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60'
-                  )}
-                >
-                  {/* Same box the pickers use — visible before it is ticked, or
-                      nothing says the list takes more than one answer. */}
-                  <span
-                    className={cn(
-                      'flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[4px] border-2 transition-colors',
-                      checked ? 'border-primary bg-primary text-primary-foreground' : 'border-slate-400 bg-white'
-                    )}
-                  >
-                    {checked && <Check className="h-3.5 w-3.5" strokeWidth={3} />}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate">{o.label}</span>
-                </button>
-              )
-            })
+            <>
+              <FilterPanelSectionLabel>{query.trim() ? 'Search results' : 'All values'}</FilterPanelSectionLabel>
+              <FilterPanelRow
+                strong
+                checked={allShownTicked}
+                disabled={shown.length === 0}
+                label="Select all"
+                onClick={toggleAllShown}
+              />
+              {shown.length === 0 ? (
+                <FilterPanelEmpty>Nothing matches &ldquo;{query.trim()}&rdquo;.</FilterPanelEmpty>
+              ) : (
+                shown.map((o) => (
+                  <FilterPanelRow
+                    key={o.value}
+                    checked={picked.has(o.value)}
+                    label={o.label}
+                    count={o.count}
+                    onClick={() => toggle(o.value)}
+                  />
+                ))
+              )}
+            </>
           )}
         </div>
-        <div className="flex items-center gap-1 border-t p-1.5">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-6 px-1.5 text-[11px]"
-            onClick={() => onApply(options.map((o) => o.value))}
-          >
-            All
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-6 px-1.5 text-[11px]"
-            onClick={() => onApply([])}
-          >
-            None
-          </Button>
-          <span className="ml-auto pr-1 text-[10px] text-muted-foreground">filters as you tick</span>
-        </div>
+        {/* Clearing means "no filter", which for this component is the empty
+            selection its callers already read as "show everything". */}
+        <FilterPanelFooter onClear={() => onApply([])} clearDisabled={value.length === 0} onDone={() => setOpen(false)} />
       </PopoverContent>
     </Popover>
   )

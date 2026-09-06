@@ -64,6 +64,7 @@ export type Page =
   | 'banks'
   | 'brokers'
   | 'packaging'
+  | 'companies'
   | 'approvals'
 
 const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
@@ -90,6 +91,7 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   brokers: { label: 'Brokers', icon: Briefcase },
   packaging: { label: 'Packed SKU', icon: Package },
   trading: { label: 'Trading', icon: Repeat },
+  companies: { label: 'Companies', icon: Building2 },
   approvals: { label: 'Approvals', icon: ClipboardCheck },
   settings: { label: 'Settings', icon: SettingsIcon }
 }
@@ -102,7 +104,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Trading', ids: ['trading'] },
   { label: 'Accounts', ids: ['accounts', 'treasury', 'bankRecon'] },
   { label: 'Masters', ids: ['categories', 'suppliers', 'transporters', 'customers', 'ports', 'banks', 'brokers', 'packaging'] },
-  { label: 'System', ids: ['approvals', 'settings'] }
+  { label: 'System', ids: ['companies', 'approvals', 'settings'] }
 ]
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -159,10 +161,10 @@ export function Sidebar({
     const Icon = it.icon
     const active = page === id
     const showLabel = expanded || mobile
-    // The forest rail only applies to the website's own desktop-width rail —
-    // the mobile overlay stays on its plain white sheet, and so does the
-    // desktop app (__WEB__ compiles out there).
-    const forestRail = __WEB__ && !mobile
+    // Both of the website's shapes wear the forest palette — the desktop rail
+    // and the phone overlay. The desktop app keeps its own theme (__WEB__
+    // compiles out there).
+    const forestRail = __WEB__
     const btn = (
       <button
         onClick={() => {
@@ -202,51 +204,44 @@ export function Sidebar({
         <button
           onClick={() => setExpanded(true)}
           aria-label="Open menu"
-          className="fixed left-3 top-3 z-40 flex h-10 w-10 items-center justify-center rounded-lg border bg-card text-foreground shadow-md"
+          className="fixed left-3 top-3 z-40 flex h-10 w-10 items-center justify-center rounded-lg bg-[#0B3D2E] text-[#C7F03F] shadow-md"
         >
           <Menu className="h-5 w-5" />
         </button>
 
         {expanded && (
           <>
-            <div className="fixed inset-0 z-40 bg-black/40" onClick={() => setExpanded(false)} />
-            <aside className="fixed left-0 top-0 z-50 flex h-screen w-72 max-w-[85vw] flex-col bg-card shadow-xl">
-              <div className="flex h-14 items-center gap-2.5 border-b px-3">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-500 text-white shadow-sm">
-                  <Droplets className="h-5 w-5" />
+            <div className="fixed inset-0 z-40 bg-[rgba(10,31,23,.42)]" onClick={() => setExpanded(false)} />
+            <aside className="fixed left-0 top-0 z-50 flex h-screen w-72 max-w-[85vw] flex-col bg-[#0B3D2E] shadow-xl">
+              <div className="flex h-14 items-center gap-2.5 border-b border-white/10 px-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#C7F03F] text-[#0B3D2E] shadow-sm">
+                  {brandLogo ? (
+                    <img src={brandLogo} alt="" className="h-full w-full rounded-lg object-contain" />
+                  ) : (
+                    <Droplets className="h-5 w-5" />
+                  )}
                 </div>
                 <div className="min-w-0 flex-1 leading-tight">
-                  <div className="text-sm font-semibold leading-tight">Database Management</div>
-                  <div className="text-[11px] text-muted-foreground">Software</div>
+                  <div className="text-sm font-semibold leading-tight text-white">Database Management</div>
+                  <div className="text-[11px] text-[#8FBFA8]">Software</div>
                 </div>
                 <button
                   onClick={() => setExpanded(false)}
                   aria-label="Close menu"
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[#6E9484] hover:bg-white/10 hover:text-[#C7F03F]"
                 >
                   <X className="h-4 w-4" />
                 </button>
               </div>
 
-              <div className="border-b p-2">
-                <Select value={String(companyId || '')} onValueChange={onCompanyChange}>
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue placeholder="Select company" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {companies
-                      .filter((c) => c.active)
-                      .map((c) => (
-                        <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              {/* No company switcher here — it lives in the page header now
+                  (see PageHeader), and two of them invited the question of
+                  whether they were the same control. */}
 
               <nav className="flex-1 space-y-1 overflow-y-auto overflow-x-hidden p-2">
                 {visibleGroups.map((g) => (
                   <div key={g.label} className="space-y-0.5">
-                    <div className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                    <div className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-[#6E9484]">
                       {g.label}
                     </div>
                     {g.ids.map((id) => navItem(id))}
@@ -254,19 +249,19 @@ export function Sidebar({
                 ))}
               </nav>
 
-              <div className="border-t p-2">
+              <div className="border-t border-white/10 p-2">
                 <div className="flex items-center gap-2.5 px-1 py-1">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-500 text-xs font-medium text-white">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#C2700A] text-xs font-medium text-white">
                     {initials(user.full_name || user.username)}
                   </div>
                   <div className="min-w-0 flex-1 leading-tight">
-                    <div className="truncate text-sm font-medium">{user.full_name || user.username}</div>
-                    <div className="text-[11px] capitalize text-muted-foreground">{user.role}</div>
+                    <div className="truncate text-sm font-medium text-white">{user.full_name || user.username}</div>
+                    <div className="text-[11px] capitalize text-[#8FBFA8]">{user.role}</div>
                   </div>
                   <button
                     onClick={onLogout}
                     title="Sign out"
-                    className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-[#6E9484] transition-colors hover:bg-white/10 hover:text-[#C7F03F]"
                   >
                     <LogOut className="h-4 w-4" />
                   </button>
@@ -321,7 +316,10 @@ export function Sidebar({
         </div>
 
         {/* Company switcher — the active company scopes every business screen.
-            Clickable in BOTH states, so switching never requires expanding. */}
+            Clickable in BOTH states, so switching never requires expanding.
+            The website moved it to the page header instead, so this is the
+            desktop app's copy only. */}
+        {!__WEB__ && (
         <div className={cn('border-b p-2', railBorder)}>
           {expanded ? (
             <Select value={String(companyId || '')} onValueChange={onCompanyChange}>
@@ -357,6 +355,7 @@ export function Sidebar({
             </Select>
           )}
         </div>
+        )}
 
         <nav
           className={cn(

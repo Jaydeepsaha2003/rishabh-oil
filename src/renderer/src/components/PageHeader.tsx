@@ -4,6 +4,8 @@ import { UpdateBadge } from '@/components/UpdateBadge'
 import { InfoTip } from '@/components/ui/tooltip'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useCompany, useHeaderExtras } from '@/lib/companyContext'
+import { useIsMobile } from '@/lib/useIsMobile'
+import { cn } from '@/lib/utils'
 
 interface Props {
   title: string
@@ -23,10 +25,14 @@ interface Props {
 function HeaderCompanySwitcher(): React.JSX.Element | null {
   const { companies, companyId, onCompanyChange } = useCompany()
   const active = companies.filter((c) => c.active)
-  if (active.length <= 1) return null
+  // Shown even when there is only one company to pick. It used to hide in
+  // that case, which was fine while the sidebar also named the active
+  // company — now that the sidebar's switcher is gone, hiding this would
+  // leave no indication anywhere of which books you are in.
+  if (active.length === 0) return null
   return (
     <Select value={String(companyId || '')} onValueChange={onCompanyChange}>
-      <SelectTrigger className="h-8 w-auto min-w-[7rem] max-w-[10rem] gap-1.5 text-xs">
+      <SelectTrigger className={cn('h-8 w-auto min-w-[7rem] max-w-[10rem] gap-1.5 text-xs', __WEB__ && '!max-w-[13rem]')}>
         <SelectValue placeholder="Company" />
       </SelectTrigger>
       <SelectContent>
@@ -40,19 +46,45 @@ function HeaderCompanySwitcher(): React.JSX.Element | null {
 
 export function PageHeader({ title, subtitle, hint, actions, leading }: Props): React.JSX.Element {
   const { bell } = useHeaderExtras()
+  const isMobile = useIsMobile()
   return (
-    <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b bg-background/80 px-4 py-4 backdrop-blur">
+    <div
+      className={cn(
+        'sticky top-0 z-10 flex items-start justify-between gap-4 border-b bg-background/80 px-4 py-4 backdrop-blur',
+        // The sidebar's tap-to-open button is fixed in the top-left corner on
+        // the website at phone width, and every page's title was sitting
+        // underneath it. Clear it, and let the row wrap so the actions drop
+        // to a second line rather than squeezing the title.
+        __WEB__ && isMobile && 'flex-wrap gap-y-2 !pl-[60px]'
+      )}
+    >
       {leading && <div className="flex shrink-0 items-center self-center">{leading}</div>}
       <div>
         <div className="flex items-center gap-1.5">
           <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
           {hint && <InfoTip text={hint} className="mt-0.5" />}
         </div>
-        {subtitle && <p className="mt-0.5 text-sm text-muted-foreground">{subtitle}</p>}
+        {/* The website drops the subtitle line from every page header — the
+            title plus the ⓘ says enough, and the sentence was costing a row
+            of height on each screen. The hint tooltip still carries the long
+            explanation, so nothing is lost. The desktop app keeps it. */}
+        {subtitle && !__WEB__ && <p className="mt-0.5 text-sm text-muted-foreground">{subtitle}</p>}
       </div>
-      <div className="ml-auto flex shrink-0 items-center gap-2">
+      {/* One height and one corner radius for everything in the action
+          cluster. Each control arrives at a different size of its own — the
+          company Select at 32, an outline Button at 32, a page's primary CTA
+          at 44, the status dot at 32 — and side by side that reads as a row
+          of mismatched boxes. Set here rather than per page so every screen
+          in the app lines up the same way. */}
+      <div
+        className={cn(
+          'ml-auto flex shrink-0 items-center gap-2',
+          __WEB__ &&
+            '[&_button]:!h-9 [&_button]:!rounded-[4px] [&_button]:!text-[13px] [&_[data-slot=select-trigger]]:!h-9 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!text-[13px]'
+        )}
+      >
         <UpdateBadge />
-        <DbStatus dotOnly />
+        <DbStatus dotOnly className={cn(__WEB__ && '!h-9 !w-9')} />
         <HeaderCompanySwitcher />
         {actions}
         {bell}

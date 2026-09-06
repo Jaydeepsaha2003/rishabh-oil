@@ -5,11 +5,15 @@ import {
   ArrowLeft,
   ArrowUp,
   ArrowUpDown,
+  AlertTriangle,
   BarChart3,
   Building2,
+  Check,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   FileSpreadsheet,
+  MinusCircle,
   Pencil,
   Plus,
   Search,
@@ -17,6 +21,7 @@ import {
   Trash2
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { RowActions } from '@/components/ui/row-actions'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
@@ -173,6 +178,29 @@ function emptyForm(uom: string): Row {
     rate_expiry_date: '',
     remarks: ''
   }
+}
+
+// Column-group tints for the purchase-bargain register on the website.
+// Opening / Addition / Adjusted are one thought (what was contracted) and
+// Dispatch is what moved against it, so each set gets a faint ground and
+// hairline edges rather than thirteen identically-painted columns.
+const PB_G = '!bg-[#FBFDFA]'
+const PB_GL = '!bg-[#FBFDFA] !border-l !border-l-[#EAF0E9]'
+const PB_GR = '!bg-[#FBFDFA] !border-r !border-r-[#EAF0E9]'
+const PB_BAL = '!bg-[#EFF5EC]'
+const PB_HG = '!bg-[#0F4534]'
+const PB_HGL = '!bg-[#0F4534] !border-l !border-l-[#C7F03F]/20'
+const PB_HGR = '!bg-[#0F4534] !border-r !border-r-[#C7F03F]/20'
+const PB_HBAND = '!bg-[#0C3226]'
+const PB_HOPEN = '!bg-[#1A4D2E] !text-[#C7F03F]'
+
+// How far a bargain has been drawn down, for the bar under Balance. Amber from
+// 95%: a contract that is nearly drawn is the one worth spotting before more
+// tankers are sent against it.
+function pbBar(opening: number, addition: number, adjusted: number, dispatch: number): { pct: number; color: string } {
+  const contracted = opening + addition + adjusted
+  const pct = contracted > 0 ? Math.min(100, Math.max(0, (dispatch / contracted) * 100)) : 0
+  return { pct, color: pct >= 95 ? '#C2700A' : pct > 0 ? '#12855A' : '#DCE7DB' }
 }
 
 export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => void } = {}): React.JSX.Element {
@@ -534,6 +562,9 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
   // Collapsed oil groups (band click toggles).
   // Oil groups are COLLAPSED by default — we track the ones the user opens.
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set())
+  // Summary tiles start closed: the register below carries the same figures
+  // per oil, so these are a glance, not the page.
+  const [kpiOpen, setKpiOpen] = useState(false)
   function toggleGroup(oil: string): void {
     setOpenGroups((prev) => {
       const next = new Set(prev)
@@ -975,7 +1006,15 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
           </div>
         ) : (
           <>
-            <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
+            <div
+              className={cn(
+                'mb-4 flex flex-wrap items-center gap-x-3 gap-y-2',
+                // One white card, one height for everything on it — the
+                // pickers arrive at 32px, 36px and 40px otherwise.
+                __WEB__ &&
+                  '!mb-3 !gap-x-2.5 !rounded-[4px] !border !border-[#D6E2D6] !bg-white !px-4 !py-3 [&_input]:!h-10 [&_input]:!rounded-[4px] [&_input]:!text-[13px] [&_[data-slot=select-trigger]]:!h-10 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-10 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[12.5px] [&>label>button]:!h-auto'
+              )}
+            >
               {/* One dropdown rather than a chip per category — the list grows
                   with the Products master, so a row of chips only ever gets
                   longer and starts scrolling sideways. */}
@@ -1023,25 +1062,126 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                 />
               </div>
               <div className="flex shrink-0 flex-wrap items-center gap-1.5 text-[13px]">
-                <span className="text-muted-foreground">Date</span>
+                <span className={cn('text-muted-foreground', __WEB__ && '!text-[10.5px] !font-extrabold !uppercase !tracking-[.13em] !text-[#5A6B62]')}>Date</span>
                 <FyPicker from={dateFrom} to={dateTo} onRange={(f, t) => { setDateFrom(f); setDateTo(t) }} className="h-9 w-28 text-xs" />
                 <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className="w-[8.5rem]" />
-                <span className="text-muted-foreground">to</span>
+                <span className={cn('text-muted-foreground', __WEB__ && '!text-[12px] !font-semibold !text-[#5A6B62]')}>to</span>
                 <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} min={dateFrom || undefined} className="w-[8.5rem]" />
                 {(dateFrom || dateTo) && (
-                  <Button variant="ghost" size="sm" className="h-8 text-muted-foreground" onClick={() => { setDateFrom(''); setDateTo('') }}>Clear</Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className={cn('h-8 text-muted-foreground', __WEB__ && '!px-2.5 !font-extrabold !uppercase !tracking-[.05em] !text-[#0B6B45]')}
+                    onClick={() => { setDateFrom(''); setDateTo('') }}
+                  >
+                    Clear
+                  </Button>
                 )}
               </div>
-              <label className="ml-auto flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[13px] text-muted-foreground">
+              <label className={cn('ml-auto flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[13px] text-muted-foreground', __WEB__ && '!gap-2.5 !text-[12.5px] !font-bold !text-[#33473E]')}>
                 <Switch checked={showZero} onCheckedChange={setShowZero} />
-                Show settled (0 balance)
+                Show settled {__WEB__ ? <span className="font-semibold text-[#7C9188]">(0 balance)</span> : '(0 balance)'}
               </label>
             </div>
 
-            <div className="rounded-xl border bg-card shadow-sm">
-              <Table wrapperClassName="max-h-[calc(100vh-215px)] rounded-xl" className="min-w-[860px] text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:px-3 [&_th]:h-9">
-                <TableHeader>
-                  <TableRow>
+            {/* Summary. Every figure is read off grandVisible — the sum of
+                the same groupStats the bands below are drawn from — so a tile
+                can never state something the register contradicts. */}
+            {__WEB__ && sortedRows.length > 0 && (
+              <div className="mb-3 overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+                <button
+                  type="button"
+                  aria-expanded={kpiOpen}
+                  onClick={() => setKpiOpen((o) => !o)}
+                  className="flex w-full items-center gap-1.5 px-3.5 py-2 text-[11px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62] transition-colors hover:bg-[#F7FAF6]"
+                >
+                  <ChevronDown className={cn('h-4 w-4 shrink-0 text-[#12855A] transition-transform', !kpiOpen && '-rotate-90')} />
+                  Summary
+                  <span className="ml-1 rounded-[2px] bg-[#EAF0E9] px-1.5 py-[2px] text-[11px] font-extrabold tabular-nums tracking-normal text-[#33473E]">
+                    {formatNum(grandVisible.closing)} MT open
+                  </span>
+                </button>
+                {kpiOpen && (
+                  <div className="grid gap-2.5 px-3.5 pb-3.5 pt-1 sm:grid-cols-2 xl:grid-cols-4">
+                    {(() => {
+                      const contracted = grandVisible.opening + grandVisible.addition + grandVisible.adjusted
+                      return [
+                        {
+                          k: 'Bargains open',
+                          v: String(grandVisible.count),
+                          unit: '',
+                          sub: `across ${groupStats.size} oil type${groupStats.size === 1 ? '' : 's'}`,
+                          accent: '#0B3D2E'
+                        },
+                        {
+                          k: 'Contracted',
+                          v: formatNum(contracted),
+                          unit: 'MT',
+                          sub: grandVisible.opening ? `${formatNum(grandVisible.opening)} MT opening carried in` : 'nothing carried in',
+                          accent: '#12855A'
+                        },
+                        {
+                          k: 'Dispatched',
+                          v: formatNum(grandVisible.dispatch),
+                          unit: 'MT',
+                          sub: contracted > 0 ? `${Math.round((grandVisible.dispatch / contracted) * 100)}% of contracted` : 'nothing contracted',
+                          accent: '#C2700A'
+                        },
+                        {
+                          k: 'Balance open',
+                          v: formatNum(grandVisible.closing),
+                          unit: 'MT',
+                          sub: `${formatINR(grandVisible.balValue)} still to draw`,
+                          accent: '#C7F03F'
+                        }
+                      ]
+                    })().map((k) => (
+                      <div
+                        key={k.k}
+                        className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3"
+                        style={{ borderTop: `3px solid ${k.accent}` }}
+                      >
+                        <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">{k.k}</div>
+                        <div className="mt-1 flex items-baseline gap-1.5">
+                          <span className="text-[23px] font-bold leading-none tracking-[-0.035em] tabular-nums">{k.v}</span>
+                          {k.unit && <span className="text-[11px] font-bold text-[#5A6B62]">{k.unit}</span>}
+                        </div>
+                        <div className="mt-1 truncate text-[11.5px] font-semibold text-[#5A6B62]" title={k.sub}>{k.sub}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className={cn('rounded-xl border bg-card shadow-sm', __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !bg-white !shadow-none')}>
+              {/* Nothing wraps: a bargain number split over three lines and a
+                  stacked date are exactly what this register is scanned for.
+                  The wrapper already scrolls, so it slides sideways instead. */}
+              <Table
+                wrapperClassName={cn('max-h-[calc(100vh-215px)] rounded-xl', __WEB__ && '!rounded-[4px]')}
+                className={cn(
+                  'min-w-[860px] text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:px-3 [&_th]:h-9',
+                  __WEB__ && '!min-w-[1460px] [&_td]:!whitespace-nowrap [&_th]:!whitespace-nowrap'
+                )}
+              >
+                <TableHeader className={cn(__WEB__ && '[&_th]:!h-10')}>
+                  {/* A band naming what the column sets below mean, so Opening
+                      / Addition / Adjusted read as one idea and Dispatch as
+                      another — without renaming or merging any column. */}
+                  {__WEB__ && (
+                    <TableRow className="!border-b-0 hover:!bg-transparent [&>th]:!sticky [&>th]:!top-0 [&>th]:!z-20 [&>th]:!h-[30px] [&>th]:!bg-[#072B20] [&>th]:!text-center [&>th]:!text-[11px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.14em] [&>th]:!text-white">
+                      <TableHead colSpan={5} />
+                      <TableHead colSpan={3} className={cn(PB_HBAND, '!border-l !border-l-[#C7F03F]/20 !border-r !border-r-[#C7F03F]/20')}>
+                        Contracted qty
+                      </TableHead>
+                      <TableHead />
+                      <TableHead className={cn(PB_HBAND, '!border-l !border-l-[#C7F03F]/20 !border-r !border-r-[#C7F03F]/20')}>Moved</TableHead>
+                      <TableHead className={PB_HOPEN}>Open</TableHead>
+                      <TableHead colSpan={2} />
+                    </TableRow>
+                  )}
+                  <TableRow className={cn(__WEB__ && 'hover:!bg-transparent')}>
                     {(
                       [
                         { id: 'bargain_no', label: 'Bargain no' },
@@ -1058,11 +1198,29 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                         { id: 'total', label: 'Total', right: true }
                       ] as { id: string; label: string; right?: boolean }[]
                     ).map((c) => (
-                      <TableHead key={c.id} className={cn('sticky top-0 z-20 bg-slate-100 text-[11px] font-semibold uppercase tracking-wide text-foreground', c.right && 'text-right')}>
+                      <TableHead
+                        key={c.id}
+                        className={cn(
+                          'sticky top-0 z-20 bg-slate-100 text-[11px] font-semibold uppercase tracking-wide text-foreground',
+                          c.right && 'text-right',
+                          __WEB__ && '!top-[30px] !h-11 !bg-[#0B3D2E] !text-[12px] !font-extrabold !tracking-[.07em] !text-[#DCEFE4]',
+                          __WEB__ && c.id === 'qty' && PB_HGL,
+                          __WEB__ && c.id === 'addition' && PB_HG,
+                          __WEB__ && c.id === 'adjusted' && PB_HGR,
+                          __WEB__ && c.id === 'dispatch' && cn(PB_HGL, '!border-r !border-r-[#C7F03F]/20'),
+                          __WEB__ && c.id === 'balance' && PB_HOPEN
+                        )}
+                      >
                         <button
                           onClick={() => toggleSort(c.id)}
                           className={cn(
-                            'inline-flex items-center gap-1 transition-colors hover:text-foreground',
+                            // uppercase repeated here on purpose: Tailwind's
+                            // preflight sets `text-transform: none` on every
+                            // <button>, so the th's own uppercase never reached
+                            // the label inside it — which is why these headers
+                            // read "Bargain no" while the plain Actions th two
+                            // cells over read "ACTIONS".
+                            'inline-flex items-center gap-1 uppercase transition-colors hover:text-foreground',
                             c.right && 'w-full justify-end'
                           )}
                           title={`Sort by ${c.label}`}
@@ -1076,7 +1234,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                         </button>
                       </TableHead>
                     ))}
-                    <TableHead className="sticky top-0 z-20 bg-slate-100 w-[90px] text-right text-[11px] font-semibold uppercase tracking-wide text-foreground">Actions</TableHead>
+                    <TableHead className={cn('sticky top-0 z-20 bg-slate-100 w-[90px] text-right text-[11px] font-semibold uppercase tracking-wide text-foreground', __WEB__ && '!top-[30px] !h-11 !bg-[#0B3D2E] !text-[12px] !font-extrabold !tracking-[.07em] !text-[#DCEFE4]')}>Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1096,20 +1254,28 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                     </TableRow>
                   ) : (
                     <>
-                    <TableRow className="border-y-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
-                      <TableCell colSpan={5} className="py-2 text-xs font-bold uppercase tracking-wide text-amber-900">
+                    <TableRow
+                      className={cn(
+                        'border-y-2 border-amber-500 bg-amber-100 hover:bg-amber-100',
+                        // Lime family, not the page's greens — the total of
+                        // everything has to look unlike the group bands it
+                        // sums, or it reads as one more of them.
+                        __WEB__ && '!border-y-0 !border-b-2 !border-b-[#0B3D2E] !bg-[#EDF7D4] hover:!bg-[#EDF7D4] [&>td]:!h-[46px] [&>td]:!text-[13px] [&>td]:!text-[#2E4A0B]'
+                      )}
+                    >
+                      <TableCell colSpan={5} className={cn('py-2 text-xs font-bold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[11px] !font-extrabold !tracking-[.1em] !text-[#2E4A0B]')}>
                         Grand total
-                        <span className="ml-1 font-medium normal-case tracking-normal text-amber-700">
+                        <span className={cn('ml-1 font-medium normal-case tracking-normal text-amber-700', __WEB__ && '!ml-1.5 !text-[12px] !font-semibold !text-[#5B7226]')}>
                           · {grandVisible.count} bargain{grandVisible.count === 1 ? '' : 's'}
                         </span>
                       </TableCell>
-                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.opening)}</TableCell>
-                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.addition)}</TableCell>
-                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.adjusted)}</TableCell>
+                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!bg-[#E4F2C3] !border-l !border-l-[#CBE0A0] !text-[13px] !text-[#2E4A0B]')}>{formatNum(grandVisible.opening)}</TableCell>
+                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!bg-[#E4F2C3] !text-[13px] !text-[#2E4A0B]')}>{formatNum(grandVisible.addition)}</TableCell>
+                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!bg-[#E4F2C3] !border-r !border-r-[#CBE0A0] !text-[13px] !text-[#2E4A0B]')}>{formatNum(grandVisible.adjusted)}</TableCell>
                       <TableCell className="py-2" />
-                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.dispatch)}</TableCell>
-                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatNum(grandVisible.closing)}</TableCell>
-                      <TableCell className="py-2 text-right text-xs font-bold tabular-nums text-amber-900">{formatINR(grandVisible.balValue)}</TableCell>
+                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!bg-[#E4F2C3] !border-l !border-l-[#CBE0A0] !border-r !border-r-[#CBE0A0] !text-[13px] !text-[#2E4A0B]')}>{formatNum(grandVisible.dispatch)}</TableCell>
+                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!bg-[#C7F03F] !text-[14px] !tracking-[-0.02em] !text-[#12280B]')}>{formatNum(grandVisible.closing)}</TableCell>
+                      <TableCell className={cn('py-2 text-right text-xs font-bold tabular-nums text-amber-900', __WEB__ && '!text-[13px] !text-[#2E4A0B]')}>{formatINR(grandVisible.balValue)}</TableCell>
                       <TableCell className="py-2" />
                     </TableRow>
                     {sortedRows.map((row, i) => {
@@ -1128,87 +1294,128 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                         <Fragment key={row.id as number}>
                           {newGroup && (
                             <TableRow
-                              className="cursor-pointer border-y-2 border-slate-300 bg-slate-100 hover:bg-slate-200/70"
+                              className={cn(
+                                'cursor-pointer border-y-2 border-slate-300 bg-slate-100 hover:bg-slate-200/70',
+                                // An oil band, not a second header: a forest left
+                                // edge when open marks which rows belong to it.
+                                __WEB__ && '!border-y-0 !border-b !border-b-[#DCE7DB] !border-l-[3px] [&>td]:!h-[44px]',
+                                __WEB__ && (isCollapsed ? '!border-l-[#C3D2C6] !bg-[#F1F5EF] hover:!bg-[#E4ECE3]' : '!border-l-[#0B3D2E] !bg-[#E4ECE3] hover:!bg-[#E4ECE3]')
+                              )}
                               onClick={() => toggleGroup(oil)}
                             >
                               <TableCell colSpan={5} className="py-1.5">
-                                <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-700">
-                                  {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                                <span className={cn('inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-700', __WEB__ && '!gap-2.5 !text-[13.5px] !font-extrabold !tracking-[.01em] !text-[#0A1F17]')}>
+                                  {isCollapsed ? <ChevronRight className={cn('h-3.5 w-3.5', __WEB__ && '!h-[18px] !w-[18px] !text-[#5A6B62]')} /> : <ChevronDown className={cn('h-3.5 w-3.5', __WEB__ && '!h-[18px] !w-[18px] !text-[#5A6B62]')} />}
                                   {oil}
-                                  <span className="font-medium normal-case tracking-normal text-slate-500">
+                                  <span className={cn('font-medium normal-case tracking-normal text-slate-500', __WEB__ && '!text-[11.5px] !font-semibold !text-[#5A6B62]')}>
                                     · {g?.count ?? 0} bargain{(g?.count ?? 0) === 1 ? '' : 's'}
                                   </span>
                                 </span>
                               </TableCell>
-                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.opening ?? 0)}</TableCell>
-                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.addition ?? 0)}</TableCell>
-                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.adjusted ?? 0)}</TableCell>
+                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!border-l !border-l-[#DCE7DB] !text-[12.5px]', __WEB__ && ((g?.opening ?? 0) ? '!text-[#0A1F17]' : '!text-[#8AA096]'))}>{formatNum(g?.opening ?? 0)}</TableCell>
+                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!text-[12.5px]', __WEB__ && ((g?.addition ?? 0) ? '!text-[#0A1F17]' : '!text-[#8AA096]'))}>{formatNum(g?.addition ?? 0)}</TableCell>
+                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!border-r !border-r-[#DCE7DB] !text-[12.5px]', __WEB__ && ((g?.adjusted ?? 0) ? '!text-[#0A1F17]' : '!text-[#8AA096]'))}>{formatNum(g?.adjusted ?? 0)}</TableCell>
                               <TableCell className="py-1.5" />
-                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.dispatch ?? 0)}</TableCell>
-                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatNum(g?.closing ?? 0)}</TableCell>
-                              <TableCell className="py-1.5 text-right text-xs font-bold tabular-nums text-slate-700">{formatINR(g?.balValue ?? 0)}</TableCell>
+                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!border-l !border-l-[#DCE7DB] !border-r !border-r-[#DCE7DB] !text-[12.5px]', __WEB__ && ((g?.dispatch ?? 0) ? '!text-[#0A1F17]' : '!text-[#8AA096]'))}>{formatNum(g?.dispatch ?? 0)}</TableCell>
+                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && PB_BAL, __WEB__ && '!text-[13px] !text-[#0A1F17]')}>
+                                {__WEB__ ? (() => {
+                                  const b = pbBar(g?.opening ?? 0, g?.addition ?? 0, g?.adjusted ?? 0, g?.dispatch ?? 0)
+                                  return (
+                                    <>
+                                      <div>{formatNum(g?.closing ?? 0)}</div>
+                                      <div className="mt-1 h-1 overflow-hidden rounded-[2px] bg-[#DCE7DB]">
+                                        <div className="h-full" style={{ width: `${b.pct}%`, background: b.color }} />
+                                      </div>
+                                    </>
+                                  )
+                                })() : formatNum(g?.closing ?? 0)}
+                              </TableCell>
+                              <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!text-[12.5px] !text-[#0A1F17]')}>{formatINR(g?.balValue ?? 0)}</TableCell>
                               <TableCell className="py-1.5" />
                             </TableRow>
                           )}
                           {!isCollapsed && (
                           <>
-                          <TableRow className={cn('cursor-pointer transition-colors', expanded.has(Number(row.id)) ? 'bg-slate-100 hover:bg-slate-100' : 'hover:bg-muted/40')} onClick={() => toggleExpand(Number(row.id))}>
-                          <TableCell className="font-medium">
+                          <TableRow
+                            className={cn(
+                              'cursor-pointer transition-colors',
+                              expanded.has(Number(row.id)) ? 'bg-slate-100 hover:bg-slate-100' : 'hover:bg-muted/40',
+                              __WEB__ && '!border-b-[#EAF0E9] !border-l-[3px] !border-l-[#DCE7DB] [&>td]:!py-2.5',
+                              __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white hover:!bg-white' : '!bg-white hover:!bg-[#F7FAF6]')
+                            )}
+                            onClick={() => toggleExpand(Number(row.id))}
+                          >
+                          <TableCell className={cn('font-medium', __WEB__ && '!text-[12.5px] !font-bold !tracking-[-0.02em]')}>
                             <ChevronRight
                               className={cn(
                                 'mr-1 inline h-3.5 w-3.5 text-muted-foreground transition-transform',
-                                expanded.has(Number(row.id)) && 'rotate-90'
+                                expanded.has(Number(row.id)) && 'rotate-90',
+                                __WEB__ && '!mr-2 !h-[18px] !w-[18px] !text-[#A8B8AE]'
                               )}
                             />
-                            <span className="mr-1 tabular-nums text-muted-foreground">{seq}.</span>
+                            <span className={cn('mr-1 tabular-nums text-muted-foreground', __WEB__ && '!mr-2 !text-[10.5px] !font-bold !text-[#5A6B62]')}>{seq}.</span>
                             {row.bargain_no}
                           </TableCell>
-                          <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(row.bargain_date)}</TableCell>
-                          <TableCell className="max-w-[160px] truncate" title={row.supplier_name ?? ''}>{row.supplier_name ?? '—'}</TableCell>
-                          <TableCell className="text-muted-foreground">{row.oil_code}</TableCell>
+                          <TableCell className={cn('whitespace-nowrap text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{formatDate(row.bargain_date)}</TableCell>
+                          <TableCell className={cn('max-w-[160px] truncate', __WEB__ && '!text-[12.5px] !font-bold')} title={row.supplier_name ?? ''}>{row.supplier_name ?? '—'}</TableCell>
+                          <TableCell className={cn('text-muted-foreground', __WEB__ && '!text-[11.5px] !font-bold !text-[#5A6B62]')}>{row.oil_code}</TableCell>
                           <TableCell>
-                            <Badge variant={row.bargain_type === 'DLD' || row.bargain_type === 'Delivered' ? 'secondary' : 'muted'} className="text-[10px]">
+                            <Badge
+                              variant={row.bargain_type === 'DLD' || row.bargain_type === 'Delivered' ? 'secondary' : 'muted'}
+                              className={cn('text-[10px]', __WEB__ && '!rounded-[2px] !border-0 !bg-[#EAF0E9] !px-1.5 !py-1 !text-[10.5px] !font-extrabold !tracking-[.06em] !text-[#33473E]')}
+                            >
                               {row.bargain_type}
                             </Badge>
                           </TableCell>
-                          <TableCell className="text-right tabular-nums text-muted-foreground">{Number(row._opening) ? formatNum(row._opening) : '—'}</TableCell>
-                          <TableCell className="text-right tabular-nums">{Number(row._addition) ? formatNum(row._addition) : '—'}</TableCell>
-                          <TableCell className="text-right tabular-nums">
-                            <span className={Number(row._adjusted) < -1e-9 ? 'text-red-600' : Number(row._adjusted) > 0 ? 'text-emerald-700' : ''}>
+                          <TableCell className={cn('text-right tabular-nums text-muted-foreground', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white' : PB_GL), __WEB__ && (Number(row._opening) ? '!text-[12.5px] !font-bold !text-[#0A1F17]' : '!text-[12.5px] !font-medium !text-[#C3D2C6]'))}>{Number(row._opening) ? formatNum(row._opening) : '—'}</TableCell>
+                          <TableCell className={cn('text-right tabular-nums', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white' : PB_G), __WEB__ && '!text-[13px] !font-bold')}>{Number(row._addition) ? formatNum(row._addition) : '—'}</TableCell>
+                          <TableCell className={cn('text-right tabular-nums', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white' : PB_GR), __WEB__ && (Number(row._adjusted) ? '!text-[12.5px] !font-bold' : '!text-[12.5px] !font-medium !text-[#C3D2C6]'))}>
+                            <span className={cn(Number(row._adjusted) < -1e-9 ? 'text-red-600' : Number(row._adjusted) > 0 ? 'text-emerald-700' : '', __WEB__ && Number(row._adjusted) !== 0 && '!text-[#8A5300]')}>
                               {Number(row._adjusted) ? formatNum(row._adjusted) : '—'}
                             </span>
                           </TableCell>
-                          <TableCell className="text-right tabular-nums">{formatINR(row.rate_per_uom)}</TableCell>
-                          <TableCell className={cn('text-right tabular-nums', Number(row._dispatch) && 'font-bold text-red-600')}>{Number(row._dispatch) ? formatNum(row._dispatch) : '—'}</TableCell>
-                          <TableCell className="text-right font-semibold tabular-nums">
-                            <span className={Number(row._closing) < -1e-9 ? 'text-red-600' : ''}>
-                              {formatNum(row._closing)}
-                            </span>
+                          <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[12.5px] !font-bold')}>{formatINR(row.rate_per_uom)}</TableCell>
+                          <TableCell className={cn('text-right tabular-nums', Number(row._dispatch) && 'font-bold text-red-600', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white !border-l !border-l-[#EAF0E9] !border-r !border-r-[#EAF0E9]' : cn(PB_GL, PB_GR)), __WEB__ && (Number(row._dispatch) ? '!text-[13px] !font-bold !text-[#0A1F17]' : '!text-[12.5px] !font-medium !text-[#C3D2C6]'))}>{Number(row._dispatch) ? formatNum(row._dispatch) : '—'}</TableCell>
+                          <TableCell className={cn('text-right font-semibold tabular-nums', __WEB__ && (expanded.has(Number(row.id)) ? '!bg-white' : PB_BAL))}>
+                            {__WEB__ ? (() => {
+                              const b = pbBar(Number(row._opening) || 0, Number(row._addition) || 0, Number(row._adjusted) || 0, Number(row._dispatch) || 0)
+                              return (
+                                <>
+                                  <div className={cn('text-[13.5px] font-bold', Number(row._closing) < -1e-9 ? 'text-[#B3261E]' : b.pct >= 95 ? 'text-[#8A5300]' : 'text-[#0A1F17]')}>
+                                    {formatNum(row._closing)}
+                                  </div>
+                                  <div className="mt-1 h-1 overflow-hidden rounded-[2px] bg-[#DCE7DB]">
+                                    <div className="h-full" style={{ width: `${b.pct}%`, background: b.color }} />
+                                  </div>
+                                </>
+                              )
+                            })() : (
+                              <span className={Number(row._closing) < -1e-9 ? 'text-red-600' : ''}>
+                                {formatNum(row._closing)}
+                              </span>
+                            )}
                           </TableCell>
-                          <TableCell className="text-right tabular-nums">
+                          <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[12.5px] !font-bold')}>
                             {formatINR(row.total_amount)}
                           </TableCell>
-                          <TableCell className="text-right">
+                          <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                             <div className="flex justify-end gap-1">
-                              <Button variant="ghost" size="icon" className="h-8 w-8" title="Add / remove balance qty" onClick={(e) => { e.stopPropagation(); openAdjust(row) }}>
-                                <SlidersHorizontal className="h-4 w-4" />
-                              </Button>
-                              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); openEdit(row) }}>
-                                <Pencil className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-destructive"
-                                onClick={(e) => { e.stopPropagation(); del(row) }}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
+                              {/* One ⋮ rather than three icon buttons: the row's
+                                  own click already opens its tankers, so nothing
+                                  here is the primary action and none of the
+                                  three earns permanent width. */}
+                              <RowActions
+                                actions={[
+                                  { label: 'Add / remove balance qty', icon: SlidersHorizontal, onClick: () => openAdjust(row) },
+                                  { label: 'Edit bargain', icon: Pencil, onClick: () => openEdit(row) },
+                                  { label: 'Delete bargain', icon: Trash2, danger: true, onClick: () => del(row) }
+                                ]}
+                              />
                             </div>
                           </TableCell>
                           </TableRow>
                           {expanded.has(Number(row.id)) && (
-                            <TableRow className="bg-slate-200 hover:bg-slate-200">
+                            <TableRow className={cn('bg-slate-200 hover:bg-slate-200', __WEB__ && '!border-l-[3px] !border-l-[#C3D2C6] !bg-[#F1F5EF] hover:!bg-[#F1F5EF]')}>
                               <TableCell colSpan={13} className="p-0">
                                 {(() => {
                                   // A tanker may be split across two bargains (excess loading):
@@ -1227,12 +1434,12 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                   // separately from the tanker table.
                                   const drawn = draws.filter((d) => Number(d.bargain_id) === Number(row.id))
                                   const drawnBlock = drawn.length ? (
-                                    <div className="mb-2 overflow-hidden rounded-md border border-violet-200">
-                                      <div className="flex items-center justify-between bg-violet-100/70 px-3 py-1">
-                                        <span className="text-[10px] font-semibold uppercase tracking-wide text-violet-900">
+                                    <div className={cn('mb-2 overflow-hidden rounded-md border border-violet-200', __WEB__ && '!mb-2.5 !rounded-[4px] !border-[#D6E2D6]')}>
+                                      <div className={cn('flex items-center justify-between bg-violet-100/70 px-3 py-1', __WEB__ && '!border-b !border-b-[#E4ECE3] !bg-[#EAF0E9] !px-3.5 !py-2.5')}>
+                                        <span className={cn('text-[10px] font-semibold uppercase tracking-wide text-violet-900', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.1em] !text-[#33473E]')}>
                                           MNC / direct purchases on this bargain
                                         </span>
-                                        <span className="text-[11px] font-bold tabular-nums text-violet-900">
+                                        <span className={cn('text-[11px] font-bold tabular-nums text-violet-900', __WEB__ && '!text-[12.5px] !text-[#0A1F17]')}>
                                           {formatNum(drawn.reduce((a, d) => a + (Number(d.qty) || 0), 0))} {row.uom}
                                         </span>
                                       </div>
@@ -1280,7 +1487,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                   ) : null
                                   if (!list.length) {
                                     return (
-                                      <div className="bg-slate-200 px-6 py-4">
+                                      <div className={cn('bg-slate-200 px-6 py-4', __WEB__ && '!border-b !border-b-[#DCE7DB] !bg-[#F1F5EF] !py-3.5 !pl-10 !pr-4')}>
                                         {remarksLine}
                                         {drawnBlock}
                                         {!drawn.length && (
@@ -1320,12 +1527,14 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                     { dis: 0, rec: 0, shortage: 0, allowed: 0 }
                                   )
                                   return (
-                                    <div className="bg-slate-200 px-6 py-4">
+                                    <div className={cn('bg-slate-200 px-6 py-4', __WEB__ && '!border-b !border-b-[#DCE7DB] !bg-[#F1F5EF] !py-3.5 !pl-10 !pr-4')}>
                                       {remarksLine}
                                       {drawnBlock}
-                                      <table className="overflow-hidden rounded-lg border border-slate-300 bg-card text-xs shadow-sm [&_td]:pl-3 [&_th]:pl-3">
+                                      <div className={cn(__WEB__ && 'flex items-start gap-3')}>
+                                      <div className={cn(__WEB__ && 'min-w-0 flex-1 overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white')}>
+                                      <table className={cn('overflow-hidden rounded-lg border border-slate-300 bg-card text-xs shadow-sm [&_td]:pl-3 [&_th]:pl-3', __WEB__ && '!w-full !rounded-none !border-0 !shadow-none')}>
                                         <thead>
-                                          <tr className="border-b bg-slate-200/70 text-left text-slate-700">
+                                          <tr className={cn('border-b bg-slate-200/70 text-left text-slate-700', __WEB__ && '!border-b-[#D6E2D6] !bg-[#EAF0E9] [&>th]:!h-[34px] [&>th]:!py-0 [&>th]:!text-[10px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.09em] [&>th]:!text-[#33473E]')}>
                                             <th className="py-1.5 pr-3 font-semibold w-8">#</th>
                                             <th className="py-1.5 pr-3 font-semibold">Tanker</th>
                                             <th className="py-1.5 pr-3 font-semibold">Loading Date</th>
@@ -1358,53 +1567,138 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                                 className={cn(
                                                   'border-b',
                                                   ti % 2 === 1 ? 'bg-muted/40' : 'bg-card',
-                                                  t.order_id && onOpenOrder && 'cursor-pointer hover:bg-sky-50'
+                                                  t.order_id && onOpenOrder && 'cursor-pointer hover:bg-sky-50',
+                                                  // Zebra stripes go: the left mark
+                                                  // carries the only distinction that
+                                                  // matters here — did this tanker cost
+                                                  // the supplier a deduction.
+                                                  __WEB__ && '!border-b-[#EAF0E9] !border-l-[3px] [&>td]:!h-[48px] [&>td]:!py-0',
+                                                  __WEB__ && (deductible != null ? '!border-l-[#B3261E] !bg-[#FDF3F2]' : '!border-l-[#12855A] !bg-white'),
+                                                  __WEB__ && t.order_id && onOpenOrder && 'hover:!bg-[#F7FAF6]'
                                                 )}
                                                 title={t.order_id ? 'Open the purchase invoice' : 'Not billed yet'}
                                                 onClick={() => t.order_id && onOpenOrder?.(Number(t.order_id))}
                                               >
-                                                <td className="py-1.5 pr-3 tabular-nums text-muted-foreground">{ti + 1}</td>
-                                                <td className="py-1.5 pr-3 font-medium">
+                                                <td className={cn('py-1.5 pr-3 tabular-nums text-muted-foreground', __WEB__ && '!text-[10px] !font-bold !text-[#5A6B62]')}>{ti + 1}</td>
+                                                <td className={cn('py-1.5 pr-3 font-medium', __WEB__ && '!text-[12.5px] !font-bold')}>
                                                   {t.tanker_no}
                                                   {split && <span className="ml-1 text-[10px] font-normal text-muted-foreground">(split)</span>}
                                                 </td>
-                                                <td className="py-1.5 pr-3">{loaded > 0 ? formatDate(t.loaded_date) : '—'}</td>
-                                                <td className="py-1.5 pr-3">{t.empty_date ? formatDate(t.empty_date) : '—'}</td>
-                                                <td className="py-1.5 pr-3 text-right tabular-nums font-medium text-red-600">{loaded > 0 ? formatNum(dis) : '—'}</td>
-                                                <td className="py-1.5 pr-3 text-right tabular-nums">{rec != null ? formatNum(rec) : '—'}</td>
+                                                <td className={cn('py-1.5 pr-3', __WEB__ && '!text-[12px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{loaded > 0 ? formatDate(t.loaded_date) : '—'}</td>
+                                                <td className={cn('py-1.5 pr-3', __WEB__ && '!text-[12px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{t.empty_date ? formatDate(t.empty_date) : '—'}</td>
+                                                <td className={cn('py-1.5 pr-3 text-right tabular-nums font-medium text-red-600', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>{loaded > 0 ? formatNum(dis) : '—'}</td>
+                                                <td className={cn('py-1.5 pr-3 text-right tabular-nums', __WEB__ && '!text-[12.5px] !font-bold')}>{rec != null ? formatNum(rec) : '—'}</td>
                                                 <td className="py-1.5 pr-3 text-right tabular-nums">
-                                                  {shortage != null ? (
+                                                  {__WEB__ && shortage != null ? (
+                                                    <>
+                                                      <div className={cn('text-[12.5px] font-bold', deductible != null ? 'text-[#B3261E]' : 'text-[#8A5300]')}>{formatNum(shortage)}</div>
+                                                      {/* Shortage against the allowance it is measured by — the
+                                                          bar fills as it approaches the tolerance and is full once
+                                                          it has passed it. */}
+                                                      <div className="mt-1 h-1 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                                                        <div
+                                                          className="h-full"
+                                                          style={{
+                                                            width: `${allowedAmt > 0 ? Math.min(100, (shortage / allowedAmt) * 100) : shortage > 0 ? 100 : 0}%`,
+                                                            background: deductible != null ? '#B3261E' : '#12855A'
+                                                          }}
+                                                        />
+                                                      </div>
+                                                    </>
+                                                  ) : shortage != null ? (
                                                     <span className={shortage > 0 ? 'text-amber-700' : ''}>{formatNum(shortage)}</span>
                                                   ) : '—'}
                                                 </td>
-                                                <td className={cn('py-1.5 text-right tabular-nums', isEx && 'pr-3')}>{loaded > 0 ? formatNum(allowedAmt) : '—'}</td>
+                                                <td className={cn('py-1.5 text-right tabular-nums', isEx && 'pr-3', __WEB__ && '!text-[12.5px] !font-semibold !text-[#5A6B62]')}>{loaded > 0 ? formatNum(allowedAmt) : '—'}</td>
                                                 {isEx && (
                                                   <>
-                                                    <td className="py-1.5 pr-3 text-right tabular-nums text-red-600">{deductible != null ? formatNum(deductible) : ''}</td>
-                                                    <td className="py-1.5 text-right">{deductible != null ? <Badge variant="destructive" className="text-[10px]">Deductible</Badge> : ''}</td>
+                                                    <td className={cn('py-1.5 pr-3 text-right tabular-nums text-red-600', __WEB__ && (deductible != null ? '!text-[12.5px] !font-bold !text-[#B3261E]' : '!text-[12.5px] !text-[#C3D2C6]'))}>{deductible != null ? formatNum(deductible) : __WEB__ ? '—' : ''}</td>
+                                                    <td className={cn('py-1.5 text-right', __WEB__ && '!pr-3')}>
+                                                      {__WEB__ ? (
+                                                        <span
+                                                          className={cn(
+                                                            'inline-flex items-center gap-1.5 rounded-[2px] border px-2 py-1 text-[10.5px] font-extrabold',
+                                                            deductible != null ? 'border-[#F0D6D4] bg-[#FDF3F2] text-[#B3261E]' : 'border-[#BFE3CB] bg-[#E9F5EE] text-[#0B6B45]'
+                                                          )}
+                                                        >
+                                                          {deductible != null ? <MinusCircle className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                                                          {deductible != null ? 'Deductible' : 'Within allowance'}
+                                                        </span>
+                                                      ) : deductible != null ? <Badge variant="destructive" className="text-[10px]">Deductible</Badge> : ''}
+                                                    </td>
                                                   </>
                                                 )}
                                               </tr>
                                             )
                                           })}
-                                          <tr className="border-t-2 border-amber-500 bg-amber-50 font-semibold text-amber-900">
-                                            <td className="py-1.5 pr-3" colSpan={4}>Total</td>
-                                            <td className="py-1.5 pr-3 text-right tabular-nums text-red-600">{formatNum(tot.dis)}</td>
-                                            <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(tot.rec)}</td>
-                                            <td className="py-1.5 pr-3 text-right tabular-nums">{formatNum(tot.shortage)}</td>
-                                            <td className={cn('py-1.5 text-right tabular-nums', isEx && 'pr-3')}>{formatNum(tot.allowed)}</td>
+                                          <tr className={cn('border-t-2 border-amber-500 bg-amber-50 font-semibold text-amber-900', __WEB__ && '!border-t-0 !bg-[#C7F03F] !text-[#12280B] [&>td]:!h-[46px] [&>td]:!py-0')}>
+                                            <td className={cn('py-1.5 pr-3', __WEB__ && '!pl-3 !text-[10.5px] !font-extrabold !uppercase !tracking-[.09em] !text-[#2E4A0B]')} colSpan={4}>
+                                              Total{__WEB__ ? ` · ${list.length} tanker${list.length === 1 ? '' : 's'}` : ''}
+                                            </td>
+                                            <td className={cn('py-1.5 pr-3 text-right tabular-nums text-red-600', __WEB__ && '!text-[13px] !text-[#12280B]')}>{formatNum(tot.dis)}</td>
+                                            <td className={cn('py-1.5 pr-3 text-right tabular-nums', __WEB__ && '!text-[13px] !text-[#12280B]')}>{formatNum(tot.rec)}</td>
+                                            <td className={cn('py-1.5 pr-3 text-right tabular-nums', __WEB__ && '!text-[13px] !text-[#12280B]')}>{formatNum(tot.shortage)}</td>
+                                            <td className={cn('py-1.5 text-right tabular-nums', isEx && 'pr-3', __WEB__ && '!text-[12.5px] !text-[#3F5A12]')}>{formatNum(tot.allowed)}</td>
                                             {isEx && (() => {
                                               const totDeductible = tot.shortage > tot.allowed ? tot.shortage - tot.allowed : null
                                               return (
                                                 <>
-                                                  <td className="py-1.5 pr-3 text-right tabular-nums text-red-600">{totDeductible != null ? formatNum(totDeductible) : ''}</td>
-                                                  <td className="py-1.5 text-right">{totDeductible != null ? <Badge variant="destructive" className="text-[10px]">Deductible</Badge> : ''}</td>
+                                                  <td className={cn('py-1.5 pr-3 text-right tabular-nums text-red-600', __WEB__ && '!text-[13px] !text-[#8C2F26]')}>{totDeductible != null ? formatNum(totDeductible) : __WEB__ ? '—' : ''}</td>
+                                                  <td className={cn('py-1.5 text-right', __WEB__ && '!pr-3')}>
+                                                    {__WEB__ ? (
+                                                      totDeductible != null ? (
+                                                        <span className="inline-flex items-center gap-1.5 rounded-[2px] bg-[#8C2F26] px-2 py-1 text-[10.5px] font-extrabold text-white">
+                                                          <MinusCircle className="h-3.5 w-3.5" /> Deductible
+                                                        </span>
+                                                      ) : null
+                                                    ) : totDeductible != null ? <Badge variant="destructive" className="text-[10px]">Deductible</Badge> : ''}
+                                                  </td>
                                                 </>
                                               )
                                             })()}
                                           </tr>
                                         </tbody>
                                       </table>
+                                      </div>
+                                      {/* The two questions this panel is opened to
+                                          answer, off the totals already computed
+                                          above: what is owed back, and how much of
+                                          the contract is left. */}
+                                      {__WEB__ && (() => {
+                                        const totDeductible = isEx && tot.shortage > tot.allowed ? tot.shortage - tot.allowed : null
+                                        const b = pbBar(Number(row._opening) || 0, Number(row._addition) || 0, Number(row._adjusted) || 0, Number(row._dispatch) || 0)
+                                        const contracted = (Number(row._opening) || 0) + (Number(row._addition) || 0) + (Number(row._adjusted) || 0)
+                                        return (
+                                          <div className="flex w-[210px] shrink-0 flex-col gap-2">
+                                            {totDeductible != null && (
+                                              <div className="rounded-[4px] border border-[#F0D6D4] border-l-4 border-l-[#B3261E] bg-[#FDF3F2] px-3 py-2.5">
+                                                  <div className="text-[9px] font-extrabold uppercase tracking-[.13em] text-[#8C2F26]">Deductible</div>
+                                                  <div className="mt-1 flex items-baseline gap-1">
+                                                    <span className="text-[20px] font-bold leading-none tracking-[-0.03em] tabular-nums text-[#B3261E]">{formatNum(totDeductible)}</span>
+                                                    <span className="text-[10px] font-extrabold text-[#8C2F26]">{String(row.uom || 'MT')}</span>
+                                                  </div>
+                                                  <div className="mt-1 text-[12px] font-bold tabular-nums text-[#8C2F26]">
+                                                    {formatINR(totDeductible * (Number(row.rate_per_uom) || 0))}
+                                                  </div>
+                                                </div>
+                                            )}
+                                            <div className="rounded-[4px] border border-[#D6E2D6] bg-white px-3 py-2.5">
+                                              <div className="text-[9px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">Drawn</div>
+                                              <div className="mt-1 flex items-baseline gap-1">
+                                                <span className="text-[20px] font-bold leading-none tracking-[-0.03em] tabular-nums">{formatNum(row._dispatch)}</span>
+                                                <span className="text-[10px] font-extrabold text-[#5A6B62]">of {formatNum(contracted)}</span>
+                                              </div>
+                                              <div className="mt-2 h-[6px] overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                                                <div className="h-full" style={{ width: `${b.pct}%`, background: b.color }} />
+                                              </div>
+                                              <div className="mt-1.5 text-[11px] font-bold tabular-nums text-[#5A6B62]">
+                                                {Math.round(b.pct)}% · {formatNum(row._closing)} {String(row.uom || 'MT')} open
+                                              </div>
+                                            </div>
+                                          </div>
+                                        )
+                                      })()}
+                                      </div>
                                     </div>
                                   )
                                 })()}
@@ -1420,6 +1714,29 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   )}
                 </TableBody>
               </Table>
+              {__WEB__ && sortedRows.length > 0 && (
+                <div className="flex items-center justify-between gap-3 border-t border-[#EAF0E9] px-4 py-3">
+                  <div className="text-[12px] font-semibold text-[#5A6B62]">
+                    {grandVisible.count} bargain{grandVisible.count === 1 ? '' : 's'} ·{' '}
+                    {formatNum(grandVisible.opening + grandVisible.addition + grandVisible.adjusted)} MT contracted ·{' '}
+                    {formatNum(grandVisible.closing)} MT balance
+                  </div>
+                  {(() => {
+                    const oils = Array.from(groupStats.keys())
+                    const allOpen = oils.length > 0 && oils.every((o) => openGroups.has(o))
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => setOpenGroups(allOpen ? new Set<string>() : new Set(oils))}
+                        className="flex items-center gap-1.5 text-[11.5px] font-extrabold uppercase tracking-[.05em] text-[#0B6B45] transition-colors hover:text-[#0B3D2E]"
+                      >
+                        <ChevronDown className={cn('h-[18px] w-[18px] transition-transform', allOpen && 'rotate-180')} />
+                        {allOpen ? 'Collapse all' : 'Expand all'}
+                      </button>
+                    )
+                  })()}
+                </div>
+              )}
             </div>
           </>
         )}
@@ -1643,9 +1960,23 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
       </Dialog>
 
       <Dialog open={!!adjustRow} onOpenChange={(o) => !o && setAdjustRow(null)}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Adjust balance — {adjustRow?.bargain_no}</DialogTitle>
+        <DialogContent
+          className={cn(
+            'max-w-md',
+            // A right-hand drawer on the website, wide enough for the before /
+            // after pair to sit side by side — the whole point of this panel is
+            // seeing what the balance becomes before committing to it.
+            __WEB__ &&
+              '!bottom-0 !left-auto !right-0 !top-0 !h-screen !max-h-screen !w-[560px] !max-w-[95vw] !translate-x-0 !translate-y-0 !grid !grid-rows-[auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!right-5 [&>button]:!top-5 [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100'
+          )}
+        >
+          <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#0B3D2E] !px-[22px] !py-4 !text-left')}>
+            {__WEB__ && (
+              <div className="text-[11.5px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Adjust balance</div>
+            )}
+            <DialogTitle className={cn(__WEB__ && '!mt-1.5 !break-all !text-[15px] !font-bold !leading-[1.35] !tracking-[-0.01em] !text-white')}>
+              {__WEB__ ? adjustRow?.bargain_no : `Adjust balance — ${adjustRow?.bargain_no}`}
+            </DialogTitle>
           </DialogHeader>
           {adjustRow && (() => {
             const qty = Number(adjustRow.qty) || 0
@@ -1659,6 +1990,188 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
             const delta = adjustForm.mode === 'add' ? amt : -amt
             const newBal = bal + delta
             const uom = adjustRow.uom || 'MT'
+            if (__WEB__) {
+              // Display only — the same arithmetic the desktop panel shows,
+              // drawn as before / after instead of on one line.
+              const entered = amt > 0
+              const over = adjustForm.mode === 'remove' && entered && newBal < -1e-9
+              const newQty = qty + delta
+              const pct = (v: number, of: number): number => (of > 0 ? Math.min(100, Math.max(0, (v / of) * 100)) : 0)
+              const drawnOld = pct(consumed, qty)
+              const drawnNew = pct(consumed, newQty)
+              return (
+                <>
+                  <div className="min-h-0 overflow-y-auto px-[22px] py-4">
+                    <div className="flex flex-col gap-4">
+                      <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+                        <div className="grid grid-cols-3">
+                          {[
+                            { k: 'Bargain qty', v: formatNum(qty) },
+                            { k: 'Loaded', v: formatNum(consumed) },
+                            { k: 'Balance', v: formatNum(bal) }
+                          ].map((st, i) => (
+                            <div key={st.k} className={cn('px-3.5 py-3', i < 2 && 'border-r border-[#EAF0E9]')}>
+                              <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">{st.k}</div>
+                              <div className="mt-1 flex items-baseline gap-1">
+                                <span className="text-[19px] font-bold tracking-[-0.02em] tabular-nums">{st.v}</span>
+                                <span className="text-[10.5px] font-bold text-[#5A6B62]">{uom}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="px-3.5 pb-3.5">
+                          <div className="h-[7px] overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                            <div className="h-full bg-[#12855A]" style={{ width: `${drawnOld}%` }} />
+                          </div>
+                          <div className="mt-1.5 text-[11px] font-bold text-[#5A6B62]">
+                            {Math.round(drawnOld)}% loaded · {formatNum(bal)} {uom} open today
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2.5">
+                        {([
+                          { m: 'add' as const, label: '+ Add to balance', on: 'border-[#12855A] bg-[#E9F5EE] text-[#0B6B45]' },
+                          { m: 'remove' as const, label: '− Remove from balance', on: 'border-[#C2700A] bg-[#FFEDD0] text-[#8A5300]' }
+                        ]).map((btn) => (
+                          <button
+                            key={btn.m}
+                            type="button"
+                            onClick={() => setAdjustForm((prev) => ({ ...prev, mode: btn.m }))}
+                            className={cn(
+                              'flex h-[50px] items-center justify-center gap-1.5 rounded-[4px] border-[1.5px] text-[13px] transition-colors',
+                              adjustForm.mode === btn.m ? `${btn.on} font-extrabold` : 'border-[#C3D2C6] bg-white font-bold text-[#5A6B62] hover:bg-[#F7FAF6]'
+                            )}
+                          >
+                            {btn.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="flex flex-col gap-4 rounded-[4px] border border-[#D6E2D6] bg-white p-4">
+                        <div>
+                          <div className="mb-1.5 text-[12px] font-extrabold text-[#33473E]">
+                            Quantity to {adjustForm.mode === 'add' ? 'add' : 'remove'} ({uom})
+                          </div>
+                          <Input
+                            type="number"
+                            autoFocus
+                            value={adjustForm.amount}
+                            onChange={(e) => setAdjustForm((prev) => ({ ...prev, amount: e.target.value }))}
+                            className={cn(
+                              '!h-[50px] !rounded-[4px] !text-[17px] !font-bold !tabular-nums',
+                              over ? '!border-[#B3261E]' : entered ? '!border-[#C3D2C6]' : '!border-[#E3C58C]'
+                            )}
+                          />
+                        </div>
+                        <div>
+                          <div className="mb-1.5 text-[12px] font-extrabold text-[#33473E]">Date</div>
+                          <DatePicker
+                            value={adjustForm.date}
+                            onChange={(v) => setAdjustForm((prev) => ({ ...prev, date: v || '' }))}
+                            className="!h-[50px] !rounded-[4px]"
+                          />
+                          <p className="mt-1.5 text-[12px] font-semibold text-[#5A6B62]">
+                            Shown under &ldquo;Addition&rdquo; for this date&rsquo;s month in the register.
+                          </p>
+                        </div>
+                        <div>
+                          <div className="mb-1.5 text-[12px] font-extrabold text-[#33473E]">
+                            Note <span className="font-semibold text-[#5A6B62]">(optional)</span>
+                          </div>
+                          <Input
+                            value={adjustForm.note}
+                            onChange={(e) => setAdjustForm((prev) => ({ ...prev, note: e.target.value }))}
+                            placeholder="Reason for the adjustment"
+                            className="!h-[50px] !rounded-[4px] !text-[13.5px]"
+                          />
+                        </div>
+                      </div>
+
+                      {over && (
+                        <div className="flex gap-2.5 rounded-[4px] border border-[#F0D6D4] border-l-4 border-l-[#B3261E] bg-[#FDF3F2] px-3.5 py-3">
+                          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-[#B3261E]" />
+                          <div className="text-[12.5px] font-semibold leading-relaxed text-[#8C2F26]">
+                            Only {formatNum(bal)} {uom} is left on this bargain. Removing {formatNum(amt)} {uom} would take the balance below zero.
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+                        <div className="flex items-center justify-between gap-2.5 border-b border-[#E4ECE3] bg-[#F7FAF6] px-3.5 py-2.5">
+                          <span className="text-[10.5px] font-extrabold uppercase tracking-[.12em] text-[#33473E]">After this adjustment</span>
+                          {entered && !over && (
+                            <span className={cn('text-[12.5px] font-extrabold tabular-nums', delta >= 0 ? 'text-[#0B6B45]' : 'text-[#8A5300]')}>
+                              {delta >= 0 ? '+' : '−'}{formatNum(Math.abs(delta))} {uom}
+                            </span>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 gap-3 p-3.5">
+                          <div>
+                            <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">Bargain qty</div>
+                            <div className="mt-1 text-[18px] font-bold tabular-nums">
+                              {over ? '—' : formatNum(entered ? newQty : qty)}{' '}
+                              <span className="text-[11px] font-semibold text-[#5A6B62]">{uom}</span>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">New balance</div>
+                            <div className={cn('mt-1 text-[18px] font-bold tabular-nums', !over && entered && newBal < -1e-9 && 'text-[#B3261E]')}>
+                              {over ? '—' : formatNum(entered ? newBal : bal)}{' '}
+                              <span className="text-[11px] font-semibold text-[#5A6B62]">{uom}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="px-3.5 pb-3.5">
+                          <div className="h-[7px] overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                            <div
+                              className="h-full"
+                              style={{
+                                width: `${over ? 0 : entered ? drawnNew : drawnOld}%`,
+                                background: drawnNew >= 95 ? '#C2700A' : '#12855A'
+                              }}
+                            />
+                          </div>
+                          {!entered && !over && (
+                            <div className="mt-2 text-[12px] font-semibold text-[#5A6B62]">Enter a quantity to see the new balance.</div>
+                          )}
+                          {over && (
+                            <div className="mt-2 text-[12px] font-semibold text-[#5A6B62]">Reduce the quantity to see the new balance.</div>
+                          )}
+                        </div>
+                      </div>
+
+                      {adjustError && (
+                        <div className="rounded-[4px] border border-[#F0D6D4] border-l-4 border-l-[#B3261E] bg-[#FDF3F2] px-3.5 py-2.5 text-[12.5px] font-semibold text-[#8C2F26]">
+                          {adjustError}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-end gap-2.5 border-t border-[#D6E2D6] bg-white px-[22px] py-3.5">
+                    <button
+                      type="button"
+                      onClick={() => setAdjustRow(null)}
+                      disabled={adjustSaving}
+                      className="h-12 rounded-[4px] border-[1.5px] border-[#C3D2C6] px-6 text-[13.5px] font-extrabold uppercase tracking-[.03em] text-[#33473E] transition-colors hover:bg-[#F7FAF6] disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={saveAdjust}
+                      disabled={adjustSaving}
+                      className={cn(
+                        'flex h-12 items-center gap-2 rounded-[4px] px-7 text-[13.5px] font-extrabold uppercase tracking-[.03em] transition-colors disabled:opacity-60',
+                        entered && !over ? 'bg-[#0B3D2E] text-[#C7F03F] hover:bg-[#0F4A38]' : 'bg-[#33473E] text-white hover:bg-[#0B3D2E]'
+                      )}
+                    >
+                      <Check className="h-5 w-5" /> {adjustSaving ? 'Saving…' : 'Apply'}
+                    </button>
+                  </div>
+                </>
+              )
+            }
             return (
               <div className="flex flex-col gap-4">
                 <div className="grid grid-cols-3 gap-2 rounded-lg border bg-muted/30 p-3 text-center text-sm">
@@ -1719,10 +2232,14 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
               </div>
             )
           })()}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setAdjustRow(null)} disabled={adjustSaving}>Cancel</Button>
-            <Button onClick={saveAdjust} disabled={adjustSaving}>{adjustSaving ? 'Saving…' : 'Apply'}</Button>
-          </DialogFooter>
+          {/* The website's drawer draws its own pinned footer inside the
+              body above, so this one is desktop's alone. */}
+          {!__WEB__ && (
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setAdjustRow(null)} disabled={adjustSaving}>Cancel</Button>
+              <Button onClick={saveAdjust} disabled={adjustSaving}>{adjustSaving ? 'Saving…' : 'Apply'}</Button>
+            </DialogFooter>
+          )}
         </DialogContent>
       </Dialog>
     </>

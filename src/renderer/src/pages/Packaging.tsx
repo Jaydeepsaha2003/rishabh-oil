@@ -68,9 +68,9 @@ const baseFields: FieldDef[] = [
 const baseColumns: ColumnDef[] = [
   { key: 'name', label: 'SKU' },
   { key: 'product_id', label: 'Product' },
-  { key: 'pouch_label', label: 'Type' },
+  { key: 'pouch_label', label: 'Type', type: 'select' },
   { key: 'unit_size', label: 'Unit size', align: 'right' },
-  { key: 'unit_uom', label: 'UOM' },
+  { key: 'unit_uom', label: 'UOM', type: 'select' },
   { key: 'pouches_per_box', label: 'Per case', align: 'right' },
   { key: 'base_uom', label: 'Base', align: 'right' },
   { key: 'active', label: 'Active', type: 'switch' }

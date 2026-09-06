@@ -411,6 +411,11 @@ const SelectTrigger = React.forwardRef<
     <button
       ref={ref}
       type="button"
+      // A stable hook for pages that size a whole form's controls at once,
+      // the way DatePicker already exposes data-slot="date-picker". This
+      // trigger is a plain button — it carries no role="combobox" — so
+      // selector rules written for the old Radix Select never matched it.
+      data-slot="select-trigger"
       disabled={disabled}
       onClick={toggle}
       className={cn(

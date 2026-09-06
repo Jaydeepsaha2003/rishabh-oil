@@ -1,14 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, CalendarClock, Check, ChevronDown, ChevronRight, FileSpreadsheet, Inbox, Loader2, Pencil, Plus, Repeat, Search, TrendingDown, TrendingUp, Trash2, Users } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, CalendarClock, Check, CheckCircle2, ChevronDown, Clock, Lock, Zap, ChevronRight, FileSpreadsheet, Inbox, Loader2, Pencil, Plus, Repeat, Search, TrendingDown, TrendingUp, Trash2, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { RowActions } from '@/components/ui/row-actions'
 import { PageHeader } from '@/components/PageHeader'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -80,11 +82,22 @@ const AUTO_CLASS = 'border-amber-300 bg-amber-50 focus-visible:ring-amber-400'
 
 // The invoice grid used on both sides of a deal: as many numbered rows as
 // needed, a + to add another, and a running total under the quantity column.
+//
+// On the website it is ruled like the register it feeds: a labelled header,
+// one line per invoice with the money right-aligned, and a totals band in the
+// side's own colour. It also shows each line's VALUE, which the grid never
+// did — you typed a quantity and a rate and had to multiply them in your
+// head to know whether the invoice you were entering was the right one.
+// GRID is shared by the header, the rows and the foot so the three cannot
+// drift apart.
+const LINE_GRID_APP = 'grid grid-cols-[1.5rem_1fr_6rem_7.5rem_1.75rem] items-center gap-2'
+const LINE_GRID_WEB = '!grid-cols-[2rem_minmax(150px,1fr)_100px_120px_130px_2.5rem] !gap-2.5'
 function InvoiceLines({
   title,
   rows,
   uom,
   totalQty,
+  tone,
   onChange,
   onAdd,
   onRemove
@@ -93,78 +106,170 @@ function InvoiceLines({
   rows: Row[]
   uom: string
   totalQty: number
+  tone: 'rose' | 'emerald'
   onChange: (i: number, key: string, value: string) => void
   onAdd: () => void
   onRemove: (i: number) => void
 }): React.JSX.Element {
+  const rose = tone === 'rose'
+  const totalValue = rows.reduce((acc, l) => acc + n(l.qty) * n(l.rate), 0)
   return (
-    <div className="rounded border border-[#e5dfc8] bg-[#fdfcf6]">
-      <div className="grid grid-cols-[1.5rem_1fr_6rem_7.5rem_1.75rem] items-center gap-2 border-b border-[#e5dfc8] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-        <span>#</span>
-        <span>{title} invoice no.</span>
-        <span className="text-right">Qty</span>
-        <span className="text-right">Rate (₹)</span>
-        <span />
-      </div>
-      {rows.map((l, i) => (
-        <div key={i} className="grid grid-cols-[1.5rem_1fr_6rem_7.5rem_1.75rem] items-center gap-2 border-b border-dotted border-[#e5dfc8] px-2.5 py-1 last:border-0">
-          <span className="text-[11px] tabular-nums text-muted-foreground">{i + 1}</span>
-          {(() => {
-            // Each line of a deal becomes an invoice of its own, so a number
-            // used twice down this grid is two documents with one name. Marked
-            // on the later line, the one that would have to change.
-            const k = String(l.invoice_no ?? '').trim().toUpperCase()
-            const dupOf = k
-              ? rows.findIndex((o) => String(o.invoice_no ?? '').trim().toUpperCase() === k)
-              : -1
-            const repeated = dupOf >= 0 && dupOf < i
-            return (
-              <Input
-                className={cn('doc-ref h-8', repeated && 'border-rose-400 focus-visible:ring-rose-300')}
-                title={repeated ? `Same number as line ${dupOf + 1} — each line needs its own` : undefined}
-                value={String(l.invoice_no ?? '')}
-                onChange={(e) => onChange(i, 'invoice_no', e.target.value)}
-              />
-            )
-          })()}
-          <Input
-            className="h-8 text-right"
-            type="number"
-            value={String(l.qty ?? '')}
-            onChange={(e) => onChange(i, 'qty', e.target.value)}
-          />
-          <Input
-            className="h-8 text-right"
-            type="number"
-            value={String(l.rate ?? '')}
-            onChange={(e) => onChange(i, 'rate', e.target.value)}
-          />
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 text-muted-foreground hover:text-red-600"
-            title="Remove this invoice"
-            onClick={() => onRemove(i)}
+    <div
+      className={cn(
+        'rounded border border-[#e5dfc8] bg-[#fdfcf6]',
+        __WEB__ && '!overflow-hidden !rounded-[4px] !bg-white',
+        __WEB__ && (rose ? '!border-[#F0D6D4]' : '!border-[#BFE3CB]')
+      )}
+    >
+      {/* Sideways rather than squeezed: a rate box narrow enough to fit a
+          phone is too narrow to read a rate in. */}
+      <div className={cn(__WEB__ && 'overflow-x-auto')}>
+        <div className={cn(__WEB__ && 'min-w-[620px]')}>
+          <div
+            className={cn(
+              LINE_GRID_APP,
+              'border-b border-[#e5dfc8] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground',
+              __WEB__ && LINE_GRID_WEB,
+              __WEB__ && '!h-[34px] !border-b-[#D6E2D6] !bg-[#EAF0E9] !px-3 !py-0 !text-[9.5px] !font-extrabold !tracking-[.09em] !text-[#33473E]'
+            )}
           >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
+            <span>#</span>
+            <span>{title} invoice no.</span>
+            <span className="text-right">Qty</span>
+            <span className="text-right">Rate (₹)</span>
+            {__WEB__ && <span className="text-right">Value</span>}
+            <span />
+          </div>
+          {rows.map((l, i) => {
+            // Each line of a deal becomes an invoice of its own, so a number
+            // used twice down this grid is two documents with one name.
+            // Marked on the later line, the one that would have to change.
+            const k = String(l.invoice_no ?? '').trim().toUpperCase()
+            const dupOf = k ? rows.findIndex((o) => String(o.invoice_no ?? '').trim().toUpperCase() === k) : -1
+            const repeated = dupOf >= 0 && dupOf < i
+            const value = n(l.qty) * n(l.rate)
+            return (
+              <div
+                key={i}
+                className={cn(
+                  LINE_GRID_APP,
+                  'border-b border-dotted border-[#e5dfc8] px-2.5 py-1 last:border-0',
+                  __WEB__ && LINE_GRID_WEB,
+                  __WEB__ && '!border-b-[#EAF0E9] !border-solid !px-3 !py-2 last:!border-b-0',
+                  __WEB__ && repeated && '!bg-[#FDF3F2]'
+                )}
+              >
+                <span className={cn('text-[11px] tabular-nums text-muted-foreground', __WEB__ && '!text-[10.5px] !font-bold !text-[#5A6B62]')}>
+                  {i + 1}
+                </span>
+                <Input
+                  className={cn(
+                    'doc-ref h-8',
+                    repeated && 'border-rose-400 focus-visible:ring-rose-300',
+                    __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[13px] !font-semibold',
+                    __WEB__ && repeated && '!border-[#B3261E]'
+                  )}
+                  placeholder={__WEB__ ? 'Invoice no.' : undefined}
+                  title={repeated ? `Same number as line ${dupOf + 1} — each line needs its own` : undefined}
+                  value={String(l.invoice_no ?? '')}
+                  onChange={(e) => onChange(i, 'invoice_no', e.target.value)}
+                />
+                <Input
+                  className={cn('h-8 text-right', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[13px] !font-semibold !tabular-nums')}
+                  type="number"
+                  placeholder={__WEB__ ? '0' : undefined}
+                  value={String(l.qty ?? '')}
+                  onChange={(e) => onChange(i, 'qty', e.target.value)}
+                />
+                <Input
+                  className={cn('h-8 text-right', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[13px] !font-semibold !tabular-nums')}
+                  type="number"
+                  placeholder={__WEB__ ? '0.00' : undefined}
+                  value={String(l.rate ?? '')}
+                  onChange={(e) => onChange(i, 'rate', e.target.value)}
+                />
+                {/* Not a field — qty times rate, shown so the line can be
+                    checked against the invoice in front of you. Greyed until
+                    both halves are in, rather than asserting a confident
+                    ₹0.00 for a line nobody has finished typing. */}
+                {__WEB__ && (
+                  <span
+                    className={cn(
+                      'text-right text-[13px] font-bold tabular-nums',
+                      value > 0 ? 'text-[#0A1F17]' : 'text-[#8FA79B]'
+                    )}
+                  >
+                    {formatINR(value)}
+                  </span>
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className={cn(
+                    'h-6 w-6 text-muted-foreground hover:text-red-600',
+                    // Never the only line: a side with no invoice row has
+                    // nothing to type into, so the last one stays put.
+                    __WEB__ && '!h-9 !w-9 !rounded-[4px] !text-[#8FA79B] hover:!bg-[#FDF3F2] hover:!text-[#B3261E]',
+                    __WEB__ && rows.length < 2 && '!pointer-events-none !opacity-30'
+                  )}
+                  title={rows.length < 2 ? 'A side needs at least one invoice line' : 'Remove this invoice'}
+                  onClick={() => onRemove(i)}
+                >
+                  <Trash2 className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4')} />
+                </Button>
+              </div>
+            )
+          })}
+          <div
+            className={cn(
+              'flex items-center justify-between gap-2 bg-[#f5f2e4] px-2.5 py-1',
+              __WEB__ && LINE_GRID_WEB,
+              __WEB__ && '!grid !items-center !px-3 !py-2',
+              __WEB__ && (rose ? '!bg-[#F7EDEC]' : '!bg-[#EAF6EC]')
+            )}
+          >
+            {/* Blue on the app: one more line on THIS grid, the same colour
+                as the column headers above it. On the website it takes the
+                side's colour for the same reason. */}
+            <Button
+              type="button"
+              size="sm"
+              className={cn(
+                'h-7 gap-1 border border-[#1a2c56]/25 bg-[#dce6f5] text-[11px] font-semibold text-[#1a2c56] shadow-sm hover:bg-[#c6d8f2]',
+                __WEB__ && '!col-span-2 !h-9 !w-fit !gap-1.5 !rounded-[4px] !border !bg-white !text-[12px] !font-extrabold !uppercase !tracking-[.04em] !shadow-none',
+                __WEB__ &&
+                  (rose
+                    ? '!border-[#E3A79A] !text-[#8C2F26] hover:!bg-[#FDF3F2]'
+                    : '!border-[#9CCFAE] !text-[#0B6B45] hover:!bg-[#F4FBF6]')
+              )}
+              onClick={onAdd}
+            >
+              <Plus className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4')} /> Add invoice
+            </Button>
+            {/* On the website the totals sit under the columns they total.
+                Rolled into one sentence on the app, where the grid is
+                narrower and there is no Value column to line up with. */}
+            {__WEB__ ? (
+              <>
+                <span className={cn('text-right text-[12.5px] font-bold tabular-nums', rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}>
+                  {formatNum(totalQty)}
+                </span>
+                <span className={cn('text-right text-[10px] font-extrabold uppercase tracking-[.08em]', rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}>
+                  {rows.length} invoice{rows.length === 1 ? '' : 's'}
+                </span>
+                <span className={cn('text-right text-[13.5px] font-bold tabular-nums', rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}>
+                  {formatINR(totalValue)}
+                </span>
+                <span />
+              </>
+            ) : (
+              <span className="text-[11px] font-semibold tabular-nums">
+                {rows.length} invoice{rows.length === 1 ? '' : 's'} · {formatNum(totalQty)} {uom}
+              </span>
+            )}
+          </div>
         </div>
-      ))}
-      <div className="flex items-center justify-between gap-2 bg-[#f5f2e4] px-2.5 py-1">
-        {/* Blue: one more line on THIS grid. The same colour as the column
-            headers above it, so it reads as belonging to this table. */}
-        <Button
-          type="button"
-          size="sm"
-          className="h-7 gap-1 border border-[#1a2c56]/25 bg-[#dce6f5] text-[11px] font-semibold text-[#1a2c56] shadow-sm hover:bg-[#c6d8f2]"
-          onClick={onAdd}
-        >
-          <Plus className="h-3.5 w-3.5" /> Add invoice
-        </Button>
-        <span className="text-[11px] font-semibold tabular-nums">
-          {rows.length} invoice{rows.length === 1 ? '' : 's'} · {formatNum(totalQty)} {uom}
-        </span>
       </div>
     </div>
   )
@@ -184,8 +289,19 @@ function BuyersCell({ parties, uom }: { parties: Row[]; uom: string }): React.JS
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="inline-flex cursor-help items-center gap-1.5 rounded-full border border-[#1a2c56]/20 bg-[#eef4ff] px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-[#1a2c56] transition-colors hover:border-[#1a2c56]/45 hover:bg-[#dce6f5]">
-          <Users className="h-3 w-3 shrink-0" />
+        <span
+          className={cn(
+            'inline-flex cursor-help items-center gap-1.5 rounded-full border border-[#1a2c56]/20 bg-[#eef4ff] px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-[#1a2c56] transition-colors hover:border-[#1a2c56]/45 hover:bg-[#dce6f5]',
+            // The pill was carrying the whole split on hover because there
+            // was nowhere else for it. The expanded row now lays that split
+            // out in full, so the cell can read as a party name like every
+            // other row does and the hover stays a shortcut, not the only way
+            // to see who bought what.
+            __WEB__ &&
+              '!gap-1.5 !rounded-none !border-0 !bg-transparent !px-0 !py-0 !text-[13px] !normal-case !tracking-normal !text-[#0A1F17] hover:!bg-transparent hover:!underline'
+          )}
+        >
+          <Users className={cn('h-3 w-3 shrink-0', __WEB__ && '!h-4 !w-4 !text-[#0B6B45]')} />
           {parties.length} buyers
         </span>
       </TooltipTrigger>
@@ -259,16 +375,73 @@ function tdsBasis(
   return { base, slabLeft, exempt, hasSlab, note }
 }
 
+// The deal form's step cards on the website: a tinted title strip over a white
+// body, with every control in them at one height. Named rather than repeated
+// inline because the three sections have to stay identical.
+const SECTION_WEB =
+  '!overflow-hidden !rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.12em] [&_label]:!text-[#5A6B62] [&_input]:!h-[46px] [&_input]:!rounded-[4px] [&_input]:!text-[13.5px] [&_[data-slot=select-trigger]]:!h-[46px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!text-[13.5px] [&_[data-slot=date-picker]]:!h-[46px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[14px]'
+const SECTION_HEAD =
+  '!mb-0 !border-b !border-b-[#E4ECE3] !border-dotted-0 !bg-[#F7FAF6] !px-4 !py-3 !text-[11.5px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]'
+
 // A labelled figure in the expanded deal's summary strip.
-function Fact({ label, value, hint }: { label: string; value: string; hint?: string }): React.JSX.Element {
+function Fact({
+  label,
+  value,
+  hint,
+  strong,
+  warn,
+  tone = 'emerald'
+}: {
+  label: string
+  value: string
+  hint?: string
+  strong?: boolean
+  // Which side of the trade the emphasised cell belongs to. The sale side's
+  // net is money coming in and reads green; the purchase side's is money
+  // going out and has to read red, or the two strips claim the same thing.
+  tone?: 'rose' | 'emerald'
+  // A figure that comes OFF the total rather than making it up — TDS. Amber,
+  // the same as every other withholding on this page.
+  warn?: boolean
+}): React.JSX.Element {
   return (
-    <div className="min-w-0">
-      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="truncate text-[13px] font-semibold tabular-nums text-[#1a2c56]">{value}</div>
+    <div
+      className={cn(
+        'min-w-0',
+        // On the website these are cells in a ruled strip rather than loose
+        // text, so each carries its own ground and the hairlines are the
+        // gaps between them.
+        __WEB__ && '!bg-white !px-3.5 !py-2.5',
+        __WEB__ && strong && (tone === 'rose' ? '!bg-[#F7EDEC]' : '!bg-[#EAF6EC]')
+      )}
+    >
+      <div
+        className={cn(
+          'text-[10px] font-semibold uppercase tracking-wide text-muted-foreground',
+          __WEB__ && '!text-[9.5px] !font-extrabold !tracking-[.1em] !text-[#5A6B62]',
+          __WEB__ && strong && (tone === 'rose' ? '!text-[#8C2F26]' : '!text-[#0B6B45]')
+        )}
+      >
+        {label}
+      </div>
+      <div
+        className={cn(
+          'truncate text-[13px] font-semibold tabular-nums text-[#1a2c56]',
+          __WEB__ && '!mt-1 !text-[13.5px] !font-bold !text-[#0A1F17]',
+          __WEB__ && warn && '!text-[#8A5300]',
+          __WEB__ && strong && (tone === 'rose' ? '!text-[15px] !text-[#8C2F26]' : '!text-[15px] !text-[#0B6B45]')
+        )}
+      >
+        {value}
+      </div>
       {/* Under the value, not beside it. Inline, a long figure and its hint
           together overran the column, and the hint was the half that got cut —
           "Net receivable ₹7,32,66,111.00 (TDS…" told the reader nothing. */}
-      {hint && <div className="truncate text-[10.5px] text-muted-foreground">{hint}</div>}
+      {hint && (
+        <div className={cn('truncate text-[10.5px] text-muted-foreground', __WEB__ && '!mt-0.5 !text-[11px] !font-semibold !text-[#5A6B62]')}>
+          {hint}
+        </div>
+      )}
     </div>
   )
 }
@@ -291,21 +464,26 @@ function DealLineTable({
   const totalQty = lines.reduce((s, l) => s + n(l.qty), 0)
   const totalValue = lines.reduce((s, l) => s + n(l.qty) * n(l.rate), 0)
   return (
-    <div className="overflow-hidden rounded border border-[#d9d2b8] bg-[#fffdf4] shadow-sm">
+    <div className={cn('overflow-hidden rounded border border-[#d9d2b8] bg-[#fffdf4] shadow-sm', __WEB__ && '!rounded-[4px] !bg-white !shadow-none', __WEB__ && (tone === 'rose' ? '!border-[#F0D6D4]' : '!border-[#BFE3CB]'))}>
       <div
         className={cn(
           'flex items-baseline justify-between gap-2 border-b px-3 py-1.5',
           tone === 'rose'
             ? 'border-rose-200 bg-rose-50/80 text-rose-900'
-            : 'border-emerald-200 bg-emerald-50/80 text-emerald-900'
+            : 'border-emerald-200 bg-emerald-50/80 text-emerald-900',
+          __WEB__ && '!px-3 !py-2.5',
+          __WEB__ && (tone === 'rose' ? '!border-b-[#F0D6D4] !bg-[#FDF3F2] !text-[#8C2F26]' : '!border-b-[#BFE3CB] !bg-[#F4FBF6] !text-[#0B6B45]')
         )}
       >
-        <span className="text-[10px] font-bold uppercase tracking-widest">{heading}</span>
-        <span className="truncate text-[11px] font-semibold">{party}</span>
+        <span className={cn('text-[10px] font-bold uppercase tracking-widest', __WEB__ && '!flex !items-center !gap-1.5 !text-[10.5px] !font-extrabold !tracking-[.11em]')}>
+          {__WEB__ && (tone === 'rose' ? <TrendingDown className="h-4 w-4" /> : <TrendingUp className="h-4 w-4" />)}
+          {heading}
+        </span>
+        <span className={cn('truncate text-[11px] font-semibold', __WEB__ && '!text-[11.5px] !font-extrabold')}>{party}</span>
       </div>
       <table className="w-full border-collapse text-[12px] [&_td]:border-r [&_td]:border-[#e8e2cc] [&_td:last-child]:border-r-0 [&_th]:border-r [&_th]:border-[#e8e2cc] [&_th:last-child]:border-r-0">
         <thead>
-          <tr className="border-b border-[#d9d2b8] bg-[#dce6f5] text-[10px] uppercase tracking-widest text-[#1a2c56]">
+          <tr className={cn('border-b border-[#d9d2b8] bg-[#dce6f5] text-[10px] uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!border-b-[#D6E2D6] !bg-[#EAF0E9] !text-[10px] !tracking-[.09em] !text-[#33473E] [&>th]:!h-8 [&>th]:!py-0')}>
             <th className="w-8 px-2 py-1 text-left font-bold">#</th>
             <th className="px-2 py-1 text-left font-bold">Invoice no.</th>
             <th className="px-2 py-1 text-right font-bold">Qty</th>
@@ -320,9 +498,9 @@ function DealLineTable({
             </tr>
           ) : (
             lines.map((l, i) => (
-              <tr key={i} className={cn('border-b border-[#efe9d5] last:border-0', i % 2 === 1 && 'bg-[#faf7ea]')}>
-                <td className="px-2 py-1 tabular-nums text-muted-foreground">{i + 1}</td>
-                <td className="px-2 py-1 font-medium">{String(l.invoice_no || '—')}</td>
+              <tr key={i} className={cn('border-b border-[#efe9d5] last:border-0', i % 2 === 1 && 'bg-[#faf7ea]', __WEB__ && '!border-b-[#EAF0E9] !bg-white [&>td]:!h-10 [&>td]:!py-0')}>
+                <td className={cn('px-2 py-1 tabular-nums text-muted-foreground', __WEB__ && '!text-[10px] !font-bold !text-[#5A6B62]')}>{i + 1}</td>
+                <td className={cn('px-2 py-1 font-medium', __WEB__ && '!text-[12.5px] !font-bold')}>{String(l.invoice_no || '—')}</td>
                 <td className="px-2 py-1 text-right tabular-nums">{formatNum(l.qty)}</td>
                 <td className="px-2 py-1 text-right tabular-nums">{formatINR(l.rate)}</td>
                 <td className="px-2 py-1 text-right tabular-nums">{formatINR(n(l.qty) * n(l.rate))}</td>
@@ -332,7 +510,7 @@ function DealLineTable({
         </tbody>
         {lines.length > 0 && (
           <tfoot>
-            <tr className="border-t-2 border-[#1a2c56] bg-[#f0ecd9] font-bold text-[#1a2c56]">
+            <tr className={cn('border-t-2 border-[#1a2c56] bg-[#f0ecd9] font-bold text-[#1a2c56]', __WEB__ && '!border-t-0 [&>td]:!h-10 [&>td]:!py-0', __WEB__ && (tone === 'rose' ? '!bg-[#F7EDEC] !text-[#8C2F26]' : '!bg-[#EAF6EC] !text-[#0B6B45]'))}>
               <td className="px-2 py-1" />
               <td className="px-2 py-1">{lines.length} invoice{lines.length === 1 ? '' : 's'}</td>
               <td className="px-2 py-1 text-right tabular-nums">{formatNum(totalQty)} {uom}</td>
@@ -342,6 +520,361 @@ function DealLineTable({
           </tfoot>
         )}
       </table>
+    </div>
+  )
+}
+
+// What the product chips group a deal under. The code is what the register
+// shows and what a trader says out loud; the name is the fallback for a
+// product that never got one.
+function dealProduct(d: Row): string {
+  return String(d.product_code || d.product_name || '').trim()
+}
+
+// One column ruler for every invoice line in the drawer — the purchase panel,
+// the sale panel and each buyer's card all measure to it, so the figures line
+// up down the whole drawer instead of each block ragging to its own content.
+//
+// A grid rather than a flex row: flex sizes each line to its own text, so an
+// invoice for 90 MT and one for 1,000 MT put their rates in different places
+// and the column cannot be read downwards. Fixed tracks with the money
+// right-aligned is what a register does, and it is what these are.
+const INV_COLS =
+  'grid grid-cols-[minmax(110px,1.3fr)_100px_140px_minmax(125px,1fr)] items-center gap-x-3 px-3.5'
+
+// The label strip over those columns.
+function InvoiceHead(): React.JSX.Element {
+  return (
+    <div className={cn(INV_COLS, 'h-[30px] bg-[#EAF0E9] text-[9.5px] font-extrabold uppercase tracking-[.09em] text-[#33473E]')}>
+      <span>Invoice no.</span>
+      <span className="text-right">Qty</span>
+      <span className="text-right">Rate</span>
+      <span className="text-right">Value</span>
+    </div>
+  )
+}
+
+// One invoice, measured to INV_COLS.
+function InvoiceRow({ line, uom }: { line: Row; uom: string }): React.JSX.Element {
+  return (
+    <div className={cn(INV_COLS, 'border-b border-b-[#EAF0E9] py-2.5')}>
+      <span className="truncate text-[13px] font-bold">{String(line.invoice_no || '\u2014')}</span>
+      <span className="text-right text-[12.5px] font-semibold tabular-nums">
+        {formatNum(line.qty)} <span className="text-[9.5px] font-bold text-[#5A6B62]">{uom}</span>
+      </span>
+      <span className="text-right text-[12.5px] font-semibold tabular-nums text-[#5A6B62]">{formatINR(line.rate)}</span>
+      <span className="text-right text-[13.5px] font-bold tabular-nums">{formatINR(n(line.qty) * n(line.rate))}</span>
+    </div>
+  )
+}
+
+// One side's invoices in the detail drawer.
+//
+// The register's own expanded row rules five columns because it has the width
+// for them; this is 720px against the edge of the screen, so the row number
+// goes and the four that carry meaning stay. It scrolls sideways rather than
+// wrapping when the drawer is narrower than the ruler — a wrapped invoice
+// line stops being a line.
+function InvoicePanel({
+  heading,
+  party,
+  lines,
+  uom,
+  total,
+  tone
+}: {
+  heading: string
+  party: string
+  lines: Row[]
+  uom: string
+  total: number
+  tone: 'rose' | 'emerald'
+}): React.JSX.Element {
+  const rose = tone === 'rose'
+  const qty = lines.reduce((a, l) => a + n(l.qty), 0)
+  return (
+    <div className={cn('overflow-hidden rounded-[4px] border bg-white', rose ? 'border-[#F0D6D4]' : 'border-[#BFE3CB]')}>
+      <div
+        className={cn(
+          'flex flex-wrap items-center justify-between gap-2.5 border-b px-3.5 py-2.5',
+          rose ? 'border-b-[#F0D6D4] bg-[#FDF3F2]' : 'border-b-[#BFE3CB] bg-[#F4FBF6]'
+        )}
+      >
+        <span
+          className={cn(
+            'flex items-center gap-1.5 text-[10.5px] font-extrabold uppercase tracking-[.11em]',
+            rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
+          )}
+        >
+          {rose ? <TrendingDown className="h-4 w-4" /> : <TrendingUp className="h-4 w-4" />}
+          {heading}
+        </span>
+        <span className={cn('min-w-0 truncate text-[11.5px] font-extrabold', rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}>
+          {party}
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <div className="min-w-[500px]">
+          {lines.length === 0 ? (
+            <div className="px-3.5 py-4 text-center text-[12.5px] font-semibold text-[#5A6B62]">No invoices.</div>
+          ) : (
+            <>
+              <InvoiceHead />
+              {lines.map((l, i) => (
+                <InvoiceRow key={i} line={l} uom={uom} />
+              ))}
+            </>
+          )}
+          {/* The side's totals sit under the columns they total, not off in a
+              sentence of their own. */}
+          <div className={cn(INV_COLS, 'py-2.5', rose ? 'bg-[#F7EDEC]' : 'bg-[#EAF6EC]')}>
+            <span
+              className={cn(
+                'text-[10.5px] font-extrabold uppercase tracking-[.06em]',
+                rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
+              )}
+            >
+              {lines.length} invoice{lines.length === 1 ? '' : 's'}
+            </span>
+            <span
+              className={cn('text-right text-[12.5px] font-bold tabular-nums', rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}
+            >
+              {formatNum(qty)} <span className="text-[9.5px]">{uom}</span>
+            </span>
+            <span />
+            <span
+              className={cn('text-right text-[14px] font-bold tabular-nums', rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}
+            >
+              {formatINR(total)}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// One colour per buyer, reused by the share bar, its legend and the card that
+// buyer gets — so a slice of the bar and the card below it are the same thing.
+const BUYER_COLORS = ['#0B6B45', '#12855A', '#3EA372']
+
+// How a split deal was divided, before the buyers themselves.
+//
+// A deal bought in one lot and sold on to several is really one question —
+// who took how much — and answering it in a stacked bar means it can be read
+// without adding up three cards. The arithmetic is spelled out beside it
+// (500 + 315 + 185 = 1,000 MT) because a bar shows proportion, not quantity,
+// and the quantities are what get reconciled against the purchase.
+function BuyerSplit({ parties, uom }: { parties: Row[]; uom: string }): React.JSX.Element {
+  const total = parties.reduce((a, b) => a + n(b.qty), 0)
+  const share = (q: unknown): number => (total ? (n(q) / total) * 100 : 0)
+  return (
+    <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-4 py-2.5">
+        <span className="flex items-center gap-1.5 text-[10.5px] font-extrabold uppercase tracking-[.11em] text-[#0A1F17]">
+          <Users className="h-4 w-4 text-[#5A6B62]" />
+          Split between {parties.length} buyers
+        </span>
+        <span className="text-[12.5px] font-bold tabular-nums text-[#33473E]">
+          {formatNum(total)} {uom} in total
+        </span>
+      </div>
+
+      {/* The bar carries its own percentages. They were only in the legend
+          below, which meant reading a slice meant finding its colour in a
+          separate line of text — the number belongs on the thing it measures.
+          A slice too narrow to hold a label keeps it in the legend. */}
+      <div className="px-4 pb-3 pt-3.5">
+        <div className="flex h-[22px] gap-0.5 overflow-hidden rounded-[2px]">
+          {parties.map((b, i) => {
+            const pct = share(b.qty)
+            return (
+              <div
+                key={i}
+                className="flex h-full items-center justify-center"
+                style={{ width: `${pct}%`, background: BUYER_COLORS[i % BUYER_COLORS.length] }}
+                title={`${String(b.customer_name || '—')} — ${formatNum(b.qty)} ${uom}`}
+              >
+                {pct >= 11 && (
+                  <span className="text-[11px] font-extrabold tabular-nums text-white">{Math.round(pct)}%</span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* One line per buyer rather than a run-on legend. Three long company
+          names separated by nothing but a swatch ran together across the
+          wrap, and there was no way to see where one entry ended. Ruled
+          rows in the same order as the cards below, so BUYER 2 here and
+          BUYER 2 down there are plainly the same party. */}
+      <div className="border-t border-t-[#EAF0E9]">
+        {parties.map((b, i) => {
+          const color = BUYER_COLORS[i % BUYER_COLORS.length]
+          return (
+            <div
+              key={i}
+              className="flex items-center gap-2.5 border-b border-b-[#EAF0E9] px-4 py-2 last:border-b-0"
+            >
+              <span className="h-2.5 w-2.5 shrink-0 rounded-[2px]" style={{ background: color }} />
+              <span className="shrink-0 text-[9.5px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">
+                Buyer {i + 1}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-[12.5px] font-bold text-[#33473E]">
+                {String(b.customer_name || '—')}
+              </span>
+              <span className="shrink-0 whitespace-nowrap text-[12.5px] font-bold tabular-nums text-[#33473E]">
+                {formatNum(b.qty)} <span className="text-[9.5px] font-bold text-[#5A6B62]">{uom}</span>
+              </span>
+              <span className="w-[44px] shrink-0 text-right text-[12.5px] font-extrabold tabular-nums" style={{ color }}>
+                {Math.round(share(b.qty))}%
+              </span>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* The arithmetic written out. A bar shows proportion, not quantity,
+          and the quantities are what get reconciled against the purchase
+          invoices above — so the sum is spelled out to be checked. */}
+      <div className="border-t border-t-[#E4ECE3] bg-[#F7FAF6] px-4 py-2.5 text-[11.5px] font-bold tabular-nums text-[#5A6B62]">
+        {parties.map((b) => formatNum(b.qty)).join(' + ')} = {formatNum(total)} {uom}
+      </div>
+    </div>
+  )
+}
+
+// One buyer of a split deal, as a card rather than a row in a shared table.
+//
+// Each buyer is invoiced on its own: its own GST, its own TDS slab, its own
+// money still to come in. A merged table hides whose money is outstanding,
+// and outstanding money belongs to a name — so the name, the tax and the
+// balance stay together, and the card carries the buyer's colour from the
+// split bar above it so the two read as one picture.
+function BuyerCard({
+  party,
+  index,
+  total,
+  uom
+}: {
+  party: Row
+  index: number
+  total: number
+  uom: string
+}): React.JSX.Element {
+  const color = BUYER_COLORS[index % BUYER_COLORS.length]
+  const rows: Row[] = Array.isArray(party.lines) ? party.lines : []
+  const share = total ? Math.round((n(party.qty) / total) * 100) : 0
+  const due = n(party.net_receivable)
+  const paid = Math.min(due, Math.max(0, n(party.paid)))
+  const outstanding = Math.max(0, due - paid)
+  const settled = !!party.fully_paid || (due > 0 && outstanding < 0.005)
+  return (
+    <div
+      className="overflow-hidden rounded-[4px] border border-l-4 border-[#BFE3CB] bg-white"
+      style={{ borderLeftColor: color }}
+    >
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2 border-b border-b-[#BFE3CB] bg-[#F4FBF6] px-3.5 py-3">
+        <span
+          className="shrink-0 rounded-[2px] px-2 py-1 text-[10px] font-extrabold uppercase tracking-[.09em] leading-none text-white"
+          style={{ background: color }}
+        >
+          Buyer {index + 1}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[13px] font-extrabold text-[#0B6B45]">
+          {String(party.customer_name || '—')}
+        </span>
+        <span className="flex shrink-0 items-center gap-2">
+          <span className="whitespace-nowrap text-[12.5px] font-extrabold tabular-nums text-[#0B6B45]">
+            {formatNum(party.qty)} {uom}
+          </span>
+          {/* The share carries the buyer's own colour so the card ties back
+              to its slice of the split bar above without a second legend. */}
+          <span
+            className="whitespace-nowrap rounded-[2px] px-1.5 py-1 text-[11px] font-extrabold tabular-nums leading-none text-white"
+            style={{ background: color }}
+          >
+            {share}%
+          </span>
+        </span>
+      </div>
+      {/* The buyer's invoices on the same ruler as the purchase panel above,
+          so the money in a split deal lines up down the whole drawer. No
+          repeat of the column labels — the panel above has already named
+          them, and three buyers would mean three copies of the same strip. */}
+      <div className="overflow-x-auto">
+        <div className="min-w-[500px]">
+          {rows.length === 0 ? (
+            <div className="px-3.5 py-3 text-center text-[12px] font-semibold text-[#5A6B62]">No invoices.</div>
+          ) : (
+            rows.map((l, i) => <InvoiceRow key={i} line={l} uom={uom} />)
+          )}
+          <div className={cn(INV_COLS, 'border-b border-b-[#BFE3CB] bg-[#EAF6EC] py-2.5')}>
+            <span className="text-[10.5px] font-extrabold uppercase tracking-[.06em] text-[#0B6B45]">
+              {rows.length} invoice{rows.length === 1 ? '' : 's'}
+            </span>
+            <span className="text-right text-[12.5px] font-bold tabular-nums text-[#0B6B45]">
+              {formatNum(party.qty)} <span className="text-[9.5px]">{uom}</span>
+            </span>
+            <span />
+            <span className="text-right text-[14px] font-bold tabular-nums text-[#0B6B45]">
+              {formatINR(party.taxable)}
+            </span>
+          </div>
+        </div>
+      </div>
+      {/* The four money figures on one line so they can be read across, and
+          across the three cards. They were three stacked bands — tax, then
+          net, then a full-width balance strip — which made a card five
+          ruled rows deep and put the one figure anybody chases, the
+          outstanding, furthest from the name it belongs to.
+          gap-px over a coloured ground draws the hairlines: the cells are
+          white, the gaps are the border showing through. */}
+      <div className="grid gap-px bg-[#EAF0E9] [grid-template-columns:repeat(auto-fit,minmax(min(50%,150px),1fr))]">
+        {[
+          { k: 'GST', v: `${formatNum(party.gst_pct)}%`, tone: 'text-[#0A1F17]' },
+          { k: 'TDS', v: formatINR(party.tds_amount), tone: 'text-[#8A5300]' },
+          { k: 'Net due', v: formatINR(due), tone: 'text-[#0A1F17]' }
+        ].map((c) => (
+          <div key={c.k} className="min-w-0 bg-white px-3.5 py-2.5">
+            <div className="text-[9px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">{c.k}</div>
+            <div className={cn('mt-1 whitespace-nowrap text-[12.5px] font-bold tabular-nums', c.tone)}>{c.v}</div>
+          </div>
+        ))}
+        {/* A settled buyer says so with the money that came in rather than a
+            zero, which reads as missing data. */}
+        <div className={cn('min-w-0 px-3.5 py-2.5', settled ? 'bg-[#F4FBF6]' : 'bg-[#FFFBF2]')}>
+          <div
+            className={cn(
+              'flex items-center gap-1.5 text-[9px] font-extrabold uppercase tracking-[.1em]',
+              settled ? 'text-[#0B6B45]' : 'text-[#8A5300]'
+            )}
+          >
+            {settled ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <Clock className="h-3.5 w-3.5 shrink-0" />}
+            {settled ? 'Settled' : 'Outstanding'}
+          </div>
+          <div
+            className={cn(
+              'mt-1 whitespace-nowrap text-[13px] font-bold tabular-nums',
+              settled ? 'text-[#0B6B45]' : 'text-[#8A5300]'
+            )}
+          >
+            {formatINR(settled ? due : outstanding)}
+          </div>
+        </div>
+      </div>
+      {/* How much of this buyer's money is actually in, as the bottom edge of
+          the card. A part-paid buyer is neither settled nor untouched, and
+          the two figures above cannot show that on their own. */}
+      {due > 0 && (
+        <div
+          className="flex h-[5px] bg-[#EAF0E9]"
+          title={`${formatINR(paid)} received of ${formatINR(due)}`}
+        >
+          <div className="h-full" style={{ width: `${(paid / due) * 100}%`, background: settled ? '#12855A' : color }} />
+        </div>
+      )}
     </div>
   )
 }
@@ -361,9 +894,27 @@ function MoneyEditRow({
   onChange: (v: string) => void
 }): React.JSX.Element {
   return (
-    <div className="flex items-center justify-between gap-2 py-1.5 text-sm">
-      <span className="text-muted-foreground">
-        {label} <span className="text-[10px] uppercase tracking-wide">{manual ? '(manual)' : '(auto)'}</span>
+    <div
+      className={cn(
+        'flex items-center justify-between gap-2 py-1.5 text-sm',
+        __WEB__ && '!border-b !border-b-[#EAF0E9] !py-2 !text-[12.5px]'
+      )}
+    >
+      <span className={cn('text-muted-foreground', __WEB__ && '!flex !items-center !gap-1.5 !font-semibold !text-[#5A6B62]')}>
+        {label}{' '}
+        <span
+          className={cn(
+            'text-[10px] uppercase tracking-wide',
+            // On the website the tag is a chip: whether this figure is the
+            // one the app worked out or one somebody typed over it changes
+            // how much it should be trusted, and a grey parenthesis said
+            // that too quietly to be noticed.
+            __WEB__ && '!rounded-[2px] !px-1.5 !py-0.5 !text-[9px] !font-extrabold !tracking-[.08em]',
+            __WEB__ && (manual ? '!bg-[#FFEDD0] !text-[#8A5300]' : '!bg-[#EAF0E9] !text-[#5A6B62]')
+          )}
+        >
+          {manual ? '(manual)' : '(auto)'}
+        </span>
       </span>
       <Input
         type="number"
@@ -371,7 +922,9 @@ function MoneyEditRow({
         title="Rounds the invoice to whole rupees. Clear it to go back to the automatic value."
         className={cn(
           'h-7 w-28 bg-white text-right text-sm tabular-nums',
-          manual && 'border-amber-300 bg-amber-50 focus-visible:ring-amber-400'
+          manual && 'border-amber-300 bg-amber-50 focus-visible:ring-amber-400',
+          __WEB__ && '!h-9 !w-[110px] !rounded-[4px] !border-[#C3D2C6] !text-[13px] !font-bold',
+          __WEB__ && manual && '!border-[#F0D9AE] !bg-[#FFFBF2]'
         )}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -380,13 +933,63 @@ function MoneyEditRow({
   )
 }
 
-function MoneyRow({ label, value, strong, muted }: { label: string; value: string; strong?: boolean; muted?: boolean }): React.JSX.Element {
+// One line of a summary card. `foot` promotes it to the card's closing
+// band: full-bleed, tinted in the side's colour, and the largest figure in
+// the card — because "net payable to the supplier" is the number the whole
+// column was adding up to, and as another 14px row among a dozen others it
+// read as no more important than the GST four lines above it.
+function MoneyRow({
+  label,
+  value,
+  strong,
+  muted,
+  foot
+}: {
+  label: string
+  value: string
+  strong?: boolean
+  muted?: boolean
+  foot?: 'rose' | 'emerald'
+}): React.JSX.Element {
+  const rose = foot === 'rose'
   return (
-    <div className="flex items-center justify-between py-1.5 text-sm">
-      <span className={strong ? 'font-semibold text-foreground' : muted ? 'text-muted-foreground' : 'text-foreground/80'}>{label}</span>
-      <span className={strong ? 'font-semibold tabular-nums' : 'tabular-nums'}>{value}</span>
+    <div
+      className={cn(
+        'flex items-center justify-between py-1.5 text-sm',
+        __WEB__ && '!items-baseline !gap-3 !border-b !border-b-[#EAF0E9] !py-2 !text-[12.5px]',
+        __WEB__ && foot && '!-mx-3.5 !-mb-3.5 !mt-2.5 !border-b-0 !px-3.5 !py-3',
+        __WEB__ && foot && (rose ? '!bg-[#F7EDEC]' : '!bg-[#EAF6EC]')
+      )}
+    >
+      <span
+        className={cn(
+          strong ? 'font-semibold text-foreground' : muted ? 'text-muted-foreground' : 'text-foreground/80',
+          __WEB__ && (strong ? '!font-bold !text-[#0A1F17]' : '!font-semibold !text-[#5A6B62]'),
+          __WEB__ && foot && '!text-[10px] !font-extrabold !uppercase !tracking-[.1em]',
+          __WEB__ && foot && (rose ? '!text-[#8C2F26]' : '!text-[#0B6B45]')
+        )}
+      >
+        {label}
+      </span>
+      <span
+        className={cn(
+          strong ? 'font-semibold tabular-nums' : 'tabular-nums',
+          __WEB__ && '!whitespace-nowrap !text-[13px] !font-bold',
+          __WEB__ && foot && '!text-[15px]',
+          __WEB__ && foot && (rose ? '!text-[#8C2F26]' : '!text-[#0B6B45]')
+        )}
+      >
+        {value}
+      </span>
     </div>
   )
+}
+
+// The asterisk on a required field. Grey among grey label text it was
+// decoration; in the alert red used everywhere else on this page it is a
+// mark, and the footer's checklist names the same fields.
+function Req(): React.JSX.Element {
+  return <span className={cn('text-destructive', __WEB__ && '!ml-0.5 !text-[#B3261E]')}>*</span>
 }
 
 // One invoice line on either side of a deal: a number, a quantity, a rate.
@@ -446,6 +1049,12 @@ export function Trading(): React.JSX.Element {
   // Deal rows whose invoice breakdown is open. The list stays one row per
   // deal; clicking a row unfolds what it is made of.
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
+  // Which product the register is narrowed to, 'ALL' for none. Website only —
+  // the desktop register keeps its single search box.
+  const [prodFilter, setProdFilter] = useState('ALL')
+  // The deal the detail drawer is open on. Website only: the desktop register
+  // opens a deal in place, underneath its own row.
+  const [detailDeal, setDetailDeal] = useState<Row | null>(null)
   function toggleExpanded(id: number): void {
     setExpanded((prev) => {
       const next = new Set(prev)
@@ -970,6 +1579,7 @@ export function Trading(): React.JSX.Element {
         const dd = String(d.deal_date || '').slice(0, 10)
         if (dd < globalRange.from || dd > globalRange.to) return false
       }
+      if (prodFilter !== 'ALL' && dealProduct(d) !== prodFilter) return false
       if (!q) return true
       // Every invoice number on the deal is searchable, not just the first.
       const invoiceNos = [
@@ -982,6 +1592,39 @@ export function Trading(): React.JSX.Element {
       return [d.product_code, d.product_name, d.supplier_name, ...buyers, ...invoiceNos]
         .some((f) => String(f || '').toLowerCase().includes(q))
     })
+  }, [deals, search, globalRange, prodFilter])
+
+  // Chips for whatever this book actually trades, not a fixed list — a
+  // company dealing only in CPO gets one chip, and the counts are struck
+  // BEFORE the product filter so picking one does not empty the others out
+  // from under the cursor. The date range and search do narrow them, because
+  // a chip claiming 6 deals that opens 2 is worse than no chip.
+  const prodChips = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    const inRange = globalRangeAppliesTo(globalRange, 'trading')
+    const pool = deals.filter((d) => {
+      if (inRange) {
+        const dd = String(d.deal_date || '').slice(0, 10)
+        if (dd < globalRange.from || dd > globalRange.to) return false
+      }
+      if (!q) return true
+      const invoiceNos = [
+        ...(Array.isArray(d.purchase_lines) ? d.purchase_lines : []),
+        ...(Array.isArray(d.sale_lines) ? d.sale_lines : [])
+      ].map((l: Row) => l.invoice_no)
+      const buyers = Array.isArray(d.customer_names) ? d.customer_names : [d.customer_name]
+      return [d.product_code, d.product_name, d.supplier_name, ...buyers, ...invoiceNos]
+        .some((f) => String(f || '').toLowerCase().includes(q))
+    })
+    const counts = new Map<string, number>()
+    pool.forEach((d) => {
+      const k = dealProduct(d)
+      if (k) counts.set(k, (counts.get(k) || 0) + 1)
+    })
+    return [
+      { label: 'All', value: 'ALL', count: pool.length },
+      ...[...counts.entries()].sort((a, b) => b[1] - a[1]).map(([value, count]) => ({ label: value, value, count }))
+    ]
   }, [deals, search, globalRange])
 
   // Summary cards mirror the filtered list, not the full unfiltered set — so
@@ -1003,23 +1646,96 @@ export function Trading(): React.JSX.Element {
   if (formPage) {
     return (
       <div className="px-4 py-4">
-        <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
-            <button className="inline-flex cursor-pointer items-center gap-1.5 text-[12px] font-medium hover:underline" onClick={() => { setFormPage(false); setEditingDeal(null) }}>
-              <ArrowLeft className="h-3.5 w-3.5" /> Back
+        <div className={cn('rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg', __WEB__ && '!rounded-[4px] !border-0 !bg-transparent !shadow-none')}>
+          {/* Pinned to the top of the window, the way the actions are
+              pinned to the bottom. This form is several screens long, and
+              Back — the only way out of it — used to scroll away with the
+              first section, leaving nothing on screen to say which deal was
+              even open. */}
+          <div
+            className={cn(
+              'flex flex-wrap items-center gap-x-3 gap-y-1 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]',
+              __WEB__ &&
+                '!sticky !top-0 !z-20 !gap-x-3.5 !gap-y-2 !rounded-[4px] !bg-[#0B3D2E] !px-5 !py-3 !text-white !shadow-[0_8px_20px_-12px_rgba(10,31,23,0.55)]'
+            )}
+          >
+            {/* Lime, not a faint white outline. It is the only way off this
+                page, and at 35% it read as a disabled control. */}
+            <button
+              className={cn(
+                'inline-flex cursor-pointer items-center gap-1.5 text-[12px] font-medium hover:underline',
+                __WEB__ &&
+                  '!h-10 !gap-2 !rounded-[4px] !border-[1.5px] !border-[#C7F03F]/70 !px-3.5 !text-[13px] !font-extrabold !uppercase !tracking-[.04em] !text-[#C7F03F] !no-underline hover:!bg-[#C7F03F] hover:!text-[#12280B]'
+              )}
+              onClick={() => { setFormPage(false); setEditingDeal(null) }}
+            >
+              <ArrowLeft className={cn('h-3.5 w-3.5', __WEB__ && '!h-[19px] !w-[19px]')} /> Back
             </button>
-            <div className="h-4 border-l border-[#1a2c56]/30" />
-            <h2 className="text-[13px] font-bold uppercase tracking-widest">{editingDeal ? 'Alter trading deal' : 'New trading deal'}</h2>
-            <span className="ml-auto text-[11px] font-medium">Raw pass-through — no bargain, no tanker, no stock</span>
+            <div className={cn('h-4 border-l border-[#1a2c56]/30', __WEB__ && '!h-6 !border-l-white/20')} />
+            <h2 className={cn('text-[13px] font-bold uppercase tracking-widest', __WEB__ && '!text-[14px] !font-extrabold !tracking-[.12em]')}>
+              {editingDeal ? 'Alter trading deal' : 'New trading deal'}
+            </h2>
+            {/* Which deal is being altered. Editing opens on a form that looks
+                identical to a new one, and the date and product are what tell
+                them apart at a glance — bounded, because loose beside the
+                heading it read as part of the title. */}
+            {__WEB__ && editingDeal && (
+              <span className="rounded-[3px] border border-white/20 bg-white/10 px-2.5 py-1.5 text-[12.5px] font-bold tabular-nums text-[#DCEFE4]">
+                {formatDate(editingDeal.deal_date)} · {String(editingDeal.product_code || editingDeal.product_name || '')}
+              </span>
+            )}
+            {/* What makes this page different from Purchases and Sales, so it
+                keeps its lime bolt — but on the ground rather than in a grey
+                pill, which had it reading as a disabled button. */}
+            <span className={cn('ml-auto text-[11px] font-medium', __WEB__ && '!flex !items-center !gap-2 !text-[12px] !font-bold !text-[#8FBFA8]')}>
+              {__WEB__ && (
+                <span className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[3px] bg-[#C7F03F]/15">
+                  <Zap className="h-4 w-4 text-[#C7F03F]" />
+                </span>
+              )}
+              Raw pass-through — no bargain, no tanker, no stock
+            </span>
           </div>
 
-          <div className="grid gap-4 p-4 xl:grid-cols-[1fr_360px]">
+          <div className={cn('grid gap-4 p-4 xl:grid-cols-[1fr_360px]', __WEB__ && '!gap-3.5 !p-0 !pt-3.5')}>
             <div className="space-y-4">
-              <section className="rounded border border-[#e5dfc8] bg-white p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
-                <h3 className="mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+              <section className={cn('rounded border border-[#e5dfc8] bg-white p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground', __WEB__ && SECTION_WEB)}>
+                <h3 className={cn('mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && cn(SECTION_HEAD, '!flex !items-center !gap-2.5'))}>
+                  {__WEB__ && !editingDeal && <span className="rounded-[2px] bg-[#0B3D2E] px-2 py-1 text-[10.5px] font-extrabold tracking-normal text-[#C7F03F]">1</span>}
+                  {/* The two sections below carry an icon for their side of
+                      the trade; this one had none, so the first heading on
+                      the page was the only one that did not look like the
+                      others. The page's own mark — goods swapped straight
+                      through — is the right one for the section that says
+                      what is being traded. */}
+                  {__WEB__ && <Repeat className="h-[18px] w-[18px] text-[#0B3D2E]" />}
                   Deal details
+                  {/* What has been chosen so far, in the same chip the other
+                      two sections use for their running totals. Worth having
+                      here because the product and the date are what every
+                      figure below is struck against — the rate is per MT of
+                      THIS product, and the date is what decides which rung of
+                      the year's TDS slab the invoices land on. */}
+                  {__WEB__ && (() => {
+                    const prod = products.find((x) => String(x.id) === String(form.product_id || ''))
+                    const label = prod ? String(prod.code || prod.name || '') : ''
+                    return (
+                      <span
+                        className={cn(
+                          'ml-auto rounded-[3px] border px-2.5 py-1.5 text-[12px] font-bold normal-case tabular-nums tracking-normal',
+                          label ? 'border-[#D6E2D6] bg-white text-[#0A1F17]' : 'border-[#DCE7DB] bg-[#F7FAF6] text-[#7C9188]'
+                        )}
+                      >
+                        {label ? `${label} · ${formatDate(form.deal_date)}` : 'No product chosen yet'}
+                      </span>
+                    )
+                  })()}
                 </h3>
-                <div className="grid gap-4 md:grid-cols-4">
+                {/* UOM holds "MT". It had a full quarter of the row while
+                    the product picker — which holds a company's product name
+                    — had the same, so one was mostly empty and the other was
+                    truncating. Sized to what they carry on the website. */}
+                <div className={cn('grid gap-4 md:grid-cols-4', __WEB__ && '!gap-3.5 !p-4 md:!grid-cols-[1.2fr_1.2fr_1fr_110px]')}>
                   <div className="flex flex-col gap-1.5">
                     <Label>Stock category</Label>
                     <Select
@@ -1045,7 +1761,7 @@ export function Trading(): React.JSX.Element {
                     </Select>
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label>Product *</Label>
+                    <Label>Product <Req /></Label>
                     <Select value={String(form.product_id || '')} onValueChange={(v) => setForm((p) => ({ ...p, product_id: v }))}>
                       <SelectTrigger><SelectValue placeholder="Select product" /></SelectTrigger>
                       <SelectContent className="max-h-64">
@@ -1064,12 +1780,43 @@ export function Trading(): React.JSX.Element {
                     </Select>
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label>Quantity <span className="text-[10px] font-normal normal-case text-muted-foreground">(from the invoices below)</span></Label>
-                    <Input
-                      disabled
-                      className="bg-muted/50 text-muted-foreground"
-                      value={purchaseQty > 0 ? `${formatNum(purchaseQty)} ${form.uom || 'MT'}` : ''}
-                    />
+                    <Label>
+                      Quantity{' '}
+                      <span
+                        className={cn(
+                          'text-[10px] font-normal normal-case text-muted-foreground',
+                          __WEB__ && '!rounded-[2px] !bg-[#EAF0E9] !px-1.5 !py-0.5 !text-[9px] !font-extrabold !uppercase !tracking-[.08em] !text-[#5A6B62]'
+                        )}
+                      >
+                        {__WEB__ ? 'from invoices' : '(from the invoices below)'}
+                      </span>
+                    </Label>
+                    {/* Not a field on the website. It was a disabled input that
+                        rendered EMPTY until a purchase line had a quantity in
+                        it, so the commonest thing this box ever showed was a
+                        grey blank — which reads as something you forgot to
+                        fill in, not as a total the form works out for you. A
+                        locked readout that always carries a figure says which
+                        of the two it is. */}
+                    {__WEB__ ? (
+                      <div
+                        className={cn(
+                          'flex h-[46px] items-center gap-2 rounded-[4px] border border-[#D6E2D6] bg-[#F1F5EF] px-3',
+                          purchaseQty > 0 ? 'text-[#0A1F17]' : 'text-[#8FA79B]'
+                        )}
+                        title="Added up from the purchase invoices below — it is not typed here"
+                      >
+                        <Lock className="h-[15px] w-[15px] shrink-0 text-[#8FA79B]" />
+                        <span className="text-[14px] font-bold tabular-nums">{formatNum(purchaseQty)}</span>
+                        <span className="text-[11px] font-bold text-[#5A6B62]">{form.uom || 'MT'}</span>
+                      </div>
+                    ) : (
+                      <Input
+                        disabled
+                        className="bg-muted/50 text-muted-foreground"
+                        value={purchaseQty > 0 ? `${formatNum(purchaseQty)} ${form.uom || 'MT'}` : ''}
+                      />
+                    )}
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>UOM</Label>
@@ -1081,24 +1828,95 @@ export function Trading(): React.JSX.Element {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label>Deal date</Label>
-                    <DatePicker min={minDate} value={String(form.deal_date || '')} onChange={(v) => setForm((p) => ({ ...p, deal_date: v }))} />
-                  </div>
-                  <div className="flex flex-col gap-1.5 md:col-span-3">
-                    <Label>Note</Label>
-                    <Input value={form.note ?? ''} onChange={(e) => setForm((p) => ({ ...p, note: e.target.value }))} />
+                  {/* A date is eight characters and a note is a sentence,
+                      and on the row above they were sharing a column ruler
+                      built for the pickers — so the date sat in a box three
+                      times wider than anything it can hold while the note,
+                      the one field here that benefits from every pixel, made
+                      do with what was left. Sized to their jobs on the
+                      website; display:contents leaves the desktop grid alone. */}
+                  <div className={cn('contents', __WEB__ && '!col-span-full !flex !flex-wrap !items-start !gap-3.5')}>
+                    <div className={cn('flex flex-col gap-1.5', __WEB__ && '!w-[210px]')}>
+                      <Label>Deal date</Label>
+                      <DatePicker min={minDate} value={String(form.deal_date || '')} onChange={(v) => setForm((p) => ({ ...p, deal_date: v }))} />
+                      {/* The calendar simply refuses to open on a day before
+                          the window your login is allowed to post in, with
+                          nothing on screen saying why. The limit is a
+                          per-user setting, so it is not something a clerk can
+                          work out from the form. */}
+                      {__WEB__ && !!minDate && (
+                        <span className="text-[11px] font-semibold leading-snug text-[#5A6B62]">
+                          Your login cannot post before {formatDate(minDate)}
+                        </span>
+                      )}
+                    </div>
+                    <div className={cn('flex flex-col gap-1.5 md:col-span-3', __WEB__ && '!min-w-[260px] !flex-1')}>
+                      <Label>
+                        Note{' '}
+                        <span
+                          className={cn(
+                            'text-[10px] font-normal normal-case text-muted-foreground',
+                            __WEB__ && '!rounded-[2px] !bg-[#EAF0E9] !px-1.5 !py-0.5 !text-[9px] !font-extrabold !uppercase !tracking-[.08em] !text-[#5A6B62]'
+                          )}
+                        >
+                          optional
+                        </span>
+                      </Label>
+                      <Input
+                        placeholder={__WEB__ ? 'Anything worth recording against this deal' : undefined}
+                        value={form.note ?? ''}
+                        onChange={(e) => setForm((p) => ({ ...p, note: e.target.value }))}
+                      />
+                      {/* The note travels with the deal into the register's
+                          detail panel, so it is worth a line saying who ends
+                          up reading it. */}
+                      {__WEB__ && (
+                        <span className="text-[11px] font-semibold leading-snug text-[#5A6B62]">
+                          Shown on this deal in the register
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               </section>
 
-              <section className="rounded border border-[#e5dfc8] bg-white p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
-                <h3 className="mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+              <section className={cn('rounded border border-[#e5dfc8] bg-white p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground', __WEB__ && cn(SECTION_WEB, '!border-[#F0D6D4]'))}>
+                <h3 className={cn('mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && cn(SECTION_HEAD, '!flex !items-center !gap-2.5 !border-b-[#F0D6D4] !bg-[#FDF3F2] !text-[#8C2F26]'))}>
+                  {__WEB__ && !editingDeal && <span className="rounded-[2px] bg-[#8C2F26] px-2 py-1 text-[10.5px] font-extrabold tracking-normal text-white">2</span>}
+                  {__WEB__ && <TrendingDown className="h-[18px] w-[18px]" />}
                   Purchase (in)
+                  {/* What this side adds up to so far, bounded so it reads
+                      as a figure rather than as a continuation of the heading
+                      — it was inheriting the h3's own capitals, so a count
+                      came out as "0 INVOICES · 0 MT". Before anything is
+                      entered it says so in words: a row of zeroes in the same
+                      weight as a real total looks like a total that came out
+                      to nothing. */}
+                  {__WEB__ && (() => {
+                    const empty = purchaseQty <= 0 && purchaseCalc.taxableValue <= 0
+                    return (
+                      <span
+                        className={cn(
+                          'ml-auto rounded-[3px] border px-2.5 py-1.5 text-[12px] font-bold normal-case tabular-nums tracking-normal',
+                          empty ? 'border-[#DCE7DB] bg-[#F7FAF6] text-[#7C9188]' : 'border-[#F0D6D4] bg-white text-[#8C2F26]'
+                        )}
+                      >
+                        {empty ? (
+                          'Nothing entered yet'
+                        ) : (
+                          <>
+                            {purchaseLines.length} invoice{purchaseLines.length === 1 ? '' : 's'} ·{' '}
+                            {formatNum(purchaseQty)} {form.uom || 'MT'}
+                            {purchaseCalc.taxableValue > 0 && ` · ${formatINR(purchaseCalc.taxableValue)}`}
+                          </>
+                        )}
+                      </span>
+                    )
+                  })()}
                 </h3>
-                <div className="grid gap-4 md:grid-cols-3">
+                <div className={cn('grid gap-4 md:grid-cols-3', __WEB__ && '!gap-3.5 !p-4')}>
                   <div className="flex flex-col gap-1.5 md:col-span-2">
-                    <Label>Supplier *</Label>
+                    <Label>Supplier <Req /></Label>
                     <Select value={String(form.supplier_id || '')} onValueChange={chooseSupplier}>
                       <SelectTrigger><SelectValue placeholder="Select supplier" /></SelectTrigger>
                       <SelectContent className="max-h-64">
@@ -1113,9 +1931,10 @@ export function Trading(): React.JSX.Element {
                     </Select>
                   </div>
                   <div className="flex flex-col gap-1.5 md:col-span-3">
-                    <Label>Purchase invoices *</Label>
+                    <Label>Purchase invoices <Req /></Label>
                     <InvoiceLines
                       title="Purchase"
+                      tone="rose"
                       rows={lines('purchase_lines')}
                       uom={String(form.uom || 'MT')}
                       totalQty={purchaseQty}
@@ -1124,46 +1943,95 @@ export function Trading(): React.JSX.Element {
                       onRemove={(i) => removeLine('purchase_lines', i)}
                     />
                   </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label>GST % {autoFields.has('purchase_gst_pct') && <span className="text-amber-700">(auto)</span>}</Label>
-                    <Input
-                      type="number"
-                      className={autoFields.has('purchase_gst_pct') ? AUTO_CLASS : ''}
-                      value={form.purchase_gst_pct ?? ''}
-                      onChange={(e) => setField('purchase_gst_pct', e.target.value)}
-                    />
+                  {/* The tax on this side, in a strip of its own.
+                      A percentage is two characters and these had a whole
+                      grid column each, so "5" sat in a box wide enough for a
+                      company name while GST type — the one that actually
+                      needs the room — got the same. Boxed and sized to what
+                      they hold, and tinted to say they belong to the purchase.
+                      display:contents keeps the desktop grid exactly as it
+                      was: the three fields go on being direct children of the
+                      section's own columns, as if this wrapper were absent. */}
+                  <div
+                    className={cn(
+                      'contents',
+                      __WEB__ &&
+                        '!col-span-full !flex !flex-wrap !items-end !gap-x-4 !gap-y-3 !rounded-[4px] !border !border-[#F0D6D4] !bg-[#FDF7F6] !px-3.5 !py-3'
+                    )}
+                  >
+                    <div className={cn('flex flex-col gap-1.5', __WEB__ && '!w-[130px]')}>
+                      <Label>GST % {autoFields.has('purchase_gst_pct') && <span className="text-amber-700">(auto)</span>}</Label>
+                      <Input
+                        type="number"
+                        className={cn(autoFields.has('purchase_gst_pct') ? AUTO_CLASS : '', __WEB__ && '!text-right !tabular-nums')}
+                        value={form.purchase_gst_pct ?? ''}
+                        onChange={(e) => setField('purchase_gst_pct', e.target.value)}
+                      />
+                    </div>
+                    <div className={cn('flex flex-col gap-1.5', __WEB__ && '!w-[210px]')}>
+                      <Label>GST type</Label>
+                      <Select value={form.purchase_gst_type || 'CGST_SGST'} onValueChange={(v) => setForm((p) => ({ ...p, purchase_gst_type: v }))}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="CGST_SGST">CGST + SGST</SelectItem>
+                          <SelectItem value="IGST">IGST</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className={cn('flex flex-col gap-1.5', __WEB__ && '!w-[130px]')}>
+                      <Label>TDS % {autoFields.has('purchase_tds_pct') && <span className="text-amber-700">(auto)</span>}</Label>
+                      <Input
+                        type="number"
+                        className={cn(autoFields.has('purchase_tds_pct') ? AUTO_CLASS : '', __WEB__ && '!text-right !tabular-nums')}
+                        value={form.purchase_tds_pct ?? ''}
+                        onChange={(e) => setField('purchase_tds_pct', e.target.value)}
+                      />
+                    </div>
                   </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label>GST type</Label>
-                    <Select value={form.purchase_gst_type || 'CGST_SGST'} onValueChange={(v) => setForm((p) => ({ ...p, purchase_gst_type: v }))}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="CGST_SGST">CGST + SGST</SelectItem>
-                        <SelectItem value="IGST">IGST</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label>TDS % {autoFields.has('purchase_tds_pct') && <span className="text-amber-700">(auto)</span>}</Label>
-                    <Input
-                      type="number"
-                      className={autoFields.has('purchase_tds_pct') ? AUTO_CLASS : ''}
-                      value={form.purchase_tds_pct ?? ''}
-                      onChange={(e) => setField('purchase_tds_pct', e.target.value)}
-                    />
-                  </div>
+                  {/* What the rates above actually come to, on the side that
+                      pays them — the same strip each buyer carries, so the two
+                      halves of a deal can be read the same way. A percentage
+                      typed into a box is not a figure anybody can check
+                      against a supplier's invoice; the rupees are.
+                      Round off is not repeated here: it is edited once, in the
+                      Purchase summary beside the total it moves, and a second
+                      box bound to the same field would be two controls for one
+                      number. */}
+                  {__WEB__ && purchaseCalc.taxableValue > 0 && (
+                    <div className="col-span-full grid gap-px overflow-hidden rounded-[4px] border border-[#F0D6D4] bg-[#F0D6D4] [grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr))]">
+                      <Fact label="Taxable" value={formatINR(purchaseCalc.taxableValue)} />
+                      <Fact label={`GST ${formatNum(form.purchase_gst_pct)}%`} value={formatINR(purchaseCalc.gstAmount)} />
+                      <Fact label="Invoice total" value={formatINR(purchaseCalc.roundedTotal)} />
+                      <Fact label={`TDS ${formatNum(form.purchase_tds_pct)}%`} value={formatINR(purchaseTds)} warn />
+                      <Fact label="Net payable" value={formatINR(purchaseNet)} strong tone="rose" />
+                    </div>
+                  )}
                 </div>
               </section>
 
-              <section className="rounded border border-[#e5dfc8] bg-white p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
-                <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2 border-b border-dotted border-[#e5dfc8] pb-1.5">
-                  <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+              <section className={cn('rounded border border-[#e5dfc8] bg-white p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground', __WEB__ && cn(SECTION_WEB, '!border-[#BFE3CB]'))}>
+                <div className={cn('mb-3 flex flex-wrap items-baseline justify-between gap-2 border-b border-dotted border-[#e5dfc8] pb-1.5', __WEB__ && '!mb-0 !items-center !border-b-[#BFE3CB] !border-solid !bg-[#F4FBF6] !px-4 !py-3')}>
+                  <h3 className={cn('text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!flex !items-center !gap-2.5 !text-[11.5px] !font-extrabold !tracking-[.14em] !text-[#0B6B45]')}>
+                    {__WEB__ && !editingDeal && <span className="rounded-[2px] bg-[#0B6B45] px-2 py-1 text-[10.5px] font-extrabold tracking-normal text-white">3</span>}
+                    {__WEB__ && <TrendingUp className="h-[18px] w-[18px]" />}
                     Sale (out)
                   </h3>
-                  <span className="text-[11px] text-muted-foreground">
+                  {/* The purchase side's chip, mirrored. With one buyer
+                      there is no split to report, so the space says what the
+                      section is FOR instead — which is the one place on this
+                      form where a reader learns a deal can go to several. */}
+                  <span
+                    className={cn(
+                      'text-[11px] text-muted-foreground',
+                      __WEB__ && '!text-[12px] !font-bold !text-[#5A6B62]',
+                      __WEB__ &&
+                        parties().length > 1 &&
+                        '!rounded-[3px] !border !border-[#BFE3CB] !bg-white !px-2.5 !py-1.5 !tabular-nums !text-[#0B6B45]'
+                    )}
+                  >
                     {parties().length === 1
                       ? 'One buyer — add another to split this purchase between several'
-                      : `${parties().length} buyers · ${formatNum(saleQty)} ${form.uom || 'MT'} sold on in ${saleLines.length} invoice${saleLines.length === 1 ? '' : 's'}`}
+                      : `${parties().length} buyers · ${formatNum(saleQty)} ${form.uom || 'MT'} · ${saleLines.length} invoice${saleLines.length === 1 ? '' : 's'}`}
                   </span>
                 </div>
 
@@ -1172,7 +2040,7 @@ export function Trading(): React.JSX.Element {
                     invoices AND its own tax treatment — a buyer in another
                     state is IGST where one in this state is CGST+SGST, and
                     each withholds TDS on its own slab. */}
-                <div className="space-y-3">
+                <div className={cn('space-y-3', __WEB__ && '!p-4')}>
                   {parties().map((sp, pi) => {
                     const c = partyCalcs[pi]
                     const name = customers.find((x) => String(x.id) === String(sp?.customer_id || ''))?.name
@@ -1187,8 +2055,21 @@ export function Trading(): React.JSX.Element {
                         key={pi}
                         className={cn(
                           'rounded border bg-[#fffdf7] shadow-sm',
-                          repeated ? 'border-rose-400' : 'border-[#d9d2b8]'
+                          repeated ? 'border-rose-400' : 'border-[#d9d2b8]',
+                          // The card was on the desktop's cream ground, which
+                          // is what put a yellow cast behind every field in
+                          // it. White, with the buyer's own colour down the
+                          // left edge — the same three colours the detail
+                          // drawer gives these buyers, so a deal looks the
+                          // same whether it is being entered or read back.
+                          __WEB__ && '!rounded-[4px] !border-l-4 !bg-white !shadow-none',
+                          __WEB__ && (repeated ? '!border-[#F0D6D4]' : '!border-[#BFE3CB]')
                         )}
+                        style={
+                          __WEB__
+                            ? { borderLeftColor: repeated ? '#B3261E' : BUYER_COLORS[pi % BUYER_COLORS.length] }
+                            : undefined
+                        }
                       >
                         {/* The picker IS the heading.
                             ---------------------------------------------------
@@ -1203,10 +2084,19 @@ export function Trading(): React.JSX.Element {
                         <div
                           className={cn(
                             'flex flex-wrap items-center gap-2 rounded-t border-b px-2.5 py-2',
-                            repeated ? 'border-rose-300 bg-rose-50/70' : 'border-emerald-200 bg-emerald-50/80'
+                            repeated ? 'border-rose-300 bg-rose-50/70' : 'border-emerald-200 bg-emerald-50/80',
+                            __WEB__ && '!gap-2.5 !px-3 !py-2.5',
+                            __WEB__ && (repeated ? '!border-b-[#F0D6D4] !bg-[#FDF3F2]' : '!border-b-[#BFE3CB] !bg-[#F4FBF6]')
                           )}
                         >
-                          <span className="shrink-0 rounded bg-emerald-700 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-widest text-white">
+                          <span
+                            className={cn('shrink-0 rounded bg-emerald-700 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-widest text-white', __WEB__ && '!rounded-[2px] !px-2.5 !py-1.5 !text-[10.5px] !font-extrabold !tracking-[.09em]')}
+                            style={
+                              __WEB__
+                                ? { background: repeated ? '#B3261E' : BUYER_COLORS[pi % BUYER_COLORS.length] }
+                                : undefined
+                            }
+                          >
                             Buyer {pi + 1}
                           </span>
                           <Select
@@ -1216,7 +2106,8 @@ export function Trading(): React.JSX.Element {
                             <SelectTrigger
                               className={cn(
                                 'h-8 w-[17rem] border-emerald-300 bg-white text-[12px] font-semibold text-emerald-950',
-                                repeated && 'border-rose-400 focus-visible:ring-rose-300'
+                                repeated && 'border-rose-400 focus-visible:ring-rose-300',
+                                __WEB__ && '!h-[42px] !w-auto !min-w-[200px] !flex-1 !rounded-[4px] !border-[#C3D2C6] !text-[13px] !font-extrabold !text-[#0A1F17]'
                               )}
                             >
                               {/* Falls back to the name from the FULL customer
@@ -1239,11 +2130,42 @@ export function Trading(): React.JSX.Element {
                               )}
                             </SelectContent>
                           </Select>
+                          {/* This buyer's running total, once. It was
+                              printed twice on the same line — a second copy
+                              beside the picker and this one by the delete
+                              button — reading as two figures that happened to
+                              agree. The one by the button is the keeper: it is
+                              right-aligned, so with three buyers the totals
+                              stack into a column. */}
                           <span className="ml-auto flex shrink-0 items-center gap-1.5">
                             {c && c.invoiceCount > 0 && (
-                              <span className="text-[11px] font-medium tabular-nums text-emerald-800">
+                              <span
+                                className={cn(
+                                  'text-[11px] font-medium tabular-nums text-emerald-800',
+                                  // Bounded on the website so it reads as this
+                                  // buyer's total rather than as a caption
+                                  // trailing off the picker beside it.
+                                  __WEB__ &&
+                                    '!rounded-[3px] !border !border-[#BFE3CB] !bg-white !px-2.5 !py-1.5 !text-[12px] !font-bold !text-[#0B6B45]'
+                                )}
+                              >
                                 {c.invoiceCount} invoice{c.invoiceCount === 1 ? '' : 's'} · {formatNum(c.qty)}{' '}
                                 {form.uom || 'MT'} · {formatINR(c.amount)}
+                                {/* What share of the purchase this buyer is
+                                    taking. Splitting a lot between three
+                                    parties is the whole job of this section,
+                                    and doing it meant dividing in your head
+                                    against a quantity two cards away. Only
+                                    where there is a split to describe. */}
+                                {__WEB__ && parties().length > 1 && purchaseQty > 0 && (
+                                  <span
+                                    className="ml-2 rounded-[2px] px-1.5 py-0.5 text-[11px] font-extrabold text-white"
+                                    style={{ background: BUYER_COLORS[pi % BUYER_COLORS.length] }}
+                                    title={`${formatNum(c.qty)} of the ${formatNum(purchaseQty)} ${form.uom || 'MT'} bought`}
+                                  >
+                                    {Math.round((c.qty / purchaseQty) * 100)}%
+                                  </span>
+                                )}
                               </span>
                             )}
                             {parties().length > 1 && (
@@ -1251,17 +2173,27 @@ export function Trading(): React.JSX.Element {
                                 type="button"
                                 variant="ghost"
                                 size="icon"
-                                className="h-7 w-7 text-muted-foreground hover:text-red-600"
+                                className={cn(
+                                  'h-7 w-7 text-muted-foreground hover:text-red-600',
+                                  __WEB__ && '!h-9 !w-9 !rounded-[4px] !text-[#8FA79B] hover:!bg-[#FDF3F2] hover:!text-[#B3261E]'
+                                )}
                                 title="Remove this buyer and all of its invoices"
                                 onClick={() => removeParty(pi)}
                               >
-                                <Trash2 className="h-3.5 w-3.5" />
+                                <Trash2 className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4')} />
                               </Button>
                             )}
                           </span>
                         </div>
                         {repeated && (
-                          <p className="border-b border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[11px] text-rose-700">
+                          <p
+                            className={cn(
+                              'border-b border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[11px] text-rose-700',
+                              __WEB__ &&
+                                '!flex !items-start !gap-2 !border-b-[#F0D6D4] !bg-[#FDF3F2] !px-3 !py-2.5 !text-[11.5px] !font-semibold !leading-relaxed !text-[#8C2F26]'
+                            )}
+                          >
+                            {__WEB__ && <AlertTriangle className="h-4 w-4 shrink-0 translate-y-px text-[#B3261E]" />}
                             Already listed as buyer {dupOf + 1} — put all of that buyer&rsquo;s invoices under the
                             one card, or the party&rsquo;s TDS slab is split in two.
                           </p>
@@ -1270,6 +2202,7 @@ export function Trading(): React.JSX.Element {
                         <div className="space-y-2 p-2.5">
                           <InvoiceLines
                             title="Sale"
+                            tone="emerald"
                             rows={Array.isArray(sp?.lines) ? (sp.lines as Row[]) : []}
                             uom={String(form.uom || 'MT')}
                             totalQty={c?.qty ?? 0}
@@ -1277,8 +2210,20 @@ export function Trading(): React.JSX.Element {
                             onAdd={() => addPartyLine(pi)}
                             onRemove={(i) => removePartyLine(pi, i)}
                           />
-                          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                            <div className="flex items-center gap-1.5">
+                          {/* The same strip as the purchase side carries,
+                              in this side's colour. It used to be inline
+                              labels beside 4.5rem boxes while the supplier's
+                              were stacked labels over full-width ones — the
+                              same three fields, entered twice on one screen,
+                              looking like two different things. */}
+                          <div
+                            className={cn(
+                              'flex flex-wrap items-center gap-x-4 gap-y-2',
+                              __WEB__ &&
+                                '!items-end !gap-x-4 !gap-y-3 !rounded-[4px] !border !border-[#BFE3CB] !bg-[#F6FBF8] !px-3.5 !py-3'
+                            )}
+                          >
+                            <div className={cn('flex items-center gap-1.5', __WEB__ && '!w-[130px] !flex-col !items-stretch !gap-1.5')}>
                               <Label className="whitespace-nowrap">
                                 GST %{' '}
                                 {autoFields.has(partyKey(pi, 'gst_pct')) && (
@@ -1289,26 +2234,27 @@ export function Trading(): React.JSX.Element {
                                 type="number"
                                 className={cn(
                                   'h-8 w-[4.5rem] text-right tabular-nums',
-                                  autoFields.has(partyKey(pi, 'gst_pct')) && AUTO_CLASS
+                                  autoFields.has(partyKey(pi, 'gst_pct')) && AUTO_CLASS,
+                                  __WEB__ && '!w-full'
                                 )}
                                 value={sp?.gst_pct ?? ''}
                                 onChange={(e) => setPartyField(pi, 'gst_pct', e.target.value)}
                               />
                             </div>
-                            <div className="flex items-center gap-1.5">
+                            <div className={cn('flex items-center gap-1.5', __WEB__ && '!w-[210px] !flex-col !items-stretch !gap-1.5')}>
                               <Label className="whitespace-nowrap">GST type</Label>
                               <Select
                                 value={sp?.gst_type || 'CGST_SGST'}
                                 onValueChange={(v) => patchParty(pi, { gst_type: v })}
                               >
-                                <SelectTrigger className="h-8 w-[9.5rem] text-[12px]"><SelectValue /></SelectTrigger>
+                                <SelectTrigger className={cn('h-8 w-[9.5rem] text-[12px]', __WEB__ && '!w-full')}><SelectValue /></SelectTrigger>
                                 <SelectContent>
                                   <SelectItem value="CGST_SGST">CGST + SGST</SelectItem>
                                   <SelectItem value="IGST">IGST</SelectItem>
                                 </SelectContent>
                               </Select>
                             </div>
-                            <div className="flex items-center gap-1.5">
+                            <div className={cn('flex items-center gap-1.5', __WEB__ && '!w-[130px] !flex-col !items-stretch !gap-1.5')}>
                               <Label className="whitespace-nowrap">
                                 TDS %{' '}
                                 {autoFields.has(partyKey(pi, 'tds_pct')) && (
@@ -1319,7 +2265,8 @@ export function Trading(): React.JSX.Element {
                                 type="number"
                                 className={cn(
                                   'h-8 w-[4.5rem] text-right tabular-nums',
-                                  autoFields.has(partyKey(pi, 'tds_pct')) && AUTO_CLASS
+                                  autoFields.has(partyKey(pi, 'tds_pct')) && AUTO_CLASS,
+                                  __WEB__ && '!w-full'
                                 )}
                                 value={sp?.tds_pct ?? ''}
                                 onChange={(e) => setPartyField(pi, 'tds_pct', e.target.value)}
@@ -1332,13 +2279,41 @@ export function Trading(): React.JSX.Element {
                             entered — so the figure is checked against the
                             document in hand, not against a deal-wide total
                             that belongs to nobody. */}
+                        {/* Ruled cells on the sale side's own colours. It was
+                            carrying the desktop's cream ledger ground, which
+                            on a white-and-green card read as a stray yellow
+                            band, and the figures sat on it as loose text with
+                            the round-off box floating between them. Net
+                            receivable takes the green cell: it is what this
+                            buyer will actually pay, and it was the same size
+                            as the GST four cells to its left. */}
                         {!!c && c.invoiceCount > 0 && (
-                          <div className="grid gap-x-4 gap-y-1.5 rounded-b border-t border-[#e5dfc8] bg-[#f7f2e2] px-2.5 py-1.5 sm:grid-cols-3 lg:grid-cols-5">
+                          <div
+                            className={cn(
+                              'grid gap-x-4 gap-y-1.5 rounded-b border-t border-[#e5dfc8] bg-[#f7f2e2] px-2.5 py-1.5 sm:grid-cols-3 lg:grid-cols-5',
+                              __WEB__ &&
+                                '!gap-px !overflow-hidden !rounded-[4px] !border !border-[#BFE3CB] !bg-[#DCE7DB] !p-0 sm:!grid-cols-[repeat(auto-fit,minmax(min(100%,150px),1fr))] lg:!grid-cols-[repeat(auto-fit,minmax(min(100%,150px),1fr))]'
+                            )}
+                          >
                             <Fact label="Taxable" value={formatINR(c.amount)} />
                             <Fact label={`GST ${formatNum(sp?.gst_pct)}%`} value={formatINR(c.gstAmount)} />
-                            <div className="min-w-0">
-                              <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                Round off {sp?.round_off_manual ? '(manual)' : '(auto)'}
+                            <div className={cn('min-w-0', __WEB__ && '!bg-white !px-3.5 !py-2.5')}>
+                              <div
+                                className={cn(
+                                  'text-[10px] font-semibold uppercase tracking-wide text-muted-foreground',
+                                  __WEB__ && '!flex !items-center !gap-1.5 !text-[9.5px] !font-extrabold !tracking-[.1em] !text-[#5A6B62]'
+                                )}
+                              >
+                                Round off{' '}
+                                <span
+                                  className={cn(
+                                    __WEB__ && '!rounded-[2px] !px-1.5 !py-0.5 !text-[9px] !font-extrabold !tracking-[.08em]',
+                                    __WEB__ &&
+                                      (sp?.round_off_manual ? '!bg-[#FFEDD0] !text-[#8A5300]' : '!bg-[#EAF0E9] !text-[#5A6B62]')
+                                  )}
+                                >
+                                  {sp?.round_off_manual ? '(manual)' : '(auto)'}
+                                </span>
                               </div>
                               <Input
                                 type="number"
@@ -1346,7 +2321,9 @@ export function Trading(): React.JSX.Element {
                                 title="Rounds this buyer's invoice to whole rupees. Clear it to go back to the automatic value."
                                 className={cn(
                                   'h-6 w-20 bg-white px-1.5 text-right text-[12px] tabular-nums',
-                                  sp?.round_off_manual && 'border-amber-300 bg-amber-50 focus-visible:ring-amber-400'
+                                  sp?.round_off_manual && 'border-amber-300 bg-amber-50 focus-visible:ring-amber-400',
+                                  __WEB__ && '!mt-1 !h-8 !w-full !rounded-[4px] !border-[#C3D2C6] !px-2 !text-[13px] !font-bold',
+                                  __WEB__ && sp?.round_off_manual && '!border-[#F0D9AE] !bg-[#FFFBF2]'
                                 )}
                                 value={String(sp?.round_off ?? '')}
                                 onChange={(e) =>
@@ -1355,18 +2332,26 @@ export function Trading(): React.JSX.Element {
                               />
                             </div>
                             <Fact label="Invoice total" value={formatINR(c.total)} />
-                            <Fact
-                              label="Net receivable"
-                              value={formatINR(c.netReceivable)}
-                              hint={c.tdsAmount > 0.005 ? `TDS ${formatINR(c.tdsAmount)}` : undefined}
-                            />
+                            {/* TDS on its own, in the order the money actually
+                                moves: invoice total, less the withholding,
+                                leaves the net. It was a grey sub-line under
+                                Net receivable, which put the deduction after
+                                the figure it had already been taken out of. */}
+                            <Fact label="TDS" value={formatINR(c.tdsAmount)} warn />
+                            <Fact label="Net receivable" value={formatINR(c.netReceivable)} strong />
                             {n(sp?.tds_pct) > 0 && (() => {
                               const b = tdsBasis(c.amount, c.master, n(salePriors[String(sp?.customer_id || '')]))
                               return (
                                 <p
                                   className={cn(
                                     'sm:col-span-3 lg:col-span-5 text-[11px] leading-snug',
-                                    b.hasSlab && !b.exempt ? 'text-amber-800' : 'text-muted-foreground'
+                                    b.hasSlab && !b.exempt ? 'text-amber-800' : 'text-muted-foreground',
+                                    // Its own row across the strip, on the
+                                    // warning ground it earns: this is the
+                                    // sentence that explains why two buyers at
+                                    // one rate owe different TDS.
+                                    __WEB__ &&
+                                      '!col-span-full !m-0 !bg-[#FFFBF2] !px-3.5 !py-2.5 !text-[11.5px] !font-semibold !leading-relaxed !text-[#8A5300]'
                                   )}
                                 >
                                   <b>TDS {formatNum(sp?.tds_pct)}%</b> on {formatINR(b.base)} ={' '}
@@ -1389,17 +2374,40 @@ export function Trading(): React.JSX.Element {
                 </div>
 
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                  {/* Green, and heavier than Add invoice: this one adds a
-                      whole party — its own invoices, its own GST and its own
-                      TDS slab — so it should not look like one more row. Green
-                      to match the buyer cards it creates. */}
+                  {/* Green to match the buyer cards it creates, and heavier
+                      than Add invoice: this one adds a whole party — its own
+                      invoices, its own GST and its own TDS slab — so it
+                      should not look like one more row. */}
+                  {/* On the website it is a slot rather than a button: a
+                      dashed outline the full width of the sale side, which
+                      reads as the place the next buyer's card will appear.
+                      Solid green, it was the second-heaviest control on the
+                      screen and sat a few pixels above BOOK DEAL competing
+                      with it — and this adds a card to fill in, it does not
+                      finish anything.
+                      Forest and lime rather than green: this sits ON the
+                      sale side's green ground, and a green slot on a green
+                      card had nothing to stand against. Filling with forest
+                      on hover makes the whole strip answer the pointer,
+                      which a border colour change alone never did. */}
                   <Button
                     type="button"
                     size="sm"
-                    className="h-9 gap-1.5 bg-emerald-600 px-4 text-[12px] font-bold text-white shadow-md hover:bg-emerald-700"
+                    className={cn(
+                      'h-9 gap-1.5 bg-emerald-600 px-4 text-[12px] font-bold text-white shadow-md hover:bg-emerald-700',
+                      __WEB__ &&
+                        '!h-[48px] !w-full !gap-2.5 !rounded-[4px] !border !border-dashed !border-[#A9BFB2] !bg-white !text-[12.5px] !font-extrabold !uppercase !tracking-[.06em] !text-[#0B3D2E] !shadow-none hover:!border-solid hover:!border-[#0B3D2E] hover:!bg-[#0B3D2E] hover:!text-[#C7F03F]'
+                    )}
                     onClick={addParty}
                   >
-                    <Plus className="h-4 w-4" /> Add another buyer
+                    {__WEB__ ? (
+                      <span className="flex h-[24px] w-[24px] items-center justify-center rounded-[3px] bg-[#C7F03F] text-[#12280B]">
+                        <Plus className="h-4 w-4" />
+                      </span>
+                    ) : (
+                      <Plus className="h-4 w-4" />
+                    )}{' '}
+                    Add another buyer
                   </Button>
                   {parties().length > 1 && (
                     <span className="text-[11px] text-muted-foreground">
@@ -1418,25 +2426,91 @@ export function Trading(): React.JSX.Element {
                 )}
               </section>
 
-              {error && <p className="text-sm text-destructive">{error}</p>}
+              {/* A save that failed is the one message on this page that
+                  must not be missed, and as bare red body text above the
+                  buttons it looked like a caption. */}
+              {error && (
+                <p
+                  className={cn(
+                    'text-sm text-destructive',
+                    __WEB__ &&
+                      '!flex !items-center !gap-2 !rounded-[4px] !border !border-[#F0D6D4] !border-l-[3px] !border-l-[#B3261E] !bg-[#FDF3F2] !px-3.5 !py-3 !text-[12.5px] !font-bold !text-[#8C2F26]'
+                  )}
+                >
+                  {__WEB__ && <AlertTriangle className="h-[18px] w-[18px] shrink-0 text-[#B3261E]" />}
+                  {error}
+                </p>
+              )}
               {/* Every row becomes a real invoice, posted one after another so
                   each lands on the right rung of the TDS slab — with a dozen
                   rows that genuinely takes a moment, so say so rather than
                   looking frozen. */}
-              <div className="flex flex-wrap items-center justify-end gap-3">
+              {/* Pinned to the bottom of the window on the website. This
+                  form runs well past a screen, and both the actions AND the
+                  list of what is still missing were parked at the end of it —
+                  so the checklist was only readable once there was nothing
+                  left to check, and saving meant scrolling past everything
+                  you had just typed. */}
+              <div
+                className={cn(
+                  'flex flex-wrap items-center justify-end gap-3',
+                  __WEB__ &&
+                    '!sticky !bottom-0 !z-10 !rounded-[4px] !border !border-[#D6E2D6] !bg-white !px-4 !py-3.5 !shadow-[0_-6px_18px_-8px_rgba(10,31,23,0.28)]'
+                )}
+              >
+                {__WEB__ && !saving && (() => {
+                  const missing = [
+                    form.product_id ? '' : 'Product',
+                    form.supplier_id ? '' : 'Supplier',
+                    purchaseLines.length ? '' : 'Purchase invoice',
+                    saleLines.length ? '' : 'Sale invoice'
+                  ].filter(Boolean)
+                  return missing.length ? (
+                    /* One chip per missing thing rather than a comma list.
+                       Four items run together as a sentence read as prose to
+                       be skimmed; as chips they can be counted, and each one
+                       disappears as it is filled in. The icon was a falling
+                       trend arrow, which on this page means a deal that lost
+                       money. */
+                    <span className="mr-auto flex flex-wrap items-center gap-2">
+                      <span className="flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-[.08em] text-[#8A5300]">
+                        <AlertTriangle className="h-4 w-4 shrink-0 text-[#C2700A]" />
+                        Still needed
+                      </span>
+                      {missing.map((m) => (
+                        <span
+                          key={m}
+                          className="rounded-[3px] border border-[#F0D9AE] bg-[#FFFBF2] px-2 py-1 text-[11.5px] font-bold text-[#8A5300]"
+                        >
+                          {m}
+                        </span>
+                      ))}
+                    </span>
+                  ) : (
+                    <span className="mr-auto flex items-center gap-2 rounded-[3px] border border-[#BFE3CB] bg-[#F4FBF6] px-2.5 py-1.5 text-[12px] font-extrabold uppercase tracking-[.06em] text-[#0B6B45]">
+                      <CheckCircle2 className="h-4 w-4 shrink-0 text-[#12855A]" />
+                      Ready to {editingDeal ? 'save' : 'create'}
+                    </span>
+                  )
+                })()}
                 {saving && (
                   <span className="text-[12px] text-muted-foreground">
                     Posting {purchaseLines.length + saleLines.length} invoice
                     {purchaseLines.length + saleLines.length === 1 ? '' : 's'} — please wait, do not close this window.
                   </span>
                 )}
-                <Button variant="outline" disabled={saving} onClick={() => { setFormPage(false); setEditingDeal(null) }}>
+                <Button
+                  variant="outline"
+                  disabled={saving}
+                  onClick={() => { setFormPage(false); setEditingDeal(null) }}
+                  className={cn(__WEB__ && '!h-12 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-6 !text-[13.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
+                >
                   Cancel
                 </Button>
                 <Button
                   disabled={saving}
                   onClick={() => void saveDeal()}
-                  className="h-11 min-w-[13rem] gap-2 bg-emerald-600 px-6 text-[15px] font-bold shadow-md hover:bg-emerald-700 disabled:opacity-90"
+                  className={cn('h-11 min-w-[13rem] gap-2 bg-emerald-600 px-6 text-[15px] font-bold shadow-md hover:bg-emerald-700 disabled:opacity-90', __WEB__ && '!h-12 !min-w-0 !rounded-[4px] !bg-[#0B3D2E] !px-7 !text-[13.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#C7F03F] !shadow-none hover:!bg-[#0F4A38]')}
                 >
                   {saving ? (
                     <>
@@ -1446,16 +2520,126 @@ export function Trading(): React.JSX.Element {
                   ) : (
                     <>
                       <Check className="h-4 w-4" />
-                      {editingDeal ? 'Save changes' : `Book deal (${purchaseLines.length + saleLines.length} invoices)`}
+                      {/* The invoice count says how many documents this
+                          is about to post, which is worth knowing — but not
+                          before there are any: "Book deal (0 invoices)" reads
+                          as a button that will do nothing. */}
+                      {editingDeal
+                        ? 'Save changes'
+                        : purchaseLines.length + saleLines.length > 0
+                          ? `Book deal · ${purchaseLines.length + saleLines.length} invoice${purchaseLines.length + saleLines.length === 1 ? '' : 's'}`
+                          : 'Book deal'}
                     </>
                   )}
                 </Button>
               </div>
             </div>
 
-            <aside className="h-fit space-y-4 xl:sticky xl:top-6">
-              <div className="rounded border border-[#d9d2b8] bg-[#f7f2e2] p-4">
-                <h3 className="mb-2 border-b border-[#d9d2b8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Purchase summary</h3>
+            <aside className={cn('h-fit space-y-4 xl:sticky xl:top-6', __WEB__ && '!space-y-3')}>
+              {/* The two questions the form is actually filled in to answer,
+                  put above the tax breakdowns rather than under them: what does
+                  this deal make, and is all of it sold on. Both read off the
+                  same margin / qty figures the summaries below use. */}
+              {__WEB__ && (
+                <>
+                  <div
+                    className={cn(
+                      'rounded-[4px] border border-l-4 px-4 py-3.5',
+                      margin < 0 ? 'border-[#F0D6D4] border-l-[#B3261E] bg-[#FDF3F2]' : 'border-[#BFE3CB] border-l-[#12855A] bg-[#F4FBF6]'
+                    )}
+                  >
+                    <div className="flex items-center gap-2">
+                      {margin < 0 ? <TrendingDown className="h-[19px] w-[19px] text-[#B3261E]" /> : <TrendingUp className="h-[19px] w-[19px] text-[#12855A]" />}
+                      <span className={cn('text-[9.5px] font-extrabold uppercase tracking-[.13em]', margin < 0 ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}>
+                        {margin < 0 ? 'Loss on this deal' : 'Margin on this deal'}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap items-baseline gap-2.5">
+                      <span className={cn('text-[26px] font-bold leading-none tracking-[-0.035em] tabular-nums', margin < 0 ? 'text-[#B3261E]' : 'text-[#0B6B45]')}>
+                        {formatINR(margin)}
+                      </span>
+                      <span className={cn('text-[14px] font-bold tabular-nums', margin < 0 ? 'text-[#B3261E]' : 'text-[#0B6B45]')}>
+                        {marginPct.toFixed(2)}%
+                      </span>
+                    </div>
+                    <div className={cn('mt-1.5 text-[11.5px] font-bold', margin < 0 ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}>
+                      {purchaseCalc.taxableValue > 0
+                        ? `${formatINR(saleCalc.amount)} sold against ${formatINR(purchaseCalc.taxableValue)} bought`
+                        : 'Enter the purchase and sale invoices to value this deal'}
+                    </div>
+                  </div>
+
+                  {/* Break-even: the rate the sale has to clear for this deal
+                      not to lose money. It is the purchase side's own adjusted
+                      rate, named as the thing to beat. */}
+                  {purchaseQty > 0 && (
+                    <div className="rounded-[4px] border border-[#D6E2D6] bg-white px-4 py-3">
+                      <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">Break-even rate</div>
+                      <div className="mt-1.5 flex items-baseline justify-between gap-2.5">
+                        <span className="text-[19px] font-bold leading-none tracking-[-0.03em] tabular-nums">
+                          {formatINR(purchaseCalc.taxableValue / purchaseQty)}
+                        </span>
+                        <span className="text-[10.5px] font-bold text-[#5A6B62]">per {form.uom || 'MT'}</span>
+                      </div>
+                      {saleQty > 0 && (() => {
+                        const sellRate = saleCalc.amount / saleQty
+                        const breakEven = purchaseCalc.taxableValue / purchaseQty
+                        const gap = sellRate - breakEven
+                        return (
+                          <>
+                            <div className="mt-2.5 flex items-baseline justify-between gap-2.5 border-t border-t-[#EAF0E9] pt-2.5">
+                              <span className="text-[12px] font-bold text-[#33473E]">Your sale rate</span>
+                              <span className="text-[13.5px] font-bold tabular-nums">{formatINR(sellRate)}</span>
+                            </div>
+                            <div className="mt-1.5 flex items-baseline justify-between gap-2.5">
+                              <span className="text-[12px] font-bold text-[#33473E]">Gap</span>
+                              <span className={cn('text-[13.5px] font-bold tabular-nums', gap < 0 ? 'text-[#B3261E]' : 'text-[#0B6B45]')}>
+                                {gap < 0 ? '−' : '+'}{formatINR(Math.abs(gap))}
+                              </span>
+                            </div>
+                          </>
+                        )
+                      })()}
+                    </div>
+                  )}
+
+                  {/* How much of what was bought has actually been sold on. A
+                      deal saved part-allocated is legal — the rest is invoiced
+                      later — so this reports rather than blocks. */}
+                  {purchaseQty > 0 && (
+                    <div
+                      className={cn(
+                        'rounded-[4px] border px-4 py-3',
+                        Math.abs(qtyDiff) < 0.0005 ? 'border-[#BFE3CB] bg-[#F4FBF6]' : 'border-[#F0D9AE] bg-[#FFFBF2]'
+                      )}
+                    >
+                      <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">Quantity allocated to buyers</div>
+                      <div className="mt-1.5 flex items-baseline gap-1.5">
+                        <span className={cn('text-[19px] font-bold leading-none tracking-[-0.03em] tabular-nums', Math.abs(qtyDiff) < 0.0005 ? 'text-[#0B6B45]' : 'text-[#8A5300]')}>
+                          {formatNum(saleQty)}
+                        </span>
+                        <span className="text-[11.5px] font-bold text-[#5A6B62]">of {formatNum(purchaseQty)} {form.uom || 'MT'} bought</span>
+                      </div>
+                      <div className="mt-2.5 h-[7px] overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                        <div
+                          className="h-full"
+                          style={{
+                            width: `${Math.min(100, (saleQty / purchaseQty) * 100)}%`,
+                            background: Math.abs(qtyDiff) < 0.0005 ? '#12855A' : '#C2700A'
+                          }}
+                        />
+                      </div>
+                      <div className={cn('mt-2 text-[11.5px] font-bold', Math.abs(qtyDiff) < 0.0005 ? 'text-[#0B6B45]' : 'text-[#8A5300]')}>
+                        {Math.abs(qtyDiff) < 0.0005
+                          ? 'Fully allocated'
+                          : `${formatNum(Math.abs(qtyDiff))} ${form.uom || 'MT'} ${qtyDiff > 0 ? 'still unsold' : 'oversold'}`}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+              <div className={cn('rounded border border-[#d9d2b8] bg-[#f7f2e2] p-4', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#F0D6D4] !bg-white !p-3.5')}>
+                <h3 className={cn('mb-2 border-b border-[#d9d2b8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!-mx-3.5 !-mt-3.5 !mb-2.5 !border-b-[#F0D6D4] !bg-[#FDF3F2] !px-3.5 !py-2.5 !text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#8C2F26]')}>Purchase summary</h3>
                 <MoneyRow label="Adjusted rate" value={formatINR(purchaseCalc.adjustedRate)} muted />
                 <MoneyRow label="Taxable value" value={formatINR(purchaseCalc.taxableValue)} muted />
                 <MoneyRow label="GST" value={formatINR(purchaseCalc.gstAmount)} muted />
@@ -1468,21 +2652,21 @@ export function Trading(): React.JSX.Element {
                     setForm((p) => ({ ...p, purchase_round_off: v, purchase_round_off_manual: v !== '' }))
                   }
                 />
-                <div className="my-2 border-t" />
+                <div className={cn('my-2 border-t', __WEB__ && '!hidden')} />
                 <MoneyRow label="Total after round off" value={formatINR(purchaseCalc.roundedTotal)} />
                 <MoneyRow label="TDS" value={formatINR(purchaseTds)} muted />
                 {!!supplierMaster?.tds_above_only && n(supplierMaster?.tds_threshold) > 0 && (
-                  <p className="pb-1 text-[11px] text-muted-foreground">
+                  <p className={cn('pb-1 text-[11px] text-muted-foreground', __WEB__ && '!mt-2 !rounded-[4px] !border !border-[#F0D9AE] !bg-[#FFFBF2] !px-2.5 !py-2 !text-[11px] !font-semibold !leading-snug !text-[#8A5300]')}>
                     No TDS below ₹{formatNum(supplierMaster.tds_threshold)} a year — {formatINR(purchasePrior)} already
                     billed to this supplier, so the slab applies from there.
                   </p>
                 )}
-                <div className="my-2 border-t-2 border-[#1a2c56]" />
-                <MoneyRow label="Net payable to supplier" value={formatINR(purchaseNet)} strong />
+                <div className={cn('my-2 border-t-2 border-[#1a2c56]', __WEB__ && '!hidden')} />
+                <MoneyRow label="Net payable to supplier" value={formatINR(purchaseNet)} strong foot="rose" />
               </div>
 
-              <div className="rounded border border-[#d9d2b8] bg-[#f7f2e2] p-4">
-                <h3 className="mb-2 border-b border-[#d9d2b8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+              <div className={cn('rounded border border-[#d9d2b8] bg-[#f7f2e2] p-4', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#BFE3CB] !bg-white !p-3.5')}>
+                <h3 className={cn('mb-2 border-b border-[#d9d2b8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!-mx-3.5 !-mt-3.5 !mb-2.5 !border-b-[#BFE3CB] !bg-[#F4FBF6] !px-3.5 !py-2.5 !text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#0B6B45]')}>
                   Sale summary
                 </h3>
                 {/* With several buyers the roll-up alone hides who owes what,
@@ -1498,8 +2682,8 @@ export function Trading(): React.JSX.Element {
                     line where there is room, with the money right-aligned so
                     the figures stack into a column that adds up by eye. */}
                 {partyCalcs.length > 1 && (
-                  <div className="mb-2.5 space-y-1.5 border-b border-dotted border-[#d9d2b8] pb-2.5">
-                    <div className="flex items-baseline justify-between text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  <div className={cn('mb-2.5 space-y-1.5 border-b border-dotted border-[#d9d2b8] pb-2.5', __WEB__ && '!mb-3 !border-b-[#E4ECE3] !border-solid !pb-3')}>
+                    <div className={cn('flex items-baseline justify-between text-[10px] font-semibold uppercase tracking-widest text-muted-foreground', __WEB__ && '!text-[9.5px] !font-extrabold !tracking-[.12em] !text-[#5A6B62]')}>
                       <span>Per buyer</span>
                       <span>Net receivable</span>
                     </div>
@@ -1507,9 +2691,9 @@ export function Trading(): React.JSX.Element {
                       const sp = parties()[pi]
                       const name = customers.find((x) => String(x.id) === String(sp?.customer_id || ''))?.name
                       return (
-                        <div key={pi} className="rounded border border-[#e5dfc8] bg-white px-2 py-1.5">
+                        <div key={pi} className={cn('rounded border border-[#e5dfc8] bg-white px-2 py-1.5', __WEB__ && '!rounded-[4px] !border-l-[3px] !border-[#BFE3CB] !border-l-[#12855A] !px-2.5 !py-2')}>
                           <div
-                            className="truncate text-[11.5px] font-semibold leading-tight text-[#1a2c56]"
+                            className={cn('truncate text-[11.5px] font-semibold leading-tight text-[#1a2c56]', __WEB__ && '!text-[12px] !font-extrabold !text-[#0B6B45]')}
                             title={name || undefined}
                           >
                             {name || `Buyer ${pi + 1}`}
@@ -1532,7 +2716,7 @@ export function Trading(): React.JSX.Element {
                                   return ` · TDS ${formatINR(c.tdsAmount)} (${tag})`
                                 })()}
                             </span>
-                            <span className="shrink-0 text-[12.5px] font-bold tabular-nums text-[#1a2c56]">
+                            <span className={cn('shrink-0 text-[12.5px] font-bold tabular-nums text-[#1a2c56]', __WEB__ && '!text-[13px] !text-[#0B6B45]')}>
                               {formatINR(c.netReceivable)}
                             </span>
                           </div>
@@ -1544,7 +2728,7 @@ export function Trading(): React.JSX.Element {
                 <MoneyRow label="Taxable value" value={formatINR(saleCalc.amount)} muted />
                 <MoneyRow label="GST" value={formatINR(saleCalc.gstAmount)} muted />
                 <MoneyRow label="Round off" value={formatINR(saleCalc.roundOff)} muted />
-                <div className="my-2 border-t-2 border-[#1a2c56]" />
+                <div className={cn('my-2 border-t-2 border-[#1a2c56]', __WEB__ && '!hidden')} />
                 <MoneyRow
                   label={partyCalcs.length > 1 ? `Sale invoice total (${partyCalcs.length} buyers)` : 'Sale invoice total'}
                   value={formatINR(saleCalc.total)}
@@ -1555,13 +2739,20 @@ export function Trading(): React.JSX.Element {
                   label={partyCalcs.length > 1 ? 'Net receivable from buyers' : 'Net receivable from customer'}
                   value={formatINR(saleCalc.netReceivable)}
                   strong
+                  foot="emerald"
                 />
               </div>
 
-              <div className="rounded border border-[#1a2c56]/30 bg-white p-4">
-                <MoneyRow label="Deal margin (sale − purchase, on taxable value)" value={formatINR(margin)} strong />
-                <MoneyRow label="Margin %" value={`${marginPct.toFixed(2)}%`} muted />
-              </div>
+              {/* The app closes the column with the margin. The website
+                  already opens it with the same two figures, in a card built
+                  to carry them — stating them again at the bottom of a long
+                  scroll invites the reader to check whether the two agree. */}
+              {!__WEB__ && (
+                <div className="rounded border border-[#1a2c56]/30 bg-white p-4">
+                  <MoneyRow label="Deal margin (sale − purchase, on taxable value)" value={formatINR(margin)} strong />
+                  <MoneyRow label="Margin %" value={`${marginPct.toFixed(2)}%`} muted />
+                </div>
+              )}
             </aside>
           </div>
         </div>
@@ -1581,15 +2772,55 @@ export function Trading(): React.JSX.Element {
         hint="No bargain, no tanker movement, no stock entries, no interest — the purchase and sale book straight through in one step, same as ticking 'Trading' inside Purchases/Sales, just from one dedicated screen with full GST/TDS/round-off control. One deal buys from a single supplier across as many purchase invoices as it needs, and sells on to ONE OR SEVERAL buyers — each buyer with its own invoices, its own GST type, its own TDS slab and its own round off, because those belong to the party and not to the trade. GST/TDS auto-load from the supplier/customer master (highlighted amber) and can be overridden. Deleting a deal removes every purchase and sale invoice on it."
         actions={
           <>
-            {globalRangeAppliesTo(globalRange, 'trading') && (
-              <span
-                className="flex items-center gap-1.5 rounded-full border border-[#d9d2b8] bg-[#fffdf4] px-3 py-1.5 text-[11px] font-medium text-[#1a2c56]"
-                title={globalRange.scope === 'page' ? 'Set with Alt+F2 — applied to this page only' : 'Set with Alt+F2 — applies across every page'}
-              >
-                <CalendarClock className="h-3.5 w-3.5" />
-                {formatDate(globalRange.from)} → {formatDate(globalRange.to)}
-              </span>
-            )}
+            {/* The period this register is showing — and the way to change
+                it. Trading is the one page with no From/To inputs of its own,
+                so this used to be a dead label whose tooltip pointed at
+                Alt+F2: a shortcut a browser user will never find, and one
+                some keyboards and window managers swallow before the page
+                sees it. It is a button now, and it is always here — with no
+                range set it reads All dates, so the period is settable from
+                the page rather than only from a key nobody pressed. */}
+            {(() => {
+              const on = globalRangeAppliesTo(globalRange, 'trading')
+              return (
+                <button
+                  type="button"
+                  onClick={() => window.dispatchEvent(new Event('open-period'))}
+                  title={
+                    on
+                      ? globalRange.scope === 'page'
+                        ? 'Period applied to this page only — click, or Alt+F2, to change it'
+                        : 'Period applied across every page — click, or Alt+F2, to change it'
+                      : 'Showing every deal on the books — click, or Alt+F2, to set a period'
+                  }
+                  className={cn(
+                    'flex items-center gap-1.5 rounded-full border border-[#d9d2b8] bg-[#fffdf4] px-3 py-1.5 text-[11px] font-medium text-[#1a2c56] transition-colors hover:bg-[#f7f2e2]',
+                    // On the website it stands in a row of white 36px
+                    // controls, where a short cream pill read as something
+                    // that had strayed in from another screen.
+                    __WEB__ &&
+                      '!gap-2 !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3 !text-[13px] !font-semibold !text-[#0A1F17] hover:!bg-[#F7FAF6]'
+                  )}
+                >
+                  <CalendarClock className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4 !text-[#5A6B62]')} />
+                  {on ? (
+                    <span className={cn(__WEB__ && 'tabular-nums')}>
+                      {formatDate(globalRange.from)} → {formatDate(globalRange.to)}
+                    </span>
+                  ) : (
+                    'All dates'
+                  )}
+                  {/* Which pages the period is holding on. Worth saying out
+                      loud: a range set for one page only, seen on another,
+                      is how a register ends up read for the wrong months. */}
+                  {__WEB__ && on && globalRange.scope === 'page' && (
+                    <span className="rounded-[2px] bg-[#EAF0E9] px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-[.06em] text-[#5A6B62]">
+                      This page
+                    </span>
+                  )}
+                </button>
+              )
+            })()}
             <Button
               variant="outline"
               className="gap-1.5"
@@ -1610,6 +2841,75 @@ export function Trading(): React.JSX.Element {
         }
       />
 
+      {/* Summary tiles. Every figure is read off filteredDeals — the same
+          array the register below is drawn from — so a tile can never state
+          something the table under it contradicts. */}
+      {__WEB__ ? (
+        <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            {
+              k: 'Total deals',
+              v: String(filteredDeals.length),
+              sub: `${new Set(filteredDeals.map((d) => String(d.product_code || d.product_name || ''))).size} product${new Set(filteredDeals.map((d) => String(d.product_code || d.product_name || ''))).size === 1 ? '' : 's'}`,
+              accent: '#0B3D2E',
+              Icon: Repeat,
+              iconBg: '#EAF0E9',
+              iconFg: '#0B3D2E',
+              vFg: '#0A1F17'
+            },
+            {
+              k: 'Total purchase (taxable)',
+              v: formatINR(totalPurchase),
+              sub: 'bought in',
+              accent: '#B3261E',
+              Icon: TrendingDown,
+              iconBg: '#FDF3F2',
+              iconFg: '#B3261E',
+              vFg: '#0A1F17'
+            },
+            {
+              k: 'Total sale (taxable)',
+              v: formatINR(totalSale),
+              sub: 'sold out',
+              accent: '#12855A',
+              Icon: TrendingUp,
+              iconBg: '#E9F5EE',
+              iconFg: '#0B6B45',
+              vFg: '#0A1F17'
+            },
+            {
+              k: 'Total margin',
+              v: formatINR(totalMargin),
+              sub: totalPurchase > 0 ? `${((totalMargin / totalPurchase) * 100).toFixed(2)}% on cost` : 'nothing bought',
+              accent: totalMargin < 0 ? '#B3261E' : '#C7F03F',
+              Icon: totalMargin < 0 ? TrendingDown : TrendingUp,
+              iconBg: totalMargin < 0 ? '#FDF3F2' : '#E9F5EE',
+              iconFg: totalMargin < 0 ? '#B3261E' : '#0B6B45',
+              vFg: totalMargin < 0 ? '#B3261E' : '#0B6B45'
+            }
+          ].map((k) => (
+            <div
+              key={k.k}
+              className="flex items-center gap-3 rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3"
+              style={{ borderTop: `3px solid ${k.accent}` }}
+            >
+              <div
+                className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[3px]"
+                style={{ background: k.iconBg, color: k.iconFg }}
+              >
+                <k.Icon className="h-[21px] w-[21px]" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">{k.k}</div>
+                <div className="mt-0.5 truncate text-[19px] font-bold leading-tight tracking-[-0.035em] tabular-nums" style={{ color: k.vFg }} title={k.v}>
+                  {k.v}
+                </div>
+                <div className="mt-0.5 text-[11.5px] font-bold text-[#5A6B62]">{k.sub}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Card className="flex items-center gap-3 p-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-indigo-100 text-indigo-700">
@@ -1640,15 +2940,88 @@ export function Trading(): React.JSX.Element {
           </div>
         </Card>
       </div>
+      )}
 
-      <div className="relative w-72">
-        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search product, party, invoice no…"
-          className="h-9 pl-8"
-        />
+      {/* Deals sold below cost, said once in a sentence.
+          A pass-through trade is meant to make a margin, so one that did not
+          is the thing to look at first — but the register sorts by date, and
+          finding them means reading down a column of red figures. This counts
+          them, totals the loss and names the worst, so the register is opened
+          knowing what to look for. It renders only when there is a loss to
+          report: a banner that is always there stops being read. */}
+      {__WEB__ && (() => {
+        const losers = filteredDeals.filter((d) => n(d.margin) < 0)
+        if (losers.length === 0) return null
+        const lost = losers.reduce((a, d) => a + n(d.margin), 0)
+        const bought = losers.reduce((a, d) => a + n(d.purchase_taxable), 0)
+        const worst = losers.reduce((a, d) => (n(d.margin) < n(a.margin) ? d : a), losers[0])
+        const all = losers.length === filteredDeals.length
+        return (
+          <div className="flex flex-wrap items-center gap-2.5 rounded-[4px] border border-l-4 border-[#F0D6D4] border-l-[#B3261E] bg-[#FDF3F2] px-4 py-3">
+            <TrendingDown className="h-5 w-5 shrink-0 text-[#B3261E]" />
+            <span className="text-[13px] font-bold text-[#8C2F26]">
+              {all ? 'All ' : ''}
+              {losers.length} deal{losers.length === 1 ? '' : 's'} sold below cost — total{' '}
+              <b className="tabular-nums">{formatINR(lost)}</b> on{' '}
+              <span className="tabular-nums">{formatINR(bought)}</span> bought.
+              {losers.length > 1 && (
+                <>
+                  {' '}Worst: {formatDate(worst.deal_date)}{' '}
+                  {String(worst.product_code || worst.product_name || '')} at{' '}
+                  <span className="tabular-nums">{formatINR(worst.margin)}</span>.
+                </>
+              )}
+            </span>
+          </div>
+        )
+      })()}
+
+      <div className={cn('relative w-72', __WEB__ && '!flex !w-full !items-center !gap-2.5')}>
+        <div className={cn(__WEB__ && 'relative min-w-[240px] flex-1')}>
+          <Search className={cn('pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground', __WEB__ && '!left-3 !h-4 !w-4 !text-[#5A6B62]')} />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search product, party, invoice no…"
+            className={cn('h-9 pl-8', __WEB__ && '!h-[42px] !rounded-[4px] !border-[#C3D2C6] !pl-9 !text-[13px]')}
+          />
+        </div>
+        {/* Products this book trades, as a segmented control rather than a
+            dropdown: two or three is the usual number, they fit, and a count
+            on each says what picking one is going to leave. Hidden when
+            there is only one product — a filter with a single option filters
+            nothing. */}
+        {__WEB__ && prodChips.length > 2 && (
+          <div className="flex shrink-0 items-center gap-[3px] rounded-[4px] border border-[#DCE7DB] bg-[#EAF0E9] p-[3px]">
+            {prodChips.map((c) => {
+              const on = prodFilter === c.value
+              return (
+                <button
+                  key={c.value}
+                  type="button"
+                  onClick={() => setProdFilter(c.value)}
+                  className={cn(
+                    'flex h-[34px] items-center gap-1.5 rounded-[2px] px-3 text-[12px] font-extrabold transition-colors',
+                    on ? 'bg-[#0B3D2E] text-white' : 'text-[#5A6B62] hover:bg-white/70'
+                  )}
+                >
+                  {c.label}
+                  <span
+                    className={cn(
+                      'rounded-[2px] px-1.5 py-0.5 text-[10.5px] tabular-nums',
+                      on ? 'bg-[#C7F03F]/20 text-[#C7F03F]' : 'bg-[#DCE7DB] text-[#33473E]'
+                    )}
+                  >
+                    {c.count}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+        {/* Expand all lived here while the website unfolded its detail in
+            place. A row now opens one deal in a drawer, so there is nothing
+            left for it to expand. */}
       </div>
 
       {/* Tally-style register: ruled columns, tight rows, figures right-aligned
@@ -1658,7 +3031,7 @@ export function Trading(): React.JSX.Element {
           side gaps bought nothing. The header and search above keep their
           margin; only the table goes edge to edge, so the rounding and the
           left/right border go with it. */}
-      <div className="-mx-4 overflow-hidden border-y border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
+      <div className={cn('-mx-4 overflow-hidden border-y border-[#d9d2b8] bg-[#fffdf4] shadow-lg', __WEB__ && '!mx-0 !rounded-[4px] !border !border-[#D6E2D6] !bg-white !shadow-none')}>
         {loading ? (
           <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">Loading…</div>
         ) : filteredDeals.length === 0 ? (
@@ -1675,9 +3048,9 @@ export function Trading(): React.JSX.Element {
           </div>
         ) : (
           <div className="overflow-x-auto">
-          <Table className="[&_td]:border-r [&_td]:border-[#e8e2cc] [&_td:last-child]:border-r-0 [&_th]:border-r [&_th]:border-[#b9c9e4] [&_th:last-child]:border-r-0">
+          <Table className={cn('[&_td]:border-r [&_td]:border-[#e8e2cc] [&_td:last-child]:border-r-0 [&_th]:border-r [&_th]:border-[#b9c9e4] [&_th:last-child]:border-r-0', __WEB__ && '!min-w-[1240px] [&_td]:!whitespace-nowrap [&_td]:!border-r-[#F1F5EF] [&_th]:!whitespace-nowrap [&_th]:!border-r-[#12553F]')}>
             <TableHeader>
-              <TableRow className="bg-[#dce6f5] hover:bg-[#dce6f5]">
+              <TableRow className={cn('bg-[#dce6f5] hover:bg-[#dce6f5]', __WEB__ && '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E]')}>
                 {[
                   { label: 'Date' },
                   { label: 'Product' },
@@ -1694,7 +3067,12 @@ export function Trading(): React.JSX.Element {
                     key={h.label}
                     className={cn(
                       'h-9 py-0 text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]',
-                      h.right && 'text-right'
+                      h.right && 'text-right',
+                      __WEB__ && '!h-11 !text-[12px] !font-extrabold !tracking-[.07em] !text-[#DCEFE4]',
+                      // Margin and Margin % are what the page is read for, so
+                      // they get the lime the rest of the app reserves for the
+                      // one column that matters.
+                      __WEB__ && (h.label === 'Margin' || h.label === 'Margin %') && '!bg-[#1A4D2E] !text-[#C7F03F]'
                     )}
                   >
                     {h.label}
@@ -1717,22 +3095,38 @@ export function Trading(): React.JSX.Element {
                   className={cn(
                     'group cursor-pointer border-b border-[#e8e2cc] transition-colors hover:bg-[#eef4ff]',
                     i % 2 === 1 && 'bg-[#faf7ea]',
-                    open && 'bg-[#e8f0ff] hover:bg-[#e8f0ff]'
+                    open && 'bg-[#e8f0ff] hover:bg-[#e8f0ff]',
+                    // Zebra stripes go: a left mark carries whether the deal
+                    // made money, which is the only distinction worth colour
+                    // here, and an open row goes white to join the panel below.
+                    __WEB__ && '!border-b-[#EAF0E9] !border-l-[3px] [&>td]:!py-2.5',
+                    __WEB__ && (n(d.margin) < 0 ? '!border-l-[#B3261E]' : '!border-l-[#12855A]'),
+                    __WEB__ && (open ? '!bg-white hover:!bg-white' : '!bg-white hover:!bg-[#F7FAF6]')
                   )}
-                  onClick={() => toggleExpanded(Number(d.id))}
+                  onClick={() => (__WEB__ ? setDetailDeal(d) : toggleExpanded(Number(d.id)))}
                 >
-                  <TableCell className="py-1.5 text-[13px] tabular-nums text-[#1a2c56]">
+                  <TableCell className={cn('py-1.5 text-[13px] tabular-nums text-[#1a2c56]', __WEB__ && '!text-[13px] !font-bold !text-[#0A1F17]')}>
                     <span className="inline-flex items-center gap-1.5">
-                      {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                      {/* Desktop turns the caret down because the detail
+                          unfolds under the row. The website's caret points
+                          right at a panel that slides in from the right, so
+                          it stays where it is. */}
+                      {open && !__WEB__ ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 text-muted-foreground', __WEB__ && '!h-[18px] !w-[18px] !text-[#5A6B62]')} />}
                       {formatDate(d.deal_date)}
                     </span>
                   </TableCell>
-                  <TableCell className="py-1.5 text-[13px] font-semibold">{d.product_code || d.product_name}</TableCell>
+                  <TableCell className="py-1.5 text-[13px] font-semibold">
+                    {__WEB__ ? (
+                      <span className="rounded-[2px] bg-[#EAF0E9] px-2 py-1 text-[11px] font-extrabold tracking-[.06em] text-[#33473E]">
+                        {String(d.product_code || d.product_name || '—')}
+                      </span>
+                    ) : (d.product_code || d.product_name)}
+                  </TableCell>
                   <TableCell className="py-1.5 text-right text-[13px] tabular-nums">
                     {formatNum(d.purchase_qty)} <span className="text-[11px] text-muted-foreground">{d.purchase_uom}</span>
                   </TableCell>
                   {/* Invoice numbers live in the expanded view, not here. */}
-                  <TableCell className="py-1.5 text-[13px] font-medium">{d.supplier_name || '—'}</TableCell>
+                  <TableCell className={cn('py-1.5 text-[13px] font-medium', __WEB__ && '!font-bold')}>{d.supplier_name || '—'}</TableCell>
                   <TableCell
                     className="py-1.5 text-right text-[13px] tabular-nums"
                     title={`Taxable ${formatINR(d.purchase_taxable)} + GST ${formatINR(d.purchase_gst_amount)} − TDS ${formatINR(d.purchase_tds_amount)} = ${formatINR(d.purchase_net)} payable to the supplier`}
@@ -1757,7 +3151,9 @@ export function Trading(): React.JSX.Element {
                   <TableCell
                     className={cn(
                       'py-1.5 text-right text-[13px] font-semibold tabular-nums',
-                      n(d.margin) < 0 ? 'text-red-700' : 'text-emerald-700'
+                      n(d.margin) < 0 ? 'text-red-700' : 'text-emerald-700',
+                      __WEB__ && '!text-[13.5px] !font-bold',
+                      __WEB__ && (n(d.margin) < 0 ? '!bg-[#FDF3F2] !text-[#B3261E]' : '!bg-[#F4FBF6] !text-[#0B6B45]')
                     )}
                   >
                     {formatINR(d.margin)}
@@ -1765,26 +3161,50 @@ export function Trading(): React.JSX.Element {
                   <TableCell
                     className={cn(
                       'py-1.5 text-right text-[13px] tabular-nums',
-                      n(d.margin_pct) < 0 ? 'text-red-700' : 'text-emerald-700'
+                      n(d.margin_pct) < 0 ? 'text-red-700' : 'text-emerald-700',
+                      __WEB__ && '!text-[12.5px] !font-bold',
+                      __WEB__ && (n(d.margin_pct) < 0 ? '!bg-[#FDF3F2] !text-[#B3261E]' : '!bg-[#F4FBF6] !text-[#0B6B45]')
                     )}
                   >
                     {n(d.margin_pct).toFixed(2)}%
                   </TableCell>
                   <TableCell className="py-1.5 text-right" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex justify-end gap-1 opacity-60 group-hover:opacity-100">
-                      <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit this deal" onClick={() => openEdit(d)}>
-                        <Pencil className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" title="Delete this deal" onClick={() => void removeDeal(d)}>
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
+                    {/* One ⋮ rather than two boxed icons. The row already
+                        opens the deal, so Edit beside it was the same action
+                        twice — and a red bin standing in every row is a lot of
+                        weight for the one action nobody wants to hit by
+                        accident. Matches the Purchases, Bargains and
+                        Formulation registers. */}
+                    {__WEB__ ? (
+                      <div className="flex justify-end">
+                        <RowActions
+                          actions={[
+                            { label: 'Edit this deal', icon: Pencil, onClick: () => openEdit(d) },
+                            {
+                              label: 'Delete this deal — removes its invoices too',
+                              icon: Trash2,
+                              danger: true,
+                              onClick: () => void removeDeal(d)
+                            }
+                          ]}
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex justify-end gap-1 opacity-60 group-hover:opacity-100">
+                        <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit this deal" onClick={() => openEdit(d)}>
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" title="Delete this deal" onClick={() => void removeDeal(d)}>
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    )}
                   </TableCell>
                 </TableRow>
-                {open && (
+                {!__WEB__ && open && (
                   <TableRow className="border-b-2 border-[#d9d2b8] bg-[#f4f7fd] hover:bg-[#f4f7fd] [&>td]:border-r-0">
                     <TableCell colSpan={10} className="p-0">
-                      <div className="grid gap-3 border-l-[3px] border-[#1a2c56] px-4 py-3 lg:grid-cols-2">
+                      <div className={cn('grid gap-3 border-l-[3px] border-[#1a2c56] px-4 py-3 lg:grid-cols-2', __WEB__ && '!border-l-[#C3D2C6] !gap-3 !px-4 !py-3.5')}>
                         <DealLineTable
                           heading="Purchase invoices"
                           party={String(d.supplier_name || '—')}
@@ -1936,6 +3356,350 @@ export function Trading(): React.JSX.Element {
           </div>
         )}
       </div>
+
+      {/* The deal, opened from its row.
+          The register is one line per deal and a trade is a stack of invoices
+          on both sides, so the detail cannot live in the row — it used to
+          unfold underneath it, which pushed every other deal off the screen
+          and made comparing two of them impossible. A drawer keeps the
+          register where it is and puts one deal beside it. Website only: the
+          desktop register keeps the in-place unfold its users know. */}
+      {__WEB__ && (
+        <Dialog open={!!detailDeal} onOpenChange={(o) => !o && setDetailDeal(null)}>
+          <DialogContent className="!bottom-0 !left-auto !right-0 !top-0 !grid-rows-[auto_minmax(0,1fr)_auto] !h-screen !max-h-screen !w-[720px] !max-w-[95vw] !min-w-0 !translate-x-0 !translate-y-0 !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!right-5 [&>button]:!top-[18px] [&>button]:!text-white [&>button]:!opacity-70 [&>button]:hover:!opacity-100">
+            {detailDeal && (() => {
+              const d = detailDeal
+              const uom = String(d.purchase_uom || 'MT')
+              const pl: Row[] = Array.isArray(d.purchase_lines) ? d.purchase_lines : []
+              const sl: Row[] = Array.isArray(d.sale_lines) ? d.sale_lines : []
+              const sp: Row[] = Array.isArray(d.sale_parties) ? d.sale_parties : []
+              const multi = sp.length > 1
+              const loss = n(d.margin) < 0
+              const totalQty = sp.reduce((a, b) => a + n(b.qty), 0)
+              return (
+                <>
+                  <DialogHeader className="!block !space-y-0 !bg-[#0B3D2E] !px-5 !pb-5 !pt-5 !text-left">
+                    <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Trading deal</div>
+                    <DialogTitle className="!mt-2.5 !flex !flex-wrap !items-center !gap-x-3.5 !gap-y-2 !pr-10">
+                      <span className="text-[21px] font-bold leading-none tracking-[-0.02em] tabular-nums text-white">
+                        {formatDate(d.deal_date)}
+                      </span>
+                      <span className="rounded-[3px] border border-white/20 bg-white/[0.12] px-2.5 py-[5px] text-[11px] font-extrabold uppercase tracking-[.06em] leading-none text-white">
+                        {String(d.product_code || d.product_name || '—')}
+                      </span>
+                      {/* A hairline rather than another chip — the quantity
+                          belongs to the date and product, not beside them as
+                          a third label of equal weight. */}
+                      <span className="h-4 w-px shrink-0 bg-white/25" />
+                      <span className="text-[14px] font-bold leading-none tabular-nums text-[#C7F03F]">
+                        {formatNum(d.purchase_qty)} {uom}
+                      </span>
+                    </DialogTitle>
+                    {/* The one figure the deal is judged on, in the header
+                        rather than at the foot of a scroll — a loss is the
+                        reason a deal gets opened.
+                        Opaque, not a tinted overlay: red at 28% over the
+                        forest header composites to an olive-brown that reads
+                        as neither colour, and the pale text on it goes muddy
+                        with it. A solid ground and a bright rule down the
+                        left say loss at a glance instead. */}
+                    <div
+                      className={cn(
+                        'mt-[18px] flex flex-wrap items-center gap-x-3 gap-y-1.5 overflow-hidden rounded-[3px] border-l-[3px] px-3.5 py-3',
+                        loss ? 'border-l-[#FF8379] bg-[#6E211B]' : 'border-l-[#C7F03F] bg-[#0E5B3E]'
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          'flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[3px]',
+                          loss ? 'bg-[#8C2F26]' : 'bg-[#12855A]'
+                        )}
+                      >
+                        {loss ? (
+                          <TrendingDown className="h-[16px] w-[16px] text-[#FFD3CF]" />
+                        ) : (
+                          <TrendingUp className="h-[16px] w-[16px] text-[#C7F03F]" />
+                        )}
+                      </span>
+                      <span
+                        className={cn(
+                          'text-[10.5px] font-extrabold uppercase tracking-[.12em]',
+                          loss ? 'text-[#FFC4BE]' : 'text-[#C7F03F]'
+                        )}
+                      >
+                        {loss ? 'Loss on deal' : 'Margin on deal'}
+                      </span>
+                      <span className="ml-auto flex items-baseline gap-2.5">
+                        <span className="whitespace-nowrap text-[19px] font-bold tracking-[-0.02em] tabular-nums text-white">
+                          {formatINR(d.margin)}
+                        </span>
+                        {/* The percentage is the smaller of the two figures
+                            and kept as one: boxed, it stops competing with
+                            the rupees beside it. */}
+                        <span
+                          className={cn(
+                            'whitespace-nowrap rounded-[3px] px-2 py-1 text-[12px] font-extrabold tabular-nums',
+                            loss ? 'bg-[#8C2F26] text-[#FFD3CF]' : 'bg-[#12855A] text-[#EAFBC9]'
+                          )}
+                        >
+                          {n(d.margin_pct).toFixed(2)}%
+                        </span>
+                      </span>
+                    </div>
+                  </DialogHeader>
+
+                  {/* [&>*]:shrink-0 is load-bearing, not tidying.
+                      In a column flex container a child's automatic minimum
+                      size normally stops it being squashed below its own
+                      content — EXCEPT when the child is itself a scroll
+                      container, and overflow:hidden counts. Both the invoice
+                      panels and the buyer cards clip their corners with
+                      overflow-hidden, so their minimum went to 0, and once
+                      this column overflowed they were shrunk to their top
+                      edge: every card rendered as its header strip alone with
+                      the invoice rows and totals clipped away, while the
+                      split card and the tax card beside them — which have no
+                      overflow-hidden — stayed whole. */}
+                  <div className="flex min-h-0 flex-col gap-3 overflow-y-auto px-5 py-4 [&>*]:shrink-0">
+                    {/* Both sides at a glance, before any invoice detail:
+                        what went out to the supplier and what came back from
+                        the buyers, each with the party's name under it. */}
+                    <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr))]">
+                      <div className="rounded-[4px] border border-l-4 border-[#F0D6D4] border-l-[#B3261E] bg-white px-3.5 py-3">
+                        <div className="flex items-center gap-1.5">
+                          <TrendingDown className="h-[15px] w-[15px] shrink-0 text-[#8C2F26]" />
+                          <span className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Bought for</span>
+                        </div>
+                        <div className="mt-1.5 whitespace-nowrap text-[16px] font-bold tabular-nums">
+                          {formatINR(d.purchase_taxable)}
+                        </div>
+                        <div className="mt-1 truncate text-[11.5px] font-bold text-[#5A6B62]">
+                          {String(d.supplier_name || '—')}
+                        </div>
+                      </div>
+                      <div className="rounded-[4px] border border-l-4 border-[#BFE3CB] border-l-[#12855A] bg-white px-3.5 py-3">
+                        <div className="flex items-center gap-1.5">
+                          <TrendingUp className="h-[15px] w-[15px] shrink-0 text-[#0B6B45]" />
+                          <span className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Sold for</span>
+                        </div>
+                        <div className="mt-1.5 whitespace-nowrap text-[16px] font-bold tabular-nums">
+                          {formatINR(d.sale_amount)}
+                        </div>
+                        <div className="mt-1 truncate text-[11.5px] font-bold text-[#5A6B62]">
+                          {multi ? `${sp.length} buyers` : String(d.customer_name || '—')}
+                        </div>
+                      </div>
+                    </div>
+
+                    <InvoicePanel
+                      heading="Purchase invoices"
+                      party={String(d.supplier_name || '—')}
+                      lines={pl}
+                      uom={uom}
+                      total={n(d.purchase_taxable)}
+                      tone="rose"
+                    />
+
+                    {multi ? (
+                      <>
+                        <BuyerSplit parties={sp} uom={uom} />
+                        {sp.map((party: Row, pi: number) => (
+                          <BuyerCard key={pi} party={party} index={pi} total={totalQty} uom={uom} />
+                        ))}
+                      </>
+                    ) : (
+                      <InvoicePanel
+                        heading="Sale invoices"
+                        party={String(sp[0]?.customer_name || d.customer_name || '—')}
+                        lines={sp.length ? (Array.isArray(sp[0]?.lines) ? sp[0].lines : []) : sl}
+                        uom={uom}
+                        total={n(d.sale_amount)}
+                        tone="emerald"
+                      />
+                    )}
+
+                    {/* The tax on each side, and what is left owing.
+                        This was four cells of slash-pairs — "3% / 5%",
+                        "₹28,158.44 / ₹27,275.14" — which asks the reader to
+                        remember that the left of every slash is the purchase
+                        and the right is the sale, then to hold that while the
+                        row wraps. One column per side removes the slash
+                        entirely: each figure sits under the side it belongs
+                        to, in that side's own colour, in the same red and
+                        green used everywhere else in this drawer. */}
+                    <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))]">
+                      {[
+                        {
+                          rose: true,
+                          head: 'Purchase',
+                          party: String(d.supplier_name || '—'),
+                          gstPct: `${formatNum(d.purchase_gst_pct)}%`,
+                          gstAmt: n(d.purchase_gst_amount),
+                          tdsPct: `${formatNum(d.purchase_tds_pct)}%`,
+                          tdsAmt: n(d.purchase_tds_amount),
+                          netLabel: 'Net payable to supplier',
+                          net: n(d.purchase_net)
+                        },
+                        {
+                          rose: false,
+                          head: 'Sale',
+                          party: multi ? `${sp.length} buyers` : String(d.customer_name || '—'),
+                          // A split deal has no single rate to quote: each
+                          // buyer is invoiced on its own GST and its own TDS
+                          // slab, and the cards above carry the real figures.
+                          gstPct: multi ? 'per buyer' : `${formatNum(d.sale_gst_pct)}%`,
+                          gstAmt: n(d.sale_gst_amount),
+                          tdsPct: multi ? 'per buyer' : `${formatNum(d.sale_tds_pct)}%`,
+                          tdsAmt: n(d.sale_tds_amount),
+                          netLabel: 'Net receivable',
+                          net: n(d.sale_net_receivable)
+                        }
+                      ].map((c) => (
+                        <div
+                          key={c.head}
+                          className={cn(
+                            'overflow-hidden rounded-[4px] border bg-white',
+                            c.rose ? 'border-[#F0D6D4]' : 'border-[#BFE3CB]'
+                          )}
+                        >
+                          <div
+                            className={cn(
+                              'flex flex-wrap items-center justify-between gap-2 border-b px-3.5 py-2.5',
+                              c.rose ? 'border-b-[#F0D6D4] bg-[#FDF3F2]' : 'border-b-[#BFE3CB] bg-[#F4FBF6]'
+                            )}
+                          >
+                            <span
+                              className={cn(
+                                'flex items-center gap-1.5 text-[10.5px] font-extrabold uppercase tracking-[.11em]',
+                                c.rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
+                              )}
+                            >
+                              {c.rose ? <TrendingDown className="h-4 w-4" /> : <TrendingUp className="h-4 w-4" />}
+                              {c.head}
+                            </span>
+                            <span
+                              className={cn('min-w-0 truncate text-[11px] font-extrabold', c.rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}
+                            >
+                              {c.party}
+                            </span>
+                          </div>
+                          {/* Rate beside the label, money on the right — the
+                              rate explains the figure, so they belong on the
+                              same line rather than stacked as a footnote. */}
+                          {[
+                            { k: 'GST', pct: c.gstPct, v: c.gstAmt, tone: '' },
+                            { k: 'TDS', pct: c.tdsPct, v: c.tdsAmt, tone: 'text-[#8A5300]' }
+                          ].map((r) => (
+                            <div key={r.k} className="flex items-baseline gap-2.5 border-b border-b-[#EAF0E9] px-3.5 py-2.5">
+                              <span className="text-[10px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">{r.k}</span>
+                              <span className="rounded-[2px] bg-[#EAF0E9] px-1.5 py-0.5 text-[10.5px] font-extrabold tabular-nums text-[#33473E]">
+                                {r.pct}
+                              </span>
+                              <span className={cn('ml-auto whitespace-nowrap text-[13px] font-bold tabular-nums', r.tone)}>
+                                {formatINR(r.v)}
+                              </span>
+                            </div>
+                          ))}
+                          <div
+                            className={cn(
+                              'flex flex-wrap items-baseline gap-x-2.5 gap-y-1 px-3.5 py-3',
+                              c.rose ? 'bg-[#F7EDEC]' : 'bg-[#EAF6EC]'
+                            )}
+                          >
+                            <span
+                              className={cn(
+                                'text-[10px] font-extrabold uppercase tracking-[.1em]',
+                                c.rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
+                              )}
+                            >
+                              {c.netLabel}
+                            </span>
+                            <span
+                              className={cn(
+                                'ml-auto whitespace-nowrap text-[15px] font-bold tabular-nums',
+                                c.rose ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
+                              )}
+                            >
+                              {formatINR(c.net)}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* The LC this deal was funded on, and whether the bank
+                        has been repaid. Carried over from the in-place panel
+                        — it only shows when there is an LC behind the deal. */}
+                    {!!d.lc_id && (
+                      <div className="flex flex-wrap items-center gap-2 rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3">
+                        <span className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#0A1F17]">
+                          LC {String(d.lc_no || `#${d.lc_id}`)}
+                        </span>
+                        <span
+                          className={cn(
+                            'rounded-[3px] px-2 py-1 text-[10px] font-extrabold uppercase tracking-[.05em]',
+                            d.lc_bank_repaid ? 'bg-[#EAF6EC] text-[#0B6B45]' : 'bg-[#FFEDD0] text-[#8A5300]'
+                          )}
+                        >
+                          {d.lc_bank_repaid ? 'Bank repaid' : 'Bank outstanding'}
+                        </span>
+                        <span
+                          className={cn(
+                            'rounded-[3px] px-2 py-1 text-[10px] font-extrabold uppercase tracking-[.05em]',
+                            d.sale_fully_paid ? 'bg-[#EAF6EC] text-[#0B6B45]' : 'bg-[#FFEDD0] text-[#8A5300]'
+                          )}
+                        >
+                          {d.sale_fully_paid
+                            ? 'Sale paid'
+                            : `Sale outstanding ${formatINR(Math.max(0, n(d.sale_net_receivable) - n(d.sale_paid)))}`}
+                        </span>
+                        {!!d.trading_lc_closed && (
+                          <span className="rounded-[3px] bg-[#EAF0E9] px-2 py-1 text-[10px] font-extrabold uppercase tracking-[.05em] text-[#33473E]">
+                            LC closed
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {(!d.qty_matched || !!d.note) && (
+                      <div className="flex flex-wrap items-center gap-2.5 rounded-[4px] border border-[#F0D9AE] bg-[#FFFBF2] px-3.5 py-3">
+                        {!d.qty_matched && (
+                          <span className="text-[12px] font-bold text-[#8A5300]">
+                            {formatNum(Math.abs(n(d.purchase_qty) - n(d.sale_qty)))} {uom}{' '}
+                            {n(d.purchase_qty) > n(d.sale_qty) ? 'still unsold' : 'oversold'}
+                          </span>
+                        )}
+                        {!!d.note && <span className="text-[12px] font-semibold text-[#33473E]">Note: {String(d.note)}</span>}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Close and Edit. The handoff draws a Print between them,
+                      but this page has no per-deal print to wire it to — the
+                      only export it owns is the whole register to Excel, from
+                      the header — so a button that did nothing is left out. */}
+                  <div className="flex flex-wrap items-center gap-2.5 border-t border-[#D6E2D6] bg-white px-5 py-3.5">
+                    <button
+                      type="button"
+                      onClick={() => setDetailDeal(null)}
+                      className="flex h-12 items-center rounded-[4px] border-[1.5px] border-[#C3D2C6] px-5 text-[13.5px] font-extrabold uppercase tracking-[.03em] text-[#33473E] transition-colors hover:bg-[#EAF0E9]"
+                    >
+                      Close
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setDetailDeal(null); openEdit(d) }}
+                      className="ml-auto flex h-12 items-center gap-2 rounded-[4px] bg-[#0B3D2E] px-6 text-[13.5px] font-extrabold uppercase tracking-[.03em] text-[#C7F03F] transition-colors hover:bg-[#0F4A38]"
+                    >
+                      <Pencil className="h-5 w-5" /> Edit deal
+                    </button>
+                  </div>
+                </>
+              )
+            })()}
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   )
 }

@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Filter } from 'lucide-react'
+import { Filter } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import {
+  FILTER_PANEL_CLASS,
+  FilterPanelEmpty,
+  FilterPanelFooter,
+  FilterPanelHeader,
+  FilterPanelRow,
+  FilterPanelSearch,
+  FilterPanelSectionLabel
+} from '@/components/ui/filter-panel'
 
 // An Excel-style column filter: the header keeps its label and grows a small
 // funnel next to it, which opens a searchable checkbox list of the values
@@ -27,7 +34,10 @@ export function ColumnFilter({
   onDark = false
 }: {
   label: string
-  options: { value: string; label: string }[]
+  // `count` is optional — a caller that already walks the rows to build this
+  // list can pass how many each value matches; one that cannot simply omits
+  // it and the chip is left off.
+  options: { value: string; label: string; count?: number }[]
   // Empty = no filter (every value shows), same convention as MultiSelectFilter.
   value: string[]
   onApply: (values: string[]) => void
@@ -111,103 +121,50 @@ export function ColumnFilter({
             <Filter className={cn('h-3 w-3', active && 'fill-current')} />
           </button>
         </PopoverTrigger>
-        <PopoverContent align={align} className="w-60 p-0">
-          <div className="border-b p-1.5">
-            <Input
-              ref={searchRef}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search"
-              className="h-7 text-[11px] font-normal normal-case tracking-normal"
-            />
-          </div>
-          <div className="max-h-56 overflow-y-auto p-1">
+        <PopoverContent align={align} className={FILTER_PANEL_CLASS}>
+          <FilterPanelHeader label={label} onClose={() => setOpen(false)} />
+          <FilterPanelSearch inputRef={searchRef} value={query} onChange={setQuery} />
+          <div className="max-h-60 overflow-y-auto">
             {options.length === 0 ? (
-              <div className="px-2 py-3 text-center text-[11px] text-muted-foreground">No values.</div>
+              <FilterPanelEmpty>No values.</FilterPanelEmpty>
             ) : (
               <>
-                <button
-                  type="button"
-                  onClick={toggleAllShown}
+                <FilterPanelSectionLabel>
+                  {query.trim() ? 'Search results' : 'All values'}
+                </FilterPanelSectionLabel>
+                <FilterPanelRow
+                  strong
+                  checked={allShownTicked}
                   disabled={shown.length === 0}
-                  className={cn(
-                    'flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-[11px] font-medium normal-case tracking-normal disabled:opacity-40',
-                    'hover:bg-accent/60'
-                  )}
-                >
-                  <span
-                    className={cn(
-                      'flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border',
-                      allShownTicked ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40'
-                    )}
-                  >
-                    {allShownTicked && <Check className="h-2.5 w-2.5" />}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate">
-                    (Select All{query.trim() ? ' — search results' : ''})
-                  </span>
-                </button>
+                  label="Select all"
+                  onClick={toggleAllShown}
+                />
                 {shown.length === 0 ? (
-                  <div className="px-2 py-3 text-center text-[11px] text-muted-foreground">
-                    Nothing matches &ldquo;{query.trim()}&rdquo;.
-                  </div>
+                  <FilterPanelEmpty>Nothing matches &ldquo;{query.trim()}&rdquo;.</FilterPanelEmpty>
                 ) : (
-                  shown.map((o) => {
-                    const checked = staged.has(o.value)
-                    return (
-                      <button
-                        key={o.value}
-                        type="button"
-                        onClick={() => toggle(o.value)}
-                        className={cn(
-                          'flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-[11px] font-normal normal-case tracking-normal',
-                          checked ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60'
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            'flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border',
-                            checked ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40'
-                          )}
-                        >
-                          {checked && <Check className="h-2.5 w-2.5" />}
-                        </span>
-                        <span className="min-w-0 flex-1 truncate" title={o.label}>{o.label}</span>
-                      </button>
-                    )
-                  })
+                  shown.map((o) => (
+                    <FilterPanelRow
+                      key={o.value}
+                      checked={staged.has(o.value)}
+                      label={o.label}
+                      count={o.count}
+                      onClick={() => toggle(o.value)}
+                    />
+                  ))
                 )}
               </>
             )}
           </div>
-          <div className="flex items-center justify-between gap-1 border-t p-1.5">
-            {/* One action, not two: an empty selection is stored as "no
-                filter" (that is the convention every caller's row predicate
-                reads), so unticking everything and ticking everything land in
-                the same place. Offering both would show two buttons with one
-                effect. To narrow to a few values, search and use (Select All)
-                on the results, the way Excel does. */}
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-6 px-1.5 text-[10px] font-normal normal-case tracking-normal"
-              title="Show every value in this column again"
-              disabled={!active}
-              onClick={() => commit(new Set(options.map((o) => o.value)))}
-            >
-              Clear filter
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-6 px-2 text-[10px] font-normal normal-case tracking-normal"
-              onClick={() => setOpen(false)}
-            >
-              Close
-            </Button>
-          </div>
+          {/* One clearing action, not two: an empty selection is stored as
+              "no filter" (the convention every caller's row predicate reads),
+              so unticking everything and ticking everything land in the same
+              place. To narrow to a few values, search and use Select all on
+              the results, the way Excel does. */}
+          <FilterPanelFooter
+            onClear={() => commit(new Set(options.map((o) => o.value)))}
+            clearDisabled={!active}
+            onDone={() => setOpen(false)}
+          />
         </PopoverContent>
       </Popover>
     </span>

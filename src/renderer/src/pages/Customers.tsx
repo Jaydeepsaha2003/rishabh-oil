@@ -48,7 +48,7 @@ const baseFields: FieldDef[] = [
 const baseColumns: ColumnDef[] = [
   { key: 'name', label: 'Name' },
   { key: 'category', label: 'Category', type: 'select' },
-  { key: 'business_type', label: 'Trading/Mfg' },
+  { key: 'business_type', label: 'Trading/Mfg', type: 'select' },
   { key: 'gst_pct', label: 'GST %', align: 'right' },
   { key: 'tds_pct', label: 'TDS %', align: 'right' },
   { key: 'credit_period_days', label: 'Credit days', align: 'right' },
