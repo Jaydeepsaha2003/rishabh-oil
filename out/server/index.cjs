@@ -1931,9 +1931,9 @@ async function backfillBargainSerials(c) {
     const no = String(r.bargain_no || "");
     const parts = no.split("/");
     const last = parts[parts.length - 1] ?? "";
-    const num = parseInt(last, 10);
-    if (!/^\d+$/.test(last) || Number.isNaN(num)) continue;
-    const fixed = String(num).padStart(2, "0");
+    const num2 = parseInt(last, 10);
+    if (!/^\d+$/.test(last) || Number.isNaN(num2)) continue;
+    const fixed = String(num2).padStart(2, "0");
     if (fixed === last) continue;
     parts[parts.length - 1] = fixed;
     await c.execute({
@@ -6959,13 +6959,13 @@ async function productionNeeds() {
   const levels = await stockLevels();
   const stockOf = {};
   for (const l of levels) stockOf[l.id] = l.stock;
-  const num = async (sql, key3) => {
+  const num2 = async (sql, key3) => {
     const r = await c.execute({ sql, args: [cid] });
     const m = /* @__PURE__ */ new Map();
     for (const row of r.rows) m.set(Number(row[key3]), Number(row.q) || 0);
     return m;
   };
-  const pending = await num(
+  const pending = await num2(
     "SELECT product_id AS pid, SUM(qty) AS q FROM sales WHERE status != 'done' AND COALESCE(affects_stock, 1) = 1 AND rejected_at IS NULL AND company_id = ? GROUP BY product_id",
     "pid"
   );
@@ -6973,7 +6973,7 @@ async function productionNeeds() {
     sql: "SELECT id, product_id, qty FROM sales_bargains WHERE company_id = ?",
     args: [cid]
   });
-  const soldByB = await num(
+  const soldByB = await num2(
     "SELECT sales_bargain_id AS bid, SUM(qty) AS q FROM sales WHERE sales_bargain_id IS NOT NULL AND company_id = ? GROUP BY sales_bargain_id",
     "bid"
   );
@@ -7192,6 +7192,70 @@ async function stockRegisters(companyIds, range) {
   return { receipts, dispatches };
 }
 
+// src/renderer/src/lib/recipeMath.ts
+var num = (v) => {
+  const x = typeof v === "number" ? v : parseFloat(String(v ?? ""));
+  return Number.isFinite(x) ? x : 0;
+};
+var kindOf = (it) => String(it.kind || "input");
+var sumOf = (items, kind) => items.filter((it) => kindOf(it) === kind).reduce((s, it) => s + num(it.qty), 0);
+function uniformRecipeTor(items) {
+  const lossPct = sumOf(items, "output") + sumOf(items, "loss");
+  if (lossPct <= 0 || lossPct >= 100) return 100;
+  return 100 * 100 / (100 - lossPct);
+}
+function inputFattyAcidPct(it) {
+  return num(it.ffa_pct) * (1 + num(it.loss_multiplier_pct) / 100);
+}
+function inputTorMultiplier(it, sharedDeadLossPct) {
+  const yieldPct = 100 - inputFattyAcidPct(it) - sharedDeadLossPct;
+  if (yieldPct <= 0) return 1;
+  return 100 / yieldPct;
+}
+function recipeTor(items) {
+  const inputs = items.filter((it) => kindOf(it) === "input");
+  const blend = inputs.reduce((s, it) => s + num(it.qty), 0);
+  const uniformTor = uniformRecipeTor(items);
+  if (blend <= 0) return uniformTor;
+  const deadLoss = sumOf(items, "loss");
+  return inputs.reduce((s, it) => {
+    const mult = it.auto_calc ? inputTorMultiplier(it, deadLoss) : uniformTor / 100;
+    return s + num(it.qty) * mult;
+  }, 0);
+}
+function expandRecipe(items, outputQty) {
+  const blend = sumOf(items, "input");
+  const uniformTor = uniformRecipeTor(items);
+  const tor = recipeTor(items);
+  const deadLoss = sumOf(items, "loss");
+  const lines = items.map((it) => {
+    const kind = kindOf(it);
+    let pct;
+    if (kind === "input") {
+      const mult = it.auto_calc ? inputTorMultiplier(it, deadLoss) : uniformTor / 100;
+      pct = blend > 0 ? num(it.qty) * mult : 0;
+    } else {
+      pct = tor * num(it.qty) / 100;
+    }
+    return { product_id: Number(it.product_id), qty: outputQty * pct / 100, kind };
+  });
+  const byproductAdds = /* @__PURE__ */ new Map();
+  for (const it of items) {
+    if (kindOf(it) !== "input" || !it.auto_calc || !num(it.byproduct_product_id)) continue;
+    const mult = inputTorMultiplier(it, deadLoss);
+    const pct = blend > 0 ? num(it.qty) * mult : 0;
+    const inputQty = outputQty * pct / 100;
+    const pid = num(it.byproduct_product_id);
+    byproductAdds.set(pid, (byproductAdds.get(pid) || 0) + inputQty * inputFattyAcidPct(it) / 100);
+  }
+  for (const [pid, qty] of byproductAdds) {
+    const existing = lines.find((l) => l.kind === "output" && l.product_id === pid);
+    if (existing) existing.qty += qty;
+    else lines.push({ product_id: pid, qty, kind: "output" });
+  }
+  return lines;
+}
+
 // src/main/production.ts
 function toPlain8(res) {
   return res.rows.map((r) => {
@@ -7203,71 +7267,6 @@ function toPlain8(res) {
 function n6(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
-}
-function uniformRecipeTor(items) {
-  const kindOf = (it) => String(it.kind || "input");
-  const sum = (kind) => items.filter((it) => kindOf(it) === kind).reduce((s, it) => s + n6(it.qty), 0);
-  const lossPct = sum("output") + sum("loss");
-  if (lossPct <= 0 || lossPct >= 100) return 100;
-  return 100 * 100 / (100 - lossPct);
-}
-function inputFattyAcidPct(it) {
-  const ffa = n6(it.ffa_pct);
-  const lossMultiplier = n6(it.loss_multiplier_pct);
-  const moisture = n6(it.moisture_pct);
-  return ffa * (1 + lossMultiplier / 100) + moisture;
-}
-function inputTorMultiplier(it, sharedDeadLossPct) {
-  const yieldPct = 100 - inputFattyAcidPct(it) - sharedDeadLossPct;
-  if (yieldPct <= 0) return 1;
-  return 100 / yieldPct;
-}
-function recipeTor(items) {
-  const kindOf = (it) => String(it.kind || "input");
-  const inputs = items.filter((it) => kindOf(it) === "input");
-  const blend = inputs.reduce((s, it) => s + n6(it.qty), 0);
-  const uniformTor = uniformRecipeTor(items);
-  if (blend <= 0) return uniformTor;
-  const sharedDeadLossPct = items.filter((it) => kindOf(it) === "loss").reduce((s, it) => s + n6(it.qty), 0);
-  const total = inputs.reduce((s, it) => {
-    const mult = it.auto_calc ? inputTorMultiplier(it, sharedDeadLossPct) : uniformTor / 100;
-    return s + n6(it.qty) * mult;
-  }, 0);
-  return total;
-}
-function expandRecipe(items, outputQty) {
-  const kindOf = (it) => String(it.kind || "input");
-  const blend = items.filter((it) => kindOf(it) === "input").reduce((s, it) => s + n6(it.qty), 0);
-  const uniformTor = uniformRecipeTor(items);
-  const tor = recipeTor(items);
-  const sharedDeadLossPct = items.filter((it) => kindOf(it) === "loss").reduce((s, it) => s + n6(it.qty), 0);
-  const lines = items.map((it) => {
-    const kind = kindOf(it);
-    let pct;
-    if (kind === "input") {
-      const mult = it.auto_calc ? inputTorMultiplier(it, sharedDeadLossPct) : uniformTor / 100;
-      pct = blend > 0 ? n6(it.qty) * mult : 0;
-    } else {
-      pct = tor * n6(it.qty) / 100;
-    }
-    return { product_id: Number(it.product_id), qty: outputQty * pct / 100, kind };
-  });
-  const byproductAdds = /* @__PURE__ */ new Map();
-  for (const it of items) {
-    if (kindOf(it) !== "input" || !it.auto_calc || !n6(it.byproduct_product_id)) continue;
-    const mult = inputTorMultiplier(it, sharedDeadLossPct);
-    const pct = blend > 0 ? n6(it.qty) * mult : 0;
-    const inputQty = outputQty * pct / 100;
-    const fattyAcidQty = inputQty * inputFattyAcidPct(it) / 100;
-    const pid = n6(it.byproduct_product_id);
-    byproductAdds.set(pid, (byproductAdds.get(pid) || 0) + fattyAcidQty);
-  }
-  for (const [pid, qty] of byproductAdds) {
-    const existing = lines.find((l) => l.kind === "output" && l.product_id === pid);
-    if (existing) existing.qty += qty;
-    else lines.push({ product_id: pid, qty, kind: "output" });
-  }
-  return lines;
 }
 async function listProduction(forModule) {
   const from = await visibleFromFor("production", forModule);
@@ -7303,6 +7302,10 @@ async function createProduction(v) {
   const qty = n6(v.qty);
   if (!productId) throw new Error("Select a product to produce");
   if (qty <= 0) throw new Error("Production quantity must be greater than zero");
+  const prodDay = String(v.prod_date || "").slice(0, 10);
+  if (prodDay && prodDay > (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)) {
+    throw new Error("Production cannot be dated in the future");
+  }
   let fid = n6(v.formulation_id);
   if (fid) {
     const owner = await c.execute({ sql: "SELECT product_id FROM formulations WHERE id = ?", args: [fid] });
@@ -7359,6 +7362,10 @@ async function updateProduction(id, v) {
   const qty = n6(v.qty);
   if (!productId) throw new Error("Select a product to produce");
   if (qty <= 0) throw new Error("Production quantity must be greater than zero");
+  const prodDay = String(v.prod_date || "").slice(0, 10);
+  if (prodDay && prodDay > (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)) {
+    throw new Error("Production cannot be dated in the future");
+  }
   let fid = n6(v.formulation_id);
   if (fid) {
     const owner = await c.execute({ sql: "SELECT product_id FROM formulations WHERE id = ?", args: [fid] });
@@ -7808,8 +7815,8 @@ async function salesInvoiceSeries(companyId) {
     if (!m || !m[1]) continue;
     const prefix2 = m[1].replace(/[/\-]+$/, "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
     count.set(prefix2, (count.get(prefix2) || 0) + 1);
-    const num = Number(m[2]);
-    if (num > (highest.get(prefix2) || 0)) highest.set(prefix2, num);
+    const num2 = Number(m[2]);
+    if (num2 > (highest.get(prefix2) || 0)) highest.set(prefix2, num2);
   }
   let prefix = "";
   let best = 0;
@@ -7890,7 +7897,7 @@ async function salesInvoiceGaps(companyId, range) {
     const voidHere = /* @__PURE__ */ new Map();
     for (const [vp, vnums] of voided) {
       if (bare(vp) !== bare(prefix)) continue;
-      for (const [num, row] of vnums) voidHere.set(num, row);
+      for (const [num2, row] of vnums) voidHere.set(num2, row);
     }
     const missing = [];
     const cancelled = [];
@@ -8925,9 +8932,9 @@ async function backfillSalesBargainCustomers() {
 async function cancelInvoiceNo(v) {
   const cid = n7(v?.company_id) || getActiveCompanyId();
   const prefix = String(v?.prefix || "").trim();
-  const num = n7(v?.number);
+  const num2 = n7(v?.number);
   const reason = String(v?.reason || "").trim();
-  if (!prefix || !num) throw new Error("Pick the invoice number to cancel");
+  if (!prefix || !num2) throw new Error("Pick the invoice number to cancel");
   if (!reason) {
     throw new Error("Say why it was cancelled \u2014 a voided number with no reason cannot be checked later");
   }
@@ -8938,7 +8945,7 @@ async function cancelInvoiceNo(v) {
              AND UPPER(REPLACE(REPLACE(REPLACE(TRIM(COALESCE(invoice_no,'')), '/', ''), '-', ''), ' ', ''))
                  = UPPER(REPLACE(REPLACE(REPLACE(? , '/', ''), '-', ''), ' ', ''))
            LIMIT 1`,
-    args: [cid, `${prefix}${num}`]
+    args: [cid, `${prefix}${num2}`]
   });
   if (inUse.rows.length) {
     throw new Error(
@@ -8950,20 +8957,20 @@ async function cancelInvoiceNo(v) {
           VALUES (?, ?, ?, ?, ?, ?)
           ON CONFLICT(company_id, prefix, number) DO UPDATE SET
             reason = excluded.reason, cancelled_on = excluded.cancelled_on, created_by = excluded.created_by`,
-    args: [cid, prefix, num, reason, todayISO(), getCurrentUser().username || null]
+    args: [cid, prefix, num2, reason, todayISO(), getCurrentUser().username || null]
   });
-  return { prefix, number: num };
+  return { prefix, number: num2 };
 }
 async function uncancelInvoiceNo(v) {
   const cid = n7(v?.company_id) || getActiveCompanyId();
   const prefix = String(v?.prefix || "").trim();
-  const num = n7(v?.number);
-  if (!prefix || !num) throw new Error("Pick the invoice number");
+  const num2 = n7(v?.number);
+  if (!prefix || !num2) throw new Error("Pick the invoice number");
   await getClient().execute({
     sql: "DELETE FROM cancelled_invoice_nos WHERE company_id = ? AND prefix = ? AND number = ?",
-    args: [cid, prefix, num]
+    args: [cid, prefix, num2]
   });
-  return { prefix, number: num };
+  return { prefix, number: num2 };
 }
 
 // src/main/auth.ts
