@@ -1056,7 +1056,7 @@ function DatabasePanel(): React.JSX.Element {
                 Upload a snapshot
                 <input
                   type="file"
-                  accept=".gz,.sql,application/gzip,application/sql,text/plain"
+                  accept=".gz,.sql,.db,.sqlite,.sqlite3,application/gzip,application/sql,application/vnd.sqlite3,application/x-sqlite3,text/plain"
                   className="hidden"
                   onChange={(e) => {
                     const f = e.target.files?.[0]
@@ -1074,7 +1074,7 @@ function DatabasePanel(): React.JSX.Element {
 
         <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
           {__WEB__
-            ? 'Downloading gives you a copy of what the website is holding right now — worth taking before you replace it.'
+            ? 'Upload either the .sql.gz this app gives you or a .db file straight out of Turso. Downloading first gives you a copy of what the website is holding now.'
             : 'The snapshot is the whole database as compressed SQL: every table, every row, exactly as it stands.'}
         </p>
       </Card>
@@ -1164,7 +1164,10 @@ function DatabasePanel(): React.JSX.Element {
                 Uploading
               </div>
               <div className="mt-0.5 truncate text-[13px] font-semibold">{pending?.name}</div>
-              <div className="text-[11px] text-muted-foreground">{mb(pending?.size || 0)}</div>
+              <div className="text-[11px] text-muted-foreground">
+                  {mb(pending?.size || 0)}
+                  {/\.(db|sqlite3?)$/i.test(pending?.name || '') && ' · SQLite database file'}
+                </div>
             </div>
             {busy === 'restore' && (
               <div>

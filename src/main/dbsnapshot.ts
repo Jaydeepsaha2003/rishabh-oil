@@ -113,8 +113,12 @@ async function* readTable(c: Client, table: string): AsyncGenerator<Page> {
   }
 }
 
-export async function dumpSql(): Promise<Snapshot> {
-  const c = getClient()
+// `from` lets a database OTHER than this build's own be dumped — the server
+// uses it to read a .db file somebody uploaded, so a real SQLite file and a
+// SQL snapshot come down the same path from there on. Defaulted, so every
+// existing caller is unchanged.
+export async function dumpSql(from?: Client): Promise<Snapshot> {
+  const c = from ?? getClient()
   const at = new Date().toISOString()
   const out: string[] = [
     `-- Rishabh Oil database snapshot, taken ${at}`,

@@ -23,11 +23,12 @@
 //
 // Before any of that, a copy of the current database is taken, so a restore
 // can be undone even after it has committed.
-import { type Client } from '@libsql/client'
+import { createClient, type Client } from '@libsql/client'
 import { gunzipSync } from 'node:zlib'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { getClient } from '../main/db'
+import { dumpSql } from '../main/dbsnapshot'
 import { runStartupTasks } from '../main/bootstrap'
 
 // Tables that must be present for a file to be this application's database.
@@ -70,6 +71,27 @@ function backupDir(live: string): string {
   const dir = join(dirname(live), 'replaced')
   mkdirSync(dir, { recursive: true })
   return dir
+}
+
+// Files a previous restore wrote and could not delete — a driver on Windows
+// can still be holding the handle when the restore finishes. Harmless, but
+// they would pile up beside the database, so each restore clears the ones left
+// by the last.
+function sweepTemp(live: string): void {
+  try {
+    const dir = dirname(live)
+    const stem = basename(live)
+    for (const f of readdirSync(dir)) {
+      if (!f.startsWith(`${stem}.uploaded-`) && !f.startsWith(`${stem}.incoming-`)) continue
+      try {
+        rmSync(join(dir, f), { force: true })
+      } catch {
+        // Still held. It will be caught by a later run.
+      }
+    }
+  } catch {
+    // An unreadable directory is the live database's problem, not this one's.
+  }
 }
 
 function stamp(): string {
@@ -137,6 +159,66 @@ export interface RestoreReport {
   before: { tables: number; rows: number }
 }
 
+// A SQLite database file announces itself: the first sixteen bytes of every
+// one, since version 3, are this exact string.
+const SQLITE_MAGIC = 'SQLite format 3\u0000'
+
+function isSqliteFile(buf: Buffer): boolean {
+  return buf.length > 16 && buf.subarray(0, 16).toString('latin1') === SQLITE_MAGIC
+}
+
+// Turso's own export hands you a .db, not a dump, and that is the file most
+// people will arrive here holding. Rather than a second restore path for it,
+// it is READ into the same SQL a snapshot already is — the server has the
+// native driver, so opening a database file is something it can simply do —
+// and everything downstream is then identical.
+//
+// The file has to touch the disk first: SQLite opens a path, not a buffer.
+async function sqlFromDbFile(buf: Buffer, live: string): Promise<string> {
+  const tmp = `${live}.uploaded-${stamp()}`
+  writeFileSync(tmp, buf)
+  let c: Client | null = null
+  try {
+    c = createClient({ url: `file:${tmp}` })
+    // Proves it opens and is this app's database before anything is dropped.
+    const names = new Set(await userTables(c))
+    const missing = REQUIRED_TABLES.filter((t) => !names.has(t))
+    if (missing.length) {
+      throw new Error(
+        `That database has no ${missing.join(', ')} table${missing.length === 1 ? '' : 's'} — it is not this app's database.`
+      )
+    }
+    const snap = await dumpSql(c as unknown as Parameters<typeof dumpSql>[0])
+    if (!snap.rows) throw new Error('That database file is empty — nothing would be restored.')
+    return snap.sql
+  } catch (e) {
+    const msg = (e as Error).message || ''
+    // A truncated or corrupt upload fails here rather than at the file check,
+    // because the header is the first sixteen bytes and says nothing about
+    // the rest.
+    throw new Error(
+      /not this app|is empty/.test(msg)
+        ? msg
+        : `That database file could not be read (${msg}). The upload may have been cut short.`
+    )
+  } finally {
+    try {
+      c?.close()
+    } catch {
+      // Nothing to close.
+    }
+    for (const suffix of ['', '-wal', '-shm']) {
+      try {
+        rmSync(tmp + suffix, { force: true })
+      } catch {
+        // A handle the driver has not let go of yet. The file is named
+        // .uploaded-<time> beside the database and is cleared on the next
+        // restore; leaving it is better than failing one that worked.
+      }
+    }
+  }
+}
+
 // Everything that can be checked without touching the database, checked before
 // anything is dropped. A transaction would roll back a bad snapshot anyway,
 // but rolling back a restore of the whole database takes as long as doing it,
@@ -167,7 +249,7 @@ function readSnapshot(buf: Buffer): string {
     (t) => !new RegExp(`CREATE\\s+TABLE(\\s+IF\\s+NOT\\s+EXISTS)?\\s+"?${t}"?\\b`, 'i').test(text)
   )
   if (missing.length) {
-    throw new Error(`The snapshot has no ${missing.join(', ')} table — it is not this app's database.`)
+    throw new Error(`The snapshot has no ${missing.join(', ')} table${missing.length === 1 ? '' : 's'} — it is not this app's database.`)
   }
   if (!/INSERT\s+INTO/i.test(text)) {
     throw new Error('The snapshot holds a schema but no data — nothing would be restored.')
@@ -209,12 +291,15 @@ export async function applyFilePragmas(c: Client): Promise<void> {
 export async function restoreFromDump(buf: Buffer): Promise<RestoreReport> {
   const started = Date.now()
   const live = livePath()
+  if (live) sweepTemp(live)
   if (!live) {
     throw new Error(
       'This site runs against a cloud database, not a local file, so there is nothing here to replace.'
     )
   }
-  const sql = readSnapshot(buf)
+  // Either shape: the .sql.gz this app writes, or a .db file straight out of
+  // Turso. Both end up as the same SQL script.
+  const sql = isSqliteFile(buf) ? await sqlFromDbFile(buf, live) : readSnapshot(buf)
 
   const c = getClient()
   const before = await countAll(c).catch(() => ({ tables: 0, rows: 0 }))
