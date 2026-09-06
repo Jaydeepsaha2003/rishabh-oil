@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowDownLeft, ArrowLeft, Boxes, CalendarDays, CheckCircle2, Factory, Info, Pencil, Plus, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowDownLeft, ArrowLeft, Boxes, CalendarDays, CheckCircle2, ChevronRight, Factory, Info, Pencil, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -61,6 +61,21 @@ export function Production(): React.JSX.Element {
   const minDate = useEntryWindow('production')
   const [rows, setRows] = useState<Row[]>([])
   const paged = usePaged(rows)
+  // Days folded shut, by their own date. Collapsed rather than expanded is the
+  // state worth remembering, so a day added later opens the way every other
+  // one does instead of inheriting whatever was set before it existed.
+  //
+  // The band keeps showing the day's batch count and total while it is shut,
+  // so folding a day away never costs you the figure you were reading.
+  const [shutDays, setShutDays] = useState<Set<string>>(() => new Set())
+  function toggleDay(day: string): void {
+    setShutDays((prev) => {
+      const next = new Set(prev)
+      if (next.has(day)) next.delete(day)
+      else next.add(day)
+      return next
+    })
+  }
   const [products, setProducts] = useState<Row[]>([])
   const [formulations, setFormulations] = useState<Row[]>([])
   const [stock, setStock] = useState<Record<number, number>>({})
@@ -1004,43 +1019,70 @@ export function Production(): React.JSX.Element {
                   </TableCell>
                 </TableRow>
               ) : (
-                paged.pageRows.map((row, ri) => (
+                paged.pageRows.map((row, ri) => {
+                  // A day's batches band together under one date, with the
+                  // day's own count and total, and the band folds them away.
+                  // A mill runs several batches a day: the flat list repeated
+                  // the date on every one of them without ever saying what the
+                  // day came to, and a busy week ran off the screen.
+                  const day = String(row.prod_date).slice(0, 10)
+                  const startsDay =
+                    ri === 0 || String(paged.pageRows[ri - 1].prod_date).slice(0, 10) !== day
+                  const dayRows = startsDay
+                    ? paged.pageRows.filter((r) => String(r.prod_date).slice(0, 10) === day)
+                    : []
+                  // Only the website bands its rows, so only the website can
+                  // fold them: the desktop list has no band to click.
+                  const shut = __WEB__ && shutDays.has(day)
+                  return (
                   <Fragment key={row.id as number}>
-                    {/* A day's batches band together under one date, with the
-                        day's own count and total. A mill runs several batches
-                        a day and the flat list repeated the date on every one
-                        of them without ever saying what the day came to. */}
-                    {__WEB__ &&
-                      (ri === 0 ||
-                        String(paged.pageRows[ri - 1].prod_date).slice(0, 10) !== String(row.prod_date).slice(0, 10)) && (
-                        <TableRow className="!border-b-[#DCE7DB] !bg-[#EFF5EC] hover:!bg-[#EFF5EC] [&>td]:!py-2">
-                          <TableCell className="!font-bold">
-                            <span className="flex items-center gap-2">
-                              <CalendarDays className="h-[17px] w-[17px] shrink-0 text-[#0B3D2E]" />
-                              <span className="text-[13px] tabular-nums">{formatDate(row.prod_date)}</span>
-                            </span>
-                          </TableCell>
-                          <TableCell className="!text-[11.5px] !font-bold !text-[#5A6B62]">
-                            {(() => {
-                              const day = paged.pageRows.filter(
-                                (r) => String(r.prod_date).slice(0, 10) === String(row.prod_date).slice(0, 10)
-                              )
-                              return `${day.length} batch${day.length === 1 ? '' : 'es'}`
-                            })()}
-                          </TableCell>
-                          <TableCell />
-                          <TableCell className="!text-right !text-[13px] !font-bold !tabular-nums">
-                            {(() => {
-                              const day = paged.pageRows.filter(
-                                (r) => String(r.prod_date).slice(0, 10) === String(row.prod_date).slice(0, 10)
-                              )
-                              return formatNum(day.reduce((t, r) => t + (Number(r.qty) || 0), 0))
-                            })()}{' '}
-                            <span className="text-[10px] font-semibold text-[#5A6B62]">{row.uom || 'MT'}</span>
-                          </TableCell>
-                          <TableCell />
-                        </TableRow>
-                      )}
+                    {__WEB__ && startsDay && (
+                      <TableRow
+                        // Anywhere on the band folds it, because a band that
+                        // is one wide strip and only clickable on its left
+                        // eighth reads as broken. The real control is the
+                        // button below — it is what a keyboard reaches and
+                        // what a screen reader is told about — and this is a
+                        // convenience laid over it.
+                        onClick={() => toggleDay(day)}
+                        className="!cursor-pointer !select-none !border-b-[#DCE7DB] !bg-[#EFF5EC] hover:!bg-[#E6EFE2] [&>td]:!py-2"
+                      >
+                        <TableCell className="!font-bold">
+                          <button
+                            type="button"
+                            aria-expanded={!shut}
+                            title={shut ? 'Show this day’s batches' : 'Hide this day’s batches'}
+                            // Or the row's own handler fires straight after
+                            // this one and folds the day back the way it was.
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              toggleDay(day)
+                            }}
+                            className="flex items-center gap-2 rounded-[3px] text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0B3D2E]"
+                          >
+                            <ChevronRight
+                              className={cn(
+                                'h-[17px] w-[17px] shrink-0 text-[#0B3D2E] transition-transform',
+                                !shut && 'rotate-90'
+                              )}
+                            />
+                            <CalendarDays className="h-[17px] w-[17px] shrink-0 text-[#0B3D2E]" />
+                            <span className="text-[13px] font-bold tabular-nums">{formatDate(row.prod_date)}</span>
+                          </button>
+                        </TableCell>
+                        <TableCell className="!text-[11.5px] !font-bold !text-[#5A6B62]">
+                          {dayRows.length} batch{dayRows.length === 1 ? '' : 'es'}
+                          {shut && <span className="!ml-1.5 !text-[#8FA79B]">· hidden</span>}
+                        </TableCell>
+                        <TableCell />
+                        <TableCell className="!text-right !text-[13px] !font-bold !tabular-nums">
+                          {formatNum(dayRows.reduce((t, r) => t + (Number(r.qty) || 0), 0))}{' '}
+                          <span className="text-[10px] font-semibold text-[#5A6B62]">{row.uom || 'MT'}</span>
+                        </TableCell>
+                        <TableCell />
+                      </TableRow>
+                    )}
+                  {!shut && (
                   <TableRow
                     className={cn(__WEB__ && '!border-b-[#EAF0E9] !bg-white hover:!bg-[#F7FAF6] [&>td]:!py-2.5')}
                   >
@@ -1102,8 +1144,10 @@ export function Production(): React.JSX.Element {
                       )}
                     </TableCell>
                   </TableRow>
+                  )}
                   </Fragment>
-                ))
+                  )
+                })
               )}
             </TableBody>
           </Table>
