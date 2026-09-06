@@ -242,11 +242,21 @@ export function GateEntry(): React.JSX.Element {
   const [inMode, setInMode] = useState<'with' | 'without'>('with')
   const [outMode, setOutMode] = useState<'with' | 'without'>('with')
 
-  function modeToggle(mode: 'with' | 'without', set: (m: 'with' | 'without') => void, pending: number): React.JSX.Element {
+  // `inline` puts it in the tab row rather than above the form. It is the same
+  // control either way; what changes is that it loses its bottom margin and
+  // takes the tab strip's own height, so the two read as one band instead of
+  // two strips that nearly line up.
+  function modeToggle(
+    mode: 'with' | 'without',
+    set: (m: 'with' | 'without') => void,
+    pending: number,
+    inline = false
+  ): React.JSX.Element {
     return (
       <div className={cn(
         'mb-3 inline-flex rounded-lg border border-[#d9d2b8] bg-[#f1ecd9] p-0.5',
-        __WEB__ && '!gap-0.5 !rounded-[4px] !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px]'
+        __WEB__ && '!gap-0.5 !rounded-[4px] !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px]',
+        inline && __WEB__ && '!mb-0 !p-1'
       )}>
         {(['with', 'without'] as const).map((m) => (
           <button
@@ -257,6 +267,7 @@ export function GateEntry(): React.JSX.Element {
               'cursor-pointer rounded-md px-3.5 py-1.5 text-[12px] font-semibold transition-colors',
               mode === m ? 'bg-[#1a2c56] text-white' : 'text-muted-foreground hover:text-foreground',
               __WEB__ && '!h-[34px] !rounded-[2px] !px-3.5 !text-[12.5px]',
+              inline && __WEB__ && '!h-9 !text-[13px]',
               __WEB__ && (mode === m ? '!bg-[#0B3D2E] !font-extrabold !text-white' : '!font-bold !text-[#5A6B62] hover:!text-[#0A1F17]')
             )}
           >
@@ -1396,6 +1407,12 @@ export function GateEntry(): React.JSX.Element {
                 )}
               </TabsTrigger>
             </TabsList>
+            {/* The weighed / not-weighed choice belongs to the tab it is in, so
+                it sits with the tabs. It had a strip of its own directly under
+                them, which cost a whole row of height to hold two buttons and
+                left this space empty. */}
+            {__WEB__ && tab === 'in' && modeToggle(inMode, setInMode, pendingIn, true)}
+            {__WEB__ && tab === 'out' && modeToggle(outMode, setOutMode, pendingOut, true)}
             {/* Pipeline readout — the three numbers the gate is actually
                 run by, off the same arrays the tab counts use. */}
             {__WEB__ && tab !== 'view' && (
@@ -1573,7 +1590,7 @@ export function GateEntry(): React.JSX.Element {
           </div>
 
           <TabsContent value="in" className="space-y-4">
-        {modeToggle(inMode, setInMode, pendingIn)}
+        {!__WEB__ && modeToggle(inMode, setInMode, pendingIn)}
         {inMode === 'without' ? quickEntry('in') : (<>
         {/* Tanker IN */}
         <section
@@ -1834,7 +1851,7 @@ export function GateEntry(): React.JSX.Element {
           </TabsContent>
 
           <TabsContent value="out" className="space-y-4">
-        {modeToggle(outMode, setOutMode, pendingOut)}
+        {!__WEB__ && modeToggle(outMode, setOutMode, pendingOut)}
         {outMode === 'without' ? quickEntry('out') : (<>
         {/* Gate OUT — sale dispatch leaving the factory */}
         <section
