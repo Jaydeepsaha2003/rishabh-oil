@@ -3066,8 +3066,8 @@ async function* readTable(c, table) {
     if (res.rows.length < READ_PAGE) return;
   }
 }
-async function dumpSql() {
-  const c = getClient();
+async function dumpSql(from) {
+  const c = from ?? getClient();
   const at = (/* @__PURE__ */ new Date()).toISOString();
   const out = [
     `-- Rishabh Oil database snapshot, taken ${at}`,
@@ -16874,6 +16874,7 @@ var import_node_path4 = require("node:path");
 var import_node_crypto = require("node:crypto");
 
 // src/server/dbrestore.ts
+var import_client = require("@libsql/client");
 var import_node_zlib2 = require("node:zlib");
 var import_node_fs3 = require("node:fs");
 var import_node_path3 = require("node:path");
@@ -16901,6 +16902,20 @@ function backupDir(live) {
   const dir = (0, import_node_path3.join)((0, import_node_path3.dirname)(live), "replaced");
   (0, import_node_fs3.mkdirSync)(dir, { recursive: true });
   return dir;
+}
+function sweepTemp(live) {
+  try {
+    const dir = (0, import_node_path3.dirname)(live);
+    const stem = (0, import_node_path3.basename)(live);
+    for (const f of (0, import_node_fs3.readdirSync)(dir)) {
+      if (!f.startsWith(`${stem}.uploaded-`) && !f.startsWith(`${stem}.incoming-`)) continue;
+      try {
+        (0, import_node_fs3.rmSync)((0, import_node_path3.join)(dir, f), { force: true });
+      } catch {
+      }
+    }
+  } catch {
+  }
 }
 function stamp2() {
   return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
@@ -16934,6 +16949,44 @@ async function dbStatus() {
   }).sort((a, b) => a.at < b.at ? 1 : -1) : [];
   return { supported: true, path: live, bytes: sizeOf(live), ...counted, restorePoints: points };
 }
+var SQLITE_MAGIC = "SQLite format 3\0";
+function isSqliteFile(buf) {
+  return buf.length > 16 && buf.subarray(0, 16).toString("latin1") === SQLITE_MAGIC;
+}
+async function sqlFromDbFile(buf, live) {
+  const tmp = `${live}.uploaded-${stamp2()}`;
+  (0, import_node_fs3.writeFileSync)(tmp, buf);
+  let c = null;
+  try {
+    c = (0, import_client.createClient)({ url: `file:${tmp}` });
+    const names = new Set(await userTables(c));
+    const missing = REQUIRED_TABLES.filter((t) => !names.has(t));
+    if (missing.length) {
+      throw new Error(
+        `That database has no ${missing.join(", ")} table${missing.length === 1 ? "" : "s"} \u2014 it is not this app's database.`
+      );
+    }
+    const snap = await dumpSql(c);
+    if (!snap.rows) throw new Error("That database file is empty \u2014 nothing would be restored.");
+    return snap.sql;
+  } catch (e) {
+    const msg = e.message || "";
+    throw new Error(
+      /not this app|is empty/.test(msg) ? msg : `That database file could not be read (${msg}). The upload may have been cut short.`
+    );
+  } finally {
+    try {
+      c?.close();
+    } catch {
+    }
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        (0, import_node_fs3.rmSync)(tmp + suffix, { force: true });
+      } catch {
+      }
+    }
+  }
+}
 function readSnapshot(buf) {
   const gz = buf.length > 2 && buf[0] === 31 && buf[1] === 139;
   let text;
@@ -16952,7 +17005,7 @@ function readSnapshot(buf) {
     (t) => !new RegExp(`CREATE\\s+TABLE(\\s+IF\\s+NOT\\s+EXISTS)?\\s+"?${t}"?\\b`, "i").test(text)
   );
   if (missing.length) {
-    throw new Error(`The snapshot has no ${missing.join(", ")} table \u2014 it is not this app's database.`);
+    throw new Error(`The snapshot has no ${missing.join(", ")} table${missing.length === 1 ? "" : "s"} \u2014 it is not this app's database.`);
   }
   if (!/INSERT\s+INTO/i.test(text)) {
     throw new Error("The snapshot holds a schema but no data \u2014 nothing would be restored.");
@@ -16979,12 +17032,13 @@ async function applyFilePragmas(c) {
 async function restoreFromDump(buf) {
   const started = Date.now();
   const live = livePath();
+  if (live) sweepTemp(live);
   if (!live) {
     throw new Error(
       "This site runs against a cloud database, not a local file, so there is nothing here to replace."
     );
   }
-  const sql = readSnapshot(buf);
+  const sql = isSqliteFile(buf) ? await sqlFromDbFile(buf, live) : readSnapshot(buf);
   const c = getClient();
   const before = await countAll(c).catch(() => ({ tables: 0, rows: 0 }));
   await c.execute("PRAGMA wal_checkpoint(TRUNCATE)").catch(() => {
