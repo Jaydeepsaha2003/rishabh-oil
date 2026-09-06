@@ -7,6 +7,19 @@ type Row = Record<string, any>
 const api = {
   dbPing: (): Promise<{ ok: boolean; message: string; offline?: boolean }> => ipcRenderer.invoke('db:ping'),
   revision: (): Promise<number> => ipcRenderer.invoke('app:revision'),
+  db: {
+    // The whole database as gzipped SQL, base64 for the trip across the
+    // bridge. Settings -> Database turns it back into a file to save.
+    snapshot: (): Promise<{
+      at: string
+      tables: number
+      rows: number
+      bytes: number
+      gz: string
+      gzBytes: number
+      fileName: string
+    }> => ipcRenderer.invoke('db:snapshot')
+  },
   config: {
     get: (): Promise<{ url: string }> => ipcRenderer.invoke('config:get'),
     save: (url: string, token: string): Promise<{ ok: boolean; message: string }> =>

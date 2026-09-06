@@ -4,6 +4,9 @@ import { extname, join, normalize, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { handlers } from './electron-shim'
 import { runInRequestContext, type RequestContext } from '../main/requestContext'
+import { getClient } from '../main/db'
+import { logEvent } from '../main/access'
+import { dbStatus, restoreFromDump } from './dbrestore'
 
 // The web front door.
 // -----------------------------------------------------------------------------
@@ -70,6 +73,28 @@ function readBody(req: IncomingMessage, limit = 8 * 1024 * 1024): Promise<string
       chunks.push(c)
     })
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', reject)
+  })
+}
+
+// The same, for bytes. A database snapshot is not text and must not be
+// decoded on its way in — and it is far larger than anything else posted here,
+// so it gets its own ceiling rather than raising the one every other endpoint
+// is protected by.
+function readBinary(req: IncomingMessage, limit: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    let size = 0
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => {
+      size += c.length
+      if (size > limit) {
+        reject(new Error(`That file is larger than the ${Math.round(limit / 1048576)} MB limit`))
+        req.destroy()
+        return
+      }
+      chunks.push(c)
+    })
+    req.on('end', () => resolve(Buffer.concat(chunks)))
     req.on('error', reject)
   })
 }
@@ -146,6 +171,41 @@ function applySessionEffect(channel: string, args: Row, result: unknown, s: Sess
   }
 }
 
+// The signed-in session for a request, or null. Unlike the /api/invoke path
+// this never CREATES one: the database endpoints are for an administrator who
+// is already signed in, and a caller with no session is turned away rather
+// than handed a fresh anonymous one.
+function currentSession(req: IncomingMessage): Session | null {
+  sweepSessions()
+  const sid = readCookie(req, 'sid')
+  if (!sid) return null
+  const s = sessions.get(sid)
+  if (!s) return null
+  s.seen = Date.now()
+  return s
+}
+
+// Admin is read from the database rather than trusted from the session,
+// because a role can be changed (or a user deleted) while a session is still
+// open, and these two endpoints are the ones where that matters most.
+async function isAdmin(s: Session | null): Promise<boolean> {
+  if (!s || !s.userId) return false
+  try {
+    const r = await getClient().execute({
+      sql: 'SELECT role FROM users WHERE id = ? AND active = 1',
+      args: [s.userId]
+    })
+    return String(r.rows[0]?.role || '') === 'admin'
+  } catch {
+    return false
+  }
+}
+
+// Uploads are capped well above any plausible snapshot: the whole database
+// gzips to a few megabytes today, and a limit that has to be raised the first
+// time the mill has a busy year is not a limit worth having.
+const RESTORE_LIMIT = 256 * 1024 * 1024
+
 export interface ServerOptions {
   port: number
   webRoot: string
@@ -190,6 +250,95 @@ export function startHttpServer({ port, webRoot }: ServerOptions): void {
       }
       if (serveStatic(res, webRoot, 'brand-default.png')) return
       return json(res, 404, { error: 'No brand icon set' })
+    }
+
+    // ---- the database itself -------------------------------------------
+    //
+    // Three endpoints rather than three channels on /api/invoke, because what
+    // travels here is a file: JSON would have to base64 it on the way in and
+    // out, and buffer the whole thing twice to do so. Admin only, every one.
+
+    // What is in the database now, and what can be rolled back to.
+    if (path === '/api/db/info') {
+      const s = currentSession(req)
+      if (!(await isAdmin(s))) return json(res, 403, { error: 'Administrators only' })
+      try {
+        return json(res, 200, { ok: true, result: await dbStatus() })
+      } catch (e) {
+        return json(res, 200, { ok: false, error: (e as Error).message })
+      }
+    }
+
+    // A snapshot of whatever database this build is pointed at — Turso on the
+    // desktop, the local file here. Streamed as a real download so the browser
+    // saves it to disk rather than the page holding it in memory.
+    if (path === '/api/db/snapshot') {
+      const s = currentSession(req)
+      if (!(await isAdmin(s))) return json(res, 403, { error: 'Administrators only' })
+      try {
+        // Dispatched through the db:snapshot CHANNEL rather than calling the
+        // snapshot maker directly, so the website's download goes through the
+        // same admin check and lands in the same audit trail as the desktop
+        // app's. Handing someone the entire database is worth a line in the
+        // log wherever it is done from.
+        const fn = handlers.get('db:snapshot')
+        if (!fn) throw new Error('This build has no snapshot channel')
+        const ctx: RequestContext = {
+          userId: s!.userId,
+          username: s!.username,
+          companyId: s!.companyId,
+          ip: clientIp(req)
+        }
+        const snap = (await runInRequestContext(ctx, () =>
+          Promise.resolve(fn({}, {}))
+        )) as { gz: string; fileName: string }
+        const body = Buffer.from(snap.gz, 'base64')
+        res.writeHead(200, {
+          'content-type': 'application/gzip',
+          'content-length': body.length,
+          'content-disposition': `attachment; filename="${snap.fileName}"`,
+          'cache-control': 'no-store'
+        })
+        return res.end(body)
+      } catch (e) {
+        return json(res, 200, { ok: false, error: (e as Error).message })
+      }
+    }
+
+    // Replace it. The body is the snapshot file, posted raw.
+    if (path === '/api/db/restore') {
+      if (req.method !== 'POST') return json(res, 405, { error: 'Use POST' })
+      const s = currentSession(req)
+      if (!(await isAdmin(s))) return json(res, 403, { error: 'Administrators only' })
+      try {
+        const buf = await readBinary(req, RESTORE_LIMIT)
+        if (!buf.length) return json(res, 200, { ok: false, error: 'No file was uploaded' })
+        const report = await restoreFromDump(buf)
+        // Logged AFTER the swap, on purpose: the audit trail is one of the
+        // tables the snapshot replaces, so an entry written beforehand would
+        // be overwritten by the restore it was recording.
+        await logEvent(
+          s!.userId,
+          s!.username,
+          clientIp(req),
+          'Restored the database',
+          `${report.rows.toLocaleString()} rows across ${report.tables} tables · previous copy kept as ${report.replacedBackup}`,
+          s!.companyId,
+          'Database',
+          null,
+          null
+        ).catch(() => {
+          // A restore that worked must not be reported as failed because the
+          // note about it could not be written.
+        })
+        console.log(
+          `[web] database restored by ${s!.username}: ${report.rows} rows, ${report.tables} tables, ${report.tookMs} ms`
+        )
+        return json(res, 200, { ok: true, result: report })
+      } catch (e) {
+        console.error('[web] restore failed:', e)
+        return json(res, 200, { ok: false, error: (e as Error).message || 'Restore failed' })
+      }
     }
 
     if (path === '/api/invoke') {

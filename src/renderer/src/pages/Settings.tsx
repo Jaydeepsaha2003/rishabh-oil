@@ -1,11 +1,30 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import {
+  AlertTriangle,
+  ArrowLeft,
+  CheckCircle2,
+  Database,
+  Download,
+  Loader2,
+  Pencil,
+  Plus,
+  ShieldCheck,
+  Trash2,
+  Upload
+} from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import {
@@ -829,6 +848,386 @@ function GeneralSettings({ isAdmin }: { isAdmin: boolean }): React.JSX.Element {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Settings -> Database
+//
+// The mill's data lives in Turso, which the desktop app writes to directly.
+// The website runs off its own SQLite file, so it shows whatever it was last
+// given. This panel is the handover between the two: download a snapshot from
+// the desktop app, upload it here, and the website is holding the same figures
+// the mill is.
+//
+// Both halves are in one component because they are one procedure with a step
+// on each side, and someone reading the desktop half needs to see what the
+// file is for.
+
+function mb(bytes: number): string {
+  if (!bytes) return '0 MB'
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / 1048576).toFixed(2)} MB`
+}
+
+function whenLocal(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+interface DbInfo {
+  supported: boolean
+  path: string | null
+  bytes: number
+  tables: number
+  rows: number
+  restorePoints: { name: string; bytes: number; at: string }[]
+}
+
+interface RestoreReport {
+  tables: number
+  rows: number
+  bytes: number
+  replacedBackup: string
+  tookMs: number
+  before: { tables: number; rows: number }
+}
+
+function DatabasePanel(): React.JSX.Element {
+  const [info, setInfo] = useState<DbInfo | null>(null)
+  const [busy, setBusy] = useState<'' | 'download' | 'restore'>('')
+  const [pending, setPending] = useState<File | null>(null)
+  const [report, setReport] = useState<RestoreReport | null>(null)
+  // The upload's own progress. A snapshot is the largest thing this app ever
+  // sends, over whatever connection the office has, so a button that simply
+  // greys out for two minutes reads as broken.
+  const [sent, setSent] = useState(0)
+
+  const loadInfo = useCallback(async (): Promise<void> => {
+    if (!__WEB__) return
+    try {
+      const res = await fetch('/api/db/info', { credentials: 'same-origin' })
+      const body = await res.json()
+      if (body?.ok) setInfo(body.result as DbInfo)
+    } catch {
+      // The panel still works without the summary; the actions report for
+      // themselves.
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadInfo()
+  }, [loadInfo])
+
+  // --- download -------------------------------------------------------------
+  // Two routes, because the two builds hold the file in different places. On
+  // the website the server streams it straight to the browser's downloads. In
+  // the desktop app there is no server, so it comes back over the bridge and
+  // is saved from here.
+  async function download(): Promise<void> {
+    setBusy('download')
+    try {
+      if (__WEB__) {
+        const res = await fetch('/api/db/snapshot', { credentials: 'same-origin' })
+        if (!res.ok) {
+          const body = await res.json().catch(() => null)
+          throw new Error(body?.error || `Server error ${res.status}`)
+        }
+        const blob = await res.blob()
+        const name =
+          /filename="([^"]+)"/.exec(res.headers.get('content-disposition') || '')?.[1] ||
+          'rishabh-snapshot.sql.gz'
+        saveBlob(blob, name)
+        toast.success('Snapshot downloaded.')
+      } else {
+        const snap = await window.api.db.snapshot()
+        const bytes = Uint8Array.from(atob(snap.gz), (ch) => ch.charCodeAt(0))
+        saveBlob(new Blob([bytes], { type: 'application/gzip' }), snap.fileName)
+        toast.success(
+          `Snapshot saved — ${snap.rows.toLocaleString()} rows, ${mb(snap.gzBytes)} compressed.`
+        )
+      }
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setBusy('')
+    }
+  }
+
+  // --- restore --------------------------------------------------------------
+  // XHR rather than fetch, for one reason: upload progress. fetch still cannot
+  // report how much of a request body has gone out.
+  function upload(file: File): Promise<RestoreReport> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', '/api/db/restore')
+      xhr.withCredentials = true
+      xhr.setRequestHeader('content-type', 'application/octet-stream')
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) setSent(Math.round((e.loaded / e.total) * 100))
+      }
+      xhr.onload = () => {
+        let body: { ok?: boolean; error?: string; result?: RestoreReport } | null = null
+        try {
+          body = JSON.parse(xhr.responseText)
+        } catch {
+          reject(new Error(`The server replied with something unreadable (${xhr.status})`))
+          return
+        }
+        if (xhr.status === 403) {
+          reject(new Error('Only an administrator can replace the database.'))
+          return
+        }
+        if (!body?.ok) {
+          reject(new Error(body?.error || `Restore failed (${xhr.status})`))
+          return
+        }
+        resolve(body.result as RestoreReport)
+      }
+      xhr.onerror = () => reject(new Error('The upload was cut off — check the connection and try again.'))
+      xhr.send(file)
+    })
+  }
+
+  async function confirmRestore(): Promise<void> {
+    const file = pending
+    if (!file) return
+    setBusy('restore')
+    setSent(0)
+    setReport(null)
+    try {
+      const res = await upload(file)
+      setReport(res)
+      setPending(null)
+      toast.success(`Database replaced — ${res.rows.toLocaleString()} rows are live.`)
+      await loadInfo()
+      // Every list on every open screen is now reading from a different
+      // database. Nothing short of a reload can be trusted to show it.
+      window.setTimeout(() => window.location.reload(), 2500)
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const stat = (k: string, v: string): React.JSX.Element => (
+    <div className="rounded-lg border bg-muted/30 px-3 py-2">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{k}</div>
+      <div className="mt-0.5 text-sm font-semibold tabular-nums">{v}</div>
+    </div>
+  )
+
+  return (
+    <div className="max-w-3xl space-y-4">
+      <Card className="p-6">
+        <div className="mb-1 flex items-center gap-2">
+          <Database className="h-4 w-4 text-muted-foreground" />
+          <h3 className="text-base font-medium">
+            {__WEB__ ? "This website's data" : 'Snapshot for the website'}
+          </h3>
+        </div>
+        <p className="mb-4 text-xs text-muted-foreground">
+          {__WEB__
+            ? "The website reads from its own copy of the database. Uploading a snapshot taken from the desktop app replaces that copy with the mill's current figures."
+            : 'The desktop app writes to the live database. Download a snapshot here, then upload it under Settings → Database on the website to bring the website up to date.'}
+        </p>
+
+        {__WEB__ && info && (
+          <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {stat('Rows', info.rows.toLocaleString())}
+            {stat('Tables', String(info.tables))}
+            {stat('On disk', mb(info.bytes))}
+            {stat('Restore points', String(info.restorePoints.length))}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={() => void download()} disabled={busy !== ''}>
+            {busy === 'download' ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
+            {busy === 'download' ? 'Preparing…' : 'Download snapshot'}
+          </Button>
+          {__WEB__ && (
+            <Button asChild variant="outline" disabled={busy !== ''}>
+              <label className="cursor-pointer">
+                <Upload className="h-4 w-4" />
+                Upload a snapshot
+                <input
+                  type="file"
+                  accept=".gz,.sql,application/gzip,application/sql,text/plain"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    e.target.value = ''
+                    if (f) {
+                      setReport(null)
+                      setPending(f)
+                    }
+                  }}
+                />
+              </label>
+            </Button>
+          )}
+        </div>
+
+        <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+          {__WEB__
+            ? 'Downloading gives you a copy of what the website is holding right now — worth taking before you replace it.'
+            : 'The snapshot is the whole database as compressed SQL: every table, every row, exactly as it stands.'}
+        </p>
+      </Card>
+
+      {__WEB__ && report && (
+        <Card className="border-emerald-200 bg-emerald-50/60 p-6 dark:border-emerald-900 dark:bg-emerald-950/20">
+          <div className="mb-2 flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+            <h3 className="text-base font-medium">Database replaced</h3>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {report.rows.toLocaleString()} rows across {report.tables} tables are live, in{' '}
+            {(report.tookMs / 1000).toFixed(1)}s. It held {report.before.rows.toLocaleString()} rows
+            before, and that copy is kept as <code className="text-[11px]">{report.replacedBackup}</code>.
+            Reloading the page…
+          </p>
+        </Card>
+      )}
+
+      {__WEB__ && info && info.restorePoints.length > 0 && (
+        <Card className="p-6">
+          <h3 className="mb-1 text-base font-medium">Databases that were replaced</h3>
+          <p className="mb-3 text-xs text-muted-foreground">
+            Kept on the server, newest first. Each is a complete database file — if a restore ever
+            turns out to be the wrong file, this is what it is put back from.
+          </p>
+          <div className="divide-y rounded-lg border">
+            {info.restorePoints.map((r) => (
+              <div key={r.name} className="flex items-center justify-between gap-3 px-3 py-2">
+                <code className="truncate text-[11px]">{r.name}</code>
+                <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                  {mb(r.bytes)} · {whenLocal(r.at)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {!__WEB__ && (
+        <Card className="p-6">
+          <h3 className="mb-1 text-base font-medium">How the website is updated</h3>
+          <ol className="ml-4 list-decimal space-y-1 text-xs text-muted-foreground">
+            <li>Download a snapshot here.</li>
+            <li>Open the website and sign in as an administrator.</li>
+            <li>
+              Settings → Database → <strong>Upload a snapshot</strong>, and pick the file you just
+              saved.
+            </li>
+          </ol>
+          <p className="mt-3 text-[11px] text-muted-foreground">
+            The website keeps the database it replaces, so an upload can be undone.
+          </p>
+        </Card>
+      )}
+
+      {/* The confirmation. A restore discards whatever the website is holding,
+          which is the one thing on this page that cannot be shrugged off, so it
+          says so in the numbers rather than in the abstract. */}
+      <Dialog open={!!pending} onOpenChange={(o) => !o && busy !== 'restore' && setPending(null)}>
+        <DialogContent
+          className={cn(
+            'max-w-md',
+            __WEB__ && '!gap-0 !overflow-hidden !rounded-[4px] !border-0 !bg-[#F1F5EF] !p-0 [&>button]:!hidden'
+          )}
+        >
+          <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#0B3D2E] !px-5 !py-4 !text-left')}>
+            {__WEB__ && (
+              <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-white/70">Database</div>
+            )}
+            <DialogTitle className={cn(__WEB__ && '!mt-1 !text-[19px] !font-bold !tracking-[-0.02em] !text-white')}>
+              Replace the website&apos;s data?
+            </DialogTitle>
+          </DialogHeader>
+          <div className={cn('space-y-3', __WEB__ && '!px-5 !py-4')}>
+            <div className="flex items-start gap-2 rounded-[4px] border border-[#F0D6D4] bg-[#FDF3F2] px-3 py-2.5">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#B3261E]" />
+              <p className="text-[12px] font-semibold leading-relaxed text-[#8C2F26]">
+                Everything the website is holding now
+                {info ? ` — ${info.rows.toLocaleString()} rows — ` : ' '}
+                is replaced by what is in this file. Anything recorded on the website since its last
+                snapshot is not in that file and will be gone.
+              </p>
+            </div>
+            <div className="rounded-[4px] border bg-white px-3 py-2.5">
+              <div className="text-[10px] font-extrabold uppercase tracking-wider text-muted-foreground">
+                Uploading
+              </div>
+              <div className="mt-0.5 truncate text-[13px] font-semibold">{pending?.name}</div>
+              <div className="text-[11px] text-muted-foreground">{mb(pending?.size || 0)}</div>
+            </div>
+            {busy === 'restore' && (
+              <div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-[#DCE7DB]">
+                  <div
+                    className="h-full rounded-full bg-[#0B3D2E] transition-[width]"
+                    style={{ width: `${sent}%` }}
+                  />
+                </div>
+                <p className="mt-1.5 text-[11px] font-semibold text-[#33473E]">
+                  {sent < 100
+                    ? `Uploading — ${sent}%`
+                    : 'Uploaded. Rebuilding the database and checking it before anything is swapped…'}
+                </p>
+              </div>
+            )}
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              The file is rebuilt into a separate database and checked first. Nothing is swapped
+              unless it comes out whole, and the database it replaces is kept.
+            </p>
+          </div>
+          <DialogFooter className={cn('gap-2', __WEB__ && '!border-t !border-t-[#D6E2D6] !bg-white !px-5 !py-3.5')}>
+            <Button
+              variant="outline"
+              onClick={() => setPending(null)}
+              disabled={busy === 'restore'}
+              className={cn(__WEB__ && '!h-12 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-5 !text-[13px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void confirmRestore()}
+              disabled={busy === 'restore'}
+              className={cn(__WEB__ && '!h-12 !gap-2 !rounded-[4px] !bg-[#B3261E] !px-5 !text-[13px] !font-extrabold !uppercase !tracking-[.03em] !text-white hover:!bg-[#9C1F18]')}
+            >
+              {busy === 'restore' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {busy === 'restore' ? 'Restoring…' : 'Replace the data'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
+// Hand a blob to the browser as a download. Same shape as lib/excel.ts's, and
+// for the same reason: revoking the object URL in the same tick races the
+// write and truncates the file.
+function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename.replace(/[/\\:*?"<>|]/g, '-')
+  a.rel = 'noopener'
+  a.style.display = 'none'
+  document.body.appendChild(a)
+  a.click()
+  window.setTimeout(() => {
+    a.remove()
+    URL.revokeObjectURL(url)
+  }, 30000)
+}
+
 function AccessPanel(): React.JSX.Element {
   const [live, setLive] = useState<Row[]>([])
   const [ips, setIps] = useState<Row[]>([])
@@ -1145,6 +1544,7 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
             {isAdmin && <TabsTrigger value="companies">Companies</TabsTrigger>}
             {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
             {isAdmin && <TabsTrigger value="access">Access</TabsTrigger>}
+            {isAdmin && <TabsTrigger value="database">Database</TabsTrigger>}
           </TabsList>
 
           {!__WEB__ && (
@@ -1191,6 +1591,11 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
           {isAdmin && (
             <TabsContent value="access" className="mt-6">
               <AccessPanel />
+            </TabsContent>
+          )}
+          {isAdmin && (
+            <TabsContent value="database" className="mt-6">
+              <DatabasePanel />
             </TabsContent>
           )}
         </Tabs>

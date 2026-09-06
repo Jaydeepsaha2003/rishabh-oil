@@ -1,5 +1,6 @@
 import { ipcMain, dialog, shell } from 'electron'
-import { ping, bumpRevision, getRevision, initDb, resetClient, getConfiguredUrl, notifyDataChanged } from './db'
+import { ping, bumpRevision, getRevision, initDb, resetClient, getConfiguredUrl, notifyDataChanged, getClient } from './db'
+import { snapshotGz } from './dbsnapshot'
 import { saveStoredConfig } from './config'
 import { seedDefaultAdmin } from './auth'
 import { seedProducts, seedFormulations } from './seed'
@@ -361,7 +362,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^gate:forRecord$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^gate:forRecord$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -388,6 +389,39 @@ export function registerIpc(): void {
   handle('app:revision', () => getRevision())
 
   handle('db:ping', () => ping())
+
+  // A full copy of this database as portable SQL, gzipped, for the website to
+  // be restored from. Whatever THIS build is pointed at: Turso in the desktop
+  // app, the local file on the server.
+  //
+  // Read-only, so it is in the list above and does not bump the revision — a
+  // download is not a change and must not make every open screen refetch. The
+  // audit note is written here instead, because handing someone the entire
+  // database is precisely the kind of thing the trail exists to record.
+  handle('db:snapshot', async () => {
+    const user = getCurrentUser()
+    const who = await getClient()
+      .execute({ sql: 'SELECT role FROM users WHERE id = ? AND active = 1', args: [user.id] })
+      .catch(() => null)
+    if (String(who?.rows[0]?.role || '') !== 'admin') {
+      throw new Error('Only an administrator can download the database.')
+    }
+    const snap = await snapshotGz()
+    await logEvent(
+      user.id,
+      user.username,
+      machineIp(),
+      'Downloaded a database snapshot',
+      `${snap.rows.toLocaleString()} rows across ${snap.tables} tables · ${(snap.gzBytes / 1048576).toFixed(2)} MB`,
+      getActiveCompanyId(),
+      'Database',
+      null,
+      null
+    ).catch(() => {
+      // The snapshot is made; failing to note it must not fail the download.
+    })
+    return snap
+  })
 
   handle('config:get', () => ({ url: getConfiguredUrl() }))
   handle('config:save', async (_e, { url, token }: { url: string; token: string }) => {
