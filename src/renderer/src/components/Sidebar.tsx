@@ -177,7 +177,7 @@ export function Sidebar({
           forestRail
             ? active
               ? 'bg-[#072B20] text-[#C7F03F]'
-              : 'text-[#6E9484] hover:bg-white/10 hover:text-[#DCEFE4]'
+              : 'text-white hover:bg-white/10 hover:text-white'
             : active
               ? 'bg-primary text-primary-foreground shadow-sm'
               : 'text-muted-foreground hover:bg-accent hover:text-foreground'
@@ -369,7 +369,7 @@ export function Sidebar({
                 <div
                   className={cn(
                     'px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider',
-                    __WEB__ ? 'text-[#6E9484]' : 'text-muted-foreground/70'
+                    __WEB__ ? 'text-[#8FBFA8]' : 'text-muted-foreground/70'
                   )}
                 >
                   {g.label}
