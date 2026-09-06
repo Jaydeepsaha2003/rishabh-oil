@@ -354,6 +354,11 @@ function Select({ value, onValueChange, disabled, children, searchable, showChec
               type="button"
               disabled={it.disabled}
               title={it.title}
+              // The same kind of hook the trigger carries, so a form that
+              // styles its fields at once can reach the list as well as the
+              // closed field. Without it the two halves of one control can
+              // only be styled apart.
+              data-slot="select-option"
               onClick={() => !it.disabled && choose(it.value)}
               onMouseEnter={() => !it.disabled && setHighlight(i)}
               className={cn(
