@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import {
   AlertTriangle,
@@ -49,6 +49,7 @@ import { BillDiscounting } from './BillDiscounting'
 import { ColumnFilter } from '@/components/ui/column-filter'
 import { canAccess } from '@/lib/modules'
 import { loadUser } from '@/lib/session'
+import { useCompany } from '@/lib/companyContext'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { TreasuryMobile } from './TreasuryMobile'
 
@@ -827,6 +828,9 @@ function ClosureBadge({ l, withDate }: { l: Row; withDate?: boolean }): React.JS
 }
 
 export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
+  // App owns the active company; this is the value that changes the instant it
+  // is switched, where `activeCompany` below is only refreshed by a load.
+  const { companyId } = useCompany()
   // A phone gets its own screen rather than this one narrowed: the registers
   // here are wide tables of figures, and a table that has to scroll sideways
   // on a phone is a table nobody reads. Website only — the desktop app's
@@ -946,12 +950,49 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     setLcLimit(lim)
     setBanks(bnk.filter((x) => x.active))
     setRelaxedInvoiceRule(invRule === '0')
-  }, [activeBank, lcKpiFrom, lcKpiTo])
+    // Switching company changes what every company-scoped list here holds —
+    // this page's banks, suppliers, invoices and LCs are all filtered by it.
+    // Without the dependency the page kept the previous company's data: the
+    // My bank picker went on offering the old company's accounts, and saving
+    // one was refused by assertOwnBankBelongsToCompany with "that bank belongs
+    // to a different company" — a bank the form had itself offered.
+  }, [activeBank, lcKpiFrom, lcKpiTo, companyId])
 
   useEffect(() => {
     load()
   }, [load])
   useLiveRefresh(load)
+
+  // An open form's company-scoped choices do not survive the switch either.
+  // They cannot be saved against the new company, so they are dropped rather
+  // than left looking valid until Save refuses them. Skipped on the first
+  // render, when companyId is simply arriving.
+  const lastCompany = useRef<number | null>(null)
+  useEffect(() => {
+    const prev = lastCompany.current
+    lastCompany.current = companyId
+    if (prev === null || prev === companyId) return
+    // The header's bank filter belongs to the company that was active when it
+    // was picked, and "Open new LC" SEEDS My bank from it. Left alone across a
+    // switch, a new LC opened straight afterwards came pre-filled with the
+    // other company's account, and Save refused it with "that bank belongs to
+    // a different company" — about a value the user never chose.
+    setActiveBank('')
+    setLcBankCol([])
+    setLcForm((p) =>
+      p
+        ? {
+            ...p,
+            our_bank_id: '',
+            party_id: '',
+            facility_id: '',
+            receivable_party_id: '',
+            linked_order_ids: [],
+            linked_deal_ids: []
+          }
+        : p
+    )
+  }, [companyId])
 
   async function openLcDetail(id: number): Promise<void> {
     setLcDetailId(id)
@@ -4557,9 +4598,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     // them, it follows the blocked amount until someone types
                     // over it, which is what amount_manual has always meant.
                     const openFollowsBlocked = !lcForm.amount_manual && !hasInvoices
-                    return (
+                    const pair = (
                       <>
-                      <div className={cn('flex min-w-0 flex-col gap-1.5', __WEB__ && '!col-span-full')}>
+                      <div className="flex min-w-0 flex-col gap-1.5">
                         <Label className="flex items-center gap-1.5">
                           Blocked amount (₹)
                           <InfoTip text="What the bank blocks against the facility when it opens the credit — the amount requested. The open amount cannot exceed the bill submitted, so where the bill comes in for less, the two part company: the bank still holds the blocked figure. The FACILITY LIMIT and the exposure outstanding are measured on this. Interest and margin are not — they stay on the open amount. Left blank, it is taken to be the same as the open amount." />
@@ -4582,7 +4623,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           Counts against the limit. Leave blank if the bank blocked exactly what was opened.
                         </span>
                       </div>
-                      <div className={cn('flex min-w-0 flex-col gap-1.5', __WEB__ && '!col-span-full')}>
+                      <div className="flex min-w-0 flex-col gap-1.5">
                         <Label className="flex items-center gap-1.5">
                           Open amount (₹) <span className="text-red-600">*</span>
                           {!hasInvoices && blocked > 0 && (
@@ -4667,6 +4708,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         })()}
                       </div>
                       </>
+                    )
+                    // Side by side, in their own row. They are the two halves
+                    // of one fact — what the bank blocked, and what it opened
+                    // against it — so they are read across, not down. A
+                    // full-width row each pushed the dates a screen further
+                    // down for no gain.
+                    return __WEB__ ? (
+                      <div className="col-span-full grid grid-cols-1 gap-[13px] sm:grid-cols-2">{pair}</div>
+                    ) : (
+                      pair
                     )
                   })()}
                   {/* The adjustment the bank's own advice implies.
