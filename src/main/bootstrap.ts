@@ -478,6 +478,21 @@ export async function runStartupTasks(): Promise<void> {
     }
   })().catch((e: unknown) => console.error('[companies] column repair failed:', e))
 
+  // The amount the bank BLOCKS against the facility when it opens the credit,
+  // as distinct from the amount actually opened. They part company whenever the
+  // bill submitted comes in under what was requested: the open amount follows
+  // the bill, while the bank still holds the requested figure against the
+  // limit. Nullable and never backfilled — every existing LC reads its blocked
+  // figure as COALESCE(blocked_amount, amount), so old rows keep behaving
+  // exactly as they did and nothing has to be rewritten to make that true.
+  await (async (): Promise<void> => {
+    await getClient()
+      .execute('ALTER TABLE letters_of_credit ADD COLUMN blocked_amount REAL')
+      .catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+  })().catch((e: unknown) => console.error('[lc] blocked_amount column failed:', e))
+
   // NOT runOnce, deliberately — and this is the second time these tables have
   // gone missing for the same reason.
   //

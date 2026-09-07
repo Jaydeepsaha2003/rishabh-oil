@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { DbStatus } from '@/components/DbStatus'
+import { LiveVersionBadge } from '@/components/LiveVersionBadge'
 import { UpdateBadge } from '@/components/UpdateBadge'
 import { InfoTip } from '@/components/ui/tooltip'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -83,6 +84,10 @@ export function PageHeader({ title, subtitle, hint, actions, leading }: Props): 
             '[&_button]:!h-9 [&_button]:!rounded-[4px] [&_button]:!text-[13px] [&_[data-slot=select-trigger]]:!h-9 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!text-[13px]'
         )}
       >
+        {/* Beside UpdateBadge, which is the same message for the desktop
+            app: your copy is behind the one that shipped. Only one of the two
+            can ever render. */}
+        <LiveVersionBadge />
         <UpdateBadge />
         <DbStatus dotOnly className={cn(__WEB__ && '!h-9 !w-9')} />
         <HeaderCompanySwitcher />

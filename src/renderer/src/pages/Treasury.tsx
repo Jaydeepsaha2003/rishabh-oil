@@ -2,7 +2,6 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   AlertTriangle,
-  ArrowRight,
   ArrowUpRight,
   Banknote,
   CalendarClock,
@@ -96,10 +95,38 @@ const DUE_PERIODS: { key: string; label: string; maxDays?: number }[] = [
 ]
 
 // Countdown chip: red overdue, amber close, muted otherwise.
-function DueBadge({ date }: { date: unknown }): React.JSX.Element | null {
+// Days left, coloured by how much of the LC's OWN term has gone rather than by
+// a flat number of days. 103 days left is nothing on a 365-day credit and most
+// of the way through a 120-day one, so a fixed 7-day threshold said little:
+// every LC read "muted" until the week it fell due. Pass `l` and the badge
+// knows the term; without it, it falls back to the flat threshold.
+function DueBadge({ date, l }: { date: unknown; l?: Row }): React.JSX.Element | null {
   const d = daysTo(date)
   if (d == null) return null
   const label = d < 0 ? `${-d}D overdue` : d === 0 ? 'due today' : `${d}D left`
+  if (__WEB__) {
+    const start = String(l?.opened_date || l?.open_date || '').slice(0, 10)
+    const end = String(date || '').slice(0, 10)
+    const term =
+      /^\d{4}-\d{2}-\d{2}$/.test(start) && /^\d{4}-\d{2}-\d{2}$/.test(end)
+        ? Math.round((Date.parse(end) - Date.parse(start)) / 86400000)
+        : 0
+    const gone = term > 0 ? ((term - d) / term) * 100 : null
+    // Overdue is always hot. Otherwise past 85% of the term, or — with no term
+    // to measure against — inside the last week.
+    const hot = d < 0 || (gone != null ? gone > 85 : d <= 7)
+    return (
+      <span
+        className={cn(
+          'inline-block whitespace-nowrap rounded-[2px] px-2.5 py-1 text-[12.5px] font-extrabold tabular-nums',
+          hot ? 'bg-[#FDF3F2] text-[#B3261E]' : 'bg-[#FFF4E0] text-[#8A5300]'
+        )}
+        title={gone != null ? `${Math.round(gone)}% of the ${term}-day term gone` : undefined}
+      >
+        {label}
+      </span>
+    )
+  }
   return (
     <Badge variant={d < 0 ? 'destructive' : d <= 7 ? 'warning' : 'muted'} className="tabular-nums">
       {label}
@@ -133,7 +160,13 @@ function StageBadge({ stage }: { stage: string }): React.JSX.Element {
           ? 'bg-slate-200 text-slate-700'
           : 'bg-amber-100 text-amber-800'
   return (
-    <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide', tone)}>
+    <span
+      className={cn(
+        'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+        tone,
+        __WEB__ && '!px-2.5 !py-[3px] !text-[11px] !font-bold'
+      )}
+    >
       {STAGE_LABEL[stage] || stage}
     </span>
   )
@@ -182,12 +215,12 @@ const TRACKER_HEAD =
 // width, because "Mark Payment received" is twice the length of "Preclose"
 // and the handoff's 126px would cut it off.
 const LC_ACT_GO =
-  '!h-7 !min-w-[112px] !rounded-[3px] !border-0 !bg-[#0B3D2E] !px-2.5 !text-[11.5px] !font-extrabold !text-white hover:!bg-[#0F4A38]'
+  '!h-[30px] !min-w-[118px] !rounded-[3px] !border-0 !bg-[#0B3D2E] !px-3 !text-[12.5px] !font-extrabold !text-white hover:!bg-[#0F4A38]'
 const LC_ACT_2ND =
-  '!h-7 !w-[72px] !rounded-[3px] !border !border-[#C3D2C6] !bg-white !px-0 !text-[11.5px] !font-extrabold !text-[#33473E] hover:!bg-[#F7FAF6]'
+  '!h-[30px] !w-[78px] !rounded-[3px] !border !border-[#C3D2C6] !bg-white !px-0 !text-[12.5px] !font-extrabold !text-[#33473E] hover:!bg-[#F7FAF6]'
 const LC_HEAD =
   __WEB__
-    ? '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&>th]:!h-auto [&>th]:!bg-[#0B3D2E] [&>th]:!py-2.5 [&>th]:!text-[9.5px] [&>th]:!font-extrabold [&>th]:!tracking-[.13em] [&>th]:!text-white [&_button]:!uppercase [&_button]:!tracking-[.13em] [&_button]:!text-white'
+    ? '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&>th]:!h-auto [&>th]:!bg-[#0B3D2E] [&>th]:!py-3 [&>th]:!text-[11px] [&>th]:!font-extrabold [&>th]:!tracking-[.1em] [&>th]:!text-white [&_button]:!text-[11px] [&_button]:!uppercase [&_button]:!tracking-[.1em] [&_button]:!text-white'
     : ''
 const LC_TOTAL =
   __WEB__
@@ -377,43 +410,62 @@ function ChipCount({ n: count, on }: { n: number; on: boolean }): React.JSX.Elem
   )
 }
 
-// Open date, an arrow, maturity — one line, the way the handoff reads it. The
-// stacked App/Mat/Closed version is three lines tall and set the row height
-// for the whole register; the app keeps it.
+// Opened over maturity, one under the other, with the tags in a fixed gutter
+// so the two dates line up as a column. Set in the app's own face (doc-ref is
+// Inter with tabular figures) rather than a mono face — the register is read
+// down, and a second typeface for four dates is a change of voice for nothing.
 function ValidityInline({ l }: { l: Row }): React.JSX.Element {
   const opened = !!l.opened_date
   const early = closureKind(l) === 'early'
+  const Line = ({
+    tag,
+    tagClass,
+    date,
+    valueClass,
+    title
+  }: {
+    tag: string
+    tagClass: string
+    date?: string | null
+    valueClass: string
+    title?: string
+  }): React.JSX.Element => (
+    <div className="flex items-baseline gap-2">
+      <span
+        className={cn('w-[27px] flex-none text-[10px] font-extrabold uppercase tracking-[.08em]', tagClass)}
+        title={title}
+      >
+        {tag}
+      </span>
+      <span className={cn('doc-ref whitespace-nowrap text-[13.5px]', valueClass)}>
+        {date ? formatDateShort(date) : <span className="text-[#C3D2C6]">—</span>}
+      </span>
+    </div>
+  )
   return (
-    <div className="flex min-w-0 items-center gap-[7px]">
-      <span
-        className={cn(
-          'flex-none text-[9px] font-extrabold uppercase tracking-[.09em]',
-          opened ? 'text-[#5A6B62]' : 'text-[#C2700A]'
-        )}
+    <div className="flex min-w-0 flex-col gap-[2px] leading-[1.35]">
+      <Line
+        tag={opened ? 'Op' : 'App'}
+        tagClass={opened ? 'text-[#5A6B62]' : 'text-[#C2700A]'}
+        date={l.opened_date || l.open_date}
+        valueClass="font-semibold text-[#0A1F17]"
         title={opened ? 'Opened by the bank' : 'Applied for — the bank has not opened it yet'}
-      >
-        {opened ? 'Op' : 'App'}
-      </span>
-      <span className="whitespace-nowrap font-mono text-[12.5px] font-bold text-[#0A1F17]">
-        {formatDateShort(l.opened_date || l.open_date)}
-      </span>
-      <ArrowRight className="h-3.5 w-3.5 flex-none text-[#C3D2C6]" />
-      <span
-        className={cn(
-          'whitespace-nowrap font-mono text-[12.5px] font-semibold',
-          early ? 'text-[#A8B8AE] line-through decoration-[#C3D2C6]' : 'text-[#5A6B62]'
-        )}
-        title={early ? `Wound up early — ${formatDateShort(l.expiry_date)} never came` : 'Maturity'}
-      >
-        {l.expiry_date ? formatDateShort(l.expiry_date) : '—'}
-      </span>
+      />
+      <Line
+        tag="Mat"
+        tagClass="text-[#A8B8AE]"
+        date={l.expiry_date}
+        valueClass={cn('font-semibold', early ? 'text-[#A8B8AE] line-through decoration-[#C3D2C6]' : 'text-[#5A6B62]')}
+        title={early ? 'Wound up early — this date never came' : 'Maturity'}
+      />
       {!!l.preclosed_date && (
-        <span
-          className="flex-none rounded-[2px] bg-[#EFF5EC] px-[5px] py-[2px] font-mono text-[10px] font-bold text-[#0B6B45]"
+        <Line
+          tag="Cls"
+          tagClass="text-[#0B6B45]"
+          date={l.preclosed_date}
+          valueClass="font-semibold text-[#0B6B45]"
           title={`Closed ${formatDate(l.preclosed_date)}`}
-        >
-          {formatDateShort(l.preclosed_date)}
-        </span>
+        />
       )}
     </div>
   )
@@ -1828,6 +1880,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               </Select>
             </>
           )}
+          {!__WEB__ && (
           <Select value={tab} onValueChange={setTab}>
             <SelectTrigger className="h-8 w-56 text-xs font-semibold uppercase tracking-wide">
               <SelectValue placeholder="Select a view" />
@@ -1846,10 +1899,47 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               ))}
             </SelectContent>
           </Select>
+          )}
           </>
         }
       />
-      <div className="space-y-4 px-4 py-4">
+      {/* The instrument bar. A dropdown hid which desks exist and how much sits
+          on each; three tabs with their counts say both without being opened,
+          and the count is the reason to look — two bills is a different day
+          from twenty-one. */}
+      {__WEB__ && TREASURY_TABS.length > 1 && (
+        <div className="flex flex-none flex-wrap items-stretch border-b border-b-[#D6E2D6] bg-white px-5">
+          {TREASURY_TABS.map((t) => {
+            const on = tab === t.key
+            const Icon = t.key === 'lc' ? Landmark : t.key === 'bd' ? FileText : CalendarClock
+            const count =
+              t.key === 'lc' ? lcs.length : t.key === 'bd' ? bills.length : tracker.filter((x) => !x.settled).length
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setTab(t.key)}
+                className={cn(
+                  'flex h-[50px] items-center gap-[9px] border-b-[3px] px-[18px] text-[13.5px] font-extrabold transition-colors',
+                  on ? 'border-b-[#0B3D2E] text-[#0A1F17]' : 'border-b-transparent text-[#5A6B62] hover:text-[#0A1F17]'
+                )}
+              >
+                <Icon className={cn('h-[19px] w-[19px]', on ? 'text-[#0B3D2E]' : 'text-[#A8B8AE]')} />
+                {t.label}
+                <span
+                  className={cn(
+                    'rounded-[2px] px-[7px] py-[3px] font-mono text-[11px] font-bold tabular-nums',
+                    on ? 'bg-[#0B3D2E] text-[#C7F03F]' : 'bg-[#EAF0E9] text-[#5A6B62]'
+                  )}
+                >
+                  {count}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+      <div className={cn('space-y-4 px-4 py-4', __WEB__ && '!px-4 !pt-3')}>
         <Tabs value={tab} onValueChange={setTab}>
           {/* Alerts and the LC filters share ONE row. The alerts stay outside
               the tab panels so they show on every tab; the filters only render
@@ -2482,7 +2572,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             {l.preclosed_date ? (
                               <Badge variant="muted" title={`Repaid ${formatDate(l.preclosed_date)}`}>Repaid</Badge>
                             ) : (
-                              <DueBadge date={l.due_date_effective} />
+                              <DueBadge date={l.due_date_effective} l={l} />
                             )}
                           </div>
                         </div>
@@ -2630,7 +2720,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       sanctioned Limit and what is still Available across them. */}
                   {lcsFiltered.length > 0 && (
                     <TableRow className={cn('border-b-2 border-amber-400 bg-amber-50 hover:bg-amber-50', LC_TOTAL)}>
-                      <TableCell className={cn('whitespace-nowrap font-semibold text-amber-900', __WEB__ && '!text-[12px] !font-extrabold !uppercase !tracking-[.06em] !text-[#0A1F17]')}>
+                      <TableCell className={cn('whitespace-nowrap font-semibold text-amber-900', __WEB__ && '!text-[13px] !font-extrabold !uppercase !tracking-[.06em] !text-[#0A1F17]')}>
                         Total
                         <span className={cn('ml-1.5 font-normal text-amber-800/70', __WEB__ && '!font-semibold !normal-case !tracking-normal !text-[#5A6B62]')}>
                           · {lcsFiltered.length} LC{lcsFiltered.length === 1 ? '' : 's'}
@@ -2640,16 +2730,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       <TableCell />
                       <TableCell />
                       <TableCell />
-                      <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[13.5px] !font-bold !text-[#0A1F17]')}>
+                      <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[15px] !font-bold !text-[#0A1F17]')}>
                         {(() => {
                           const t = lcsFiltered.reduce((a2, l) => a2 + n(l.preclose_premature_interest), 0)
                           return t > 0.004 ? formatINR(t) : ''
                         })()}
                       </TableCell>
-                      <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[13.5px] !font-bold !text-[#0A1F17]')}>
+                      <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[15px] !font-bold !text-[#0A1F17]')}>
                         {formatINR(lcsFiltered.reduce((t, l) => t + n(l.amount), 0))}
                       </TableCell>
-                      <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[13.5px] !font-bold !text-[#0A1F17]')}>
+                      <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[15px] !font-bold !text-[#0A1F17]')}>
                         {formatINR(lcsFiltered.reduce((t, l) => t + n(l.paid_to_party ?? l.paid_expected), 0))}
                       </TableCell>
                       <TableCell />
@@ -2678,18 +2768,41 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             onClick={() => void openLcDetail(Number(l.id))}
                           >
                             <TableCell className="whitespace-nowrap">
-                              <div className="flex items-center gap-1.5">
-                                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                <div>
+                              <div className={cn('flex items-center gap-1.5', __WEB__ && '!items-start')}>
+                                <ChevronRight
+                                  className={cn(
+                                    'h-3.5 w-3.5 shrink-0 text-muted-foreground',
+                                    __WEB__ && '!mt-[3px] !text-[#A8B8AE]'
+                                  )}
+                                />
+                                {/* Three lines on the website: the number, then
+                                    the state, then the bank. Side by side, the
+                                    badge pushed the bank down to a second line
+                                    anyway and left the state ragged from row to
+                                    row — stacked, all three read straight down
+                                    their own column. */}
+                                <div className={cn(__WEB__ && 'flex flex-col items-start gap-[3px]')}>
                                   <div className="flex items-center gap-1.5">
-                                    <span className={cn('doc-ref font-semibold', !l.lc_no && 'italic text-muted-foreground')}>
+                                    <span
+                                      className={cn(
+                                        'doc-ref font-semibold',
+                                        !l.lc_no && 'italic text-muted-foreground',
+                                        __WEB__ && '!text-[14px] !font-bold !text-[#0A1F17]'
+                                      )}
+                                    >
                                       {l.lc_no || 'Pending LC no'}
                                       <DuplicateNoBadge lcs={lcs} l={l} />
                                     </span>
-                                    {currentStageBadge(l)}
-                                    <ClosureBadge l={l} />
+                                    {!__WEB__ && currentStageBadge(l)}
+                                    {!__WEB__ && <ClosureBadge l={l} />}
                                   </div>
-                                  <div className={cn('mt-0.5 text-[11px] text-muted-foreground', __WEB__ && '!text-[11.5px] !font-semibold !text-[#5A6B62]')}>
+                                  {__WEB__ && (
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      {currentStageBadge(l)}
+                                      <ClosureBadge l={l} />
+                                    </div>
+                                  )}
+                                  <div className={cn('mt-0.5 text-[11px] text-muted-foreground', __WEB__ && '!mt-0 !text-[12.5px] !font-semibold !text-[#5A6B62]')}>
                                     {l.bank}
                                     {/* The margin lives in the expanded panel and
                                         in the Preclose preview. On the website it
@@ -2707,7 +2820,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 // No truncation: max-width is ignored on cells
                                 // in an auto-layout table, and this one is
                                 // 1340px wide with its own scroller.
-                                __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]'
+                                __WEB__ && '!text-[14px] !font-bold !text-[#0A1F17]'
                               )}
                               title={String(l.supplier_name || '')}
                             >
@@ -2766,19 +2879,24 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               {l.preclosed_date ? (
                                 <Badge variant="muted" title={`Repaid ${formatDate(l.preclosed_date)}`}>Repaid</Badge>
                               ) : l.expiry_date ? (
-                                <DueBadge date={l.expiry_date} />
+                                <DueBadge date={l.expiry_date} l={l} />
                               ) : (
                                 <span className="text-muted-foreground">—</span>
                               )}
                             </TableCell>
-                            <TableCell className="whitespace-nowrap text-right tabular-nums text-muted-foreground">
+                            <TableCell
+                              className={cn(
+                                'whitespace-nowrap text-right tabular-nums text-muted-foreground',
+                                __WEB__ && '!text-[13.5px] !font-semibold !text-[#33473E]'
+                              )}
+                            >
                               {n(l.usance_days) > 0 ? n(l.usance_days) : '—'}
                             </TableCell>
                             <TableCell className="whitespace-nowrap border-l border-[#1a2c56]/10 text-right tabular-nums">
                               {n(l.preclose_premature_interest) > 0.004 ? (
                                 <>
-                                  <div className="font-semibold text-violet-800">{formatINR(l.preclose_premature_interest)}</div>
-                                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                                  <div className={cn('font-semibold text-violet-800', __WEB__ && '!text-[13.5px] !font-bold')}>{formatINR(l.preclose_premature_interest)}</div>
+                                  <div className={cn('text-[10px] uppercase tracking-wide text-muted-foreground', __WEB__ && '!text-[11px]')}>
                                     {String(l.preclose_interest_route || '') === 'pay_to_party' ? 'paid to party' : 'credited to us'}
                                   </div>
                                 </>
@@ -2786,7 +2904,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 <span className="text-muted-foreground">—</span>
                               )}
                             </TableCell>
-                            <TableCell className="whitespace-nowrap text-right font-medium tabular-nums">{formatINR(l.amount)}</TableCell>
+                            <TableCell
+                              className={cn(
+                                'whitespace-nowrap text-right font-medium tabular-nums',
+                                __WEB__ && '!text-[15px] !font-bold !text-[#0A1F17]'
+                              )}
+                            >
+                              {formatINR(l.amount)}
+                            </TableCell>
                             <TableCell className="whitespace-nowrap text-right">
                               {/* lc_net_available is the open amount less this
                                   LC's interest and charges — the sum the bank
@@ -2801,6 +2926,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 <div
                                   className={cn(
                                     'font-semibold tabular-nums underline decoration-dotted underline-offset-4',
+                                    __WEB__ && '!text-[15px] !font-bold',
                                     l.paid_to_party == null
                                       ? 'text-muted-foreground decoration-muted-foreground/30'
                                       : 'text-emerald-700 decoration-emerald-700/25'
@@ -2808,7 +2934,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 >
                                   {formatINR(l.paid_to_party ?? l.paid_expected)}
                                 </div>
-                                <div className="text-[10px] tabular-nums text-muted-foreground">
+                                <div className={cn('text-[10px] tabular-nums text-muted-foreground', __WEB__ && '!mt-0.5 !text-[11.5px] !font-semibold')}>
                                   {l.paid_to_party == null
                                     ? 'not drawn yet'
                                     : `after ${formatINR(n(l.amount) - n(l.paid_to_party))} int + chg`}
@@ -3991,10 +4117,55 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         .filter((o) => linkedIds.map(String).includes(String(o.id)))
                         .reduce((s, o) => s + n(o.net_amount), 0)
                     )
+                    const blocked = n(lcForm.blocked_amount)
+                    // With invoices attached, the open amount is already driven
+                    // by their total — that IS the bill submitted. Without
+                    // them, it follows the blocked amount until someone types
+                    // over it, which is what amount_manual has always meant.
+                    const openFollowsBlocked = !lcForm.amount_manual && !hasInvoices
                     return (
+                      <>
+                      <div className="flex flex-col gap-1.5">
+                        <Label className="flex items-center gap-1.5">
+                          Blocked amount (₹)
+                          <InfoTip text="What the bank blocks against the facility when it opens the credit — the amount requested. The open amount cannot exceed the bill submitted, so where the bill comes in for less, the two part company: the bank still holds the blocked figure. The FACILITY LIMIT and the exposure outstanding are measured on this. Interest and margin are not — they stay on the open amount. Left blank, it is taken to be the same as the open amount." />
+                        </Label>
+                        <Input
+                          type="number"
+                          placeholder="Same as the open amount"
+                          value={lcForm.blocked_amount ?? ''}
+                          onChange={(e) =>
+                            setLcForm((prev) => {
+                              const val = e.target.value
+                              const linked: number[] = Array.isArray(prev?.linked_order_ids) ? prev!.linked_order_ids : []
+                              const follows = !prev?.amount_manual && linked.length === 0
+                              return { ...prev, blocked_amount: val, ...(follows ? { amount: val } : {}) }
+                            })
+                          }
+                        />
+                        <span className="text-[10px] text-muted-foreground">
+                          Counts against the limit. Leave blank if the bank blocked exactly what was opened.
+                        </span>
+                      </div>
                       <div className="flex flex-col gap-1.5">
                         <Label className="flex items-center gap-1.5">
                           Open amount (₹) <span className="text-red-600">*</span>
+                          {!hasInvoices && blocked > 0 && (
+                            <span className="text-[10px] font-normal text-muted-foreground">
+                              {openFollowsBlocked ? '(auto — same as blocked)' : '(manual)'}
+                            </span>
+                          )}
+                          {!hasInvoices && blocked > 0 && !openFollowsBlocked && (
+                            <button
+                              type="button"
+                              className="text-[10px] font-medium text-teal-700 underline-offset-2 hover:underline"
+                              onClick={() =>
+                                setLcForm((prev) => ({ ...prev, amount: String(blocked), amount_manual: false }))
+                              }
+                            >
+                              Reset to blocked
+                            </button>
+                          )}
                           {hasInvoices && (
                             <span className="text-[10px] font-normal text-muted-foreground">
                               {lcForm.amount_manual ? '(manual)' : '(auto — sum of selected invoices)'}
@@ -4017,6 +4188,21 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         />
                         {hasInvoices && (
                           <span className="text-[10px] text-muted-foreground">Suggested from the selected invoices — edit freely, but it can't exceed their total.</span>
+                        )}
+                        {/* Stated, not refused. An open amount above the
+                            blocked figure means the limit is being measured on
+                            less than the LC actually opened for, which is
+                            almost always a typo in one of the two — but it is
+                            the bank's advice that settles which, not us. */}
+                        {blocked > 0 && n(lcForm.amount) > blocked + 0.005 && (
+                          <div className="flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-900">
+                            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                            <span>
+                              The open amount is <b>{formatINR(round2(n(lcForm.amount) - blocked))}</b> above the
+                              blocked amount. The limit counts the blocked figure, so it would understate this LC by
+                              that much.
+                            </span>
+                          </div>
                         )}
                         {/* Interest and charges come out of the open amount
                             before any bill draws on it, so raising either
@@ -4044,6 +4230,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           )
                         })()}
                       </div>
+                      </>
                     )
                   })()}
                   {/* The adjustment the bank's own advice implies.
@@ -4248,6 +4435,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 // the bank — interest and charges come OUT of it, not on top —
                 // unless both are being paid upfront from the bank instead.
                 const netAvailable = upfront ? openAmount : round2(openAmount - interest - charges)
+                // What the facility is actually carrying, which is a different
+                // figure from the one every cell in this panel is built on.
+                const blockedAmt = n(lcForm.blocked_amount) || openAmount
                 return (
                   <div className={cn('rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm lg:col-span-2', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#BFE3CB] !bg-white !bg-none !p-0 !shadow-none')}>
                     <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-sky-900', __WEB__ && '!mb-0 !gap-2 !border-b !border-b-[#BFE3CB] !bg-[#F4FBF6] !px-4 !py-3 !text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#0B6B45]')}>
@@ -4275,6 +4465,22 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       </span>
                       <span className={cn('text-xl font-bold tabular-nums text-[#1a2c56]', __WEB__ && '!ml-auto !whitespace-nowrap !text-[21px] !tracking-[-0.035em] !text-[#0B6B45]')}>{formatINR(netAvailable)}</span>
                     </div>
+                    {/* Only when the two differ. Every figure in the panel above
+                        is struck on the open amount, so the one that is not
+                        says so plainly rather than being left to be inferred. */}
+                    {Math.abs(blockedAmt - openAmount) > 0.005 && (
+                      <div className={cn('mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-lg border border-sky-200 bg-white/70 px-4 py-2.5', __WEB__ && '!mt-0 !rounded-none !border-0 !border-t !border-t-[#C6DAF0] !bg-[#F4F8FD] !px-4 !py-3')}>
+                        <span className={cn('text-[10px] font-semibold uppercase tracking-wide text-sky-700', __WEB__ && '!text-[9px] !font-extrabold !tracking-[.12em] !text-[#1B4E82]')}>
+                          Blocked against the limit
+                        </span>
+                        <span className={cn('text-[15px] font-bold tabular-nums text-sky-950', __WEB__ && '!text-[14.5px] !text-[#1B4E82]')}>
+                          {formatINR(blockedAmt)}
+                        </span>
+                        <span className={cn('ml-auto text-[11px] text-sky-700/80', __WEB__ && '!text-[11px] !font-semibold !text-[#5A6B62]')}>
+                          Interest and margin stay on the open amount.
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )
               })()}
@@ -4425,6 +4631,17 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <div><div className="text-muted-foreground">Open</div><div className="font-medium tabular-nums">{formatDate(dRow.opened_date)}</div></div>
                     <div><div className="text-muted-foreground">Payment received</div><div className="font-medium tabular-nums">{formatDate(dRow.payment_received_date)}</div></div>
                     <div><div className="text-muted-foreground">Maturity</div><div className="font-medium tabular-nums">{formatDate(dRow.expiry_date)}</div></div>
+                    {/* Only when it differs from the open amount above, which
+                        is the headline figure on this panel. Repeating the same
+                        number under a second name teaches the reader that the
+                        two are interchangeable, and they are not. */}
+                    {Math.abs(n(dRow.blocked_effective) - n(dRow.amount)) > 0.005 && (
+                      <div>
+                        <div className="text-muted-foreground">Blocked</div>
+                        <div className="font-medium tabular-nums">{formatINR(dRow.blocked_effective)}</div>
+                        <div className="text-[10.5px] text-muted-foreground">counts against the limit</div>
+                      </div>
+                    )}
                     <div><div className="text-muted-foreground">Margin</div><div className="font-medium tabular-nums">{n(dRow.margin_pct)}%</div></div>
                     <div>
                       <div className="text-muted-foreground">Interest</div>
