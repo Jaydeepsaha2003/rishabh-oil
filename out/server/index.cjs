@@ -41,6 +41,10 @@ CREATE TABLE IF NOT EXISTS companies (
   -- not derivable from its books: a trading company buys and sells the same
   -- goods, a manufacturing one runs them through a formula first.
   company_type TEXT NOT NULL DEFAULT 'manufacturing',
+  -- The colour this company's name is written in wherever two companies'
+  -- rows sit in one list. NULL means "no colour picked" and reads in the
+  -- ordinary ink, which is what every existing company does.
+  colour TEXT,
   active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -755,9 +759,6 @@ var MIGRATIONS = [
      SELECT id, COALESCE(code, name, 'GEN'), COALESCE(name, code, 'PRODUCT'), 1 FROM products`,
   // default UOM switched from ton to MT
   "UPDATE app_settings SET value = 'MT' WHERE key = 'default_uom' AND value = 'ton'",
-  // Trading or manufacturing. Existing companies were all mills, so that
-  // is what they default to; the field is only ever set by hand.
-  "ALTER TABLE companies ADD COLUMN company_type TEXT NOT NULL DEFAULT 'manufacturing'",
   "ALTER TABLE suppliers ADD COLUMN supplier_type TEXT",
   "ALTER TABLE orders ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
   "ALTER TABLE gate_entries ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'",
@@ -1918,7 +1919,7 @@ var MIGRATIONS = [
   // Bill Discounting: the register filters by NBFC and by finance type, and
   // every mutation re-reads the bill by id (already the primary key).
   "CREATE INDEX IF NOT EXISTS idx_bd_nbfc ON bill_discountings(nbfc_id)",
-  "CREATE INDEX IF NOT EXISTS idx_bd_company_status ON bill_discountings(company_id, status)"
+  "CREATE INDEX IF NOT EXISTS idx_bd_company_status ON bill_discountings(company_id, status)",
   // ---------------------------------------------------------------------
   // NOTE FOR LATER, learned the hard way: this list is applied BY COUNT.
   // Startup stores how many entries it has run and executes only the ones
@@ -1931,6 +1932,15 @@ var MIGRATIONS = [
   // the mark belongs in a runOnce() instead, keyed by name -- see
   // 'ulogs_entity_index_v1' in index.ts.
   // ---------------------------------------------------------------------
+  //
+  // Appended, having first been added in the MIDDLE of this list, where the
+  // count-based mark meant they never ran and the two entries at the old end
+  // were re-run in their place instead. Exactly what the note above says.
+  //
+  // What each company does, and the colour its name is written in wherever two
+  // companies' rows share a list.
+  "ALTER TABLE companies ADD COLUMN company_type TEXT NOT NULL DEFAULT 'manufacturing'",
+  "ALTER TABLE companies ADD COLUMN colour TEXT"
 ];
 async function backfillBargainSerials(c) {
   const res = await c.execute("SELECT id, bargain_no FROM bargains");
@@ -2221,7 +2231,7 @@ var TABLES = {
   sources: ["name", "transit_days", "active"],
   uoms: ["name", "active"],
   brokers: ["name", "contact_person", "phone", "brokerage_pct", "address", "note", "active"],
-  companies: ["name", "company_type", "active"],
+  companies: ["name", "company_type", "colour", "active"],
   packagings: ["name", "box_label", "pouch_label", "pouches_per_box", "unit_size", "unit_uom", "base_per_pouch", "base_uom", "product_id", "product_label", "active"]
 };
 var COMPANY_SCOPED_TABLES = /* @__PURE__ */ new Set(["banks", "nbfcs"]);
