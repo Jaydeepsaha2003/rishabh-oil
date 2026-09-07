@@ -1919,7 +1919,7 @@ var MIGRATIONS = [
   // Bill Discounting: the register filters by NBFC and by finance type, and
   // every mutation re-reads the bill by id (already the primary key).
   "CREATE INDEX IF NOT EXISTS idx_bd_nbfc ON bill_discountings(nbfc_id)",
-  "CREATE INDEX IF NOT EXISTS idx_bd_company_status ON bill_discountings(company_id, status)",
+  "CREATE INDEX IF NOT EXISTS idx_bd_company_status ON bill_discountings(company_id, status)"
   // ---------------------------------------------------------------------
   // NOTE FOR LATER, learned the hard way: this list is applied BY COUNT.
   // Startup stores how many entries it has run and executes only the ones
@@ -1933,14 +1933,12 @@ var MIGRATIONS = [
   // 'ulogs_entity_index_v1' in index.ts.
   // ---------------------------------------------------------------------
   //
-  // Appended, having first been added in the MIDDLE of this list, where the
-  // count-based mark meant they never ran and the two entries at the old end
-  // were re-run in their place instead. Exactly what the note above says.
-  //
-  // What each company does, and the colour its name is written in wherever two
-  // companies' rows share a list.
-  "ALTER TABLE companies ADD COLUMN company_type TEXT NOT NULL DEFAULT 'manufacturing'",
-  "ALTER TABLE companies ADD COLUMN colour TEXT"
+  // companies.company_type and companies.colour were tried here, twice: once
+  // in the middle of the list (never reached), then appended — by which point
+  // the first attempt had already bumped the stored count PAST the new length,
+  // so the loop had nothing left to run and one of the two columns was left
+  // missing. They are unconditional ALTERs in bootstrap.ts now, which no count
+  // can defeat.
 ];
 async function backfillBargainSerials(c) {
   const res = await c.execute("SELECT id, bargain_no FROM bargains");
@@ -9734,6 +9732,17 @@ async function runStartupTasks() {
     await c.execute("DROP TABLE IF EXISTS bd_entries");
     await c.execute("DROP TABLE bd_parties");
   }).catch((e) => console.error("[bd] party-table reshape failed:", e));
+  await (async () => {
+    const c = getClient();
+    for (const sql of [
+      "ALTER TABLE companies ADD COLUMN company_type TEXT NOT NULL DEFAULT 'manufacturing'",
+      "ALTER TABLE companies ADD COLUMN colour TEXT"
+    ]) {
+      await c.execute(sql).catch((e) => {
+        if (!/duplicate column/i.test(String(e.message))) throw e;
+      });
+    }
+  })().catch((e) => console.error("[companies] column repair failed:", e));
   await (async () => {
     const c = getClient();
     await c.execute(`CREATE TABLE IF NOT EXISTS bill_discountings (
