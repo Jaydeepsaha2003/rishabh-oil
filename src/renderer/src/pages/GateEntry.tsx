@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  Ban, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, RotateCcw,
-  LogIn, LogOut, Pencil, Scale, Trash2, Truck } from 'lucide-react'
+  AlertTriangle, Ban, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Hash, Info, Lock,
+  RotateCcw, LogIn, LogOut, Pencil, Scale, Trash2, Truck, X } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -266,8 +266,8 @@ export function GateEntry(): React.JSX.Element {
             className={cn(
               'cursor-pointer rounded-md px-3.5 py-1.5 text-[12px] font-semibold transition-colors',
               mode === m ? 'bg-[#1a2c56] text-white' : 'text-muted-foreground hover:text-foreground',
-              __WEB__ && '!h-[34px] !rounded-[2px] !px-3.5 !text-[12.5px]',
-              inline && __WEB__ && '!h-9 !text-[13px]',
+              __WEB__ && '!h-[34px] !rounded-[2px] !px-3.5 !text-[12px]',
+              inline && __WEB__ && '!h-9 !text-[12.5px]',
               __WEB__ && (mode === m ? '!bg-[#0B3D2E] !font-extrabold !text-white' : '!font-bold !text-[#5A6B62] hover:!text-[#0A1F17]')
             )}
           >
@@ -710,6 +710,498 @@ export function GateEntry(): React.JSX.Element {
   // party comes from its bargain), not already named by a sale invoice, and
   // not Miscellaneous (which has no trading party at all) — same rule the
   // arrival/gate-out forms use when first recording the entry.
+  // --------------------------------------------------------------- edit ----
+  // The website's Edit gate entry: a right-side drawer rather than a centred
+  // box, because the form is three groups of fields and a box that tall has to
+  // scroll the page behind it.
+  //
+  // Written out separately from the desktop dialog rather than styled into it.
+  // The two are genuinely different shapes — banded cards against a flat grid —
+  // and the desktop app is not part of this work. What they share is the state
+  // and every save path; only the markup forks.
+  const EDIT_LABEL = 'mb-1.5 block text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]'
+  const EDIT_FIELD =
+    '!h-11 !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3 !text-[13.5px] !font-bold !text-[#0A1F17]'
+  const EDIT_CARD = 'overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white'
+  const EDIT_BAND =
+    'flex items-center gap-2 border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-[15px] py-2.5 text-[10.5px] font-extrabold uppercase tracking-[.13em] text-[#0A1F17]'
+
+  function editCardBody(cls?: string): string {
+    return cn('grid gap-3 p-[15px]', cls)
+  }
+
+  function editDrawerWeb(): React.JSX.Element {
+    const done = String(editRow?.status) !== 'pending'
+    const isOut = String(editRow?.direction) === 'out'
+    const net = derivedNet(editForm)
+    const na = String(editForm.dispatch_qty ?? '').trim().toUpperCase() === 'NA'
+    // What the challan said against what the bridge found. Shown only when
+    // both figures are real — an entry still waiting for its tare has nothing
+    // to compare, and a challan marked NA never claimed a figure at all.
+    const disp = na ? null : Number(editForm.dispatch_qty || 0) || null
+    const recd = net != null ? net : Number(editForm.received_qty || 0) || null
+    const gap = disp != null && recd != null ? Math.round((disp - recd) * 1000) / 1000 : null
+    const gapPct = gap != null && disp ? (gap / disp) * 100 : null
+
+    return (
+      <>
+        {/* Header. The gate number is the thing being edited, so it is the
+            title; direction and status ride beside it because they decide what
+            the rest of the form is allowed to say. */}
+        <div className="flex-none bg-[#0B3D2E] px-5 py-4 text-white">
+          <div className="flex items-start justify-between gap-3.5">
+            <div className="min-w-0">
+              <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">
+                Edit gate entry
+              </div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
+                <span className="text-[20px] font-bold tracking-[-0.02em] tabular-nums">
+                  {String(editRow?.gate_entry_no || '')}
+                </span>
+                <span
+                  className={cn(
+                    'rounded-[2px] px-2 py-1 text-[10px] font-extrabold uppercase tracking-[.06em]',
+                    isOut ? 'bg-[#1B4E82] text-white' : 'bg-[#C7F03F] text-[#12280B]'
+                  )}
+                >
+                  {isOut ? 'Out' : 'In'}
+                </span>
+                <span
+                  className={cn(
+                    'rounded-[2px] px-2 py-1 text-[10px] font-extrabold uppercase tracking-[.06em]',
+                    done ? 'bg-white/[.14] text-[#DCEFE4]' : 'bg-[#FFEDD0] text-[#8A5300]'
+                  )}
+                >
+                  {done ? 'Completed' : 'Pending Wt.'}
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setEditRow(null)}
+              title="Close"
+              className="flex h-9 w-9 flex-none items-center justify-center rounded-[3px] bg-white/10 transition-colors hover:bg-white/20"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 space-y-3 overflow-y-auto bg-[#F1F5EF] px-5 py-4 [&>*]:shrink-0">
+          {/* -------------------------------------------------- the entry -- */}
+          <div className={EDIT_CARD}>
+            <div className={EDIT_BAND}>
+              <Hash className="h-[17px] w-[17px] text-[#5A6B62]" />
+              The entry
+            </div>
+            <div className={editCardBody('sm:grid-cols-2 lg:grid-cols-4')}>
+              <div>
+                <span className={EDIT_LABEL}>
+                  Gate entry no <span className="text-[#B3261E]">*</span>
+                </span>
+                <Input
+                  value={editForm.gate_entry_no || ''}
+                  onChange={(e) => setEditForm((p) => ({ ...p, gate_entry_no: e.target.value }))}
+                  className={cn(EDIT_FIELD, '!tabular-nums')}
+                />
+              </div>
+              <div>
+                <span className={EDIT_LABEL}>
+                  Manual gate no{' '}
+                  <span className="font-bold normal-case tracking-normal">(optional)</span>
+                </span>
+                <Input
+                  value={editForm.ref_no || ''}
+                  onChange={(e) => setEditForm((p) => ({ ...p, ref_no: e.target.value }))}
+                  className={cn(EDIT_FIELD, '!tabular-nums')}
+                />
+              </div>
+              <div>
+                <span className={EDIT_LABEL}>
+                  Date <span className="text-[#B3261E]">*</span>
+                </span>
+                <DatePicker
+                  min={minDate}
+                  value={editForm.entry_date || ''}
+                  onChange={(v) => setEditForm((p) => ({ ...p, entry_date: v }))}
+                  className={cn(EDIT_FIELD, '![&_*]:!font-bold')}
+                />
+              </div>
+              {/* The time the vehicle came in. The column has always been
+                  stored and shown in the register; it simply had nowhere to be
+                  corrected. Left blank it keeps whatever it already had. */}
+              <div>
+                <span className={EDIT_LABEL}>In time</span>
+                <div className="relative">
+                  <Clock className="pointer-events-none absolute left-3 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-[#5A6B62]" />
+                  <Input
+                    value={String(editForm.entry_time || '').slice(0, 5)}
+                    placeholder="14:20"
+                    onChange={(e) => setEditForm((p) => ({ ...p, entry_time: e.target.value }))}
+                    className={cn(EDIT_FIELD, '!pl-10 !tabular-nums')}
+                  />
+                </div>
+              </div>
+              <label
+                className={cn(
+                  'flex cursor-pointer items-center gap-2.5 rounded-[4px] border px-3 py-2.5 sm:col-span-2 lg:col-span-4',
+                  editForm.is_direct_mnc
+                    ? 'border-[#D8C7EE] bg-[#F7F3FD]'
+                    : 'border-[#DCE7DB] bg-[#F7FAF6]'
+                )}
+              >
+                <Switch
+                  checked={!!editForm.is_direct_mnc}
+                  onCheckedChange={(v) => {
+                    if (
+                      v &&
+                      !editForm.is_direct_mnc &&
+                      !window.confirm(
+                        'Mark this as DIRECT MNC STOCK?\n\nThe vehicle is the party’s own — no tanker is linked, and you name the MNC / direct-purchase party sending it.'
+                      )
+                    ) {
+                      return
+                    }
+                    setEditForm((p) => ({ ...p, is_direct_mnc: v, supplier_id: v ? p.supplier_id : '' }))
+                  }}
+                />
+                <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#33473E]">
+                  Direct MNC stock
+                </span>
+                <span className="ml-auto text-right text-[11.5px] font-semibold text-[#5A6B62]">
+                  {editForm.is_direct_mnc
+                    ? suppliers.find((x) => String(x.id) === String(editForm.supplier_id))?.name ||
+                      'Party not set — assign it from Consignment stock → Validate'
+                    : 'The vehicle is ours or the transporter’s'}
+                </span>
+              </label>
+            </div>
+          </div>
+
+          {/* --------------------------------- vehicle, party and material -- */}
+          <div className={EDIT_CARD}>
+            <div className={EDIT_BAND}>
+              <Truck className="h-[17px] w-[17px] text-[#5A6B62]" />
+              Vehicle, party and material
+            </div>
+            <div className={editCardBody('sm:grid-cols-2 lg:grid-cols-3')}>
+              {partyEditable(editForm) && (
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <span className={EDIT_LABEL}>
+                    Party <span className="font-bold normal-case tracking-normal">(supplier or customer)</span>
+                  </span>
+                  <Select
+                    searchable
+                    value={String(editForm.party || '')}
+                    onValueChange={(v) => setEditForm((p) => ({ ...p, party: v }))}
+                  >
+                    <SelectTrigger className={EDIT_FIELD}>
+                      <SelectValue placeholder="Select the party" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-72">{partyOptions(editForm)}</SelectContent>
+                  </Select>
+                </div>
+              )}
+              <div>
+                <span className={EDIT_LABEL}>
+                  {editForm.is_direct_mnc ? 'Vehicle number' : 'Tanker no'}{' '}
+                  <span className="text-[#B3261E]">*</span>
+                </span>
+                <Input
+                  value={editForm.tanker_no || ''}
+                  onChange={(e) => setEditForm((p) => ({ ...p, tanker_no: e.target.value }))}
+                  className={cn(
+                    EDIT_FIELD,
+                    '!tabular-nums',
+                    !String(editForm.tanker_no || '').trim() && '!border-[#E3C58C] !bg-[#FFFBF2]'
+                  )}
+                />
+              </div>
+              <div>
+                <span className={EDIT_LABEL}>Rec type</span>
+                <Select
+                  searchable
+                  value={editForm.rec_type || 'OIL'}
+                  onValueChange={(v) => setEditForm((p) => ({ ...p, rec_type: v }))}
+                >
+                  <SelectTrigger className={EDIT_FIELD}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {recTypes.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <span className={EDIT_LABEL}>Product</span>
+                <Select
+                  searchable
+                  value={String(editForm.oil_type_id || '')}
+                  onValueChange={(v) => setEditForm((p) => ({ ...p, oil_type_id: v }))}
+                >
+                  <SelectTrigger
+                    className={cn(EDIT_FIELD, !editForm.oil_type_id && '!border-[#E3C58C] !bg-[#FFFBF2]')}
+                  >
+                    <SelectValue placeholder="Select product" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {products.map((pr) => (
+                      <SelectItem key={pr.id} value={String(pr.id)}>{pr.code || pr.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {!editForm.oil_type_id && (
+                  <div className="mt-1.5 text-[11px] font-bold text-[#8A5300]">
+                    No product on this entry — stock cannot be posted against it until one is picked.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* --------------------------------------------------- weighment -- */}
+          <div className={EDIT_CARD}>
+            <div className={EDIT_BAND}>
+              <Scale className="h-[17px] w-[17px] text-[#5A6B62]" />
+              Weighment
+            </div>
+            <div className="p-[15px]">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <span className={EDIT_LABEL}>Gross wt</span>
+                  <Input
+                    type="number"
+                    value={editForm.gross_weight ?? ''}
+                    onChange={(e) => setEditForm((p) => syncNet({ ...p, gross_weight: e.target.value }))}
+                    className={cn(EDIT_FIELD, '!text-right !tabular-nums')}
+                  />
+                </div>
+                <div>
+                  <span className={EDIT_LABEL}>Tare wt</span>
+                  <Input
+                    type="number"
+                    value={editForm.tare_weight ?? ''}
+                    onChange={(e) => setEditForm((p) => syncNet({ ...p, tare_weight: e.target.value }))}
+                    className={cn(EDIT_FIELD, '!text-right !tabular-nums')}
+                  />
+                </div>
+                <div>
+                  <span className={EDIT_LABEL}>UOM</span>
+                  <Input
+                    value={editForm.uom || ''}
+                    onChange={(e) => setEditForm((p) => ({ ...p, uom: e.target.value }))}
+                    className={EDIT_FIELD}
+                  />
+                </div>
+              </div>
+
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <div>
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">
+                      Dispatch qty
+                    </span>
+                    {/* The challan that named no figure. It was typed as the
+                        letters NA into the same box; as a switch it is one
+                        click and cannot be mistyped. */}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditForm((p) => ({ ...p, dispatch_qty: na ? '' : 'NA' }))
+                      }
+                      title={na ? 'This challan named no quantity' : 'Mark the challan as naming no quantity'}
+                      className={cn(
+                        'rounded-[2px] border px-2 py-[3px] text-[10px] font-extrabold tracking-[.05em] transition-colors',
+                        na
+                          ? 'border-[#C2700A] bg-[#FFEDD0] text-[#8A5300]'
+                          : 'border-[#DCE7DB] bg-white text-[#5A6B62] hover:bg-[#F7FAF6]'
+                      )}
+                    >
+                      NA
+                    </button>
+                  </div>
+                  <Input
+                    placeholder={DISPATCH_HINT}
+                    value={editForm.dispatch_qty ?? ''}
+                    onChange={(e) => setEditForm((p) => ({ ...p, dispatch_qty: cleanDispatch(e.target.value) }))}
+                    className={cn(
+                      EDIT_FIELD,
+                      '!text-right !tabular-nums',
+                      na && '!border-[#F0D9AE] !bg-[#FFFBF2] !text-[#8A5300]'
+                    )}
+                  />
+                </div>
+                <div>
+                  <span className={EDIT_LABEL}>
+                    Received (net){' '}
+                    {net != null && (
+                      <span className="font-bold normal-case tracking-normal">(Gross − Tare)</span>
+                    )}
+                  </span>
+                  <div className="relative">
+                    {net != null && (
+                      <Lock className="pointer-events-none absolute left-3 top-1/2 h-[16px] w-[16px] -translate-y-1/2 text-[#A8B8AE]" />
+                    )}
+                    <Input
+                      type="number"
+                      disabled={net != null}
+                      value={net != null ? String(net) : editForm.received_qty ?? ''}
+                      onChange={(e) => setEditForm((p) => ({ ...p, received_qty: e.target.value }))}
+                      className={cn(
+                        EDIT_FIELD,
+                        '!text-right !tabular-nums',
+                        net != null && '!border-[#E4ECE3] !bg-[#F7FAF6] !text-[#33473E] disabled:!opacity-100'
+                      )}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {gap != null && Math.abs(gap) >= 0.0005 && (
+                <div
+                  className={cn(
+                    'mt-3 flex flex-wrap items-center gap-3 rounded-[4px] border border-l-4 px-3.5 py-3',
+                    gap > 0
+                      ? 'border-[#F0D9AE] border-l-[#C2700A] bg-[#FFFBF2]'
+                      : 'border-[#BFE3CB] border-l-[#0B6B45] bg-[#F2F9F5]'
+                  )}
+                >
+                  <AlertTriangle
+                    className={cn('h-[19px] w-[19px] flex-none', gap > 0 ? 'text-[#C2700A]' : 'text-[#0B6B45]')}
+                  />
+                  <div className="min-w-0">
+                    <div
+                      className={cn(
+                        'text-[9.5px] font-extrabold uppercase tracking-[.12em]',
+                        gap > 0 ? 'text-[#8A5300]' : 'text-[#0B6B45]'
+                      )}
+                    >
+                      {gap > 0 ? 'Shortage' : 'Excess'}
+                    </div>
+                    <div
+                      className={cn(
+                        'mt-0.5 text-[11.5px] font-bold',
+                        gap > 0 ? 'text-[#8A5300]' : 'text-[#0B6B45]'
+                      )}
+                    >
+                      {gap > 0
+                        ? 'The bridge found less than the challan claimed.'
+                        : 'The bridge found more than the challan claimed.'}
+                    </div>
+                  </div>
+                  <div className="ml-auto text-right">
+                    <div
+                      className={cn(
+                        'whitespace-nowrap text-[19px] font-bold tracking-[-0.02em] tabular-nums',
+                        gap > 0 ? 'text-[#C2700A]' : 'text-[#0B6B45]'
+                      )}
+                    >
+                      {formatNum(Math.abs(gap))} {editForm.uom || 'MT'}
+                    </div>
+                    {gapPct != null && (
+                      <div
+                        className={cn(
+                          'mt-0.5 text-[11px] font-bold tabular-nums',
+                          gap > 0 ? 'text-[#8A5300]' : 'text-[#0B6B45]'
+                        )}
+                      >
+                        {Math.abs(gapPct).toFixed(2)}% of the challan
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-3 flex items-start gap-2.5">
+                <Info className="h-[17px] w-[17px] flex-none text-[#5A6B62]" />
+                <span className="text-[11.5px] font-semibold leading-relaxed text-[#33473E]">
+                  The net is Gross − Tare and cannot be typed — correct the two weights and it follows.
+                  An entry with no Gross was finished without weighment, so there the net is entered
+                  directly. Leaving everything empty keeps the entry pending.
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* -------------------------------------------------------- note -- */}
+          <div className={cn(EDIT_CARD, 'p-[15px]')}>
+            <span className={EDIT_LABEL}>Note</span>
+            <Input
+              value={editForm.note || ''}
+              placeholder="Anything to record against this entry"
+              onChange={(e) => setEditForm((p) => ({ ...p, note: e.target.value }))}
+              className={cn(EDIT_FIELD, '!font-semibold')}
+            />
+          </div>
+        </div>
+
+        {/* Footer. The left half says what saving will make this entry, because
+            the status is decided by the weights above rather than chosen. */}
+        <div className="flex flex-none flex-wrap items-center gap-2.5 border-t border-t-[#D6E2D6] bg-white px-5 py-3.5">
+          <div
+            className={cn(
+              'flex min-w-0 items-center gap-2 text-[12px] font-bold',
+              recd != null && recd > 0 ? 'text-[#0B6B45]' : 'text-[#8A5300]'
+            )}
+          >
+            {recd != null && recd > 0 ? (
+              <Check className="h-[17px] w-[17px] flex-none" />
+            ) : (
+              <Scale className="h-[17px] w-[17px] flex-none" />
+            )}
+            {recd != null && recd > 0
+              ? `Saving completes this entry at ${formatNum(recd)} ${editForm.uom || 'MT'}`
+              : 'No received quantity yet — this entry stays pending'}
+          </div>
+          <div className="ml-auto flex gap-2.5">
+            <Button
+              variant="outline"
+              onClick={() => setEditRow(null)}
+              className="!h-12 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-5 !text-[13px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={saveEdit}
+              className="!h-12 !gap-2 !rounded-[4px] !bg-[#0B3D2E] !px-6 !text-[13px] !font-extrabold !uppercase !tracking-[.03em] !text-[#C7F03F] hover:!bg-[#0F4A38]"
+            >
+              <Check className="h-[19px] w-[19px]" />
+              Save
+            </Button>
+          </div>
+        </div>
+      </>
+    )
+  }
+
+  // The grouped supplier/customer list the party picker offers. Lifted out of
+  // the desktop dialog so the website's drawer offers exactly the same options,
+  // filtered the same way, rather than a second copy that drifts.
+  function partyOptions(f: Row): React.JSX.Element {
+    const keepSup = String(f.party || '').startsWith('s:') ? String(f.party).slice(2) : null
+    const keepCus = String(f.party || '').startsWith('c:') ? String(f.party).slice(2) : null
+    const sup = partiesIn(allSuppliers, 'supplier', String(f.rec_type || ''), keepSup)
+    const cus = partiesIn(customers, 'customer', String(f.rec_type || ''), keepCus)
+    return (
+      <>
+        {sup.rows.length > 0 && (
+          <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+            Suppliers
+          </div>
+        )}
+        {sup.rows.map((x) => (
+          <SelectItem key={`s${x.id}`} value={`s:${x.id}`}>{x.name}</SelectItem>
+        ))}
+        {cus.rows.length > 0 && (
+          <div className="mt-1 border-t px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+            Customers
+          </div>
+        )}
+        {cus.rows.map((x) => (
+          <SelectItem key={`c${x.id}`} value={`c:${x.id}`}>{x.name}</SelectItem>
+        ))}
+      </>
+    )
+  }
+
   function partyEditable(f: Row): boolean {
     return !f.is_direct_mnc && !f.tanker_id && !f.invoice_group && !isMisc(f.rec_type)
   }
@@ -832,25 +1324,25 @@ export function GateEntry(): React.JSX.Element {
           className={cn(
             'rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white',
             __WEB__ &&
-              '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-12 [&_input]:!rounded-[4px] [&_input]:!text-[14px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-12 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-12 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[14px] [&_[data-slot=date-picker]]:!font-bold'
+              '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-[42px] [&_input]:!rounded-[4px] [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-[42px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12.5px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-[42px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[13px] [&_[data-slot=date-picker]]:!font-bold'
           )}
         >
           <div
             className={cn(
               'mb-3 flex items-center gap-2 border-b border-dotted border-[#e5dfc8] pb-1.5',
-              __WEB__ && '!mb-0 !gap-2.5 !border-b !border-solid !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[18px] !py-3'
+              __WEB__ && '!mb-0 !gap-2.5 !border-b !border-solid !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[13px] !py-2'
             )}
           >
             <div className="flex h-7 w-7 items-center justify-center rounded-md bg-slate-200 text-slate-700">
               <ClipboardList className="h-4 w-4" />
             </div>
-            <h3 className={cn('text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!text-[12px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]')}>Without weighment — quick entry</h3>
+            <h3 className={cn('text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]')}>Without weighment — quick entry</h3>
             <InfoTip text="The plain gate-register line: which vehicle, who it is with, and what it carries. It completes on the spot — no weighment, no invoice, and it touches no stock or purchase." />
             <span className="ml-auto rounded bg-slate-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-slate-700">
               {dir === 'in' ? 'Coming in' : 'Going out'}
             </span>
           </div>
-          <div className={cn('grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4', __WEB__ && '!gap-x-4 !gap-y-4 !p-[18px]')}>
+          <div className={cn('grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4', __WEB__ && '!gap-x-3 !gap-y-2.5 !p-[13px]')}>
             <div className="flex min-w-0 flex-col gap-1">
               <Label>Vehicle number *</Label>
               <Input
@@ -893,7 +1385,7 @@ export function GateEntry(): React.JSX.Element {
                   .
                 </Label>
                 <Button
-                  className="!h-12 !w-full !gap-2 !rounded-[4px] !bg-[#0B6B45] !text-[13px] !font-extrabold !uppercase !tracking-[.04em] !text-white hover:!bg-[#0A5D3C]"
+                  className="!h-[42px] !w-full !gap-2 !rounded-[4px] !bg-[#0B6B45] !text-[12.5px] !font-extrabold !uppercase !tracking-[.04em] !text-white hover:!bg-[#0A5D3C]"
                   onClick={() => void recordQuick(dir)}
                   disabled={savingQuick}
                 >
@@ -939,14 +1431,14 @@ export function GateEntry(): React.JSX.Element {
     return (
         <section>
           <div className="mb-2 flex items-center gap-2">
-            <div className={cn('flex h-7 w-7 items-center justify-center rounded-md bg-amber-100 text-amber-700', __WEB__ && '!h-8 !w-8 !rounded-[3px] !bg-[#FFEDD0] !text-[#C2700A]')}>
-              <Scale className={cn('h-4 w-4', __WEB__ && '!h-[19px] !w-[19px]')} />
+            <div className={cn('flex h-7 w-7 items-center justify-center rounded-md bg-amber-100 text-amber-700', __WEB__ && '!h-7 !w-7 !rounded-[3px] !bg-[#FFEDD0] !text-[#C2700A]')}>
+              <Scale className={cn('h-4 w-4', __WEB__ && '!h-[17px] !w-[17px]')} />
             </div>
-            <h3 className={cn('text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!text-[12px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]')}>Waiting for weighment</h3>
+            <h3 className={cn('text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]')}>Waiting for weighment</h3>
             <InfoTip text="Enter the weighbridge Gross and Tare; the net (gross − tare) is calculated and completes the entry." />
             <Badge
               variant={list.length ? 'warning' : 'muted'}
-              className={cn('ml-1', __WEB__ && '!rounded-[2px] !border-0 !bg-[#FFEDD0] !px-2.5 !py-1 !text-[12.5px] !font-extrabold !tabular-nums !text-[#8A5300]')}
+              className={cn('ml-1', __WEB__ && '!rounded-[2px] !border-0 !bg-[#FFEDD0] !px-2.5 !py-1 !text-[12px] !font-extrabold !tabular-nums !text-[#8A5300]')}
             >
               {list.length}
             </Badge>
@@ -1021,18 +1513,18 @@ export function GateEntry(): React.JSX.Element {
                   )}
                 >
                   {/* Identity strip: vehicle + direction, never wrapping. */}
-                  <div className={cn('flex items-center gap-2 rounded-tr-xl border-b px-3 py-2', dirColor.headerBg, dirColor.headerBorder, __WEB__ && '!gap-2.5 !rounded-none !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-3.5 !py-3')}>
+                  <div className={cn('flex items-center gap-2 rounded-tr-xl border-b px-3 py-2', dirColor.headerBg, dirColor.headerBorder, __WEB__ && '!gap-2.5 !rounded-none !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-3.5 !py-2')}>
                     <span className={cn('inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md', dirColor.icon, __WEB__ && '!h-auto !w-auto !bg-transparent !text-[#0B6B45]')}>
-                      {row.direction === 'out' ? <LogOut className={cn('h-3.5 w-3.5', __WEB__ && '!h-[19px] !w-[19px]')} /> : <LogIn className={cn('h-3.5 w-3.5', __WEB__ && '!h-[19px] !w-[19px]')} />}
+                      {row.direction === 'out' ? <LogOut className={cn('h-3.5 w-3.5', __WEB__ && '!h-[17px] !w-[17px]')} /> : <LogIn className={cn('h-3.5 w-3.5', __WEB__ && '!h-[17px] !w-[17px]')} />}
                     </span>
-                    <span className={cn('truncate text-[13.5px] font-bold tracking-wide', __WEB__ && '!text-[16px] !tracking-[-0.01em]')}>{row.tanker_no}</span>
+                    <span className={cn('truncate text-[13.5px] font-bold tracking-wide', __WEB__ && '!text-[14.5px] !tracking-[-0.01em]')}>{row.tanker_no}</span>
                     <span className={cn('ml-auto shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wide', dirColor.badge, __WEB__ && '!rounded-[2px] !bg-[#0B3D2E] !px-2.5 !py-1 !text-[10.5px] !font-extrabold !tracking-[.08em] !text-[#C7F03F]')}>
                       {row.direction === 'out' ? 'OUT' : 'IN'}
                     </span>
                   </div>
 
                   <div className={cn('flex flex-1 flex-col px-3 pb-3 pt-2', __WEB__ && '!px-3.5 !pb-3.5 !pt-3')}>
-                    <div className={cn('truncate text-[12.5px] font-medium', __WEB__ && '!text-[13.5px] !font-extrabold !tracking-[-0.01em]')} title={String(row.direction === 'out' ? row.sale_customer || '' : row.supplier_name || '')}>
+                    <div className={cn('truncate text-[12.5px] font-medium', __WEB__ && '!text-[12.5px] !font-extrabold !tracking-[-0.01em]')} title={String(row.direction === 'out' ? row.sale_customer || '' : row.supplier_name || '')}>
                       {row.direction === 'out'
                         ? (row.sale_invoice || row.sale_customer
                             ? <>{row.sale_customer || '—'}{row.sale_invoice ? <span className="text-muted-foreground"> · {row.sale_invoice}</span> : ''}</>
@@ -1102,7 +1594,7 @@ export function GateEntry(): React.JSX.Element {
                               // that produces a single number, and two loose
                               // inputs on a white card did not say so.
                               __WEB__ &&
-                                '!mt-3 !gap-x-3 !gap-y-2 !rounded-[3px] !border !border-[#E4ECE3] !p-3'
+                                '!mt-2 !gap-x-3 !gap-y-2 !rounded-[3px] !border !border-[#E4ECE3] !p-2.5'
                             )}
                           >
                             <label
@@ -1122,7 +1614,7 @@ export function GateEntry(): React.JSX.Element {
                               className={cn(
                                 'h-8 text-right tabular-nums',
                                 hasG ? 'border-emerald-300 bg-emerald-50/60 font-semibold text-emerald-900' : 'border-sky-200 focus-visible:ring-sky-400',
-                                __WEB__ && '!h-12 !rounded-[4px] !text-[17px] !font-bold',
+                                __WEB__ && '!h-[42px] !rounded-[4px] !text-[15px] !font-bold',
                                 __WEB__ && (hasG ? '!border-[#C3D2C6] !bg-white !text-[#0A1F17]' : '!border-[#E3C58C] !bg-white')
                               )}
                               placeholder="0.000"
@@ -1135,7 +1627,7 @@ export function GateEntry(): React.JSX.Element {
                               className={cn(
                                 'h-8 text-right tabular-nums',
                                 hasT ? 'border-emerald-300 bg-emerald-50/60 font-semibold text-emerald-900' : 'border-amber-200 focus-visible:ring-amber-400',
-                                __WEB__ && '!h-12 !rounded-[4px] !text-[17px] !font-bold',
+                                __WEB__ && '!h-[42px] !rounded-[4px] !text-[15px] !font-bold',
                                 __WEB__ && (hasT ? '!border-[#C3D2C6] !bg-white !text-[#0A1F17]' : '!border-[#E3C58C] !bg-white')
                               )}
                               placeholder="0.000"
@@ -1151,7 +1643,7 @@ export function GateEntry(): React.JSX.Element {
                               known, so it needs the same NA option everything
                               else already gets here. */}
                           {(!isOil || row.direction === 'out') && (
-                            <div className={cn('mt-1.5 flex flex-col gap-0.5', __WEB__ && '!mt-2.5 !gap-2 !rounded-[3px] !border !border-[#E4ECE3] !p-3')}>
+                            <div className={cn('mt-1.5 flex flex-col gap-0.5', __WEB__ && '!mt-2.5 !gap-2 !rounded-[3px] !border !border-[#E4ECE3] !p-2.5')}>
                               <label
                                 className={cn('truncate text-[9px] font-semibold uppercase tracking-wide text-rose-700', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.11em] !text-[#5A6B62]')}
                                 title="The quantity the challan declares — or NA when it gives none"
@@ -1159,7 +1651,7 @@ export function GateEntry(): React.JSX.Element {
                                 Dis. qty <span className="font-normal normal-case text-muted-foreground">({row.uom}, per challan)</span>
                               </label>
                               <Input
-                                className={cn('h-8 border-rose-200 text-right tabular-nums focus-visible:ring-rose-400', __WEB__ && '!h-12 !rounded-[4px] !border-[#C3D2C6] !text-[15px] !font-bold')}
+                                className={cn('h-8 border-rose-200 text-right tabular-nums focus-visible:ring-rose-400', __WEB__ && '!h-[42px] !rounded-[4px] !border-[#C3D2C6] !text-[14px] !font-bold')}
                                 placeholder="0.000 or NA"
                                 value={w.dispatch}
                                 onChange={(e) => setW('dispatch', cleanDispatch(e.target.value))}
@@ -1169,17 +1661,17 @@ export function GateEntry(): React.JSX.Element {
                           )}
                           {/* One figure saves and waits; both complete. */}
                           {(hasG || hasT) && !both && (
-                            <div className={cn('mt-1.5 flex items-center gap-1.5 rounded-lg bg-amber-100 px-2 py-1.5 text-[10.5px] font-semibold text-amber-900', __WEB__ && '!mt-3 !gap-2 !rounded-[3px] !border !border-[#F0E4CB] !bg-[#FFFBF2] !px-2.5 !py-2.5 !text-[12px] !font-bold !text-[#8A5300]')}>
+                            <div className={cn('mt-1.5 flex items-center gap-1.5 rounded-lg bg-amber-100 px-2 py-1.5 text-[10.5px] font-semibold text-amber-900', __WEB__ && '!mt-2 !gap-2 !rounded-[3px] !border !border-[#F0E4CB] !bg-[#FFFBF2] !px-2.5 !py-2 !text-[11.5px] !font-bold !text-[#8A5300]')}>
                               <Scale className={cn('h-3 w-3 shrink-0', __WEB__ && '!h-[17px] !w-[17px] !text-[#C2700A]')} />
                               {hasG ? 'Gross recorded — waiting for the tare weight' : 'Tare recorded — waiting for the gross weight'}
                             </div>
                           )}
-                          <div className={cn('mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-dotted border-amber-200 pt-2.5', __WEB__ && '!mt-3 !border-t !border-solid !border-t-[#E4ECE3] !pt-3')}>
+                          <div className={cn('mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-dotted border-amber-200 pt-2.5', __WEB__ && '!mt-2 !border-t !border-solid !border-t-[#E4ECE3] !pt-3')}>
                             <span
                               className={cn(
                                 'inline-flex items-baseline gap-1 rounded-md px-2 py-1 text-[12px]',
                                 ready ? 'bg-emerald-100 font-bold text-emerald-800' : 'bg-slate-100 text-muted-foreground',
-                                __WEB__ && '!rounded-[3px] !px-2.5 !py-1.5 !text-[13px]',
+                                __WEB__ && '!rounded-[3px] !px-2.5 !py-1.5 !text-[12.5px]',
                                 __WEB__ && (ready ? '!bg-[#DFF0C4] !text-[#12280B]' : '!bg-[#F7FAF6] !text-[#5A6B62]')
                               )}
                             >
@@ -1201,7 +1693,7 @@ export function GateEntry(): React.JSX.Element {
                               <Button
                                 size="sm"
                                 variant="outline"
-                                className={cn('h-8 border-rose-300 px-2 text-[11px] text-rose-700 hover:bg-rose-50', __WEB__ && '!h-10 !rounded-[4px] !border-[1.5px] !border-[#F0D6D4] !bg-[#FDF3F2] !px-3.5 !text-[12.5px] !font-extrabold !text-[#B3261E] hover:!bg-[#FBE9E7]')}
+                                className={cn('h-8 border-rose-300 px-2 text-[11px] text-rose-700 hover:bg-rose-50', __WEB__ && '!h-9 !rounded-[4px] !border-[1.5px] !border-[#F0D6D4] !bg-[#FDF3F2] !px-3.5 !text-[12px] !font-extrabold !text-[#B3261E] hover:!bg-[#FBE9E7]')}
                                 title="This tanker will never be weighed — the party refused it and it went elsewhere"
                                 onClick={() => openReject(row)}
                               >
@@ -1223,7 +1715,7 @@ export function GateEntry(): React.JSX.Element {
                                 className={cn(
                                   'h-8 font-semibold',
                                   ready ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-sky-600 hover:bg-sky-700',
-                                  __WEB__ && '!h-10 !rounded-[4px] !px-4 !text-[12.5px] !font-extrabold',
+                                  __WEB__ && '!h-9 !rounded-[4px] !px-4 !text-[12px] !font-extrabold',
                                   __WEB__ && (ready ? '!bg-[#0B3D2E] !text-[#C7F03F] hover:!bg-[#0F4A38]' : '!bg-[#33473E] !text-white hover:!bg-[#0B3D2E]')
                                 )}
                                 disabled={!hasG && !hasT}
@@ -1339,13 +1831,13 @@ export function GateEntry(): React.JSX.Element {
           />
         }
       />
-      <div className="w-full px-4 py-5">
+      <div className={cn('w-full px-4 py-5', __WEB__ && '!px-3 !py-3')}>
         <Tabs value={tab} onValueChange={setTab}>
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <div className={cn('mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2', __WEB__ && '!mb-3')}>
             <TabsList
               className={cn(
                 'bg-gradient-to-r from-[#0b1530] to-[#152449] p-1 text-white/60',
-                __WEB__ && '!gap-0.5 !rounded-[4px] !bg-[#0B3D2E] !bg-none !p-1 [&>button]:!h-9 [&>button]:!gap-2 [&>button]:!rounded-[2px] [&>button]:!px-3.5 [&>button]:!text-[13px] [&>button]:!font-extrabold [&>button]:!text-[#8FBFA8] [&>button:hover]:!text-white'
+                __WEB__ && '!gap-0.5 !rounded-[4px] !bg-[#0B3D2E] !bg-none !p-1 [&>button]:!h-9 [&>button]:!gap-2 [&>button]:!rounded-[2px] [&>button]:!px-3.5 [&>button]:!text-[12.5px] [&>button]:!font-extrabold [&>button]:!text-[#8FBFA8] [&>button:hover]:!text-white'
               )}
             >
               <TabsTrigger
@@ -1435,7 +1927,7 @@ export function GateEntry(): React.JSX.Element {
                 className={cn(
                   'flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-[#d9d2b8] bg-[#fffdf4] px-2.5 py-1 shadow-sm',
                   __WEB__ &&
-                    '!w-full !gap-x-2.5 !gap-y-2 !rounded-[4px] !border-[#D6E2D6] !bg-white !px-4 !py-3 !shadow-none [&_input]:!h-10 [&_input]:!rounded-[4px] [&_input]:!border-input [&_input]:!text-[13px] [&_[data-slot=date-picker]]:!h-10 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-input [&_[data-slot=date-picker]]:!text-[12.5px]'
+                    '!w-full !gap-x-2.5 !gap-y-2 !rounded-[4px] !border-[#D6E2D6] !bg-white !px-4 !py-2 !shadow-none [&_input]:!h-9 [&_input]:!rounded-[4px] [&_input]:!border-input [&_input]:!text-[12.5px] [&_[data-slot=date-picker]]:!h-9 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-input [&_[data-slot=date-picker]]:!text-[12px]'
                 )}
               >
                 <div className={cn('flex shrink-0 items-center gap-0.5 rounded-md bg-[#e5dfc8]/60 p-0.5', __WEB__ && '!gap-0.5 !rounded-[4px] !border !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px]')}>
@@ -1446,7 +1938,7 @@ export function GateEntry(): React.JSX.Element {
                       className={cn(
                         'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide transition',
                         gDir === d ? 'bg-[#1a2c56] text-white shadow-sm' : 'text-[#1a2c56]/70 hover:text-[#1a2c56]',
-                        __WEB__ && '!h-8 !rounded-[2px] !px-3 !text-[12px] !font-extrabold', __WEB__ && (gDir === d ? '!bg-[#0B3D2E] !text-white !shadow-none' : '!bg-transparent !text-[#5A6B62] hover:!text-[#0A1F17]')
+                        __WEB__ && '!h-8 !rounded-[2px] !px-3 !text-[11.5px] !font-extrabold', __WEB__ && (gDir === d ? '!bg-[#0B3D2E] !text-white !shadow-none' : '!bg-transparent !text-[#5A6B62] hover:!text-[#0A1F17]')
                       )}
                       onClick={() => setGDir(d)}
                     >
@@ -1464,7 +1956,7 @@ export function GateEntry(): React.JSX.Element {
                       className={cn(
                         'rounded px-2 py-1 text-[11px] font-semibold uppercase tracking-wide transition',
                         gKind === k ? 'bg-[#1a2c56] text-white shadow-sm' : 'text-[#1a2c56]/70 hover:text-[#1a2c56]',
-                        __WEB__ && '!h-8 !rounded-[2px] !px-3 !text-[12px] !font-extrabold', __WEB__ && (gKind === k ? '!bg-[#0B3D2E] !text-white !shadow-none' : '!bg-transparent !text-[#5A6B62] hover:!text-[#0A1F17]')
+                        __WEB__ && '!h-8 !rounded-[2px] !px-3 !text-[11.5px] !font-extrabold', __WEB__ && (gKind === k ? '!bg-[#0B3D2E] !text-white !shadow-none' : '!bg-transparent !text-[#5A6B62] hover:!text-[#0A1F17]')
                       )}
                       onClick={() => setGKind(k)}
                     >
@@ -1501,7 +1993,7 @@ export function GateEntry(): React.JSX.Element {
                           gMode === m
                             ? 'bg-[#1a2c56] text-white'
                             : 'bg-white text-[#1a2c56]/70 hover:bg-[#f1ecd9]',
-                          __WEB__ && '!h-8 !rounded-[2px] !px-3 !text-[12px] !font-extrabold', __WEB__ && (gMode === m ? '!bg-[#0B3D2E] !text-white !shadow-none' : '!bg-transparent !text-[#5A6B62] hover:!text-[#0A1F17]')
+                          __WEB__ && '!h-8 !rounded-[2px] !px-3 !text-[11.5px] !font-extrabold', __WEB__ && (gMode === m ? '!bg-[#0B3D2E] !text-white !shadow-none' : '!bg-transparent !text-[#5A6B62] hover:!text-[#0A1F17]')
                         )}
                       >
                         {label}
@@ -1568,7 +2060,7 @@ export function GateEntry(): React.JSX.Element {
                     value={gCats}
                     onApply={setGCats}
                     allLabel="All categories"
-                    className={cn('h-7 w-[10.5rem] shrink-0 text-[11px]', __WEB__ && '!h-10 !w-[11rem] !rounded-[4px] !text-[12.5px]')}
+                    className={cn('h-7 w-[10.5rem] shrink-0 text-[11px]', __WEB__ && '!h-9 !w-[11rem] !rounded-[4px] !text-[12px]')}
                   />
                 </div>
                 {(gFrom || gTo || gCats.length > 0 || gDir !== 'ALL' || gKind !== 'ALL' || gStatus.length > 0 || gSearch) && (
@@ -1597,19 +2089,19 @@ export function GateEntry(): React.JSX.Element {
           className={cn(
             'rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white',
             __WEB__ &&
-              '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-12 [&_input]:!rounded-[4px] [&_input]:!text-[14px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-12 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-12 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[14px] [&_[data-slot=date-picker]]:!font-bold'
+              '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-[42px] [&_input]:!rounded-[4px] [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-[42px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12.5px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-[42px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[13px] [&_[data-slot=date-picker]]:!font-bold'
           )}
         >
           <div
             className={cn(
               'mb-3 flex items-center gap-2 border-b border-dotted border-[#e5dfc8] pb-1.5',
-              __WEB__ && '!mb-0 !gap-2.5 !border-b !border-solid !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[18px] !py-3'
+              __WEB__ && '!mb-0 !gap-2.5 !border-b !border-solid !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[13px] !py-2'
             )}
           >
-            <div className={cn('flex h-7 w-7 items-center justify-center rounded-md bg-emerald-100 text-emerald-700', __WEB__ && '!h-8 !w-8 !rounded-[3px] !bg-[#EAF0E9] !text-[#0B3D2E]')}>
+            <div className={cn('flex h-7 w-7 items-center justify-center rounded-md bg-emerald-100 text-emerald-700', __WEB__ && '!h-7 !w-7 !rounded-[3px] !bg-[#EAF0E9] !text-[#0B3D2E]')}>
               <Truck className="h-4 w-4" />
             </div>
-            <h3 className={cn('text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!text-[12px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]')}>Tanker in</h3>
+            <h3 className={cn('text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]')}>Tanker in</h3>
             <InfoTip text="Record a tanker the moment it arrives — pick it from the list or type the number manually. Weight is entered later under Waiting for weighment." />
             {/* Direct MNC stock arrives on the party's own vehicle: nothing to
                 pick from our tanker list, so the number is typed and the party
@@ -1644,7 +2136,7 @@ export function GateEntry(): React.JSX.Element {
               <InfoTip text="ON: the goods come straight from a direct-purchase party (BUNGE and the like) on their own vehicle. No tanker to select — type the number and name the party." />
             </label>
           </div>
-          <div className={cn('grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4', __WEB__ && '!gap-x-4 !gap-y-4 !p-[18px]')}>
+          <div className={cn('grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4', __WEB__ && '!gap-x-3 !gap-y-2.5 !p-[13px]')}>
             {arrival.is_direct_mnc ? (
               <div className="flex min-w-0 flex-col gap-1">
                 <Label>MNC / party *</Label>
@@ -1716,32 +2208,7 @@ export function GateEntry(): React.JSX.Element {
                   onValueChange={(v) => setArrival((p) => ({ ...p, party: v }))}
                 >
                   <SelectTrigger><SelectValue placeholder="Select the party" /></SelectTrigger>
-                  <SelectContent className="max-h-72">
-                    {(() => {
-                      const sup = partiesIn(allSuppliers, 'supplier', String(arrival.rec_type || ''))
-                      const cus = partiesIn(customers, 'customer', String(arrival.rec_type || ''))
-                      return (
-                        <>
-                          {sup.rows.length > 0 && (
-                            <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                              Suppliers{sup.narrowed ? ` · ${String(arrival.rec_type).toUpperCase()}` : ''}
-                            </div>
-                          )}
-                          {sup.rows.map((x) => (
-                            <SelectItem key={`s${x.id}`} value={`s:${x.id}`}>{x.name}</SelectItem>
-                          ))}
-                          {cus.rows.length > 0 && (
-                            <div className="mt-1 border-t px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                              Customers{cus.narrowed ? ` · ${String(arrival.rec_type).toUpperCase()}` : ''}
-                            </div>
-                          )}
-                          {cus.rows.map((x) => (
-                            <SelectItem key={`c${x.id}`} value={`c:${x.id}`}>{x.name}</SelectItem>
-                          ))}
-                        </>
-                      )
-                    })()}
-                  </SelectContent>
+                  <SelectContent className="max-h-72">{partyOptions(editForm)}</SelectContent>
                 </Select>
                 {(() => {
                   const cat = String(arrival.rec_type || '').toUpperCase()
@@ -1827,7 +2294,7 @@ export function GateEntry(): React.JSX.Element {
                   .
                 </Label>
                 <Button
-                  className="!h-12 !w-full !gap-2 !rounded-[4px] !bg-[#0B6B45] !text-[13px] !font-extrabold !uppercase !tracking-[.04em] !text-white hover:!bg-[#0A5D3C]"
+                  className="!h-[42px] !w-full !gap-2 !rounded-[4px] !bg-[#0B6B45] !text-[12.5px] !font-extrabold !uppercase !tracking-[.04em] !text-white hover:!bg-[#0A5D3C]"
                   onClick={recordArrival}
                   disabled={savingArrival}
                 >
@@ -1858,20 +2325,20 @@ export function GateEntry(): React.JSX.Element {
           className={cn(
             'rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white',
             __WEB__ &&
-              '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-12 [&_input]:!rounded-[4px] [&_input]:!text-[14px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-12 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-12 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[14px] [&_[data-slot=date-picker]]:!font-bold'
+              '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-[42px] [&_input]:!rounded-[4px] [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-[42px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12.5px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-[42px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[13px] [&_[data-slot=date-picker]]:!font-bold'
           )}
         >
           <div
             className={cn(
               'flex items-center gap-2',
               outFormOpen && 'mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5',
-              __WEB__ && '!mb-0 !gap-2.5 !border-b !border-solid !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[18px] !py-3 !pb-3'
+              __WEB__ && '!mb-0 !gap-2.5 !border-b !border-solid !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[13px] !py-2 !pb-3'
             )}
           >
-            <div className={cn('flex h-7 w-7 items-center justify-center rounded-md bg-sky-100 text-sky-700', __WEB__ && '!h-8 !w-8 !rounded-[3px] !bg-[#EAF0E9] !text-[#0B3D2E]')}>
+            <div className={cn('flex h-7 w-7 items-center justify-center rounded-md bg-sky-100 text-sky-700', __WEB__ && '!h-7 !w-7 !rounded-[3px] !bg-[#EAF0E9] !text-[#0B3D2E]')}>
               <LogOut className="h-4 w-4" />
             </div>
-            <h3 className={cn('text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!text-[12px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]')}>Gate out</h3>
+            <h3 className={cn('text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]')}>Gate out</h3>
             <InfoTip text="Record a sale tanker here — even the moment it arrives EMPTY for loading, before the invoice is ready (pick the party + a reason). It stays in the weighing queue below: enter its Tare (empty) weight now, then come back and enter the Gross (loaded) weight once it leaves — either order, either first. Net = Gross − Tare completes it." />
             <label className="ml-auto flex cursor-pointer items-center gap-2">
               <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -1881,7 +2348,7 @@ export function GateEntry(): React.JSX.Element {
             </label>
           </div>
           {outFormOpen && (<>
-          <div className={cn('grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4', __WEB__ && '!gap-x-4 !gap-y-4 !p-[18px]')}>
+          <div className={cn('grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4', __WEB__ && '!gap-x-3 !gap-y-2.5 !p-[13px]')}>
             <div className="flex min-w-0 flex-col gap-1 sm:col-span-2 lg:col-span-1">
               <Label>
                 Sale invoice (dispatched){' '}
@@ -2023,7 +2490,7 @@ export function GateEntry(): React.JSX.Element {
                   .
                 </Label>
                 <Button
-                  className="!h-12 !w-full !gap-2 !rounded-[4px] !bg-[#0B6B45] !text-[13px] !font-extrabold !uppercase !tracking-[.04em] !text-white hover:!bg-[#0A5D3C]"
+                  className="!h-[42px] !w-full !gap-2 !rounded-[4px] !bg-[#0B6B45] !text-[12.5px] !font-extrabold !uppercase !tracking-[.04em] !text-white hover:!bg-[#0A5D3C]"
                   onClick={recordGateOut}
                   disabled={savingOut}
                 >
@@ -2051,10 +2518,10 @@ export function GateEntry(): React.JSX.Element {
               // box each carried their own size, so a row of four came out at
               // three different heights. Matches the Gate in / Gate out cards.
               __WEB__ &&
-                '!rounded-[4px] !border-[#F0D9AE] !bg-[#FFFBF2] !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-12 [&_input]:!rounded-[4px] [&_input]:!bg-white [&_input]:!text-[14px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-12 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-12 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[14px] [&_[data-slot=date-picker]]:!font-bold'
+                '!rounded-[4px] !border-[#F0D9AE] !bg-[#FFFBF2] !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-[42px] [&_input]:!rounded-[4px] [&_input]:!bg-white [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-[42px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12.5px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-[42px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[13px] [&_[data-slot=date-picker]]:!font-bold'
             )}
           >
-            <div className={cn('mb-3 flex items-center gap-2 border-b border-dotted border-amber-300 pb-1.5', __WEB__ && '!mb-0 !border-b-[#F0D9AE] !border-solid !px-[18px] !py-3')}>
+            <div className={cn('mb-3 flex items-center gap-2 border-b border-dotted border-amber-300 pb-1.5', __WEB__ && '!mb-0 !border-b-[#F0D9AE] !border-solid !px-[13px] !py-2')}>
               <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-100 text-amber-700">
                 <Scale className="h-4 w-4" />
               </div>
@@ -2062,7 +2529,7 @@ export function GateEntry(): React.JSX.Element {
               <InfoTip text="Vehicles weighed Tare-only at Gate In and flagged as being for sale. Pick one, link the sale invoice it is carrying, say when it left and enter its Gross weight — it completes on the spot. No dispatch quantity is asked for: the invoice already says what is on board." />
               <Badge variant="warning" className="ml-1">{awaitingGross.length}</Badge>
             </div>
-            <div className={cn('grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4', __WEB__ && '!gap-x-4 !gap-y-4 !p-[18px] lg:!grid-cols-[1fr_1fr_1fr_1fr_auto]')}>
+            <div className={cn('grid gap-x-3 gap-y-2.5 sm:grid-cols-2 lg:grid-cols-4', __WEB__ && '!gap-x-3 !gap-y-2.5 !p-[13px] lg:!grid-cols-[1fr_1fr_1fr_1fr_auto]')}>
               <div className="flex min-w-0 flex-col gap-1">
                 <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Vehicle</Label>
                 <Select value={grossPickId} onValueChange={setGrossPickId}>
@@ -2188,7 +2655,7 @@ export function GateEntry(): React.JSX.Element {
                     .
                   </Label>
                   <Button
-                    className="!h-12 !w-full !gap-2 !rounded-[4px] !bg-[#C2700A] !px-5 !text-[13px] !font-extrabold !uppercase !tracking-[.04em] !text-white hover:!bg-[#A85F08] disabled:!bg-[#E4C79A] disabled:!text-white"
+                    className="!h-[42px] !w-full !gap-2 !rounded-[4px] !bg-[#C2700A] !px-5 !text-[12.5px] !font-extrabold !uppercase !tracking-[.04em] !text-white hover:!bg-[#A85F08] disabled:!bg-[#E4C79A] disabled:!text-white"
                     disabled={!grossPickId || !grossPickInvoices.length || !grossPickOutDate || grossPickSaving}
                     onClick={() => void saveAwaitingGross()}
                   >
@@ -2274,13 +2741,13 @@ export function GateEntry(): React.JSX.Element {
           <div
             className={cn(
               'flex items-center gap-2 bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2.5 text-white',
-              __WEB__ && '!gap-2.5 !bg-[#0B3D2E] !bg-none !px-4 !py-3'
+              __WEB__ && '!gap-2.5 !bg-[#0B3D2E] !bg-none !px-4 !py-2'
             )}
           >
             <span className={cn('flex h-6 w-6 items-center justify-center rounded-full bg-white/15', __WEB__ && '!h-auto !w-auto !bg-transparent !text-[#C7F03F]')}>
-              <ClipboardList className={cn('h-3.5 w-3.5', __WEB__ && '!h-[19px] !w-[19px]')} />
+              <ClipboardList className={cn('h-3.5 w-3.5', __WEB__ && '!h-[17px] !w-[17px]')} />
             </span>
-            <span className={cn('text-[13px] font-bold uppercase tracking-widest', __WEB__ && '!text-[12px] !font-extrabold !tracking-[.14em]')}>Gate register</span>
+            <span className={cn('text-[13px] font-bold uppercase tracking-widest', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.14em]')}>Gate register</span>
             {__WEB__ && (
               <span className="rounded-[2px] bg-[#C7F03F]/[.16] px-2 py-[3px] text-[12px] font-extrabold tabular-nums text-[#C7F03F]">
                 {filteredRows.length}
@@ -2299,12 +2766,26 @@ export function GateEntry(): React.JSX.Element {
             <TableHeader
               className={cn(
                 __WEB__ &&
-                  '!bg-[#EAF0E9] [&_th]:!h-10 [&_th]:!text-[10.5px] [&_th]:!font-extrabold [&_th]:!uppercase [&_th]:!tracking-[.1em] [&_th]:!text-[#33473E]'
+                  '!bg-[#EAF0E9] [&_th]:!h-9 [&_th]:!text-[10.5px] [&_th]:!font-extrabold [&_th]:!uppercase [&_th]:!tracking-[.1em] [&_th]:!text-[#33473E]'
               )}
             ><TableRow className={cn(__WEB__ && '!border-b-[#D6E2D6] hover:!bg-[#EAF0E9]')}>
               <TableHead>Gate entry</TableHead>
               <TableHead>In / Out</TableHead>
-              <TableHead>Rec type</TableHead>
+              <TableHead>
+                {/* Bound to the same gCats the Category picker in the filter
+                    bar uses, so the two are one filter with two handles rather
+                    than two that can disagree. */}
+                <ColumnFilter
+                  label="Rec type"
+                  options={gCatOptions.map((c) => ({
+                    value: c,
+                    label: c,
+                    count: rows.filter((r) => String(r.rec_type || '') === c).length
+                  }))}
+                  value={gCats}
+                  onApply={setGCats}
+                />
+              </TableHead>
               <TableHead>Date</TableHead>
               <TableHead>Vehicle · party</TableHead>
               <TableHead className="text-right">Dis Qty</TableHead>
@@ -2332,44 +2813,67 @@ export function GateEntry(): React.JSX.Element {
                   // Nothing to compare against when the challan gave no figure.
                   const diff = Number(row.dispatch_na) === 1 ? 0 : Number(row.dispatch_qty || 0) - Number(row.received_qty || 0)
                   return (
-                    <TableRow key={row.id}>
-                      <TableCell className="font-medium">
+                    <TableRow
+                      key={row.id}
+                      className={cn(
+                        // A mark down the left edge, so which rows are still
+                        // waiting on the weighbridge reads from the shape of
+                        // the register rather than from reading the status
+                        // column of every line.
+                        __WEB__ && '!border-b-[#EAF0E9] [&>td]:!py-2.5',
+                        __WEB__ && (done ? '!bg-white hover:!bg-[#F7FAF6]' : '!bg-[#FFFDF7] hover:!bg-[#FFFBF2]')
+                      )}
+                      style={__WEB__ ? { borderLeft: `3px solid ${done ? '#0B6B45' : '#C2700A'}` } : undefined}
+                    >
+                      <TableCell className={cn('font-medium', __WEB__ && '!text-[13.5px] !font-bold !tabular-nums !text-[#0A1F17]')}>
                         <div>{row.gate_entry_no}</div>
-                        {row.ref_no && <div className="text-[11px] font-normal text-muted-foreground">Manual: {row.ref_no}</div>}
+                        {row.ref_no && (
+                          <div className={cn('text-[11px] font-normal text-muted-foreground', __WEB__ && '!mt-0.5 !text-[11px] !font-semibold !tabular-nums !text-[#5A6B62]')}>
+                            Manual {row.ref_no}
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell>
-                        <Badge variant={isOut ? 'default' : 'muted'}>{isOut ? 'OUT' : 'IN'}</Badge>
+                        <Badge
+                          variant={isOut ? 'default' : 'muted'}
+                          className={cn(
+                            __WEB__ && '!rounded-[2px] !border-0 !px-2.5 !py-1 !text-[10.5px] !font-extrabold !tracking-[.08em]',
+                            __WEB__ && (isOut ? '!bg-[#1B4E82] !text-white' : '!bg-[#EAF0E9] !text-[#0B3D2E]')
+                          )}
+                        >
+                          {isOut ? 'OUT' : 'IN'}
+                        </Badge>
                       </TableCell>
-                      <TableCell><span className="text-xs font-medium text-muted-foreground">{row.rec_type || 'OIL'}</span></TableCell>
+                      <TableCell><span className={cn('text-xs font-medium text-muted-foreground', __WEB__ && '!text-[12.5px] !font-bold !text-[#33473E]')}>{row.rec_type || 'OIL'}</span></TableCell>
                       <TableCell>
                         {/* A vehicle that came in empty and went out loaded is
                             one record with two movements — show both ends. */}
                         <div className="whitespace-nowrap">
-                          <span className="text-[10px] font-semibold uppercase text-muted-foreground">In </span>
-                          {formatDate(row.entry_date)}
+                          <span className={cn('text-[10px] font-semibold uppercase text-muted-foreground', __WEB__ && '!mr-1 !text-[9.5px] !font-extrabold !tracking-[.06em] !text-[#5A6B62]')}>In </span>
+                          <span className={cn(__WEB__ && '!text-[12.5px] !font-semibold !tabular-nums !text-[#33473E]')}>{formatDate(row.entry_date)}</span>
                           {row.entry_time && (
-                            <span className="ml-1 text-[11px] tabular-nums text-muted-foreground">{String(row.entry_time).slice(0, 5)}</span>
+                            <span className={cn('ml-1 text-[11px] tabular-nums text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !text-[#33473E]')}>{String(row.entry_time).slice(0, 5)}</span>
                           )}
                         </div>
                         {row.out_date && (
                           <div className="whitespace-nowrap">
-                            <span className="text-[10px] font-semibold uppercase text-muted-foreground">Out </span>
-                            {formatDate(row.out_date)}
+                            <span className={cn('text-[10px] font-semibold uppercase text-muted-foreground', __WEB__ && '!mr-1 !text-[9.5px] !font-extrabold !tracking-[.06em] !text-[#5A6B62]')}>Out </span>
+                            <span className={cn(__WEB__ && '!text-[12.5px] !font-semibold !tabular-nums !text-[#33473E]')}>{formatDate(row.out_date)}</span>
                             {row.out_time && (
-                              <span className="ml-1 text-[11px] tabular-nums text-muted-foreground">{String(row.out_time).slice(0, 5)}</span>
+                              <span className={cn('ml-1 text-[11px] tabular-nums text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !text-[#33473E]')}>{String(row.out_time).slice(0, 5)}</span>
                             )}
                           </div>
                         )}
                       </TableCell>
                       <TableCell>
-                        <div>{row.tanker_no}</div>
+                        <div className={cn(__WEB__ && '!text-[13px] !font-extrabold !tabular-nums !text-[#0A1F17]')}>{row.tanker_no}</div>
                         {String(row.entry_kind) === 'simple' ? (
-                          <div className="text-xs">
-                            <span className="font-medium text-slate-700">{row.person || 'Quick entry'}</span>
-                            {row.note ? <span className="text-muted-foreground"> · {row.note}</span> : ''}
+                          <div className={cn('text-xs', __WEB__ && '!mt-0.5 !text-[12px]')}>
+                            <span className={cn('font-medium text-slate-700', __WEB__ && '!font-semibold !text-[#33473E]')}>{row.person || 'Quick entry'}</span>
+                            {row.note ? <span className={cn('text-muted-foreground', __WEB__ && '!font-semibold !text-[#5A6B62]')}> · {row.note}</span> : ''}
                           </div>
                         ) : isOut ? (
-                          <div className="text-xs text-muted-foreground">
+                          <div className={cn('text-xs text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12px] !font-semibold !text-[#33473E]')}>
                             {row.sale_invoice || row.sale_customer
                               ? <>{row.sale_customer || '—'}{
                                   // A vehicle carrying several bills names them
@@ -2381,33 +2885,37 @@ export function GateEntry(): React.JSX.Element {
                               : <span className="font-medium text-amber-700">No bill{row.note ? ` — ${row.note}` : ''}</span>}
                           </div>
                         ) : (
-                          row.supplier_name && <div className="text-xs text-muted-foreground">{row.supplier_name}{row.bargain_no ? ` · ${row.bargain_no}` : ''}</div>
+                          row.supplier_name && <div className={cn('text-xs text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12px] !font-semibold !text-[#33473E]')}>{row.supplier_name}{row.bargain_no ? ` · ${row.bargain_no}` : ''}</div>
                         )}
                       </TableCell>
-                      <TableCell className="text-right tabular-nums">{dispatchLabel(row, row.uom)}</TableCell>
-                      <TableCell className="text-right tabular-nums">
+                      <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[13px] !font-bold !text-[#33473E]')}>{dispatchLabel(row, row.uom)}</TableCell>
+                      <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[13px] !font-bold !text-[#0A1F17]')}>
                         {done ? (
                           <>
                             <div>{formatNum(row.received_qty)} {row.uom}</div>
                             {(row.gross_weight != null || row.tare_weight != null) && (
-                              <div className="text-[11px] text-muted-foreground">G {formatNum(row.gross_weight)} · T {formatNum(row.tare_weight)}</div>
+                              <div className={cn('text-[11px] text-muted-foreground', __WEB__ && '!mt-0.5 !text-[11px] !font-semibold !text-[#5A6B62]')}>G {formatNum(row.gross_weight)} · T {formatNum(row.tare_weight)}</div>
                             )}
                           </>
-                        ) : <span className="text-muted-foreground">—</span>}
+                        ) : <span className={cn('text-muted-foreground', __WEB__ && '!text-[#A9CBBA]')}>—</span>}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {!done || Number(row.dispatch_na) === 1 ? (
-                          <span className="text-muted-foreground">—</span>
+                          <span className={cn('text-muted-foreground', __WEB__ && '!text-[#A9CBBA]')}>—</span>
                         ) : Math.abs(diff) < 0.0005 ? (
-                          <Badge variant="muted">0</Badge>
+                          <Badge variant="muted" className={cn(__WEB__ && '!rounded-[2px] !border-0 !bg-[#EAF0E9] !px-2 !py-[3px] !text-[11px] !font-extrabold !text-[#5A6B62]')}>0</Badge>
                         ) : (
-                          <span className={diff > 0 ? 'text-amber-700' : 'text-emerald-700'}>{formatNum(diff)} {row.uom}</span>
+                          <span className={cn(diff > 0 ? 'text-amber-700' : 'text-emerald-700', __WEB__ && '!text-[13px] !font-bold', __WEB__ && (diff > 0 ? '!text-[#C2700A]' : '!text-[#0B6B45]'))}>{formatNum(diff)} {row.uom}</span>
                         )}
                       </TableCell>
                       <TableCell>
-                        {done ? <Badge variant="success">Completed</Badge> : <Badge variant="warning">Pending Wt.</Badge>}
+                        {done ? (
+                          <Badge variant="success" className={cn(__WEB__ && '!rounded-[2px] !border !border-[#BFE3CB] !bg-[#E9F5EE] !px-2.5 !py-1 !text-[10.5px] !font-extrabold !uppercase !tracking-[.06em] !text-[#0B6B45]')}>Completed</Badge>
+                        ) : (
+                          <Badge variant="warning" className={cn(__WEB__ && '!rounded-[2px] !border !border-[#F0D9AE] !bg-[#FFEDD0] !px-2.5 !py-1 !text-[10.5px] !font-extrabold !uppercase !tracking-[.06em] !text-[#8A5300]')}>Pending Wt.</Badge>
+                        )}
                         {Number(row.no_weighment) === 1 && (
-                          <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700">
+                          <div className={cn('mt-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700', __WEB__ && '!mt-1 !text-[10px] !font-extrabold !tracking-[.08em] !text-[#1B4E82]')}>
                             {String(row.entry_kind) === 'simple' ? 'Quick entry' : 'No weighment'}
                           </div>
                         )}
@@ -2440,7 +2948,18 @@ export function GateEntry(): React.JSX.Element {
               )}
             </TableBody>
           </Table>
-          <Pagination {...paged} label="gate entries" className="border-t px-3" />
+          {/* Styled from here rather than inside Pagination: that component
+              is the footer of every register in the app, and this is the only
+              one being redesigned. */}
+          <Pagination
+            {...paged}
+            label="gate entries"
+            className={cn(
+              'border-t px-3',
+              __WEB__ &&
+                '!border-t-[#D6E2D6] !px-4 !py-3 [&>span]:!text-[12.5px] [&>span]:!font-semibold [&>span]:!text-[#5A6B62] [&_button]:!h-[34px] [&_button]:!min-w-[34px] [&_button]:!rounded-[3px] [&_button]:!border-[#D6E2D6] [&_button]:!text-[13px] [&_button]:!font-bold [&_.bg-primary]:!border-[#0B3D2E] [&_.bg-primary]:!bg-[#0B3D2E] [&_.bg-primary]:!text-[#C7F03F]'
+            )}
+          />
         </section>
           </TabsContent>
           <TabsContent value="rejected">
@@ -2581,7 +3100,27 @@ export function GateEntry(): React.JSX.Element {
 
       {/* Correction dialog (office use) */}
       <Dialog open={!!editRow} onOpenChange={(o) => !o && setEditRow(null)}>
-        <DialogContent>
+        <DialogContent
+          className={cn(
+            __WEB__ &&
+              // A right-side sheet, full height, its own scroll. Radix centres
+              // a dialog and caps it; all three are overridden here rather
+              // than in the shared component, which every other dialog in the
+              // app still wants as it is.
+              '!left-auto !right-0 !top-0 !flex !h-full !max-h-none !w-[min(100vw,740px)] !max-w-none !translate-x-0 !translate-y-0 !flex-col !gap-0 !rounded-none !border-0 !bg-[#F1F5EF] !p-0 !shadow-[-16px_0_40px_rgba(10,31,23,.24)] [&>button]:!hidden'
+          )}
+        >
+          {__WEB__ ? (
+            <>
+              {/* The title has to exist for the dialog to be announced, but the
+                  drawer draws its own header. */}
+              <DialogHeader className="sr-only">
+                <DialogTitle>Edit {editRow?.gate_entry_no}</DialogTitle>
+              </DialogHeader>
+              {editDrawerWeb()}
+            </>
+          ) : (
+          <>
           <DialogHeader><DialogTitle>Edit {editRow?.gate_entry_no}</DialogTitle></DialogHeader>
           <div className="grid gap-3">
             <div className="grid grid-cols-2 gap-3">
@@ -2737,6 +3276,8 @@ export function GateEntry(): React.JSX.Element {
             <Button variant="outline" onClick={() => setEditRow(null)}>Cancel</Button>
             <Button onClick={saveEdit}>Save</Button>
           </DialogFooter>
+          </>
+          )}
         </DialogContent>
       </Dialog>
     </>
