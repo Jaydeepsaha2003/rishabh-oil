@@ -253,7 +253,7 @@ const LC_FIELDS = __WEB__
   // back to normal case — a required asterisk does not care, but a
   // parenthetical like "(repayments go out of this)" is a sentence and gets
   // hard to read shouted.
-  ? '[&_label]:!min-h-[18px] [&_label]:!items-center [&_label]:!text-[11px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.1em] [&_label]:!text-[#33473E] [&_label>span]:!normal-case [&_label>span]:!tracking-normal [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-11 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!text-[13.5px]'
+  ? '[&_label]:!min-h-[18px] [&_label]:!items-center [&_label]:!text-[11px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.1em] [&_label]:!text-[#33473E] [&_label>span]:!normal-case [&_label>span]:!tracking-normal [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=select-trigger]]:!font-semibold [&_[data-slot=date-picker]]:!h-11 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!text-[13.5px] [&_[data-slot=date-picker]]:!font-semibold'
   : ''
 
 // A row of preview figures: hairline cells, label small caps over the money,
@@ -4825,15 +4825,21 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       onto three lines to say what fits comfortably on one, and
                       the label sat above a figure it belongs beside. */}
                   {n(lcForm.amount) > 0 && (
-                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 sm:col-span-2">
-                      <span className="text-[10px] font-semibold uppercase tracking-wide text-sky-700">
+                    <div
+                      className={cn(
+                        'flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 sm:col-span-2',
+                        __WEB__ &&
+                          '!col-span-full !min-h-11 !items-center !gap-x-2.5 !rounded-[4px] !border-[#C6DAF0] !bg-[#F4F8FD] !px-3.5 !py-2.5'
+                      )}
+                    >
+                      <span className={cn('text-[10px] font-semibold uppercase tracking-wide text-sky-700', __WEB__ && '!text-[9.5px] !font-extrabold !tracking-[.12em] !text-[#1B4E82]')}>
                         Interest charged on
                       </span>
-                      <span className="text-[15px] font-bold tabular-nums text-sky-950">
+                      <span className={cn('text-[15px] font-bold tabular-nums text-sky-950', __WEB__ && 'doc-ref !text-[15px] !font-bold !text-[#1B4E82]')}>
                         {formatINR(lcInterestBaseOf(lcForm))}
                       </span>
                       {!!lcInterestBaseWorking(lcForm) && (
-                        <span className="doc-ref ml-auto text-[11px] tabular-nums text-sky-700/80">
+                        <span className={cn('doc-ref ml-auto text-[11px] tabular-nums text-sky-700/80', __WEB__ && '!ml-auto !text-[11.5px] !font-semibold !text-[#5A6B62]')}>
                           {lcInterestBaseWorking(lcForm)}
                         </span>
                       )}
@@ -4989,13 +4995,19 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       return (
                         <>
                           Interest is worked out on{' '}
-                          <b className="text-foreground">
+                          {/* The figures are the point of the sentence, so they
+                              are set apart from it: tabular, a size up, in ink
+                              against the grey — and the saving in green, since
+                              that is the number the switch is offering. */}
+                          <b className={cn('text-foreground', __WEB__ && 'doc-ref !text-[13px] !font-bold !tabular-nums !text-[#0A1F17]')}>
                             {working || formatINR(amt)}
                           </b>
                           {saved > 0.005 && (
                             <>
                               {' '}&mdash; {excl ? 'that is' : 'turning this on would save'}{' '}
-                              <b className="text-foreground">{formatINR(saved)}</b>{' '}
+                              <b className={cn('text-foreground', __WEB__ && 'doc-ref !text-[13px] !font-bold !tabular-nums !text-[#0B6B45]')}>
+                                {formatINR(saved)}
+                              </b>{' '}
                               {excl ? 'less than on the whole open amount' : 'of interest'}.
                             </>
                           )}
