@@ -456,7 +456,23 @@ export async function runStartupTasks(): Promise<void> {
   //
   // Under its own key so it runs regardless of those older markers, and every
   // statement is idempotent, so it is harmless where the tables are fine.
-  await runOnce('bd_tables_repair_v1', async () => {
+  // NOT runOnce, deliberately — and this is the second time these tables have
+  // gone missing for the same reason.
+  //
+  // Every statement in here is CREATE TABLE / CREATE INDEX IF NOT EXISTS or an
+  // ALTER whose duplicate-column error is swallowed, so running it on a
+  // healthy database costs a few no-op DDL statements and changes nothing.
+  // Behind a runOnce it fixed the problem exactly once: db.ts's MIGRATIONS list
+  // is applied BY COUNT and once reused the bd_parties name (see the note
+  // there), so a later replay drops the table again — while this block's marker
+  // still says it has been dealt with, and nothing recreates it.
+  //
+  // Which is the state a live database was found in: both markers recorded, and
+  // no bd_parties table. bd:list and bd:kpis threw "no such table", and because
+  // Treasury loads its LCs and its bills in one Promise.all, the whole page
+  // came up empty rather than just Bill Discounting. Unconditional, it heals on
+  // the next start however the table came to be missing.
+  await (async (): Promise<void> => {
     const c = getClient()
     await c.execute(`CREATE TABLE IF NOT EXISTS bill_discountings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -532,7 +548,7 @@ export async function runStartupTasks(): Promise<void> {
       SELECT id, party_type, party_id FROM bill_discountings WHERE party_id IS NOT NULL`).catch(() => {})
 
     console.log('[bd] tables checked/restored')
-  }).catch((e) => console.error('[bd] table repair failed:', e))
+  })().catch((e: unknown) => console.error('[bd] table repair failed:', e))
   await runOnce('bd_parties_v1', async () => {
     const c = getClient()
     await c.execute(`CREATE TABLE IF NOT EXISTS bd_parties (
