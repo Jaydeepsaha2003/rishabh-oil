@@ -5717,6 +5717,10 @@ async function listPurchaseTankers(allCompanies = false, forModule) {
            -- the vehicle number written down there, which is the number the
            -- yard actually saw.
            ge.gate_entry_no, ge.tanker_no AS gate_tanker_no, ge.entry_date AS gate_date,
+           -- The number written in the gate's own paper register, which is
+           -- what the yard quotes when a tanker is queried \u2014 the system's
+           -- GE/0196 means nothing to them.
+           ge.ref_no AS gate_ref_no,
            ge.received_qty AS gate_qty,
            (SELECT old_tanker_no || ' -> ' || new_tanker_no || ' (' || loss_qty || ' lost)'
               FROM tanker_replacements WHERE tanker_id = pt.id ORDER BY id DESC LIMIT 1) AS last_replacement
