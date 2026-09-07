@@ -456,6 +456,28 @@ export async function runStartupTasks(): Promise<void> {
   //
   // Under its own key so it runs regardless of those older markers, and every
   // statement is idempotent, so it is harmless where the tables are fine.
+  // Columns on `companies` that the count-based MIGRATIONS list could not be
+  // trusted to add. That list runs entries by INDEX from a stored count, and
+  // these two were added to it twice — once mid-list, where the mark already
+  // covered them, and then appended, by which point the first attempt had
+  // bumped the count past the new length. The result on a live database was
+  // `colour` present and `company_type` missing, and no further restart could
+  // fix it because the count said there was nothing to do.
+  //
+  // Unconditional and idempotent instead: a duplicate-column error is the job
+  // already done, and anything else is worth seeing.
+  await (async (): Promise<void> => {
+    const c = getClient()
+    for (const sql of [
+      "ALTER TABLE companies ADD COLUMN company_type TEXT NOT NULL DEFAULT 'manufacturing'",
+      'ALTER TABLE companies ADD COLUMN colour TEXT'
+    ]) {
+      await c.execute(sql).catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+    }
+  })().catch((e: unknown) => console.error('[companies] column repair failed:', e))
+
   // NOT runOnce, deliberately — and this is the second time these tables have
   // gone missing for the same reason.
   //

@@ -1347,14 +1347,12 @@ const MIGRATIONS = [
   // 'ulogs_entity_index_v1' in index.ts.
   // ---------------------------------------------------------------------
   //
-  // Appended, having first been added in the MIDDLE of this list, where the
-  // count-based mark meant they never ran and the two entries at the old end
-  // were re-run in their place instead. Exactly what the note above says.
-  //
-  // What each company does, and the colour its name is written in wherever two
-  // companies' rows share a list.
-  "ALTER TABLE companies ADD COLUMN company_type TEXT NOT NULL DEFAULT 'manufacturing'",
-  'ALTER TABLE companies ADD COLUMN colour TEXT'
+  // companies.company_type and companies.colour were tried here, twice: once
+  // in the middle of the list (never reached), then appended — by which point
+  // the first attempt had already bumped the stored count PAST the new length,
+  // so the loop had nothing left to run and one of the two columns was left
+  // missing. They are unconditional ALTERs in bootstrap.ts now, which no count
+  // can defeat.
 ]
 
 

@@ -11,7 +11,6 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { MultiSelectFilter } from '@/components/ui/multi-select-filter'
 import { ColumnFilter } from '@/components/ui/column-filter'
 import { Switch } from '@/components/ui/switch'
 import { InfoTip } from '@/components/ui/tooltip'
@@ -2050,19 +2049,10 @@ export function GateEntry(): React.JSX.Element {
                     </span>
                   )}
                 </div>
-                <div className={cn('h-5 shrink-0 border-l border-[#d9d2b8]', __WEB__ && '!hidden')} />
-                <div className="flex shrink-0 items-center gap-1.5">
-                  <span className={cn('shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-[#1a2c56]/70', __WEB__ && '!text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#5A6B62]')}>
-                    Category
-                  </span>
-                  <MultiSelectFilter
-                    options={gCatOptions.map((c) => ({ value: c, label: c }))}
-                    value={gCats}
-                    onApply={setGCats}
-                    allLabel="All categories"
-                    className={cn('h-7 w-[10.5rem] shrink-0 text-[11px]', __WEB__ && '!h-9 !w-[11rem] !rounded-[4px] !text-[12px]')}
-                  />
-                </div>
+                {/* The Category picker that sat here is gone: the Rec type
+                    column in the register carries the same filter, bound to the
+                    same state, and this bar was running to a second row to hold
+                    a duplicate of it. Clear below still resets it. */}
                 {(gFrom || gTo || gCats.length > 0 || gDir !== 'ALL' || gKind !== 'ALL' || gStatus.length > 0 || gSearch) && (
                   <>
                     <div className={cn('h-5 shrink-0 border-l border-[#d9d2b8]', __WEB__ && '!hidden')} />
