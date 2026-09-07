@@ -35,7 +35,7 @@ import { todayISO } from '@/lib/format'
 import { Pagination, usePaged } from '@/components/Pagination'
 import { useIsMobile } from '@/lib/useIsMobile'
 
-export type FieldType = 'text' | 'number' | 'switch' | 'select' | 'date' | 'creatable'
+export type FieldType = 'text' | 'number' | 'switch' | 'select' | 'date' | 'creatable' | 'color'
 export type ColumnType = FieldType
 
 // Chip colours for the values a master list's select column actually carries.
@@ -711,6 +711,45 @@ export function EntityManager({
                         onCheckedChange={(v) => setField(fd.key, v)}
                       />
                     </div>
+                  ) : fd.type === 'color' ? (
+                    <>
+                      <Label>
+                        {fd.label}
+                        {fd.required ? ' *' : ''}
+                      </Label>
+                      {/* The swatch and the hex, side by side. The native
+                          picker alone gives no way to read back or paste a
+                          value, and Clear matters because "no colour" is a
+                          real choice here — the name then reads in the
+                          ordinary ink. */}
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={String(form[fd.key] || '#0B3D2E')}
+                          disabled={fieldDisabled}
+                          onChange={(e) => setField(fd.key, e.target.value)}
+                          className="h-9 w-12 shrink-0 cursor-pointer rounded-md border border-input bg-white p-1"
+                        />
+                        <Input
+                          value={String(form[fd.key] ?? '')}
+                          placeholder="#0B3D2E"
+                          disabled={fieldDisabled}
+                          onChange={(e) => setField(fd.key, e.target.value)}
+                          className="font-mono"
+                        />
+                        {!!form[fd.key] && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={fieldDisabled}
+                            onClick={() => setField(fd.key, '')}
+                          >
+                            Clear
+                          </Button>
+                        )}
+                      </div>
+                    </>
                   ) : fd.type === 'date' ? (
                     <>
                       <Label>

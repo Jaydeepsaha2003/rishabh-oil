@@ -69,7 +69,7 @@ const TABLES: Record<string, string[]> = {
   sources: ['name', 'transit_days', 'active'],
   uoms: ['name', 'active'],
   brokers: ['name', 'contact_person', 'phone', 'brokerage_pct', 'address', 'note', 'active'],
-  companies: ['name', 'company_type', 'active'],
+  companies: ['name', 'company_type', 'colour', 'active'],
   packagings: ['name', 'box_label', 'pouch_label', 'pouches_per_box', 'unit_size', 'unit_uom', 'base_per_pouch', 'base_uom', 'product_id', 'product_label', 'active']
 }
 

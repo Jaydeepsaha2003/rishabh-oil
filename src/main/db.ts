@@ -167,9 +167,6 @@ const MIGRATIONS = [
      SELECT id, COALESCE(code, name, 'GEN'), COALESCE(name, code, 'PRODUCT'), 1 FROM products`,
   // default UOM switched from ton to MT
   "UPDATE app_settings SET value = 'MT' WHERE key = 'default_uom' AND value = 'ton'",
-  // Trading or manufacturing. Existing companies were all mills, so that
-  // is what they default to; the field is only ever set by hand.
-  "ALTER TABLE companies ADD COLUMN company_type TEXT NOT NULL DEFAULT 'manufacturing'",
   'ALTER TABLE suppliers ADD COLUMN supplier_type TEXT',
   "ALTER TABLE orders ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
   "ALTER TABLE gate_entries ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'",
@@ -1335,8 +1332,7 @@ const MIGRATIONS = [
   // Bill Discounting: the register filters by NBFC and by finance type, and
   // every mutation re-reads the bill by id (already the primary key).
   'CREATE INDEX IF NOT EXISTS idx_bd_nbfc ON bill_discountings(nbfc_id)',
-  'CREATE INDEX IF NOT EXISTS idx_bd_company_status ON bill_discountings(company_id, status)'
-
+  'CREATE INDEX IF NOT EXISTS idx_bd_company_status ON bill_discountings(company_id, status)',
 
   // ---------------------------------------------------------------------
   // NOTE FOR LATER, learned the hard way: this list is applied BY COUNT.
@@ -1350,6 +1346,15 @@ const MIGRATIONS = [
   // the mark belongs in a runOnce() instead, keyed by name -- see
   // 'ulogs_entity_index_v1' in index.ts.
   // ---------------------------------------------------------------------
+  //
+  // Appended, having first been added in the MIDDLE of this list, where the
+  // count-based mark meant they never ran and the two entries at the old end
+  // were re-run in their place instead. Exactly what the note above says.
+  //
+  // What each company does, and the colour its name is written in wherever two
+  // companies' rows share a list.
+  "ALTER TABLE companies ADD COLUMN company_type TEXT NOT NULL DEFAULT 'manufacturing'",
+  'ALTER TABLE companies ADD COLUMN colour TEXT'
 ]
 
 

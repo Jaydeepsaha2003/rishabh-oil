@@ -17,6 +17,12 @@ const fields: FieldDef[] = [
       { value: 'trading', label: 'Trading' }
     ]
   },
+  {
+    key: 'colour',
+    label: 'Name colour',
+    type: 'color',
+    placeholder: '#0B3D2E'
+  },
   { key: 'active', label: 'Active', type: 'switch', default: true }
 ]
 
@@ -26,6 +32,11 @@ const columns: ColumnDef[] = [
     key: 'company_type',
     label: 'Type',
     value: (r) => (String(r.company_type) === 'trading' ? 'Trading' : 'Manufacturing')
+  },
+  {
+    key: 'colour',
+    label: 'Colour',
+    value: (r) => String(r.colour || '')
   },
   { key: 'active', label: 'Active', type: 'switch' },
   { key: 'created_at', label: 'Created', type: 'date' }

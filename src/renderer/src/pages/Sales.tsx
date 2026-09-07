@@ -3820,6 +3820,14 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
   // the invoice list underneath has to span the same companies. Picking one
   // narrows both together.
   const [companies, setCompanies] = useState<Row[]>([])
+  // A bargain is general — either company can dispatch against it — so the
+  // line is where the company is actually decided, not the bargain.
+  const coNameOf = (id: unknown): string =>
+    String(companies.find((c) => Number(c.id) === Number(id))?.name || '')
+  // And the colour it was given, so the two companies' dispatches read apart
+  // in a bargain that both have drawn on.
+  const coColourOf = (id: unknown): string =>
+    String(companies.find((c) => Number(c.id) === Number(id))?.colour || '')
   const [coIds, setCoIds] = useState<number[]>([])
   // The credit-note lines behind each bargain's Return figure.
   const [returns, setReturns] = useState<Row[]>([])
@@ -4788,7 +4796,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             type="search"
-            className="h-8 pl-8 text-[12px]"
+            className={cn('h-8 pl-8 text-[12px]', __WEB__ && '!text-[12.5px] !font-semibold')}
             placeholder="Search bargain no, customer, product…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -4796,10 +4804,25 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
         </div>
         <div className={cn('flex items-center gap-1.5 text-[12px]', __WEB__ && '!gap-2')}>
           <span className={cn('shrink-0 text-muted-foreground', __WEB__ && '!text-[10.5px] !font-extrabold !uppercase !tracking-[.13em] !text-[#5A6B62]')}>Date</span>
-          <FyPicker from={dateFrom} to={dateTo} onRange={(f, t) => { setDateFrom(f); setDateTo(t) }} className="h-8 w-36 shrink-0 text-[11px]" />
-          <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className="h-8 w-40 shrink-0 text-[11px]" />
+          <FyPicker
+            from={dateFrom}
+            to={dateTo}
+            onRange={(f, t) => { setDateFrom(f); setDateTo(t) }}
+            className={cn('h-8 w-36 shrink-0 text-[11px]', __WEB__ && '!text-[12.5px] !font-semibold !text-[#33473E]')}
+          />
+          <DatePicker
+            value={dateFrom}
+            onChange={(v) => setDateFrom(v || '')}
+            max={dateTo || undefined}
+            className={cn('h-8 w-40 shrink-0 text-[11px]', __WEB__ && '!text-[12.5px] !font-semibold !tabular-nums !text-[#33473E]')}
+          />
           <span className={cn('shrink-0 text-muted-foreground', __WEB__ && '!text-[12px] !font-semibold !text-[#5A6B62]')}>to</span>
-          <DatePicker value={dateTo} onChange={(v) => setDateTo(v || '')} min={dateFrom || undefined} className="h-8 w-40 shrink-0 text-[11px]" />
+          <DatePicker
+            value={dateTo}
+            onChange={(v) => setDateTo(v || '')}
+            min={dateFrom || undefined}
+            className={cn('h-8 w-40 shrink-0 text-[11px]', __WEB__ && '!text-[12.5px] !font-semibold !tabular-nums !text-[#33473E]')}
+          />
           {(dateFrom || dateTo) && (
             <Button
               variant="ghost"
@@ -4816,7 +4839,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
             value={coIds.length === 1 ? String(coIds[0]) : 'all'}
             onValueChange={(v) => setCoIds(v === 'all' ? [] : [Number(v)])}
           >
-            <SelectTrigger className="h-8 w-[12rem] shrink-0 text-[12px]">
+            <SelectTrigger className={cn('h-8 w-[12rem] shrink-0 text-[12px]', __WEB__ && '!text-[12.5px] !font-semibold !text-[#33473E]')}>
               <span className="flex min-w-0 items-center gap-1.5">
                 <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <SelectValue />
@@ -5243,6 +5266,8 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                 rate: number
                                 amount: number
                                 uom: string
+                                company: string
+                                companyColour: string
                               }
                               const lines: Line[] = [
                                 ...Array.from(byInvoice.values()).map((g): Line => ({
@@ -5255,7 +5280,9 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                   qty: g.qty,
                                   rate: g.qty > 0 ? g.taxable / g.qty : 0,
                                   amount: g.total,
-                                  uom: String(g.sample.uom || row.uom || 'MT')
+                                  uom: String(g.sample.uom || row.uom || 'MT'),
+                                  company: coNameOf(g.sample.company_id),
+                                  companyColour: coColourOf(g.sample.company_id)
                                 })),
                                 ...retLines.map((rl, ri): Line => ({
                                   key: `r${rl.note_id}-${ri}`,
@@ -5271,7 +5298,9 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                   // Inclusive of GST, matching the dispatch rows
                                   // this column already states that way.
                                   amount: -(Number(rl.amount_incl ?? rl.amount) || 0),
-                                  uom: String(row.uom || 'MT')
+                                  uom: String(row.uom || 'MT'),
+                                  company: coNameOf(rl.company_id),
+                                  companyColour: coColourOf(rl.company_id)
                                 }))
                               ].sort((x, y) => x.date.localeCompare(y.date) || x.key.localeCompare(y.key))
                               const net = lines.reduce(
@@ -5301,6 +5330,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                           <th className="py-1.5 pr-3 text-right font-semibold">Qty</th>
                                           <th className="py-1.5 pr-3 text-right font-semibold">Rate</th>
                                           <th className={cn('py-1.5 text-right font-semibold', __WEB__ && '!pr-3')}>Amount</th>
+                                          <th className={cn('py-1.5 pr-3 font-semibold', __WEB__ && '!pr-3')}>Company</th>
                                         </tr>
                                       </thead>
                                       <tbody>
@@ -5358,8 +5388,17 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                                 <span className={cn(__WEB__ && '!text-[10.5px] !font-semibold !text-[#7C9188]')}>{l.uom}</span>
                                               </td>
                                               <td className={cn('py-1.5 pr-3 text-right tabular-nums', __WEB__ && '!text-[12.5px] !font-semibold !text-[#5A6B62]')}>{formatINR(l.rate)}</td>
-                                              <td className={cn('py-1.5 text-right tabular-nums', isRet && 'text-emerald-700', __WEB__ && '!pr-3 !text-[13px] !font-bold', __WEB__ && isRet && '!text-[#0B6B45]')}>
+                                              <td className={cn('py-1.5 pr-3 text-right tabular-nums', isRet && 'text-emerald-700', __WEB__ && '!text-[13px] !font-bold', __WEB__ && isRet && '!text-[#0B6B45]')}>
                                                 {isRet ? '−' : ''}{formatINR(Math.abs(l.amount))}
+                                              </td>
+                                              {/* Whose book this dispatch landed in. A blank means
+                                                  the line predates multi-company, not that nobody
+                                                  owns it. */}
+                                              <td
+                                                className={cn('py-1.5 pr-3 whitespace-nowrap', __WEB__ && '!text-[12px] !font-bold !text-[#33473E]')}
+                                                style={__WEB__ && l.companyColour ? { color: l.companyColour } : undefined}
+                                              >
+                                                {l.company || <span className={cn(__WEB__ && '!font-semibold !text-[#A8B8AE]')}>—</span>}
                                               </td>
                                             </tr>
                                           )
@@ -5379,7 +5418,8 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                             {formatNum(net.qty)} <span className={cn(__WEB__ && '!text-[10.5px]')}>{row.uom}</span>
                                           </td>
                                           <td className="py-1.5" />
-                                          <td className={cn('py-1.5 text-right tabular-nums', __WEB__ && '!pr-3 !text-[14.5px] !font-bold !tracking-[-0.02em] !text-[#12280B]')}>{formatINR(net.amount)}</td>
+                                          <td className={cn('py-1.5 pr-3 text-right tabular-nums', __WEB__ && '!text-[14.5px] !font-bold !tracking-[-0.02em] !text-[#12280B]')}>{formatINR(net.amount)}</td>
+                                          <td className="py-1.5 pr-3" />
                                         </tr>
                                       </tbody>
                                     </table>

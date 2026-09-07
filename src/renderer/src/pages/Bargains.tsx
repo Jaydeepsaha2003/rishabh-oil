@@ -678,6 +678,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
   const multiCo = companies.length > 1
   const coName = (id: unknown): string =>
     String(companies.find((c) => Number(c.id) === Number(id))?.name || '')
+  // The colour picked for that company on the Companies page, or nothing —
+  // which reads in the ordinary ink. Two companies' tankers sit in one list
+  // here, and the colour is what tells them apart at a glance.
+  const coColour = (id: unknown): string =>
+    String(companies.find((c) => Number(c.id) === Number(id))?.colour || '')
   // A bargain is general: the company is whoever drew on it. Not drawn yet →
   // there is genuinely no company to name, and saying so beats a blank cell.
   const drawnCos = (r: Row): string => {
@@ -1623,7 +1628,14 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                                     been mapped into one, and the tanker's own
                                                     until then — that is the order in which it
                                                     is actually decided. */}
-                                                <td className={cn('py-1.5 pr-3', __WEB__ && '!text-[12px] !font-semibold !text-[#33473E]')}>
+                                                <td
+                                                  className={cn('py-1.5 pr-3', __WEB__ && '!text-[12px] !font-bold !text-[#33473E]')}
+                                                  style={
+                                                    __WEB__ && coColour(t.invoice_company_id ?? t.company_id)
+                                                      ? { color: coColour(t.invoice_company_id ?? t.company_id) }
+                                                      : undefined
+                                                  }
+                                                >
                                                   {coName(t.invoice_company_id ?? t.company_id) || (
                                                     <span className={cn(__WEB__ && '!font-semibold !text-[#A8B8AE]')}>—</span>
                                                   )}

@@ -15,6 +15,10 @@ CREATE TABLE IF NOT EXISTS companies (
   -- not derivable from its books: a trading company buys and sells the same
   -- goods, a manufacturing one runs them through a formula first.
   company_type TEXT NOT NULL DEFAULT 'manufacturing',
+  -- The colour this company's name is written in wherever two companies'
+  -- rows sit in one list. NULL means "no colour picked" and reads in the
+  -- ordinary ink, which is what every existing company does.
+  colour TEXT,
   active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
