@@ -1165,7 +1165,7 @@ export function Formulation(): React.JSX.Element {
                     value={String(form.product_id)}
                     onValueChange={(v) => setForm((p) => ({ ...p, product_id: v }))}
                   >
-                    <SelectTrigger className="h-10">
+                    <SelectTrigger className={cn('h-10', __WEB__ && '!h-11 !text-[15px] !font-bold')}>
                       <SelectValue placeholder="Finished good or intermediate" />
                     </SelectTrigger>
                     <SelectContent>
@@ -1180,7 +1180,7 @@ export function Formulation(): React.JSX.Element {
                 <div className="flex flex-col gap-1.5">
                   <Label>Name (optional)</Label>
                   <Input
-                    className="h-10"
+                    className={cn('h-10', __WEB__ && '!h-11 !text-[15px] !font-bold')}
                     value={form.name ?? ''}
                     onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
                     placeholder="e.g. standard recipe"
@@ -1206,7 +1206,7 @@ export function Formulation(): React.JSX.Element {
                     value={form.subcategory_id ? String(form.subcategory_id) : 'none'}
                     onValueChange={(v) => setForm((p) => ({ ...p, subcategory_id: v === 'none' ? '' : v }))}
                   >
-                    <SelectTrigger className="h-10">
+                    <SelectTrigger className={cn('h-10', __WEB__ && '!h-11 !text-[15px] !font-bold')}>
                       <SelectValue placeholder="Not classified" />
                     </SelectTrigger>
                     <SelectContent>

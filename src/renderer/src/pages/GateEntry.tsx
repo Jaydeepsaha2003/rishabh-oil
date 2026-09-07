@@ -1324,7 +1324,7 @@ export function GateEntry(): React.JSX.Element {
           className={cn(
             'rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white',
             __WEB__ &&
-              '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-[42px] [&_input]:!rounded-[4px] [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-[42px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12.5px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-[42px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[13px] [&_[data-slot=date-picker]]:!font-bold'
+              '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none [&_label]:!text-[11px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-[42px] [&_input]:!rounded-[4px] [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-[42px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12.5px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-[42px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[13px] [&_[data-slot=date-picker]]:!font-bold'
           )}
         >
           <div
@@ -2089,7 +2089,7 @@ export function GateEntry(): React.JSX.Element {
           className={cn(
             'rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white',
             __WEB__ &&
-              '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-[42px] [&_input]:!rounded-[4px] [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-[42px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12.5px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-[42px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[13px] [&_[data-slot=date-picker]]:!font-bold'
+              '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none [&_label]:!text-[11px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-[42px] [&_input]:!rounded-[4px] [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-[42px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12.5px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-[42px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[13px] [&_[data-slot=date-picker]]:!font-bold'
           )}
         >
           <div
@@ -2161,11 +2161,35 @@ export function GateEntry(): React.JSX.Element {
                 <Select searchable value={String(arrival.tanker_id || '')} onValueChange={chooseTanker}>
                   <SelectTrigger><SelectValue placeholder="Select arriving tanker" /></SelectTrigger>
                   <SelectContent>
+                    {/* The bargain on the option itself: a supplier can have
+                        several tankers on the road at once against different
+                        bargains, and the tanker number alone does not say which
+                        one is arriving. */}
                     {arrivable.map((t) => (
-                      <SelectItem key={t.id} value={String(t.id)}>{t.tanker_no} · {t.supplier_name}</SelectItem>
+                      <SelectItem key={t.id} value={String(t.id)}>
+                        {t.tanker_no} · {t.supplier_name}
+                        {t.bargain_no ? ` · ${t.bargain_no}` : ''}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                {/* And again once one is picked, because the closed field
+                    shows only what the trigger can fit. This is the number the
+                    entry will be posted against. */}
+                {(() => {
+                  const t = tankers.find((x) => String(x.id) === String(arrival.tanker_id))
+                  if (!t) return null
+                  const nos = [String(t.bargain_no || ''), String(t.extra_bargain_no || '')].filter(Boolean)
+                  return (
+                    <span className={cn('text-[10px] text-muted-foreground', __WEB__ && '!text-[11.5px] !font-semibold !text-[#33473E]')}>
+                      {nos.length ? (
+                        <>Bargain <b className={cn(__WEB__ && '!font-extrabold !text-[#0B3D2E]')}>{nos.join(' + ')}</b></>
+                      ) : (
+                        <span className={cn(__WEB__ && '!font-semibold !text-[#8A5300]')}>No bargain on this tanker</span>
+                      )}
+                    </span>
+                  )
+                })()}
               </div>
             )}
             <div className="flex min-w-0 flex-col gap-1">
@@ -2325,7 +2349,7 @@ export function GateEntry(): React.JSX.Element {
           className={cn(
             'rounded-md border border-[#d9d2b8] bg-[#fffdf4] p-4 shadow-sm [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white [&_textarea]:bg-white',
             __WEB__ &&
-              '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-[42px] [&_input]:!rounded-[4px] [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-[42px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12.5px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-[42px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[13px] [&_[data-slot=date-picker]]:!font-bold'
+              '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none [&_label]:!text-[11px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-[42px] [&_input]:!rounded-[4px] [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-[42px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12.5px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-[42px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[13px] [&_[data-slot=date-picker]]:!font-bold'
           )}
         >
           <div
@@ -2518,7 +2542,7 @@ export function GateEntry(): React.JSX.Element {
               // box each carried their own size, so a row of four came out at
               // three different heights. Matches the Gate in / Gate out cards.
               __WEB__ &&
-                '!rounded-[4px] !border-[#F0D9AE] !bg-[#FFFBF2] !p-0 !shadow-none [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-[42px] [&_input]:!rounded-[4px] [&_input]:!bg-white [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-[42px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12.5px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-[42px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[13px] [&_[data-slot=date-picker]]:!font-bold'
+                '!rounded-[4px] !border-[#F0D9AE] !bg-[#FFFBF2] !p-0 !shadow-none [&_label]:!text-[11px] [&_label]:!font-extrabold [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62] [&_input]:!h-[42px] [&_input]:!rounded-[4px] [&_input]:!bg-white [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-[42px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12.5px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-option]]:!font-bold [&_[data-slot=date-picker]]:!h-[42px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[13px] [&_[data-slot=date-picker]]:!font-bold'
             )}
           >
             <div className={cn('mb-3 flex items-center gap-2 border-b border-dotted border-amber-300 pb-1.5', __WEB__ && '!mb-0 !border-b-[#F0D9AE] !border-solid !px-[13px] !py-2')}>

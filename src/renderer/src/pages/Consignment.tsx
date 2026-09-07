@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { Pencil, Plus, Trash2 } from 'lucide-react'
+import { Clock, Package, Pencil, Plus, Trash2 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { ExcelButton } from '@/components/ExcelButton'
 import { Badge } from '@/components/ui/badge'
@@ -463,47 +463,79 @@ export function Consignment(): React.JSX.Element {
         }
       />
 
-      <div className="space-y-6 px-4 py-5">
+      <div className={cn('space-y-6 px-4 py-5', __WEB__ && '!space-y-3 !px-3 !py-3')}>
         {/* Step 1 of the flow: tankers passed at the gate, waiting for the
             accountant to say whose stock they are. */}
         {pending.length > 0 && (
-          <section className="overflow-hidden rounded-xl border-2 border-amber-300 bg-amber-50/40">
-            <div className="flex items-center justify-between border-b border-amber-200 bg-amber-100/70 px-5 py-3">
-              <div>
-                <h3 className="font-medium text-amber-900">Gate arrivals awaiting validation</h3>
-                <p className="text-xs text-amber-800">
+          <section
+            className={cn(
+              'overflow-hidden rounded-xl border-2 border-amber-300 bg-amber-50/40',
+              // The one queue on this page that is asking to be worked, so it
+              // keeps a warm edge while everything below it is forest.
+              __WEB__ && '!rounded-[4px] !border !border-[#E2A84A] !border-l-4 !border-l-[#E2A84A] !bg-white'
+            )}
+          >
+            <div
+              className={cn(
+                'flex items-center justify-between border-b border-amber-200 bg-amber-100/70 px-5 py-3',
+                __WEB__ && '!gap-3.5 !border-b-0 !bg-[#FDF6E7] !px-[15px] !py-3'
+              )}
+            >
+              <div className={cn(__WEB__ && 'min-w-0')}>
+                <h3 className={cn('font-medium text-amber-900', __WEB__ && '!flex !items-center !gap-2 !text-[13.5px] !font-extrabold !text-[#0A1F17]')}>
+                  {__WEB__ && <Clock className="h-[18px] w-[18px] shrink-0 text-[#8A5300]" />}
+                  Gate arrivals awaiting validation
+                </h3>
+                <p className={cn('text-xs text-amber-800', __WEB__ && '!mt-0.5 !text-[11.5px] !font-semibold !text-[#8A5300]')}>
                   Tankers passed at the gate that aren&apos;t linked to a purchase. Validate one to start maintaining its consignment stock.
                 </p>
               </div>
-              <Badge variant="warning">{pending.length} pending</Badge>
+              <Badge
+                variant="warning"
+                className={cn(__WEB__ && '!shrink-0 !rounded-[2px] !border-0 !bg-[#F5E2B8] !px-2.5 !py-[5px] !text-[11px] !font-extrabold !text-[#7A4A00]')}
+              >
+                {pending.length} pending
+              </Badge>
             </div>
-            <Table className="text-[12px] [&_td]:px-4 [&_td]:py-2 [&_th]:h-9 [&_th]:px-4">
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Gate no</TableHead>
-                  <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Date</TableHead>
-                  <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Tanker</TableHead>
-                  <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Party</TableHead>
-                  <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Type</TableHead>
-                  <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-amber-900">Net qty</TableHead>
-                  <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">Weighment</TableHead>
-                  <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-amber-900">Action</TableHead>
+            <Table
+              className={cn(
+                'text-[12px] [&_td]:px-4 [&_td]:py-2 [&_th]:h-9 [&_th]:px-4',
+                __WEB__ && '!text-[12.5px] [&_td]:!px-2.5 [&_td]:!py-2.5 [&_th]:!h-[30px] [&_th]:!px-2.5'
+              )}
+            >
+              <TableHeader className={cn(__WEB__ && '!bg-[#EAF0E9]')}>
+                <TableRow className={cn(__WEB__ && '!border-t !border-t-[#E4D9BC] !border-b-0 hover:!bg-[#EAF0E9] [&>th]:!bg-[#EAF0E9] [&>th]:!text-[9.5px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.11em] [&>th]:!text-[#33473E]')}>
+                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Gate no</TableHead>
+                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Date</TableHead>
+                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Tanker</TableHead>
+                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Party</TableHead>
+                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Type</TableHead>
+                  <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Net qty</TableHead>
+                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Weighment</TableHead>
+                  <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Action</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {pending.map((g, i) => {
                   const weighed = g.status === 'completed' && Number(g.received_qty) > 0
                   return (
-                    <TableRow key={g.id as number} className={cn('border-b', i % 2 === 1 && 'bg-amber-50/60')}>
-                      <TableCell className="font-medium tabular-nums">{g.gate_entry_no}</TableCell>
-                      <TableCell className="whitespace-nowrap">{formatDate(g.entry_date)}</TableCell>
-                      <TableCell className="font-medium">{g.tanker_no || <span className="italic text-muted-foreground">no number</span>}</TableCell>
+                    <TableRow
+                      key={g.id as number}
+                      className={cn(
+                        'border-b',
+                        i % 2 === 1 && 'bg-amber-50/60',
+                        __WEB__ && '!border-b-0 !border-t !border-t-[#EAF0E9] !bg-white hover:!bg-[#FFFDF7]'
+                      )}
+                    >
+                      <TableCell className={cn('font-medium tabular-nums', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>{g.gate_entry_no}</TableCell>
+                      <TableCell className={cn('whitespace-nowrap', __WEB__ && '!text-[12px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{formatDate(g.entry_date)}</TableCell>
+                      <TableCell className={cn('font-medium', __WEB__ && '!text-[12.5px] !font-bold !tabular-nums !text-[#0A1F17]')}>{g.tanker_no || <span className="italic text-muted-foreground">no number</span>}</TableCell>
                       <TableCell>
                         {g.supplier_name ? (
                           <span className="inline-flex items-center gap-1.5">
                             {g.supplier_name}
                             {Number(g.is_direct_mnc) === 1 && (
-                              <Badge className="bg-violet-600 font-normal hover:bg-violet-600">MNC</Badge>
+                              <Badge className={cn('bg-violet-600 font-normal hover:bg-violet-600', __WEB__ && '!rounded-[2px] !bg-[#0B3D2E] !px-1.5 !py-[3px] !text-[9.5px] !font-extrabold !tracking-[.05em] !text-[#C7F03F] hover:!bg-[#0B3D2E]')}>MNC</Badge>
                             )}
                           </span>
                         ) : (
@@ -534,24 +566,55 @@ export function Consignment(): React.JSX.Element {
 
         {/* The stock register: what each supplier is holding at our place, the
             tankers it is made of, and what has already been invoiced. */}
-        <section className="overflow-hidden rounded-xl border-2 border-violet-200 bg-card">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-violet-200 bg-violet-50 px-5 py-3">
-            <div>
-              <h3 className="font-medium text-violet-900">Stock</h3>
-              <p className="text-xs text-violet-800/80">
+        <section
+          className={cn(
+            'overflow-hidden rounded-xl border-2 border-violet-200 bg-card',
+            // Violet was never a colour this app uses; the register wears the
+            // same forest the other four do.
+            __WEB__ && '!rounded-[4px] !border !border-[#D6E2D6] !bg-white'
+          )}
+        >
+          <div
+            className={cn(
+              'flex flex-wrap items-center justify-between gap-2 border-b border-violet-200 bg-violet-50 px-5 py-3',
+              __WEB__ && '!gap-3.5 !border-b-0 !bg-[#0B3D2E] !px-[15px] !py-3 !text-white'
+            )}
+          >
+            <div className={cn(__WEB__ && 'min-w-0')}>
+              <h3 className={cn('font-medium text-violet-900', __WEB__ && '!flex !items-center !gap-2 !text-[14px] !font-extrabold !text-white')}>
+                {__WEB__ && <Package className="h-[19px] w-[19px] shrink-0 text-[#C7F03F]" />}
+                Stock
+              </h3>
+              <p className={cn('text-xs text-violet-800/80', __WEB__ && '!mt-0.5 !text-[11.5px] !font-semibold !text-[#8FBFA8]')}>
                 Supplier-owned stock lying at your place, tanker by tanker. Booking a purchase moves it into your books.
               </p>
             </div>
             <div className="flex items-center gap-2">
               {pendingLotCount > 0 && (
-                <Badge variant="warning">{pendingLotCount} tanker{pendingLotCount > 1 ? 's' : ''} pending booking</Badge>
+                <Badge
+                  variant="warning"
+                  className={cn(__WEB__ && '!rounded-[2px] !border-0 !bg-[#FFEDD0] !px-2.5 !py-[5px] !text-[11px] !font-extrabold !text-[#8A5300]')}
+                >
+                  {pendingLotCount} tanker{pendingLotCount > 1 ? 's' : ''} pending booking
+                </Badge>
               )}
-              <Badge className="bg-violet-600 hover:bg-violet-600">
+              <Badge
+                className={cn(
+                  'bg-violet-600 hover:bg-violet-600',
+                  __WEB__ && '!rounded-[2px] !bg-[#C7F03F]/[.16] !px-2.5 !py-[5px] !text-[11.5px] !font-extrabold !tabular-nums !text-[#C7F03F] hover:!bg-[#C7F03F]/[.16]'
+                )}
+              >
                 {formatNum(totalBalance)} MT {ranged ? 'closing' : 'in stock'}
               </Badge>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 border-b border-violet-100 bg-violet-50/40 px-5 py-2">
+          <div
+            className={cn(
+              'flex flex-wrap items-center gap-2 border-b border-violet-100 bg-violet-50/40 px-5 py-2',
+              __WEB__ &&
+                '!gap-2 !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[15px] !py-2.5 [&_[data-slot=date-picker]]:!h-9 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[12px] [&_[data-slot=date-picker]]:!font-bold [&_[data-slot=select-trigger]]:!h-9 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12px] [&_[data-slot=select-trigger]]:!font-extrabold'
+            )}
+          >
             <FyPicker from={from} to={to} onRange={(f, t) => { setFrom(f); setTo(t) }} className="h-9 w-28 text-xs" />
             <span className="text-[11px] font-semibold text-muted-foreground">From</span>
             <div className="w-40"><DatePicker value={from} onChange={(v) => setFrom(v || '')} max={to || undefined} /></div>
@@ -576,18 +639,28 @@ export function Consignment(): React.JSX.Element {
               {stockBands.map((band) => (
                 <div key={String(band.supplier_id)}>
                   {/* Party band */}
-                  <div className="flex flex-wrap items-center gap-x-6 gap-y-1 bg-violet-100/60 px-5 py-2">
-                    <div className="text-sm font-semibold text-violet-900">{band.supplier_name}</div>
-                    <div className="ml-auto flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px]">
-                      <span className="text-violet-900/70">
-                        In <span className="font-semibold tabular-nums text-violet-900">{formatNum(band.deposited)}</span>
+                  <div
+                    className={cn(
+                      'flex flex-wrap items-center gap-x-6 gap-y-1 bg-violet-100/60 px-5 py-2',
+                      __WEB__ && '!gap-x-4 !border-b !border-b-[#DCE7DB] !bg-[#EFF5EC] !px-[15px] !py-2.5'
+                    )}
+                  >
+                    <div className={cn('text-sm font-semibold text-violet-900', __WEB__ && '!text-[13.5px] !font-extrabold !text-[#0A1F17]')}>
+                      {band.supplier_name}
+                    </div>
+                    <div className={cn('ml-auto flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px]', __WEB__ && '!gap-x-4')}>
+                      {/* Label above value reads as a caption; label BESIDE it
+                          reads as a figure with a name, which is what these
+                          three are. */}
+                      <span className={cn('text-violet-900/70', __WEB__ && '!text-[9.5px] !font-extrabold !uppercase !tracking-[.12em] !text-[#5A6B62]')}>
+                        In <span className={cn('font-semibold tabular-nums text-violet-900', __WEB__ && '!ml-1 !text-[12.5px] !font-bold !normal-case !tracking-normal !text-[#33473E]')}>{formatNum(band.deposited)}</span>
                       </span>
-                      <span className="text-violet-900/70">
-                        Booked <span className="font-semibold tabular-nums text-violet-900">{formatNum(band.invoiced)}</span>
+                      <span className={cn('text-violet-900/70', __WEB__ && '!text-[9.5px] !font-extrabold !uppercase !tracking-[.12em] !text-[#5A6B62]')}>
+                        Booked <span className={cn('font-semibold tabular-nums text-violet-900', __WEB__ && '!ml-1 !text-[12.5px] !font-bold !normal-case !tracking-normal !text-[#33473E]')}>{formatNum(band.invoiced)}</span>
                       </span>
-                      <span className="text-violet-900/70">
+                      <span className={cn('text-violet-900/70', __WEB__ && '!text-[9.5px] !font-extrabold !uppercase !tracking-[.12em] !text-[#5A6B62]')}>
                         In stock{' '}
-                        <span className="font-bold tabular-nums text-violet-900">
+                        <span className={cn('font-bold tabular-nums text-violet-900', __WEB__ && '!ml-1 !text-[14px] !font-bold !normal-case !tracking-[-0.02em] !text-[#0B6B45]')}>
                           {formatNum(band.balance)} {band.uom}
                         </span>
                       </span>
