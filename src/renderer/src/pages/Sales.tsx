@@ -214,7 +214,7 @@ function BargainSection({ title, children }: { title: string; children: React.Re
   return (
     <div>
       <div className="mb-2.5 text-[10px] font-extrabold uppercase tracking-[.14em] text-[#7C9188]">{title}</div>
-      <div className="grid grid-cols-2 gap-3.5 rounded-[4px] border border-[#D6E2D6] bg-white p-4 [&_[data-slot=date-picker]]:!h-11 [&_[data-slot=select-trigger]]:!h-11 [&_input]:!h-11 [&_label]:!text-[12px] [&_label]:!font-extrabold [&_label]:!text-[#33473E]">
+      <div className="grid grid-cols-2 gap-3.5 rounded-[4px] border border-[#D6E2D6] bg-white p-4 [&_[data-slot=date-picker]]:!h-10 [&_[data-slot=select-trigger]]:!h-10 [&_input]:!h-10 [&_label]:!text-[11.5px] [&_label]:!font-extrabold [&_label]:!text-[#33473E]">
         {children}
       </div>
     </div>
@@ -2508,7 +2508,7 @@ function SalesTab({
                 key={i}
                 className={cn(
                   __WEB__
-                    ? 'overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white [&_label]:text-[9.5px] [&_label]:font-extrabold [&_label]:uppercase [&_label]:tracking-[.13em] [&_label]:text-[#5A6B62] [&_input]:!h-[46px] [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:bg-white [&_input]:text-[15px] [&_[data-slot=select-trigger]]:!h-[46px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:bg-white [&_[data-slot=select-trigger]]:text-[14.5px] [&_[data-slot=select-trigger]]:font-bold [&_[data-slot=date-picker]]:!h-[46px] [&_[data-slot=date-picker]]:bg-white'
+                    ? 'overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white [&_label]:text-[9.5px] [&_label]:font-extrabold [&_label]:uppercase [&_label]:tracking-[.13em] [&_label]:text-[#5A6B62] [&_input]:!h-10 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:bg-white [&_input]:text-[13.5px] [&_input]:font-semibold [&_[data-slot=select-trigger]]:!h-10 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:bg-white [&_[data-slot=select-trigger]]:text-[13px] [&_[data-slot=select-trigger]]:font-bold [&_[data-slot=date-picker]]:!h-10 [&_[data-slot=date-picker]]:!text-[13.5px] [&_[data-slot=date-picker]]:bg-white'
                     : 'rounded border border-[#e5dfc8] bg-white p-3 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground [&_input]:h-8 [&_input]:bg-white [&_input]:text-[13px] [&_button[role=combobox]]:h-8 [&_button[role=combobox]]:bg-white [&_button[role=combobox]]:text-[12px] [&_[data-slot=date-picker]]:h-8 [&_[data-slot=date-picker]]:bg-white'
                 )}
                 // The left edge carries the line's state at a glance: amber
@@ -4581,7 +4581,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
             <button
               type="button"
               onClick={closeRateCard}
-              className="h-11 rounded-[4px] border-[1.5px] border-[#C3D2C6] px-6 text-[13.5px] font-extrabold uppercase tracking-[.03em] text-[#33473E] transition-colors hover:bg-[#F7FAF6]"
+              className="h-10 rounded-[4px] border-[1.5px] border-[#C3D2C6] px-5 text-[13px] font-extrabold uppercase tracking-[.03em] text-[#33473E] transition-colors hover:bg-[#F7FAF6]"
             >
               Close
             </button>
@@ -4592,7 +4592,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                 type="button"
                 onClick={() => void saveInlineRates()}
                 disabled={rateBusy}
-                className="flex h-11 items-center gap-2 rounded-[4px] bg-[#0B3D2E] px-6 text-[13.5px] font-extrabold uppercase tracking-[.03em] text-[#C7F03F] transition-colors hover:bg-[#0F4A38] disabled:cursor-not-allowed disabled:opacity-60"
+                className="flex h-10 items-center gap-2 rounded-[4px] bg-[#0B3D2E] px-5 text-[13px] font-extrabold uppercase tracking-[.03em] text-[#C7F03F] transition-colors hover:bg-[#0F4A38] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Check className="h-5 w-5" /> {rateBusy ? 'Saving…' : 'Save rates'}
               </button>
@@ -5017,7 +5017,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                 <TableRow
                   className={cn(
                     'border-y-2 border-amber-500 bg-amber-100 hover:bg-amber-100',
-                    __WEB__ && '!border-y-0 !border-b-2 !border-b-[#0B3D2E] !bg-[#EDF7D4] hover:!bg-[#EDF7D4] [&>td]:!h-[46px] [&>td]:!text-[13px] [&>td]:!text-[#2E4A0B]'
+                    __WEB__ && '!border-y-0 !border-b-2 !border-b-[#0B3D2E] !bg-[#EDF7D4] hover:!bg-[#EDF7D4] [&>td]:!h-[42px] [&>td]:!text-[13px] [&>td]:!text-[#2E4A0B]'
                   )}
                 >
                   <TableCell colSpan={4} className={cn('py-2 text-xs font-bold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[11px] !font-extrabold !tracking-[.1em] !text-[#2E4A0B]')}>
@@ -5057,7 +5057,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                             // left edge when open marks which rows below
                             // belong to it, the way the group cards on
                             // Purchases do.
-                            __WEB__ && '!border-y-0 !border-b !border-b-[#DCE7DB] !border-l-[3px] [&>td]:!h-[46px]',
+                            __WEB__ && '!border-y-0 !border-b !border-b-[#DCE7DB] !border-l-[3px] [&>td]:!h-[42px]',
                             __WEB__ && (isCollapsed ? '!border-l-transparent !bg-[#F7FAF6] hover:!bg-[#F1F5EF]' : '!border-l-[#0B3D2E] !bg-[#F1F5EF] hover:!bg-[#F1F5EF]')
                           )}
                           onClick={() => toggleGroup(grp)}
@@ -5757,7 +5757,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                     type="button"
                     onClick={() => setOpen(false)}
                     disabled={saving}
-                    className="h-11 rounded-[4px] border-[1.5px] border-[#C3D2C6] px-5 text-[13.5px] font-extrabold uppercase tracking-[.03em] text-[#33473E] transition-colors hover:bg-[#F7FAF6] disabled:opacity-50"
+                    className="h-10 rounded-[4px] border-[1.5px] border-[#C3D2C6] px-5 text-[13px] font-extrabold uppercase tracking-[.03em] text-[#33473E] transition-colors hover:bg-[#F7FAF6] disabled:opacity-50"
                   >
                     Cancel
                   </button>
@@ -5766,7 +5766,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                     onClick={save}
                     disabled={saving}
                     className={cn(
-                      'flex h-11 items-center gap-2 rounded-[4px] px-6 text-[13.5px] font-extrabold uppercase tracking-[.03em] transition-colors disabled:opacity-60',
+                      'flex h-10 items-center gap-2 rounded-[4px] px-5 text-[13px] font-extrabold uppercase tracking-[.03em] transition-colors disabled:opacity-60',
                       missing.length ? 'bg-[#33473E] text-white hover:bg-[#0B3D2E]' : 'bg-[#0B3D2E] text-[#C7F03F] hover:bg-[#0F4A38]'
                     )}
                   >

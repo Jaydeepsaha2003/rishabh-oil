@@ -2784,7 +2784,7 @@ export function GateEntry(): React.JSX.Element {
               // Nothing wraps: a gate number split over two lines and a
               // stacked date are the two things this register is scanned for.
               __WEB__ &&
-                '!min-w-[1320px] [&_td]:!whitespace-nowrap [&_td]:!border-r-[#F1F5EF] [&_th]:!whitespace-nowrap [&_th]:!border-r-[#DCE7DB]'
+                '!min-w-[1320px] [&_td]:!whitespace-nowrap [&_td]:!border-r-[#E4ECE3] [&_th]:!whitespace-nowrap [&_th]:!border-r-[#C3D2C6]'
             )}
           >
             <TableHeader
@@ -2844,7 +2844,7 @@ export function GateEntry(): React.JSX.Element {
                         // waiting on the weighbridge reads from the shape of
                         // the register rather than from reading the status
                         // column of every line.
-                        __WEB__ && '!border-b-[#EAF0E9] [&>td]:!py-2.5',
+                        __WEB__ && '!border-b-[#DCE7DB] [&>td]:!py-2.5',
                         __WEB__ && (done ? '!bg-white hover:!bg-[#F7FAF6]' : '!bg-[#FFFDF7] hover:!bg-[#FFFBF2]')
                       )}
                       style={__WEB__ ? { borderLeft: `3px solid ${done ? '#0B6B45' : '#C2700A'}` } : undefined}

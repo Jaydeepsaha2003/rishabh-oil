@@ -5471,61 +5471,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   )
                 ]
                 const manuals = [...new Set(mine.map((t) => String(t.gate_ref_no || '')).filter(Boolean))]
-                // The bargain's own note, against the number it belongs to.
-                // It lives in the Bargains & notes card further up the drawer,
-                // which is a scroll away from the summary anyone actually
-                // reads — and a note like "Rs 3000/- Interest add" changes
-                // what the rate beside it means.
-                const noteOf = new Map(
-                  (bargainNotes || []).map((b) => [String(b.bargain_no || ''), String(b.remarks || '').trim()])
-                )
-                const notes = bargains
-                  .map((no) => ({ no, note: noteOf.get(no) || '' }))
-                  .filter((x) => x.note)
+                // The note itself stays in the Bargains & notes card above,
+                // which carries it in bold beside that bargain's date, quantity
+                // and rate. Repeating it here said the same thing twice, three
+                // lines apart.
                 return (
                   <>
-                    <div
-                      className={cn(
-                        'flex items-start gap-2 rounded-lg border bg-muted/30 px-3 py-2',
-                        __WEB__ && '!min-w-0 !flex-col !gap-1.5 !rounded-[4px] !border-[#D6E2D6] !bg-white !px-3.5 !py-3'
-                      )}
-                    >
-                      <div className={cn(__WEB__ && 'flex items-center gap-1.5')}>
-                        <ScrollText className={cn('mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground', __WEB__ && '!mt-0 !h-4 !w-4 !text-[#8AA096]')} />
-                        {__WEB__ && (
-                          <span className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#7C9188]">
-                            {bargains.length > 1 ? 'Bargains' : 'Bargain no'}
-                          </span>
-                        )}
-                      </div>
-                      <div className="min-w-0">
-                        {!__WEB__ && (
-                          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                            {bargains.length > 1 ? 'Bargains' : 'Bargain no'}
-                          </div>
-                        )}
-                        <div
-                          className={cn(
-                            'truncate text-sm font-medium',
-                            __WEB__ && '!overflow-visible !whitespace-normal !break-words !text-[15px] !font-bold !leading-snug !tracking-[-0.01em]'
-                          )}
-                        >
-                          {bargains.length ? bargains.join(' + ') : 'Not linked'}
-                        </div>
-                        {notes.map((x) => (
-                          <div
-                            key={x.no}
-                            className={cn(
-                              'mt-1 text-[11px] text-muted-foreground',
-                              __WEB__ && '!mt-1.5 !rounded-[3px] !bg-[#FFFBF2] !px-2 !py-1 !text-[11.5px] !font-bold !leading-snug !text-[#8A5300]'
-                            )}
-                          >
-                            {bargains.length > 1 ? `${x.no}: ` : ''}
-                            {x.note}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
+                    <InfoTile
+                      icon={ScrollText}
+                      label={bargains.length > 1 ? 'Bargains' : 'Bargain no'}
+                      value={bargains.length ? bargains.join(' + ') : 'Not linked'}
+                    />
                     <InfoTile
                       icon={ClipboardList}
                       label={manuals.length > 1 ? 'Manual gate nos' : 'Manual gate no'}
@@ -5635,7 +5591,6 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                     )}
                                     {!!r.t.bargain_no && (
                                       <span className="font-semibold text-[#33473E]">
-                                        {r.t.gate_entry_no ? '· ' : ''}
                                         {String(r.t.bargain_no)}
                                         {r.t.extra_bargain_no ? ` + ${String(r.t.extra_bargain_no)}` : ''}
                                       </span>
