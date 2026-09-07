@@ -48,8 +48,12 @@ const baseFields: FieldDef[] = [
   { key: 'pouches_per_box', label: 'Units per case (×)', type: 'number', required: true, default: 1 },
   { key: 'box_label', label: 'Case label', type: 'text', default: 'Case' },
   // Derived for stock conversion — auto-filled from unit size/UOM, editable.
-  { key: 'base_per_pouch', label: 'Base qty / unit (auto)', type: 'number', default: 0 },
-  { key: 'base_uom', label: 'Base unit (auto)', type: 'text', default: 'KG' },
+  // Locked: both are worked out from the unit size and its UOM the moment
+  // either changes. They are still saved — stock converts through
+  // base_per_pouch — but typing over them only puts the two out of step with
+  // the size they are supposed to describe.
+  { key: 'base_per_pouch', label: 'Base qty / unit (auto)', type: 'number', default: 0, readOnly: true },
+  { key: 'base_uom', label: 'Base unit (auto)', type: 'text', default: 'KG', readOnly: true },
   // The check on the two numbers above it. A case entered as "500 GM x 32"
   // reads 16 KG here; one entered the older way, with the case total in the
   // unit size and 1 per case, reads the same total but from a unit size that

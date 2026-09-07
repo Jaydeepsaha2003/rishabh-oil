@@ -89,6 +89,12 @@ export interface FieldDef {
   // has no business being stored and going stale.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   compute?: (form: Record<string, any>) => string
+  // Shown, saved, but not typed into. For a value the form works out for
+  // itself: readOnly rather than disabled, because a disabled input is greyed
+  // to half opacity and reads as "not applicable" when in fact it is the
+  // answer. The value still goes in the payload — unlike 'computed', these
+  // ARE columns.
+  readOnly?: boolean
 }
 
 export interface ColumnDef {
@@ -626,7 +632,10 @@ export function EntityManager({
                         'py-1.5',
                         // The record's own name leads the row, and the date is
                         // the other thing people scan down a master list for.
-                        __WEB__ && c.key === 'name' && '!text-[14.5px] !font-bold !tracking-[-0.01em]',
+                        // Every value on a master list is a fact somebody is
+                        // checking, so none of them sit at the default weight.
+                        __WEB__ && '!text-[13px] !font-semibold !text-[#33473E]',
+                        __WEB__ && c.key === 'name' && '!text-[14.5px] !font-bold !tracking-[-0.01em] !text-[#0A1F17]',
                         __WEB__ && c.type === 'date' && '!text-[13px] !font-bold !text-[#5A6B62]',
                         c.align === 'right' && 'text-right tabular-nums'
                       )}
@@ -916,7 +925,11 @@ export function EntityManager({
                         value={form[fd.key] ?? ''}
                         placeholder={fd.placeholder}
                         disabled={fieldDisabled}
-                        onChange={(e) => setField(fd.key, e.target.value)}
+                        readOnly={fd.readOnly}
+                        tabIndex={fd.readOnly ? -1 : undefined}
+                        title={fd.readOnly ? 'Worked out from the fields above — not typed' : undefined}
+                        onChange={(e) => !fd.readOnly && setField(fd.key, e.target.value)}
+                        className={cn(fd.readOnly && 'cursor-default bg-muted/40 font-semibold text-foreground')}
                       />
                     </>
                   )}
