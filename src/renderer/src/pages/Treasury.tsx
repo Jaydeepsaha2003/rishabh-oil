@@ -530,6 +530,108 @@ function ValidityInline({ l }: { l: Row }): React.JSX.Element {
   )
 }
 
+// The invoices an LC covers, as a card of its own: a counted header, one
+// hairline-separated row per invoice, and a summary strip at the foot.
+//
+// It used to be a tinted teal box tucked under the Supplier field, with the
+// invoice number, the party, the date and the amount all on one 12px line. A
+// tick list of money is the part of this form most likely to be got wrong, so
+// it gets the room: number and party stacked on the left, figure right-aligned
+// in tabular figures, and a count in the header so "how many did I pick" needs
+// no counting.
+function LcCoverCard({
+  title,
+  rows,
+  isOn,
+  lockedBy,
+  onToggle,
+  footer
+}: {
+  title: string
+  rows: { id: number; no: string; party: string; date?: string | null; amount: number }[]
+  isOn: (id: number) => boolean
+  lockedBy?: (id: number) => string | null
+  onToggle: (id: number, checked: boolean) => void
+  footer?: React.ReactNode
+}): React.JSX.Element {
+  const [openFoot, setOpenFoot] = useState(true)
+  const picked = rows.filter((r) => isOn(r.id)).length
+  // No overflow-hidden on the card. It is a grid item here, and a grid item
+  // whose overflow is not visible has an automatic minimum size of 0 — its
+  // auto row collapses to the borders and the card is clipped to 2px.
+  return (
+    <section className="rounded-[4px] border border-[#D6E2D6] bg-white">
+      <div className="flex items-center gap-2 border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-[15px] py-[11px]">
+        <span className="text-[10.5px] font-extrabold uppercase tracking-[.13em] text-[#0A1F17]">{title}</span>
+        <span className="doc-ref ml-auto whitespace-nowrap text-[11.5px] font-bold tabular-nums text-[#5A6B62]">
+          {picked} of {rows.length} linked
+        </span>
+      </div>
+      {rows.length === 0 ? (
+        <div className="px-[15px] py-4 text-[12.5px] font-semibold text-[#5A6B62]">
+          No open invoices for this party yet.
+        </div>
+      ) : (
+        <div>
+          {rows.map((r, i) => {
+            const locked = lockedBy?.(r.id) || null
+            const on = isOn(r.id)
+            return (
+              <label
+                key={r.id}
+                className={cn(
+                  'flex items-center gap-3 px-[15px] py-[11px]',
+                  i > 0 && 'border-t border-t-[#EAF0E9]',
+                  locked ? 'cursor-not-allowed bg-[#FBFCFA]' : 'cursor-pointer hover:bg-[#F7FAF6]',
+                  on && !locked && 'bg-[#F4FBF6]'
+                )}
+              >
+                <input
+                  type="checkbox"
+                  className="h-[18px] w-[18px] shrink-0 accent-[#0B3D2E]"
+                  checked={on}
+                  disabled={!!locked}
+                  onChange={(e) => onToggle(r.id, e.target.checked)}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="doc-ref block truncate text-[13px] font-bold text-[#0A1F17]">
+                    {r.no || `Order #${r.id}`}
+                  </span>
+                  <span className="block truncate text-[11.5px] font-semibold text-[#5A6B62]">
+                    {r.party}
+                    {r.date ? ` · ${formatDate(r.date)}` : ''}
+                    {locked ? ` · linked to LC ${locked}` : ''}
+                  </span>
+                </span>
+                <span className="doc-ref flex-none whitespace-nowrap text-[13.5px] font-bold tabular-nums text-[#0A1F17]">
+                  {formatINR(r.amount)}
+                </span>
+              </label>
+            )
+          })}
+        </div>
+      )}
+      {!!footer && (
+        <>
+          <button
+            type="button"
+            onClick={() => setOpenFoot((o) => !o)}
+            className="flex w-full items-center gap-2 border-t border-t-[#E4ECE3] bg-[#F7FAF6] px-[15px] py-[10px] text-left"
+          >
+            <span className="text-[10.5px] font-extrabold uppercase tracking-[.13em] text-[#0A1F17]">
+              Cover selected
+            </span>
+            <ChevronDown
+              className={cn('ml-auto h-4 w-4 shrink-0 text-[#5A6B62] transition-transform', openFoot && 'rotate-180')}
+            />
+          </button>
+          {openFoot && <div className="px-[15px] py-3">{footer}</div>}
+        </>
+      )}
+    </section>
+  )
+}
+
 function LcPreviewRow({
   label,
   value,
@@ -4137,7 +4239,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     </Select>
                   </div>
                 </div>
-                {!!lcForm.party_id && String(lcForm.purpose || '') === 'trading' && (
+                {!__WEB__ && !!lcForm.party_id && String(lcForm.purpose || '') === 'trading' && (
                   <div className="mt-3 rounded-lg border border-teal-200 bg-teal-50/50 p-3">
                     <Label>Trading invoices for this supplier <span className="text-[10px] font-normal text-muted-foreground">(each invoice is its own pick — select whichever this LC finances)</span></Label>
                     {lcFormTradingInvoices.length === 0 ? (
@@ -4217,7 +4319,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     })()}
                   </div>
                 )}
-                {!!lcForm.party_id && String(lcForm.purpose || '') !== 'trading' && (
+                {!__WEB__ && !!lcForm.party_id && String(lcForm.purpose || '') !== 'trading' && (
                   <div className="mt-3 rounded-lg border border-teal-200 bg-teal-50/50 p-3">
                     <Label>Open invoices for this party <span className="text-[10px] font-normal text-muted-foreground">(select one or more this LC covers)</span></Label>
                     {lcFormOrders.length === 0 ? (
@@ -4282,7 +4384,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     })()}
                   </div>
                 )}
-                {!!lcForm.party_id && String(lcForm.purpose) === 'trading' && (
+                {!__WEB__ && !!lcForm.party_id && String(lcForm.purpose) === 'trading' && (
                   <div className="mt-3 grid gap-3 rounded-lg border border-teal-200 bg-teal-50/50 p-3">
                     <div className="flex flex-col gap-1.5">
                       <Label>Party payment will be received from</Label>
@@ -4305,6 +4407,135 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   </div>
                 )}
               </section>
+
+              {__WEB__ && !!lcForm.party_id && (() => {
+                const trading = String(lcForm.purpose || '') === 'trading'
+                const ids: number[] = Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []
+                const isOn = (id: number): boolean => ids.map(String).includes(String(id))
+                const total = round2(
+                  orders.filter((o) => ids.map(String).includes(String(o.id))).reduce((t, o) => t + n(o.net_amount), 0)
+                )
+                const over = round2(n(lcForm.amount) - total)
+                // Exactly the summary the tinted block carried, and the same
+                // rule the Save button enforces: an application may be saved
+                // with nothing linked, anything past it may not.
+                const foot = ids.length ? (
+                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+                      {ids.length} invoice{ids.length === 1 ? '' : 's'} · total
+                    </span>
+                    <span className="doc-ref text-[15px] font-bold tabular-nums text-[#0A1F17]">{formatINR(total)}</span>
+                    {over > 0.005 && (
+                      <span className="ml-auto flex items-center gap-1.5 text-[12px] font-bold text-[#B3261E]">
+                        <AlertTriangle className="h-4 w-4 shrink-0" />
+                        Open amount is {formatINR(over)} over this cover
+                      </span>
+                    )}
+                  </div>
+                ) : needsLinkedInvoice(lcForm) ? (
+                  <div className="flex items-start gap-2 rounded-[4px] border border-[#F0D6D4] bg-[#FDF3F2] px-3 py-2.5 text-[12.5px] font-bold text-[#8C2F26]">
+                    <AlertTriangle className="mt-px h-4 w-4 shrink-0" />
+                    An LC past Application must name the invoice(s) it covers.
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-2 rounded-[4px] border border-[#BFE3CB] bg-[#F4FBF6] px-3 py-2.5 text-[12.5px] font-bold text-[#0B6B45]">
+                    <Check className="mt-px h-4 w-4 shrink-0" />
+                    No invoice yet. An application can be saved without one.
+                  </div>
+                )
+                if (trading) {
+                  return (
+                    <>
+                      <LcCoverCard
+                        title="Trading invoices covered"
+                        rows={lcFormTradingInvoices.map((r) => ({
+                          id: Number(r.order_id),
+                          no: String(r.invoice_no || ''),
+                          party: String(r.customer_name || 'no customer yet'),
+                          date: r.deal_date,
+                          amount: n(r.net_amount)
+                        }))}
+                        isOn={isOn}
+                        lockedBy={(id) => {
+                          const c = lcInvoiceClaims.get(id)
+                          return c ? String(c.lc_no || 'pending') : null
+                        }}
+                        onToggle={(id, checked) => {
+                          const r = lcFormTradingInvoices.find((x) => Number(x.order_id) === id)
+                          const nextIds = checked ? [...ids, id] : ids.filter((x) => Number(x) !== id)
+                          const t = round2(
+                            orders.filter((o) => nextIds.map(Number).includes(Number(o.id))).reduce((a, o) => a + n(o.net_amount), 0)
+                          )
+                          const dealIdsNow = Array.from(
+                            new Set(lcFormTradingInvoices.filter((x) => nextIds.includes(Number(x.order_id))).map((x) => x.deal_id))
+                          )
+                          setLcForm({
+                            ...lcForm,
+                            linked_order_ids: nextIds,
+                            linked_deal_ids: dealIdsNow,
+                            amount: lcForm.amount_manual ? lcForm.amount : String(t),
+                            receivable_party_id:
+                              lcForm.receivable_party_id || (checked ? r?.customer_id : lcForm.receivable_party_id)
+                          })
+                        }}
+                        footer={foot}
+                      />
+                      <section className={cn(LC_DIALOG, LC_FIELDS)}>
+                        <h3 className={cn('flex items-center gap-1.5 uppercase', LC_SECTION_HEAD)}>Repayment</h3>
+                        <div className={cn(LC_GRID, 'grid')}>
+                          <div className="flex min-w-0 flex-col gap-1.5">
+                            <Label>Party payment will be received from</Label>
+                            <Select
+                              value={lcForm.receivable_party_id ? String(lcForm.receivable_party_id) : ''}
+                              onValueChange={(v) => setLcForm((prev) => ({ ...prev, receivable_party_id: v }))}
+                            >
+                              <SelectTrigger><SelectValue placeholder="Select customer" /></SelectTrigger>
+                              <SelectContent className="max-h-64">
+                                {customers.map((x) => <SelectItem key={String(x.id)} value={String(x.id)}>{x.name}</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+                        {(!ids.length || !lcForm.receivable_party_id) && (
+                          <div className="mx-[15px] mb-[15px] flex items-start gap-2 rounded-[4px] border border-[#F0D6D4] bg-[#FDF3F2] px-3 py-2.5 text-[12.5px] font-bold text-[#8C2F26]">
+                            <AlertTriangle className="mt-px h-4 w-4 shrink-0" />
+                            Non-compliant — a Trading LC needs at least one open invoice and the party the repayment
+                            will come from.
+                          </div>
+                        )}
+                      </section>
+                    </>
+                  )
+                }
+                return (
+                  <LcCoverCard
+                    title="Purchase invoices covered"
+                    rows={lcFormOrders.map((o) => ({
+                      id: Number(o.id),
+                      no: String(o.invoice_no || ''),
+                      party: String(o.supplier_name || suppliers.find((x) => Number(x.id) === Number(o.supplier_id))?.name || ''),
+                      date: o.order_date,
+                      amount: n(o.net_amount)
+                    }))}
+                    isOn={isOn}
+                    onToggle={(id, checked) => {
+                      const next = checked ? [...ids, id] : ids.filter((x) => Number(x) !== id)
+                      // Rounded before it reaches the field, the same as every
+                      // other money total here: summing several net_amounts in
+                      // floating point lands a paisa off a clean figure.
+                      const t = round2(
+                        orders.filter((x) => next.map(String).includes(String(x.id))).reduce((a, x) => a + n(x.net_amount), 0)
+                      )
+                      setLcForm((prev) => ({
+                        ...prev,
+                        linked_order_ids: next,
+                        amount: prev?.amount_manual ? prev.amount : String(t)
+                      }))
+                    }}
+                    footer={foot}
+                  />
+                )
+              })()}
 
               <section className={cn('rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm', LC_DIALOG, LC_FIELDS)}>
                 <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', LC_SECTION_HEAD)}>
