@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { EntityManager, type ColumnDef, type FieldDef } from '@/components/EntityManager'
+import { formatNum } from '@/lib/format'
 import { loadUser } from '@/lib/session'
 import { canWrite } from '@/lib/modules'
 
@@ -49,6 +50,22 @@ const baseFields: FieldDef[] = [
   // Derived for stock conversion — auto-filled from unit size/UOM, editable.
   { key: 'base_per_pouch', label: 'Base qty / unit (auto)', type: 'number', default: 0 },
   { key: 'base_uom', label: 'Base unit (auto)', type: 'text', default: 'KG' },
+  // The check on the two numbers above it. A case entered as "500 GM x 32"
+  // reads 16 KG here; one entered the older way, with the case total in the
+  // unit size and 1 per case, reads the same total but from a unit size that
+  // is not a unit — which is the mistake this line makes visible.
+  {
+    key: '_case_total',
+    label: 'Total weight per case (auto)',
+    type: 'computed',
+    compute: (f) => {
+      const per = Number(f.pouches_per_box) || 0
+      const base = Number(f.base_per_pouch) || 0
+      if (!per || !base) return '—'
+      const t = caseTotal(f)
+      return `${per} × ${formatNum(base)} = ${formatNum(t.qty)} ${t.uom}`
+    }
+  },
   // Which finished product this SKU packs (DALDA 15 KG TIN → DALDA), so packed
   // pieces reconcile in tonnage against that product's stock. Options are
   // filled in from the product master below.
@@ -65,16 +82,40 @@ const baseFields: FieldDef[] = [
   { key: 'active', label: 'Active', type: 'switch', default: true }
 ]
 
+// Every column carries a header filter except SKU, which is what the search
+// box above the table is for — a funnel listing twenty-one distinct names is
+// a worse way to find one than typing it.
 const baseColumns: ColumnDef[] = [
   { key: 'name', label: 'SKU' },
-  { key: 'product_id', label: 'Product' },
-  { key: 'pouch_label', label: 'Type', type: 'select' },
-  { key: 'unit_size', label: 'Unit size', align: 'right' },
-  { key: 'unit_uom', label: 'UOM', type: 'select' },
-  { key: 'pouches_per_box', label: 'Per case', align: 'right' },
-  { key: 'base_uom', label: 'Base', align: 'right' },
-  { key: 'active', label: 'Active', type: 'switch' }
+  { key: 'product_id', label: 'Product', filterable: true },
+  { key: 'pouch_label', label: 'Type', type: 'select', filterable: true },
+  { key: 'unit_size', label: 'Unit size', align: 'right', filterable: true },
+  { key: 'unit_uom', label: 'UOM', type: 'select', filterable: true },
+  { key: 'pouches_per_box', label: 'Per case', align: 'right', filterable: true },
+  {
+    key: '_case_total',
+    label: 'Total weight',
+    align: 'right',
+    filterable: true,
+    value: (r) => {
+      const t = caseTotal(r)
+      return t.qty > 0 ? `${formatNum(t.qty)} ${t.uom}` : '—'
+    }
+  },
+  { key: 'base_uom', label: 'Base', align: 'right', filterable: true },
+  { key: 'active', label: 'Active', type: 'switch', filterable: true }
 ]
+
+// What one case comes to in the base unit: units per case x the base quantity
+// of one unit. 500 GM x 32 is 16 KG, and that is the figure anybody checking a
+// SKU actually knows — so it is shown rather than left to be multiplied in the
+// head. Derived, never stored: a stored total would go stale the moment the
+// unit size or the count changed.
+function caseTotal(row: Row): { qty: number; uom: string } {
+  const per = Number(row.pouches_per_box) || 0
+  const base = Number(row.base_per_pouch) || 0
+  return { qty: Math.round(per * base * 1e6) / 1e6, uom: String(row.base_uom || 'KG').toUpperCase() }
+}
 
 // Convert the entered unit size to the base unit used for stock (KG or L).
 function deriveBase(form: Row): Row {

@@ -33,9 +33,10 @@ import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { ExcelButton } from '@/components/ExcelButton'
 import { todayISO } from '@/lib/format'
 import { Pagination, usePaged } from '@/components/Pagination'
+import { ColumnFilter } from '@/components/ui/column-filter'
 import { useIsMobile } from '@/lib/useIsMobile'
 
-export type FieldType = 'text' | 'number' | 'switch' | 'select' | 'date' | 'creatable' | 'color'
+export type FieldType = 'text' | 'number' | 'switch' | 'select' | 'date' | 'creatable' | 'color' | 'computed'
 export type ColumnType = FieldType
 
 // Chip colours for the values a master list's select column actually carries.
@@ -83,6 +84,11 @@ export interface FieldDef {
   // Field is editable only while this returns true (e.g. gated by a switch).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   enabledWhen?: (form: Record<string, any>) => boolean
+  // For type 'computed': what to show. Read-only, worked out from the fields
+  // above it as they are typed, and never sent — a figure that is derivable
+  // has no business being stored and going stale.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  compute?: (form: Record<string, any>) => string
 }
 
 export interface ColumnDef {
@@ -93,6 +99,9 @@ export interface ColumnDef {
   // Derives what the cell shows, for columns that are not a plain field —
   // e.g. an id resolved to the linked record's name.
   value?: (row: Row) => string
+  // Opt-in header filter. Off by default so no existing master changes: a
+  // list of eight ports does not need one, and a list of twenty-one SKUs does.
+  filterable?: boolean
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -148,8 +157,44 @@ export function EntityManager({
     return rows.filter((r) => columns.some((c) => String(r[c.key] ?? '').toLowerCase().includes(q)))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, search])
+  // Excel-style per-column filters, on the columns that ask for one. Keyed by
+  // column, empty meaning "every value" — the same convention ColumnFilter
+  // uses everywhere else in the app.
+  const [colFilters, setColFilters] = useState<Record<string, string[]>>({})
+  // Options come from renderCell, not the raw field, so what the funnel offers
+  // is exactly what the column displays — "Yes"/"No" for a switch, the
+  // resolved name for a linked id, the derived total for a computed column.
+  const filterOptions = useMemo(() => {
+    const out: Record<string, { value: string; label: string; count: number }[]> = {}
+    for (const c of columns) {
+      if (!c.filterable) continue
+      const tally = new Map<string, number>()
+      for (const r of rows) {
+        const t = renderCell(r, c)
+        tally.set(t, (tally.get(t) || 0) + 1)
+      }
+      out[c.key] = [...tally.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+        .map(([value, count]) => ({ value, label: value, count }))
+    }
+    return out
+    // renderCell is stable for a given rows/columns pair.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, columns])
+  const filteredRows = useMemo(
+    () =>
+      shownRows.filter((r) =>
+        columns.every((c) => {
+          const sel = colFilters[c.key]
+          if (!c.filterable || !sel?.length) return true
+          return sel.includes(renderCell(r, c))
+        })
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [shownRows, colFilters, columns]
+  )
   // 10 per page with page numbers underneath, shared by every master list.
-  const paged = usePaged(shownRows)
+  const paged = usePaged(filteredRows)
   // Options a creatable field offers: whatever the field declares, plus every
   // value already used by an existing record, plus anything added this session.
   const [addedOptions, setAddedOptions] = useState<Record<string, string[]>>({})
@@ -223,6 +268,7 @@ export function EntityManager({
 
   async function save(): Promise<void> {
     for (const fd of fields) {
+      if (fd.type === 'computed') continue
       if (fd.required && (form[fd.key] === '' || form[fd.key] == null)) {
         setError(`${fd.label} is required`)
         return
@@ -233,6 +279,7 @@ export function EntityManager({
     try {
       const payload: Row = {}
       for (const fd of fields) {
+        if (fd.type === 'computed') continue
         let v = form[fd.key]
         if (fd.type === 'number') v = v === '' || v == null ? 0 : Number(v)
         if (fd.type === 'switch') v = v ? 1 : 0
@@ -362,7 +409,8 @@ export function EntityManager({
             __WEB__ && '!rounded-[3px] !bg-[#C7F03F] !px-2.5 !py-1 !text-[13px] !font-extrabold !text-[#12280B]'
           )}
         >
-          {shownRows.length}{search ? ` / ${rows.length}` : ''}
+          {filteredRows.length}
+          {search || filteredRows.length !== rows.length ? ` / ${rows.length}` : ''}
         </span>
         {(() => {
           const dupes = rows.filter(isDuplicated).length
@@ -432,7 +480,11 @@ export function EntityManager({
             <div className="py-10 text-center text-[13px] text-[#7C9188]">Loading…</div>
           ) : paged.pageRows.length === 0 ? (
             <div className="py-10 text-center text-[13px] text-[#7C9188]">
-              {rows.length === 0 ? 'No records yet.' : 'Nothing matches that search.'}
+              {rows.length === 0
+                ? 'No records yet.'
+                : search
+                  ? 'Nothing matches that search.'
+                  : 'Nothing matches these filters.'}
             </div>
           ) : (
             <div className="space-y-2.5">
@@ -513,7 +565,17 @@ export function EntityManager({
                     c.align === 'right' && 'text-right'
                   )}
                 >
-                  {c.label}
+                  {c.filterable ? (
+                    <ColumnFilter
+                      label={c.label}
+                      options={filterOptions[c.key] || []}
+                      value={colFilters[c.key] || []}
+                      onApply={(vals) => setColFilters((prev) => ({ ...prev, [c.key]: vals }))}
+                      align={c.align === 'right' ? 'end' : 'start'}
+                    />
+                  ) : (
+                    c.label
+                  )}
                 </TableHead>
               ))}
               <TableHead
@@ -702,7 +764,14 @@ export function EntityManager({
               const fieldDisabled = fd.enabledWhen ? !fd.enabledWhen(form) : false
               return (
                 <div key={fd.key} className={cn('flex flex-col gap-1.5', fieldDisabled && 'opacity-50')}>
-                  {fd.type === 'switch' ? (
+                  {fd.type === 'computed' ? (
+                    <>
+                      <Label>{fd.label}</Label>
+                      <div className="flex h-9 items-center rounded-md border border-input bg-muted/40 px-3 text-sm font-semibold tabular-nums text-foreground">
+                        {fd.compute?.(form) || '—'}
+                      </div>
+                    </>
+                  ) : fd.type === 'switch' ? (
                     <div className="flex items-center justify-between rounded-md border px-3 py-2">
                       <Label>{fd.label}</Label>
                       <Switch
