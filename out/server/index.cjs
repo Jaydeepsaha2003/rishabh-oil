@@ -9748,6 +9748,11 @@ async function runStartupTasks() {
     }
   })().catch((e) => console.error("[companies] column repair failed:", e));
   await (async () => {
+    await getClient().execute("ALTER TABLE letters_of_credit ADD COLUMN blocked_amount REAL").catch((e) => {
+      if (!/duplicate column/i.test(String(e.message))) throw e;
+    });
+  })().catch((e) => console.error("[lc] blocked_amount column failed:", e));
+  await (async () => {
     const c = getClient();
     await c.execute(`CREATE TABLE IF NOT EXISTS bill_discountings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -13890,7 +13895,10 @@ var n20 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
 async function listFacilities() {
   const res = await getClient().execute({
     sql: `SELECT f.*,
-            COALESCE((SELECT SUM(l.amount - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
+            -- Blocked, not opened: a sanctioned facility carries whatever the
+            -- bank has blocked against it, which is the figure it holds even
+            -- when the bill came in for less. Same rule as getLcLimit in lc.ts.
+            COALESCE((SELECT SUM(COALESCE(l.blocked_amount, l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
                        WHERE r.lc_id = l.id AND r.posted = 1), 0)) FROM letters_of_credit l
                        WHERE l.facility_id = f.id AND l.status != 'closed'), 0) AS lc_committed,
             COALESCE((SELECT SUM(i.amount) FROM lc_issuances i
@@ -14002,7 +14010,7 @@ async function facilityHeadroom(facilityId, excludeLcId = 0) {
   const f = await c.execute({ sql: "SELECT * FROM bank_facilities WHERE id = ?", args: [facilityId] });
   if (!f.rows.length) throw new Error("That facility no longer exists");
   const lc = await c.execute({
-    sql: `SELECT COALESCE(SUM(l.amount - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
+    sql: `SELECT COALESCE(SUM(COALESCE(l.blocked_amount, l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
                  WHERE r.lc_id = l.id AND r.posted = 1), 0)), 0) AS a
           FROM letters_of_credit l WHERE l.facility_id = ? AND l.status != 'closed' AND l.id != ?`,
     args: [facilityId, excludeLcId]
@@ -14118,7 +14126,11 @@ async function listLCs() {
       // What's still owed against the LC's full sanctioned limit, net of
       // repayments — explicitly requested this way even for an LC that's
       // barely drawn down, so it reads as the limit's outstanding exposure.
-      outstanding: Math.round((n21(l.amount) - n21(l.repaid)) * 100) / 100,
+      // Against the limit, so the blocked figure less what has been repaid.
+      outstanding: Math.round(((n21(l.blocked_amount) || n21(l.amount)) - n21(l.repaid)) * 100) / 100,
+      // Resolved once here so the register and the forms never have to repeat
+      // the fallback — and cannot disagree about it.
+      blocked_effective: round29(n21(l.blocked_amount) || n21(l.amount)),
       compliant,
       display_status: !compliant ? "non_compliant" : String(l.workflow_status || "in_progress")
     };
@@ -14153,7 +14165,11 @@ async function getLcLimit(bankId, from, to) {
   const f = from ? String(from).slice(0, 10) : "";
   const t = to ? String(to).slice(0, 10) : "";
   const sumsRes = await c.execute({
-    sql: `SELECT stage, COALESCE(SUM(amount), 0) AS total, COUNT(*) AS cnt FROM letters_of_credit
+    // Against the LIMIT it is the blocked amount that counts, not the amount
+    // opened: the bank is holding the figure it blocked whether or not the bill
+    // came in for that much. Interest and margin still work off the open
+    // amount, which is why only the limit sums coalesce this way.
+    sql: `SELECT stage, COALESCE(SUM(COALESCE(blocked_amount, amount)), 0) AS total, COUNT(*) AS cnt FROM letters_of_credit
           WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
             ${bank ? "AND our_bank_id = ?" : ""}
             ${f ? "AND open_date >= ?" : ""}
@@ -14202,7 +14218,7 @@ async function listBankLcLimits() {
                  COALESCE(l.convertible_limit, 0) AS convertible_limit,
                  COALESCE(l.convertible_enabled, 0) AS convertible_enabled,
                  (SELECT COUNT(*) FROM letters_of_credit x WHERE x.company_id = ? AND x.our_bank_id = b.id) AS lc_count,
-                 COALESCE((SELECT SUM(x.amount) FROM letters_of_credit x
+                 COALESCE((SELECT SUM(COALESCE(x.blocked_amount, x.amount)) FROM letters_of_credit x
                            WHERE x.company_id = ? AND x.our_bank_id = b.id
                              AND COALESCE(x.facility_type, 'lc') = 'lc' AND x.preclosed_date IS NULL), 0) AS utilized
           FROM banks b
@@ -14318,6 +14334,10 @@ var LC_COLS = [
   "party_type",
   "party_id",
   "amount",
+  // What the bank blocks against the facility. Nullable on purpose: an LC that
+  // has never been told otherwise reads its blocked figure as the open amount,
+  // which is what every LC opened before this column existed means.
+  "blocked_amount",
   "open_date",
   "expiry_date",
   "interest_pct",
@@ -14348,7 +14368,7 @@ function lcArgs(v) {
       if (k === "lc_no") return "";
       return null;
     }
-    if (k === "our_bank_id" || k === "party_id" || k === "amount" || k === "interest_pct" || k === "charges" || k === "usance_days" || k === "margin_pct" || k === "facility_id" || k === "receivable_party_id" || k === "interest_upfront" || // Signed: a negative adjustment is the ordinary case, so this must not
+    if (k === "our_bank_id" || k === "party_id" || k === "amount" || k === "blocked_amount" || k === "interest_pct" || k === "charges" || k === "usance_days" || k === "margin_pct" || k === "facility_id" || k === "receivable_party_id" || k === "interest_upfront" || // Signed: a negative adjustment is the ordinary case, so this must not
     // be floored or read as a string.
     k === "interest_adj") {
       return n21(val);
@@ -14360,7 +14380,7 @@ async function assertWithinFacility(v, excludeLcId = 0) {
   const facilityId = n21(v.facility_id);
   if (!facilityId || v.force_over_limit) return;
   const h = await facilityHeadroom(facilityId, excludeLcId);
-  const amount = n21(v.amount);
+  const amount = n21(v.blocked_amount) || n21(v.amount);
   if (amount > n21(h.available) + 5e-3) {
     throw new Error(
       `${h.name} has ${Number(h.available).toFixed(2)} left of its ${Number(h.sanctioned).toFixed(2)} sanction (${Number(h.lc_committed).toFixed(2)} on other LCs, ${Number(h.other_outstanding).toFixed(2)} other outstanding). This LC of ${amount.toFixed(2)} would exceed it.`
