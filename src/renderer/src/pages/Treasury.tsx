@@ -49,6 +49,8 @@ import { BillDiscounting } from './BillDiscounting'
 import { ColumnFilter } from '@/components/ui/column-filter'
 import { canAccess } from '@/lib/modules'
 import { loadUser } from '@/lib/session'
+import { useIsMobile } from '@/lib/useIsMobile'
+import { TreasuryMobile } from './TreasuryMobile'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -504,6 +506,13 @@ function ClosureBadge({ l, withDate }: { l: Row; withDate?: boolean }): React.JS
 }
 
 export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
+  // A phone gets its own screen rather than this one narrowed: the registers
+  // here are wide tables of figures, and a table that has to scroll sideways
+  // on a phone is a table nobody reads. Website only — the desktop app's
+  // window is never this narrow. Same fork Sales.tsx makes for SalesMobile.
+  const isMobile = useIsMobile()
+  if (__WEB__ && isMobile) return <TreasuryMobile />
+
   // Treasury's three sections are granted separately. A user reaches this page
   // through the Treasury permission, then sees only the sections they hold —
   // the LC desk, the discounting decision and collections are different jobs.
