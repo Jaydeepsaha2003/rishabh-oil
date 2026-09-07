@@ -1603,22 +1603,22 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                                 <td className={cn('py-1.5 pr-3 text-right tabular-nums font-medium text-red-600', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>{loaded > 0 ? formatNum(dis) : '—'}</td>
                                                 <td className={cn('py-1.5 pr-3 text-right tabular-nums', __WEB__ && '!text-[12.5px] !font-bold')}>{rec != null ? formatNum(rec) : '—'}</td>
                                                 <td className="py-1.5 pr-3 text-right tabular-nums">
+                                                  {/* The figure alone. The bar that used to sit under it
+                                                      measured the shortage against its allowance — the same
+                                                      species of bar the client had removed from the Balance
+                                                      column, and the Allowed MT figure is right beside it
+                                                      anyway. */}
                                                   {__WEB__ && shortage != null ? (
-                                                    <>
-                                                      <div className={cn('text-[12.5px] font-bold', deductible != null ? 'text-[#B3261E]' : 'text-[#8A5300]')}>{formatNum(shortage)}</div>
-                                                      {/* Shortage against the allowance it is measured by — the
-                                                          bar fills as it approaches the tolerance and is full once
-                                                          it has passed it. */}
-                                                      <div className="mt-1 h-1 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
-                                                        <div
-                                                          className="h-full"
-                                                          style={{
-                                                            width: `${allowedAmt > 0 ? Math.min(100, (shortage / allowedAmt) * 100) : shortage > 0 ? 100 : 0}%`,
-                                                            background: deductible != null ? '#B3261E' : '#12855A'
-                                                          }}
-                                                        />
-                                                      </div>
-                                                    </>
+                                                    <div
+                                                      className={cn('text-[12.5px] font-bold', deductible != null ? 'text-[#B3261E]' : 'text-[#8A5300]')}
+                                                      title={
+                                                        allowedAmt > 0
+                                                          ? `${formatNum(shortage)} against an allowance of ${formatNum(allowedAmt)}`
+                                                          : undefined
+                                                      }
+                                                    >
+                                                      {formatNum(shortage)}
+                                                    </div>
                                                   ) : shortage != null ? (
                                                     <span className={shortage > 0 ? 'text-amber-700' : ''}>{formatNum(shortage)}</span>
                                                   ) : '—'}
@@ -1647,7 +1647,13 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                                     until then — that is the order in which it
                                                     is actually decided. */}
                                                 <td
-                                                  className={cn('py-1.5 pr-3', __WEB__ && '!text-[12px] !font-bold !text-[#33473E]')}
+                                                  className={cn(
+                                                    'py-1.5 pr-3',
+                                                    __WEB__ && '!text-[12px] !font-bold',
+                                                    // Only when no colour is set: !important would
+                                                    // otherwise beat the inline colour below.
+                                                    __WEB__ && !coColour(t.invoice_company_id ?? t.company_id) && '!text-[#33473E]'
+                                                  )}
                                                   style={
                                                     __WEB__ && coColour(t.invoice_company_id ?? t.company_id)
                                                       ? { color: coColour(t.invoice_company_id ?? t.company_id) }

@@ -20,6 +20,7 @@ import {
   Percent,
   Plus,
   RotateCcw,
+  Search,
   SlidersHorizontal,
   Trash2,
   Users
@@ -119,7 +120,7 @@ function DueBadge({ date, l }: { date: unknown; l?: Row }): React.JSX.Element | 
     return (
       <span
         className={cn(
-          'inline-block whitespace-nowrap rounded-[2px] px-2.5 py-1 text-[12.5px] font-extrabold tabular-nums',
+          'inline-block whitespace-nowrap rounded-[2px] px-2 py-[3px] text-[11px] font-extrabold tabular-nums',
           hot ? 'bg-[#FDF3F2] text-[#B3261E]' : 'bg-[#FFF4E0] text-[#8A5300]'
         )}
         title={gone != null ? `${Math.round(gone)}% of the ${term}-day term gone` : undefined}
@@ -165,7 +166,7 @@ function StageBadge({ stage }: { stage: string }): React.JSX.Element {
       className={cn(
         'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
         tone,
-        __WEB__ && '!px-2.5 !py-[3px] !text-[11px] !font-bold'
+        __WEB__ && '!rounded-[2px] !px-2 !py-[2px] !text-[10px] !font-bold'
       )}
     >
       {STAGE_LABEL[stage] || stage}
@@ -275,12 +276,12 @@ const TRACKER_HEAD =
 // width, because "Mark Payment received" is twice the length of "Preclose"
 // and the handoff's 126px would cut it off.
 const LC_ACT_GO =
-  '!h-[30px] !min-w-[118px] !rounded-[3px] !border-0 !bg-[#0B3D2E] !px-3 !text-[12.5px] !font-extrabold !text-white hover:!bg-[#0F4A38]'
+  '!h-[30px] !rounded-[3px] !border-0 !bg-[#0B3D2E] !px-2.5 !text-[11.5px] !font-extrabold !leading-none !text-white hover:!bg-[#0F4A38]'
 const LC_ACT_2ND =
-  '!h-[30px] !w-[78px] !rounded-[3px] !border !border-[#C3D2C6] !bg-white !px-0 !text-[12.5px] !font-extrabold !text-[#33473E] hover:!bg-[#F7FAF6]'
+  '!h-[30px] !w-[70px] !rounded-[3px] !border !border-[#C3D2C6] !bg-white !px-0 !text-[11.5px] !font-extrabold !leading-none !text-[#33473E] hover:!bg-[#F7FAF6]'
 const LC_HEAD =
   __WEB__
-    ? '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&>th]:!h-auto [&>th]:!bg-[#0B3D2E] [&>th]:!py-3 [&>th]:!text-[11px] [&>th]:!font-extrabold [&>th]:!tracking-[.1em] [&>th]:!text-white [&_button]:!text-[11px] [&_button]:!uppercase [&_button]:!tracking-[.1em] [&_button]:!text-white'
+    ? '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&>th]:!h-auto [&>th]:!bg-[#0B3D2E] [&>th]:!py-3 [&>th]:!text-[10.5px] [&>th]:!font-semibold [&>th]:!tracking-[.06em] [&>th]:!text-white [&_button]:!text-[10.5px] [&_button]:!font-semibold [&_button]:!uppercase [&_button]:!tracking-[.06em] [&_button]:!text-white'
     : ''
 const LC_TOTAL =
   __WEB__
@@ -503,12 +504,12 @@ function ValidityInline({ l }: { l: Row }): React.JSX.Element {
   }): React.JSX.Element => (
     <div className="flex items-baseline gap-2">
       <span
-        className={cn('w-[27px] flex-none text-[10px] font-extrabold uppercase tracking-[.08em]', tagClass)}
+        className={cn('w-[26px] flex-none text-[9.5px] font-extrabold uppercase tracking-[.08em]', tagClass)}
         title={title}
       >
         {tag}
       </span>
-      <span className={cn('doc-ref whitespace-nowrap text-[13.5px]', valueClass)}>
+      <span className={cn('doc-ref whitespace-nowrap text-[12px]', valueClass)}>
         {date ? formatDateShort(date) : <span className="text-[#C3D2C6]">—</span>}
       </span>
     </div>
@@ -919,6 +920,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   // Signature: 'none' | 'early' | 'on_time' | 'late'.
   // 'repaid' = preclosed/repaid already.
   const [lcStatusFilter, setLcStatusFilter] = useState<'all' | 'matured' | 'repaid'>('all')
+  // One box across the three things an LC is looked up by. The column filters
+  // are for narrowing a whole register; this is for finding one row.
+  const [lcSearch, setLcSearch] = useState('')
   // Every LC bill and discounted bill in one due-date-sorted list, regardless
   // of urgency — the alerts above only surface what's already close.
   const [tracker, setTracker] = useState<Row[]>([])
@@ -1834,9 +1838,17 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     if (lcBankCol.length) rows = rows.filter((l) => lcBankCol.includes(String(l.bank || '')))
     if (lcPartyCol.length) rows = rows.filter((l) => lcPartyCol.includes(String(l.supplier_name || '')))
     if (lcMatCol.length) rows = rows.filter((l) => lcMatCol.includes(matMonth(l)))
+    const q = lcSearch.trim().toLowerCase()
+    if (q) {
+      rows = rows.filter((l) =>
+        [l.lc_no, l.bank, l.bank_name, l.supplier_name, l.fd_no].some((f) =>
+          String(f || '').toLowerCase().includes(q)
+        )
+      )
+    }
     return rows
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lcsBase, lcBankCol, lcPartyCol, lcMatCol])
+  }, [lcsBase, lcBankCol, lcPartyCol, lcMatCol, lcSearch])
 
   // Who did what to one LC — the same dialog every other register uses.
   const hist = useHistoryDialog()
@@ -2207,7 +2219,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 )}
               >
                 <Icon className={cn('h-[19px] w-[19px]', on ? 'text-[#0B3D2E]' : 'text-[#A8B8AE]')} />
-                {t.label}
+                {__WEB__ ? t.label.replace(/\bof Credit\b/, 'of credit').replace(/\bDiscounting\b/, 'discounting').replace(/\bTracker\b/, 'tracker') : t.label}
                 <span
                   className={cn(
                     'rounded-[2px] px-[7px] py-[3px] font-mono text-[11px] font-bold tabular-nums',
@@ -2226,7 +2238,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
           {/* Alerts and the LC filters share ONE row. The alerts stay outside
               the tab panels so they show on every tab; the filters only render
               on the LC tab, where they mean something. */}
-          {(tabAlerts.length > 0 || tab === 'lc') && (
+          {tabAlerts.length > 0 && !(__WEB__ && tab === 'lc') && (
             <div className="flex flex-wrap items-center gap-2">
               {tabAlerts.map((a) => (
                 <button
@@ -2244,125 +2256,6 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   <ChevronRight className="h-3.5 w-3.5 opacity-60" />
                 </button>
               ))}
-              {tabAlerts.length > 0 && tab === 'lc' && <div className={cn('h-4 w-px bg-[#e5dfc8]', __WEB__ && '!h-6 !bg-[#C3D2C6]')} />}
-              {tab === 'lc' && (
-                <>
-                    {/* One dropdown rather than four chips — they were mutually
-                        exclusive windows on the same thing (how soon it falls
-                        due), so a single control says that and frees the row.
-                        Disabled wholesale for Repaid: a repaid LC has no due
-                        date, so every window but All would come back empty. */}
-                    <span
-                      className="flex items-center gap-1.5"
-                      title={
-                        lcStatusFilter === 'repaid'
-                          ? 'A repaid LC has no due date — nothing is owed on it'
-                          : undefined
-                      }
-                    >
-                      <span className={cn('text-[10px] font-semibold uppercase tracking-wide text-muted-foreground', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.13em] !text-[#5A6B62]')}>
-                        Due
-                      </span>
-                      <Select
-                        value={lcDuePeriod}
-                        onValueChange={setLcDuePeriod}
-                        disabled={lcStatusFilter === 'repaid'}
-                      >
-                        <SelectTrigger
-                          className={cn(
-                            'h-8 w-[9.5rem] text-[11px] font-semibold uppercase tracking-wide',
-                            lcDuePeriod !== 'all' && 'border-[#1a2c56] bg-[#1a2c56] text-white',
-                            __WEB__ && '!h-[38px] !w-[10.5rem] !rounded-[4px] !border-[#C3D2C6] !text-[12px] !font-bold !normal-case !tracking-normal',
-                            __WEB__ && lcDuePeriod !== 'all' && '!border-[#0B3D2E] !bg-[#0B3D2E] !text-white'
-                          )}
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {DUE_PERIODS.map((p) => (
-                            <SelectItem key={p.key} value={p.key}>
-                              {p.key === 'all' ? 'Any due date' : p.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </span>
-                    <div className={cn('h-4 w-px bg-[#e5dfc8]', __WEB__ && '!h-6 !bg-[#C3D2C6]')} />
-                    {(['manufacturing', 'trading'] as const).map((p) => (
-                      <button
-                        key={p}
-                        type="button"
-                        onClick={() => setLcPurposeFilter(lcPurposeFilter === p ? null : p)}
-                        className={cn(
-                          'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide capitalize transition-colors',
-                          lcPurposeFilter === p ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50',
-                          __WEB__ && '!h-[38px] !rounded-[4px] !px-3.5 !text-[12px] !font-extrabold !tracking-[.04em]',
-                          __WEB__ &&
-                            (lcPurposeFilter === p
-                              ? '!border-[#0B3D2E] !bg-[#0B3D2E] !text-white'
-                              : '!border-[#C3D2C6] !bg-white !text-[#33473E] hover:!bg-[#F7FAF6]')
-                        )}
-                      >
-                        {p}
-                        {__WEB__ && <ChipCount n={lcChipCounts[p]} on={lcPurposeFilter === p} />}
-                      </button>
-                    ))}
-                    <div className={cn('h-4 w-px bg-[#e5dfc8]', __WEB__ && '!h-6 !bg-[#C3D2C6]')} />
-                    {(
-                      [
-                        // Named for what it now shows — a chip labelled "All" that
-                        // hides the matured and repaid ones would misread.
-                        { key: 'all', label: 'Running' },
-                        { key: 'matured', label: 'Matured' },
-                        { key: 'repaid', label: 'Repaid' }
-                      ] as const
-                    ).map((p) => (
-                      <button
-                        key={p.key}
-                        type="button"
-                        onClick={() => {
-                          setLcStatusFilter(p.key)
-                          // Switching to Repaid would otherwise leave a due-period
-                          // chip selected but dead, and the list empty for no
-                          // visible reason.
-                          if (p.key === 'repaid') setLcDuePeriod('all')
-                        }}
-                        className={cn(
-                          'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
-                          lcStatusFilter === p.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50',
-                          __WEB__ && '!h-[38px] !rounded-[4px] !px-3.5 !text-[12px] !font-extrabold !tracking-[.04em]',
-                          __WEB__ &&
-                            (lcStatusFilter === p.key
-                              ? '!border-[#0B3D2E] !bg-[#0B3D2E] !text-white'
-                              : '!border-[#C3D2C6] !bg-white !text-[#33473E] hover:!bg-[#F7FAF6]')
-                        )}
-                      >
-                        {p.label}
-                        {__WEB__ && <ChipCount n={lcChipCounts[p.key]} on={lcStatusFilter === p.key} />}
-                      </button>
-                    ))}
-                    <div className={cn('ml-auto flex gap-1 rounded-md border border-[#d9d2b8] bg-white p-0.5', __WEB__ && '!gap-[3px] !rounded-[4px] !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px]')}>
-                      <Button
-                        size="icon"
-                        variant={lcView === 'cards' ? 'default' : 'ghost'}
-                        className={cn('h-7 w-7', __WEB__ && '!h-8 !w-8 !rounded-[2px]', __WEB__ && (lcView === 'cards' ? '!bg-[#0B3D2E] !text-white' : '!bg-transparent !text-[#5A6B62] hover:!bg-white/70'))}
-                        title="Card view"
-                        onClick={() => setLcView('cards')}
-                      >
-                        <LayoutGrid className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4')} />
-                      </Button>
-                      <Button
-                        size="icon"
-                        variant={lcView === 'table' ? 'default' : 'ghost'}
-                        className={cn('h-7 w-7', __WEB__ && '!h-8 !w-8 !rounded-[2px]', __WEB__ && (lcView === 'table' ? '!bg-[#0B3D2E] !text-white' : '!bg-transparent !text-[#5A6B62] hover:!bg-white/70'))}
-                        title="Table view"
-                        onClick={() => setLcView('table')}
-                      >
-                        <List className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4')} />
-                      </Button>
-                    </div>
-                </>
-              )}
             </div>
           )}
 
@@ -2536,6 +2429,23 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       ? `${lcLimit.period_lc_count} of ${lcLimit.lc_count} holding limit`
                       : `${lcLimit.lc_count} holding limit`}
                   </span>
+                  {__WEB__ &&
+                    tabAlerts.map((a) => (
+                      <button
+                        key={a.key}
+                        type="button"
+                        title={`Click to see all ${a.rows.length}`}
+                        onClick={() => setExpandedAlert(a.key)}
+                        className={cn(
+                          'flex items-center gap-1.5 rounded-[3px] border px-3 py-1.5 text-[12px] font-extrabold uppercase tracking-[.05em] transition-colors hover:brightness-95',
+                          a.tone,
+                          '!h-[34px]'
+                        )}
+                      >
+                        <a.icon className="h-3.5 w-3.5" /> {a.label}
+                        <ChevronRight className="h-3.5 w-3.5 opacity-60" />
+                      </button>
+                    ))}
                   <PeriodPicker
                     from={lcKpiFrom}
                     to={lcKpiTo}
@@ -2617,9 +2527,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       {formatINR(lcLimit.convertible_limit)}
                     </div>
                   </div>
-                  <div className={cn('bg-[#1a2c56] px-3 py-2.5 text-center', LIMIT_CELL, __WEB__ && '!bg-[#0B3D2E]')}>
-                    <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-white/70', LIMIT_K, __WEB__ && '!text-[#8FBFA8]')}>Total LC Limit</div>
-                    <div className={cn('text-[15px] font-bold tabular-nums text-white', LIMIT_V, __WEB__ && '!text-[#C7F03F]')}>{formatINR(lcLimit.total_limit)}</div>
+                  <div className={cn('bg-[#1a2c56] px-3 py-2.5 text-center', LIMIT_CELL, __WEB__ && '!bg-[#F1F5EF]')}>
+                    <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-white/70', LIMIT_K, __WEB__ && '!text-[#33473E]')}>Total LC Limit</div>
+                    <div className={cn('text-[15px] font-bold tabular-nums text-white', LIMIT_V, __WEB__ && '!text-[#0A1F17]')}>{formatINR(lcLimit.total_limit)}</div>
                   </div>
                   {/* The one figure that decides whether another LC can be
                       opened at all, next to the limit it comes out of. Red and
@@ -2726,6 +2636,182 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 </div>
               </div>
             )}
+
+            <div className={cn('flex flex-wrap items-center gap-2', __WEB__ && '!gap-2.5')}>
+              {tab === 'lc' && (
+                <>
+                    {/* One dropdown rather than four chips — they were mutually
+                        exclusive windows on the same thing (how soon it falls
+                        due), so a single control says that and frees the row.
+                        Disabled wholesale for Repaid: a repaid LC has no due
+                        date, so every window but All would come back empty. */}
+                    <span
+                      className="flex items-center gap-1.5"
+                      title={
+                        lcStatusFilter === 'repaid'
+                          ? 'A repaid LC has no due date — nothing is owed on it'
+                          : undefined
+                      }
+                    >
+                      <span className={cn('text-[10px] font-semibold uppercase tracking-wide text-muted-foreground', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.13em] !text-[#5A6B62]')}>
+                        Due
+                      </span>
+                      <Select
+                        value={lcDuePeriod}
+                        onValueChange={setLcDuePeriod}
+                        disabled={lcStatusFilter === 'repaid'}
+                      >
+                        <SelectTrigger
+                          className={cn(
+                            'h-8 w-[9.5rem] text-[11px] font-semibold uppercase tracking-wide',
+                            lcDuePeriod !== 'all' && 'border-[#1a2c56] bg-[#1a2c56] text-white',
+                            __WEB__ && '!h-[38px] !w-[10.5rem] !rounded-[4px] !border-[#C3D2C6] !text-[12px] !font-bold !normal-case !tracking-normal',
+                            __WEB__ && lcDuePeriod !== 'all' && '!border-[#0B3D2E] !bg-[#0B3D2E] !text-white'
+                          )}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {DUE_PERIODS.map((p) => (
+                            <SelectItem key={p.key} value={p.key}>
+                              {p.key === 'all' ? 'Any due date' : p.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </span>
+                    <div className={cn('h-4 w-px bg-[#e5dfc8]', __WEB__ && '!h-6 !bg-[#C3D2C6]')} />
+                    {(
+                      [
+                        // Named for what it now shows — a chip labelled "All" that
+                        // hides the matured and repaid ones would misread.
+                        { key: 'all', label: 'Running' },
+                        { key: 'matured', label: 'Matured' },
+                        { key: 'repaid', label: 'Repaid' }
+                      ] as const
+                    ).map((p) => (
+                      <button
+                        key={p.key}
+                        type="button"
+                        onClick={() => {
+                          setLcStatusFilter(p.key)
+                          // Switching to Repaid would otherwise leave a due-period
+                          // chip selected but dead, and the list empty for no
+                          // visible reason.
+                          if (p.key === 'repaid') setLcDuePeriod('all')
+                        }}
+                        className={cn(
+                          'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
+                          lcStatusFilter === p.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50',
+                          __WEB__ && '!h-[38px] !rounded-[4px] !px-3.5 !text-[12.5px] !font-extrabold !capitalize !tracking-normal',
+                          __WEB__ &&
+                            (lcStatusFilter === p.key
+                              ? '!border-[#0B3D2E] !bg-[#0B3D2E] !text-white'
+                              : '!border-[#C3D2C6] !bg-white !text-[#33473E] hover:!bg-[#F7FAF6]')
+                        )}
+                      >
+                        {p.label}
+                        {__WEB__ && <ChipCount n={lcChipCounts[p.key]} on={lcStatusFilter === p.key} />}
+                      </button>
+                    ))}
+                    {(['manufacturing', 'trading'] as const).map((p) => (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => setLcPurposeFilter(lcPurposeFilter === p ? null : p)}
+                        className={cn(
+                          'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide capitalize transition-colors',
+                          lcPurposeFilter === p ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50',
+                          __WEB__ && '!h-[38px] !rounded-[4px] !px-3.5 !text-[12.5px] !font-extrabold !capitalize !tracking-normal',
+                          __WEB__ &&
+                            (lcPurposeFilter === p
+                              ? '!border-[#0B3D2E] !bg-[#0B3D2E] !text-white'
+                              : '!border-[#C3D2C6] !bg-white !text-[#33473E] hover:!bg-[#F7FAF6]')
+                        )}
+                      >
+                        {/* The real word, not the stored key leaning on CSS
+                            capitalize — the label is text people copy, read
+                            aloud and search for. */}
+                        {p === 'manufacturing' ? 'Manufacturing' : 'Trading'}
+                        {__WEB__ && <ChipCount n={lcChipCounts[p]} on={lcPurposeFilter === p} />}
+                      </button>
+                    ))}
+                    {__WEB__ && (
+                      <div className="ml-auto flex h-[38px] min-w-[150px] flex-1 basis-[150px] items-center gap-2.5 rounded-[4px] border border-[#C3D2C6] bg-white px-3">
+                        <Search className="h-4 w-4 shrink-0 text-[#5A6B62]" />
+                        <input
+                          value={lcSearch}
+                          onChange={(e) => setLcSearch(e.target.value)}
+                          placeholder="Search LC no, bank, supplier…"
+                          className="min-w-0 flex-1 border-0 bg-transparent p-0 text-[13px] font-semibold text-[#0A1F17] outline-none placeholder:font-medium placeholder:text-[#8FA79B]"
+                        />
+                        {!!lcSearch && (
+                          <button
+                            type="button"
+                            onClick={() => setLcSearch('')}
+                            title="Clear"
+                            className="shrink-0 text-[11px] font-extrabold uppercase tracking-[.06em] text-[#0B6B45]"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {__WEB__ && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="!h-[38px] !shrink-0 !gap-1.5 !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3.5 !text-[12.5px] !font-bold !text-[#0A1F17] hover:!bg-[#F7FAF6] hover:!text-[#0A1F17]"
+                          disabled={lcExporting || lcsFiltered.length === 0}
+                          onClick={() => void downloadLcRegister()}
+                        >
+                          <FileSpreadsheet className="h-4 w-4" /> {lcExporting ? 'Preparing…' : 'Excel'}
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="!h-[38px] !shrink-0 !gap-1.5 !rounded-[4px] !bg-[#C7F03F] !px-4 !text-[13px] !font-extrabold !text-[#0B3D2E] !shadow-none hover:!bg-[#B9E62F]"
+                          onClick={() =>
+                            setLcForm({
+                              open_date: todayISO(),
+                              usance_days: '',
+                              margin_pct: '',
+                              interest_pct: '',
+                              charges: '',
+                              purpose: 'manufacturing',
+                              workflow_status: 'in_progress',
+                              stage: 'application',
+                              our_bank_id: activeBank || ''
+                            })
+                          }
+                        >
+                          <Plus className="h-4 w-4" /> Open new LC
+                        </Button>
+                      </>
+                    )}
+                    <div className={cn('ml-auto flex gap-1 rounded-md border border-[#d9d2b8] bg-white p-0.5', __WEB__ && '!ml-0 !shrink-0 !gap-[3px] !rounded-[4px] !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px]')}>
+                      <Button
+                        size="icon"
+                        variant={lcView === 'cards' ? 'default' : 'ghost'}
+                        className={cn('h-7 w-7', __WEB__ && '!h-8 !w-8 !rounded-[2px]', __WEB__ && (lcView === 'cards' ? '!bg-[#0B3D2E] !text-white' : '!bg-transparent !text-[#5A6B62] hover:!bg-white/70'))}
+                        title="Card view"
+                        onClick={() => setLcView('cards')}
+                      >
+                        <LayoutGrid className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4')} />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant={lcView === 'table' ? 'default' : 'ghost'}
+                        className={cn('h-7 w-7', __WEB__ && '!h-8 !w-8 !rounded-[2px]', __WEB__ && (lcView === 'table' ? '!bg-[#0B3D2E] !text-white' : '!bg-transparent !text-[#5A6B62] hover:!bg-white/70'))}
+                        title="Table view"
+                        onClick={() => setLcView('table')}
+                      >
+                        <List className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4')} />
+                      </Button>
+                    </div>
+                </>
+              )}
+            </div>
 
             {lcView === 'cards' ? (
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -2924,13 +3010,18 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               <div
                 className={cn(
                   'flex items-center gap-2 rounded-t-md bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-4 py-2 text-white shadow-sm',
-                  __WEB__ && '!flex-wrap !gap-2.5 !rounded-none !border-b !border-b-[#E4ECE3] !bg-[#F7FAF6] !bg-none !px-4 !py-3 !text-[#0A1F17] !shadow-none'
+                  // Nothing left on it but the title once Excel and Open new LC
+                  // moved into the filter row, and the table below already says
+                  // what it is.
+                  __WEB__ && '!hidden'
                 )}
               >
                 <span className={cn('flex h-6 w-6 items-center justify-center rounded-full bg-white/15', __WEB__ && '!h-7 !w-7 !rounded-[3px] !bg-[#EAF0E9]')}>
                   <Banknote className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4 !text-[#0B3D2E]')} />
                 </span>
                 <span className={cn('text-[13px] font-bold uppercase tracking-widest', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.14em]')}>Letters of Credit</span>
+                {!__WEB__ && (
+                  <>
                 <Button
                   size="sm"
                   variant="outline"
@@ -2941,7 +3032,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   disabled={lcExporting || lcsFiltered.length === 0}
                   onClick={() => void downloadLcRegister()}
                 >
-                  <FileSpreadsheet className="h-4 w-4" /> {lcExporting ? 'Preparing…' : 'Download Excel'}
+                  <FileSpreadsheet className="h-4 w-4" /> {lcExporting ? 'Preparing…' : __WEB__ ? 'Excel' : 'Download Excel'}
                 </Button>
                 {/* The one primary action on this bar — amber against the navy
                     so it reads as the thing to click, rather than blending
@@ -2950,48 +3041,52 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   size="sm"
                   className={cn(
                     'bg-amber-400 font-semibold text-[#1a2c56] shadow-sm hover:bg-amber-300',
-                    __WEB__ && '!h-[34px] !gap-1.5 !rounded-[3px] !bg-[#0B3D2E] !px-3.5 !text-[12px] !font-extrabold !text-[#C7F03F] !shadow-none hover:!bg-[#0F4A38]'
+                    // Lime on forest, as the handoff draws the one button on
+                    // the page that starts something new.
+                    __WEB__ && '!h-[34px] !gap-1.5 !rounded-[3px] !bg-[#C7F03F] !px-3.5 !text-[12.5px] !font-extrabold !text-[#0B3D2E] !shadow-none hover:!bg-[#B9E62F]'
                   )}
                   onClick={() => setLcForm({ open_date: todayISO(), usance_days: '', margin_pct: '', interest_pct: '', charges: '', purpose: 'manufacturing', workflow_status: 'in_progress', stage: 'application', our_bank_id: activeBank || '' })}
                 >
                   <Plus className="h-4 w-4" /> Open new LC
                 </Button>
+                  </>
+                )}
               </div>
               <div className="overflow-x-auto">
-              <Table className={cn('ruled-cols text-[13px]', __WEB__ && '!min-w-[1340px]')}>
+              <Table className={cn('ruled-cols text-[13px]', __WEB__ && '!min-w-[1242px] !table-fixed')}>
                 <TableHeader className="sticky top-0 z-10">
                   <TableRow className={cn('border-b-2 border-[#1a2c56]/20 bg-[#dce6f5] hover:bg-[#dce6f5]', LC_HEAD)}>
-                    <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                    <TableHead className={cn('h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[192px]')}>
                       <ColumnFilter label="LC no · bank" options={colOptions.bank} value={lcBankCol} onApply={setLcBankCol} />
                     </TableHead>
-                    <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                    <TableHead className={cn('h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[160px]')}>
                       <ColumnFilter label="Supplier" options={colOptions.party} value={lcPartyCol} onApply={setLcPartyCol} />
                     </TableHead>
-                    <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                    <TableHead className={cn('h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[116px]')}>
                       {/* By maturity MONTH — a tick list of individual days
                           would be as long as the register itself. */}
                       <ColumnFilter label="Validity" options={colOptions.mat} value={lcMatCol} onApply={setLcMatCol} />
                     </TableHead>
-                    <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Days left</TableHead>
-                    <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Int. days</TableHead>
+                    <TableHead className={cn('h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[96px]')}>Days left</TableHead>
+                    <TableHead className={cn('h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[72px]')}>Int. days</TableHead>
                     <TableHead
-                      className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]"
+                      className={cn('h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[96px]')}
                       title="Interest for the days between preclosure and the LC's original maturity — the stretch that never happened"
                     >
                       Premature int.
                     </TableHead>
-                    <TableHead className="h-9 w-[150px] min-w-[150px] whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                    <TableHead className={cn('h-9 w-[150px] min-w-[150px] whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[152px] !min-w-0')}>
                       Open amount
                     </TableHead>
                     <TableHead
-                      className="h-9 w-[165px] min-w-[165px] whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]"
+                      className={cn('h-9 w-[165px] min-w-[165px] whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[162px] !min-w-0')}
                       title="What reaches the beneficiary — the open amount less the interest and commission the bank keeps"
                     >
                       {/* Lime, like the balance column on every other register:
                           this is the figure the register exists to report. */}
                       <span className={cn(__WEB__ && '!text-[#C7F03F]')}>Payment rec</span>
                     </TableHead>
-                    <TableHead className="h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
+                    <TableHead className={cn('h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[196px]')}>
                       <span className={cn(__WEB__ && '!text-white')}>Actions</span>
                     </TableHead>
                   </TableRow>
@@ -3002,7 +3097,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       sanctioned Limit and what is still Available across them. */}
                   {lcsFiltered.length > 0 && (
                     <TableRow className={cn('border-b-2 border-amber-400 bg-amber-50 hover:bg-amber-50', LC_TOTAL)}>
-                      <TableCell className={cn('whitespace-nowrap font-semibold text-amber-900', __WEB__ && '!text-[13px] !font-extrabold !uppercase !tracking-[.06em] !text-[#0A1F17]')}>
+                      <TableCell className={cn('whitespace-nowrap font-semibold text-amber-900', __WEB__ && '!text-[12px] !font-extrabold !uppercase !tracking-[.06em] !text-[#0A1F17]')}>
                         Total
                         <span className={cn('ml-1.5 font-normal text-amber-800/70', __WEB__ && '!font-semibold !normal-case !tracking-normal !text-[#5A6B62]')}>
                           · {lcsFiltered.length} LC{lcsFiltered.length === 1 ? '' : 's'}
@@ -3012,16 +3107,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       <TableCell />
                       <TableCell />
                       <TableCell />
-                      <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[15px] !font-bold !text-[#0A1F17]')}>
+                      <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[14px] !font-bold !text-[#0A1F17]')}>
                         {(() => {
                           const t = lcsFiltered.reduce((a2, l) => a2 + n(l.preclose_premature_interest), 0)
                           return t > 0.004 ? formatINR(t) : ''
                         })()}
                       </TableCell>
-                      <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[15px] !font-bold !text-[#0A1F17]')}>
+                      <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[14px] !font-bold !text-[#0A1F17]')}>
                         {formatINR(lcsFiltered.reduce((t, l) => t + n(l.amount), 0))}
                       </TableCell>
-                      <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[15px] !font-bold !text-[#0A1F17]')}>
+                      <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-amber-900', __WEB__ && '!text-[14px] !font-bold !text-[#0A1F17]')}>
                         {formatINR(lcsFiltered.reduce((t, l) => t + n(l.paid_to_party ?? l.paid_expected), 0))}
                       </TableCell>
                       <TableCell />
@@ -3069,7 +3164,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                       className={cn(
                                         'doc-ref font-semibold',
                                         !l.lc_no && 'italic text-muted-foreground',
-                                        __WEB__ && '!text-[14px] !font-bold !text-[#0A1F17]'
+                                        __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]'
                                       )}
                                     >
                                       {l.lc_no || 'Pending LC no'}
@@ -3078,13 +3173,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                     {!__WEB__ && currentStageBadge(l)}
                                     {!__WEB__ && <ClosureBadge l={l} />}
                                   </div>
-                                  {__WEB__ && (
-                                    <div className="flex flex-wrap items-center gap-1.5">
-                                      {currentStageBadge(l)}
-                                      <ClosureBadge l={l} />
-                                    </div>
-                                  )}
-                                  <div className={cn('mt-0.5 text-[11px] text-muted-foreground', __WEB__ && '!mt-0 !text-[12.5px] !font-semibold !text-[#5A6B62]')}>
+                                  <div className={cn('mt-0.5 text-[11px] text-muted-foreground', __WEB__ && '!mt-0 !truncate !text-[11.5px] !font-semibold !text-[#5A6B62]')}>
                                     {l.bank}
                                     {/* The margin lives in the expanded panel and
                                         in the Preclose preview. On the website it
@@ -3093,6 +3182,17 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                         there and untouched in the app. */}
                                     {!__WEB__ && n(l.margin_pct) ? <span className="tabular-nums"> · margin {l.margin_pct}%</span> : ''}
                                   </div>
+                                  {/* Number, bank, then state — the order the row is
+                                      read in. The state is squared off rather than a
+                                      pill: every other tag in this register is a 2px
+                                      box, and a lozenge among them read as a control
+                                      rather than a label. */}
+                                  {__WEB__ && (
+                                    <div className="flex flex-wrap items-center gap-1.5 [&>span]:!rounded-[2px]">
+                                      {currentStageBadge(l)}
+                                      <ClosureBadge l={l} />
+                                    </div>
+                                  )}
                                 </div>
                               </div>
                             </TableCell>
@@ -3102,7 +3202,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 // No truncation: max-width is ignored on cells
                                 // in an auto-layout table, and this one is
                                 // 1340px wide with its own scroller.
-                                __WEB__ && '!text-[14px] !font-bold !text-[#0A1F17]'
+                                __WEB__ && '!truncate !text-[12.5px] !font-bold !text-[#0A1F17]'
                               )}
                               title={String(l.supplier_name || '')}
                             >
@@ -3169,7 +3269,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <TableCell
                               className={cn(
                                 'whitespace-nowrap text-right tabular-nums text-muted-foreground',
-                                __WEB__ && '!text-[13.5px] !font-semibold !text-[#33473E]'
+                                __WEB__ && '!text-[12px] !font-semibold !text-[#33473E]'
                               )}
                             >
                               {n(l.usance_days) > 0 ? n(l.usance_days) : '—'}
@@ -3177,8 +3277,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <TableCell className="whitespace-nowrap border-l border-[#1a2c56]/10 text-right tabular-nums">
                               {n(l.preclose_premature_interest) > 0.004 ? (
                                 <>
-                                  <div className={cn('font-semibold text-violet-800', __WEB__ && '!text-[13.5px] !font-bold')}>{formatINR(l.preclose_premature_interest)}</div>
-                                  <div className={cn('text-[10px] uppercase tracking-wide text-muted-foreground', __WEB__ && '!text-[11px]')}>
+                                  <div className={cn('font-semibold text-violet-800', __WEB__ && '!text-[12.5px] !font-bold')}>{formatINR(l.preclose_premature_interest)}</div>
+                                  <div className={cn('text-[10px] uppercase tracking-wide text-muted-foreground', __WEB__ && '!text-[10.5px]')}>
                                     {String(l.preclose_interest_route || '') === 'pay_to_party' ? 'paid to party' : 'credited to us'}
                                   </div>
                                 </>
@@ -3189,7 +3289,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <TableCell
                               className={cn(
                                 'whitespace-nowrap text-right font-medium tabular-nums',
-                                __WEB__ && '!text-[15px] !font-bold !text-[#0A1F17]'
+                                __WEB__ && '!text-[13.5px] !font-bold !text-[#0A1F17]'
                               )}
                             >
                               {formatINR(l.amount)}
@@ -3208,7 +3308,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 <div
                                   className={cn(
                                     'font-semibold tabular-nums underline decoration-dotted underline-offset-4',
-                                    __WEB__ && '!text-[15px] !font-bold',
+                                    __WEB__ && '!text-[13.5px] !font-bold',
                                     l.paid_to_party == null
                                       ? 'text-muted-foreground decoration-muted-foreground/30'
                                       : 'text-emerald-700 decoration-emerald-700/25'
@@ -3216,7 +3316,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 >
                                   {formatINR(l.paid_to_party ?? l.paid_expected)}
                                 </div>
-                                <div className={cn('text-[10px] tabular-nums text-muted-foreground', __WEB__ && '!mt-0.5 !text-[11.5px] !font-semibold')}>
+                                <div className={cn('text-[10px] tabular-nums text-muted-foreground', __WEB__ && '!mt-0.5 !text-[11px] !font-semibold')}>
                                   {l.paid_to_party == null
                                     ? 'not drawn yet'
                                     : `after ${formatINR(n(l.amount) - n(l.paid_to_party))} int + chg`}

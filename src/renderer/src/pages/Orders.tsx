@@ -3996,11 +3996,58 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           </TableCell>
                           <TableCell className={cn('font-medium', __WEB__ && '!text-[13.5px] !font-bold')}>{row.oil_code || row.oil_name || '—'}</TableCell>
                           <TableCell className="text-center">
-                            {__WEB__ ? (
-                              <span className="inline-flex h-6 min-w-[30px] items-center justify-center rounded-[2px] border border-[#C3D2C6] px-1.5 text-[12.5px] font-bold tabular-nums">
-                                {row.tanker_count || 0}
-                              </span>
-                            ) : <Badge variant="secondary">{row.tanker_count || 0}</Badge>}
+                            {/* The vehicles behind the count, on hover.
+                                tanker_nos is already a GROUP_CONCAT on the
+                                order (see listOrders), so this costs nothing —
+                                and "which lorries were these?" was otherwise a
+                                trip into the gate entries. */}
+                            {__WEB__ ? (() => {
+                              const nos = String(row.tanker_nos || '')
+                                .split(',')
+                                .map((x) => x.trim())
+                                .filter(Boolean)
+                              const chip = (
+                                <span
+                                  className={cn(
+                                    'inline-flex h-6 min-w-[30px] items-center justify-center rounded-[2px] border px-1.5 text-[12.5px] font-bold tabular-nums',
+                                    nos.length
+                                      ? 'cursor-help border-[#BFE3CB] bg-[#F4FBF6] text-[#0B6B45]'
+                                      : 'border-[#C3D2C6] text-[#8FA79B]'
+                                  )}
+                                >
+                                  {row.tanker_count || 0}
+                                </span>
+                              )
+                              if (!nos.length) return chip
+                              return (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>{chip}</TooltipTrigger>
+                                  {/* The vehicles listed one per line rather than run
+                                      together in a sentence: a comma-separated string of
+                                      registration numbers is unreadable at four or more,
+                                      and the point of the hover is to check one against a
+                                      document. */}
+                                  <TooltipContent className="!max-w-none !bg-[#0A1F17] !p-0">
+                                    <div className="border-b border-b-white/10 px-3 py-2 text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#8FBFA8]">
+                                      {nos.length} tanker{nos.length === 1 ? '' : 's'} · {row.invoice_no || 'this invoice'}
+                                    </div>
+                                    <div className="px-3 py-2">
+                                      {nos.map((no, i) => (
+                                        <div
+                                          key={`${no}-${i}`}
+                                          className="doc-ref flex items-center gap-2 whitespace-nowrap py-[3px] text-[12.5px] font-bold text-white"
+                                        >
+                                          <span className="w-[14px] shrink-0 text-right text-[10px] font-semibold text-[#8FBFA8]">
+                                            {i + 1}
+                                          </span>
+                                          {no}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </TooltipContent>
+                                </Tooltip>
+                              )
+                            })() : <Badge variant="secondary">{row.tanker_count || 0}</Badge>}
                           </TableCell>
                           <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[13.5px] !font-semibold')}>
                             {formatNum(row.ordered_qty)} <span className={cn(__WEB__ && '!text-[11.5px] !font-medium !text-[#7C9188]')}>{row.uom}</span>

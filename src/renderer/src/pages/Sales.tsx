@@ -643,6 +643,26 @@ function SalesTab({
     [invBaseRows, invCols, INV_COLUMNS]
   )
 
+  // Ten invoices to a page. The register runs to a hundred and more in a
+  // period, and every row can expand into a panel — a single scroll of that
+  // length is unusable, and it makes the browser lay out work nobody is
+  // looking at.
+  //
+  // The TOTALS above the table stay whole-period on purpose: they answer "what
+  // did we sell", which a page of ten cannot.
+  const INV_PAGE = 10
+  const [invPage, setInvPage] = useState(1)
+  const invPageCount = Math.max(1, Math.ceil(filteredInvoices.length / INV_PAGE))
+  // Any change to what is being listed puts the reader back on page one —
+  // otherwise a filter that leaves three invoices shows an empty page four.
+  useEffect(() => {
+    setInvPage(1)
+  }, [invBaseRows, invCols])
+  const pagedInvoices = useMemo(() => {
+    const start = (Math.min(invPage, invPageCount) - 1) * INV_PAGE
+    return filteredInvoices.slice(start, start + INV_PAGE)
+  }, [filteredInvoices, invPage, invPageCount])
+
   function blankHeader(): Row {
     return {
       sale_date: todayISO(),
@@ -1731,7 +1751,7 @@ function SalesTab({
                   : invoices.length === 0 ? 'No sales yet.' : 'No sales in this period / search.'}
               </TableCell></TableRow>
             ) : (
-              filteredInvoices.map((inv) => {
+              pagedInvoices.map((inv) => {
                 const stg = stageInfo(inv.first)
                 const exTerm = String(inv.first.freight_term || 'FREIGHT_ON_GOODS') !== 'DLD'
                 const idx = DISPATCH_STAGES.findIndex((x) => x.value === stg.value)
@@ -2116,6 +2136,79 @@ function SalesTab({
           </TableBody>
         </Table>
       </div>
+      {/* Only when there is more than one page — a pager under eleven invoices
+          is a control that can do nothing. */}
+      {!loading && invPageCount > 1 && (
+        <div
+          className={cn(
+            'flex flex-wrap items-center gap-2 border-t px-4 py-3',
+            __WEB__ ? '!border-t-[#E4ECE3] !bg-[#F7FAF6]' : 'border-t-[#e5dfc8]'
+          )}
+        >
+          <span className={cn('text-[12px] text-muted-foreground', __WEB__ && '!text-[12px] !font-semibold !text-[#5A6B62]')}>
+            Showing{' '}
+            <b className={cn(__WEB__ && '!font-bold !text-[#0A1F17]')}>
+              {(Math.min(invPage, invPageCount) - 1) * INV_PAGE + 1}–
+              {Math.min(invPage * INV_PAGE, filteredInvoices.length)}
+            </b>{' '}
+            of <b className={cn(__WEB__ && '!font-bold !text-[#0A1F17]')}>{filteredInvoices.length}</b> invoices
+          </span>
+          <div className="ml-auto flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={invPage <= 1}
+              onClick={() => setInvPage((v) => Math.max(1, v - 1))}
+              className={cn(__WEB__ && '!h-[34px] !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3 !text-[12.5px] !font-bold !text-[#0A1F17] hover:!bg-[#F7FAF6]')}
+            >
+              Previous
+            </Button>
+            {/* Up to seven page buttons, always including the first, the last
+                and the ones either side of where the reader is — a register of
+                two hundred invoices must not put twenty buttons on the bar. */}
+            {(() => {
+              const cur = Math.min(invPage, invPageCount)
+              const want = new Set([1, invPageCount, cur, cur - 1, cur + 1])
+              const pages = [...want].filter((x) => x >= 1 && x <= invPageCount).sort((a, b) => a - b)
+              const out: React.ReactNode[] = []
+              pages.forEach((n, i) => {
+                if (i > 0 && n - pages[i - 1] > 1) {
+                  out.push(
+                    <span key={`gap-${n}`} className="px-1 text-[12px] font-bold text-[#A8B8AE]">
+                      …
+                    </span>
+                  )
+                }
+                out.push(
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setInvPage(n)}
+                    className={cn(
+                      'h-[34px] min-w-[34px] rounded-[4px] border px-2 text-[12.5px] font-bold tabular-nums transition-colors',
+                      n === cur
+                        ? 'border-[#0B3D2E] bg-[#0B3D2E] text-white'
+                        : 'border-[#C3D2C6] bg-white text-[#33473E] hover:bg-[#F7FAF6]'
+                    )}
+                  >
+                    {n}
+                  </button>
+                )
+              })
+              return out
+            })()}
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={invPage >= invPageCount}
+              onClick={() => setInvPage((v) => Math.min(invPageCount, v + 1))}
+              className={cn(__WEB__ && '!h-[34px] !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3 !text-[12.5px] !font-bold !text-[#0A1F17] hover:!bg-[#F7FAF6]')}
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      )}
       </>
       )}
 
@@ -3719,6 +3812,57 @@ function SalesTab({
                   <span className="text-[19px] font-bold tracking-[-0.02em] text-[#12280B]">{formatINR(drawer.net)}</span>
                 </div>
               </div>
+
+              {/* Where the dispatch has got to, above the audit trail. The
+                  trail records the gate movements as they happen; this says
+                  the three dates in the order they occur, so "when did it
+                  leave and when did it land" needs no reading of events. A
+                  stage with no date yet is shown greyed rather than hidden —
+                  the gap IS the answer to where it has got to. */}
+              {(() => {
+                const f = drawer.first
+                const stage = String(f.dispatch_stage || (f.status === 'done' ? 'unloaded' : 'pending'))
+                const rank = { pending: 0, loaded: 1, transit: 2, unloaded: 3 }[stage] ?? 0
+                const steps = [
+                  { key: 'Loaded', date: f.loaded_date, at: 1 },
+                  { key: 'In transit', date: f.transit_date, at: 2 },
+                  { key: 'Unloaded', date: f.unloaded_date, at: 3 }
+                ]
+                if (rank === 0 && !steps.some((x) => x.date)) return null
+                return (
+                  <>
+                    <div className="mb-2 mt-5 text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#7C9188]">
+                      Dispatch
+                    </div>
+                    <div className="grid grid-cols-3 gap-px overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-[#E4ECE3]">
+                      {steps.map((x) => {
+                        const done = rank >= x.at
+                        return (
+                          <div key={x.key} className={cn('bg-white px-3 py-2.5', done && 'bg-[#F4FBF6]')}>
+                            <div
+                              className={cn(
+                                'flex items-center gap-1.5 text-[9px] font-extrabold uppercase tracking-[.12em]',
+                                done ? 'text-[#0B6B45]' : 'text-[#A8B8AE]'
+                              )}
+                            >
+                              {done && <Check className="h-3 w-3 shrink-0" />}
+                              {x.key}
+                            </div>
+                            <div
+                              className={cn(
+                                'doc-ref mt-1 whitespace-nowrap text-[13px] font-bold tabular-nums',
+                                x.date ? 'text-[#0A1F17]' : 'text-[#C3D2C6]'
+                              )}
+                            >
+                              {x.date ? formatDate(x.date) : '—'}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </>
+                )
+              })()}
 
               {/* Collapsible — the trail grows with every edit and gate
                   movement, and a long one pushes the invoice out of view. */}
@@ -5408,7 +5552,14 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                                   the line predates multi-company, not that nobody
                                                   owns it. */}
                                               <td
-                                                className={cn('py-1.5 pr-3 whitespace-nowrap', __WEB__ && '!text-[12px] !font-bold !text-[#33473E]')}
+                                                className={cn(
+                                                  'py-1.5 pr-3 whitespace-nowrap',
+                                                  __WEB__ && '!text-[12px] !font-bold',
+                                                  // See Bargains: !important beats a plain inline
+                                                  // style, so the ink is only set when there is no
+                                                  // company colour to show instead.
+                                                  __WEB__ && !l.companyColour && '!text-[#33473E]'
+                                                )}
                                                 style={__WEB__ && l.companyColour ? { color: l.companyColour } : undefined}
                                               >
                                                 {l.company || <span className={cn(__WEB__ && '!font-semibold !text-[#A8B8AE]')}>—</span>}
