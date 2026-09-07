@@ -78,6 +78,14 @@ type Row = Record<string, unknown>
 
 const n = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0)
 const s = (v: unknown): string => (v == null ? '' : String(v))
+// Lakhs and crores, because that is how the mill quotes its own figures and
+// because a header chip cannot hold ₹1,58,84,232.50. Matches TreasuryMobile's.
+const fmtINRShort = (v: number): string => {
+  const a = Math.abs(v)
+  if (a >= 1e7) return `₹${(v / 1e7).toFixed(2)} Cr`
+  if (a >= 1e5) return `₹${(v / 1e5).toFixed(2)} L`
+  return `₹${Math.round(v).toLocaleString('en-IN')}`
+}
 const fmtINR = (v: number): string =>
   '₹' + v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const fmtQty = (v: number): string => v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 3 })
@@ -372,7 +380,43 @@ function ListScreen(props: {
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 8, marginTop: 13 }}>
+        <div style={{ display: 'flex', gap: 8, marginTop: 11 }}>
+          {[
+            { k: 'Invoices', v: String(totals.count), lime: false },
+            { k: 'Quantity', v: `${fmtQty(totals.qty)} MT`, lime: false },
+            { k: 'Value', v: fmtINRShort(totals.value), lime: true }
+          ].map((c) => (
+            <div
+              key={c.k}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                background: 'rgba(255,255,255,.08)',
+                borderRadius: 3,
+                padding: '8px 9px'
+              }}
+            >
+              <div style={{ fontSize: 8.5, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: T.greenMuted }}>
+                {c.k}
+              </div>
+              <div
+                style={{
+                  marginTop: 2,
+                  fontSize: 13.5,
+                  fontWeight: 700,
+                  letterSpacing: '-0.03em',
+                  whiteSpace: 'nowrap',
+                  color: c.lime ? T.lime : '#fff',
+                  ...mono
+                }}
+              >
+                {c.v}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 11 }}>
           <div
             style={{
               flex: 1,

@@ -2079,71 +2079,40 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     Edit limit
                   </Button>
                 </div>
-                {/* How much of the facility is gone, said once and large.
-                    It was a line of 11px small caps under six equal cells —
-                    "Utilised X of Y" — so the single number that decides
-                    whether another LC can be opened at all was the quietest
-                    thing on the card. The bar is drawn forest against lime
-                    headroom, and a facility nearly gone says so in words. */}
+                {/* The wide Utilised/Available strip is gone — the figure it
+                    made large is a KPI in the row below now, beside the limit
+                    it is measured against, which is where it is read.
+
+                    What is NOT dropped with it: a facility drawn past its own
+                    limit. The Available tile says so by going red and
+                    negative, and this line says it in words, because "there is
+                    no room to open another LC" is not something to leave to a
+                    minus sign. Only when actually over — the 90%-drawn nudge
+                    went with the strip. */}
                 {__WEB__ && (() => {
-                  const total = n(lcLimit.total_limit)
-                  const used = n(lcLimit.utilized)
-                  const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0
                   const over = n(lcLimit.available) < 0
-                  const tight = !over && pct >= 90
+                  const ranged = !!(lcLimit.period_from || lcLimit.period_to)
+                  if (!over && !ranged && !lcStageFilter) return null
                   return (
-                    <div className="flex flex-wrap items-center gap-x-5 gap-y-4 px-4 py-4">
-                      <div className="min-w-[300px] flex-1">
-                        <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-                          <span className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">Utilised</span>
-                          <span className="whitespace-nowrap text-[23px] font-bold leading-none tracking-[-0.035em] tabular-nums">
-                            {formatINR(used)}
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-t-[#E4ECE3] px-4 py-2.5">
+                      {over && (
+                        <span className="flex items-center gap-2">
+                          <AlertTriangle className="h-[17px] w-[17px] shrink-0 text-[#B3261E]" />
+                          <span className="text-[12px] font-bold text-[#8C2F26]">
+                            Over the facility by {formatINR(Math.abs(n(lcLimit.available)))} — no headroom left.
                           </span>
-                          <span className="text-[12px] font-bold text-[#5A6B62]">of {formatINR(total)}</span>
-                        </div>
-                        <div className="mt-2.5 flex h-3 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
-                          <div className="h-full" style={{ width: `${pct}%`, background: over ? '#B3261E' : '#0B3D2E' }} />
-                          <div className="h-full flex-1" style={{ background: over ? '#F0D6D4' : '#C7F03F' }} />
-                        </div>
-                        {(over || tight) && (
-                          <div className="mt-2 flex items-center gap-2">
-                            <AlertTriangle className={cn('h-[17px] w-[17px] shrink-0', over ? 'text-[#B3261E]' : 'text-[#C2700A]')} />
-                            <span className={cn('text-[12px] font-bold', over ? 'text-[#8C2F26]' : 'text-[#8A5300]')}>
-                              {over
-                                ? `Over the facility by ${formatINR(Math.abs(n(lcLimit.available)))} — no headroom left.`
-                                : `${pct.toFixed(1)}% of the facility is drawn — ${formatINR(lcLimit.available)} headroom left.`}
-                            </span>
-                          </div>
-                        )}
-                        {(lcLimit.period_from || lcLimit.period_to) && (
-                          <div className="mt-2 text-[11.5px] font-semibold text-[#5A6B62]">
-                            LCs opened {formatDate(lcLimit.period_from)} to {formatDate(lcLimit.period_to)}
-                          </div>
-                        )}
-                      </div>
-                      <div
-                        className={cn(
-                          'min-w-[200px] rounded-[4px] border border-l-4 px-4 py-3',
-                          over ? 'border-[#F0D6D4] border-l-[#B3261E] bg-[#FDF3F2]' : 'border-[#BFE3CB] border-l-[#12855A] bg-[#F4FBF6]'
-                        )}
-                      >
-                        <div className={cn('text-[9.5px] font-extrabold uppercase tracking-[.13em]', over ? 'text-[#8C2F26]' : 'text-[#0B6B45]')}>
-                          Available
-                        </div>
-                        <div
-                          className={cn(
-                            'mt-1 whitespace-nowrap text-[21px] font-bold leading-none tracking-[-0.035em] tabular-nums',
-                            over ? 'text-[#B3261E]' : 'text-[#0B6B45]'
-                          )}
-                        >
-                          {formatINR(lcLimit.available)}
-                        </div>
-                      </div>
+                        </span>
+                      )}
+                      {ranged && (
+                        <span className="text-[11.5px] font-semibold text-[#5A6B62]">
+                          LCs opened {formatDate(lcLimit.period_from)} to {formatDate(lcLimit.period_to)}
+                        </span>
+                      )}
                       {lcStageFilter && (
                         <button
                           type="button"
                           onClick={() => setLcStageFilter(null)}
-                          className="h-9 shrink-0 rounded-[3px] border border-[#C3D2C6] bg-white px-3 text-[12px] font-extrabold uppercase tracking-[.04em] text-[#33473E] transition-colors hover:bg-[#F7FAF6]"
+                          className="ml-auto h-9 shrink-0 rounded-[3px] border border-[#C3D2C6] bg-white px-3 text-[12px] font-extrabold uppercase tracking-[.04em] text-[#33473E] transition-colors hover:bg-[#F7FAF6]"
                         >
                           Clear stage filter
                         </button>
@@ -2153,7 +2122,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 })()}
                 <div
                   className={cn(
-                    'grid grid-cols-2 gap-px bg-[#e5dfc8] p-px sm:grid-cols-3 lg:grid-cols-6',
+                    'grid grid-cols-2 gap-px bg-[#e5dfc8] p-px sm:grid-cols-3 lg:grid-cols-7',
                     __WEB__ && '!gap-px !border-t !border-t-[#E4ECE3] !bg-[#E4ECE3] !p-0'
                   )}
                 >
@@ -2173,6 +2142,41 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-white/70', LIMIT_K, __WEB__ && '!text-[#8FBFA8]')}>Total LC Limit</div>
                     <div className={cn('text-[15px] font-bold tabular-nums text-white', LIMIT_V, __WEB__ && '!text-[#C7F03F]')}>{formatINR(lcLimit.total_limit)}</div>
                   </div>
+                  {/* The one figure that decides whether another LC can be
+                      opened at all, next to the limit it comes out of. Red and
+                      negative when the facility is already over-drawn. */}
+                  {(() => {
+                    const avail = n(lcLimit.available)
+                    const over = avail < 0
+                    return (
+                      <div
+                        className={cn(
+                          'bg-[#fffdf4] px-3 py-2.5 text-center',
+                          LIMIT_CELL,
+                          __WEB__ && (over ? '!bg-[#FDF3F2]' : '!bg-[#F4FBF6]')
+                        )}
+                      >
+                        <div
+                          className={cn(
+                            'text-[10px] font-semibold uppercase tracking-wide text-muted-foreground',
+                            LIMIT_K,
+                            __WEB__ && (over ? '!text-[#8C2F26]' : '!text-[#0B6B45]')
+                          )}
+                        >
+                          Available
+                        </div>
+                        <div
+                          className={cn(
+                            'text-[15px] font-bold tabular-nums text-[#1a2c56]',
+                            LIMIT_V,
+                            __WEB__ && (over ? '!text-[#B3261E]' : '!text-[#0B6B45]')
+                          )}
+                        >
+                          {formatINR(avail)}
+                        </div>
+                      </div>
+                    )
+                  })()}
                   <button
                     type="button"
                     onClick={() => setLcStageFilter(lcStageFilter === 'application' ? null : 'application')}
