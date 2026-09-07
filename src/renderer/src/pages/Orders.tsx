@@ -282,7 +282,28 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('orders')
-  const [tab, setTab] = useState('tankers')
+  // Which tab, kept in the URL. A refresh used to land back on Tanker
+  // movement whatever you were looking at, which on a page reached by reload
+  // rather than by clicking is most of the time. In the address it also means
+  // a link to Purchase entries actually opens Purchase entries.
+  //
+  // Website only: the desktop app has one window and no address bar to keep it
+  // in, and it does not reload.
+  const TABS = ['tankers', 'purchases', 'unmapped']
+  const [tab, setTab] = useState<string>(() => {
+    if (!__WEB__) return 'tankers'
+    const t = new URLSearchParams(window.location.search).get('tab')
+    return t && TABS.includes(t) ? t : 'tankers'
+  })
+  useEffect(() => {
+    if (!__WEB__) return
+    const url = new URL(window.location.href)
+    // The default is the bare path — a ?tab=tankers on every visit is noise in
+    // an address someone might copy.
+    if (tab === 'tankers') url.searchParams.delete('tab')
+    else url.searchParams.set('tab', tab)
+    window.history.replaceState(null, '', url.toString())
+  }, [tab])
   // Invoices with no live bargain link, and the mapping dialog state.
   const [companies, setCompanies] = useState<Row[]>([])
   const [activeCompany, setActiveCompany] = useState<number>(0)

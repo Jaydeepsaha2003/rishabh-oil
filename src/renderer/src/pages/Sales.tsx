@@ -5080,17 +5080,9 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                             {(g?.ret ?? 0) > 0.0005 ? formatNum(g?.ret ?? 0) : '0'}
                           </TableCell>
                           <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && SB_BAL, __WEB__ && '!text-[13.5px] !text-[#0A1F17]')}>
-                            {__WEB__ ? (() => {
-                              const b = sbBar(g?.opening ?? 0, g?.addition ?? 0, g?.adjusted ?? 0, g?.dispatch ?? 0, g?.ret ?? 0)
-                              return (
-                                <>
-                                  <div>{formatNum(g?.closing ?? 0)} <span className="text-[10.5px] font-semibold text-[#5A6B62]">{g?.uom || 'MT'}</span></div>
-                                  <div className="mt-1 h-1 overflow-hidden rounded-[2px] bg-[#DCE7DB]">
-                                    <div className="h-full" style={{ width: `${b.pct}%`, background: b.color }} />
-                                  </div>
-                                </>
-                              )
-                            })() : <>{formatNum(g?.closing ?? 0)} {g?.uom || 'MT'}</>}
+                            {__WEB__ ? (
+                              <div>{formatNum(g?.closing ?? 0)} <span className="text-[10.5px] font-semibold text-[#5A6B62]">{g?.uom || 'MT'}</span></div>
+                            ) : <>{formatNum(g?.closing ?? 0)} {g?.uom || 'MT'}</>}
                           </TableCell>
                           <TableCell className="py-1.5" />
                         </TableRow>
@@ -5185,9 +5177,6 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                 <>
                                   <div className={cn('text-[14px] font-bold tracking-[-0.01em]', reg.closing < -1e-9 ? 'text-[#B3261E]' : b.pct >= 90 ? 'text-[#8A5300]' : 'text-[#0A1F17]')}>
                                     {formatNum(reg.closing)}
-                                  </div>
-                                  <div className="mt-1 h-1 overflow-hidden rounded-[2px] bg-[#DCE7DB]">
-                                    <div className="h-full" style={{ width: `${b.pct}%`, background: b.color }} />
                                   </div>
                                 </>
                               )

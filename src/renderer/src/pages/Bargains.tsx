@@ -1318,17 +1318,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                               <TableCell className="py-1.5" />
                               <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!border-l !border-l-[#DCE7DB] !border-r !border-r-[#DCE7DB] !text-[12.5px]', __WEB__ && ((g?.dispatch ?? 0) ? '!text-[#0A1F17]' : '!text-[#8AA096]'))}>{formatNum(g?.dispatch ?? 0)}</TableCell>
                               <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && PB_BAL, __WEB__ && '!text-[13px] !text-[#0A1F17]')}>
-                                {__WEB__ ? (() => {
-                                  const b = pbBar(g?.opening ?? 0, g?.addition ?? 0, g?.adjusted ?? 0, g?.dispatch ?? 0)
-                                  return (
-                                    <>
-                                      <div>{formatNum(g?.closing ?? 0)}</div>
-                                      <div className="mt-1 h-1 overflow-hidden rounded-[2px] bg-[#DCE7DB]">
-                                        <div className="h-full" style={{ width: `${b.pct}%`, background: b.color }} />
-                                      </div>
-                                    </>
-                                  )
-                                })() : formatNum(g?.closing ?? 0)}
+                                {formatNum(g?.closing ?? 0)}
                               </TableCell>
                               <TableCell className={cn('py-1.5 text-right text-xs font-bold tabular-nums text-slate-700', __WEB__ && '!text-[12.5px] !text-[#0A1F17]')}>{formatINR(g?.balValue ?? 0)}</TableCell>
                               <TableCell className="py-1.5" />
@@ -1383,9 +1373,6 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                 <>
                                   <div className={cn('text-[13.5px] font-bold', Number(row._closing) < -1e-9 ? 'text-[#B3261E]' : b.pct >= 95 ? 'text-[#8A5300]' : 'text-[#0A1F17]')}>
                                     {formatNum(row._closing)}
-                                  </div>
-                                  <div className="mt-1 h-1 overflow-hidden rounded-[2px] bg-[#DCE7DB]">
-                                    <div className="h-full" style={{ width: `${b.pct}%`, background: b.color }} />
                                   </div>
                                 </>
                               )
@@ -1530,8 +1517,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                     <div className={cn('bg-slate-200 px-6 py-4', __WEB__ && '!border-b !border-b-[#DCE7DB] !bg-[#F1F5EF] !py-3.5 !pl-10 !pr-4')}>
                                       {remarksLine}
                                       {drawnBlock}
-                                      <div className={cn(__WEB__ && 'flex items-start gap-3')}>
-                                      <div className={cn(__WEB__ && 'min-w-0 flex-1 overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white')}>
+                                      <div className={cn(__WEB__ && 'overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white')}>
                                       <table className={cn('overflow-hidden rounded-lg border border-slate-300 bg-card text-xs shadow-sm [&_td]:pl-3 [&_th]:pl-3', __WEB__ && '!w-full !rounded-none !border-0 !shadow-none')}>
                                         <thead>
                                           <tr className={cn('border-b bg-slate-200/70 text-left text-slate-700', __WEB__ && '!border-b-[#D6E2D6] !bg-[#EAF0E9] [&>th]:!h-[34px] [&>th]:!py-0 [&>th]:!text-[10px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.09em] [&>th]:!text-[#33473E]')}>
@@ -1549,6 +1535,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                                 <th className="py-1.5 text-right font-semibold">Status</th>
                                               </>
                                             )}
+                                            {/* Whose book the tanker went through. A bargain
+                                                is general — either company can draw on it —
+                                                so the tanker is the level where that is
+                                                actually decided. */}
+                                            <th className="py-1.5 pr-3 text-left font-semibold">Company</th>
                                           </tr>
                                         </thead>
                                         <tbody>
@@ -1628,6 +1619,15 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                                     </td>
                                                   </>
                                                 )}
+                                                {/* The invoice's company where the tanker has
+                                                    been mapped into one, and the tanker's own
+                                                    until then — that is the order in which it
+                                                    is actually decided. */}
+                                                <td className={cn('py-1.5 pr-3', __WEB__ && '!text-[12px] !font-semibold !text-[#33473E]')}>
+                                                  {coName(t.invoice_company_id ?? t.company_id) || (
+                                                    <span className={cn(__WEB__ && '!font-semibold !text-[#A8B8AE]')}>—</span>
+                                                  )}
+                                                </td>
                                               </tr>
                                             )
                                           })}
@@ -1656,48 +1656,10 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                                 </>
                                               )
                                             })()}
+                                            <td className="py-1.5 pr-3" />
                                           </tr>
                                         </tbody>
                                       </table>
-                                      </div>
-                                      {/* The two questions this panel is opened to
-                                          answer, off the totals already computed
-                                          above: what is owed back, and how much of
-                                          the contract is left. */}
-                                      {__WEB__ && (() => {
-                                        const totDeductible = isEx && tot.shortage > tot.allowed ? tot.shortage - tot.allowed : null
-                                        const b = pbBar(Number(row._opening) || 0, Number(row._addition) || 0, Number(row._adjusted) || 0, Number(row._dispatch) || 0)
-                                        const contracted = (Number(row._opening) || 0) + (Number(row._addition) || 0) + (Number(row._adjusted) || 0)
-                                        return (
-                                          <div className="flex w-[210px] shrink-0 flex-col gap-2">
-                                            {totDeductible != null && (
-                                              <div className="rounded-[4px] border border-[#F0D6D4] border-l-4 border-l-[#B3261E] bg-[#FDF3F2] px-3 py-2.5">
-                                                  <div className="text-[9px] font-extrabold uppercase tracking-[.13em] text-[#8C2F26]">Deductible</div>
-                                                  <div className="mt-1 flex items-baseline gap-1">
-                                                    <span className="text-[20px] font-bold leading-none tracking-[-0.03em] tabular-nums text-[#B3261E]">{formatNum(totDeductible)}</span>
-                                                    <span className="text-[10px] font-extrabold text-[#8C2F26]">{String(row.uom || 'MT')}</span>
-                                                  </div>
-                                                  <div className="mt-1 text-[12px] font-bold tabular-nums text-[#8C2F26]">
-                                                    {formatINR(totDeductible * (Number(row.rate_per_uom) || 0))}
-                                                  </div>
-                                                </div>
-                                            )}
-                                            <div className="rounded-[4px] border border-[#D6E2D6] bg-white px-3 py-2.5">
-                                              <div className="text-[9px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">Drawn</div>
-                                              <div className="mt-1 flex items-baseline gap-1">
-                                                <span className="text-[20px] font-bold leading-none tracking-[-0.03em] tabular-nums">{formatNum(row._dispatch)}</span>
-                                                <span className="text-[10px] font-extrabold text-[#5A6B62]">of {formatNum(contracted)}</span>
-                                              </div>
-                                              <div className="mt-2 h-[6px] overflow-hidden rounded-[2px] bg-[#EAF0E9]">
-                                                <div className="h-full" style={{ width: `${b.pct}%`, background: b.color }} />
-                                              </div>
-                                              <div className="mt-1.5 text-[11px] font-bold tabular-nums text-[#5A6B62]">
-                                                {Math.round(b.pct)}% · {formatNum(row._closing)} {String(row.uom || 'MT')} open
-                                              </div>
-                                            </div>
-                                          </div>
-                                        )
-                                      })()}
                                       </div>
                                     </div>
                                   )
