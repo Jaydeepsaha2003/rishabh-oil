@@ -584,7 +584,17 @@ function LcCoverCard({
           No open invoices for this party yet.
         </div>
       ) : (
-        <div>
+        // Four rows, then it scrolls. A supplier with eight open invoices made
+        // this card taller than everything else in the drawer and pushed the
+        // amounts a screen down; four is enough to show what the list is
+        // while the header's "0 of 8 linked" says how much more there is.
+        // The cap is 248px against a 59/60px row, so the fifth row peeks and
+        // the list is visibly scrollable rather than looking finished.
+        //
+        // The scroller goes on THIS div, never on the <section>: a grid item
+        // whose overflow is not visible has an automatic minimum size of 0 and
+        // its row collapses to the borders.
+        <div className={cn(rows.length > 4 && 'max-h-[248px] overflow-y-auto')}>
           {rows.map((r, i) => {
             const locked = lockedBy?.(r.id) || null
             const on = isOn(r.id)
