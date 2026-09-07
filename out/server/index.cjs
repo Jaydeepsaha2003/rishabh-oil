@@ -9724,7 +9724,7 @@ async function runStartupTasks() {
     await c.execute("DROP TABLE IF EXISTS bd_entries");
     await c.execute("DROP TABLE bd_parties");
   }).catch((e) => console.error("[bd] party-table reshape failed:", e));
-  await runOnce("bd_tables_repair_v1", async () => {
+  await (async () => {
     const c = getClient();
     await c.execute(`CREATE TABLE IF NOT EXISTS bill_discountings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -9798,7 +9798,7 @@ async function runStartupTasks() {
       SELECT id, party_type, party_id FROM bill_discountings WHERE party_id IS NOT NULL`).catch(() => {
     });
     console.log("[bd] tables checked/restored");
-  }).catch((e) => console.error("[bd] table repair failed:", e));
+  })().catch((e) => console.error("[bd] table repair failed:", e));
   await runOnce("bd_parties_v1", async () => {
     const c = getClient();
     await c.execute(`CREATE TABLE IF NOT EXISTS bd_parties (
