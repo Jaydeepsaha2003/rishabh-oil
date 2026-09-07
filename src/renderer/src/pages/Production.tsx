@@ -336,7 +336,13 @@ export function Production(): React.JSX.Element {
     const net = Array.from(touched).map((pid) => ({
       product_id: pid,
       name: products.find((p) => Number(p.id) === pid)?.name ?? `#${pid}`,
-      before: stock[pid] ?? 0,
+      // The SAME baseline `bal` was seeded from, or the two disagree and the
+      // Effect column — which is after minus before — reports the difference
+      // between two different starting points instead of what this sheet does.
+      // On an edit that came out as exactly zero: `before` was the live figure
+      // (which already contains the run) and `after` was the run reversed out
+      // and re-applied, so the two landed on the same number.
+      before: (asAtStock ?? stock)[pid] ?? 0,
       after: bal[pid] ?? 0
     }))
     net.sort((a, b) => String(a.name).localeCompare(String(b.name)))

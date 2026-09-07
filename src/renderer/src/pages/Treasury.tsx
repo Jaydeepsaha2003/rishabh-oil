@@ -2582,9 +2582,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                     {currentStageBadge(l)}
                                     <ClosureBadge l={l} />
                                   </div>
-                                  <div className="mt-0.5 text-[11px] text-muted-foreground">
+                                  <div className={cn('mt-0.5 text-[11px] text-muted-foreground', __WEB__ && '!text-[11.5px] !font-semibold !text-[#5A6B62]')}>
                                     {l.bank}
-                                    {n(l.margin_pct) ? <span className="tabular-nums"> · margin {l.margin_pct}%</span> : ''}
+                                    {/* The margin lives in the expanded panel and
+                                        in the Preclose preview. On the website it
+                                        came second in a two-line cell that is read
+                                        for the LC no and the bank, so it is off
+                                        there and untouched in the app. */}
+                                    {!__WEB__ && n(l.margin_pct) ? <span className="tabular-nums"> · margin {l.margin_pct}%</span> : ''}
                                   </div>
                                 </div>
                               </div>
