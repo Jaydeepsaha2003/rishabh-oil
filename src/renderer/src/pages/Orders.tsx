@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  Undo2, ArrowLeft, ArrowRight, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, CheckCircle2, ChevronDown, Clock, DoorOpen, Eye, MinusCircle, Package,
+  Undo2, ArrowLeft, ArrowRight, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, CheckCircle2, ChevronDown, ClipboardList, Clock, DoorOpen, Eye, MinusCircle, Package,
   FileText, History, IndianRupee, Pencil, Plus, ScrollText, Search, Trash2, Truck, type LucideIcon } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { FyPicker } from '@/components/FyPicker'
@@ -196,6 +196,52 @@ function MoneyRow({ label, value, strong, title }: { label: string; value: strin
 // Small labeled fact card for a detail dialog's key figures — an icon +
 // muted caption + the value, so a handful of facts read at a glance instead
 // of as a stack of plain label/value lines.
+// One foldable section of the purchase panel. The panel used to be a single
+// stack with Gate entries and History behind buttons that CLOSED it and opened
+// a dialog of their own — so reading the trail meant losing the invoice you
+// were reading it about. They are sections here instead, and each one's
+// contents are mounted only while it is open, so nothing is fetched until it
+// is actually asked for.
+//
+// The desktop app keeps the panel it has: it renders the children with no
+// chrome at all, which is exactly what it had before.
+function DrawerSection({
+  icon: Icon,
+  title,
+  defaultOpen = false,
+  children
+}: {
+  icon: LucideIcon
+  title: string
+  defaultOpen?: boolean
+  children: React.ReactNode
+}): React.JSX.Element {
+  const [open, setOpen] = useState(defaultOpen)
+  if (!__WEB__) return <>{children}</>
+  return (
+    <div className="min-w-0">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          'flex w-full items-center gap-2 rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-2.5 text-left transition-colors hover:bg-[#F7FAF6]',
+          open && 'rounded-b-none'
+        )}
+      >
+        <ChevronDown className={cn('h-4 w-4 shrink-0 text-[#12855A] transition-transform', !open && '-rotate-90')} />
+        <Icon className="h-4 w-4 shrink-0 text-[#8AA096]" />
+        <span className="text-[11px] font-extrabold uppercase tracking-[.13em] text-[#33473E]">{title}</span>
+      </button>
+      {open && (
+        <div className="min-w-0 space-y-3 rounded-b-[4px] border border-t-0 border-[#D6E2D6] bg-[#F7FAF6] p-3">
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function InfoTile({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }): React.JSX.Element {
   return (
     // The website stacks the icon+label over the value rather than putting the
@@ -204,7 +250,11 @@ function InfoTile({ icon: Icon, label, value }: { icon: LucideIcon; label: strin
     <div
       className={cn(
         'flex items-start gap-2 rounded-lg border bg-muted/30 px-3 py-2',
-        __WEB__ && '!flex-col !gap-1.5 !rounded-[4px] !border-[#D6E2D6] !bg-white !px-3.5 !py-3'
+        // min-w-0: a grid item's automatic minimum is its CONTENT, so a value
+        // that does not wrap pushes the tile wider than its column and the
+        // text runs out past the border — which is what a two-bargain invoice
+        // did to this tile.
+        __WEB__ && '!min-w-0 !flex-col !gap-1.5 !rounded-[4px] !border-[#D6E2D6] !bg-white !px-3.5 !py-3'
       )}
     >
       <div className={cn(__WEB__ && 'flex items-center gap-1.5')}>
@@ -215,7 +265,20 @@ function InfoTile({ icon: Icon, label, value }: { icon: LucideIcon; label: strin
       </div>
       <div className="min-w-0">
         {!__WEB__ && <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>}
-        <div className={cn('truncate text-sm font-medium', __WEB__ && '!text-[15px] !font-bold !tracking-[-0.01em]')} title={value}>{value}</div>
+        {/* Wraps rather than truncates on the website. These tiles hold the
+            things the invoice is looked up by — the bargain it draws on, the
+            tankers on it — and half of one behind an ellipsis is no more use
+            than none of it. Two tiles to a row stretch to match, so the grid
+            stays square. */}
+        <div
+          className={cn(
+            'truncate text-sm font-medium',
+            __WEB__ && '!overflow-visible !whitespace-normal !break-words !text-[15px] !font-bold !leading-snug !tracking-[-0.01em]'
+          )}
+          title={value}
+        >
+          {value}
+        </div>
       </div>
     </div>
   )
@@ -701,8 +764,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     // detail in the first cell they were already tall enough — the extra
     // padding just cost a tanker or two off the visible list.
     return <TableRow key={row.id} className={cn(__WEB__ && '[&>td]:!py-2')}>
-      <TableCell><div className={cn('font-medium', !String(row.tanker_no || '').trim() && 'italic text-muted-foreground')}>{String(row.tanker_no || '').trim() || 'No number yet'}</div><div className="text-xs text-muted-foreground">{row.status === 'supplier_factory' ? `Entered ${formatDate(row.loaded_date)}` : `Loaded ${formatDate(row.loaded_date)}`}</div>{!!row.gate_entry_no && (
-          <div className="mt-0.5 text-[11px] text-sky-700">
+      <TableCell><div className={cn('font-medium', __WEB__ && '!text-[14px] !font-extrabold !text-[#0A1F17]', !String(row.tanker_no || '').trim() && 'italic text-muted-foreground')}>{String(row.tanker_no || '').trim() || 'No number yet'}</div><div className={cn('text-xs text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12.5px] !font-semibold !text-[#5A6B62]')}>{row.status === 'supplier_factory' ? `Entered ${formatDate(row.loaded_date)}` : `Loaded ${formatDate(row.loaded_date)}`}</div>{!!row.gate_entry_no && (
+          <div className={cn('mt-0.5 text-[11px] text-sky-700', __WEB__ && '!text-[12.5px] !font-semibold !text-[#1B4E82]')}>
             Gate {row.gate_entry_no}
             {row.gate_tanker_no && String(row.gate_tanker_no).trim() !== String(row.tanker_no || '').trim()
               ? ` · vehicle ${row.gate_tanker_no}`
@@ -710,13 +773,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             {Number(row.gate_qty) > 0 ? ` · weighed ${formatNum(row.gate_qty)}` : ''}
           </div>
         )}{!!row.last_replacement && (
-          <div className="mt-0.5 text-[11px] text-amber-700" title="Tanker replaced en route">
+          <div className={cn('mt-0.5 text-[11px] text-amber-700', __WEB__ && '!text-[12.5px] !font-semibold !text-[#8A5300]')} title="Tanker replaced en route">
             Replaced: {row.last_replacement}
           </div>
         )}</TableCell>
       <TableCell>
         <div className={cn(__WEB__ && 'text-[14px] font-extrabold text-[#0B3D2E]')}>{row.supplier_name}</div>
-        <div className="text-xs text-muted-foreground">
+        <div className={cn('text-xs text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12.5px] !font-semibold !text-[#33473E]')}>
           {row.bargain_no}
           {row.extra_bargain_no && (
             <span title={`Split: ${formatNum((Number(row.loaded_qty) || 0) - (Number(row.extra_qty) || 0))} ${row.uom} + ${formatNum(row.extra_qty)} ${row.uom} excess`}>
@@ -1020,6 +1083,25 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     [poSearch]
   )
 
+  // Bargain numbers by invoice. The order row carries none of its own — a
+  // purchase reaches its bargain through its tankers — so the search box could
+  // not find an invoice by the one number a supplier is most likely to quote.
+  //
+  // Built once here rather than scanned per row: this register holds hundreds
+  // of invoices and hundreds of tankers, and matching inside the filter would
+  // be a full pass over the second for every one of the first.
+  const bargainNoByOrder = useMemo(() => {
+    const m = new Map<number, string>()
+    for (const t of tankers) {
+      const oid = Number(t.order_id)
+      if (!oid) continue
+      const nos = [String(t.bargain_no || ''), String(t.extra_bargain_no || '')].filter(Boolean)
+      if (!nos.length) continue
+      m.set(oid, `${m.get(oid) || ''} ${nos.join(' ')}`.trim())
+    }
+    return m
+  }, [tankers])
+
   const poBaseRows = useMemo(
     () =>
       rows
@@ -1051,7 +1133,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           if (Number(r.is_trading) === 1) return false
           if (poCategory.length && !poCategory.includes(String(r.product_category || ''))) return false
           if (poTerms.length) {
-            const hay = [r.invoice_no, r.supplier_name, r.oil_code, r.oil_name, r.product_category, r.tanker_nos]
+            const hay = [
+              r.invoice_no,
+              r.supplier_name,
+              r.oil_code,
+              r.oil_name,
+              r.product_category,
+              r.tanker_nos,
+              bargainNoByOrder.get(Number(r.id)) || ''
+            ]
               .join(' ')
               .toLowerCase()
             // Every term has to match somewhere, so "deepchand 510" narrows
@@ -1061,7 +1151,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           }
           return true
         }),
-    [rows, tankers, poFrom, poTo, poCategory, poIncludeReceipt, poTerms]
+    [rows, tankers, poFrom, poTo, poCategory, poIncludeReceipt, poTerms, bargainNoByOrder]
   )
 
   const filteredOrders = useMemo(
@@ -3387,7 +3477,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <Input
                       type="search"
                       className={cn('h-8 pl-8 text-[11px]', __WEB__ && '!pl-9')}
-                      placeholder="Search invoice, supplier, product, tanker…"
+                      placeholder="Search invoice, bargain, supplier, product, tanker…"
                       value={poSearch}
                       onChange={(e) => setPoSearch(e.target.value)}
                     />
@@ -3886,7 +3976,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         >
                           <TableCell>
                             <div className={cn('font-medium', __WEB__ && '!text-[13.5px] !font-bold !tracking-[-0.01em]')}>{row.invoice_no}</div>
-                            <div className={cn('text-[11px] text-muted-foreground', __WEB__ && '!mt-0.5 !text-[11.5px] !font-medium !text-[#7C9188]')}>{formatDate(row.order_date)}</div>
+                            <div className={cn('text-[11px] text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{formatDate(row.order_date)}</div>
                             {row._shownForReceipt && (
                               <div
                                 className="text-[10px] text-sky-600"
@@ -5244,6 +5334,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             </DialogTitle>
           </DialogHeader>
           {detailRow && <div className={cn('grid min-w-0 gap-3', __WEB__ && '!min-h-0 !content-start !gap-3.5 !overflow-y-auto !px-[22px] !py-[18px]')}>
+            <DrawerSection icon={FileText} title="Purchase details" defaultOpen>
             {/* The bargain this invoice was drawn against, and everything
                 written against it. A note explaining why a bargain's quantity
                 moved is the reason the invoice looks the way it does, and it
@@ -5281,8 +5372,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                             </span>
                           )}
                         </div>
+                        {/* The note itself, not a footnote to the line above
+                            it: "Rs 3000/- Interest add" changes what the rate
+                            beside it means, so it is set to be read. */}
                         {extra.length > 0 && (
-                          <div className="mt-1 text-[12px] text-muted-foreground">{extra.join(' · ')}</div>
+                          <div className={cn('mt-1 text-[12px] text-muted-foreground', __WEB__ && '!mt-1.5 !text-[12.5px] !font-bold !text-[#8A5300]')}>
+                            {extra.join(' · ')}
+                          </div>
                         )}
                         {adj.length > 0 && (
                           <div className="mt-1.5 space-y-1">
@@ -5361,6 +5457,83 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   the same flag the deductible column below is driven by, so
                   it's named here rather than left to be inferred from it. */}
               <InfoTile icon={FileText} label="Condition" value={invoiceCondition(detailRow)} />
+              {/* The two numbers this invoice is actually looked up by outside
+                  the system: the bargain it draws on, and the number in the
+                  gate's own paper register. Both were only reachable by
+                  scrolling to the tanker cards below, or not shown at all. */}
+              {(() => {
+                const mine = tankers.filter((t) => Number(t.order_id) === Number(detailRow.id))
+                const bargains = [
+                  ...new Set(
+                    mine
+                      .flatMap((t) => [String(t.bargain_no || ''), String(t.extra_bargain_no || '')])
+                      .filter(Boolean)
+                  )
+                ]
+                const manuals = [...new Set(mine.map((t) => String(t.gate_ref_no || '')).filter(Boolean))]
+                // The bargain's own note, against the number it belongs to.
+                // It lives in the Bargains & notes card further up the drawer,
+                // which is a scroll away from the summary anyone actually
+                // reads — and a note like "Rs 3000/- Interest add" changes
+                // what the rate beside it means.
+                const noteOf = new Map(
+                  (bargainNotes || []).map((b) => [String(b.bargain_no || ''), String(b.remarks || '').trim()])
+                )
+                const notes = bargains
+                  .map((no) => ({ no, note: noteOf.get(no) || '' }))
+                  .filter((x) => x.note)
+                return (
+                  <>
+                    <div
+                      className={cn(
+                        'flex items-start gap-2 rounded-lg border bg-muted/30 px-3 py-2',
+                        __WEB__ && '!min-w-0 !flex-col !gap-1.5 !rounded-[4px] !border-[#D6E2D6] !bg-white !px-3.5 !py-3'
+                      )}
+                    >
+                      <div className={cn(__WEB__ && 'flex items-center gap-1.5')}>
+                        <ScrollText className={cn('mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground', __WEB__ && '!mt-0 !h-4 !w-4 !text-[#8AA096]')} />
+                        {__WEB__ && (
+                          <span className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#7C9188]">
+                            {bargains.length > 1 ? 'Bargains' : 'Bargain no'}
+                          </span>
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        {!__WEB__ && (
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            {bargains.length > 1 ? 'Bargains' : 'Bargain no'}
+                          </div>
+                        )}
+                        <div
+                          className={cn(
+                            'truncate text-sm font-medium',
+                            __WEB__ && '!overflow-visible !whitespace-normal !break-words !text-[15px] !font-bold !leading-snug !tracking-[-0.01em]'
+                          )}
+                        >
+                          {bargains.length ? bargains.join(' + ') : 'Not linked'}
+                        </div>
+                        {notes.map((x) => (
+                          <div
+                            key={x.no}
+                            className={cn(
+                              'mt-1 text-[11px] text-muted-foreground',
+                              __WEB__ && '!mt-1.5 !rounded-[3px] !bg-[#FFFBF2] !px-2 !py-1 !text-[11.5px] !font-bold !leading-snug !text-[#8A5300]'
+                            )}
+                          >
+                            {bargains.length > 1 ? `${x.no}: ` : ''}
+                            {x.note}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <InfoTile
+                      icon={ClipboardList}
+                      label={manuals.length > 1 ? 'Manual gate nos' : 'Manual gate no'}
+                      value={manuals.length ? manuals.join(', ') : '—'}
+                    />
+                  </>
+                )
+              })()}
             </div>
             <div
               className={cn(
@@ -5443,9 +5616,30 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                 {r.t.transporter_name && (
                                   <div className="mt-0.5 text-[12px] font-medium text-[#7C9188]">{r.t.transporter_name}</div>
                                 )}
-                                {r.t.gate_entry_no && (
-                                  <div className="mt-0.5 flex items-center gap-1.5 text-[12px] font-bold text-[#0B6B45]">
-                                    <CheckCircle2 className="h-3.5 w-3.5" /> Gate {r.t.gate_entry_no}
+                                {/* Gate, manual number and the bargain THIS tanker
+                                    was drawn against, on one line. They are the
+                                    three references someone reads together when
+                                    they are chasing a vehicle, and stacking them
+                                    made three lines of a card that only has
+                                    four. It wraps rather than clipping when a
+                                    split bargain makes the line too long. */}
+                                {(!!r.t.gate_entry_no || !!r.t.bargain_no) && (
+                                  <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px] font-bold leading-snug">
+                                    {!!r.t.gate_entry_no && (
+                                      <span className="flex items-center gap-1.5 text-[#0B6B45]">
+                                        <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> Gate {r.t.gate_entry_no}
+                                      </span>
+                                    )}
+                                    {!!r.t.gate_ref_no && (
+                                      <span className="font-semibold text-[#5A6B62]">· Manual {r.t.gate_ref_no}</span>
+                                    )}
+                                    {!!r.t.bargain_no && (
+                                      <span className="font-semibold text-[#33473E]">
+                                        {r.t.gate_entry_no ? '· ' : ''}
+                                        {String(r.t.bargain_no)}
+                                        {r.t.extra_bargain_no ? ` + ${String(r.t.extra_bargain_no)}` : ''}
+                                      </span>
+                                    )}
                                   </div>
                                 )}
                               </div>
@@ -5700,32 +5894,43 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 </div>
               )
             })()}
+            </DrawerSection>
+            {/* Mounted only while open, so the gate register and the audit
+                trail are fetched the first time each is asked for rather than
+                on every panel that is opened. */}
+            <DrawerSection icon={DoorOpen} title="Gate entries">
+              <GateEntriesDialog open inline query={{ orderId: Number(detailRow.id) || 0 }} />
+            </DrawerSection>
+            <DrawerSection icon={History} title="History">
+              <HistoryDialog
+                inline
+                target={{
+                  entity: 'Purchase',
+                  id: Number(detailRow.id),
+                  title: String(detailRow.invoice_no || 'this purchase')
+                }}
+              />
+            </DrawerSection>
           </div>}
-          {/* Pinned footer. Three real actions the row menu already offers —
-              nothing new is invented here, this panel just puts them where
-              you end up after reading the invoice. */}
+          {/* Pinned footer. Edit is the only thing left here — Gate entries and
+              History used to sit beside it and CLOSED this panel to open a
+              dialog of their own, so reading the trail cost you the invoice you
+              were reading it about. They are sections above now. */}
           {__WEB__ && detailRow && (
             <div className="flex gap-2.5 border-t border-[#D6E2D6] bg-white px-[22px] py-3.5">
               <button
                 type="button"
+                onClick={() => setDetailRow(null)}
+                className="flex h-11 flex-1 items-center justify-center gap-2 rounded-[4px] border-[1.5px] border-[#C3D2C6] text-[13px] font-extrabold uppercase tracking-[.03em] text-[#33473E] transition-colors hover:bg-[#EAF0E9]"
+              >
+                Close
+              </button>
+              <button
+                type="button"
                 onClick={() => { const r = detailRow; setDetailRow(null); openEditPurchase(r) }}
-                className="flex h-11 flex-1 items-center justify-center gap-2 rounded-[4px] border-[1.5px] border-[#0B3D2E] text-[13px] font-extrabold uppercase tracking-[.03em] text-[#0B3D2E] transition-colors hover:bg-[#EAF0E9]"
+                className="flex h-11 flex-[1.4] items-center justify-center gap-2 rounded-[4px] bg-[#0B3D2E] text-[13px] font-extrabold uppercase tracking-[.03em] text-[#C7F03F] transition-colors hover:bg-[#0F4A38]"
               >
-                <Pencil className="h-[18px] w-[18px]" /> Edit
-              </button>
-              <button
-                type="button"
-                onClick={() => { const r = detailRow; setDetailRow(null); setGateOrder(r) }}
-                className="flex h-11 flex-1 items-center justify-center gap-2 rounded-[4px] border-[1.5px] border-[#0B3D2E] text-[13px] font-extrabold uppercase tracking-[.03em] text-[#0B3D2E] transition-colors hover:bg-[#EAF0E9]"
-              >
-                <DoorOpen className="h-[18px] w-[18px]" /> Gate entries
-              </button>
-              <button
-                type="button"
-                onClick={() => { const r = detailRow; setDetailRow(null); openHistory(r) }}
-                className="flex h-11 flex-[1.2] items-center justify-center gap-2 rounded-[4px] bg-[#0B3D2E] text-[13px] font-extrabold uppercase tracking-[.03em] text-[#C7F03F] transition-colors hover:bg-[#0F4A38]"
-              >
-                <History className="h-[18px] w-[18px]" /> History
+                <Pencil className="h-[18px] w-[18px]" /> Edit this purchase
               </button>
             </div>
           )}

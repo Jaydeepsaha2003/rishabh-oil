@@ -28,13 +28,19 @@ export function GateEntriesDialog({
   onClose,
   heading,
   subheading,
-  query
+  query,
+  // Renders the register on its own, with no dialog around it, so a panel that
+  // already has a frame can hold it as a section. The loading, the query and
+  // the empty state are the same ones the dialog shows — there is no second
+  // copy of any of it.
+  inline = false
 }: {
   open: boolean
-  onClose: () => void
-  heading: string
+  onClose?: () => void
+  heading?: string
   subheading?: string
   query: { orderId?: number; saleIds?: number[]; invoiceGroup?: string }
+  inline?: boolean
 }): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [hidden, setHidden] = useState(0)
@@ -44,6 +50,11 @@ export function GateEntriesDialog({
 
   // Keyed off the query rather than fetched once, so reopening on a different
   // invoice never shows the previous one's vehicles for a frame.
+  // Inline on the website means this sits inside a panel that already has a
+  // palette — the purchase drawer's white cards on a pale ground. The dialog
+  // form is untouched and keeps the colours it has everywhere else.
+  const web = inline && __WEB__
+
   const key = JSON.stringify(query)
   const load = useCallback(async () => {
     setLoading(true)
@@ -65,28 +76,8 @@ export function GateEntriesDialog({
     if (open) void load()
   }, [open, load])
 
-  return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[88vh] max-w-4xl overflow-y-auto p-0">
-        <div className="flex items-center gap-3 rounded-t-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-6 py-4 text-white">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/15">
-            <DoorOpen className="h-5 w-5" />
-          </span>
-          <div className="min-w-0">
-            <DialogTitle className="text-[16px] font-bold text-white">Gate entries</DialogTitle>
-            <p className="truncate text-[12.5px] font-medium text-white/90">
-              {heading}
-              {subheading ? ` · ${subheading}` : ''}
-            </p>
-          </div>
-          {!loading && (
-            <span className="ml-auto shrink-0 rounded-full bg-white/20 px-3 py-1 text-[11.5px] font-bold">
-              {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
-            </span>
-          )}
-        </div>
-
-        <div className="space-y-3 p-5">
+  const body = (
+        <div className={inline ? 'space-y-3' : 'space-y-3 p-5'}>
           {loading && <div className="py-10 text-center text-sm font-medium text-[#334155]">Reading the gate register…</div>}
           {!!error && (
             <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-900">
@@ -124,7 +115,9 @@ export function GateEntriesDialog({
                 key={String(g.id)}
                 className={cn(
                   'overflow-hidden rounded-xl border shadow-sm',
-                  rejected ? 'border-rose-300 bg-rose-50/40' : 'border-[#d9d2b8] bg-[#fffdf7]'
+                  rejected ? 'border-rose-300 bg-rose-50/40' : 'border-[#d9d2b8] bg-[#fffdf7]',
+                  web && '!rounded-[4px] !shadow-none',
+                  web && (rejected ? '!border-[#F0D6D4] !bg-[#FDF3F2]' : '!border-[#D6E2D6] !bg-white')
                 )}
               >
                 <div
@@ -134,21 +127,25 @@ export function GateEntriesDialog({
                       ? 'border-rose-200 bg-rose-100/60'
                       : inbound
                         ? 'border-emerald-200 bg-emerald-50/80'
-                        : 'border-sky-200 bg-sky-50/80'
+                        : 'border-sky-200 bg-sky-50/80',
+                    web && '!gap-2.5 !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-3.5 !py-2.5',
+                    web && rejected && '!border-b-[#F0D6D4] !bg-[#FBE9E7]'
                   )}
                 >
                   <span
                     className={cn(
                       'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-widest text-white',
-                      inbound ? 'bg-emerald-700' : 'bg-sky-700'
+                      inbound ? 'bg-emerald-700' : 'bg-sky-700',
+                      web && '!rounded-[2px] !px-2 !py-1 !text-[10px] !font-extrabold !tracking-[.08em]',
+                      web && (inbound ? '!bg-[#0B3D2E] !text-[#C7F03F]' : '!bg-[#1B4E82] !text-white')
                     )}
                   >
                     {inbound ? 'In' : 'Out'}
                   </span>
-                  <span className="doc-ref text-[13.5px] font-bold text-[#0b1728]">
+                  <span className={cn('doc-ref text-[13.5px] font-bold text-[#0b1728]', web && '!text-[14px] !font-extrabold !tabular-nums !text-[#0A1F17]')}>
                     {String(g.gate_entry_no || '(no number)')}
                   </span>
-                  <span className="flex items-center gap-1 text-[12px] font-medium text-[#334155]">
+                  <span className={cn('flex items-center gap-1 text-[12px] font-medium text-[#334155]', web && '!gap-1.5 !text-[12px] !font-semibold !tabular-nums !text-[#5A6B62]')}>
                     <Clock className="h-3 w-3" />
                     {formatDate(g.entry_date)}
                     {g.entry_time ? ` ${String(g.entry_time)}` : ''}
@@ -179,11 +176,11 @@ export function GateEntriesDialog({
                   </span>
                 </div>
 
-                <div className="grid gap-x-4 gap-y-2 px-3 py-2.5 sm:grid-cols-3 lg:grid-cols-4">
-                  <Fact icon={Truck} label="Vehicle" value={String(g.tanker_no || g.purchase_tanker_no || '—')} />
-                  <Fact label="Product" value={String(g.oil_name || g.oil_code || '—')} />
-                  <Fact label={inbound ? 'Supplier' : 'Customer'} value={String(g.party_name || g.gate_customer_name || g.sale_customer || '—')} />
-                  <Fact
+                <div className={cn('grid gap-x-4 gap-y-2 px-3 py-2.5 sm:grid-cols-3 lg:grid-cols-4', web && '!gap-x-3.5 !gap-y-3 !px-3.5 !py-3')}>
+                  <Fact web={web} icon={Truck} label="Vehicle" value={String(g.tanker_no || g.purchase_tanker_no || '—')} />
+                  <Fact web={web} label="Product" value={String(g.oil_name || g.oil_code || '—')} />
+                  <Fact web={web} label={inbound ? 'Supplier' : 'Customer'} value={String(g.party_name || g.gate_customer_name || g.sale_customer || '—')} />
+                  <Fact web={web}
                     label={inbound ? 'Purchase invoice' : 'Sales invoice'}
                     value={String(
                       inbound
@@ -193,24 +190,24 @@ export function GateEntriesDialog({
                     hint={!inbound && n(g.sale_count) > 1 ? `${n(g.sale_count)} invoices on this vehicle` : undefined}
                   />
 
-                  <Fact
+                  <Fact web={web}
                     label="Challan qty"
                     value={dispatch == null ? 'N/A' : `${formatNum(dispatch)} ${uom}`}
                     hint={dispatch == null ? 'not stated at the gate' : undefined}
                   />
-                  <Fact
+                  <Fact web={web}
                     label="Weighed qty"
                     value={received > 0 ? `${formatNum(received)} ${uom}` : '—'}
                   />
                   {diff != null && Math.abs(diff) > 0.0005 && (
-                    <Fact
+                    <Fact web={web}
                       label={diff < 0 ? 'Short' : 'Excess'}
                       value={`${formatNum(Math.abs(diff))} ${uom}`}
                       tone={diff < 0 ? 'text-rose-700' : 'text-amber-700'}
                     />
                   )}
                   {net != null && (
-                    <Fact
+                    <Fact web={web}
                       icon={Scale}
                       label="Weighbridge"
                       value={`${formatNum(net)} ${uom}`}
@@ -218,13 +215,13 @@ export function GateEntriesDialog({
                     />
                   )}
 
-                  {!!g.bargain_no && <Fact label="Bargain" value={String(g.bargain_no)} />}
-                  {!!g.transporter_name && <Fact label="Transporter" value={String(g.transporter_name)} />}
-                  {!!g.source_name && <Fact label="Source" value={String(g.source_name)} />}
-                  {!!g.ref_no && <Fact label="Reference" value={String(g.ref_no)} />}
-                  {!!g.person && <Fact icon={User} label="Person" value={String(g.person)} />}
-                  {String(g.rec_type || 'OIL') !== 'OIL' && <Fact label="Records" value={String(g.rec_type)} />}
-                  {!!g.is_direct_mnc && <Fact label="Direct / MNC" value="Yes" />}
+                  {!!g.bargain_no && <Fact web={web} label="Bargain" value={String(g.bargain_no)} />}
+                  {!!g.transporter_name && <Fact web={web} label="Transporter" value={String(g.transporter_name)} />}
+                  {!!g.source_name && <Fact web={web} label="Source" value={String(g.source_name)} />}
+                  {!!g.ref_no && <Fact web={web} label="Reference" value={String(g.ref_no)} />}
+                  {!!g.person && <Fact web={web} icon={User} label="Person" value={String(g.person)} />}
+                  {String(g.rec_type || 'OIL') !== 'OIL' && <Fact web={web} label="Records" value={String(g.rec_type)} />}
+                  {!!g.is_direct_mnc && <Fact web={web} label="Direct / MNC" value="Yes" />}
                 </div>
 
                 {(!!g.note || rejected) && (
@@ -260,6 +257,31 @@ export function GateEntriesDialog({
             </div>
           )}
         </div>
+  )
+
+  if (inline) return body
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose?.()}>
+      <DialogContent className="max-h-[88vh] max-w-4xl overflow-y-auto p-0">
+        <div className="flex items-center gap-3 rounded-t-lg bg-gradient-to-r from-[#1a2c56] to-[#24407e] px-6 py-4 text-white">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/15">
+            <DoorOpen className="h-5 w-5" />
+          </span>
+          <div className="min-w-0">
+            <DialogTitle className="text-[16px] font-bold text-white">Gate entries</DialogTitle>
+            <p className="truncate text-[12.5px] font-medium text-white/90">
+              {heading}
+              {subheading ? ` · ${subheading}` : ''}
+            </p>
+          </div>
+          {!loading && (
+            <span className="ml-auto shrink-0 rounded-full bg-white/20 px-3 py-1 text-[11.5px] font-bold">
+              {rows.length} {rows.length === 1 ? 'entry' : 'entries'}
+            </span>
+          )}
+        </div>
+        {body}
       </DialogContent>
     </Dialog>
   )
@@ -270,13 +292,15 @@ function Fact({
   label,
   value,
   hint,
-  tone
+  tone,
+  web
 }: {
   icon?: React.ComponentType<{ className?: string }>
   label: string
   value: string
   hint?: string
   tone?: string
+  web?: boolean
 }): React.JSX.Element {
   return (
     <div className="min-w-0">
@@ -284,14 +308,14 @@ function Fact({
           screen to read, and this panel is nothing but labels and figures. All
           three lines are pushed dark deliberately: the label to slate-700, the
           figure to near-black, the working to slate-600. */}
-      <div className="flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-wide text-[#334155]">
-        {Icon && <Icon className="h-3 w-3" />}
+      <div className={cn('flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-wide text-[#334155]', web && '!gap-1.5 !text-[9.5px] !font-extrabold !tracking-[.12em] !text-[#5A6B62]')}>
+        {Icon && <Icon className={cn('h-3 w-3', web && '!h-3.5 !w-3.5 !text-[#8AA096]')} />}
         {label}
       </div>
-      <div className={cn('truncate text-[13.5px] font-bold', tone || 'text-[#0b1728]')} title={value}>
+      <div className={cn('truncate text-[13.5px] font-bold', tone || 'text-[#0b1728]', web && !tone && '!mt-0.5 !text-[13px] !text-[#0A1F17]', web && !!tone && '!mt-0.5 !text-[13px]')} title={value}>
         {value}
       </div>
-      {hint && <div className="truncate text-[11px] font-medium text-[#475569]">{hint}</div>}
+      {hint && <div className={cn('truncate text-[11px] font-medium text-[#475569]', web && '!text-[11px] !font-semibold !text-[#5A6B62]')}>{hint}</div>}
     </div>
   )
 }

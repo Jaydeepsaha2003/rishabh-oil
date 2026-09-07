@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
+import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -80,12 +81,20 @@ function when(ts: unknown): { date: string; time: string } {
 // it, and four near-identical dialogs would drift apart.
 export function HistoryDialog({
   target,
-  onClose
+  onClose,
+  // The trail on its own, with no dialog around it, so a panel that already
+  // has a frame can hold it as a section. Same fetch, same table, same empty
+  // state — nothing is duplicated.
+  inline = false
 }: {
   target: HistoryTarget | null
-  onClose: () => void
+  onClose?: () => void
+  inline?: boolean
 }): React.JSX.Element {
   const [rows, setRows] = useState<Row[] | null>(null)
+  // Inline on the website means the trail is a section of a panel that already
+  // has a palette. The dialog keeps the cream and navy it has everywhere else.
+  const web = inline && __WEB__
 
   const load = useCallback(async (t: HistoryTarget) => {
     setRows(null)
@@ -103,31 +112,23 @@ export function HistoryDialog({
     if (target) void load(target)
   }, [target, load])
 
-  return (
-    <Dialog open={!!target} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[85vh] w-[calc(100vw-2rem)] max-w-2xl overflow-y-auto border-[#d9d2b8] bg-[#fffdf4]">
-        <DialogHeader className="-mx-6 -mt-6 mb-1 rounded-t-lg bg-[#dce6f5] px-6 py-2.5">
-          <DialogTitle className="text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]">
-            History — {target?.title || 'record'}
-          </DialogTitle>
-        </DialogHeader>
-        {target && (
+  const body = target ? (
           <div className="grid gap-3">
-            {target.subtitle && (
+            {target.subtitle && !inline && (
               <div className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">{target.subtitle}</div>
             )}
             {rows === null ? (
               <div className="py-8 text-center text-sm text-muted-foreground">Loading…</div>
             ) : rows.length === 0 ? (
-              <div className="rounded-md border border-dashed border-[#d9d2b8] px-4 py-8 text-center text-sm text-muted-foreground">
+              <div className={cn('rounded-md border border-dashed border-[#d9d2b8] px-4 py-8 text-center text-sm text-muted-foreground', web && '!rounded-[4px] !border-[#C3D2C6] !bg-white !px-4 !py-8 !text-[12.5px] !font-semibold !text-[#5A6B62]')}>
                 Nothing recorded against this record yet. Changes made before the trail started keeping the
                 record it belonged to will not appear here.
               </div>
             ) : (
-              <div className="overflow-hidden rounded-lg border border-[#e5dfc8]">
-                <Table className="text-[13px]">
+              <div className={cn('overflow-hidden rounded-lg border border-[#e5dfc8]', web && '!rounded-[4px] !border-[#D6E2D6] !bg-white')}>
+                <Table className={cn('text-[13px]', web && '!text-[12.5px]')}>
                   <TableHeader>
-                    <TableRow className="bg-[#f7f4e8] hover:bg-[#f7f4e8]">
+                    <TableRow className={cn('bg-[#f7f4e8] hover:bg-[#f7f4e8]', web && '!border-b-[#DCE7DB] !bg-[#EAF0E9] hover:!bg-[#EAF0E9] [&>th]:!bg-[#EAF0E9] [&>th]:!h-[30px] [&>th]:!text-[9.5px] [&>th]:!font-extrabold [&>th]:!tracking-[.11em] [&>th]:!text-[#33473E]')}>
                       <TableHead className="h-8 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">
                         When
                       </TableHead>
@@ -168,12 +169,24 @@ export function HistoryDialog({
               </div>
             )}
             {!!rows?.length && (
-              <div className="text-[11px] text-muted-foreground">
+              <div className={cn('text-[11px] text-muted-foreground', web && '!text-[11.5px] !font-semibold !text-[#5A6B62]')}>
                 {rows.length} event{rows.length === 1 ? '' : 's'}, oldest first.
               </div>
             )}
           </div>
-        )}
+  ) : null
+
+  if (inline) return <>{body}</>
+
+  return (
+    <Dialog open={!!target} onOpenChange={(o) => !o && onClose?.()}>
+      <DialogContent className="max-h-[85vh] w-[calc(100vw-2rem)] max-w-2xl overflow-y-auto border-[#d9d2b8] bg-[#fffdf4]">
+        <DialogHeader className="-mx-6 -mt-6 mb-1 rounded-t-lg bg-[#dce6f5] px-6 py-2.5">
+          <DialogTitle className="text-[13px] font-bold uppercase tracking-widest text-[#1a2c56]">
+            History — {target?.title || 'record'}
+          </DialogTitle>
+        </DialogHeader>
+        {body}
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
             Close
