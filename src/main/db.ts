@@ -167,6 +167,9 @@ const MIGRATIONS = [
      SELECT id, COALESCE(code, name, 'GEN'), COALESCE(name, code, 'PRODUCT'), 1 FROM products`,
   // default UOM switched from ton to MT
   "UPDATE app_settings SET value = 'MT' WHERE key = 'default_uom' AND value = 'ton'",
+  // Trading or manufacturing. Existing companies were all mills, so that
+  // is what they default to; the field is only ever set by hand.
+  "ALTER TABLE companies ADD COLUMN company_type TEXT NOT NULL DEFAULT 'manufacturing'",
   'ALTER TABLE suppliers ADD COLUMN supplier_type TEXT',
   "ALTER TABLE orders ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
   "ALTER TABLE gate_entries ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'",

@@ -11,6 +11,10 @@ CREATE TABLE IF NOT EXISTS app_settings (
 CREATE TABLE IF NOT EXISTS companies (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
+  -- 'manufacturing' or 'trading'. What the company actually does, which is
+  -- not derivable from its books: a trading company buys and sells the same
+  -- goods, a manufacturing one runs them through a formula first.
+  company_type TEXT NOT NULL DEFAULT 'manufacturing',
   active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

@@ -673,10 +673,25 @@ const sourceColumns: ColumnDef[] = [
 
 const companyFields: FieldDef[] = [
   { key: 'name', label: 'Company name', type: 'text', required: true },
+  {
+    key: 'company_type',
+    label: 'Company type',
+    type: 'select',
+    default: 'manufacturing',
+    options: [
+      { value: 'manufacturing', label: 'Manufacturing' },
+      { value: 'trading', label: 'Trading' }
+    ]
+  },
   { key: 'active', label: 'Active', type: 'switch', default: true }
 ]
 const companyColumns: ColumnDef[] = [
   { key: 'name', label: 'Company' },
+  {
+    key: 'company_type',
+    label: 'Type',
+    value: (r) => (String(r.company_type) === 'trading' ? 'Trading' : 'Manufacturing')
+  },
   { key: 'active', label: 'Active', type: 'switch' },
   { key: 'created_at', label: 'Created', type: 'date' }
 ]
