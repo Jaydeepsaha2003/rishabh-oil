@@ -61,15 +61,20 @@ export function Production(): React.JSX.Element {
   const minDate = useEntryWindow('production')
   const [rows, setRows] = useState<Row[]>([])
   const paged = usePaged(rows)
-  // Days folded shut, by their own date. Collapsed rather than expanded is the
-  // state worth remembering, so a day added later opens the way every other
-  // one does instead of inheriting whatever was set before it existed.
+  // Days the reader has OPENED, by their own date — every day starts folded.
+  //
+  // A period of production is a list of days, and the question asked of this
+  // screen is almost always "what happened on one of them". Opening all of
+  // them by default meant scrolling past every batch of every other day to
+  // reach it. Tracking the open ones (rather than the shut ones, as this did
+  // before) also means a day added later arrives folded like the rest instead
+  // of springing open on its own.
   //
   // The band keeps showing the day's batch count and total while it is shut,
-  // so folding a day away never costs you the figure you were reading.
-  const [shutDays, setShutDays] = useState<Set<string>>(() => new Set())
+  // so nothing is hidden that was being read — only the batches behind it.
+  const [openDays, setOpenDays] = useState<Set<string>>(() => new Set())
   function toggleDay(day: string): void {
-    setShutDays((prev) => {
+    setOpenDays((prev) => {
       const next = new Set(prev)
       if (next.has(day)) next.delete(day)
       else next.add(day)
@@ -1213,7 +1218,7 @@ export function Production(): React.JSX.Element {
                     : []
                   // Only the website bands its rows, so only the website can
                   // fold them: the desktop list has no band to click.
-                  const shut = __WEB__ && shutDays.has(day)
+                  const shut = __WEB__ && !openDays.has(day)
                   return (
                   <Fragment key={row.id as number}>
                     {__WEB__ && startsDay && (

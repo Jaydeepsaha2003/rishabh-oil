@@ -14,7 +14,7 @@ import { SalesMobile } from './SalesMobile'
 // listSalesForUnloadDesk), so this flag shapes the page to match what the data
 // already is rather than being the restriction itself.
 const UNLOAD_DESK = (): boolean => moduleScope(loadUser(), 'sales') === 'unload'
-import { cn } from '@/lib/utils'
+import { cn, inkOn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -5551,18 +5551,21 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                                               {/* Whose book this dispatch landed in. A blank means
                                                   the line predates multi-company, not that nobody
                                                   owns it. */}
-                                              <td
-                                                className={cn(
-                                                  'py-1.5 pr-3 whitespace-nowrap',
-                                                  __WEB__ && '!text-[12px] !font-bold',
-                                                  // See Bargains: !important beats a plain inline
-                                                  // style, so the ink is only set when there is no
-                                                  // company colour to show instead.
-                                                  __WEB__ && !l.companyColour && '!text-[#33473E]'
+                                              <td className={cn('py-1.5 pr-3 whitespace-nowrap', __WEB__ && '!text-[12px] !font-bold !text-[#33473E]')}>
+                                                {!l.company ? (
+                                                  <span className={cn(__WEB__ && '!font-semibold !text-[#A8B8AE]')}>—</span>
+                                                ) : __WEB__ && l.companyColour ? (
+                                                  // Filled chip, see Bargains for why the colour is
+                                                  // the ground and not the ink.
+                                                  <span
+                                                    className="inline-block whitespace-nowrap rounded-[2px] px-2 py-[3px] text-[11px] font-bold"
+                                                    style={{ background: l.companyColour, color: inkOn(l.companyColour) }}
+                                                  >
+                                                    {l.company}
+                                                  </span>
+                                                ) : (
+                                                  l.company
                                                 )}
-                                                style={__WEB__ && l.companyColour ? { color: l.companyColour } : undefined}
-                                              >
-                                                {l.company || <span className={cn(__WEB__ && '!font-semibold !text-[#A8B8AE]')}>—</span>}
                                               </td>
                                             </tr>
                                           )

@@ -54,7 +54,7 @@ import { UomSelect } from '@/components/UomSelect'
 import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { exportRowsToExcel } from '@/lib/excel'
-import { cn } from '@/lib/utils'
+import { cn, inkOn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useCategories } from '@/lib/useCategories'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
@@ -1646,23 +1646,26 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                                                     been mapped into one, and the tanker's own
                                                     until then — that is the order in which it
                                                     is actually decided. */}
-                                                <td
-                                                  className={cn(
-                                                    'py-1.5 pr-3',
-                                                    __WEB__ && '!text-[12px] !font-bold',
-                                                    // Only when no colour is set: !important would
-                                                    // otherwise beat the inline colour below.
-                                                    __WEB__ && !coColour(t.invoice_company_id ?? t.company_id) && '!text-[#33473E]'
-                                                  )}
-                                                  style={
-                                                    __WEB__ && coColour(t.invoice_company_id ?? t.company_id)
-                                                      ? { color: coColour(t.invoice_company_id ?? t.company_id) }
-                                                      : undefined
-                                                  }
-                                                >
-                                                  {coName(t.invoice_company_id ?? t.company_id) || (
-                                                    <span className={cn(__WEB__ && '!font-semibold !text-[#A8B8AE]')}>—</span>
-                                                  )}
+                                                <td className={cn('py-1.5 pr-3', __WEB__ && '!text-[12px] !font-bold !text-[#33473E]')}>
+                                                  {(() => {
+                                                    const co = coName(t.invoice_company_id ?? t.company_id)
+                                                    if (!co) return <span className={cn(__WEB__ && '!font-semibold !text-[#A8B8AE]')}>—</span>
+                                                    const bg = coColour(t.invoice_company_id ?? t.company_id)
+                                                    // The colour as the chip's ground rather than its
+                                                    // ink: a pale pick is unreadable as text but reads
+                                                    // perfectly as a background, and a filled chip
+                                                    // tells two companies apart down a column far
+                                                    // faster than two shades of lettering.
+                                                    if (!__WEB__ || !bg) return co
+                                                    return (
+                                                      <span
+                                                        className="inline-block whitespace-nowrap rounded-[2px] px-2 py-[3px] text-[11px] font-bold"
+                                                        style={{ background: bg, color: inkOn(bg) }}
+                                                      >
+                                                        {co}
+                                                      </span>
+                                                    )
+                                                  })()}
                                                 </td>
                                               </tr>
                                             )
