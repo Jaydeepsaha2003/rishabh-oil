@@ -294,6 +294,17 @@ const STAGE_MARK_WEB: Record<string, string> = {
   payment_received: '!border-l-[#12855A]'
 }
 
+// The fill a stage takes when selected — the same three colours the register
+// marks its rows with (STAGE_MARK_WEB), so a stage reads the same everywhere.
+// Application is deliberately unsaturated: a request sitting with the bank is
+// not a warning, and amber here would say it was.
+const STAGE_FILL_WEB: Record<string, string> = {
+  application: 'bg-[#5A6B62]',
+  open: 'bg-[#C2700A]',
+  payment_received: 'bg-[#12855A]'
+}
+const STAGE_ORDER = ['application', 'open', 'payment_received'] as const
+
 const STAGE_ROW_TONE: Record<string, { row: string; hover: string }> = {
   // Slate, matching the badge — the border and the chip are two readings of the
   // same fact and must not disagree.
@@ -637,35 +648,33 @@ function LcPreviewRow({
   label,
   value,
   sub,
-  tone,
-  strong,
+  minus,
+  zero,
   last
 }: {
   label: string
   value: string
   sub?: string
-  tone?: string
-  strong?: boolean
+  // A deduction. It carries its own minus sign, because a red figure alone
+  // does not say whether it is coming off or going on — and the panel is an
+  // arithmetic, so the signs have to be readable down the column.
+  minus?: boolean
+  // Nothing is being deducted. A zero in alert red claims a problem where
+  // there is none, so it goes quiet instead.
+  zero?: boolean
   last?: boolean
 }): React.JSX.Element {
   return (
-    <div className={cn('py-[9px]', !last && 'border-b border-b-[#EAF0E9]')}>
+    <div className={cn('py-[10px]', !last && 'border-b border-b-[#EAF0E9]')}>
       <div className="flex items-baseline justify-between gap-3">
+        <span className="min-w-0 text-[12.5px] font-semibold text-[#33473E]">{label}</span>
         <span
           className={cn(
-            'min-w-0 text-[12.5px]',
-            strong ? 'font-extrabold text-[#0A1F17]' : 'font-semibold text-[#33473E]'
+            'doc-ref flex-none whitespace-nowrap text-[14px] font-bold tabular-nums',
+            zero ? 'text-[#A8B8AE]' : minus ? 'text-[#B3261E]' : 'text-[#0A1F17]'
           )}
         >
-          {label}
-        </span>
-        <span
-          className={cn(
-            'doc-ref flex-none whitespace-nowrap font-bold tabular-nums',
-            strong ? 'text-[17px]' : 'text-[13.5px]',
-            tone || 'text-[#0A1F17]'
-          )}
-        >
+          {minus && !zero ? <span className="mr-[3px] font-semibold">−</span> : null}
           {value}
         </span>
       </div>
@@ -4170,9 +4179,15 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     })()}
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label>FD No <span className="text-red-600">*</span></Label>
+                    <Label className="flex items-center gap-1.5">
+                      FD No <span className="text-red-600">*</span>
+                      {__WEB__ && <InfoTip text="The fixed deposit lodged with the bank as security for this credit." />}
+                    </Label>
                     <Input value={lcForm.fd_no ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, fd_no: e.target.value }))} placeholder="e.g. FD/2026/045" />
-                    <span className="text-[10px] text-muted-foreground">Fixed deposit lodged as security</span>
+                    {/* Behind the (i) on the website. It was the only field in
+                        this row carrying a line underneath, which left its
+                        input sitting a line higher than its neighbours. */}
+                    {!__WEB__ && <span className="text-[10px] text-muted-foreground">Fixed deposit lodged as security</span>}
                   </div>
                   {/* Our own account, distinct from the discounting bank above:
                       the bank above FINANCES the LC, this is the account the
@@ -4191,23 +4206,77 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   </div>
                   <div className="flex flex-col gap-1.5 sm:col-span-2">
                     <Label>Stage</Label>
-                    <div className="grid grid-cols-3 gap-1.5">
-                      {(['application', 'open', 'payment_received'] as const).map((s) => (
-                        <button
-                          key={s}
-                          type="button"
-                          onClick={() => setLcForm((p) => ({ ...p, stage: s }))}
-                          className={cn(
-                            'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
-                            String(lcForm.stage || 'application') === s
-                              ? s === 'payment_received' ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : s === 'open' ? 'border-sky-500 bg-sky-50 text-sky-800' : 'border-amber-500 bg-amber-50 text-amber-800'
-                              : 'border-[#e5dfc8] text-muted-foreground hover:bg-muted/40'
-                          )}
-                        >
-                          {STAGE_LABEL[s]}
-                        </button>
-                      ))}
-                    </div>
+                    {__WEB__ ? (
+                      // One segmented control in the same shell as Purpose, but
+                      // read as a journey rather than three equal choices: the
+                      // stages behind the current one are ticked, the current one
+                      // is filled in its own colour, and the ones ahead are
+                      // numbered and quiet. Three separate outlined boxes gave no
+                      // clue that they run in an order, or how far along this LC
+                      // was. All three stay clickable — this is a field, not a
+                      // read-only progress bar.
+                      <div className="flex w-full gap-[3px] rounded-[4px] border border-[#DCE7DB] bg-[#EAF0E9] p-[3px]">
+                        {STAGE_ORDER.map((st, i) => {
+                          const cur = String(lcForm.stage || 'application')
+                          const done = i < STAGE_ORDER.indexOf(cur as (typeof STAGE_ORDER)[number])
+                          const on = cur === st
+                          return (
+                            <button
+                              key={st}
+                              type="button"
+                              onClick={() => setLcForm((prev) => ({ ...prev, stage: st }))}
+                              title={
+                                st === 'application'
+                                  ? 'Requested — still with the bank'
+                                  : st === 'open'
+                                    ? 'The bank has opened the credit'
+                                    : 'Payment received against the credit'
+                              }
+                              className={cn(
+                                'flex h-[38px] min-w-0 flex-1 items-center justify-center gap-2 rounded-[2px] px-2 text-[12px] font-extrabold uppercase tracking-[.04em] transition-colors',
+                                on
+                                  ? cn(STAGE_FILL_WEB[st], 'text-white')
+                                  : done
+                                    ? 'bg-white text-[#0B6B45]'
+                                    : 'bg-transparent text-[#5A6B62] hover:bg-white/70'
+                              )}
+                            >
+                              {done ? (
+                                <Check className="h-[15px] w-[15px] shrink-0" />
+                              ) : (
+                                <span
+                                  className={cn(
+                                    'doc-ref shrink-0 text-[11px] font-bold tabular-nums',
+                                    on ? 'text-white/70' : 'text-[#A8B8AE]'
+                                  )}
+                                >
+                                  {i + 1}
+                                </span>
+                              )}
+                              <span className="truncate">{STAGE_LABEL[st]}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {(['application', 'open', 'payment_received'] as const).map((s) => (
+                          <button
+                            key={s}
+                            type="button"
+                            onClick={() => setLcForm((p) => ({ ...p, stage: s }))}
+                            className={cn(
+                              'rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors',
+                              String(lcForm.stage || 'application') === s
+                                ? s === 'payment_received' ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : s === 'open' ? 'border-sky-500 bg-sky-50 text-sky-800' : 'border-amber-500 bg-amber-50 text-amber-800'
+                                : 'border-[#e5dfc8] text-muted-foreground hover:bg-muted/40'
+                            )}
+                          >
+                            {STAGE_LABEL[s]}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               </section>
@@ -4242,7 +4311,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 }))
                               }
                               className={cn(
-                                'flex h-[38px] flex-1 items-center justify-center rounded-[2px] px-4 text-[12.5px] font-extrabold capitalize transition-colors',
+                                'flex h-[38px] flex-1 items-center justify-center rounded-[2px] px-4 text-[12.5px] font-extrabold uppercase transition-colors',
                                 on ? 'bg-[#0B3D2E] text-white' : 'bg-transparent text-[#5A6B62] hover:bg-white/70'
                               )}
                             >
@@ -4784,17 +4853,23 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           <DatePicker value={String(lcForm.open_date || '')} onChange={(v) => setLcForm((p) => ({ ...p, open_date: v }))} />
                         </div>
                         <div className="flex flex-col gap-1.5">
-                          <Label>Open date</Label>
+                          <Label className="flex items-center gap-1.5">
+                            Open date
+                            {__WEB__ && <InfoTip text="The day the bank actually opened the credit. Set once the stage moves to Open." />}
+                          </Label>
                           <DatePicker
                             value={String(lcForm.opened_date || '')}
                             onChange={(v) => setLcForm((p) => ({ ...p, opened_date: v }))}
                             disabled={stage === 'application'}
                             min={String(lcForm.open_date || '') || undefined}
                           />
-                          {stage === 'application' && <span className="text-[10px] text-muted-foreground">Set once the stage moves to Open</span>}
+                          {!__WEB__ && stage === 'application' && <span className="text-[10px] text-muted-foreground">Set once the stage moves to Open</span>}
                         </div>
                         <div className="flex flex-col gap-1.5">
-                          <Label>Payment received date</Label>
+                          <Label className="flex items-center gap-1.5">
+                            Payment received date
+                            {__WEB__ && <InfoTip text="The day payment was received against the credit. Set once the stage moves to Payment received — the interest days run from here to maturity." />}
+                          </Label>
                           <DatePicker
                             value={String(lcForm.payment_received_date || '')}
                             onChange={(v) => {
@@ -4804,10 +4879,13 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             disabled={stage !== 'payment_received'}
                             min={String(lcForm.opened_date || '') || undefined}
                           />
-                          {stage !== 'payment_received' && <span className="text-[10px] text-muted-foreground">Set once payment is received</span>}
+                          {!__WEB__ && stage !== 'payment_received' && <span className="text-[10px] text-muted-foreground">Set once payment is received</span>}
                         </div>
                         <div className="flex flex-col gap-1.5">
-                          <Label>Maturity date</Label>
+                          <Label className="flex items-center gap-1.5">
+                            Maturity date
+                            {__WEB__ && <InfoTip text="The day the credit falls due. Set together with the payment received date — the two of them give the interest days." />}
+                          </Label>
                           <DatePicker
                             value={String(lcForm.expiry_date || '')}
                             onChange={(v) => {
@@ -4817,17 +4895,17 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             disabled={stage !== 'payment_received'}
                             min={String(lcForm.payment_received_date || '') || undefined}
                           />
-                          {stage !== 'payment_received' && <span className="text-[10px] text-muted-foreground">Set together with payment received</span>}
+                          {!__WEB__ && stage !== 'payment_received' && <span className="text-[10px] text-muted-foreground">Set together with payment received</span>}
                         </div>
                         <div className="flex flex-col gap-1.5 sm:col-span-2">
                           <Label>Interest days</Label>
                           {days != null ? (
-                            <div className={cn('flex h-11 items-center justify-between rounded-md border border-sky-300 bg-sky-50 px-3', __WEB__ && '!h-12 !rounded-[4px] !border-[#C6DAF0] !bg-[#F4F8FD] !px-3.5')}>
+                            <div className={cn('flex h-11 items-center justify-between rounded-md border border-sky-300 bg-sky-50 px-3', __WEB__ && '!h-11 !rounded-[4px] !border-[#C6DAF0] !bg-[#F4F8FD] !px-3.5')}>
                               <span className={cn('text-lg font-bold tabular-nums text-sky-950', __WEB__ && '!text-[17px] !text-[#1B4E82]')}>{days} days</span>
                               <span className={cn('rounded-full bg-sky-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white', __WEB__ && '!rounded-[2px] !bg-[#EAF0FA] !px-2 !py-1 !text-[10px] !font-extrabold !tracking-[.1em] !text-[#1B4E82]')}>Auto</span>
                             </div>
                           ) : (
-                            <div className={cn('flex h-11 items-center rounded-md border border-dashed bg-muted/20 px-3 text-[12px] italic text-muted-foreground', __WEB__ && '!h-12 !rounded-[4px] !border-[#C3D2C6] !bg-[#F7FAF6] !text-[12px] !font-semibold !not-italic !text-[#5A6B62]')}>
+                            <div className={cn('flex h-11 items-center rounded-md border border-dashed bg-muted/20 px-3 text-[12px] italic text-muted-foreground', __WEB__ && '!h-11 !rounded-[4px] !border-[#C3D2C6] !bg-[#F7FAF6] !text-[12px] !font-semibold !not-italic !text-[#5A6B62]')}>
                               Calculated once maturity date &amp; payment received date are set
                             </div>
                           )}
@@ -4851,18 +4929,26 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       other hint in this form already lives; the desktop app
                       keeps it in the label. */}
                   <div className="flex min-w-0 flex-col gap-1.5">
-                    <Label>Interest % p.a. (ROI) {!__WEB__ && String(lcForm.stage) !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set with payment received)</span>}</Label>
+                    <Label className="flex items-center gap-1.5">
+                      Interest % p.a. (ROI)
+                      {__WEB__ ? (
+                        <InfoTip text="The rate the bank charges on the credit. Obtained once payment is received, so the field opens at that stage — interest then runs over the interest days (maturity date − payment received date)." />
+                      ) : (
+                        String(lcForm.stage) !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set with payment received)</span>
+                      )}
+                    </Label>
                     <Input type="number" value={lcForm.interest_pct ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, interest_pct: e.target.value }))} disabled={String(lcForm.stage) !== 'payment_received'} />
-                    {__WEB__ && String(lcForm.stage) !== 'payment_received' && (
-                      <span className="text-[10px] text-muted-foreground">Set with payment received</span>
-                    )}
                   </div>
                   <div className="flex min-w-0 flex-col gap-1.5">
-                    <Label>LC charges (₹) {!__WEB__ && String(lcForm.stage) !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set with payment received)</span>}</Label>
+                    <Label className="flex items-center gap-1.5">
+                      LC charges (₹)
+                      {__WEB__ ? (
+                        <InfoTip text="The bank's own charges on the credit. Obtained once payment is received, so the field opens at that stage. They come out of the open amount before any bill draws on it." />
+                      ) : (
+                        String(lcForm.stage) !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set with payment received)</span>
+                      )}
+                    </Label>
                     <Input type="number" value={lcForm.charges ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, charges: e.target.value }))} disabled={String(lcForm.stage) !== 'payment_received'} />
-                    {__WEB__ && String(lcForm.stage) !== 'payment_received' && (
-                      <span className="text-[10px] text-muted-foreground">Set with payment received</span>
-                    )}
                   </div>
                 </div>
                 <span className={cn('mt-1 block text-[10px] text-muted-foreground', __WEB__ && '!mt-0 !px-4 !pb-1 !text-[11px] !font-semibold !leading-relaxed')}>ROI and LC charges are obtained once payment is received; interest is charged over the interest days (maturity date − payment received date).</span>
@@ -4954,9 +5040,10 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           sub="held by the bank against the credit"
                         />
                         <LcPreviewRow
-                          label="Interest"
+                          label={upfront ? 'Interest (paid upfront)' : 'Interest'}
                           value={formatINR(interest)}
-                          tone={upfront ? undefined : '!text-[#B3261E]'}
+                          minus={!upfront}
+                          zero={interest < 0.005}
                           sub={
                             upfront
                               ? 'paid upfront by its own voucher — not deducted'
@@ -4967,23 +5054,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           }
                         />
                         <LcPreviewRow
-                          label="Charges"
+                          label={upfront ? 'Charges (paid upfront)' : 'Charges'}
                           value={formatINR(charges)}
-                          tone={upfront ? undefined : '!text-[#B3261E]'}
+                          minus={!upfront}
+                          zero={charges < 0.005}
                           sub={upfront ? 'paid upfront — not deducted' : undefined}
-                        />
-                        <LcPreviewRow
-                          label="Released to beneficiary"
-                          value={formatINR(netAvailable)}
-                          tone="!text-[#0B6B45]"
-                          strong
-                          sub={
-                            n(lcForm.interest_adj)
-                              ? `includes an interest adjustment of ${formatINR(n(lcForm.interest_adj))}`
-                              : upfront
-                                ? 'the full open amount — interest and charges are settled separately'
-                                : 'open amount − interest − charges'
-                          }
                           last
                         />
                       </div>
@@ -5001,7 +5076,26 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Margin</div><div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(margin)}</div></div>
                     </div>
                     )}
-                    {/* The website's last preview row IS this figure, so the
+                    {__WEB__ && (
+                      <div className="border-t-2 border-t-[#BFE3CB] bg-[#F4FBF6] px-[15px] py-3.5">
+                        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                          <span className="text-[10.5px] font-extrabold uppercase tracking-[.12em] text-[#0B6B45]">
+                            Released to beneficiary
+                          </span>
+                          <span className="doc-ref whitespace-nowrap text-[21px] font-bold tabular-nums tracking-[-0.02em] text-[#0B6B45]">
+                            {formatINR(netAvailable)}
+                          </span>
+                        </div>
+                        <div className="doc-ref mt-1 text-[11px] font-semibold tabular-nums text-[#5A6B62]">
+                          {n(lcForm.interest_adj)
+                            ? `includes an interest adjustment of ${formatINR(n(lcForm.interest_adj))}`
+                            : upfront
+                              ? 'the full open amount — interest and charges are settled separately'
+                              : 'open amount − interest − charges'}
+                        </div>
+                      </div>
+                    )}
+                    {/* The website's own band above IS this figure, so the
                         strip would say it twice. */}
                     {!__WEB__ && (
                       <div className="mt-3 flex items-center justify-between rounded-lg bg-white/70 px-4 py-2.5">
