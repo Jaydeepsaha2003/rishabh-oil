@@ -136,8 +136,13 @@ export function Production(): React.JSX.Element {
   const recipesFor = (productId: unknown): Row[] =>
     formulations.filter((x) => String(x.product_id) === String(productId ?? ''))
 
+  // `_mat` and `_cat` narrow the product picker and are never saved: save()
+  // builds its payload field by field, so they cannot leak into a batch, and
+  // sheetShape() leaves them out so narrowing a list is not an unsaved change.
   const blankRun = (): Row => ({
     key: keyRef.current++,
+    _mat: '',
+    _cat: '',
     product_id: '',
     formulation_id: null,
     qty: '',
@@ -191,8 +196,14 @@ export function Production(): React.JSX.Element {
     setResults({})
     const fid = row.formulation_id ? Number(row.formulation_id) : null
     const items = fid ? await window.api.formulations.items(fid) : []
+    const pr = products.find((x) => String(x.id) === String(row.product_id))
     const only = {
       key: keyRef.current++,
+      // Opened at the product's own category and sub-category, so the two
+      // steps read as where this batch already is rather than as empty
+      // filters over a product that is somehow set.
+      _mat: String(pr?.material_type || ''),
+      _cat: String(pr?.category || ''),
       product_id: String(row.product_id ?? ''),
       formulation_id: fid,
       qty: String(row.qty ?? ''),
@@ -434,9 +445,24 @@ export function Production(): React.JSX.Element {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2.5">
-              <span className="flex items-center gap-2 rounded-[3px] border border-white/15 bg-white/[0.08] px-3 py-2">
-                <CalendarDays className="h-[17px] w-[17px] shrink-0 text-[#8FBFA8]" />
-                <span className="text-[13px] font-bold tabular-nums">{formatDate(sheetDate)}</span>
+              {/* The real picker, wearing the bar's chip. Moving the date up
+                  here left the website with no way to change it at all — the
+                  card it used to live in is hidden on this build — so the chip
+                  had to become the control rather than a read-out of it.
+
+                  Still no forward-dating: a batch is something that has been
+                  run, and recording one for a future date takes stock out of
+                  the tanks on a day that has not happened. The bound here is a
+                  courtesy; createProduction refuses it whatever the form
+                  sends. */}
+              <span className="flex items-center gap-1.5 rounded-[3px] border border-white/15 bg-white/[0.08] pr-3">
+                <DatePicker
+                  min={minDate}
+                  max={todayISO()}
+                  value={sheetDate}
+                  onChange={(v) => setSheetDate(v)}
+                  className="!h-auto !w-auto !justify-start !gap-2 !rounded-[3px] !border-0 !bg-transparent !px-3 !py-2 !text-[13px] !font-bold !tabular-nums !text-white !shadow-none hover:!bg-white/10 hover:!text-white [&>svg]:!mr-0 [&>svg]:!h-[17px] [&>svg]:!w-[17px] [&>svg]:!text-[#8FBFA8] [&>svg]:!opacity-100"
+                />
                 {!editingId && <span className="text-[10.5px] font-semibold text-[#8FBFA8]">applies to every row</span>}
               </span>
               <span
@@ -529,6 +555,80 @@ export function Production(): React.JSX.Element {
                     {i + 1}
                   </span>
                   <div>
+                    {/* Category, then sub-category, then the product. Every
+                        list is built from the products this page will actually
+                        accept — a weighed finished or intermediate good — so a
+                        step never offers a route that ends in an empty list,
+                        and no product can be filtered out of reach.
+
+                        The sub-category step appears only once a category is
+                        picked: on its own it would offer the same three stages
+                        against everything at once, which is the list this was
+                        meant to cut down. */}
+                    {__WEB__ && (
+                      <div className="mb-2 grid grid-cols-2 gap-2">
+                        <Select
+                          value={String(r._mat || 'all')}
+                          onValueChange={(v) => {
+                            const next = v === 'all' ? '' : v
+                            const keep = outputs.some(
+                              (p) => String(p.id) === String(r.product_id) && (!next || String(p.material_type) === next)
+                            )
+                            patchRun(i, {
+                              _mat: next,
+                              _cat: '',
+                              ...(keep ? {} : { product_id: '', formulation_id: null, items: [] })
+                            })
+                          }}
+                        >
+                          <SelectTrigger className="!h-9 !rounded-[4px] !border-[#DCE7DB] !bg-[#F7FAF6] !text-[12px] !font-bold">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">All categories</SelectItem>
+                            {[...new Set(outputs.map((p) => String(p.material_type || '')).filter(Boolean))]
+                              .sort()
+                              .map((m) => (
+                                <SelectItem key={m} value={m}>{m}</SelectItem>
+                              ))}
+                          </SelectContent>
+                        </Select>
+                        {!!r._mat && (
+                          <Select
+                            value={String(r._cat || 'all')}
+                            onValueChange={(v) => {
+                              const next = v === 'all' ? '' : v
+                              const keep = outputs.some(
+                                (p) => String(p.id) === String(r.product_id) && (!next || String(p.category) === next)
+                              )
+                              patchRun(i, {
+                                _cat: next,
+                                ...(keep ? {} : { product_id: '', formulation_id: null, items: [] })
+                              })
+                            }}
+                          >
+                            <SelectTrigger className="!h-9 !rounded-[4px] !border-[#DCE7DB] !bg-[#F7FAF6] !text-[12px] !font-bold">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="all">All sub-categories</SelectItem>
+                              {[
+                                ...new Set(
+                                  outputs
+                                    .filter((p) => String(p.material_type || '') === String(r._mat))
+                                    .map((p) => String(p.category || ''))
+                                    .filter(Boolean)
+                                )
+                              ]
+                                .sort()
+                                .map((c) => (
+                                  <SelectItem key={c} value={c}>{CAT_LABEL[c] ?? c}</SelectItem>
+                                ))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                      </div>
+                    )}
                     <Select value={String(r.product_id ?? '')} onValueChange={(v) => void chooseProduct(i, v)}>
                       {/* Amber while empty: it is the field every other
                           column on the row waits on, so an unset one is a
@@ -537,11 +637,14 @@ export function Production(): React.JSX.Element {
                         <SelectValue placeholder="Finished good or intermediate" />
                       </SelectTrigger>
                       <SelectContent className="max-h-64">
-                        {outputs.map((p) => (
-                          <SelectItem key={p.id} value={String(p.id)}>
-                            {p.name} · {CAT_LABEL[p.category] ?? p.category}
-                          </SelectItem>
-                        ))}
+                        {outputs
+                          .filter((p) => !__WEB__ || !r._mat || String(p.material_type || '') === String(r._mat))
+                          .filter((p) => !__WEB__ || !r._cat || String(p.category || '') === String(r._cat))
+                          .map((p) => (
+                            <SelectItem key={p.id} value={String(p.id)}>
+                              {p.name} · {CAT_LABEL[p.category] ?? p.category}
+                            </SelectItem>
+                          ))}
                       </SelectContent>
                     </Select>
                     {err && (

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowDownLeft, ArrowLeft, ArrowRight, ArrowUpRight, Beaker, Calculator, Flame, Layers, Package, Pencil, Plus, Search, Sparkles, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ArrowRight, Beaker, Calculator, CheckCircle2, Flame, Info, Layers, Package, Pencil, Plus, Search, Sparkles, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -140,7 +140,7 @@ const FM_CARD_FIELDS = __WEB__
     // inputs. Uppercase to match every other field label in the app, with
     // the tracking opened back up: caps need the extra letter-spacing that
     // mixed case does not.
-    '[&_label]:!text-[13px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.07em] [&_label]:!text-[#5A6B62] [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[13px] [&_input]:!font-semibold [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[13.5px] [&_[data-slot=select-trigger]]:!font-bold'
+    '[&_label]:!text-[12.5px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.07em] [&_label]:!text-[#5A6B62] [&_input]:!h-10 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[12.5px] [&_input]:!font-semibold [&_[data-slot=select-trigger]]:!h-10 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[12.5px] [&_[data-slot=select-trigger]]:!font-bold'
   : ''
 
 const round2 = (v: number): number => Math.round(v * 100) / 100
@@ -179,7 +179,7 @@ const FM_ROW = __WEB__
   ? '!border-b-[#EAF0E9] !bg-white hover:!bg-[#F7FAF6] [&>td]:!py-2.5'
   : ''
 const FM_CHIP = __WEB__
-  ? '!h-[38px] !rounded-[4px] !px-3.5 !text-[12px] !font-extrabold !tracking-[.04em]'
+  ? '!h-9 !rounded-[4px] !px-3.5 !text-[11.5px] !font-extrabold !tracking-[.04em]'
   : ''
 
 function rawFattyAcidPct(it: Row): number {
@@ -293,7 +293,7 @@ function SubcatRow({ row, onDone }: { row: Row; onDone: () => Promise<void> }): 
         // glance without a badge on every row.
         'group relative overflow-hidden rounded-xl border bg-white pl-3.5 pr-2.5 py-2.5 shadow-sm transition-colors',
         active ? 'border-[#e0d8bd] hover:border-[#c9c0a2]' : 'border-dashed border-[#d9d2b8] bg-[#faf8f1]',
-        __WEB__ && '!rounded-[4px] !py-3 !pl-4 !pr-3 !shadow-none',
+        __WEB__ && '!rounded-[4px] !py-2 !pl-4 !pr-3 !shadow-none',
         __WEB__ && (active ? '!border-[#D6E2D6] hover:!border-[#C3D2C6]' : '!border-[#DCE7DB] !bg-[#F7FAF6]')
       )}
     >
@@ -312,7 +312,7 @@ function SubcatRow({ row, onDone }: { row: Row; onDone: () => Promise<void> }): 
             'min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-[14px] font-semibold outline-none transition-colors',
             'hover:border-[#e0d8bd] focus:border-[#1a2c56] focus:bg-white focus:ring-2 focus:ring-[#1a2c56]/15',
             active ? 'text-[#1a2c56]' : 'text-muted-foreground line-through decoration-muted-foreground/40',
-            __WEB__ && '!rounded-[4px] !px-2.5 !py-1.5 !text-[14px] !font-bold hover:!border-[#C3D2C6] focus:!border-[#0B3D2E] focus:!ring-[#0B3D2E]/15',
+            __WEB__ && '!rounded-[4px] !px-2.5 !py-1.5 !text-[13px] !font-bold hover:!border-[#C3D2C6] focus:!border-[#0B3D2E] focus:!ring-[#0B3D2E]/15',
             __WEB__ && (active ? '!text-[#0A1F17]' : '!text-[#5A6B62]')
           )}
           value={name}
@@ -1017,14 +1017,14 @@ export function Formulation(): React.JSX.Element {
         <DialogHeader className={cn('shrink-0 space-y-0 bg-gradient-to-r from-[#1a2c56] to-[#2c4a8c] px-5 py-4 pr-14 text-left', __WEB__ && '!bg-[#0B3D2E] !bg-none')}>
           <div className="flex items-start gap-3">
             <span className={cn('mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/15', __WEB__ && '!mt-0 !h-9 !w-9 !rounded-[4px]')}>
-              <Layers className={cn('h-4 w-4 text-white', __WEB__ && '!h-[18px] !w-[18px]')} />
+              <Layers className={cn('h-4 w-4 text-white', __WEB__ && '!h-4 !w-4')} />
             </span>
             <div className="min-w-0">
               {__WEB__ && (
                 <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Formulation</div>
               )}
               <DialogTitle className={cn('text-white', __WEB__ && '!mt-1 !text-[19px] !font-bold !tracking-[-0.02em]')}>Recipe sub-categories</DialogTitle>
-              <p className={cn('mt-1 text-[11.5px] leading-snug text-white/70', __WEB__ && '!mt-1.5 !text-[12px] !font-semibold !leading-relaxed !text-[#8FBFA8]')}>
+              <p className={cn('mt-1 text-[11.5px] leading-snug text-white/70', __WEB__ && '!mt-1.5 !text-[11.5px] !font-semibold !leading-relaxed !text-[#8FBFA8]')}>
                 What a recipe is built on, as against what it makes. One name each, so
                 &ldquo;recovered-oil&rdquo; stays one thing instead of three spellings of itself.
               </p>
@@ -1032,27 +1032,27 @@ export function Formulation(): React.JSX.Element {
           </div>
         </DialogHeader>
 
-        <div className={cn('min-h-0 flex-1 space-y-2.5 overflow-y-auto bg-[#fffdf4] px-4 py-4', __WEB__ && '!space-y-2.5 !bg-[#F1F5EF] !p-4')}>
+        <div className={cn('min-h-0 flex-1 space-y-2.5 overflow-y-auto bg-[#fffdf4] px-4 py-4', __WEB__ && '!space-y-2.5 !bg-[#F1F5EF] !p-3')}>
           {subcats.map((sc) => (
             <SubcatRow key={String(sc.id)} row={sc} onDone={reloadAfterSubcats} />
           ))}
           {!subcats.length && (
             <div className={cn('rounded-xl border border-dashed border-[#d9d2b8] bg-white/60 px-4 py-10 text-center', __WEB__ && '!rounded-[4px] !border-[#C3D2C6] !bg-white')}>
               <Layers className={cn('mx-auto h-5 w-5 text-muted-foreground/50', __WEB__ && '!h-6 !w-6 !text-[#C3D2C6]')} />
-              <p className={cn('mt-2 text-[13px] font-medium text-[#1a2c56]', __WEB__ && '!mt-2.5 !text-[13.5px] !font-bold !text-[#0A1F17]')}>No sub-categories yet</p>
-              <p className={cn('mt-0.5 text-[11.5px] text-muted-foreground', __WEB__ && '!mt-1 !text-[12px] !font-semibold !text-[#5A6B62]')}>Add the first one below.</p>
+              <p className={cn('mt-2 text-[13px] font-medium text-[#1a2c56]', __WEB__ && '!mt-2.5 !text-[12.5px] !font-bold !text-[#0A1F17]')}>No sub-categories yet</p>
+              <p className={cn('mt-0.5 text-[11.5px] text-muted-foreground', __WEB__ && '!mt-1 !text-[11.5px] !font-semibold !text-[#5A6B62]')}>Add the first one below.</p>
             </div>
           )}
         </div>
 
         {/* Add and Close share the footer, so the scrolling list gets the height
             instead of an entry field that is only used now and then. */}
-        <DialogFooter className={cn('shrink-0 gap-2 border-t border-[#e0d8bd] bg-[#f1ecd9] px-4 py-3 sm:justify-between', __WEB__ && '!gap-2.5 !border-t-[#D6E2D6] !bg-white !px-4 !py-3.5')}>
+        <DialogFooter className={cn('shrink-0 gap-2 border-t border-[#e0d8bd] bg-[#f1ecd9] px-4 py-3 sm:justify-between', __WEB__ && '!gap-2 !border-t-[#D6E2D6] !bg-white !px-3 !py-2.5')}>
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <input
               className={cn(
                 'h-9 min-w-0 flex-1 rounded-md border border-[#d9d2b8] bg-white px-2.5 text-[13px] outline-none focus:border-[#1a2c56] focus:ring-2 focus:ring-[#1a2c56]/15',
-                __WEB__ && '!h-11 !rounded-[4px] !border-[#C3D2C6] !px-3 !text-[13px] !font-semibold focus:!border-[#0B3D2E] focus:!ring-[#0B3D2E]/15'
+                __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !px-3 !text-[12.5px] !font-semibold focus:!border-[#0B3D2E] focus:!ring-[#0B3D2E]/15'
               )}
               placeholder="Add a sub-category…"
               value={newSubcat}
@@ -1062,7 +1062,7 @@ export function Formulation(): React.JSX.Element {
               }}
             />
             <Button
-              className={cn('h-9 shrink-0 bg-[#1a2c56] hover:bg-[#24407e]', __WEB__ && '!h-11 !gap-1.5 !rounded-[4px] !bg-[#0B3D2E] !px-4 !text-[12.5px] !font-extrabold !uppercase !tracking-[.04em] !text-[#C7F03F] hover:!bg-[#0F4A38]')}
+              className={cn('h-9 shrink-0 bg-[#1a2c56] hover:bg-[#24407e]', __WEB__ && '!h-10 !gap-1.5 !rounded-[4px] !bg-[#0B3D2E] !px-3 !text-[12px] !font-extrabold !uppercase !tracking-[.04em] !text-[#C7F03F] hover:!bg-[#0F4A38]')}
               onClick={addSubcat}
               disabled={!newSubcat.trim()}
             >
@@ -1071,7 +1071,7 @@ export function Formulation(): React.JSX.Element {
           </div>
           <Button
             variant="outline"
-            className={cn('h-9 shrink-0 bg-white', __WEB__ && '!h-11 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-5 !text-[12.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
+            className={cn('h-9 shrink-0 bg-white', __WEB__ && '!h-10 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-4 !text-[12px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
             onClick={() => setSubcatOpen(false)}
           >
             Close
@@ -1130,7 +1130,7 @@ export function Formulation(): React.JSX.Element {
             </span>
           </div>
         )}
-        <div className={cn('px-4 py-6', __WEB__ && '!px-4 !py-4')}>
+        <div className={cn('px-4 py-6', __WEB__ && '!px-3 !py-4')}>
           <div className={cn('mx-auto max-w-6xl space-y-5', __WEB__ && '!max-w-none !space-y-3.5')}>
             {/* Output product header — no overflow-hidden here: the Output
                 product dropdown opens INSIDE this card, and clipping the
@@ -1139,7 +1139,7 @@ export function Formulation(): React.JSX.Element {
               <div
                 className={cn(
                   'flex items-center gap-3 rounded-t-2xl bg-gradient-to-r from-[#1a2c56] to-[#2c4a8c] px-5 py-4 text-white',
-                  __WEB__ && '!gap-2.5 !rounded-none !border-b !border-b-[#E4ECE3] !bg-[#F7FAF6] !bg-none !px-4 !py-3 !text-[#0A1F17]'
+                  __WEB__ && '!gap-2 !rounded-none !border-b !border-b-[#E4ECE3] !bg-[#F7FAF6] !bg-none !px-3 !py-2 !text-[#0A1F17]'
                 )}
               >
                 {/* Numbered, because this card decides what everything below
@@ -1152,13 +1152,13 @@ export function Formulation(): React.JSX.Element {
                   <Beaker className={cn('h-5 w-5', __WEB__ && '!h-4 !w-4 !text-[#0B3D2E]')} />
                 </span>
                 <div className="min-w-0">
-                  <div className={cn('text-[15px] font-bold', __WEB__ && '!text-[13px] !font-extrabold !uppercase !tracking-[.11em]')}>
+                  <div className={cn('text-[15px] font-bold', __WEB__ && '!text-[12.5px] !font-extrabold !uppercase !tracking-[.11em]')}>
                     {__WEB__ ? 'What it makes' : editing ? 'Edit formulation' : 'New formulation'}
                   </div>
                   {!__WEB__ && <div className="text-[11px] text-white/70">Compose a finished good or intermediate from other products</div>}
                 </div>
               </div>
-              <div className={cn('grid gap-3 rounded-b-2xl bg-card p-5 sm:grid-cols-2', __WEB__ && '!gap-3.5 !rounded-none !p-4')}>
+              <div className={cn('grid gap-3 rounded-b-2xl bg-card p-5 sm:grid-cols-2', __WEB__ && '!gap-3.5 !rounded-none !p-3')}>
                 <div className="flex flex-col gap-1.5">
                   <Label>Output product *</Label>
                   <Select
@@ -1195,7 +1195,7 @@ export function Formulation(): React.JSX.Element {
                         'text-[11px] font-medium text-sky-700 hover:underline',
                         // Sky blue is not a colour this page uses. Green, and
                         // sized to sit level with the label beside it.
-                        __WEB__ && '!text-[13px] !font-extrabold !text-[#0B6B45] hover:!underline'
+                        __WEB__ && '!text-[12.5px] !font-extrabold !text-[#0B6B45] hover:!underline'
                       )}
                       onClick={() => setSubcatOpen(true)}
                     >
@@ -1221,7 +1221,7 @@ export function Formulation(): React.JSX.Element {
                         ))}
                     </SelectContent>
                   </Select>
-                  <span className={cn('text-[11px] leading-snug text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !leading-relaxed !text-[#5A6B62]')}>
+                  <span className={cn('text-[11px] leading-snug text-muted-foreground', __WEB__ && '!text-[12px] !font-semibold !leading-relaxed !text-[#5A6B62]')}>
                     What this recipe is built on, as against what it produces &mdash; so a recipe fed
                     by SHEA can still be tracked as recovered-oil. Production and stock can then be
                     read by sub-category.
@@ -1253,7 +1253,7 @@ export function Formulation(): React.JSX.Element {
                     className={cn(
                       'flex items-center gap-2.5 rounded-t-2xl bg-gradient-to-r px-4 py-3 text-white',
                       sec.grad,
-                      __WEB__ && '!rounded-none !border-b !bg-none !px-4 !py-3',
+                      __WEB__ && '!rounded-none !border-b !bg-none !px-3 !py-2',
                       __WEB__ && sec.webHead
                     )}
                   >
@@ -1269,10 +1269,10 @@ export function Formulation(): React.JSX.Element {
                         {sec.kind === 'loss' ? (hasManualByproduct ? '4' : '3') : sec.step}
                       </span>
                     )}
-                    <sec.icon className={cn('h-4 w-4 shrink-0', __WEB__ && cn('!h-[18px] !w-[18px]', sec.webIcon))} />
+                    <sec.icon className={cn('h-4 w-4 shrink-0', __WEB__ && cn('!h-4 !w-4', sec.webIcon))} />
                     <div className="flex-1 min-w-0">
-                      <div className={cn('text-[13px] font-bold uppercase tracking-wide', __WEB__ && '!text-[13px] !font-extrabold !tracking-[.11em]')}>{sec.title}</div>
-                      <div className={cn('text-[10px] text-white/75', __WEB__ && '!mt-0.5 !text-[12px] !font-semibold !normal-case !text-[#5A6B62]')}>{sec.subtitle}</div>
+                      <div className={cn('text-[13px] font-bold uppercase tracking-wide', __WEB__ && '!text-[12.5px] !font-extrabold !tracking-[.11em]')}>{sec.title}</div>
+                      <div className={cn('text-[10px] text-white/75', __WEB__ && '!mt-0.5 !text-[11.5px] !font-semibold !normal-case !text-[#5A6B62]')}>{sec.subtitle}</div>
                     </div>
                     <Badge
                       variant="secondary"
@@ -1288,16 +1288,16 @@ export function Formulation(): React.JSX.Element {
                       variant="secondary"
                       className={cn(
                         'h-7 bg-white/90 text-[#1a2c56] hover:bg-white',
-                        __WEB__ && cn('!h-9 !gap-1.5 !rounded-[4px] !border !px-3 !text-[12px] !font-extrabold !uppercase !tracking-[.04em]', sec.webAdd)
+                        __WEB__ && cn('!h-9 !gap-1.5 !rounded-[4px] !border !px-3 !text-[11.5px] !font-extrabold !uppercase !tracking-[.04em]', sec.webAdd)
                       )}
                       onClick={() => addItem(sec.kind)}
                     >
                       <Plus className="h-3.5 w-3.5" /> {sec.add}
                     </Button>
                   </div>
-                  <div className={cn('space-y-2 rounded-b-2xl bg-muted/20 p-3', __WEB__ && '!space-y-2.5 !rounded-none !bg-white !p-4')}>
+                  <div className={cn('space-y-2 rounded-b-2xl bg-muted/20 p-3', __WEB__ && '!space-y-2.5 !rounded-none !bg-white !p-3')}>
                     {secItems.length === 0 ? (
-                      <p className={cn('px-2 py-4 text-center text-xs text-muted-foreground', __WEB__ && '!rounded-[4px] !border !border-dashed !border-[#C3D2C6] !py-6 !text-[12.5px] !font-semibold !text-[#5A6B62]')}>None yet.</p>
+                      <p className={cn('px-2 py-4 text-center text-xs text-muted-foreground', __WEB__ && '!rounded-[4px] !border !border-dashed !border-[#C3D2C6] !py-6 !text-[12px] !font-semibold !text-[#5A6B62]')}>None yet.</p>
                     ) : (
                       secItems.map(({ it, idx }) => (
                         <div
@@ -1308,7 +1308,7 @@ export function Formulation(): React.JSX.Element {
                             __WEB__ && cn('!rounded-[4px] !border !border-[#D6E2D6] !border-l-[4px] !bg-[#F7FAF6] !p-3.5 !shadow-none hover:!shadow-none', sec.webAccent)
                           )}
                         >
-                          <div className={cn('flex items-center gap-2', __WEB__ && '!flex-wrap !gap-2.5')}>
+                          <div className={cn('flex items-center gap-2', __WEB__ && '!flex-wrap !gap-2')}>
                             {/* Category first, then the product it narrows to.
                                 One list of every product in the book made
                                 picking a raw oil a scroll past every finished
@@ -1354,7 +1354,7 @@ export function Formulation(): React.JSX.Element {
                                     )
                                   }}
                                 >
-                                  <SelectTrigger className="!h-11 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[13px] !font-bold">
+                                  <SelectTrigger className="!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[12.5px] !font-bold">
                                     <SelectValue />
                                   </SelectTrigger>
                                   <SelectContent>
@@ -1387,7 +1387,7 @@ export function Formulation(): React.JSX.Element {
                                     )
                                   }}
                                 >
-                                  <SelectTrigger className="!h-11 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[13px] !font-bold">
+                                  <SelectTrigger className="!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[12.5px] !font-bold">
                                     <SelectValue />
                                   </SelectTrigger>
                                   <SelectContent>
@@ -1415,7 +1415,7 @@ export function Formulation(): React.JSX.Element {
                                 value={String(it.product_id)}
                                 onValueChange={(v) => setItem(idx, 'product_id', v)}
                               >
-                                <SelectTrigger className={cn('h-9', __WEB__ && '!h-11 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[13px] !font-bold')}>
+                                <SelectTrigger className={cn('h-9', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[12.5px] !font-bold')}>
                                   <SelectValue placeholder="Select product" />
                                 </SelectTrigger>
                                 <SelectContent>
@@ -1453,7 +1453,7 @@ export function Formulation(): React.JSX.Element {
                                 className={cn(
                                   'h-9 pr-6 text-right font-semibold tabular-nums',
                                   sec.kind === 'output' && it.auto_calc && 'bg-muted/60 text-muted-foreground',
-                                  __WEB__ && '!h-11 !rounded-[4px] !border-[#C3D2C6] !bg-white !pr-7 !text-[14px] !font-bold',
+                                  __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !pr-7 !text-[13px] !font-bold',
                                   __WEB__ && sec.kind === 'output' && !!it.auto_calc && '!bg-[#F1F5EF] !text-[#5A6B62]'
                                 )}
                                 placeholder="0"
@@ -1475,7 +1475,7 @@ export function Formulation(): React.JSX.Element {
                                   // when active reads as "pressed", not as
                                   // "on", and this one decides whether three
                                   // more fields exist.
-                                  __WEB__ && '!h-11 !w-auto !shrink-0 !gap-2.5 !rounded-[4px] !border !px-2.5',
+                                  __WEB__ && '!h-10 !w-auto !shrink-0 !gap-2 !rounded-[4px] !border !px-2.5',
                                   __WEB__ &&
                                     (it.auto_calc
                                       ? '!border-[#0B3D2E] !bg-[#F7FAF6] !text-[#0B3D2E] hover:!bg-[#EAF0E9]'
@@ -1492,7 +1492,7 @@ export function Formulation(): React.JSX.Element {
                                 }
                                 onClick={() => toggleItemAutoCalc(idx)}
                               >
-                                <Calculator className={cn('h-4 w-4', __WEB__ && '!h-[18px] !w-[18px]')} />
+                                <Calculator className={cn('h-4 w-4', __WEB__ && '!h-4 !w-4')} />
                                 {__WEB__ && (
                                   <span
                                     className={cn(
@@ -1508,7 +1508,7 @@ export function Formulation(): React.JSX.Element {
                             <Button
                               variant="ghost"
                               size="icon"
-                              className={cn('h-9 w-9 shrink-0 text-destructive hover:bg-destructive/10', __WEB__ && '!h-11 !w-11 !rounded-[4px] !text-[#8FA79B] hover:!bg-[#FDF3F2] hover:!text-[#B3261E]')}
+                              className={cn('h-9 w-9 shrink-0 text-destructive hover:bg-destructive/10', __WEB__ && '!h-10 !w-11 !rounded-[4px] !text-[#8FA79B] hover:!bg-[#FDF3F2] hover:!text-[#B3261E]')}
                               onClick={() => removeItem(idx)}
                             >
                               <Trash2 className="h-4 w-4" />
@@ -1531,37 +1531,37 @@ export function Formulation(): React.JSX.Element {
                               )}
                             >
                               <div className="flex flex-col gap-0.5">
-                                <Label className={cn('flex items-center gap-1 text-[10px] font-semibold text-amber-800', __WEB__ && '!text-[12px] !font-extrabold !uppercase !tracking-[.07em] !text-[#5A6B62]')}>
+                                <Label className={cn('flex items-center gap-1 text-[10px] font-semibold text-amber-800', __WEB__ && '!text-[11.5px] !font-extrabold !uppercase !tracking-[.07em] !text-[#5A6B62]')}>
                                   <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500', __WEB__ && '!hidden')} /> Oil FFA %
                                 </Label>
                                 <Input
                                   type="number"
-                                  className={cn('h-8 border-amber-200 bg-amber-50/60 text-right focus-visible:ring-amber-400', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[13px] !font-semibold !tabular-nums')}
+                                  className={cn('h-8 border-amber-200 bg-amber-50/60 text-right focus-visible:ring-amber-400', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[12.5px] !font-semibold !tabular-nums')}
                                   value={it.ffa_pct ?? ''}
                                   onChange={(e) => setItemFormula(idx, 'ffa_pct', e.target.value)}
                                 />
                               </div>
                               <div className="flex flex-col gap-0.5">
-                                <Label className={cn('flex items-center gap-1 text-[10px] font-semibold text-rose-800', __WEB__ && '!text-[12px] !font-extrabold !uppercase !tracking-[.07em] !text-[#5A6B62]')}>
+                                <Label className={cn('flex items-center gap-1 text-[10px] font-semibold text-rose-800', __WEB__ && '!text-[11.5px] !font-extrabold !uppercase !tracking-[.07em] !text-[#5A6B62]')}>
                                   <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full bg-rose-500', __WEB__ && '!hidden')} /> Loss multiplier % (the "1 +")
                                 </Label>
                                 <Input
                                   type="number"
-                                  className={cn('h-8 border-rose-200 bg-rose-50/60 text-right focus-visible:ring-rose-400', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[13px] !font-semibold !tabular-nums')}
+                                  className={cn('h-8 border-rose-200 bg-rose-50/60 text-right focus-visible:ring-rose-400', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[12.5px] !font-semibold !tabular-nums')}
                                   value={it.loss_multiplier_pct ?? ''}
                                   onChange={(e) => setItemFormula(idx, 'loss_multiplier_pct', e.target.value)}
                                 />
                               </div>
                               {sec.kind === 'input' && (
                                 <div className="flex flex-col gap-0.5">
-                                  <Label className={cn('flex items-center gap-1 text-[10px] font-semibold text-emerald-800', __WEB__ && '!text-[12px] !font-extrabold !uppercase !tracking-[.07em] !text-[#5A6B62]')}>
+                                  <Label className={cn('flex items-center gap-1 text-[10px] font-semibold text-emerald-800', __WEB__ && '!text-[11.5px] !font-extrabold !uppercase !tracking-[.07em] !text-[#5A6B62]')}>
                                     <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500', __WEB__ && '!hidden')} /> By-product goes to *
                                   </Label>
                                   <Select
                                     value={it.byproduct_product_id ? String(it.byproduct_product_id) : ''}
                                     onValueChange={(v) => setItem(idx, 'byproduct_product_id', v)}
                                   >
-                                    <SelectTrigger className={cn('h-8 border-emerald-200 bg-emerald-50/60 text-xs', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[12.5px] !font-semibold')}><SelectValue placeholder="e.g. Fatty Acid" /></SelectTrigger>
+                                    <SelectTrigger className={cn('h-8 border-emerald-200 bg-emerald-50/60 text-xs', __WEB__ && '!h-10 !rounded-[4px] !border-[#C3D2C6] !bg-white !text-[12px] !font-semibold')}><SelectValue placeholder="e.g. Fatty Acid" /></SelectTrigger>
                                     <SelectContent>
                                       {products.map((p) => (
                                         <SelectItem key={p.id} value={String(p.id)}>
@@ -1586,12 +1586,12 @@ export function Formulation(): React.JSX.Element {
                                     __WEB__ && '!-mx-3 !-mb-3 !mt-0.5 !gap-3 !rounded-none !bg-[#0B3D2E] !px-3 !py-2.5'
                                   )}
                                 >
-                                  <span className={cn('text-[11px]', sec.formulaText, __WEB__ && '!min-w-0 !text-[12.5px] !font-bold !tabular-nums !text-white')}>
+                                  <span className={cn('text-[11px]', sec.formulaText, __WEB__ && '!min-w-0 !text-[12px] !font-bold !tabular-nums !text-white')}>
                                     {__WEB__
                                       ? `1 ÷ (1 − ${formatNum(it.ffa_pct ?? 0)}% × ${(1 + (Number(it.loss_multiplier_pct) || 0) / 100).toFixed(2)} − ${formatNum(lossPct)}%)`
                                       : "1 ÷ (1 − FFA % × (1 + loss %) − recipe's dead loss %) = this ingredient's own TOR multiplier"}
                                   </span>
-                                  <span className={cn('rounded-full bg-sky-600 px-2.5 py-0.5 text-[12px] font-bold tabular-nums text-white', __WEB__ && '!ml-auto !shrink-0 !rounded-[2px] !bg-[#12855A] !px-2.5 !py-1.5 !text-[14px] !text-white')}>
+                                  <span className={cn('rounded-full bg-sky-600 px-2.5 py-0.5 text-[12px] font-bold tabular-nums text-white', __WEB__ && '!ml-auto !shrink-0 !rounded-[2px] !bg-[#12855A] !px-2.5 !py-1.5 !text-[13px] !text-white')}>
                                     ×{inputTorMultiplier(it, lossPct).toFixed(4)}
                                   </span>
                                 </div>
@@ -1602,12 +1602,12 @@ export function Formulation(): React.JSX.Element {
                                     __WEB__ && '!-mx-3 !-mb-3 !mt-0.5 !gap-3 !rounded-none !bg-[#1B4E82] !px-3 !py-2.5'
                                   )}
                                 >
-                                  <span className={cn('text-[11px] text-emerald-800', __WEB__ && '!text-[12.5px] !font-bold !tabular-nums !text-white')}>
+                                  <span className={cn('text-[11px] text-emerald-800', __WEB__ && '!text-[12px] !font-bold !tabular-nums !text-white')}>
                                     {__WEB__
                                       ? `${formatNum(it.ffa_pct ?? 0)}% × ${(1 + (Number(it.loss_multiplier_pct) || 0) / 100).toFixed(2)} = % of input`
                                       : 'FFA % × (1 + loss %) = % of input'}
                                   </span>
-                                  <span className={cn('rounded-full bg-emerald-600 px-2.5 py-0.5 text-[12px] font-bold tabular-nums text-white', __WEB__ && '!ml-auto !shrink-0 !rounded-[2px] !bg-[#0B3D2E] !px-2.5 !py-1.5 !text-[14px] !text-white')}>
+                                  <span className={cn('rounded-full bg-emerald-600 px-2.5 py-0.5 text-[12px] font-bold tabular-nums text-white', __WEB__ && '!ml-auto !shrink-0 !rounded-[2px] !bg-[#0B3D2E] !px-2.5 !py-1.5 !text-[13px] !text-white')}>
                                     {formatNum(autoCalcPct(it))}%
                                   </span>
                                 </div>
@@ -1658,12 +1658,30 @@ export function Formulation(): React.JSX.Element {
               const batchQty = Number(torQty) || 0
               const uom = uomLabel(form.uom)
               const outName = products.find((pr) => String(pr.id) === String(form.product_id))?.name || 'the output'
+
+              // One flat table, not three banded groups. What a reader is
+              // actually comparing is a line against another line — how much
+              // of this against how much of that — and a heading every few
+              // rows kept breaking the column they were reading down. The
+              // kind each line belongs to moves into a column of its own and
+              // a mark down the left edge, which separates them without
+              // interrupting anything.
+              const TYPES: Record<string, { label: string; mark: string; fg: string; bg: string }> = {
+                input: { label: 'IN', mark: '#12855A', fg: '#0B6B45', bg: '#FFFFFF' },
+                loss: { label: 'LOSS', mark: '#B3261E', fg: '#8C2F26', bg: '#FDF3F2' },
+                output: { label: 'BY-PROD', mark: '#1B4E82', fg: '#1B4E82', bg: '#F4F8FD' },
+                batch: { label: 'MADE', mark: '#C7F03F', fg: '#0B6B45', bg: '#F4FBF6' }
+              }
               const ins = req.rows.filter((r) => r.kind === 'input')
-              const losses = req.rows.filter((r) => r.kind === 'loss')
-              const yields: TorRow[] = [
+              // The batch itself is not a formulation line, but it is the
+              // largest thing the recipe yields and reads as missing when the
+              // by-products beneath it are listed and it is not.
+              const rows: TorRow[] = [
+                ...ins,
+                ...req.rows.filter((r) => r.kind === 'loss'),
                 {
                   key: 'batch',
-                  kind: 'output',
+                  kind: 'batch',
                   name: outName,
                   share: null,
                   q: batchQty,
@@ -1677,265 +1695,201 @@ export function Formulation(): React.JSX.Element {
               // a blend of 80/15/5 read as three stubs when every bar was a
               // fraction of a hundred.
               const maxShare = Math.max(1, ...ins.map((r) => Number(r.share) || 0))
-              // Gridlines between the money columns. Five figures a row
-              // across a 600px table run together without them — the eye has
-              // nothing to follow down a column. Drawn on every cell but the
-              // first, so the ruler itself carries them and the header, the
-              // rows and the totals cannot disagree.
+              const balances = Math.abs(req.net - batchQty) < 0.005
+              // Three decimals throughout, padded. formatNum drops trailing
+              // zeros, so a column of it reads 100, 27.778, 5.348 — three
+              // different widths, and the decimal points do not line up. A
+              // working-out table is read down its columns.
+              const f3 = (v: number | null | undefined): string =>
+                v == null || Number.isNaN(v)
+                  ? '—'
+                  : v.toLocaleString('en-IN', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
               const COLS =
-                'grid grid-cols-[minmax(140px,1.2fr)_minmax(130px,1fr)_120px_108px_94px] items-center gap-3 px-3.5 [&>*+*]:border-l [&>*+*]:border-l-[#E4ECE3] [&>*+*]:pl-3'
-              const groups = [
-                {
-                  key: 'in',
-                  label: 'Goes in',
-                  icon: ArrowDownLeft,
-                  total: `${formatNum(req.inputTotal)} ${uom}`,
-                  head: '!bg-[#F7FAF6] !border-b-[#E4ECE3] !text-[#33473E]',
-                  rows: ins
-                },
-                {
-                  key: 'lost',
-                  label: 'Is lost',
-                  icon: Flame,
-                  total: `${formatNum(req.deadLossTotal)} ${uom}`,
-                  head: '!bg-[#FDF3F2] !border-b-[#F0D6D4] !text-[#8C2F26]',
-                  rows: losses
-                },
-                {
-                  key: 'out',
-                  label: 'Is yielded',
-                  icon: ArrowUpRight,
-                  total: `${formatNum(batchQty)} + ${formatNum(req.fattyYieldTotal)} ${uom}`,
-                  head: '!bg-[#F4FBF6] !border-b-[#BFE3CB] !text-[#0B6B45]',
-                  rows: yields
-                }
-              ]
+                // Gridlines on every cell but the first, so the ruler
+                // itself carries them and the header, the rows and the NET
+                // line cannot disagree about where a column starts.
+                'grid grid-cols-[58px_minmax(130px,1.5fr)_minmax(96px,1fr)_104px_100px_92px] items-center gap-0 px-3.5 [&>*+*]:border-l [&>*+*]:border-l-[#E4ECE3] [&>*+*]:pl-2.5 [&>*]:pr-2.5'
+
               return (
                 <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
-                  <div className="bg-[#0B3D2E] px-4 py-3.5 text-white">
-                    <div className="flex items-center gap-2 text-[11px] font-extrabold uppercase tracking-[.14em]">
+                  {/* The answer, and the batch it is an answer for, on one
+                      line. The quantity is typed here rather than somewhere
+                      above, because changing it is the whole point of the
+                      calculator. */}
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-3 bg-[#0B3D2E] px-4 py-3.5 text-white">
+                    <span className="flex items-center gap-2 text-[11px] font-extrabold uppercase tracking-[.14em]">
                       <Calculator className="h-[18px] w-[18px] text-[#C7F03F]" /> TOR calculator
-                    </div>
-                    <div className="mt-3 flex flex-wrap items-end gap-3.5">
-                      <div>
-                        <div className="text-[9px] font-extrabold uppercase tracking-[.13em] text-[#8FBFA8]">Produce</div>
-                        <div className="mt-1.5 flex items-center gap-2">
-                          <Input
-                            type="number"
-                            className="!h-[46px] !w-[88px] !rounded-[3px] !border-white/25 !bg-white/10 !px-2.5 !text-right !text-[18px] !font-bold !tabular-nums !text-white"
-                            value={torQty}
-                            onChange={(e) => setTorQty(e.target.value)}
-                          />
-                          <span className="text-[11px] font-extrabold uppercase tracking-[.1em] text-[#8FBFA8]">{uom}</span>
-                        </div>
-                      </div>
-                      <ArrowRight className="mb-3.5 h-[22px] w-[22px] shrink-0 text-[#5C7A6C]" />
-                      <div className="min-w-[180px] flex-1 border-l-[3px] border-l-[#C7F03F] pl-3.5">
-                        <div className="text-[9px] font-extrabold uppercase tracking-[.13em] text-[#C7F03F]">Total oil required</div>
-                        <div className="mt-1.5 flex flex-wrap items-baseline gap-2">
-                          <span className="text-[32px] font-bold leading-none tracking-[-0.04em] tabular-nums text-[#C7F03F]">
-                            {formatNum((batchQty * tor) / 100)}
-                          </span>
-                          <span className="text-[12px] font-extrabold text-[#8FBFA8]">{uom}</span>
-                        </div>
-                      </div>
-                      <div className="border-l border-l-white/15 pl-4 text-right">
-                        <div className="text-[9px] font-extrabold uppercase tracking-[.13em] text-[#8FBFA8]">TOR per 100</div>
-                        <div className="mt-1.5 text-[26px] font-bold leading-none tracking-[-0.035em] tabular-nums">
-                          {formatNum(tor)}%
-                        </div>
-                      </div>
-                    </div>
-                    {/* A footnote to the figure above it, so it is set as
-                        one: the number is the answer, this is only why. At
-                        12px semibold it competed with the readout it was
-                        explaining. */}
-                    {/* One line, not three. The figures above already say what
-                        the answer is; this only has to say where it came from,
-                        and a paragraph at that width was being skipped rather
-                        than read. */}
-                    <p className="mt-3 border-t border-t-white/12 pt-3 text-[12.5px] font-medium leading-relaxed text-[#A9CBBA]">
-                      {hasPerInputAutoCalc ? (
-                        <>
-                          Each input has its own multiplier, so the total is every share × its own — summed,{' '}
-                          <b className="text-white">{formatNum(tor)}%</b> makes {formatNum(batchQty)} {uom} of {outName}.
-                        </>
-                      ) : offInput > 0 ? (
-                        <>
-                          {formatNum(offInput)}% comes off the oil going in, so 100 ÷{' '}
-                          {((100 - offInput) / 100).toFixed(4)} = <b className="text-white">{formatNum(tor)}%</b> has to
-                          be put in.
-                        </>
-                      ) : (
-                        <>Nothing is lost — the blend goes in one for one with the output.</>
-                      )}
-                    </p>
+                    </span>
+                    <span className="ml-auto flex items-center gap-2">
+                      <span className="text-[9px] font-extrabold uppercase tracking-[.13em] text-[#8FBFA8]">Produce</span>
+                      <Input
+                        type="number"
+                        className="!h-[38px] !w-[82px] !rounded-[3px] !border-white/25 !bg-white/10 !px-2.5 !text-right !text-[15px] !font-bold !tabular-nums !text-white"
+                        value={torQty}
+                        onChange={(e) => setTorQty(e.target.value)}
+                      />
+                      <span className="text-[10.5px] font-extrabold text-[#8FBFA8]">{uom}</span>
+                    </span>
+                    <ArrowRight className="h-[19px] w-[19px] shrink-0 text-[#5C7A6C]" />
+                    <span className="flex items-baseline gap-2 border-l-[3px] border-l-[#C7F03F] pl-3">
+                      <span className="text-[26px] font-bold leading-none tracking-[-0.035em] tabular-nums text-[#C7F03F]">
+                        {f3((batchQty * tor) / 100)}
+                      </span>
+                      <span className="text-[10.5px] font-extrabold text-[#8FBFA8]">{uom} total oil</span>
+                    </span>
+                    <span className="flex items-baseline gap-2 border-l border-l-white/[.14] pl-3.5">
+                      <span className="text-[20px] font-bold leading-none tracking-[-0.03em] tabular-nums">
+                        {f3(tor)}%
+                      </span>
+                      <span className="text-[10.5px] font-extrabold text-[#8FBFA8]">TOR / 100</span>
+                    </span>
                   </div>
 
                   <div className="overflow-x-auto">
-                    <div className="min-w-[680px]">
-                      <div className={cn(COLS, 'h-[38px] border-b border-b-[#DCE7DB] bg-[#EAF0E9] text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#33473E]')}>
+                    <div className="min-w-[660px]">
+                      <div
+                        className={cn(
+                          COLS,
+                          'h-[36px] border-b border-b-[#DCE7DB] border-l-[3px] border-l-transparent bg-[#EAF0E9] text-[9px] font-extrabold uppercase tracking-[.11em] text-[#33473E]'
+                        )}
+                      >
+                        <span />
                         <span>Product</span>
-                        <span>Share of blend</span>
+                        <span>Share</span>
                         <span className="text-right">Quantity</span>
                         <span className="text-right">Fatty yield</span>
                         <span className="text-right">Multiplier</span>
                       </div>
-                      {groups.map((g) =>
-                        g.rows.length === 0 ? null : (
-                          <div key={g.key}>
-                            {/* Each band totals itself, so what goes in, what is
-                                lost and what comes out can be read without
-                                adding the rows up. */}
-                            <div className={cn('flex items-center gap-2 border-b px-3.5 py-2', g.head)}>
-                              <g.icon className="h-[15px] w-[15px] shrink-0" />
-                              <span className="text-[10.5px] font-extrabold uppercase tracking-[.12em]">{g.label}</span>
-                              <span className="ml-auto whitespace-nowrap text-[12.5px] font-bold tabular-nums">{g.total}</span>
+
+                      {rows.length === 0 ? (
+                        <div className="px-3.5 py-6 text-center text-[12px] font-semibold text-[#5A6B62]">
+                          Add an input with a share and the working appears here.
+                        </div>
+                      ) : (
+                        rows.map((r) => {
+                          const t = TYPES[r.kind] || TYPES.input
+                          const note = r.isBatch
+                            ? 'the batch itself'
+                            : r.kind === 'loss'
+                              ? 'struck on the total oil'
+                              : r.kind === 'output'
+                                ? 'recovered'
+                                : r.auto
+                                  ? 'own multiplier'
+                                  : ''
+                          return (
+                            <div
+                              key={r.key}
+                              className={cn(COLS, 'min-h-[42px] border-b border-b-[#EAF0E9] py-2')}
+                              style={{ borderLeft: `3px solid ${t.mark}`, background: t.bg }}
+                            >
+                              <span
+                                className="text-[9px] font-extrabold tracking-[.09em]"
+                                style={{ color: t.fg }}
+                              >
+                                {t.label}
+                              </span>
+                              <span className="min-w-0 truncate text-[12.5px] font-extrabold text-[#0A1F17]" title={r.name}>
+                                {r.name}
+                                {note && <span className="text-[11px] font-semibold text-[#5A6B62]"> {note}</span>}
+                              </span>
+                              <span>
+                                {r.share != null ? (
+                                  <span className="flex items-center gap-2">
+                                    <span className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                                      <span
+                                        className="block h-full"
+                                        style={{
+                                          width: `${(Number(r.share) / maxShare) * 100}%`,
+                                          background: '#12855A'
+                                        }}
+                                      />
+                                    </span>
+                                    <span className="flex-none text-[12px] font-bold tabular-nums text-[#33473E]">
+                                      {f3(r.share)}%
+                                    </span>
+                                  </span>
+                                ) : (
+                                  <span className="text-[11px] font-semibold text-[#A8B8AE]">—</span>
+                                )}
+                              </span>
+                              <span
+                                className="whitespace-nowrap text-right text-[14.5px] font-bold tabular-nums"
+                                style={{ color: r.kind === 'loss' ? '#8C2F26' : '#0A1F17' }}
+                              >
+                                {f3(r.q)}
+                              </span>
+                              <span className="whitespace-nowrap text-right text-[13.5px] font-bold tabular-nums text-[#1B4E82]">
+                                {r.fattyYield != null ? f3(r.fattyYield) : '—'}
+                              </span>
+                              {/* Only an INPUT has a multiplier. A dead-loss
+                                  line is a percentage struck on the total, not
+                                  something multiplied up from a share, and the
+                                  figure sitting there read as one more input
+                                  carrying its own rate. */}
+                              <span className="text-right text-[13px] font-semibold tabular-nums text-[#5A6B62]">
+                                {r.kind === 'input' && r.multiplier != null ? `${f3(r.multiplier)}x` : '—'}
+                              </span>
                             </div>
-                            {(g.rows as TorRow[]).map((r) => {
-                              const mark = r.isBatch
-                                ? '#0B3D2E'
-                                : r.kind === 'loss'
-                                  ? '#B3261E'
-                                  : r.kind === 'output'
-                                    ? '#0B6B45'
-                                    : '#12855A'
-                              const note = r.isBatch
-                                ? 'what you set out to make'
-                                : r.kind === 'loss'
-                                  ? 'written off — no value recovered'
-                                  : r.auto
-                                    ? 'saleable by-product'
-                                    : ''
-                              return (
-                                <div
-                                  key={r.key}
-                                  className={cn(COLS, 'border-b border-b-[#EAF0E9] border-l-[3px] py-2.5')}
-                                  style={{ borderLeftColor: mark }}
-                                >
-                                  <span className="min-w-0 truncate text-[13.5px] font-extrabold">
-                                    {r.name}
-                                    {r.isBatch && (
-                                      <span className="ml-1.5 text-[12px] font-semibold text-[#5A6B62]">the recipe&apos;s output</span>
-                                    )}
-                                    {r.auto && <span className="ml-1.5 text-[12px] font-semibold text-[#5A6B62]">auto, from FFA</span>}
-                                  </span>
-                                  <div className="min-w-0">
-                                    {r.share != null ? (
-                                      <div className="flex items-center gap-2">
-                                        <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
-                                          <div className="h-full" style={{ width: `${(Number(r.share) / maxShare) * 100}%`, background: '#12855A' }} />
-                                        </div>
-                                        <span className="shrink-0 text-[12.5px] font-bold tabular-nums text-[#33473E]">
-                                          {formatNum(r.share)}%
-                                        </span>
-                                      </div>
-                                    ) : (
-                                      <span className={cn('text-[12.5px] font-semibold', r.kind === 'loss' ? 'text-[#8C2F26]' : 'text-[#5A6B62]')}>
-                                        {note}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <span
-                                    className={cn(
-                                      'whitespace-nowrap text-right text-[15px] font-bold tabular-nums',
-                                      r.kind === 'loss' ? 'text-[#B3261E]' : r.auto ? 'text-[#0B6B45]' : 'text-[#0A1F17]'
-                                    )}
-                                  >
-                                    {formatNum(r.q)} <span className="text-[11px] font-semibold text-[#5A6B62]">{uom}</span>
-                                  </span>
-                                  <span className={cn('whitespace-nowrap text-right text-[13.5px] font-bold tabular-nums', r.fattyYield != null ? 'text-[#0B6B45]' : 'text-[#5A6B62]')}>
-                                    {r.fattyYield != null ? `${formatNum(r.fattyYield)} ${uom}` : '—'}
-                                  </span>
-                                  <span className="text-right text-[13px] font-semibold tabular-nums text-[#33473E]">
-                                    {r.multiplier != null ? `×${r.multiplier.toFixed(4)}` : '—'}
-                                  </span>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        )
+                          )
+                        })
                       )}
+
+                      {/* Does the mass balance? In minus what is lost and what
+                          is recovered should be the batch, and if it is not
+                          the recipe is wrong somewhere above. */}
+                      <div
+                        className={cn(COLS, 'border-l-[3px] border-l-transparent border-t-2 border-t-[#C7F03F] bg-[#EFF5EC] py-2.5')}
+                      >
+                        <span className="text-[9px] font-extrabold tracking-[.09em] text-[#5A6B62]">NET</span>
+                        <span className="min-w-0 truncate text-[12px] font-bold text-[#33473E]">
+                          {f3(req.inputTotal)} in − {f3(req.deadLossTotal)} lost − {f3(req.fattyYieldTotal)} recovered
+                        </span>
+                        <span />
+                        <span className="whitespace-nowrap text-right text-[15.5px] font-bold tabular-nums">
+                          {f3(req.net)}
+                        </span>
+                        <span className="col-span-2 flex items-center justify-end gap-1.5 text-right">
+                          {balances ? (
+                            <>
+                              <CheckCircle2 className="h-4 w-4 text-[#0B6B45]" />
+                              <span className="text-[11px] font-extrabold text-[#0B6B45]">balances</span>
+                            </>
+                          ) : (
+                            <>
+                              <AlertTriangle className="h-4 w-4 text-[#C2700A]" />
+                              <span className="whitespace-nowrap text-[11px] font-extrabold text-[#8A5300]">
+                                off by {f3(Math.abs(req.net - batchQty))}
+                              </span>
+                            </>
+                          )}
+                        </span>
+                      </div>
                     </div>
                   </div>
 
-                  {/* The reconciliation the client's own spreadsheet ends on,
-                      laid out as the sum it is rather than as one run-on line:
-                      it should always land back on the batch size. */}
-                  <div className="border-t-2 border-t-[#C7F03F] bg-[#EFF5EC] px-4 py-3.5">
-                    {(() => {
-                      // The reconciliation should always land back on the batch
-                      // size. Saying so out loud turns the row from four
-                      // figures into a check somebody can act on — and when it
-                      // does NOT balance, that is the most important thing on
-                      // this card.
-                      const drift = req.net - batchQty
-                      const balances = Math.abs(drift) < 0.0005
-                      const terms = [
-                        { k: 'oil in', v: formatNum(req.inputTotal), fg: 'text-[#0A1F17]' },
-                        { op: '\u2212' },
-                        { k: 'fatty acid out', v: formatNum(req.fattyYieldTotal), fg: 'text-[#0B6B45]' },
-                        { op: '\u2212' },
-                        { k: 'dead loss', v: formatNum(req.deadLossTotal), fg: 'text-[#B3261E]' },
-                        { op: '=' }
-                      ]
-                      return (
+                  {/* Where the TOR came from. One line under the working
+                      rather than a paragraph over it — the figures above have
+                      already said what the answer is. */}
+                  <div className="flex items-start gap-2.5 border-t border-t-[#E4ECE3] bg-[#F7FAF6] px-4 py-3">
+                    <Info className="h-4 w-4 flex-none text-[#5A6B62]" />
+                    <span className="text-[11.5px] font-semibold leading-relaxed text-[#33473E]">
+                      {hasPerInputAutoCalc ? (
                         <>
-                          <div className="flex flex-wrap items-center gap-2.5">
-                            <span className="text-[10px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">Net</span>
-                            <span
-                              className={cn(
-                                'flex items-center gap-1.5 rounded-[3px] border px-2 py-1 text-[11px] font-extrabold uppercase tracking-[.05em]',
-                                balances
-                                  ? 'border-[#BFE3CB] bg-white text-[#0B6B45]'
-                                  : 'border-[#F0D6D4] bg-[#FDF3F2] text-[#B3261E]'
-                              )}
-                            >
-                              {balances ? <Beaker className="h-3.5 w-3.5" /> : <Flame className="h-3.5 w-3.5" />}
-                              {balances ? 'Balances to the batch' : `Out by ${formatNum(Math.abs(drift))} ${uom}`}
-                            </span>
-                          </div>
-                          <div className="mt-2.5 overflow-x-auto">
-                            {/* Every cell carries both rows — the operators get
-                                an invisible label — so the figures share one
-                                baseline. Aligned to the bottom instead, the
-                                − and = dropped down level with the captions. */}
-                            <div className="flex min-w-[480px] items-stretch gap-2">
-                              {terms.map((t, ti) =>
-                                t.op ? (
-                                  <div key={ti} className="flex shrink-0 flex-col justify-center px-0.5">
-                                    <div className="text-[17px] font-bold leading-none text-[#8FA79B]">{t.op}</div>
-                                    <div aria-hidden className="mt-1.5 text-[10px] font-bold opacity-0">
-                                      .
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div key={ti} className="rounded-[3px] border border-[#DCE7DB] bg-white px-3 py-2">
-                                    <div className={cn('whitespace-nowrap text-[18px] font-bold leading-none tracking-[-0.02em] tabular-nums', t.fg)}>
-                                      {t.v}
-                                    </div>
-                                    <div className="mt-1.5 whitespace-nowrap text-[10px] font-bold text-[#5A6B62]">{t.k}</div>
-                                  </div>
-                                )
-                              )}
-                              {/* The answer, weighted as one: it is what the
-                                  whole strip adds up to. */}
-                              <div
-                                className={cn(
-                                  'rounded-[3px] border border-l-[3px] px-3.5 py-2',
-                                  balances ? 'border-[#BFE3CB] border-l-[#C7F03F] bg-white' : 'border-[#F0D6D4] border-l-[#B3261E] bg-[#FDF3F2]'
-                                )}
-                              >
-                                <div className={cn('whitespace-nowrap text-[22px] font-bold leading-none tracking-[-0.03em] tabular-nums', balances ? 'text-[#0A1F17]' : 'text-[#B3261E]')}>
-                                  {formatNum(req.net)} <span className="text-[13px] font-extrabold text-[#5A6B62]">{uom}</span>
-                                </div>
-                                <div className="mt-1.5 whitespace-nowrap text-[10px] font-bold text-[#5A6B62]">batch size</div>
-                              </div>
-                            </div>
-                          </div>
+                          Each input carries its own multiplier, so the total is every share × its own —
+                          summed, <b className="text-[#0A1F17]">{formatNum(tor)}%</b> makes{' '}
+                          {formatNum(batchQty)} {uom} of {outName}.
                         </>
-                      )
-                    })()}
+                      ) : offInput > 0 ? (
+                        <>
+                          {formatNum(offInput)}% comes off the oil going in, so 100 ÷{' '}
+                          {((100 - offInput) / 100).toFixed(4)} ={' '}
+                          <b className="text-[#0A1F17]">{formatNum(tor)}%</b> has to be put in.
+                        </>
+                      ) : (
+                        <>Nothing is lost — the blend goes in one for one with the output.</>
+                      )}
+                    </span>
                   </div>
                 </div>
               )
@@ -1945,16 +1899,16 @@ export function Formulation(): React.JSX.Element {
               <div
                 className={cn(
                   'flex flex-wrap items-center gap-2 bg-gradient-to-r from-[#0f1c3d] to-[#1a2c56] px-5 py-3 text-white',
-                  __WEB__ && '!gap-2.5 !border-b !border-b-white/10 !bg-[#072B20] !bg-none !px-5 !py-3.5'
+                  __WEB__ && '!gap-2 !border-b !border-b-white/10 !bg-[#072B20] !bg-none !px-4 !py-2.5'
                 )}
               >
-                <Calculator className={cn('h-4 w-4 shrink-0 text-amber-400', __WEB__ && '!h-[18px] !w-[18px] !text-[#C7F03F]')} />
-                <span className={cn('text-[13px] font-bold uppercase tracking-widest', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.14em]')}>TOR Calculator</span>
+                <Calculator className={cn('h-4 w-4 shrink-0 text-amber-400', __WEB__ && '!h-4 !w-4 !text-[#C7F03F]')} />
+                <span className={cn('text-[13px] font-bold uppercase tracking-widest', __WEB__ && '!text-[11px] !font-extrabold !tracking-[.14em]')}>TOR Calculator</span>
                 <span
                   className={cn(
                     'ml-auto rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tabular-nums',
                     balanced ? 'border-emerald-400 bg-emerald-400/10 text-emerald-300' : 'border-rose-400 bg-rose-400/10 text-rose-300',
-                    __WEB__ && '!rounded-[3px] !px-2.5 !py-1.5 !text-[12px] !font-bold',
+                    __WEB__ && '!rounded-[3px] !px-2.5 !py-1.5 !text-[11.5px] !font-bold',
                     __WEB__ &&
                       (balanced
                         ? '!border-[#C7F03F]/40 !bg-[#C7F03F]/15 !text-[#C7F03F]'
@@ -1965,7 +1919,7 @@ export function Formulation(): React.JSX.Element {
                 </span>
               </div>
               <div className={cn('bg-gradient-to-b from-[#1a2c56] to-[#132247] p-5 text-white', __WEB__ && '!bg-[#0B3D2E] !bg-none !p-5')}>
-                <p className={cn('text-[12px] leading-relaxed text-white/70', __WEB__ && '!text-[12.5px] !font-semibold !text-[#8FBFA8]')}>
+                <p className={cn('text-[12px] leading-relaxed text-white/70', __WEB__ && '!text-[12px] !font-semibold !text-[#8FBFA8]')}>
                   {hasPerInputAutoCalc ? (
                     <>
                       One or more inputs carry their own TOR multiplier (a blend of differing-quality raw oils), so the
@@ -1986,7 +1940,7 @@ export function Formulation(): React.JSX.Element {
                   )}
                 </p>
 
-                <div className={cn('mt-4 flex flex-wrap items-center gap-3 rounded-xl bg-black/20 p-4', __WEB__ && '!mt-4 !gap-3.5 !rounded-[4px] !border !border-white/10 !bg-[#072B20] !p-4')}>
+                <div className={cn('mt-4 flex flex-wrap items-center gap-3 rounded-xl bg-black/20 p-4', __WEB__ && '!mt-4 !gap-3.5 !rounded-[4px] !border !border-white/10 !bg-[#072B20] !p-3')}>
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] uppercase tracking-wide text-white/60">Produce</span>
                     <Input
@@ -2094,7 +2048,7 @@ export function Formulation(): React.JSX.Element {
               className={cn(
                 'flex justify-end gap-2 pb-2',
                 __WEB__ &&
-                  '!sticky !bottom-0 !z-10 !gap-2.5 !rounded-[4px] !border !border-[#D6E2D6] !bg-white !px-4 !py-3.5 !pb-3.5 !shadow-[0_-6px_18px_-8px_rgba(10,31,23,0.28)]'
+                  '!sticky !bottom-0 !z-10 !gap-2 !rounded-[4px] !border !border-[#D6E2D6] !bg-white !px-3 !py-2.5 !pb-3.5 !shadow-[0_-6px_18px_-8px_rgba(10,31,23,0.28)]'
               )}
             >
               {/* What still stands between this recipe and a save, said where
@@ -2109,7 +2063,7 @@ export function Formulation(): React.JSX.Element {
                 variant="outline"
                 onClick={leaveEditor}
                 disabled={saving}
-                className={cn(__WEB__ && '!h-12 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-6 !text-[13.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
+                className={cn(__WEB__ && '!h-[42px] !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-6 !text-[12.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
               >
                 Cancel
               </Button>
@@ -2118,7 +2072,7 @@ export function Formulation(): React.JSX.Element {
                 disabled={saving}
                 className={cn(
                   'bg-[#1a2c56] hover:bg-[#24407e]',
-                  __WEB__ && '!h-12 !rounded-[4px] !bg-[#0B3D2E] !px-7 !text-[13.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#C7F03F] hover:!bg-[#0F4A38]'
+                  __WEB__ && '!h-[42px] !rounded-[4px] !bg-[#0B3D2E] !px-7 !text-[12.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#C7F03F] hover:!bg-[#0F4A38]'
                 )}
               >
                 {saving ? 'Saving…' : 'Save formulation'}
@@ -2139,7 +2093,7 @@ export function Formulation(): React.JSX.Element {
               __WEB__ && '!gap-0 !overflow-hidden !rounded-[4px] !border-0 !bg-[#F1F5EF] !p-0 [&>button]:!hidden'
             )}
           >
-            <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#0B3D2E] !px-5 !py-4 !text-left')}>
+            <DialogHeader className={cn(__WEB__ && '!block !space-y-0 !bg-[#0B3D2E] !px-4 !py-4 !text-left')}>
               {__WEB__ && (
                 <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Formulation</div>
               )}
@@ -2147,23 +2101,23 @@ export function Formulation(): React.JSX.Element {
                 Leave without saving?
               </DialogTitle>
             </DialogHeader>
-            <p className={cn('text-[12px] text-muted-foreground', __WEB__ && '!px-5 !py-4 !text-[13px] !font-semibold !leading-relaxed !text-[#33473E]')}>
+            <p className={cn('text-[12px] text-muted-foreground', __WEB__ && '!px-4 !py-4 !text-[12.5px] !font-semibold !leading-relaxed !text-[#33473E]')}>
               {editing
                 ? 'Your changes to this recipe have not been saved. Leaving now puts it back the way it was.'
                 : 'This recipe has not been saved. Leaving now discards it.'}
             </p>
-            <DialogFooter className={cn('gap-2', __WEB__ && '!flex-wrap !border-t !border-t-[#D6E2D6] !bg-white !px-5 !py-3.5')}>
+            <DialogFooter className={cn('gap-2', __WEB__ && '!flex-wrap !border-t !border-t-[#D6E2D6] !bg-white !px-4 !py-2.5')}>
               <Button
                 variant="outline"
                 onClick={() => setLeaveOpen(false)}
-                className={cn(__WEB__ && '!h-12 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-5 !text-[13px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
+                className={cn(__WEB__ && '!h-[42px] !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !px-4 !text-[12.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E]')}
               >
                 Keep editing
               </Button>
               <Button
                 variant="outline"
                 onClick={discardAndLeave}
-                className={cn(__WEB__ && '!h-12 !rounded-[4px] !border-[1.5px] !border-[#F0D6D4] !bg-[#FDF3F2] !px-5 !text-[13px] !font-extrabold !uppercase !tracking-[.03em] !text-[#B3261E] hover:!bg-[#FBE9E7]')}
+                className={cn(__WEB__ && '!h-[42px] !rounded-[4px] !border-[1.5px] !border-[#F0D6D4] !bg-[#FDF3F2] !px-4 !text-[12.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#B3261E] hover:!bg-[#FBE9E7]')}
               >
                 Discard
               </Button>
@@ -2175,7 +2129,7 @@ export function Formulation(): React.JSX.Element {
                 <Button
                   onClick={() => void saveAndLeave()}
                   disabled={saving}
-                  className={cn(__WEB__ && '!h-12 !gap-2 !rounded-[4px] !bg-[#0B3D2E] !px-5 !text-[13px] !font-extrabold !uppercase !tracking-[.03em] !text-[#C7F03F] hover:!bg-[#0F4A38]')}
+                  className={cn(__WEB__ && '!h-[42px] !gap-2 !rounded-[4px] !bg-[#0B3D2E] !px-4 !text-[12.5px] !font-extrabold !uppercase !tracking-[.03em] !text-[#C7F03F] hover:!bg-[#0F4A38]')}
                 >
                   {saving ? 'Saving…' : 'Save formulation'}
                 </Button>
@@ -2232,7 +2186,7 @@ export function Formulation(): React.JSX.Element {
         actions={
           <Button
             size="sm"
-            className={cn(__WEB__ && '!gap-2 !bg-[#C7F03F] !px-4 !font-extrabold !text-[#12280B] hover:!bg-[#B8E32E]')}
+            className={cn(__WEB__ && '!gap-2 !bg-[#C7F03F] !px-3 !font-extrabold !text-[#12280B] hover:!bg-[#B8E32E]')}
             onClick={openAdd}
             disabled={outputs.length === 0}
           >
@@ -2245,7 +2199,7 @@ export function Formulation(): React.JSX.Element {
         {/* Sub-category filter. Counts on each chip so it is obvious at a glance how
             much of the book is still unclassified. */}
         {rows.length > 0 && (
-          <div className={cn('mb-4 flex flex-wrap items-center gap-2', __WEB__ && '!mb-3 !gap-2.5')}>
+          <div className={cn('mb-4 flex flex-wrap items-center gap-2', __WEB__ && '!mb-3 !gap-2')}>
             <span className={cn('text-[10px] font-bold uppercase tracking-widest text-muted-foreground', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.13em] !text-[#5A6B62]')}>Sub-category</span>
             {[
               { key: 'all', label: 'All', count: rows.length },
@@ -2295,7 +2249,7 @@ export function Formulation(): React.JSX.Element {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Search output product or recipe name…"
-                  className="!h-[38px] !rounded-[4px] !border-[#C3D2C6] !pl-9 !text-[13px]"
+                  className="!h-9 !rounded-[4px] !border-[#C3D2C6] !pl-9 !text-[12.5px]"
                 />
               </div>
             )}
@@ -2304,7 +2258,7 @@ export function Formulation(): React.JSX.Element {
               className={cn(
                 'ml-auto text-[11px] font-medium text-sky-700 hover:underline',
                 __WEB__ &&
-                  '!ml-0 !flex !h-[38px] !shrink-0 !items-center !gap-2 !rounded-[4px] !border !border-[#C3D2C6] !bg-white !px-3.5 !text-[12.5px] !font-extrabold !text-[#0B6B45] hover:!bg-[#F7FAF6] hover:!no-underline'
+                  '!ml-0 !flex !h-9 !shrink-0 !items-center !gap-2 !rounded-[4px] !border !border-[#C3D2C6] !bg-white !px-3.5 !text-[12px] !font-extrabold !text-[#0B6B45] hover:!bg-[#F7FAF6] hover:!no-underline'
               )}
               onClick={() => setSubcatOpen(true)}
             >
@@ -2314,7 +2268,7 @@ export function Formulation(): React.JSX.Element {
           </div>
         )}
         {outputs.length === 0 && (
-          <div className={cn('mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800', __WEB__ && '!rounded-[4px] !border-[#F0D9AE] !border-l-[3px] !border-l-[#C2700A] !bg-[#FFFBF2] !text-[12.5px] !font-bold !text-[#8A5300]')}>
+          <div className={cn('mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800', __WEB__ && '!rounded-[4px] !border-[#F0D9AE] !border-l-[3px] !border-l-[#C2700A] !bg-[#FFFBF2] !text-[12px] !font-bold !text-[#8A5300]')}>
             Add finished or intermediate products first (Products page) to build a formulation.
           </div>
         )}
@@ -2380,7 +2334,7 @@ export function Formulation(): React.JSX.Element {
                     className={cn(FM_ROW, __WEB__ && '!cursor-pointer')}
                     onClick={__WEB__ ? () => void openEdit(row) : undefined}
                   >
-                    <TableCell className={cn('font-medium', __WEB__ && '!text-[13px] !font-bold !text-[#0A1F17]')}>{row.product_name ?? '—'}</TableCell>
+                    <TableCell className={cn('font-medium', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>{row.product_name ?? '—'}</TableCell>
                     <TableCell>
                       <Badge
                         variant={row.product_category === 'finished' ? 'success' : 'secondary'}
@@ -2395,7 +2349,7 @@ export function Formulation(): React.JSX.Element {
                         {CAT_LABEL[row.product_category] ?? row.product_category}
                       </Badge>
                     </TableCell>
-                    <TableCell className={cn('text-muted-foreground', __WEB__ && '!text-[12.5px] !font-bold !text-[#33473E]')}>
+                    <TableCell className={cn('text-muted-foreground', __WEB__ && '!text-[12px] !font-bold !text-[#33473E]')}>
                       {row.name || (__WEB__ ? <span className="!font-semibold !text-[#A8B8AE]">—</span> : '—')}
                     </TableCell>
                     <TableCell>
@@ -2407,14 +2361,14 @@ export function Formulation(): React.JSX.Element {
                           {String(row.subcategory_name)}
                         </Badge>
                       ) : (
-                        <span className={cn('text-[12px] italic text-muted-foreground', __WEB__ && '!text-[12px] !font-semibold !text-[#A8B8AE]')}>Not classified</span>
+                        <span className={cn('text-[12px] italic text-muted-foreground', __WEB__ && '!text-[11.5px] !font-semibold !text-[#A8B8AE]')}>Not classified</span>
                       )}
                     </TableCell>
-                    <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[13px] !font-bold')}>{row.item_count}</TableCell>
-                    <TableCell className={cn('text-right tabular-nums text-emerald-700', __WEB__ && (Number(row.byproduct_pct) ? '!text-[13px] !font-bold !text-[#0B6B45]' : '!text-[13px] !font-semibold !text-[#C3D2C6]'))}>
+                    <TableCell className={cn('text-right tabular-nums', __WEB__ && '!text-[12.5px] !font-bold')}>{row.item_count}</TableCell>
+                    <TableCell className={cn('text-right tabular-nums text-emerald-700', __WEB__ && (Number(row.byproduct_pct) ? '!text-[12.5px] !font-bold !text-[#0B6B45]' : '!text-[12.5px] !font-semibold !text-[#C3D2C6]'))}>
                       {Number(row.byproduct_pct) ? `${formatNum(row.byproduct_pct)}%` : '—'}
                     </TableCell>
-                    <TableCell className={cn('text-right tabular-nums text-amber-700', __WEB__ && (Number(row.loss_pct) ? '!text-[13px] !font-bold !text-[#8A5300]' : '!text-[13px] !font-semibold !text-[#C3D2C6]'))}>
+                    <TableCell className={cn('text-right tabular-nums text-amber-700', __WEB__ && (Number(row.loss_pct) ? '!text-[12.5px] !font-bold !text-[#8A5300]' : '!text-[12.5px] !font-semibold !text-[#C3D2C6]'))}>
                       {Number(row.loss_pct) ? `${formatNum(row.loss_pct)}%` : '—'}
                     </TableCell>
                     {(() => {
