@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { Clock, Package, Pencil, Plus, Trash2 } from 'lucide-react'
+import { Check, ChevronRight, Clock, Package, Pencil, Plus, ShoppingCart, Trash2 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { ExcelButton } from '@/components/ExcelButton'
 import { Badge } from '@/components/ui/badge'
@@ -23,6 +23,27 @@ import { useEntryWindow } from '@/lib/useEntryWindow'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
+
+// The website's dialog shell: forest header band, pale ground, one field
+// height throughout, and a footer that is a bar rather than three buttons
+// floating on the body. Written once because this page has two dialogs and
+// they are the same shape.
+const CS_DIALOG =
+  '!gap-0 !overflow-hidden !rounded-[4px] !border-0 !bg-[#F1F5EF] !p-0 [&>button]:!hidden'
+// Editing a lot opens against the right edge rather than over the middle of
+// the register, so the row it came from stays where it was. Header and footer
+// are pinned; only the fields scroll.
+const CS_DRAWER =
+  '!bottom-0 !left-auto !right-0 !top-0 !h-screen !max-h-screen !w-[min(100vw,560px)] !max-w-none !translate-x-0 !translate-y-0 !grid-rows-[auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] !p-0 sm:!rounded-none [&>button]:!hidden'
+const CS_HEAD = '!block !space-y-0 !bg-[#0B3D2E] !px-5 !py-4 !text-left'
+const CS_TITLE = '!mt-1 !text-[19px] !font-bold !tracking-[-0.02em] !text-white'
+const CS_BODY =
+  '!gap-3.5 !overflow-y-auto !px-5 !py-4 [&_label]:!text-[10.5px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.12em] [&_label]:!text-[#5A6B62] [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[13.5px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13.5px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=date-picker]]:!h-11 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[13.5px] [&_[data-slot=date-picker]]:!font-bold'
+const CS_FOOT = '!flex-wrap !gap-2.5 !border-t !border-t-[#D6E2D6] !bg-white !px-5 !py-3.5'
+const CS_BTN =
+  '!h-12 !rounded-[4px] !border-[1.5px] !border-[#C3D2C6] !bg-white !px-5 !text-[13px] !font-extrabold !uppercase !tracking-[.03em] !text-[#33473E] hover:!bg-[#EAF0E9]'
+const CS_GO =
+  '!h-12 !gap-2 !rounded-[4px] !bg-[#0B3D2E] !px-6 !text-[13px] !font-extrabold !uppercase !tracking-[.03em] !text-[#C7F03F] hover:!bg-[#0F4A38]'
 
 function SummaryLine({ label, value, strong }: { label: string; value: string; strong?: boolean }): React.JSX.Element {
   return (
@@ -430,6 +451,20 @@ export function Consignment(): React.JSX.Element {
   }, [summary, deposits, ranged, from, to])
   const pendingLotCount = deposits.filter((d) => d.order_id == null).length
 
+  // Products folded shut, by party and product. Shut rather than open is what
+  // is remembered, so a product that arrives later opens the way every other
+  // one does instead of inheriting a state set before it existed — and the
+  // register reads exactly as it did before anything is clicked.
+  const [shutProducts, setShutProducts] = useState<Set<string>>(() => new Set())
+  function toggleProduct(key: string): void {
+    setShutProducts((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
   return (
     <>
       <PageHeader
@@ -464,6 +499,56 @@ export function Consignment(): React.JSX.Element {
       />
 
       <div className={cn('space-y-6 px-4 py-5', __WEB__ && '!space-y-3 !px-3 !py-3')}>
+        {/* What the page is holding, read off the same arrays everything below
+            is drawn from — so a tile can never state something the register
+            under it contradicts. */}
+        {__WEB__ && !loading && (
+          <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
+            {[
+              {
+                k: ranged ? 'Closing stock' : 'In stock',
+                v: formatNum(totalBalance),
+                unit: 'MT',
+                sub: `${stockBands.length} part${stockBands.length === 1 ? 'y' : 'ies'} holding`,
+                accent: '#0B6B45'
+              },
+              {
+                k: 'Awaiting validation',
+                v: String(pending.length),
+                unit: '',
+                sub: 'gate arrivals not yet placed',
+                accent: '#C2700A'
+              },
+              {
+                k: 'Pending booking',
+                v: String(pendingLotCount),
+                unit: '',
+                sub: 'lots still off your books',
+                accent: '#1B4E82'
+              },
+              {
+                k: 'Booked',
+                v: formatNum(stockBands.reduce((t, b) => t + (Number(b.invoiced) || 0), 0)),
+                unit: 'MT',
+                sub: 'invoiced into your books',
+                accent: '#0B3D2E'
+              }
+            ].map((k) => (
+              <div
+                key={k.k}
+                className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3"
+                style={{ borderTop: `3px solid ${k.accent}` }}
+              >
+                <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">{k.k}</div>
+                <div className="mt-1 flex items-baseline gap-1.5">
+                  <span className="text-[22px] font-bold leading-none tracking-[-0.035em] tabular-nums">{k.v}</span>
+                  {k.unit && <span className="text-[10.5px] font-extrabold text-[#5A6B62]">{k.unit}</span>}
+                </div>
+                <div className="mt-1 truncate text-[11px] font-semibold text-[#5A6B62]" title={k.sub}>{k.sub}</div>
+              </div>
+            ))}
+          </div>
+        )}
         {/* Step 1 of the flow: tankers passed at the gate, waiting for the
             accountant to say whose stock they are. */}
         {pending.length > 0 && (
@@ -505,14 +590,14 @@ export function Consignment(): React.JSX.Element {
             >
               <TableHeader className={cn(__WEB__ && '!bg-[#EAF0E9]')}>
                 <TableRow className={cn(__WEB__ && '!border-t !border-t-[#E4D9BC] !border-b-0 hover:!bg-[#EAF0E9] [&>th]:!bg-[#EAF0E9] [&>th]:!text-[9.5px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.11em] [&>th]:!text-[#33473E]')}>
-                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Gate no</TableHead>
-                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Date</TableHead>
-                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Tanker</TableHead>
-                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Party</TableHead>
-                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Type</TableHead>
-                  <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Net qty</TableHead>
-                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Weighment</TableHead>
-                  <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[9.5px]')}>Action</TableHead>
+                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[10.5px]')}>Gate no</TableHead>
+                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[10.5px]')}>Date</TableHead>
+                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[10.5px]')}>Tanker</TableHead>
+                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[10.5px]')}>Party</TableHead>
+                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[10.5px]')}>Type</TableHead>
+                  <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[10.5px]')}>Net qty</TableHead>
+                  <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[10.5px]')}>Weighment</TableHead>
+                  <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[10.5px]')}>Action</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -528,7 +613,7 @@ export function Consignment(): React.JSX.Element {
                       )}
                     >
                       <TableCell className={cn('font-medium tabular-nums', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>{g.gate_entry_no}</TableCell>
-                      <TableCell className={cn('whitespace-nowrap', __WEB__ && '!text-[12px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{formatDate(g.entry_date)}</TableCell>
+                      <TableCell className={cn('whitespace-nowrap', __WEB__ && '!text-[12.5px] !font-semibold !tabular-nums !text-[#33473E]')}>{formatDate(g.entry_date)}</TableCell>
                       <TableCell className={cn('font-medium', __WEB__ && '!text-[12.5px] !font-bold !tabular-nums !text-[#0A1F17]')}>{g.tanker_no || <span className="italic text-muted-foreground">no number</span>}</TableCell>
                       <TableCell>
                         {g.supplier_name ? (
@@ -542,7 +627,7 @@ export function Consignment(): React.JSX.Element {
                           <span className="italic text-muted-foreground">to be named</span>
                         )}
                       </TableCell>
-                      <TableCell className="text-muted-foreground">{g.rec_type || 'OIL'}</TableCell>
+                      <TableCell className={cn('text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !text-[#33473E]')}>{g.rec_type || 'OIL'}</TableCell>
                       <TableCell className="text-right font-semibold tabular-nums text-emerald-700">
                         {weighed ? `${formatNum(g.received_qty)} ${g.uom || 'MT'}` : '—'}
                       </TableCell>
@@ -615,7 +700,14 @@ export function Consignment(): React.JSX.Element {
                 '!gap-2 !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[15px] !py-2.5 [&_[data-slot=date-picker]]:!h-9 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[12px] [&_[data-slot=date-picker]]:!font-bold [&_[data-slot=select-trigger]]:!h-9 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12px] [&_[data-slot=select-trigger]]:!font-extrabold'
             )}
           >
-            <FyPicker from={from} to={to} onRange={(f, t) => { setFrom(f); setTo(t) }} className="h-9 w-28 text-xs" />
+            {/* w-28 is 112px, and "FY 2026-27" plus the chevron does not fit
+                in it — the label was being truncated to "FY 2026…". */}
+            <FyPicker
+              from={from}
+              to={to}
+              onRange={(f, t) => { setFrom(f); setTo(t) }}
+              className={cn('h-9 w-28 text-xs', __WEB__ && '!w-[136px] !whitespace-nowrap !text-[12px]')}
+            />
             <span className="text-[11px] font-semibold text-muted-foreground">From</span>
             <div className="w-40"><DatePicker value={from} onChange={(v) => setFrom(v || '')} max={to || undefined} /></div>
             <span className="text-[11px] font-semibold text-muted-foreground">To</span>
@@ -668,81 +760,141 @@ export function Consignment(): React.JSX.Element {
                   </div>
 
                   {/* Products of that party, each with its tankers */}
-                  {(band.products as Row[]).map((p) => (
-                    <div key={`${band.supplier_id}:${p.product_id}`} className="px-5 py-2.5">
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                        <div className="text-[13px] font-medium">{p.product_code || p.product_name}</div>
-                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-                          <span>
-                            In <span className="tabular-nums">{formatNum(p.deposited)}</span>
+                  {(band.products as Row[]).map((p) => {
+                    const pkey = `${band.supplier_id}:${p.product_id}`
+                    const shut = __WEB__ && shutProducts.has(pkey)
+                    return (
+                    <div key={pkey} className={cn('px-5 py-2.5', __WEB__ && '!p-0 [&+div]:!mt-2.5')}>
+                      <div
+                        className={cn(
+                          'flex flex-wrap items-center gap-x-4 gap-y-1',
+                          __WEB__ && '!gap-x-3.5 !border-b-0 !bg-[#1A5C46] !px-[15px] !py-2.5 !text-white'
+                        )}
+                      >
+                        {/* The product's own tankers fold away under it. A party
+                            can hold four or five products and every one of them
+                            listing its lots made the register a page of scrolling
+                            before the next party. */}
+                        {__WEB__ && (
+                          <button
+                            type="button"
+                            aria-expanded={!shut}
+                            onClick={() => toggleProduct(pkey)}
+                            title={shut ? 'Show this product’s tankers' : 'Hide this product’s tankers'}
+                            className="flex items-center gap-2 rounded-[3px] text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0B3D2E]"
+                          >
+                            <ChevronRight className={cn('h-4 w-4 shrink-0 text-[#C7F03F] transition-transform', !shut && 'rotate-90')} />
+                            <span className="text-[13.5px] font-extrabold text-white">{p.product_code || p.product_name}</span>
+                            <span className="text-[11px] font-semibold text-[#8FBFA8]">
+                              · {(p.lots as Row[]).length} tanker{(p.lots as Row[]).length === 1 ? '' : 's'}
+                            </span>
+                          </button>
+                        )}
+                        {!__WEB__ && <div className="text-[13px] font-medium">{p.product_code || p.product_name}</div>}
+                        <div className={cn('flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground', __WEB__ && '!ml-auto !gap-x-3.5')}>
+                          <span className={cn(__WEB__ && '!text-[9.5px] !font-extrabold !uppercase !tracking-[.12em] !text-[#8FBFA8]')}>
+                            In <span className={cn('tabular-nums', __WEB__ && '!ml-1 !text-[12.5px] !font-bold !normal-case !tracking-normal !text-white')}>{formatNum(p.deposited)}</span>
                           </span>
-                          <span>
-                            Booked <span className="tabular-nums">{formatNum(p.invoiced)}</span>
+                          <span className={cn(__WEB__ && '!text-[9.5px] !font-extrabold !uppercase !tracking-[.12em] !text-[#8FBFA8]')}>
+                            Booked <span className={cn('tabular-nums', __WEB__ && '!ml-1 !text-[12.5px] !font-bold !normal-case !tracking-normal !text-white')}>{formatNum(p.invoiced)}</span>
                           </span>
                           <span
                             className={cn(
                               'font-semibold',
-                              Number(p.balance) > 0.0001 ? 'text-emerald-700' : 'text-muted-foreground'
+                              Number(p.balance) > 0.0001 ? 'text-emerald-700' : 'text-muted-foreground',
+                              __WEB__ && '!text-[9.5px] !font-extrabold !uppercase !tracking-[.12em] !text-[#8FBFA8]'
                             )}
                           >
-                            In stock <span className="tabular-nums">{formatNum(p.balance)} {p.uom}</span>
+                            In stock{' '}
+                            <span
+                              className={cn(
+                                'tabular-nums',
+                                __WEB__ && '!ml-1 !text-[14px] !font-bold !normal-case !tracking-[-0.02em]',
+                                __WEB__ && (Number(p.balance) > 0.0001 ? '!text-[#C7F03F]' : '!text-[#8FBFA8]')
+                              )}
+                            >
+                              {formatNum(p.balance)} {p.uom}
+                            </span>
                           </span>
                         </div>
                         <Button
                           size="sm"
                           variant="outline"
-                          className="ml-auto h-7 text-xs"
+                          className={cn(
+                            'ml-auto h-7 text-xs',
+                            __WEB__ && '!ml-0 !h-8 !gap-1.5 !rounded-[3px] !border-0 !bg-[#C7F03F] !px-3.5 !text-[11.5px] !font-extrabold !text-[#12280B] hover:!bg-[#B8E32E] disabled:!bg-white/20 disabled:!text-[#8FBFA8] disabled:!opacity-100'
+                          )}
                           disabled={Number(p.balance) <= 0.0001}
                           onClick={() => openBooking(p)}
                         >
+                          {__WEB__ && <ShoppingCart className="h-4 w-4" />}
                           Book purchase
                         </Button>
                       </div>
 
-                      {(p.lots as Row[]).length > 0 && (
+                      {(p.lots as Row[]).length > 0 && !shut && (
                         <Table
-                          className="mt-2 text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-8 [&_th]:px-3"
-                          wrapperClassName="rounded-lg border"
+                          className={cn(
+                            'mt-2 text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-8 [&_th]:px-3',
+                            __WEB__ && '!mt-0 !text-[13px] !table-fixed [&_td]:!px-2.5 [&_td]:!py-2.5 [&_th]:!h-[32px] [&_th]:!px-2.5'
+                          )}
+                          wrapperClassName={cn('rounded-lg border', __WEB__ && '!rounded-none !border-0')}
                         >
                           <TableHeader>
-                            <TableRow className="bg-muted/60">
-                              <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Date</TableHead>
-                              <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Tanker</TableHead>
-                              <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Gate no</TableHead>
-                              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Weighed</TableHead>
-                              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Short %</TableHead>
-                              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Qty (net)</TableHead>
-                              <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Status</TableHead>
-                              <TableHead className="text-[10px] font-semibold uppercase tracking-wide">Note</TableHead>
-                              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide">Actions</TableHead>
+                            <TableRow className={cn('bg-muted/60', __WEB__ && '!border-b-[#DCE7DB] !bg-[#EAF0E9] hover:!bg-[#EAF0E9] [&>th]:!bg-[#EAF0E9] [&>th]:!text-[10.5px] [&>th]:!font-extrabold [&>th]:!tracking-[.11em] [&>th]:!text-[#0A1F17]')}>
+                              <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[104px] !whitespace-nowrap !text-[10.5px]')}>Date</TableHead>
+                              <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[190px] !whitespace-nowrap !text-[10.5px]')}>Tanker</TableHead>
+                              <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[104px] !whitespace-nowrap !text-[10.5px]')}>Gate no</TableHead>
+                              <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[104px] !whitespace-nowrap !text-[10.5px]')}>Weighed</TableHead>
+                              <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[86px] !whitespace-nowrap !text-[10.5px]')}>Short %</TableHead>
+                              <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[118px] !whitespace-nowrap !text-[10.5px]')}>Qty (net)</TableHead>
+                              <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[120px] !whitespace-nowrap !text-[10.5px]')}>Status</TableHead>
+                              <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-auto !whitespace-nowrap !text-[10.5px]')}>Note</TableHead>
+                              <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[86px] !whitespace-nowrap !text-[10.5px]')}>Actions</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
                             {(p.lots as Row[]).map((d) => {
                               const booked = d.order_id != null
                               return (
-                                <TableRow key={d.id as number} className={cn('border-b', !booked && 'bg-emerald-50/40')}>
-                                  <TableCell className="whitespace-nowrap">{formatDate(d.deposit_date)}</TableCell>
-                                  <TableCell className="font-medium">
+                                <TableRow
+                                  key={d.id as number}
+                                  className={cn(
+                                    'border-b',
+                                    !booked && 'bg-emerald-50/40',
+                                    // A mark down the left edge says which lots
+                                    // are still the supplier's without reading
+                                    // the status column of every line.
+                                    __WEB__ && '!border-b-[#F1F5EF] !bg-white hover:!bg-[#F7FAF6]'
+                                  )}
+                                  style={__WEB__ ? { borderLeft: `3px solid ${booked ? '#C3D2C6' : '#0B6B45'}` } : undefined}
+                                >
+                                  <TableCell className={cn('whitespace-nowrap', __WEB__ && '!text-[13px] !font-semibold !tabular-nums !text-[#33473E]')}>{formatDate(d.deposit_date)}</TableCell>
+                                  <TableCell
+                                    className={cn('font-medium', __WEB__ && '!max-w-0 !truncate !text-[13px] !font-bold !tabular-nums !text-[#0A1F17]')}
+                                    title={String(d.tanker_no || '')}
+                                  >
                                     {d.tanker_no || (Number(d.is_opening) === 1 ? (
                                       <Badge variant="secondary" className="font-normal">Opening</Badge>
                                     ) : (
                                       <span className="italic text-muted-foreground">no number</span>
                                     ))}
                                   </TableCell>
-                                  <TableCell className="tabular-nums text-muted-foreground">
+                                  <TableCell className={cn('tabular-nums text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !tabular-nums !text-[#5A6B62]')}>
                                     {d.gate_entry_no || '—'}
                                   </TableCell>
-                                  <TableCell className="text-right tabular-nums text-muted-foreground">
+                                  <TableCell className={cn('text-right tabular-nums text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !text-[#5A6B62]')}>
                                     {Number(d.weighed_qty) > 0 ? formatNum(d.weighed_qty) : '—'}
                                   </TableCell>
-                                  <TableCell className="text-right tabular-nums text-muted-foreground">
+                                  <TableCell className={cn('text-right tabular-nums text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !text-[#5A6B62]')}>
                                     {Number(d.shortage_pct) > 0 ? `${d.shortage_pct}%` : '—'}
                                   </TableCell>
                                   <TableCell
                                     className={cn(
                                       'text-right font-semibold tabular-nums',
-                                      booked ? 'text-muted-foreground' : 'text-emerald-700'
+                                      booked ? 'text-muted-foreground' : 'text-emerald-700',
+                                      __WEB__ && '!text-[13.5px] !font-bold',
+                                      __WEB__ && (booked ? '!text-[#8FA79B]' : '!text-[#0B6B45]')
                                     )}
                                   >
                                     {formatNum(d.qty)} {d.uom}
@@ -764,7 +916,7 @@ export function Consignment(): React.JSX.Element {
                                       <Badge variant="warning">Pending</Badge>
                                     )}
                                   </TableCell>
-                                  <TableCell className="max-w-[200px] truncate text-muted-foreground">
+                                  <TableCell className={cn('max-w-[200px] truncate text-muted-foreground', __WEB__ && '!max-w-0 !text-[12.5px] !font-semibold !text-[#5A6B62]')} title={String(d.note || '')}>
                                     {d.note || '—'}
                                   </TableCell>
                                   <TableCell className="text-right">
@@ -794,11 +946,33 @@ export function Consignment(): React.JSX.Element {
                                 </TableRow>
                               )
                             })}
+                            {/* What the lots above come to. The band over them
+                                already says it, but a table you have scrolled
+                                to the bottom of should not make you scroll back
+                                up to find its total. */}
+                            {__WEB__ && (
+                              <TableRow className="!border-b-[#C3D2C6] !border-t-2 !border-t-[#C7F03F] !bg-[#EFF5EC] hover:!bg-[#EFF5EC]">
+                                <TableCell colSpan={3} className="!text-[10.5px] !font-extrabold !uppercase !tracking-[.11em] !text-[#0B3D2E]">
+                                  {(p.lots as Row[]).length} tanker{(p.lots as Row[]).length === 1 ? '' : 's'}
+                                </TableCell>
+                                <TableCell className="!text-right !text-[12.5px] !font-bold !tabular-nums !text-[#33473E]">
+                                  {formatNum((p.lots as Row[]).reduce((t, d) => t + (Number(d.weighed_qty) || 0), 0))}
+                                </TableCell>
+                                <TableCell />
+                                <TableCell className="!text-right !text-[13.5px] !font-bold !tabular-nums !tracking-[-0.02em] !text-[#0A1F17]">
+                                  {formatNum(p.deposited)} {p.uom}
+                                </TableCell>
+                                <TableCell colSpan={3} className="!text-[11px] !font-bold !text-[#5A6B62]">
+                                  {formatNum(p.balance)} {p.uom} still in stock
+                                </TableCell>
+                              </TableRow>
+                            )}
                           </TableBody>
                         </Table>
                       )}
                     </div>
-                  ))}
+                    )
+                  })}
                 </div>
               ))}
             </div>
@@ -809,9 +983,14 @@ export function Consignment(): React.JSX.Element {
 
       {/* Deposit intake dialog */}
       <Dialog open={depOpen} onOpenChange={(o) => !o && setDepOpen(false)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
+        <DialogContent className={cn(__WEB__ && CS_DRAWER)}>
+          <DialogHeader className={cn(__WEB__ && CS_HEAD)}>
+            {__WEB__ && (
+              <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">
+                Consignment stock
+              </div>
+            )}
+            <DialogTitle className={cn(__WEB__ && CS_TITLE)}>
               {editing
                 ? 'Edit consignment stock'
                 : depForm.gate_entry_id
@@ -819,9 +998,14 @@ export function Consignment(): React.JSX.Element {
                   : 'Log consignment stock'}
             </DialogTitle>
           </DialogHeader>
-          <div className="grid gap-4">
+          <div className={cn('grid gap-4', __WEB__ && CS_BODY)}>
             {!!depForm.gate_entry_id && (
-              <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <div
+                className={cn(
+                  'rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900',
+                  __WEB__ && '!rounded-[4px] !border-[#F0D9AE] !border-l-4 !border-l-[#C2700A] !bg-[#FFFBF2] !px-3.5 !py-3 !text-[12px] !font-semibold !leading-relaxed !text-[#8A5300]'
+                )}
+              >
                 From gate entry <b>{depForm.gate_entry_no}</b>
                 {depForm.tanker_no ? <> · tanker <b>{depForm.tanker_no}</b></> : null}
                 {Number(depForm.qty) > 0 ? <> · weighed net <b>{formatNum(depForm.qty)} {depForm.uom}</b></> : <> · <b>not weighed yet</b> — enter the quantity manually</>}
@@ -866,6 +1050,18 @@ export function Consignment(): React.JSX.Element {
                   {suppliers.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
                 </SelectContent>
               </Select>
+            </div>
+            {/* The tanker number was carried in from the gate entry and
+                saved with the lot, but there was nowhere to correct it — which
+                is how a whole invoice reference ends up in a field meant for a
+                vehicle number and stays there. saveDeposit already sends it. */}
+            <div className="flex flex-col gap-1.5">
+              <Label>Tanker no</Label>
+              <Input
+                value={depForm.tanker_no ?? ''}
+                placeholder="Vehicle number"
+                onChange={(e) => setDepForm((p) => ({ ...p, tanker_no: e.target.value }))}
+              />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>Product *</Label>
@@ -935,34 +1131,63 @@ export function Consignment(): React.JSX.Element {
               <Label>Note</Label>
               <Input value={depForm.note ?? ''} onChange={(e) => setDepForm((p) => ({ ...p, note: e.target.value }))} />
             </div>
-            {depError && <p className="text-sm text-destructive">{depError}</p>}
+            {depError && (
+              <p className={cn('text-sm text-destructive', __WEB__ && '!rounded-[4px] !border !border-[#F0D6D4] !bg-[#FDF3F2] !px-3 !py-2.5 !text-[12.5px] !font-bold !text-[#8C2F26]')}>
+                {depError}
+              </p>
+            )}
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDepOpen(false)} disabled={savingDep}>Cancel</Button>
+          <DialogFooter className={cn(__WEB__ && CS_FOOT)}>
+            <Button variant="outline" onClick={() => setDepOpen(false)} disabled={savingDep} className={cn(__WEB__ && CS_BTN)}>
+              Cancel
+            </Button>
             {editing && (
-              <Button variant="outline" onClick={() => { setDepOpen(false); openBookFromLot(editing) }} disabled={savingDep}>
+              <Button
+                variant="outline"
+                onClick={() => { setDepOpen(false); openBookFromLot(editing) }}
+                disabled={savingDep}
+                className={cn(__WEB__ && cn(CS_BTN, '!text-[#0B6B45]'))}
+              >
                 Book this stock
               </Button>
             )}
-            <Button onClick={saveDeposit} disabled={savingDep}>{savingDep ? 'Saving…' : 'Save'}</Button>
+            <Button onClick={saveDeposit} disabled={savingDep} className={cn(__WEB__ && cn(CS_GO, '!ml-auto'))}>
+              {__WEB__ && !savingDep && <Check className="h-[18px] w-[18px]" />}
+              {savingDep ? 'Saving…' : 'Save'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Booking dialog */}
       <Dialog open={!!book} onOpenChange={(o) => !o && setBook(null)}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-1.5">
+        <DialogContent
+          className={cn(
+            'max-h-[90vh] overflow-y-auto sm:max-w-lg',
+            __WEB__ && cn(CS_DIALOG, '!grid-rows-[auto_minmax(0,1fr)_auto] !overflow-hidden')
+          )}
+        >
+          <DialogHeader className={cn(__WEB__ && CS_HEAD)}>
+            {__WEB__ && (
+              <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">
+                Consignment stock
+              </div>
+            )}
+            <DialogTitle className={cn('flex items-center gap-1.5', __WEB__ && CS_TITLE)}>
               Book consignment purchase
               <InfoTip text="No transporter, no gate entry and no tanker stages — the goods are already at your place. The invoiced quantity becomes your owned stock and posts to the supplier ledger and journal." />
             </DialogTitle>
           </DialogHeader>
           {book && (
-            <div className="grid gap-4">
-              <div className="rounded-md bg-muted px-3 py-2 text-sm">
+            <div className={cn('grid gap-4', __WEB__ && CS_BODY)}>
+              <div
+                className={cn(
+                  'rounded-md bg-muted px-3 py-2 text-sm',
+                  __WEB__ && '!rounded-[4px] !border !border-[#D6E2D6] !bg-white !px-3.5 !py-3 !text-[13px] !font-semibold !text-[#33473E]'
+                )}
+              >
                 {book.supplier_name} · {book.product_code || book.product_name} · available{' '}
-                <b>{formatNum(book.balance)} {book.uom}</b>
+                <b className={cn(__WEB__ && '!text-[#0B6B45]')}>{formatNum(book.balance)} {book.uom}</b>
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label>Book into company *</Label>
@@ -1070,12 +1295,21 @@ export function Consignment(): React.JSX.Element {
                 <SummaryLine label="Net purchase amount" value={formatINR(calc.netAmount)} strong />
               </div>
 
-              {bookError && <p className="text-sm text-destructive">{bookError}</p>}
+              {bookError && (
+                <p className={cn('text-sm text-destructive', __WEB__ && '!rounded-[4px] !border !border-[#F0D6D4] !bg-[#FDF3F2] !px-3 !py-2.5 !text-[12.5px] !font-bold !text-[#8C2F26]')}>
+                  {bookError}
+                </p>
+              )}
             </div>
           )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setBook(null)} disabled={savingBook}>Cancel</Button>
-            <Button onClick={saveBooking} disabled={savingBook}>{savingBook ? 'Booking…' : 'Book purchase'}</Button>
+          <DialogFooter className={cn(__WEB__ && CS_FOOT)}>
+            <Button variant="outline" onClick={() => setBook(null)} disabled={savingBook} className={cn(__WEB__ && CS_BTN)}>
+              Cancel
+            </Button>
+            <Button onClick={saveBooking} disabled={savingBook} className={cn(__WEB__ && cn(CS_GO, '!ml-auto'))}>
+              {__WEB__ && !savingBook && <ShoppingCart className="h-[18px] w-[18px]" />}
+              {savingBook ? 'Booking…' : 'Book purchase'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
