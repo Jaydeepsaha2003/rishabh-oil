@@ -682,7 +682,7 @@ export async function updateConsignment(id: number, v: Row): Promise<{ id: numbe
   await c.execute({
     sql: `UPDATE consignment_stock
           SET company_id = ?, supplier_id = ?, product_id = ?, qty = ?, uom = ?, deposit_date = ?, note = ?,
-              weighed_qty = ?, shortage_pct = ?
+              weighed_qty = ?, shortage_pct = ?, tanker_no = ?
           WHERE id = ?`,
     args: [
       newCompany,
@@ -694,6 +694,10 @@ export async function updateConsignment(id: number, v: Row): Promise<{ id: numbe
       v.note ? String(v.note).trim() : null,
       v.weighed_qty != null && v.weighed_qty !== '' ? n(v.weighed_qty) : row.weighed_qty,
       v.shortage_pct != null && v.shortage_pct !== '' ? n(v.shortage_pct) : row.shortage_pct,
+      // Only a caller that actually named the key may change it — every other
+      // path into this function (booking, allocation) leaves it alone rather
+      // than blanking the vehicle the gate weighed.
+      v.tanker_no !== undefined ? String(v.tanker_no ?? '').trim() || null : row.tanker_no,
       id
     ]
   })

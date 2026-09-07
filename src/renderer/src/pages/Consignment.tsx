@@ -188,6 +188,9 @@ export function Consignment(): React.JSX.Element {
       weighed_qty: row.weighed_qty ?? '',
       shortage_pct: row.shortage_pct ?? '',
       uom: row.uom ?? defaultUom,
+      // Without this the field opens blank on a lot that HAS a tanker number,
+      // and saving then writes the blank back over it.
+      tanker_no: row.tanker_no ?? '',
       deposit_date: row.deposit_date ?? todayISO(),
       note: row.note ?? '',
       company_id: String(row.company_id ?? activeCompany ?? '')
@@ -1054,7 +1057,7 @@ export function Consignment(): React.JSX.Element {
             {/* The tanker number was carried in from the gate entry and
                 saved with the lot, but there was nowhere to correct it — which
                 is how a whole invoice reference ends up in a field meant for a
-                vehicle number and stays there. saveDeposit already sends it. */}
+                vehicle number and stays there. */}
             <div className="flex flex-col gap-1.5">
               <Label>Tanker no</Label>
               <Input

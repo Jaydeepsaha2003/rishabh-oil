@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   AlertTriangle,
+  ArrowRight,
   ArrowUpRight,
   Banknote,
   CalendarClock,
@@ -176,6 +177,14 @@ const TRACKER_HEAD =
   __WEB__
     ? '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&>th]:!h-auto [&>th]:!bg-[#0B3D2E] [&>th]:!py-2.5 [&>th]:!text-[9.5px] [&>th]:!font-extrabold [&>th]:!tracking-[.13em] [&>th]:!text-white'
     : ''
+// The row's own actions. Fixed heights and a floor on the width so the column
+// reads as one stack of buttons rather than a ragged edge — min, not a hard
+// width, because "Mark Payment received" is twice the length of "Preclose"
+// and the handoff's 126px would cut it off.
+const LC_ACT_GO =
+  '!h-7 !min-w-[112px] !rounded-[3px] !border-0 !bg-[#0B3D2E] !px-2.5 !text-[11.5px] !font-extrabold !text-white hover:!bg-[#0F4A38]'
+const LC_ACT_2ND =
+  '!h-7 !w-[72px] !rounded-[3px] !border !border-[#C3D2C6] !bg-white !px-0 !text-[11.5px] !font-extrabold !text-[#33473E] hover:!bg-[#F7FAF6]'
 const LC_HEAD =
   __WEB__
     ? '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&>th]:!h-auto [&>th]:!bg-[#0B3D2E] [&>th]:!py-2.5 [&>th]:!text-[9.5px] [&>th]:!font-extrabold [&>th]:!tracking-[.13em] [&>th]:!text-white [&_button]:!uppercase [&_button]:!tracking-[.13em] [&_button]:!text-white'
@@ -352,6 +361,64 @@ function canPreclose(l: Row): boolean {
 // label that flows pushes its date sideways — which is what made the column
 // look ragged when every date in it is in fact the same width. Columned dates
 // can be compared down the page at a glance; staggered ones cannot.
+// The tally beside a filter chip. Mono, because it is read as a number and
+// lines up down the bar; inverted when the chip is on, so the count stays
+// legible against the forest fill instead of going near-black on near-black.
+function ChipCount({ n: count, on }: { n: number; on: boolean }): React.JSX.Element {
+  return (
+    <span
+      className={cn(
+        'ml-1.5 inline-block rounded-[2px] px-[5px] py-[2px] align-middle font-mono text-[10.5px] font-bold tabular-nums',
+        on ? 'bg-white/20 text-white' : 'bg-[#EAF0E9] text-[#33473E]'
+      )}
+    >
+      {count}
+    </span>
+  )
+}
+
+// Open date, an arrow, maturity — one line, the way the handoff reads it. The
+// stacked App/Mat/Closed version is three lines tall and set the row height
+// for the whole register; the app keeps it.
+function ValidityInline({ l }: { l: Row }): React.JSX.Element {
+  const opened = !!l.opened_date
+  const early = closureKind(l) === 'early'
+  return (
+    <div className="flex min-w-0 items-center gap-[7px]">
+      <span
+        className={cn(
+          'flex-none text-[9px] font-extrabold uppercase tracking-[.09em]',
+          opened ? 'text-[#5A6B62]' : 'text-[#C2700A]'
+        )}
+        title={opened ? 'Opened by the bank' : 'Applied for — the bank has not opened it yet'}
+      >
+        {opened ? 'Op' : 'App'}
+      </span>
+      <span className="whitespace-nowrap font-mono text-[12.5px] font-bold text-[#0A1F17]">
+        {formatDateShort(l.opened_date || l.open_date)}
+      </span>
+      <ArrowRight className="h-3.5 w-3.5 flex-none text-[#C3D2C6]" />
+      <span
+        className={cn(
+          'whitespace-nowrap font-mono text-[12.5px] font-semibold',
+          early ? 'text-[#A8B8AE] line-through decoration-[#C3D2C6]' : 'text-[#5A6B62]'
+        )}
+        title={early ? `Wound up early — ${formatDateShort(l.expiry_date)} never came` : 'Maturity'}
+      >
+        {l.expiry_date ? formatDateShort(l.expiry_date) : '—'}
+      </span>
+      {!!l.preclosed_date && (
+        <span
+          className="flex-none rounded-[2px] bg-[#EFF5EC] px-[5px] py-[2px] font-mono text-[10px] font-bold text-[#0B6B45]"
+          title={`Closed ${formatDate(l.preclosed_date)}`}
+        >
+          {formatDateShort(l.preclosed_date)}
+        </span>
+      )}
+    </div>
+  )
+}
+
 function DateLine({
   tag,
   date,
@@ -1353,6 +1420,44 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     return rows.filter((l) => l.days_left_effective != null && l.days_left_effective <= maxDays)
   }, [lcsWithDue, lcDuePeriod, lcStageFilter, lcPurposeFilter, lcStatusFilter, activeBank, lcKpiFrom, lcKpiTo])
 
+  // How many LCs sit behind each chip in the bar. Counted with every OTHER
+  // filter in the bar applied, so a chip's number is what clicking it would
+  // actually show — a global tally would disagree with the register beneath it
+  // the moment a bank or a due period is picked.
+  const lcChipCounts = useMemo(() => {
+    const scope = (rows: Row[], withDue: boolean): Row[] => {
+      let r = rows
+      if (lcStageFilter) r = r.filter((l) => String(l.stage || 'application') === lcStageFilter)
+      if (activeBank) r = r.filter((l) => String(l.our_bank_id || '') === String(activeBank))
+      if (lcKpiFrom) r = r.filter((l) => String(l.open_date || '').slice(0, 10) >= lcKpiFrom)
+      if (lcKpiTo) r = r.filter((l) => String(l.open_date || '').slice(0, 10) <= lcKpiTo)
+      if (!withDue || lcDuePeriod === 'all') return r
+      const maxDays = DUE_PERIODS.find((x) => x.key === lcDuePeriod)?.maxDays
+      if (maxDays == null) return r
+      return r.filter((l) => l.days_left_effective != null && l.days_left_effective <= maxDays)
+    }
+    const running = (l: Row): boolean => !l.preclosed_date && !isLcPastMaturity(l)
+    const matured = (l: Row): boolean => isLcPastMaturity(l) && !l.preclosed_date
+    const purposeOf = (l: Row): string => String(l.purpose || 'manufacturing')
+    // The purpose chips count within whichever state is on screen; the state
+    // chips count within whichever purpose is on screen. Neither counts its
+    // own dimension, or the number would just be the row count.
+    const inState = scope(lcsWithDue, true).filter(
+      lcStatusFilter === 'matured' ? matured : lcStatusFilter === 'repaid' ? (l) => !!l.preclosed_date : running
+    )
+    const inPurpose = (rows: Row[]): Row[] =>
+      lcPurposeFilter ? rows.filter((l) => purposeOf(l) === lcPurposeFilter) : rows
+    return {
+      manufacturing: inState.filter((l) => purposeOf(l) === 'manufacturing').length,
+      trading: inState.filter((l) => purposeOf(l) === 'trading').length,
+      all: inPurpose(scope(lcsWithDue, true)).filter(running).length,
+      matured: inPurpose(scope(lcsWithDue, true)).filter(matured).length,
+      // Clicking Repaid clears the due period, so counting one in would show a
+      // zero on a chip that is about to reveal rows.
+      repaid: inPurpose(scope(lcsWithDue, false)).filter((l) => !!l.preclosed_date).length
+    }
+  }, [lcsWithDue, lcDuePeriod, lcStageFilter, lcPurposeFilter, lcStatusFilter, activeBank, lcKpiFrom, lcKpiTo])
+
   // The month an LC matures in — the one useful way to filter a date column,
   // since a checkbox list of individual days would be as long as the register.
   const matMonth = (l: Row): string => String(l.expiry_date || '').slice(0, 7)
@@ -1827,6 +1932,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         )}
                       >
                         {p}
+                        {__WEB__ && <ChipCount n={lcChipCounts[p]} on={lcPurposeFilter === p} />}
                       </button>
                     ))}
                     <div className={cn('h-4 w-px bg-[#e5dfc8]', __WEB__ && '!h-6 !bg-[#C3D2C6]')} />
@@ -1860,6 +1966,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         )}
                       >
                         {p.label}
+                        {__WEB__ && <ChipCount n={lcChipCounts[p.key]} on={lcStatusFilter === p.key} />}
                       </button>
                     ))}
                     <div className={cn('ml-auto flex gap-1 rounded-md border border-[#d9d2b8] bg-white p-0.5', __WEB__ && '!gap-[3px] !rounded-[4px] !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px]')}>
@@ -2594,8 +2701,23 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 </div>
                               </div>
                             </TableCell>
-                            <TableCell className="whitespace-nowrap">{l.supplier_name || '—'}</TableCell>
-                            <TableCell className="doc-ref whitespace-nowrap py-2">
+                            <TableCell
+                              className={cn(
+                                'whitespace-nowrap',
+                                // No truncation: max-width is ignored on cells
+                                // in an auto-layout table, and this one is
+                                // 1340px wide with its own scroller.
+                                __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]'
+                              )}
+                              title={String(l.supplier_name || '')}
+                            >
+                              {l.supplier_name || '—'}
+                            </TableCell>
+                            <TableCell className={cn('doc-ref whitespace-nowrap py-2', __WEB__ && '!py-2')}>
+                              {__WEB__ ? (
+                                <ValidityInline l={l} />
+                              ) : (
+                              <>
                               {/* open_date is the date the LC was APPLIED for;
                                   opened_date is the day the bank actually opened
                                   it. Until that day exists this is an
@@ -2635,6 +2757,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                   <span className="text-[9px] uppercase tracking-wide text-violet-700/70">Closed</span>
                                   {formatDateShort(l.preclosed_date)}
                                 </div>
+                              )}
+                              </>
                               )}
                             </TableCell>
                             <TableCell className="whitespace-nowrap">
@@ -2697,7 +2821,14 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                   const next = nextLcStage(String(l.stage || 'application'))
                                   if (!next) return null
                                   return (
-                                    <Button size="sm" className="h-7 bg-[#1a2c56] px-2 text-xs hover:bg-[#24407e]" onClick={() => openStageAdvance(l)}>
+                                    <Button
+                                      size="sm"
+                                      className={cn(
+                                        'h-7 bg-[#1a2c56] px-2 text-xs hover:bg-[#24407e]',
+                                        __WEB__ && LC_ACT_GO
+                                      )}
+                                      onClick={() => openStageAdvance(l)}
+                                    >
                                       Mark {STAGE_LABEL[next]}
                                     </Button>
                                   )
@@ -2705,7 +2836,10 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 {canMarkPaymentIn(l) && (
                                   <Button
                                     size="sm"
-                                    className="h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700"
+                                    className={cn(
+                                      'h-7 bg-emerald-600 px-2 text-xs hover:bg-emerald-700',
+                                      __WEB__ && cn(LC_ACT_GO, '!bg-[#12855A] hover:!bg-[#0F7350]')
+                                    )}
                                     title="Record the customer's payment for the resale — independent of whether the bank side has been preclosed yet"
                                     onClick={() => void openPaymentIn(l)}
                                   >
@@ -2716,7 +2850,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                   <Button
                                     size="sm"
                                     variant="outline"
-                                    className="h-7 px-2 text-xs"
+                                    className={cn('h-7 px-2 text-xs', __WEB__ && LC_ACT_2ND)}
                                     title={isLcPastMaturity(l) ? 'Repay this LC now that it has matured' : 'Wind this LC up before its natural maturity'}
                                     onClick={() => openPreclose(l)}
                                   >
