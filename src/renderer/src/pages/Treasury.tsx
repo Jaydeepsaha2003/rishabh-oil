@@ -193,7 +193,17 @@ function StageBadge({ stage }: { stage: string }): React.JSX.Element {
 // past a screen, and Save at the bottom of a long scroll is Save that gets
 // missed.
 const LC_DRAWER = __WEB__
-  ? '!bottom-0 !left-auto !right-0 !top-0 !h-screen !max-h-screen !w-[min(100vw,720px)] !max-w-none !translate-x-0 !translate-y-0 !grid-rows-[auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] sm:!rounded-none [&>button]:!right-5 [&>button]:!top-5'
+  //
+  // The width steps with the screen. 720px is the handoff's figure and it is
+  // right on a laptop, but on a desktop it left two thirds of the window dark
+  // while the fields inside sat three to a row. The section grids are auto-fit
+  // at minmax(190px, 1fr), so every extra 200px of drawer becomes another
+  // field on the line rather than more whitespace — the form gets shorter as
+  // the screen gets wider, which is the point.
+  //
+  // Capped in vw as well as px so a small laptop still gets a sliver of the
+  // register behind it to keep its place.
+  ? '!bottom-0 !left-auto !right-0 !top-0 !h-screen !max-h-screen !w-[min(100vw,720px)] lg:!w-[min(94vw,880px)] xl:!w-[min(92vw,1000px)] 2xl:!w-[min(90vw,1120px)] !max-w-none !translate-x-0 !translate-y-0 !grid-rows-[auto_minmax(0,1fr)_auto] !gap-0 !overflow-hidden !rounded-none !border-0 !bg-[#F1F5EF] sm:!rounded-none [&>button]:!right-5 [&>button]:!top-5'
   : ''
 // The forest band at the top of each of them: kind above name, so
 // "Letter of credit / Open new LC" reads as a heading rather than a sentence.
@@ -221,10 +231,28 @@ const LC_DIALOG = __WEB__
   ? '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0 !shadow-none'
   : ''
 const LC_SECTION_HEAD = __WEB__
-  ? '!mb-0 !gap-2 !border-b !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-4 !py-3 !text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#0A1F17]'
+  ? '!mb-0 !gap-2 !border-b !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[15px] !py-[11px] !text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#0A1F17] [&>span:first-child]:!hidden'
+  : ''
+
+// One grid for every section body in the LC screens. The handoff flows its
+// fields — repeat(auto-fit, minmax(min(100%,190px),1fr)) — rather than fixing
+// two columns, so a 720px drawer fits three short fields on a line and a
+// narrow window drops to one without a breakpoint being involved. 15px of
+// padding and a 13px gutter, as drawn.
+const LC_GRID = __WEB__
+  ? '!grid-cols-[repeat(auto-fit,minmax(min(100%,190px),1fr))] !gap-[13px] !p-[15px] [&>div]:!min-w-0'
   : ''
 const LC_FIELDS = __WEB__
-  ? '[&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.12em] [&_label]:!text-[#5A6B62] [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[13px] [&_input]:!font-semibold [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-11 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!text-[13.5px]'
+  // min-h on the labels because some carry an (i) and some do not: a 14px icon
+  // makes its label taller than its neighbour's, and the two inputs below then
+  // start 4px apart on the same row.
+  //
+  // Uppercase and a shade darker, at 11px: mixed-case 10px grey read as a
+  // caption rather than as the name of the field under it. The nested spans go
+  // back to normal case — a required asterisk does not care, but a
+  // parenthetical like "(repayments go out of this)" is a sentence and gets
+  // hard to read shouted.
+  ? '[&_label]:!min-h-[18px] [&_label]:!items-center [&_label]:!text-[11px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.1em] [&_label]:!text-[#33473E] [&_label>span]:!normal-case [&_label>span]:!tracking-normal [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-11 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!text-[13.5px]'
   : ''
 
 // A row of preview figures: hairline cells, label small caps over the money,
@@ -498,6 +526,47 @@ function ValidityInline({ l }: { l: Row }): React.JSX.Element {
           title={`Closed ${formatDate(l.preclosed_date)}`}
         />
       )}
+    </div>
+  )
+}
+
+function LcPreviewRow({
+  label,
+  value,
+  sub,
+  tone,
+  strong,
+  last
+}: {
+  label: string
+  value: string
+  sub?: string
+  tone?: string
+  strong?: boolean
+  last?: boolean
+}): React.JSX.Element {
+  return (
+    <div className={cn('py-[9px]', !last && 'border-b border-b-[#EAF0E9]')}>
+      <div className="flex items-baseline justify-between gap-3">
+        <span
+          className={cn(
+            'min-w-0 text-[12.5px]',
+            strong ? 'font-extrabold text-[#0A1F17]' : 'font-semibold text-[#33473E]'
+          )}
+        >
+          {label}
+        </span>
+        <span
+          className={cn(
+            'doc-ref flex-none whitespace-nowrap font-bold tabular-nums',
+            strong ? 'text-[17px]' : 'text-[13.5px]',
+            tone || 'text-[#0A1F17]'
+          )}
+        >
+          {value}
+        </span>
+      </div>
+      {!!sub && <div className="doc-ref mt-[3px] text-[11px] font-semibold tabular-nums text-[#5A6B62]">{sub}</div>}
     </div>
   )
 }
@@ -3213,8 +3282,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
           <div
             className={cn(
               'grid gap-3',
-              __WEB__ &&
-                '!min-h-0 !content-start !gap-3.5 !overflow-y-auto !p-4 [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.12em] [&_label]:!text-[#5A6B62] [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[13px] [&_input]:!font-semibold [&_input]:!tabular-nums [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[13px]'
+              // One copy of the field sizing, in LC_FIELDS. These two screens
+              // each had their own and so missed every change made to it.
+              __WEB__ && cn(LC_BODY, LC_FIELDS, '[&_input]:!tabular-nums')
             )}
           >
             {/* The limit is sanctioned against one of OUR accounts, so it is
@@ -3388,7 +3458,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
             )}
 
             {preclosePreview && preclosePreview.pendingDays > 0 && (
-              <div className={cn('rounded-xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm', LC_FIELDS, __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#BFE3CB] !bg-white !p-0 !shadow-none')}>
+              <div className={cn('rounded-xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm', LC_FIELDS, __WEB__ && '!rounded-[4px] !border-[#BFE3CB] !bg-white !p-0 !shadow-none')}>
                 <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-emerald-900', __WEB__ && '!mb-0 !gap-2 !border-b !border-b-[#BFE3CB] !bg-[#F4FBF6] !px-4 !py-3 !text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#0B6B45]')}>
                   <AlertTriangle className={cn('h-3.5 w-3.5', __WEB__ && '!h-4 !w-4')} /> Premature closure — interest rebate
                   <InfoTip text="Interest for the pending days was already deducted from what the supplier was paid, over the full planned term. Since those days won't actually happen, this comes back as a rebate — either to your own account, or passed on to the supplier." />
@@ -3396,7 +3466,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     <CalendarClock className="h-3 w-3" /> {preclosePreview.pendingDays} pending days
                   </span>
                 </h3>
-                <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
+                <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && LC_GRID)}>
                   <div className="flex flex-col gap-1.5">
                     <Label className="flex flex-wrap items-center gap-1.5">
                       Premature interest (₹)
@@ -3470,7 +3540,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               <p className="mb-3 text-[11px] text-muted-foreground">
                 Preclosing is a repayment, just like Log Repayment — the bank still wants its full open amount back.
               </p>
-              <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
+              <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && LC_GRID)}>
                 <div className="flex flex-col gap-1.5">
                   <Label>Open amount (LC)</Label>
                   <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm text-muted-foreground">
@@ -3497,7 +3567,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         <p className="mb-2 text-[11px] font-medium text-amber-900">
                           This is {formatINR(excess)} over the open amount — split that between commission and bank charges below.
                         </p>
-                        <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
+                        <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && LC_GRID)}>
                           <div className="flex flex-col gap-1.5">
                             <Label>Comm. charges (₹)</Label>
                             <Input
@@ -3730,7 +3800,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       </section>
                     </div>
                     {stagePreview && (
-                      <div className={cn('rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#BFE3CB] !bg-white !bg-none !p-0 !shadow-none')}>
+                      <div className={cn('rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm', __WEB__ && '!rounded-[4px] !border-[#BFE3CB] !bg-white !bg-none !p-0 !shadow-none')}>
                         <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-sky-900', __WEB__ && '!mb-0 !gap-2 !border-b !border-b-[#BFE3CB] !bg-[#F4FBF6] !px-4 !py-3 !text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#0B6B45]')}>
                           {__WEB__ ? <ArrowUpRight className="h-4 w-4" /> : <Banknote className="h-3.5 w-3.5" />}
                           {__WEB__ ? 'What will reach the supplier' : 'Back-calculated from the open amount'}
@@ -3806,7 +3876,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
         <DialogContent
           className={cn(
             'max-w-5xl max-h-[88vh] overflow-y-auto p-0 shadow-2xl [&>button]:text-white [&>button]:opacity-90 [&>button:hover]:opacity-100',
-            LC_DRAWER
+            LC_DRAWER,
+            __WEB__ &&
+              '[&>button]:!flex [&>button]:!h-9 [&>button]:!w-9 [&>button]:!items-center [&>button]:!justify-center [&>button]:!rounded-[3px] [&>button]:!bg-white/10 [&>button]:!opacity-100 hover:[&>button]:!bg-white/20'
           )}
         >
           <div
@@ -3815,7 +3887,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               __WEB__ && '!rounded-none !bg-[#0B3D2E] !bg-none !px-5 !py-4'
             )}
           >
-            <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/15', __WEB__ && '!h-10 !w-10 !rounded-[4px]')}>
+            <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/15', __WEB__ && '!hidden')}>
               <Landmark className="h-5 w-5" />
             </div>
             <div className="min-w-0">
@@ -3828,9 +3900,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               <DialogTitle className={cn('text-[16px] font-bold text-white', __WEB__ && '!mt-1 !text-[19px] !font-bold !tracking-[-0.02em]')}>
                 {lcForm?.id ? `Alter LC ${lcForm.lc_no || '(pending no.)'}` : __WEB__ ? 'Open new LC' : 'Open a letter of credit'}
               </DialogTitle>
-              <p className={cn('text-[12px] text-white/70', __WEB__ && '!mt-1 !text-[12px] !font-semibold !text-[#8FBFA8]')}>
-                Track the LC from application through to payment received.
-              </p>
+              {!__WEB__ && (
+                <p className="text-[12px] text-white/70">
+                  Track the LC from application through to payment received.
+                </p>
+              )}
             </div>
             {!!activeCompany && (
               <Select value={String(activeCompany)} onValueChange={onCompanyChange}>
@@ -3856,15 +3930,22 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
           {/* One column in the drawer. lg:grid-cols-2 is a VIEWPORT breakpoint,
               not a container one, so on a wide screen it would still fire
               inside a 720px panel and hand each section card about 340px — two
-              cramped columns where the handoff has one readable stack. */}
+              cramped columns where the handoff has one readable stack.
+              ------------------------------------------------------------
+              col-span-1 on every child is NOT redundant. Two of them carry
+              lg:col-span-2, and a span of 2 inside a ONE-column grid does
+              not clamp — it manufactures an implicit second column, sized
+              auto. That auto track took the whole width and starved the 1fr
+              track to 0px, so every other section card came out 2px wide
+              showing nothing but a collapsed control. */}
           {lcForm && (
-            <div className={cn('grid gap-4 p-6 lg:grid-cols-2', __WEB__ && cn(LC_BODY, 'lg:!grid-cols-1'))}>
+            <div className={cn('grid gap-4 p-6 lg:grid-cols-2', __WEB__ && cn(LC_BODY, 'lg:!grid-cols-1 [&>*]:!col-span-1'))}>
               <section className={cn('rounded-xl border border-[#e5dfc8] bg-white p-4 shadow-sm', LC_DIALOG, LC_FIELDS)}>
                 <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', LC_SECTION_HEAD)}>
                   <span className={cn('flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10', __WEB__ && '!h-6 !w-6 !rounded-[3px] !bg-[#EAF0E9]')}><Landmark className="h-3 w-3 text-[#1a2c56]" /></span>
                   LC & stage
                 </h3>
-                <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
+                <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && LC_GRID)}>
                   <div className="flex flex-col gap-1.5">
                     <Label>LC no {String(lcForm.stage || 'application') !== 'application' && <span className="text-red-600">*</span>}</Label>
                     {(() => {
@@ -3993,23 +4074,56 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   <span className={cn('flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10', __WEB__ && '!h-6 !w-6 !rounded-[3px] !bg-[#EAF0E9]')}><Users className="h-3 w-3 text-[#1a2c56]" /></span>
                   Party & purpose
                 </h3>
-                <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
-                  <div className="flex flex-col gap-1.5">
+                <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && LC_GRID)}>
+                  <div className="flex min-w-0 flex-col gap-1.5">
                     <Label>Purpose <span className="text-red-600">*</span></Label>
-                    <Select
-                      value={String(lcForm.purpose || '')}
-                      onValueChange={(v) =>
-                        setLcForm((p) => ({ ...p, purpose: v, party_id: '', linked_order_ids: [], linked_deal_ids: [], amount_manual: false }))
-                      }
-                    >
-                      <SelectTrigger><SelectValue placeholder="Select purpose" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="trading">Trading</SelectItem>
-                        <SelectItem value="manufacturing">Manufacturing</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    {__WEB__ ? (
+                      <div className="inline-flex gap-[3px] rounded-[4px] border border-[#DCE7DB] bg-[#EAF0E9] p-[3px]">
+                        {(['manufacturing', 'trading'] as const).map((o) => {
+                          const on = String(lcForm.purpose || '') === o
+                          return (
+                            <button
+                              key={o}
+                              type="button"
+                              // The same setter the Select used, unchanged:
+                              // switching purpose clears the party and every
+                              // invoice picked under the old one.
+                              onClick={() =>
+                                setLcForm((prev) => ({
+                                  ...prev,
+                                  purpose: o,
+                                  party_id: '',
+                                  linked_order_ids: [],
+                                  linked_deal_ids: [],
+                                  amount_manual: false
+                                }))
+                              }
+                              className={cn(
+                                'flex h-[38px] flex-1 items-center justify-center rounded-[2px] px-4 text-[12.5px] font-extrabold capitalize transition-colors',
+                                on ? 'bg-[#0B3D2E] text-white' : 'bg-transparent text-[#5A6B62] hover:bg-white/70'
+                              )}
+                            >
+                              {o}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <Select
+                        value={String(lcForm.purpose || '')}
+                        onValueChange={(v) =>
+                          setLcForm((p) => ({ ...p, purpose: v, party_id: '', linked_order_ids: [], linked_deal_ids: [], amount_manual: false }))
+                        }
+                      >
+                        <SelectTrigger><SelectValue placeholder="Select purpose" /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="trading">Trading</SelectItem>
+                          <SelectItem value="manufacturing">Manufacturing</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    )}
                   </div>
-                  <div className="flex flex-col gap-1.5">
+                  <div className="flex min-w-0 flex-col gap-1.5">
                     <Label>Supplier (beneficiary) <span className="text-red-600">*</span></Label>
                     <Select
                       disabled={!lcForm.purpose}
@@ -4197,7 +4311,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   <span className={cn('flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10', __WEB__ && '!h-6 !w-6 !rounded-[3px] !bg-[#EAF0E9]')}><CalendarRange className="h-3 w-3 text-[#1a2c56]" /></span>
                   Amount & validity
                 </h3>
-                <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && '!gap-3.5 !p-4')}>
+                <div className={cn('grid gap-3 sm:grid-cols-2', __WEB__ && LC_GRID)}>
                   {(() => {
                     const linkedIds: number[] = Array.isArray(lcForm.linked_order_ids) ? lcForm.linked_order_ids : []
                     const hasInvoices = linkedIds.length > 0
@@ -4214,7 +4328,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     const openFollowsBlocked = !lcForm.amount_manual && !hasInvoices
                     return (
                       <>
-                      <div className="flex flex-col gap-1.5">
+                      <div className={cn('flex min-w-0 flex-col gap-1.5', __WEB__ && '!col-span-full')}>
                         <Label className="flex items-center gap-1.5">
                           Blocked amount (₹)
                           <InfoTip text="What the bank blocks against the facility when it opens the credit — the amount requested. The open amount cannot exceed the bill submitted, so where the bill comes in for less, the two part company: the bank still holds the blocked figure. The FACILITY LIMIT and the exposure outstanding are measured on this. Interest and margin are not — they stay on the open amount. Left blank, it is taken to be the same as the open amount." />
@@ -4222,6 +4336,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         <Input
                           type="number"
                           placeholder="Same as the open amount"
+                          className={cn(__WEB__ && '!h-12 !text-[16px] !font-bold')}
                           value={lcForm.blocked_amount ?? ''}
                           onChange={(e) =>
                             setLcForm((prev) => {
@@ -4236,7 +4351,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           Counts against the limit. Leave blank if the bank blocked exactly what was opened.
                         </span>
                       </div>
-                      <div className="flex flex-col gap-1.5">
+                      <div className={cn('flex min-w-0 flex-col gap-1.5', __WEB__ && '!col-span-full')}>
                         <Label className="flex items-center gap-1.5">
                           Open amount (₹) <span className="text-red-600">*</span>
                           {!hasInvoices && blocked > 0 && (
@@ -4272,6 +4387,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         </Label>
                         <Input
                           type="number"
+                          className={cn(__WEB__ && '!h-12 !text-[17px] !font-bold')}
                           value={lcForm.amount ?? ''}
                           onChange={(e) => setLcForm((p) => ({ ...p, amount: e.target.value, amount_manual: e.target.value !== '' }))}
                         />
@@ -4424,12 +4540,12 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         <div className="flex flex-col gap-1.5 sm:col-span-2">
                           <Label>Interest days</Label>
                           {days != null ? (
-                            <div className="flex h-11 items-center justify-between rounded-md border border-sky-300 bg-sky-50 px-3">
-                              <span className="text-lg font-bold tabular-nums text-sky-950">{days} days</span>
-                              <span className="rounded-full bg-sky-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">Auto</span>
+                            <div className={cn('flex h-11 items-center justify-between rounded-md border border-sky-300 bg-sky-50 px-3', __WEB__ && '!h-12 !rounded-[4px] !border-[#C6DAF0] !bg-[#F4F8FD] !px-3.5')}>
+                              <span className={cn('text-lg font-bold tabular-nums text-sky-950', __WEB__ && '!text-[17px] !text-[#1B4E82]')}>{days} days</span>
+                              <span className={cn('rounded-full bg-sky-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white', __WEB__ && '!rounded-[2px] !bg-[#EAF0FA] !px-2 !py-1 !text-[10px] !font-extrabold !tracking-[.1em] !text-[#1B4E82]')}>Auto</span>
                             </div>
                           ) : (
-                            <div className="flex h-11 items-center rounded-md border border-dashed bg-muted/20 px-3 text-[12px] italic text-muted-foreground">
+                            <div className={cn('flex h-11 items-center rounded-md border border-dashed bg-muted/20 px-3 text-[12px] italic text-muted-foreground', __WEB__ && '!h-12 !rounded-[4px] !border-[#C3D2C6] !bg-[#F7FAF6] !text-[12px] !font-semibold !not-italic !text-[#5A6B62]')}>
                               Calculated once maturity date &amp; payment received date are set
                             </div>
                           )}
@@ -4445,21 +4561,32 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                   <span className={cn('flex h-5 w-5 items-center justify-center rounded-full bg-[#1a2c56]/10', __WEB__ && '!h-6 !w-6 !rounded-[3px] !bg-[#EAF0E9]')}><Percent className="h-3 w-3 text-[#1a2c56]" /></span>
                   Margin, interest & charges
                 </h3>
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <div className="flex flex-col gap-1.5"><Label>Margin %</Label><Input type="number" value={lcForm.margin_pct ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, margin_pct: e.target.value }))} /></div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label>Interest % p.a. (ROI) {String(lcForm.stage) !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set with payment received)</span>}</Label>
+                <div className={cn('grid gap-3 sm:grid-cols-3', __WEB__ && cn(LC_GRID, '!grid-cols-[repeat(auto-fit,minmax(min(100%,140px),1fr))]'))}>
+                  <div className="flex min-w-0 flex-col gap-1.5"><Label>Margin %</Label><Input type="number" value={lcForm.margin_pct ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, margin_pct: e.target.value }))} /></div>
+                  {/* "(set with payment received)" doubled the label's height on
+                      two of the three fields and left the inputs on different
+                      lines. On the website it moves under the field, where every
+                      other hint in this form already lives; the desktop app
+                      keeps it in the label. */}
+                  <div className="flex min-w-0 flex-col gap-1.5">
+                    <Label>Interest % p.a. (ROI) {!__WEB__ && String(lcForm.stage) !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set with payment received)</span>}</Label>
                     <Input type="number" value={lcForm.interest_pct ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, interest_pct: e.target.value }))} disabled={String(lcForm.stage) !== 'payment_received'} />
+                    {__WEB__ && String(lcForm.stage) !== 'payment_received' && (
+                      <span className="text-[10px] text-muted-foreground">Set with payment received</span>
+                    )}
                   </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label>LC charges (₹) {String(lcForm.stage) !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set with payment received)</span>}</Label>
+                  <div className="flex min-w-0 flex-col gap-1.5">
+                    <Label>LC charges (₹) {!__WEB__ && String(lcForm.stage) !== 'payment_received' && <span className="text-[10px] font-normal text-muted-foreground">(set with payment received)</span>}</Label>
                     <Input type="number" value={lcForm.charges ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, charges: e.target.value }))} disabled={String(lcForm.stage) !== 'payment_received'} />
+                    {__WEB__ && String(lcForm.stage) !== 'payment_received' && (
+                      <span className="text-[10px] text-muted-foreground">Set with payment received</span>
+                    )}
                   </div>
                 </div>
-                <span className="mt-1 block text-[10px] text-muted-foreground">ROI and LC charges are obtained once payment is received; interest is charged over the interest days (maturity date − payment received date).</span>
-                <div className="mt-3 flex items-center gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
+                <span className={cn('mt-1 block text-[10px] text-muted-foreground', __WEB__ && '!mt-0 !px-4 !pb-1 !text-[11px] !font-semibold !leading-relaxed')}>ROI and LC charges are obtained once payment is received; interest is charged over the interest days (maturity date − payment received date).</span>
+                <div className={cn('mt-3 flex items-center gap-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5', __WEB__ && '!mx-4 !mt-1 !rounded-[4px] !border-[#D6E2D6] !bg-[#F7FAF6] !px-3.5 !py-3')}>
                   <Switch checked={!!lcForm.interest_upfront} onCheckedChange={(v) => setLcForm((p) => ({ ...p, interest_upfront: v }))} />
-                  <div className="text-[12px] font-semibold">Interest &amp; charges paid upfront</div>
+                  <div className={cn('text-[12px] font-semibold', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>Interest &amp; charges paid upfront</div>
                 </div>
                 {/* What the interest is charged ON. Normally the whole open
                     amount: the bank funds the credit in full and takes its
@@ -4470,15 +4597,15 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     Editing this and saving re-posts the LC's vouchers from the
                     new figure — the settlement journal, the upfront-interest
                     journal and the party's fee adjustment all follow. */}
-                <div className="mt-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5">
+                <div className={cn('mt-2 rounded-md border border-[#e5dfc8] bg-muted/30 px-3 py-2.5', __WEB__ && '!mx-4 !mb-4 !rounded-[4px] !border-[#D6E2D6] !bg-[#F7FAF6] !px-3.5 !py-3')}>
                   <div className="flex items-center gap-2">
                     <Switch
                       checked={!!lcForm.interest_excl_charges}
                       onCheckedChange={(v) => setLcForm((p) => ({ ...p, interest_excl_charges: v }))}
                     />
-                    <div className="text-[12px] font-semibold">Exclude bank charges from the interest</div>
+                    <div className={cn('text-[12px] font-semibold', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>Exclude bank charges from the interest</div>
                   </div>
-                  <div className="mt-1.5 pl-11 text-[11px] leading-snug text-muted-foreground">
+                  <div className={cn('mt-1.5 pl-11 text-[11px] leading-snug text-muted-foreground', __WEB__ && '!text-[11.5px] !font-semibold !leading-relaxed !text-[#5A6B62]')}>
                     {(() => {
                       const amt = n(lcForm.amount)
                       const excl = !!lcForm.interest_excl_charges
@@ -4528,7 +4655,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 // figure from the one every cell in this panel is built on.
                 const blockedAmt = n(lcForm.blocked_amount) || openAmount
                 return (
-                  <div className={cn('rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm lg:col-span-2', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#BFE3CB] !bg-white !bg-none !p-0 !shadow-none')}>
+                  <div className={cn('rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 p-4 shadow-sm lg:col-span-2', __WEB__ && '!rounded-[4px] !border-[#BFE3CB] !bg-white !bg-none !p-0 !shadow-none')}>
                     <h3 className={cn('mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-sky-900', __WEB__ && '!mb-0 !gap-2 !border-b !border-b-[#BFE3CB] !bg-[#F4FBF6] !px-4 !py-3 !text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#0B6B45]')}>
                       {__WEB__ ? <ArrowUpRight className="h-4 w-4" /> : <Banknote className="h-3.5 w-3.5" />}
                       {__WEB__ ? 'What will reach the supplier' : 'Back-calculated from the open amount'}
@@ -4536,29 +4663,77 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         <CalendarClock className="h-3 w-3" /> {n(lcForm.usance_days) || 0} interest days
                       </span>
                     </h3>
-                    <div className={cn('grid grid-cols-2 gap-3 text-center sm:grid-cols-4', __WEB__ && '!gap-px !bg-[#E4ECE3] !text-left [&>div]:!bg-white [&>div]:!px-3.5 [&>div]:!py-3 [&>div>div:first-child]:!text-[9px] [&>div>div:first-child]:!font-extrabold [&>div>div:first-child]:!tracking-[.12em] [&>div>div:first-child]:!text-[#5A6B62] [&>div>div:last-child]:!mt-1 [&>div>div:last-child]:!whitespace-nowrap [&>div>div:last-child]:!text-[14.5px] [&>div>div:last-child]:!font-bold')}>
-                      <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Open amount</div><div className={cn('text-[15px] font-semibold tabular-nums text-sky-950', __WEB__ && '!text-[#0A1F17]')}>{formatINR(openAmount)}</div></div>
+                    {__WEB__ ? (
+                      <div className="px-[15px] pb-[14px] pt-[6px]">
+                        <LcPreviewRow label="Open amount" value={formatINR(openAmount)} />
+                        <LcPreviewRow
+                          label={`Margin ${n(lcForm.margin_pct) || 0}%`}
+                          value={formatINR(margin)}
+                          sub="held by the bank against the credit"
+                        />
+                        <LcPreviewRow
+                          label="Interest"
+                          value={formatINR(interest)}
+                          tone={upfront ? undefined : '!text-[#B3261E]'}
+                          sub={
+                            upfront
+                              ? 'paid upfront by its own voucher — not deducted'
+                              : lcInterestBaseWorking(lcForm) ||
+                                (n(lcForm.interest_pct) > 0
+                                  ? `${formatINR(lcInterestBaseOf(lcForm))} × ${lcForm.interest_pct}% × ${n(lcForm.usance_days) || 0} ÷ 365`
+                                  : 'rate × interest days ÷ 365')
+                          }
+                        />
+                        <LcPreviewRow
+                          label="Charges"
+                          value={formatINR(charges)}
+                          tone={upfront ? undefined : '!text-[#B3261E]'}
+                          sub={upfront ? 'paid upfront — not deducted' : undefined}
+                        />
+                        <LcPreviewRow
+                          label="Released to beneficiary"
+                          value={formatINR(netAvailable)}
+                          tone="!text-[#0B6B45]"
+                          strong
+                          sub={
+                            n(lcForm.interest_adj)
+                              ? `includes an interest adjustment of ${formatINR(n(lcForm.interest_adj))}`
+                              : upfront
+                                ? 'the full open amount — interest and charges are settled separately'
+                                : 'open amount − interest − charges'
+                          }
+                          last
+                        />
+                      </div>
+                    ) : (
+                    <div className="grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
+                      <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Open amount</div><div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(openAmount)}</div></div>
                       <div>
                         <div className="text-[10px] uppercase tracking-wide text-sky-700">{upfront ? 'Interest (upfront)' : '− Interest'}</div>
-                        <div className={cn('text-[15px] font-semibold tabular-nums', upfront ? 'text-sky-950' : 'text-rose-700', __WEB__ && (upfront ? '!text-[#0A1F17]' : '!text-[#B3261E]'))}>{formatINR(interest)}</div>
+                        <div className={cn('text-[15px] font-semibold tabular-nums', upfront ? 'text-sky-950' : 'text-rose-700')}>{formatINR(interest)}</div>
                       </div>
                       <div>
                         <div className="text-[10px] uppercase tracking-wide text-sky-700">{upfront ? 'Charges (upfront)' : '− Charges'}</div>
-                        <div className={cn('text-[15px] font-semibold tabular-nums', upfront ? 'text-sky-950' : 'text-rose-700', __WEB__ && (upfront ? '!text-[#0A1F17]' : '!text-[#B3261E]'))}>{formatINR(charges)}</div>
+                        <div className={cn('text-[15px] font-semibold tabular-nums', upfront ? 'text-sky-950' : 'text-rose-700')}>{formatINR(charges)}</div>
                       </div>
-                      <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Margin</div><div className={cn('text-[15px] font-semibold tabular-nums text-sky-950', __WEB__ && '!text-[#0A1F17]')}>{formatINR(margin)}</div></div>
+                      <div><div className="text-[10px] uppercase tracking-wide text-sky-700">Margin</div><div className="text-[15px] font-semibold tabular-nums text-sky-950">{formatINR(margin)}</div></div>
                     </div>
-                    <div className={cn('mt-3 flex items-center justify-between rounded-lg bg-white/70 px-4 py-2.5', __WEB__ && '!mt-0 !flex-wrap !gap-2.5 !rounded-none !border-t !border-t-[#BFE3CB] !bg-[#EAF6EC] !px-4 !py-3.5')}>
-                      <span className={cn('text-[11px] font-medium uppercase tracking-wide text-sky-800', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.1em] !text-[#0B6B45]')}>
-                        {upfront ? 'Net available = open amount (interest & charges paid upfront)' : 'Net available = open amount − interest − charges'}
-                      </span>
-                      <span className={cn('text-xl font-bold tabular-nums text-[#1a2c56]', __WEB__ && '!ml-auto !whitespace-nowrap !text-[21px] !tracking-[-0.035em] !text-[#0B6B45]')}>{formatINR(netAvailable)}</span>
-                    </div>
+                    )}
+                    {/* The website's last preview row IS this figure, so the
+                        strip would say it twice. */}
+                    {!__WEB__ && (
+                      <div className="mt-3 flex items-center justify-between rounded-lg bg-white/70 px-4 py-2.5">
+                        <span className="text-[11px] font-medium uppercase tracking-wide text-sky-800">
+                          {upfront ? 'Net available = open amount (interest & charges paid upfront)' : 'Net available = open amount − interest − charges'}
+                        </span>
+                        <span className="text-xl font-bold tabular-nums text-[#1a2c56]">{formatINR(netAvailable)}</span>
+                      </div>
+                    )}
                     {/* Only when the two differ. Every figure in the panel above
                         is struck on the open amount, so the one that is not
                         says so plainly rather than being left to be inferred. */}
                     {Math.abs(blockedAmt - openAmount) > 0.005 && (
-                      <div className={cn('mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-lg border border-sky-200 bg-white/70 px-4 py-2.5', __WEB__ && '!mt-0 !rounded-none !border-0 !border-t !border-t-[#C6DAF0] !bg-[#F4F8FD] !px-4 !py-3')}>
+                      <div className={cn('mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-lg border border-sky-200 bg-white/70 px-4 py-2.5', __WEB__ && '!mt-0 !rounded-none !border-0 !border-t !border-t-[#C6DAF0] !bg-[#F4F8FD] !px-[15px] !py-3')}>
                         <span className={cn('text-[10px] font-semibold uppercase tracking-wide text-sky-700', __WEB__ && '!text-[9px] !font-extrabold !tracking-[.12em] !text-[#1B4E82]')}>
                           Blocked against the limit
                         </span>
@@ -4574,7 +4749,28 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 )
               })()}
 
-              <div className="flex flex-col gap-1.5 lg:col-span-2"><Label>Note</Label><Input value={lcForm.note ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, note: e.target.value }))} /></div>
+              {__WEB__ ? (
+                <section className={cn(LC_DIALOG, LC_FIELDS)}>
+                  {/* flex items-center comes from the base h3 class on every
+                      other section; LC_SECTION_HEAD only carries the website's
+                      overrides, so without it the icon stacked above the word. */}
+                  <h3 className={cn('flex items-center gap-1.5 uppercase', LC_SECTION_HEAD)}>
+                    <span className="flex !h-6 !w-6 items-center justify-center !rounded-[3px] !bg-[#EAF0E9]">
+                      <FileText className="h-3 w-3 text-[#0B3D2E]" />
+                    </span>
+                    Note
+                  </h3>
+                  <div className="!p-4">
+                    <Input
+                      value={lcForm.note ?? ''}
+                      placeholder="Anything worth recording against this LC"
+                      onChange={(e) => setLcForm((p) => ({ ...p, note: e.target.value }))}
+                    />
+                  </div>
+                </section>
+              ) : (
+                <div className="flex flex-col gap-1.5 lg:col-span-2"><Label>Note</Label><Input value={lcForm.note ?? ''} onChange={(e) => setLcForm((p) => ({ ...p, note: e.target.value }))} /></div>
+              )}
             </div>
           )}
           <DialogFooter className={cn('border-t border-[#e5dfc8] bg-muted/20 px-6 py-4', LC_FOOT)}>
@@ -4850,8 +5046,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
             <div
               className={cn(
                 'grid gap-3 sm:grid-cols-2',
-                __WEB__ &&
-                  '!min-h-0 !content-start !gap-3.5 !overflow-y-auto !p-4 [&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!tracking-[.12em] [&_label]:!text-[#5A6B62] [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[13px] [&_input]:!font-semibold [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-11 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!text-[13.5px]'
+                __WEB__ && cn(LC_BODY, LC_FIELDS)
               )}
             >
               <div className="flex flex-col gap-1.5 sm:col-span-2">

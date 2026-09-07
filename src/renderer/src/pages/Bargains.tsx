@@ -131,27 +131,27 @@ function bargainRegister(r: Row, from: string, to: string): { opening: number; a
   return { opening, addition, adjusted, dispatch: inP, closing: opening + addition + adjusted - inP }
 }
 
-// A bargain shows in the register when it still has an open balance. Fully
-// settled (0-balance) bargains are hidden unless `showZero` is on, in which case
-// they show only if they belong to the selected range (created / finished /
-// had activity in it).
+// A bargain shows in the register when it still has an open balance, or when
+// `showZero` is on — in which case the settled ones come too, regardless of
+// which period is selected.
 function inRegister(r: Row, from: string, to: string, showZero = false): boolean {
   const bdate = String(r.bargain_date || '').slice(0, 10)
   if (bdate > to) return false
   const reg = bargainRegister(r, from, to)
   if (reg.closing > 1e-6) return true
-  if (!showZero) return false
-  const fin = String(r.last_dispatch_date || '').slice(0, 10)
-  const finishedInRange = !!fin && fin >= from && fin <= to
-  const createdInRange = bdate >= from && bdate <= to
-  // Each figure checked on its own, not summed — an addition and a same-size
-  // removal in the same period (e.g. a bargain booked then cancelled) net to
-  // zero, but it is still real activity that happened in this period. Opening
-  // is deliberately excluded: it is the balance carried IN from before the
-  // period, not something that happened during it.
-  const activityInRange =
-    Math.abs(reg.addition) > 1e-6 || Math.abs(reg.adjusted) > 1e-6 || Math.abs(reg.dispatch) > 1e-6
-  return finishedInRange || createdInRange || activityInRange
+  // Settled. Shown whenever the switch is on, whatever the period.
+  //
+  // This used to require the bargain to have been created, finished, or had
+  // activity inside [from, to] — which reads sensibly and behaves terribly.
+  // Turn the switch on with a month selected and nothing happens: the settled
+  // bargains were all finished in some earlier month, so none of them
+  // qualified, and the control looked broken. The only way to see them was to
+  // widen the range, which is not what "Show settled" says it does.
+  //
+  // The period still governs what the COLUMNS say — the figures come from
+  // bargainRegister(from, to) either way — and a bargain dated after the
+  // period end is still out, above. This decides membership only.
+  return showZero
 }
 
 // Default order: grouped by oil (A→Z), oldest first inside each group.
@@ -513,9 +513,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
     [rows, F, T]
   )
   const q = search.trim().toLowerCase()
-  const visibleRows = regRows
+  // Everything except the settled switch. Splitting it out means the number on
+  // the switch is counted from the same rows the register draws, so it can
+  // never claim more (or fewer) than turning it on would show.
+  const matchedRows = regRows
     .filter((r) => typeFilter === 'ALL' || String(r.supplier_type || '').toUpperCase() === typeFilter)
-    .filter((r) => inRegister(r, F, T, showZero))
     .filter(
       (r) =>
         !q ||
@@ -523,6 +525,10 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
           String(f || '').toLowerCase().includes(q)
         )
     )
+  const visibleRows = matchedRows.filter((r) => inRegister(r, F, T, showZero))
+  const settledCount = matchedRows.filter(
+    (r) => inRegister(r, F, T, true) && !inRegister(r, F, T, false)
+  ).length
 
   const [sort, setSort] = useState<SortState>(null)
   const [reportOpen, setReportOpen] = useState(false)
@@ -1086,6 +1092,18 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
               <label className={cn('ml-auto flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[13px] text-muted-foreground', __WEB__ && '!gap-2.5 !text-[12.5px] !font-bold !text-[#33473E]')}>
                 <Switch checked={showZero} onCheckedChange={setShowZero} />
                 Show settled {__WEB__ ? <span className="font-semibold text-[#7C9188]">(0 balance)</span> : '(0 balance)'}
+                {/* The count, so the switch can be seen to have done something
+                    even when the rows it adds are inside collapsed oil bands —
+                    and so that "nothing to add" reads as an answer rather than
+                    as a control that ignored the click. */}
+                <span
+                  className={cn(
+                    'rounded-full px-2 py-0.5 font-mono text-[11px] font-bold tabular-nums',
+                    settledCount === 0 ? 'bg-muted text-muted-foreground' : 'bg-[#EAF0E9] text-[#33473E]'
+                  )}
+                >
+                  {settledCount}
+                </span>
               </label>
             </div>
 

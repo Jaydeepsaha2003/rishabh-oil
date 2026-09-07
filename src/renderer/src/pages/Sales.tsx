@@ -246,27 +246,27 @@ function sbBar(opening: number, addition: number, adjusted: number, dispatch: nu
 
 // Whether a bargain belongs in the register for [from,to]: created on/before the
 // period, and either still open at period end OR finished within the period.
-// A bargain shows in the register when it still has an open balance. Fully
-// settled (0-balance) bargains are hidden unless `showZero` is on, in which case
-// they show only if they belong to the selected range (created / finished /
-// had activity in it).
+// A bargain shows in the register when it still has an open balance, or when
+// `showZero` is on — in which case the settled ones come too, regardless of
+// which period is selected.
 function inRegister(r: Row, from: string, to: string, showZero = false): boolean {
   const bdate = String(r.bargain_date || '').slice(0, 10)
   if (bdate > to) return false
   const reg = bargainRegister(r, from, to)
   if (reg.closing > 1e-6) return true
-  if (!showZero) return false
-  const fin = String(r.last_dispatch_date || '').slice(0, 10)
-  const finishedInRange = !!fin && fin >= from && fin <= to
-  const createdInRange = bdate >= from && bdate <= to
-  // Each figure checked on its own, not summed — an addition and a same-size
-  // removal in the same period (e.g. a bargain booked then cancelled) net to
-  // zero, but it is still real activity that happened in this period. Opening
-  // is deliberately excluded: it is the balance carried IN from before the
-  // period, not something that happened during it.
-  const activityInRange =
-    Math.abs(reg.addition) > 1e-6 || Math.abs(reg.adjusted) > 1e-6 || Math.abs(reg.dispatch) > 1e-6
-  return finishedInRange || createdInRange || activityInRange
+  // Settled. Shown whenever the switch is on, whatever the period.
+  //
+  // This used to require the bargain to have been created, finished, or had
+  // activity inside [from, to] — which reads sensibly and behaves terribly.
+  // Turn the switch on with a month selected and nothing happens: the settled
+  // bargains were all finished in some earlier month, so none of them
+  // qualified, and the control looked broken. The only way to see them was to
+  // widen the range, which is not what "Show settled" says it does.
+  //
+  // The period still governs what the COLUMNS say — the figures come from
+  // bargainRegister(from, to) either way — and a bargain dated after the
+  // period end is still out, above. This decides membership only.
+  return showZero
 }
 
 // ---------------- Sales tab ----------------
@@ -3933,16 +3933,21 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
   }
 
   const q = search.trim().toLowerCase()
-  const visibleRows = rows.filter(
+  // Everything except the settled switch, so the number on the switch is
+  // counted from the same rows the register draws.
+  const matchedRows = rows.filter(
     (r) =>
       (sectionCategory === 'ALL' || String(r.sale_category || 'FINISHED_OIL') === sectionCategory) &&
       (String(r.sale_type || 'LOOSE') === 'PACKED' ? 'PACKED' : 'LOOSE') === sectionType &&
-      inRegister(r, F, T, showZero) &&
       (!q ||
         [r.bargain_no, r.customer, r.product_name, r.note].some((f) =>
           String(f || '').toLowerCase().includes(q)
         ))
   )
+  const visibleRows = matchedRows.filter((r) => inRegister(r, F, T, showZero))
+  const settledCount = matchedRows.filter(
+    (r) => inRegister(r, F, T, true) && !inRegister(r, F, T, false)
+  ).length
   const sortedRows = useMemo(
     () =>
       [...visibleRows].sort(
@@ -4780,6 +4785,14 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
         <label className={cn('ml-auto flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[12px] text-muted-foreground', __WEB__ && '!gap-2.5 !text-[12.5px] !font-bold !text-[#33473E]')}>
           <Switch checked={showZero} onCheckedChange={setShowZero} />
           Show settled {__WEB__ ? <span className="font-semibold text-[#7C9188]">(0 balance)</span> : '(0 balance)'}
+          <span
+            className={cn(
+              'rounded-full px-2 py-0.5 font-mono text-[11px] font-bold tabular-nums',
+              settledCount === 0 ? 'bg-muted text-muted-foreground' : 'bg-[#EAF0E9] text-[#33473E]'
+            )}
+          >
+            {settledCount}
+          </span>
         </label>
       </div>
       <div
