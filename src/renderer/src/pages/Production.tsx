@@ -182,6 +182,7 @@ export function Production(): React.JSX.Element {
 
   function openAdd(): void {
     setEditingId(null)
+    editBaseRef.current = null
     const first = blankRun()
     setSheetDate(todayISO())
     setRuns([first])
@@ -190,12 +191,19 @@ export function Production(): React.JSX.Element {
     setBuilding(true)
   }
 
+  // The run being edited, as it stands on the books. Stock as at the run's own
+  // date ALREADY contains it, so the projection has to take it back out before
+  // showing what the edited quantity would do — otherwise "current stock" is
+  // the figure after this very run and the effect is counted twice.
+  const editBaseRef = useRef<{ items: Row[]; qty: number } | null>(null)
+
   async function openEdit(row: Row): Promise<void> {
     setEditingId(Number(row.id))
     setSheetDate(String(row.prod_date || todayISO()).slice(0, 10))
     setResults({})
     const fid = row.formulation_id ? Number(row.formulation_id) : null
     const items = fid ? await window.api.formulations.items(fid) : []
+    editBaseRef.current = { items, qty: Number(row.qty) || 0 }
     const pr = products.find((x) => String(x.id) === String(row.product_id))
     const only = {
       key: keyRef.current++,
@@ -215,6 +223,61 @@ export function Production(): React.JSX.Element {
     setBuilding(true)
   }
 
+  // Stock AS AT the sheet's date, not as at today.
+  //
+  // A back-dated run has to be judged against the tanks as they stood on the
+  // day it ran. Read against today's figure, a day's production that has since
+  // been drawn on shows its inputs already negative — SHEA at -31.305 before
+  // the run has taken anything — and the whole projection is wrong by whatever
+  // has happened since.
+  //
+  // stock.list({ to }) with no `from` is the closing balance at that date (see
+  // stockLevels in src/main/stock.ts), which is exactly the baseline wanted.
+  // Today's date returns today's figure, so a same-day sheet is unchanged.
+  const [asAtStock, setAsAtStock] = useState<Record<number, number> | null>(null)
+  useEffect(() => {
+    if (!building) {
+      setAsAtStock(null)
+      return
+    }
+    let alive = true
+    const day = String(sheetDate || '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return
+    void window.api.stock
+      .list({ to: day })
+      .then((rows) => {
+        if (!alive) return
+        const m: Record<number, number> = {}
+        for (const l of rows) m[l.id as number] = Number(l.stock) || 0
+        // And if a run is being edited, undo what it already did: its inputs
+        // go back into the tanks, its outputs come out. What is left is the
+        // stock the run was recorded against.
+        const base = editBaseRef.current
+        if (base) {
+          for (const line of expandRecipe(base.items, base.qty)) {
+            const pid = Number(line.product_id)
+            if (!pid) continue
+            const amt = Number(line.qty) || 0
+            if (line.kind === 'input') m[pid] = (m[pid] ?? 0) + amt
+            else if (line.kind === 'output') m[pid] = (m[pid] ?? 0) - amt
+          }
+          const outPid = Number(editingId ? runs[0]?.product_id : 0)
+          if (outPid) m[outPid] = (m[outPid] ?? 0) - base.qty
+        }
+        setAsAtStock(m)
+      })
+      .catch(() => {
+        // Fall back to the live figure rather than an empty projection.
+        if (alive) setAsAtStock(null)
+      })
+    return () => {
+      alive = false
+    }
+    // runs[0].product_id is read only to undo the edited run's own output, and
+    // that product cannot change without the sheet being reopened.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [building, sheetDate, editingId])
+
   // What the whole sheet does to stock, walked IN ORDER so a batch can be fed
   // by one above it. Only 'input' lines consume; 'output' lines (recovered
   // fatty acid) add back, and 'loss' lines are simply gone.
@@ -223,7 +286,7 @@ export function Production(): React.JSX.Element {
     net: Row[]
     short: Row[]
   } => {
-    const bal: Record<number, number> = { ...stock }
+    const bal: Record<number, number> = { ...(asAtStock ?? stock) }
     const perRun: { consumes: Row[]; produces: Row[] }[] = []
     const touched = new Set<number>()
     for (const r of runs) {
@@ -865,7 +928,15 @@ export function Production(): React.JSX.Element {
                 <TableHeader>
                   <TableRow className={cn(__WEB__ && '!border-b-[#DCE7DB] !bg-[#EAF0E9] hover:!bg-[#EAF0E9] [&>th]:!h-auto [&>th]:!py-3 [&>th]:!text-[11.5px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.09em] [&>th]:!text-[#33473E]')}>
                     <TableHead>Product</TableHead>
-                    <TableHead className="text-right">{__WEB__ ? 'Current stock' : 'Now'}</TableHead>
+                    {/* Named by the day it is read on, because on a back-dated
+                        sheet "current" is not today. */}
+                    <TableHead className="text-right">
+                      {__WEB__
+                        ? sheetDate === todayISO()
+                          ? 'Current stock'
+                          : `Stock on ${formatDate(sheetDate)}`
+                        : 'Now'}
+                    </TableHead>
                     {/* Effect, not "used": this column carries both directions
                         — what a batch draws out AND what it puts back, the
                         recovered fatty acid and the output itself included. */}
