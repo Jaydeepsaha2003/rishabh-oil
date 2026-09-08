@@ -472,7 +472,19 @@ export async function stockPartyBreakdown(
 ): Promise<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[] }>> {
   const c = getClient()
   const cidList = (companyIds || []).map(Number).filter((x) => x > 0)
-  if (!cidList.length) cidList.push(getActiveCompanyId())
+  // The SAME default scope stockLevels uses — the whole factory, not the active
+  // company.
+  //
+  // This is what made the hover contradict the cell it explains. With no
+  // company list passed, stockLevels read every company at the site while this
+  // read one, so a factory-wise register showed a receipt of 137.795 and its
+  // tooltip listed 39.25 — the one company's share of it. Worse, a product
+  // whose only receipt belonged to the OTHER company had a figure and an empty
+  // tooltip, which is the "hover does not work" that kept coming back.
+  //
+  // The comment further down already says the split must cover the same period
+  // the register shows. It has to cover the same COMPANIES too.
+  if (!cidList.length) cidList.push(...(await companiesOfFactory()))
   const ph = cidList.map(() => '?').join(', ')
   const multi = cidList.length > 1
   // The split must cover the SAME period the register shows, or the hover
@@ -932,7 +944,19 @@ export async function stockRegisters(
 ): Promise<{ receipts: Row[]; dispatches: Row[] }> {
   const c = getClient()
   const cidList = (companyIds || []).map(Number).filter((x) => x > 0)
-  if (!cidList.length) cidList.push(getActiveCompanyId())
+  // The SAME default scope stockLevels uses — the whole factory, not the active
+  // company.
+  //
+  // This is what made the hover contradict the cell it explains. With no
+  // company list passed, stockLevels read every company at the site while this
+  // read one, so a factory-wise register showed a receipt of 137.795 and its
+  // tooltip listed 39.25 — the one company's share of it. Worse, a product
+  // whose only receipt belonged to the OTHER company had a figure and an empty
+  // tooltip, which is the "hover does not work" that kept coming back.
+  //
+  // The comment further down already says the split must cover the same period
+  // the register shows. It has to cover the same COMPANIES too.
+  if (!cidList.length) cidList.push(...(await companiesOfFactory()))
   const ph = cidList.map(() => '?').join(', ')
   const from = String(range?.from || '')
   const to = String(range?.to || '')

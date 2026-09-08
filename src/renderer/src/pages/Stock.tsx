@@ -966,7 +966,16 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
         const OUT_FG = '#8C2F26'
         return (
           <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6]">
-            <Table className="doc-ref min-w-[820px] text-[12px] [&_td]:border-l [&_td]:border-l-[#DCE7DB] [&_td]:px-[9px] [&_td]:py-[5px] [&_td:first-child]:border-l-0 [&_th]:h-11 [&_th]:px-[9px]">
+            {/* The wrapper is the scroll container, and a sticky <thead>
+                sticks to whichever container scrolls. Without a max-height
+                here that container is the PAGE, so the column names peeled off
+                the card and rode up over the Stock title and the company
+                picker. Bounded, the head stays inside its own card — the same
+                arrangement the Packed SKU register already uses. */}
+            <Table
+              wrapperClassName="max-h-[calc(100vh-330px)]"
+              className="doc-ref min-w-[820px] text-[12px] [&_td]:border-l [&_td]:border-l-[#DCE7DB] [&_td]:px-[9px] [&_td]:py-[5px] [&_td:first-child]:border-l-0 [&_th]:h-11 [&_th]:px-[9px]"
+            >
               <TableHeader className="sticky top-0 z-10">
                 <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[30px] [&>th]:!p-0 [&>th]:!text-[11px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.1em] [&>th]:!text-[#8FBFA8]">
                   <TableHead />

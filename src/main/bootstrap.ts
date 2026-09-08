@@ -896,5 +896,74 @@ export async function runStartupTasks(): Promise<void> {
     )
   }).catch((e) => console.error('[gate] outside tanker diary failed:', e))
 
+  // LC-9's bill was raised for the gross open amount.
+  //
+  // Every other bill in the book is the open amount LESS the interest and
+  // commission the bank keeps out of the credit. LC-9's was raised for the
+  // whole ₹88,49,000 — ₹1,74,474.58 more, which is exactly those two fees. Of
+  // 52 bills it is the only one billed gross without the "interest settled
+  // upfront" flag that makes gross correct. The consequences are in the
+  // ledger: ASHOK SHOP shows paid ₹1,74,474.58 more than they received, and
+  // the LC draws ₹90,23,474.58 against an ₹88,49,000 facility.
+  //
+  // Corrected here rather than by hand because it has to happen on the server,
+  // where the data is. The same guards the standalone script carries
+  // (scripts/fix-lc9-bill.mjs) apply: it touches nothing unless the LC still
+  // looks exactly as diagnosed, and runOnce means a second boot is a no-op.
+  //
+  // It re-posts the settlement voucher through the app's own resync rather
+  // than editing journal lines, so the correction is derived the same way
+  // every other settlement is.
+  await runOnce('lc9_gross_bill_fix_v1', async () => {
+    const c = getClient()
+    const lcRes = await c.execute({
+      sql: `SELECT id, lc_no, amount, interest_pct, usance_days, charges, interest_upfront
+              FROM letters_of_credit
+             WHERE lc_no = 'LC-9' AND ABS(amount - 8849000) < 1`,
+      args: []
+    })
+    if (lcRes.rows.length !== 1) {
+      console.log('[lc9] skipped — expected one LC-9 at 88,49,000, found', lcRes.rows.length)
+      return
+    }
+    const lc = lcRes.rows[0] as unknown as Record<string, unknown>
+    const num = (v: unknown): number => Number(v || 0)
+    if (num(lc.interest_upfront) === 1) {
+      console.log('[lc9] skipped — flagged interest-upfront, a gross bill is correct there')
+      return
+    }
+    const interest =
+      Math.round(((num(lc.amount) * num(lc.interest_pct) * num(lc.usance_days)) / 36500) * 100) / 100
+    const charges = Math.round(num(lc.charges) * 100) / 100
+    const correct = Math.round((num(lc.amount) - interest - charges) * 100) / 100
+
+    const bills = await c.execute({
+      sql: 'SELECT id, amount FROM lc_issuances WHERE lc_id = ?',
+      args: [num(lc.id)]
+    })
+    if (bills.rows.length !== 1) {
+      console.log('[lc9] skipped — expected one bill, found', bills.rows.length)
+      return
+    }
+    const bill = bills.rows[0] as unknown as Record<string, unknown>
+    if (Math.abs(num(bill.amount) - correct) < 0.005) {
+      console.log('[lc9] already correct at', correct)
+      return
+    }
+    if (Math.abs(num(bill.amount) - num(lc.amount)) > 0.005) {
+      console.log('[lc9] skipped — bill is neither gross nor the correct net:', num(bill.amount))
+      return
+    }
+    // The before-state, in the log, so the change can be reversed by hand.
+    console.log('[lc9] BEFORE', JSON.stringify({ lc, bill, correctingTo: correct }))
+    await c.execute({
+      sql: 'UPDATE lc_issuances SET amount = ? WHERE id = ?',
+      args: [correct, num(bill.id)]
+    })
+    const { resyncLcSettlement } = await import('./treasury')
+    await resyncLcSettlement(num(lc.id))
+    console.log(`[lc9] bill ${num(bill.amount)} -> ${correct}, settlement voucher re-posted`)
+  }).catch((e) => console.error('[lc9] gross bill fix failed:', e))
+
   startRevisionWatcher()
 }
