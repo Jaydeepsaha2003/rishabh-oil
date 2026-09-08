@@ -1199,7 +1199,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                     only place they can live. They add to 1074, the table's
                     floor, so a 13" screen fits without zooming out and
                     anything narrower slides. */}
-                {__WEB__ && (
+                {__WEB__ && groupedByOil && !q && openGroups.size === 0 && (
                   <colgroup>
                     {[112, 91, 100, 69, 62, 69, 71, 69, 95, 65, 76, 128, 67].map((w, i) => (
                       <col key={i} style={{ width: `${w}px` }} />
@@ -1376,7 +1376,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                             )}
                             onClick={() => toggleExpand(Number(row.id))}
                           >
-                          <TableCell className={cn('font-medium', __WEB__ && '!text-[12.5px] !font-bold !tracking-[-0.02em]')}>
+                          <TableCell className={cn('font-medium', __WEB__ && '!min-w-[300px] !text-[12.5px] !font-bold !tracking-[-0.02em]')}>
                             <ChevronRight
                               className={cn(
                                 'mr-1 inline h-3.5 w-3.5 text-muted-foreground transition-transform',
@@ -1385,12 +1385,12 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                               )}
                             />
                             <span className={cn('mr-1 tabular-nums text-muted-foreground', __WEB__ && '!mr-2 !text-[10.5px] !font-bold !text-[#5A6B62]')}>{seq}.</span>
-                            <span className={cn(__WEB__ && '!truncate')} title={String(row.bargain_no || '')}>
+                            <span title={String(row.bargain_no || '')}>
                               {row.bargain_no}
                             </span>
                           </TableCell>
                           <TableCell className={cn('whitespace-nowrap text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{formatDate(row.bargain_date)}</TableCell>
-                          <TableCell className={cn('max-w-[160px] truncate', __WEB__ && '!text-[12.5px] !font-bold')} title={row.supplier_name ?? ''}>{row.supplier_name ?? '—'}</TableCell>
+                          <TableCell className={cn('max-w-[160px] truncate', __WEB__ && '!max-w-none !overflow-visible !text-[12.5px] !font-bold')} title={row.supplier_name ?? ''}>{row.supplier_name ?? '—'}</TableCell>
                           <TableCell className={cn('text-muted-foreground', __WEB__ && '!text-[11.5px] !font-bold !text-[#5A6B62]')}>{row.oil_code}</TableCell>
                           <TableCell>
                             <Badge

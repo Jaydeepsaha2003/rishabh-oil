@@ -5206,7 +5206,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
               at a time — so a colgroup is the only place they can live. They
               add to 1074, the table's floor, so a 13" screen fits without
               zooming out and anything narrower slides. */}
-          {__WEB__ && (
+          {__WEB__ && !q && openGroups.size === 0 && (
             <colgroup>
               {[110, 80, 96, 116, 78, 80, 80, 104, 84, 76, 96, 74].map((w, i) => (
                 <col key={i} style={{ width: `${w}px` }} />
@@ -5336,7 +5336,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
                           )}
                           onClick={() => toggleBg(Number(row.id))}
                         >
-                          <TableCell className={cn('font-medium', __WEB__ && '!text-[13.5px] !font-bold')}>
+                          <TableCell className={cn('font-medium', __WEB__ && '!min-w-[300px] !text-[13.5px] !font-bold')}>
                             <span className="inline-flex items-center gap-1.5">
                               {bgOpen ? <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground', __WEB__ && '!h-4 !w-4 !text-[#A8B8AE]')} /> : <ChevronRight className={cn('h-3.5 w-3.5 text-muted-foreground', __WEB__ && '!h-4 !w-4 !text-[#A8B8AE]')} />}
                               <span className={cn('tabular-nums text-muted-foreground', __WEB__ && '!text-[11.5px] !font-bold !text-[#A8B8AE]')}>{seq}.</span>
