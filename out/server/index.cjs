@@ -11225,8 +11225,13 @@ async function listStockOpenings(companyId) {
     (t, r) => t + (n12(r.qty) + n12(r.pp_qty) + n12(r.adj_qty)) * n12(r.rate),
     0
   );
+  const facName = fid ? String(
+    (await c.execute({ sql: "SELECT name FROM factories WHERE id = ?", args: [fid] }).catch(() => null))?.rows?.[0]?.name || ""
+  ) : "";
   return {
     company_id: cid,
+    factory_id: fid || null,
+    factory_name: facName || null,
     as_of: asOf,
     books_from: await getBooksFrom(cid) || null,
     rows,
@@ -11759,22 +11764,27 @@ async function listSkuOpenings(companyId, asOfIn) {
   const c = getClient();
   const asOf = String(asOfIn || "").slice(0, 10) || await skuOpeningDate(cid);
   const saved = await skuOpeningMap(cid);
+  const fidL = await factoryOfCompanies([cid]);
+  const cidsL = fidL ? await companiesOfFactory(fidL) : [cid];
+  const cphL = cidsL.map(() => "?").join(", ");
   const notes = /* @__PURE__ */ new Map();
-  const savedRows = await c.execute({ sql: "SELECT packaging_id, note FROM sku_openings WHERE company_id = ?", args: [cid] }).catch(() => null);
+  const savedRows = await c.execute(
+    fidL ? { sql: "SELECT packaging_id, note FROM sku_openings WHERE factory_id = ?", args: [fidL] } : { sql: "SELECT packaging_id, note FROM sku_openings WHERE company_id = ?", args: [cid] }
+  ).catch(() => null);
   for (const r of savedRows ? toPlain17(savedRows) : []) {
     if (r.note) notes.set(n14(r.packaging_id), String(r.note));
   }
   const moved = await c.execute({
     sql: `SELECT pk.id,
                  COALESCE((SELECT SUM(a.delta) FROM sku_adjustments a
-                           WHERE a.packaging_id = pk.id AND a.company_id = ?
+                           WHERE a.packaging_id = pk.id AND a.company_id IN (${cphL})
                              AND (? = '' OR substr(a.adj_date, 1, 10) >= ?)), 0) AS packed_in,
                  COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
                            WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
-                             AND s.status = 'done' AND s.company_id = ?
+                             AND s.status = 'done' AND s.company_id IN (${cphL})
                              AND (? = '' OR substr(s.sale_date, 1, 10) >= ?)), 0) AS dispatched
           FROM packagings pk WHERE pk.active = 1`,
-    args: [cid, asOf, asOf, cid, asOf, asOf]
+    args: [...cidsL, asOf, asOf, ...cidsL, asOf, asOf]
   });
   const movedBy = /* @__PURE__ */ new Map();
   for (const r of toPlain17(moved)) movedBy.set(n14(r.id), r);
@@ -11818,6 +11828,8 @@ async function saveSkuOpenings(rows, asOf, companyId) {
   const date = String(asOf || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the date this opening is counted on");
   const c = getClient();
+  const fidS = await factoryOfCompanies([cid]);
+  const keyedS = (extra) => fidS ? { sql: `factory_id = ?${extra}`, args: [fidS] } : { sql: `company_id = ?${extra}`, args: [cid] };
   let saved = 0;
   let cleared = 0;
   for (const raw of Array.isArray(rows) ? rows : []) {
@@ -11825,9 +11837,10 @@ async function saveSkuOpenings(rows, asOf, companyId) {
     if (!pid) continue;
     const blank = raw?.qty === "" || raw?.qty == null;
     if (blank) {
+      const k = keyedS(" AND packaging_id = ?");
       const res = await c.execute({
-        sql: "DELETE FROM sku_openings WHERE company_id = ? AND packaging_id = ?",
-        args: [cid, pid]
+        sql: `DELETE FROM sku_openings WHERE ${k.sql}`,
+        args: [...k.args, pid]
       });
       if (Number(res.rowsAffected) > 0) cleared++;
       continue;
