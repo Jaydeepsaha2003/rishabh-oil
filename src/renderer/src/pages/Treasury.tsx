@@ -371,6 +371,19 @@ function PayableBreakdown({ l, children }: { l: Row; children: React.ReactNode }
   const expected = n(l.paid_expected)
   const net = paid ?? expected
   const drift = paid == null ? 0 : Math.round((paid - expected) * 100) / 100
+  // Not every difference is a fault, and the card used to shout at all of them
+  // equally — the same amber box at ₹678 as at ₹1,74,474.58.
+  //
+  // Two of them ARE faults and look alike: the drift is the whole fee, meaning
+  // the bill was raised gross when the bank had kept its interest and
+  // commission out of the credit (LC-9), or the bank released materially less
+  // of the credit than expected. Everything else is the bank's own arithmetic
+  // landing a few hundred rupees off ours — a rate struck over different days,
+  // a commission waived — which is normal and which the register should note
+  // without alarming anyone.
+  const feeTotal = Math.round((lcInterestOf(l) + n(l.charges)) * 100) / 100
+  const isWholeFee = feeTotal > 0.005 && Math.abs(Math.abs(drift) - feeTotal) < 1
+  const material = isWholeFee || Math.abs(drift) > 0.005 * amount
   const party = String(l.supplier_name || 'the beneficiary')
 
   return (
@@ -451,12 +464,22 @@ function PayableBreakdown({ l, children }: { l: Row; children: React.ReactNode }
               a rate struck over different days, a commission waived. When it
               does not, say so and name the gap rather than quietly showing one
               figure in the register and the other in the ledger. */}
-          {Math.abs(drift) > 0.005 && (
-            <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10.5px] leading-snug text-amber-900">
-              The bill the bank raised is <b>{formatINR(Math.abs(drift))}</b> {drift > 0 ? 'more' : 'less'} than the
-              sum above ({formatINR(expected)}). The bill is what {party} was paid, and it is what the ledger carries.
-            </div>
-          )}
+          {Math.abs(drift) > 0.005 &&
+            (material ? (
+              <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10.5px] leading-snug text-amber-900">
+                The bill the bank raised is <b>{formatINR(Math.abs(drift))}</b> {drift > 0 ? 'more' : 'less'} than the
+                sum above ({formatINR(expected)}).
+                {isWholeFee
+                  ? ' That is the whole of the interest and commission — so either the bill was raised for the gross credit, or the bank settled its fees separately and this LC is not marked as such. Worth checking against the advice.'
+                  : ' The bill is what ' + party + ' was paid, and it is what the ledger carries.'}
+              </div>
+            ) : (
+              <div className="rounded border border-[#E4ECE3] bg-[#F7FAF6] px-2 py-1.5 text-[10.5px] leading-snug text-[#5A6B62]">
+                The bank&apos;s bill is {formatINR(Math.abs(drift))} {drift > 0 ? 'above' : 'below'} the sum above —
+                its own rounding of the rate and the days. The bill is what {party} was paid, and it is what the
+                ledger carries.
+              </div>
+            ))}
           {paid == null && (
             <div className="rounded border border-sky-200 bg-sky-50 px-2 py-1.5 text-[10.5px] leading-snug text-sky-900">
               No bill has been raised yet, so nothing has reached {party}. This is what the LC would release.

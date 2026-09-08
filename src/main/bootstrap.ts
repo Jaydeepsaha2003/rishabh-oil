@@ -965,5 +965,53 @@ export async function runStartupTasks(): Promise<void> {
     console.log(`[lc9] bill ${num(bill.amount)} -> ${correct}, settlement voucher re-posted`)
   }).catch((e) => console.error('[lc9] gross bill fix failed:', e))
 
+  // LC-5's "interest settled upfront" flag contradicts its own bill.
+  //
+  // Upfront means the bank collects its interest and commission separately, so
+  // the beneficiary receives the WHOLE open amount — which is how LC-26 and
+  // LC-11 are billed, correctly. LC-5 carries the same flag but its bill is
+  // ₹1,18,12,440.88 against an open amount of ₹1,20,00,000: BUNGE was paid
+  // less than the credit, which by definition means the fees came out of it.
+  // The bill is a recorded bank figure; the flag is a tick box. The tick box
+  // is the thing that is wrong.
+  //
+  // This moves no money. None of the upfront LCs carries a separate interest
+  // voucher (interest_journal_entry_id is null on all three), so the flag only
+  // changes what the app EXPECTS, not what it has posted. Clearing it stops
+  // the register expecting a gross bill it was never going to see, which is
+  // what made LC-5 read as ₹1,87,559.12 adrift instead of ₹4,241.10.
+  await runOnce('lc5_upfront_flag_v1', async () => {
+    const c = getClient()
+    const res = await c.execute({
+      sql: `SELECT id, lc_no, amount, interest_upfront, interest_journal_entry_id,
+                   (SELECT COALESCE(SUM(i.amount), 0) FROM lc_issuances i WHERE i.lc_id = l.id) billed
+              FROM letters_of_credit l
+             WHERE lc_no = 'LC-5' AND ABS(amount - 12000000) < 1 AND interest_upfront = 1`,
+      args: []
+    })
+    if (res.rows.length !== 1) {
+      console.log('[lc5] skipped — expected one upfront LC-5 at 1,20,00,000, found', res.rows.length)
+      return
+    }
+    const r = res.rows[0] as unknown as Record<string, unknown>
+    const num = (v: unknown): number => Number(v || 0)
+    // Only if the bill really is BELOW the open amount. If someone has since
+    // re-billed it gross, the flag is right and this must not touch it.
+    if (num(r.billed) >= num(r.amount) - 0.005) {
+      console.log('[lc5] skipped — billed at or above the open amount, the flag is correct')
+      return
+    }
+    if (r.interest_journal_entry_id != null) {
+      console.log('[lc5] skipped — it now carries an upfront interest voucher; clearing the flag would strand it')
+      return
+    }
+    console.log('[lc5] BEFORE', JSON.stringify(r))
+    await c.execute({
+      sql: 'UPDATE letters_of_credit SET interest_upfront = 0 WHERE id = ?',
+      args: [num(r.id)]
+    })
+    console.log('[lc5] interest_upfront cleared — expectation now matches the recorded bill')
+  }).catch((e) => console.error('[lc5] upfront flag fix failed:', e))
+
   startRevisionWatcher()
 }
