@@ -60,7 +60,15 @@ export function Production(): React.JSX.Element {
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('production')
   const [rows, setRows] = useState<Row[]>([])
-  const paged = usePaged(rows)
+  // Production is the FACTORY's: a batch is run on the plant floor, and which
+  // company's books it was booked under does not change that it happened or
+  // that its output landed in the same tank. The company filter is a
+  // breakdown of the site, not a different register.
+  const [factoryName, setFactoryName] = useState('')
+  const [companies, setCompanies] = useState<Row[]>([])
+  const [coFilter, setCoFilter] = useState(0)
+  const visible = coFilter ? rows.filter((r) => Number(r.company_id) === coFilter) : rows
+  const paged = usePaged(visible)
   // Days the reader has OPENED, by their own date — every day starts folded.
   //
   // A period of production is a list of days, and the question asked of this
@@ -105,12 +113,16 @@ export function Production(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [p, pr, f, s] = await Promise.all([
+    const [p, pr, f, s, fac, cos] = await Promise.all([
       window.api.production.list(),
       window.api.data.list('products'),
       window.api.formulations.list(),
-      window.api.stock.list()
+      window.api.stock.list(),
+      window.api.factory.active().catch(() => null),
+      window.api.company.list().catch(() => [] as Row[])
     ])
+    setFactoryName(String(fac?.name || ''))
+    setCompanies(cos)
     setRows(p)
     setProducts(pr.filter((x) => x.active))
     setFormulations(f)
@@ -1121,22 +1133,41 @@ export function Production(): React.JSX.Element {
     <>
       <PageHeader
         title="Production"
-        subtitle="Daily production runs"
-        hint="Recording a run consumes the formula's input products from stock and adds the produced output. The formula must total 100%."
+        subtitle={factoryName ? `Daily production runs — ${factoryName}` : 'Daily production runs'}
+        hint="Every batch run at this factory, whichever company booked it — production is work on the plant floor, and its output lands in one set of tanks. Recording a run consumes the formula's input products from stock and adds the produced output. The formula must total 100%."
         actions={
           <div className="flex items-center gap-2">
+            {__WEB__ && companies.length > 1 && (
+              <Select value={coFilter ? String(coFilter) : 'all'} onValueChange={(v) => setCoFilter(v === 'all' ? 0 : Number(v))}>
+                <SelectTrigger className="h-9 w-[14rem] text-xs">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <Factory className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <SelectValue />
+                  </span>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{factoryName || 'Factory'} — whole site</SelectItem>
+                  {companies.map((c) => (
+                    <SelectItem key={String(c.id)} value={String(c.id)}>
+                      Booked by {String(c.name)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
             <ExcelButton
               filename={`production-${todayISO()}`}
               sheetName="Production"
               title="Production runs"
               columns={[
                 { header: 'Date', key: 'prod_date', value: (r) => formatDate(r.prod_date) },
+                { header: 'Booked by', key: 'company_name', value: (r) => r.company_name || '' },
                 { header: 'Product', key: 'product_name', value: (r) => r.product_name || '' },
                 { header: 'Category', key: 'product_category', value: (r) => CAT_LABEL[r.product_category] ?? r.product_category ?? '' },
                 { header: 'Qty', key: 'qty', align: 'right', numFmt: '#,##0.000', value: (r) => Number(r.qty) || 0 },
                 { header: 'UOM', key: 'uom', value: (r) => r.uom || '' }
               ]}
-              rows={rows}
+              rows={visible}
             />
             <Button
               size="sm"
@@ -1279,6 +1310,15 @@ export function Production(): React.JSX.Element {
                       {row.formulation_name && (
                         <div className={cn('text-xs font-normal text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12px] !font-bold !text-[#33473E]')}>
                           {row.formulation_name}
+                        </div>
+                      )}
+                      {/* Whose books the batch was booked under. The register
+                          is the whole site's now, so with two companies at one
+                          plant the row has to say which one — and with only
+                          one it would say nothing worth the line. */}
+                      {__WEB__ && companies.length > 1 && row.company_name && (
+                        <div className="mt-0.5 text-[11.5px] font-semibold text-[#5A6B62]">
+                          Booked by {String(row.company_name)}
                         </div>
                       )}
                     </TableCell>
