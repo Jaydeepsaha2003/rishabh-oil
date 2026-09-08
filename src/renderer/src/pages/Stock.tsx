@@ -783,20 +783,48 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
           const gStock = gSum('stock')
           return (
             <div key={grp.label} className="overflow-hidden rounded-xl border bg-card shadow-sm">
-              <div className="flex items-center justify-between bg-[#1a2c56] px-3.5 py-2">
+              <div
+                className={cn(
+                  'flex items-center justify-between bg-[#1a2c56] px-3.5 py-2',
+                  __WEB__ && '!bg-[#0B3D2E]'
+                )}
+              >
                 <span className="text-[12px] font-bold uppercase tracking-wide text-white">{titleCase(grp.label)}</span>
                 <span className="text-[11px] font-medium text-white/70">{grp.rows.length} product{grp.rows.length === 1 ? '' : 's'}</span>
               </div>
-              <Table className="ruled-slate min-w-[820px] text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3">
+              <Table
+                className={cn(
+                  'ruled-slate min-w-[820px] text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3',
+                  __WEB__ && 'doc-ref'
+                )}
+              >
                 <TableHeader>
-                  <TableRow>
+                  {/* A band naming what the column sets below mean, so Receipt
+                      and Produced read as one idea and Consumed / Packed /
+                      Dispatch as another — without renaming or merging any
+                      column. */}
+                  {__WEB__ && (
+                    <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[26px] [&>th]:!p-0 [&>th]:!text-[9px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.16em] [&>th]:!text-[#8FBFA8]">
+                      <TableHead />
+                      {ranged && <TableHead className={cn('!text-center', SK_RULE, SK_OPEN)}>Open</TableHead>}
+                      <TableHead colSpan={2} className={cn('!text-center !text-[#9FE3BF]', SK_RULE, SK_IN)}>In</TableHead>
+                      <TableHead colSpan={3} className={cn('!text-center !text-[#F0AFAA]', SK_RULE, SK_OUT)}>Out</TableHead>
+                      <TableHead className={cn('!text-center !text-[#C7F03F]', SK_RULE, SK_CLOSE)}>Close</TableHead>
+                    </TableRow>
+                  )}
+                  <TableRow className={cn(__WEB__ && '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E]')}>
                     {STOCK_TABLE_COLS(ranged).map((h) => (
                       <TableHead
                         key={h.l}
                         className={cn(
                           'bg-slate-100 text-[10px] font-semibold uppercase tracking-wide',
                           h.tone || 'text-slate-700',
-                          h.r && 'text-right'
+                          h.r && 'text-right',
+                          __WEB__ &&
+                            '!bg-transparent !text-[9.5px] !font-extrabold !tracking-[.11em] !text-[#8FBFA8]',
+                          __WEB__ && h.wash,
+                          __WEB__ && h.fg,
+                          __WEB__ && !h.r && '!text-white'
                         )}
                       >
                         {h.l}
@@ -880,17 +908,43 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
   )
 }
 
+// Column banding for the register, from the handoff. Eight columns of figures
+// give the eye nothing to hold on to, so they are grouped into the four
+// readings the row actually contains — what it opened at, what came in, what
+// went out, what it closed at — with a lime hairline opening each group and a
+// wash behind it. The closing pair takes the lime, because it is the answer
+// the row exists to give.
+// The register head, shared by every table on the page. Forest with a lime
+// hairline between column groups; the two opening sheets take the violet
+// instead, because they are the one surface that is not a register.
+const SK_HEAD =
+  '!bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&_th]:!h-9 [&_th]:!text-[9.5px] [&_th]:!font-extrabold [&_th]:!uppercase [&_th]:!tracking-[.11em] [&_th]:!text-[#8FBFA8]'
+
+const SK_RULE = '!border-l !border-l-[#C7F03F]/[.18]'
+const SK_OPEN = '!bg-white/[0.03]'
+const SK_IN = '!bg-[#12855A]/[.16]'
+const SK_OUT = '!bg-[#B3261E]/[.14]'
+const SK_CLOSE = '!bg-[#C7F03F]/[.1]'
+
 // Shared column header set for every per-category stock table.
-function STOCK_TABLE_COLS(ranged: boolean): { l: string; r?: boolean; tone?: string }[] {
+function STOCK_TABLE_COLS(
+  ranged: boolean
+): { l: string; r?: boolean; tone?: string; wash?: string; fg?: string }[] {
   return [
     { l: 'Product' },
-    ...(ranged ? [{ l: 'Opening', r: true, tone: 'text-slate-700' }] : []),
-    { l: 'Receipt', r: true, tone: 'text-emerald-700' },
-    { l: 'Produced', r: true, tone: 'text-emerald-700' },
-    { l: 'Consumed', r: true, tone: 'text-rose-700' },
-    { l: 'Packed', r: true, tone: 'text-rose-700' },
-    { l: 'Dispatch', r: true, tone: 'text-rose-700' },
-    { l: ranged ? 'Closing' : 'In stock', r: true, tone: 'text-sky-800' }
+    ...(ranged ? [{ l: 'Opening', r: true, tone: 'text-slate-700', wash: cn(SK_RULE, SK_OPEN) }] : []),
+    { l: 'Receipt', r: true, tone: 'text-emerald-700', wash: cn(SK_RULE, SK_IN) },
+    { l: 'Produced', r: true, tone: 'text-emerald-700', wash: SK_IN },
+    { l: 'Consumed', r: true, tone: 'text-rose-700', wash: cn(SK_RULE, SK_OUT) },
+    { l: 'Packed', r: true, tone: 'text-rose-700', wash: SK_OUT },
+    { l: 'Dispatch', r: true, tone: 'text-rose-700', wash: SK_OUT },
+    {
+      l: ranged ? 'Closing' : 'In stock',
+      r: true,
+      tone: 'text-sky-800',
+      wash: cn(SK_RULE, SK_CLOSE),
+      fg: '!text-[#C7F03F]'
+    }
   ]
 }
 
@@ -1471,7 +1525,7 @@ function OpeningStock({
             <div className="overflow-x-auto">
               <table className="ruled-cols w-full min-w-[1200px] bg-[#fffdf4] text-[13px]">
                 <thead>
-                  <tr className="border-b border-[#e0d8bd] bg-[#faf6e8] text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                  <tr className={cn('border-b border-[#e0d8bd] bg-[#faf6e8] text-left text-[10px] uppercase tracking-widest text-muted-foreground', __WEB__ && '!border-b-0 !bg-[#5B4BA8] !text-[9.5px] !font-extrabold !tracking-[.11em] !text-[#DAD2F5]')}>
                     <th className="pin-col min-w-[190px] px-3 py-2">Product</th>
                     <th className="w-[110px] px-3 py-2 text-right">
                       <span className="inline-flex items-center gap-1">
@@ -2223,17 +2277,30 @@ function DayCloseSection({
       <div className="overflow-hidden rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
         <Table className="[&_td]:border-r [&_td]:border-[#e8e2cc] [&_td:last-child]:border-r-0 [&_th]:border-r [&_th]:border-[#b9c9e4] [&_th:last-child]:border-r-0">
           <TableHeader>
-            <TableRow className="bg-[#dce6f5] hover:bg-[#dce6f5] [&_th]:h-9 [&_th]:py-0 [&_th]:text-[10px] [&_th]:font-bold [&_th]:uppercase [&_th]:tracking-widest [&_th]:text-[#1a2c56]">
-              <TableHead>Product</TableHead>
+            {/* Books against Counted, the gap between them, then the money that
+                follows from it — the four readings this sheet exists to
+                compare, named so the eye can find them. */}
+            {__WEB__ && (
+              <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[26px] [&>th]:!p-0 [&>th]:!text-[9px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.16em] [&>th]:!text-[#8FBFA8]">
+                <TableHead colSpan={2} />
+                <TableHead className={cn('!text-center', SK_RULE, SK_OPEN)}>Books</TableHead>
+                <TableHead colSpan={3} className={cn('!text-center !text-[#C7F03F]', SK_RULE, SK_CLOSE)}>Counted</TableHead>
+                <TableHead className={cn('!text-center !text-[#F0C98A]', SK_RULE, '!bg-[#C2700A]/[.18]')}>Gap</TableHead>
+                <TableHead colSpan={2} className={cn('!text-center', SK_RULE, SK_OPEN)}>Valuation</TableHead>
+                <TableHead />
+              </TableRow>
+            )}
+            <TableRow className={cn('bg-[#dce6f5] hover:bg-[#dce6f5] [&_th]:h-9 [&_th]:py-0 [&_th]:text-[10px] [&_th]:font-bold [&_th]:uppercase [&_th]:tracking-widest [&_th]:text-[#1a2c56]', __WEB__ && SK_HEAD)}>
+              <TableHead className={cn(__WEB__ && '!text-white')}>Product</TableHead>
               <TableHead>Category</TableHead>
-              <TableHead className="text-right">Book qty</TableHead>
-              <TableHead className="w-[130px] bg-[#cfe0f7] text-right">Raw qty</TableHead>
-              <TableHead className="w-[120px] bg-[#cfe0f7] text-right">PP</TableHead>
-              <TableHead className="text-right">Total</TableHead>
-              <TableHead className="text-right">Difference</TableHead>
-              <TableHead className="text-right">Rate (₹)</TableHead>
-              <TableHead className="text-right">Actual value (₹)</TableHead>
-              <TableHead className="w-[180px]">Note</TableHead>
+              <TableHead className={cn('text-right', __WEB__ && cn(SK_RULE, SK_OPEN))}>Book qty</TableHead>
+              <TableHead className={cn('w-[130px] bg-[#cfe0f7] text-right', __WEB__ && cn('!bg-[#C7F03F]/[.1]', SK_RULE))}>Raw qty</TableHead>
+              <TableHead className={cn('w-[120px] bg-[#cfe0f7] text-right', __WEB__ && '!bg-[#C7F03F]/[.1]')}>PP</TableHead>
+              <TableHead className={cn('text-right', __WEB__ && SK_CLOSE)}>Total</TableHead>
+              <TableHead className={cn('text-right', __WEB__ && cn(SK_RULE, '!bg-[#C2700A]/[.18]'))}>Difference</TableHead>
+              <TableHead className={cn('text-right', __WEB__ && cn(SK_RULE, SK_OPEN))}>Rate (₹)</TableHead>
+              <TableHead className={cn('text-right', __WEB__ && SK_OPEN)}>Actual value (₹)</TableHead>
+              <TableHead className={cn('w-[180px]', __WEB__ && SK_RULE)}>Note</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -2739,7 +2806,7 @@ function SkuOpeningStock({ onSaved }: { onSaved: () => void }): React.JSX.Elemen
         <div className="overflow-x-auto">
           <table className="ruled-cols w-full min-w-[900px] bg-[#fffdf4] text-[13px]">
             <thead>
-              <tr className="border-b border-[#e0d8bd] bg-[#faf6e8] text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+              <tr className={cn('border-b border-[#e0d8bd] bg-[#faf6e8] text-left text-[10px] uppercase tracking-widest text-muted-foreground', __WEB__ && '!border-b-0 !bg-[#5B4BA8] !text-[9.5px] !font-extrabold !tracking-[.11em] !text-[#DAD2F5]')}>
                 <th className="pin-col min-w-[220px] px-3 py-2">SKU</th>
                 <th className="w-[110px] px-3 py-2 text-right">Pack</th>
                 <th className="w-[130px] px-3 py-2 text-right">
@@ -3531,7 +3598,7 @@ function SkuStock(): React.JSX.Element {
           className="text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3"
         >
           <TableHeader className="sticky top-0 z-10">
-            <TableRow className="bg-slate-200 hover:bg-slate-200">
+            <TableRow className={cn('bg-slate-200 hover:bg-slate-200', __WEB__ && SK_HEAD)}>
               <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-slate-700">SKU</TableHead>
               <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-slate-700">Pack</TableHead>
               {/* The unit every figure on the row is counted in — the SKU's own
@@ -4335,12 +4402,12 @@ function MncStock(): React.JSX.Element {
         >
           <TableHeader>
             <TableRow>
-              <TableHead className="sticky top-0 z-20 bg-violet-100 text-[10px] font-semibold uppercase tracking-wide text-violet-900">Party / product</TableHead>
-              <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">Opening</TableHead>
-              <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-emerald-700">Deposited</TableHead>
-              <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-rose-700">Invoiced</TableHead>
-              <TableHead className="sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-violet-900">{mncRanged ? 'Closing' : 'Balance'}</TableHead>
-              <TableHead className="sticky top-0 z-20 bg-violet-100 text-[10px] font-semibold uppercase tracking-wide text-violet-900">UOM</TableHead>
+              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-[10px] font-semibold uppercase tracking-wide text-violet-900', __WEB__ && '!bg-[#3D3179] !text-[9.5px] !font-extrabold !tracking-[.11em] !text-white')}>Party / product</TableHead>
+              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && '!bg-[#3D3179] !text-[9.5px] !font-extrabold !tracking-[.11em] !text-[#C7BCF0]')}>Opening</TableHead>
+              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-emerald-700', __WEB__ && '!bg-[#3D3179] !text-[9.5px] !font-extrabold !tracking-[.11em] !text-[#9FE3BF]')}>Deposited</TableHead>
+              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-rose-700', __WEB__ && '!bg-[#3D3179] !text-[9.5px] !font-extrabold !tracking-[.11em] !text-[#F0AFAA]')}>Invoiced</TableHead>
+              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-violet-900', __WEB__ && '!bg-[#3D3179] !text-[9.5px] !font-extrabold !tracking-[.11em] !text-white')}>{mncRanged ? 'Closing' : 'Balance'}</TableHead>
+              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-[10px] font-semibold uppercase tracking-wide text-violet-900', __WEB__ && '!bg-[#3D3179] !text-[9.5px] !font-extrabold !tracking-[.11em] !text-white')}>UOM</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -4887,8 +4954,8 @@ function Transfers(): React.JSX.Element {
       <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
         <Table>
           <TableHeader>
-            <TableRow>
-              <TableHead>Date</TableHead>
+            <TableRow className={cn(__WEB__ && SK_HEAD)}>
+              <TableHead className={cn(__WEB__ && '!text-white')}>Date</TableHead>
               <TableHead>Direction</TableHead>
               <TableHead>Product</TableHead>
               <TableHead>From → To</TableHead>
