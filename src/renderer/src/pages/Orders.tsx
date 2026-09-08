@@ -4079,7 +4079,17 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                         // point of the column.
                                         __WEB__ && '!rounded-[2px] !px-2 !py-1 !text-[11px] !font-extrabold !tracking-[.06em]',
                                         __WEB__ && !due && !label.startsWith('EX') && '!bg-[#EAF0E9] !text-[#33473E] hover:!bg-[#DFE9DE]',
-                                        __WEB__ && !due && label.startsWith('EX') && '!bg-[#FFEDD0] !text-[#8A5300] hover:!bg-[#FBE2B8]'
+                                        // Blue, not amber. Amber is this page's
+                                        // "needs attention" colour and the Status
+                                        // chip in the very next column uses it for
+                                        // In process — two amber chips side by side
+                                        // read as one thought. EX is a freight TERM,
+                                        // a neutral fact about the contract, so it
+                                        // gets a colour that claims nothing. Red
+                                        // stays reserved for a debit note due, which
+                                        // is the one thing in this column that does
+                                        // need attention.
+                                        __WEB__ && !due && label.startsWith('EX') && '!bg-[#E7F0FA] !text-[#1B4E82] hover:!bg-[#D8E7F6]'
                                       )}
                                     >
                                       {label}

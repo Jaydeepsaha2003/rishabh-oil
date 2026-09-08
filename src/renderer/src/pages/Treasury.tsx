@@ -509,7 +509,12 @@ function ChipCount({ n: count, on }: { n: number; on: boolean }): React.JSX.Elem
 // down, and a second typeface for four dates is a change of voice for nothing.
 function ValidityInline({ l }: { l: Row }): React.JSX.Element {
   const opened = !!l.opened_date
-  const early = closureKind(l) === 'early'
+  const kind = closureKind(l)
+  const early = kind === 'early'
+  // Closed after maturity. The chip in the first column says so too — this is
+  // the same fact where the two dates actually sit, so the reader can see WHY
+  // without carrying one column's date across to another's.
+  const late = kind === 'late'
   const Line = ({
     tag,
     tagClass,
@@ -554,10 +559,14 @@ function ValidityInline({ l }: { l: Row }): React.JSX.Element {
       {!!l.preclosed_date && (
         <Line
           tag="Cls"
-          tagClass="text-[#0B6B45]"
+          tagClass={late ? 'text-[#B3261E]' : 'text-[#0B6B45]'}
           date={l.preclosed_date}
-          valueClass="font-semibold text-[#0B6B45]"
-          title={`Closed ${formatDate(l.preclosed_date)}`}
+          valueClass={cn('font-semibold', late ? 'text-[#B3261E]' : 'text-[#0B6B45]')}
+          title={
+            late
+              ? `Closed ${formatDate(l.preclosed_date)} — after its ${formatDate(l.expiry_date)} maturity`
+              : `Closed ${formatDate(l.preclosed_date)}`
+          }
         />
       )}
     </div>
@@ -856,7 +865,14 @@ function ClosureBadge({ l, withDate }: { l: Row; withDate?: boolean }): React.JS
   }
   if (kind === 'late') {
     return (
-      <Badge variant="warning" title={`Closed on ${formatDate(l.preclosed_date)}, after its ${formatDate(l.expiry_date)} maturity`}>
+      <Badge
+        variant="warning"
+        className={cn(
+          __WEB__ &&
+            '!rounded-[2px] !border !border-[#F0D6D4] !bg-[#FDF3F2] !px-2 !py-[3px] !text-[10.5px] !font-extrabold !tracking-[.03em] !text-[#B3261E]'
+        )}
+        title={`Closed on ${formatDate(l.preclosed_date)}, after its ${formatDate(l.expiry_date)} maturity`}
+      >
         Closed late{on}
       </Badge>
     )
