@@ -7579,7 +7579,23 @@ function resolveStageDates(stage, src, today) {
   if (t >= 1 && !loaded) loaded = today;
   if (t >= 2 && !transit) transit = today;
   if (t >= 3 && !unloaded) unloaded = today;
+  assertStageDateOrder2(loaded, transit, unloaded);
   return { loaded_date: loaded, transit_date: transit, unloaded_date: unloaded };
+}
+function assertStageDateOrder2(loaded, transit, unloaded) {
+  const pairs = [
+    ["Loaded", loaded, "In transit", transit],
+    ["In transit", transit, "Unloaded", unloaded],
+    ["Loaded", loaded, "Unloaded", unloaded]
+  ];
+  for (const [aName, a, bName, b] of pairs) {
+    if (!a || !b) continue;
+    if (a.slice(0, 10) > b.slice(0, 10)) {
+      throw new Error(
+        `${bName} date (${b.slice(0, 10)}) cannot be before the ${aName.toLowerCase()} date (${a.slice(0, 10)}) \u2014 a sale is loaded, then in transit, then unloaded.`
+      );
+    }
+  }
 }
 function todayLocal() {
   const d = /* @__PURE__ */ new Date();
@@ -13898,7 +13914,7 @@ async function listFacilities() {
             -- Blocked, not opened: a sanctioned facility carries whatever the
             -- bank has blocked against it, which is the figure it holds even
             -- when the bill came in for less. Same rule as getLcLimit in lc.ts.
-            COALESCE((SELECT SUM(COALESCE(l.blocked_amount, l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
+            COALESCE((SELECT SUM(COALESCE(NULLIF(l.blocked_amount, 0), l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
                        WHERE r.lc_id = l.id AND r.posted = 1), 0)) FROM letters_of_credit l
                        WHERE l.facility_id = f.id AND l.status != 'closed'), 0) AS lc_committed,
             COALESCE((SELECT SUM(i.amount) FROM lc_issuances i
@@ -14010,7 +14026,7 @@ async function facilityHeadroom(facilityId, excludeLcId = 0) {
   const f = await c.execute({ sql: "SELECT * FROM bank_facilities WHERE id = ?", args: [facilityId] });
   if (!f.rows.length) throw new Error("That facility no longer exists");
   const lc = await c.execute({
-    sql: `SELECT COALESCE(SUM(COALESCE(l.blocked_amount, l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
+    sql: `SELECT COALESCE(SUM(COALESCE(NULLIF(l.blocked_amount, 0), l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
                  WHERE r.lc_id = l.id AND r.posted = 1), 0)), 0) AS a
           FROM letters_of_credit l WHERE l.facility_id = ? AND l.status != 'closed' AND l.id != ?`,
     args: [facilityId, excludeLcId]
@@ -14169,7 +14185,7 @@ async function getLcLimit(bankId, from, to) {
     // opened: the bank is holding the figure it blocked whether or not the bill
     // came in for that much. Interest and margin still work off the open
     // amount, which is why only the limit sums coalesce this way.
-    sql: `SELECT stage, COALESCE(SUM(COALESCE(blocked_amount, amount)), 0) AS total, COUNT(*) AS cnt FROM letters_of_credit
+    sql: `SELECT stage, COALESCE(SUM(COALESCE(NULLIF(blocked_amount, 0), amount)), 0) AS total, COUNT(*) AS cnt FROM letters_of_credit
           WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
             ${bank ? "AND our_bank_id = ?" : ""}
             ${f ? "AND open_date >= ?" : ""}
@@ -14218,7 +14234,7 @@ async function listBankLcLimits() {
                  COALESCE(l.convertible_limit, 0) AS convertible_limit,
                  COALESCE(l.convertible_enabled, 0) AS convertible_enabled,
                  (SELECT COUNT(*) FROM letters_of_credit x WHERE x.company_id = ? AND x.our_bank_id = b.id) AS lc_count,
-                 COALESCE((SELECT SUM(COALESCE(x.blocked_amount, x.amount)) FROM letters_of_credit x
+                 COALESCE((SELECT SUM(COALESCE(NULLIF(x.blocked_amount, 0), x.amount)) FROM letters_of_credit x
                            WHERE x.company_id = ? AND x.our_bank_id = b.id
                              AND COALESCE(x.facility_type, 'lc') = 'lc' AND x.preclosed_date IS NULL), 0) AS utilized
           FROM banks b
