@@ -168,7 +168,7 @@ export interface Api {
   stock: {
     list: (range?: { from?: string; to?: string }, companyIds?: number[]) => Promise<Row[]>
     needs: () => Promise<Row[]>
-    breakdown: (companyIds?: number[], range?: { from?: string; to?: string }) => Promise<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[] }>>
+    breakdown: (companyIds?: number[], range?: { from?: string; to?: string }) => Promise<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[] }>>
     registers: (companyIds?: number[], range?: { from?: string; to?: string }) => Promise<{ receipts: Row[]; dispatches: Row[] }>
     daybook: (from: string, to: string) => Promise<{ vouchers: Row[]; material: Row[] }>
     transfers: () => Promise<Row[]>
@@ -186,6 +186,11 @@ export interface Api {
     list: () => Promise<Row[]>
     save: (values: Row) => Promise<{ id: number }>
     delete: (id: number) => Promise<{ id: number }>
+  }
+  outsideTanker: {
+    list: (date?: string) => Promise<Row[]>
+    save: (v: Row) => Promise<{ id: number }>
+    remove: (id: number) => Promise<{ ok: true }>
   }
   stockOpening: {
     list: (companyId?: number) => Promise<Row>

@@ -15,6 +15,7 @@ import { ColumnFilter } from '@/components/ui/column-filter'
 import { Switch } from '@/components/ui/switch'
 import { InfoTip } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import { OutsideTankerLog } from '@/components/OutsideTankerLog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { errText, formatDate, formatNum, todayISO } from '@/lib/format'
 import { ExcelButton } from '@/components/ExcelButton'
@@ -1919,6 +1920,10 @@ export function GateEntry(): React.JSX.Element {
                     <span className="text-[11.5px] font-bold text-[#5A6B62]">{st.k}</span>
                   </div>
                 ))}
+                {/* The gate's other half: what has NOT come in. Beside the
+                    pipeline counts, because a supervisor reading "3 at gate"
+                    wants "and 11 still outside" in the same glance. */}
+                <OutsideTankerLog products={products} suppliers={suppliers} customers={customers} />
               </div>
             )}
             {tab === 'view' && (

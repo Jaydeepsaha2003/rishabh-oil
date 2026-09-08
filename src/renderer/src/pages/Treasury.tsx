@@ -279,9 +279,11 @@ const TRACKER_HEAD =
 // width, because "Mark Payment received" is twice the length of "Preclose"
 // and the handoff's 126px would cut it off.
 const LC_ACT_GO =
-  '!h-[30px] !rounded-[3px] !border-0 !bg-[#0B3D2E] !px-2.5 !text-[11.5px] !font-extrabold !leading-none !text-white hover:!bg-[#0F4A38]'
+  '!h-[28px] !shrink-0 !rounded-[3px] !border-0 !bg-[#0B3D2E] !px-2 !text-[11px] !font-extrabold !leading-none !text-white hover:!bg-[#0F4A38]'
+// Width was fixed at 70px, which is what "Preclose" happens to need and eight
+// pixels more than "Repay" ever does. Sized to its own label instead.
 const LC_ACT_2ND =
-  '!h-[30px] !w-[70px] !rounded-[3px] !border !border-[#C3D2C6] !bg-white !px-0 !text-[11.5px] !font-extrabold !leading-none !text-[#33473E] hover:!bg-[#F7FAF6]'
+  '!h-[28px] !shrink-0 !rounded-[3px] !border !border-[#C3D2C6] !bg-white !px-2 !text-[11px] !font-extrabold !leading-none !text-[#33473E] hover:!bg-[#F7FAF6]'
 // Column banding for the register header, from the second handoff. A hairline
 // opens each group; the middle two groups sit on a barely-there white wash and
 // the money pair on a lime one, so Open amount and Payment rec read as the
@@ -3408,8 +3410,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                 </div>
                               </PayableBreakdown>
                             </TableCell>
-                            <TableCell className="whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
-                              <div className="flex justify-end gap-1">
+                            <TableCell className={cn('whitespace-nowrap text-right', __WEB__ && '!px-2')} onClick={(e) => e.stopPropagation()}>
+                              <div className={cn('flex justify-end gap-1', __WEB__ && '!gap-1.5')}>
                                 {(() => {
                                   const next = nextLcStage(String(l.stage || 'application'))
                                   if (!next) return null
@@ -3422,7 +3424,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                       )}
                                       onClick={() => openStageAdvance(l)}
                                     >
-                                      Mark {STAGE_LABEL[next]}
+                                      {__WEB__ ? STAGE_LABEL[next] : `Mark ${STAGE_LABEL[next]}`}
                                     </Button>
                                   )
                                 })()}
@@ -3436,7 +3438,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                     title="Record the customer's payment for the resale — independent of whether the bank side has been preclosed yet"
                                     onClick={() => void openPaymentIn(l)}
                                   >
-                                    Mark Payment IN
+                                    {__WEB__ ? 'Payment IN' : 'Mark Payment IN'}
                                   </Button>
                                 )}
                                 {canPreclose(l) && (

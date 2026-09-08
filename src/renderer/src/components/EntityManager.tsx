@@ -108,6 +108,12 @@ export interface ColumnDef {
   // Opt-in header filter. Off by default so no existing master changes: a
   // list of eight ports does not need one, and a list of twenty-one SKUs does.
   filterable?: boolean
+  // A switch column the reader can flip from the list, without opening Edit.
+  // Opt-in rather than automatic: flipping Active by a stray click takes a
+  // product out of every dropdown in the app, which is not something a list
+  // should let you do in passing. A column says for itself whether it is
+  // cheap enough to undo.
+  toggle?: boolean
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -131,6 +137,9 @@ interface Props {
     // so the list says which rows are linked without opening each one.
     marked?: (row: Row) => boolean
   }
+  // Which fields together identify one record, for the duplicate warning.
+  // Defaults to ['name'].
+  dupeKey?: string[]
 }
 
 export function EntityManager({
@@ -140,6 +149,7 @@ export function EntityManager({
   fields,
   columns,
   readOnly = false,
+  dupeKey,
   onFieldChange,
   rowAction
 }: Props): React.JSX.Element {
@@ -148,13 +158,20 @@ export function EntityManager({
   const isMobile = useIsMobile()
 
   // Names already taken, and the ones duplicated in the data as it stands.
+  //
+  // What makes two rows "the same" is not always the name. On Products, RPL is
+  // a raw oil AND the finished oil refined from it — two different goods that
+  // share a label, and calling them duplicates asks the reader to merge what
+  // the mill buys into what it makes. `dupeKey` lets a master say which fields
+  // together identify a record; it defaults to the name alone, so every other
+  // list behaves exactly as before.
   const norm = (v: unknown): string => String(v ?? '').trim().toLowerCase()
+  const dupeOf = (r: Row): string => (dupeKey || ['name']).map((k) => norm(r[k])).join('\u0000')
   const nameCounts = new Map<string, number>()
   for (const r of rows) {
-    const k = norm(r.name)
-    if (k) nameCounts.set(k, (nameCounts.get(k) || 0) + 1)
+    if (norm(r.name)) nameCounts.set(dupeOf(r), (nameCounts.get(dupeOf(r)) || 0) + 1)
   }
-  const isDuplicated = (r: Row): boolean => (nameCounts.get(norm(r.name)) || 0) > 1
+  const isDuplicated = (r: Row): boolean => (nameCounts.get(dupeOf(r)) || 0) > 1
   // Tally-style type-to-find across every visible column.
   const [search, setSearch] = useState('')
   const shownRows = useMemo(() => {
@@ -313,6 +330,33 @@ export function EntityManager({
     }
   }
 
+  // Flip one switch column straight from the list.
+  //
+  // Sends only that field: `update` merges, so a partial payload leaves every
+  // other column alone — which matters because the list does not hold the
+  // whole record the edit form does, and writing back what it has would blank
+  // whatever it never loaded. The row is updated locally first so the switch
+  // answers immediately, then reloaded from the server so what is on screen is
+  // what was actually stored.
+  const [toggling, setToggling] = useState<string | null>(null)
+  async function toggleField(row: Row, key: string, next: boolean): Promise<void> {
+    const id = Number(row.id)
+    if (!id) return
+    setToggling(`${id}:${key}`)
+    setRows((prev) => prev.map((r) => (Number(r.id) === id ? { ...r, [key]: next ? 1 : 0 } : r)))
+    try {
+      await window.api.data.update(table, id, { [key]: next ? 1 : 0 })
+      await load()
+    } catch (e) {
+      // Put it back: the switch must not keep showing a state the database
+      // refused.
+      setRows((prev) => prev.map((r) => (Number(r.id) === id ? { ...r, [key]: next ? 0 : 1 } : r)))
+      toast.error((e as Error).message)
+    } finally {
+      setToggling(null)
+    }
+  }
+
   async function del(row: Row): Promise<void> {
     const label = (row[columns[0].key] as string) ?? `#${row.id}`
     if (!window.confirm(`Delete "${label}"? This cannot be undone.`)) return
@@ -362,11 +406,26 @@ export function EntityManager({
     if (!__WEB__) return text
     if (col.type === 'switch') {
       const on = text === 'Yes'
-      return (
+      const body = (
         <span className={cn('inline-flex items-center gap-1.5 font-bold', on ? 'text-[#12855A]' : 'text-[#B3261E]')}>
           {on ? <CheckCircle2 className="h-[18px] w-[18px]" /> : <XCircle className="h-[18px] w-[18px]" />}
           {text}
         </span>
+      )
+      if (!col.toggle || readOnly) return body
+      return (
+        <button
+          type="button"
+          title={`${on ? 'Turn off' : 'Turn on'} ${col.label.toLowerCase()}`}
+          disabled={toggling === `${row.id}:${col.key}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            void toggleField(row, col.key, !on)
+          }}
+          className="-mx-1.5 rounded-[3px] px-1.5 py-0.5 transition-colors hover:bg-[#EAF0E9] disabled:opacity-50"
+        >
+          {body}
+        </button>
       )
     }
     if (col.type === 'select' && text !== '—') {

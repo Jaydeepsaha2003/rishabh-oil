@@ -262,7 +262,17 @@ export async function stockLevels(
 
   const keys = Object.keys(SOURCES) as (keyof typeof SOURCES)[]
   const [products, brought, ...maps] = await Promise.all([
-    c.execute('SELECT id, code, name, category, material_type, active FROM products ORDER BY category, name'),
+    // show_in_stock is the switch on the Products page. Filtered here rather
+    // than in the page, because stockLevels() is what BOTH stock sheets are
+    // built from — Book Stock reads it directly and the opening sheet maps
+    // over it — so one WHERE keeps the two in step instead of two filters that
+    // can drift. COALESCE, so a row written before the column existed still
+    // shows.
+    c.execute(
+      `SELECT id, code, name, category, material_type, active FROM products
+        WHERE COALESCE(show_in_stock, 1) = 1
+        ORDER BY category, name`
+    ),
     openingBalance(),
     ...keys.map((k) => slice(SOURCES[k], 'period')),
     ...keys.map((k) => slice(SOURCES[k], 'opening'))
@@ -459,7 +469,7 @@ async function openingFloor(cidList: number[], factoryId = 0): Promise<string> {
 export async function stockPartyBreakdown(
   companyIds?: number[],
   range?: { from?: string; to?: string }
-): Promise<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[] }>> {
+): Promise<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[] }>> {
   const c = getClient()
   const cidList = (companyIds || []).map(Number).filter((x) => x > 0)
   if (!cidList.length) cidList.push(getActiveCompanyId())
@@ -501,12 +511,16 @@ export async function stockPartyBreakdown(
   // Same rule as the register's Dispatch column above — the hover has to cover
   // exactly the period the cell it explains does.
   const dispB = bounds('s.sale_date')
-  const out: Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[] }> = {}
-  const ensure = (pid: number): { receipt: Row[]; dispatch: Row[]; packed: Row[] } =>
-    (out[pid] ??= { receipt: [], dispatch: [], packed: [] })
+  const out: Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[] }> = {}
+  const ensure = (pid: number): { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[] } =>
+    (out[pid] ??= { receipt: [], dispatch: [], packed: [], produced: [], consumed: [] })
 
   // With more than one company in view, the party rows say whose books each
-  // figure belongs to.
+  // figure belongs to — COMPANY first, then the party. Reading a factory-wise
+  // register the question is "which of my two companies bought this", and the
+  // company was arriving last, after a supplier name long enough to push it
+  // out of sight. Leading with it also lines the rows up by company, so a
+  // hover listing eight receipts groups itself.
   const rec = await c.execute({
     sql: `SELECT o.oil_type_id AS pid, COALESCE(s.name, 'Unknown') AS party, co.name AS company, SUM(o.received_qty) AS qty
           FROM orders o
@@ -520,7 +534,7 @@ export async function stockPartyBreakdown(
   })
   for (const r of rec.rows)
     ensure(Number(r.pid)).receipt.push({
-      party: multi ? `${r.party} · ${r.company || ''}` : String(r.party),
+      party: multi ? `${r.company || '—'} · ${r.party}` : String(r.party),
       qty: Number(r.qty) || 0
     })
 
@@ -548,7 +562,57 @@ export async function stockPartyBreakdown(
   })
   for (const r of disp.rows)
     ensure(Number(r.pid)).dispatch.push({
-      party: multi ? `${r.party} · ${r.company || ''}` : String(r.party),
+      party: multi ? `${r.company || '—'} · ${r.party}` : String(r.party),
+      qty: Number(r.qty) || 0
+    })
+
+  const prodB = bounds('p.prod_date')
+
+  // Output of a run, plus by-product lines, exactly as the register's own
+  // `produced` and `byProduct` sources add them together.
+  const made = await c.execute({
+    sql: `SELECT pid, party, company, SUM(qty) AS qty FROM (
+            SELECT p.product_id AS pid, COALESCE(r.name, 'Production run') AS party,
+                   co.name AS company, p.qty AS qty
+              FROM production p
+              LEFT JOIN formulations r ON r.id = p.formulation_id
+              LEFT JOIN companies co ON co.id = p.company_id
+             WHERE p.company_id IN (${ph}) ${prodB.sql}
+            UNION ALL
+            SELECT i.product_id AS pid, COALESCE(r.name, 'Production run') || ' · by-product' AS party,
+                   co.name AS company, i.qty AS qty
+              FROM production_items i
+              JOIN production p ON p.id = i.production_id
+              LEFT JOIN formulations r ON r.id = p.formulation_id
+              LEFT JOIN companies co ON co.id = p.company_id
+             WHERE i.kind = 'output' AND p.company_id IN (${ph}) ${prodB.sql}
+          ) GROUP BY pid, party, company HAVING SUM(qty) > 0 ORDER BY qty DESC`,
+    args: [...cidList, ...prodB.args, ...cidList, ...prodB.args]
+  })
+  for (const r of made.rows)
+    ensure(Number(r.pid)).produced.push({
+      party: multi ? `${r.company || '—'} · ${r.party}` : String(r.party),
+      qty: Number(r.qty) || 0
+    })
+
+  // Inputs only. A 'loss' line is neither consumed nor produced — it just
+  // goes — and the register's own source excludes it, so this must too or the
+  // hover would out-total the cell it explains.
+  const used = await c.execute({
+    sql: `SELECT i.product_id AS pid, COALESCE(r.name, 'Production run') AS party,
+                 co.name AS company, SUM(i.qty) AS qty
+            FROM production_items i
+            JOIN production p ON p.id = i.production_id
+            LEFT JOIN formulations r ON r.id = p.formulation_id
+            LEFT JOIN companies co ON co.id = p.company_id
+           WHERE i.kind = 'input' AND p.company_id IN (${ph}) ${prodB.sql}
+           GROUP BY i.product_id, r.name, p.company_id
+          HAVING SUM(i.qty) > 0 ORDER BY qty DESC`,
+    args: [...cidList, ...prodB.args]
+  })
+  for (const r of used.rows)
+    ensure(Number(r.pid)).consumed.push({
+      party: multi ? `${r.company || '—'} · ${r.party}` : String(r.party),
       qty: Number(r.qty) || 0
     })
 
@@ -580,13 +644,13 @@ export async function stockPartyBreakdown(
   }
   for (const r of await noteSide('credit', 'customer', 'customers'))
     ensure(Number(r.pid)).dispatch.push({
-      party: `${multi ? `${r.party} · ${r.company || ''}` : String(r.party)} — return ${r.note_no}`,
+      party: `${multi ? `${r.company || '—'} · ${r.party}` : String(r.party)} — return ${r.note_no}`,
       qty: -(Number(r.qty) || 0),
       isReturn: true
     })
   for (const r of await noteSide('debit', 'supplier', 'suppliers'))
     ensure(Number(r.pid)).receipt.push({
-      party: `${multi ? `${r.party} · ${r.company || ''}` : String(r.party)} — return ${r.note_no}`,
+      party: `${multi ? `${r.company || '—'} · ${r.party}` : String(r.party)} — return ${r.note_no}`,
       qty: -(Number(r.qty) || 0),
       isReturn: true
     })

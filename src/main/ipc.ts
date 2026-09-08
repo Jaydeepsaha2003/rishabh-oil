@@ -70,6 +70,7 @@ import {
   deleteStockTransfer
 } from './stock'
 import { listStockOpenings, saveStockOpenings, stockOpeningDate } from './stockopenings'
+import { listOutsideTankers, saveOutsideTanker, removeOutsideTanker } from './outsidetankers'
 import {
   listFormulationSubcategories,
   saveFormulationSubcategory,
@@ -686,6 +687,9 @@ export function registerIpc(): void {
   )
   handle('sales:cancelInvoiceNo', (_e, { values }: { values: Row }) => cancelInvoiceNo(values))
   handle('sales:uncancelInvoiceNo', (_e, { values }: { values: Row }) => uncancelInvoiceNo(values))
+  handle('outsideTanker:list', (_e, { date }: { date?: string } = {}) => listOutsideTankers(date))
+  handle('outsideTanker:save', (_e, v: Record<string, unknown>) => saveOutsideTanker(v))
+  handle('outsideTanker:remove', (_e, { id }: { id: number }) => removeOutsideTanker(id))
   handle('stockOpening:list', (_e, { companyId }: { companyId?: number } = {}) =>
     listStockOpenings(companyId)
   )

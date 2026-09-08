@@ -852,5 +852,49 @@ export async function runStartupTasks(): Promise<void> {
     await c.execute('CREATE INDEX IF NOT EXISTS idx_production_factory ON production(factory_id)')
   }).catch((e) => console.error('[production] factory column failed:', e))
 
+  // A product that is real but never stands in a tank — packaging, a service
+  // line, a name kept only so an old document still resolves — was still a row
+  // on both stock sheets, at nil, forever. Forty-one products with eleven
+  // permanently at zero makes the sheet longer than the work in it.
+  //
+  // Hiding is not deleting and not deactivating: an inactive product leaves
+  // the dropdowns and stops being usable, which is far too blunt for something
+  // you still buy every week. This says only "do not carry a stock balance
+  // for it", and it can be turned back on from Products at any time.
+  //
+  // Defaults to 1 so every existing product keeps showing until somebody says
+  // otherwise — the migration changes nothing on its own.
+  await runOnce('products_show_in_stock_v1', async () => {
+    const c = getClient()
+    await c
+      .execute('ALTER TABLE products ADD COLUMN show_in_stock INTEGER NOT NULL DEFAULT 1')
+      .catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+    await c.execute('UPDATE products SET show_in_stock = 1 WHERE show_in_stock IS NULL')
+  }).catch((e) => console.error('[products] show_in_stock column failed:', e))
+
+  // The gate supervisor's diary of what is standing OUTSIDE the gate — see
+  // outsidetankers.ts for why this is not a flag on gate_entries.
+  await runOnce('outside_tankers_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS outside_tankers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER,
+      log_date TEXT NOT NULL,
+      slot TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      product_id INTEGER,
+      party_id INTEGER,
+      tankers INTEGER NOT NULL DEFAULT 0,
+      note TEXT,
+      created_by TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )`)
+    await c.execute(
+      'CREATE INDEX IF NOT EXISTS idx_outside_tankers_day ON outside_tankers(company_id, log_date)'
+    )
+  }).catch((e) => console.error('[gate] outside tanker diary failed:', e))
+
   startRevisionWatcher()
 }

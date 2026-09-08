@@ -37,8 +37,21 @@ const baseFields: FieldDef[] = [
       { value: 'PCS', label: 'PCS — counted' }
     ]
   },
-  { key: 'active', label: 'Active', type: 'switch', default: true }
+  { key: 'active', label: 'Active', type: 'switch', default: true },
+  // Separate from Active on purpose. Inactive takes a product out of the
+  // dropdowns entirely, which is far too blunt for packaging you still buy
+  // every week but never hold a tonnage of. This says only "do not carry a
+  // stock balance for it", and it can be switched back at any time.
+  { key: 'show_in_stock', label: 'Show in stock', type: 'switch', default: true }
 ]
+
+// Two products may share a name if they are different goods: RPL is a raw oil
+// AND the finished oil refined from it, and the mill buys one and makes the
+// other. Only a repeat of the same name in the same sub-category is a real
+// duplicate — the rest are the list telling the truth about a name used twice
+// on purpose, and flagging them invites someone to merge what the mill buys
+// into what it makes.
+const PRODUCT_DUPE_KEY = ['name', 'category']
 
 const columns: ColumnDef[] = [
   { key: 'name', label: 'Name' },
@@ -47,6 +60,7 @@ const columns: ColumnDef[] = [
   { key: 'category', label: 'Sub-category', type: 'select' },
   { key: 'uom', label: 'Unit', type: 'select' },
   { key: 'active', label: 'Active', type: 'switch' },
+  { key: 'show_in_stock', label: 'Show in stock', type: 'switch', toggle: true },
   { key: 'created_at', label: 'Created', type: 'date' }
 ]
 
@@ -67,6 +81,7 @@ export function Products(): React.JSX.Element {
           description="Everything you buy, make or sell."
           fields={fields}
           columns={columns}
+          dupeKey={PRODUCT_DUPE_KEY}
           readOnly={!canWrite(loadUser(), 'products')}
         />
       </div>

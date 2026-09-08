@@ -68,7 +68,15 @@ export async function exportLcRegister(lcs: Row[], filename: string, repayments:
       interest_amount: interestAmount,
       charges: n(l.charges),
       open_amount: n(l.amount),
-      receipt_amount: n(l.lc_net_available),
+      // What the beneficiary was ACTUALLY paid — the bill the bank honoured —
+      // falling back to the expectation only while no bill exists. This used
+      // to export lc_net_available, which is the back-calculation (open amount
+      // less what the fees ought to be), so on any LC whose bill did not match
+      // that formula the sheet and the register disagreed: six of thirty-two
+      // here, LC-9 by ₹1,74,474.58. lc.ts settled this question already —
+      // "a recorded amount beats a formula, every time" — and the register
+      // follows it. The export now does too.
+      receipt_amount: l.paid_to_party == null ? n(l.paid_expected) : n(l.paid_to_party),
       linked_invoices: l.linked_invoice_nos || '',
       // The note typed on the LC. It was not in the sheet at all, so anything
       // recorded against a facility could not leave the app.

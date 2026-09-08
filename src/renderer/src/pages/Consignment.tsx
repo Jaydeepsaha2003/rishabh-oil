@@ -678,11 +678,8 @@ export function Consignment(): React.JSX.Element {
               </p>
             </div>
             <div className="flex items-center gap-2">
-              {pendingLotCount > 0 && (
-                <Badge
-                  variant="warning"
-                  className={cn(__WEB__ && '!rounded-[2px] !border-0 !bg-[#FFEDD0] !px-2.5 !py-[5px] !text-[11px] !font-extrabold !text-[#8A5300]')}
-                >
+              {!__WEB__ && pendingLotCount > 0 && (
+                <Badge variant="warning">
                   {pendingLotCount} tanker{pendingLotCount > 1 ? 's' : ''} pending booking
                 </Badge>
               )}

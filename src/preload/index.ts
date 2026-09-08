@@ -229,7 +229,7 @@ const api = {
   stock: {
     list: (range?: { from?: string; to?: string }, companyIds?: number[]): Promise<Row[]> => ipcRenderer.invoke('stock:list', { range, companyIds }),
     needs: (): Promise<Row[]> => ipcRenderer.invoke('stock:needs'),
-    breakdown: (companyIds?: number[], range?: { from?: string; to?: string }): Promise<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[] }>> =>
+    breakdown: (companyIds?: number[], range?: { from?: string; to?: string }): Promise<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[] }>> =>
       ipcRenderer.invoke('stock:breakdown', { companyIds, range }),
     registers: (companyIds?: number[], range?: { from?: string; to?: string }): Promise<{ receipts: Row[]; dispatches: Row[] }> =>
       ipcRenderer.invoke('stock:registers', { companyIds, range }),
@@ -256,6 +256,11 @@ const api = {
       ipcRenderer.invoke('formulationSubcategory:save', { values }),
     delete: (id: number): Promise<{ id: number }> =>
       ipcRenderer.invoke('formulationSubcategory:delete', { id })
+  },
+  outsideTanker: {
+    list: (date?: string): Promise<Row[]> => ipcRenderer.invoke('outsideTanker:list', { date }),
+    save: (v: Row): Promise<{ id: number }> => ipcRenderer.invoke('outsideTanker:save', v),
+    remove: (id: number): Promise<{ ok: true }> => ipcRenderer.invoke('outsideTanker:remove', { id })
   },
   stockOpening: {
     list: (companyId?: number): Promise<Row> => ipcRenderer.invoke('stockOpening:list', { companyId }),

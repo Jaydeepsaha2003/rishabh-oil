@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowRightLeft, BookOpen, Boxes, Building2, CalendarCheck, CalendarRange, ClipboardCheck, Factory, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Plus, Sigma, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
+import { AlertTriangle, ArrowRightLeft, BookOpen, Boxes, Building2, CalendarCheck, CalendarRange, ClipboardCheck, Factory, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -26,7 +26,7 @@ import {
   TableHeader,
   TableRow
 } from '@/components/ui/table'
-import { InfoTip, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { HelpTip, InfoTip, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { PageHeader } from '@/components/PageHeader'
 import { errText, formatDate, formatDateShort, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -293,24 +293,37 @@ function PartyCell({
     wash,
     __WEB__ && !value && '!text-[#C3D2C6]'
   )
-  if (!parties || parties.length === 0) {
-    return <TableCell className={cls}>{value ? cell : '—'}</TableCell>
-  }
-  const hasReturn = parties.some((p) => p.isReturn)
+  // A figure with no breakdown behind it still gets a hover, saying so.
+  //
+  // It used to return a bare cell, which is indistinguishable from a figure
+  // that HAS a breakdown the tooltip failed to open — and that is exactly the
+  // report that kept coming back: "the hover does not work on this one". A
+  // dead-silent cell cannot tell you whether there is nothing to show or
+  // something went wrong, so now it says which.
+  const empty = !parties || parties.length === 0
+  if (empty && !value) return <TableCell className={cls}>—</TableCell>
+  const hasReturn = !empty && parties.some((p) => p.isReturn)
   return (
     <TableCell className={cls}>
       <Tooltip>
         <TooltipTrigger asChild>
           <span
             className={cn(
-              'cursor-default underline decoration-dotted underline-offset-4',
-              hasReturn ? 'decoration-rose-400 decoration-2' : 'decoration-muted-foreground/50'
+              'cursor-help underline decoration-dotted underline-offset-4',
+              hasReturn ? 'decoration-rose-400 decoration-2' : 'decoration-slate-400'
             )}
           >
             {cell}
           </span>
         </TooltipTrigger>
         <TooltipContent className="max-w-sm">
+          {empty ? (
+            <div className="text-[11px] leading-snug">
+              No party breakdown came back for this figure. The quantity is right — it is the
+              detail behind it that is missing, which usually means the breakdown was read for a
+              different company or period than the register.
+            </div>
+          ) : (
           <div className="space-y-0.5">
             {caption && (
               <div className="mb-1 border-b border-white/25 pb-1 text-[10px] font-bold uppercase tracking-wider opacity-80">
@@ -353,6 +366,7 @@ function PartyCell({
               </div>
             )}
           </div>
+          )}
         </TooltipContent>
       </Tooltip>
     </TableCell>
@@ -367,8 +381,49 @@ function PartyCell({
 // Each carries a subtitle because the labels alone do not separate them: "Book
 // Stock" and "Actual Stock" are the same three words rearranged until you are
 // told one is what the ledger says and the other is what somebody counted.
+// Which view the page was on, kept across a refresh.
+//
+// App.tsx already puts the PAGE in the URL, so F5 on /stock comes back on
+// Stock — but which of its three menus, and which tab under them, was ordinary
+// component state, so a reload always landed on Book Stock. Someone working
+// down the Packed SKU register lost their place every time they refreshed.
+//
+// sessionStorage rather than the query string, deliberately. App.tsx owns the
+// path and rewrites the whole URL whenever `page` changes; a child writing
+// search params into that same URL races the parent's effect and loses — and
+// child effects run first, so on the render that navigates here it would write
+// the view onto the PREVIOUS page's URL. Storage has no such ordering problem.
+//
+// Per tab and per session on purpose: two tabs can sit on different views, and
+// tomorrow starts on Book Stock rather than wherever last week ended.
+const STOCK_VIEW_KEY = 'stock.view'
+
+function readStockView<T extends string>(field: string, allowed: readonly T[], fallback: T): T {
+  if (!__WEB__) return fallback
+  try {
+    const raw = sessionStorage.getItem(STOCK_VIEW_KEY)
+    if (!raw) return fallback
+    const v = (JSON.parse(raw) as Record<string, unknown>)[field]
+    return (allowed as readonly string[]).includes(String(v)) ? (v as T) : fallback
+  } catch {
+    // Private windows, and browsers set to block site data, throw on the
+    // accessor itself. Losing the place on refresh is the old behaviour, so
+    // falling back to it costs nothing.
+    return fallback
+  }
+}
+
+function writeStockView(view: Record<string, string>): void {
+  if (!__WEB__) return
+  try {
+    sessionStorage.setItem(STOCK_VIEW_KEY, JSON.stringify(view))
+  } catch {
+    /* see above */
+  }
+}
+
 const STOCK_MENUS = [
-  { key: 'book', label: 'Book Stock', sub: 'WHAT THE BOOKS SAY', icon: BookOpen },
+  { key: 'book', label: 'Book / Theoretical Stock', sub: 'WHAT THE BOOKS SAY', icon: BookOpen },
   { key: 'actual', label: 'Actual Stock', sub: 'WHAT WAS COUNTED', icon: ClipboardCheck },
   { key: 'opening', label: 'Opening Stock', sub: 'WHERE IT ALL STARTS', icon: CalendarCheck }
 ] as const
@@ -378,6 +433,66 @@ type StockMenu = (typeof STOCK_MENUS)[number]['key']
 // A figure, what it is measured in, and the one line that says why it matters.
 // The accent is a 3px rule along the top rather than a tint behind the whole
 // card: four tinted cards in a row read as four warnings.
+// The KPI strip, folded away.
+//
+// Every view on this page opens with four cards summarising the table beneath
+// it, which on a laptop spent a third of the screen restating what the reader
+// had come to read. They fold, shut by default.
+//
+// Collapsed is not a bare chevron. The same figures stay on one line — all of
+// them, whatever the view — so the strip still answers "is anything wrong here"
+// at a glance and only has to be opened for the detail behind it. It never
+// wraps: past the width it has, the line scrolls sideways rather than pushing
+// the control to two rows and giving back the space the fold just saved.
+function KpiFold({
+  line,
+  children
+}: {
+  line: { k: string; v: string; fg?: string; tip?: string }[]
+  children: React.ReactNode
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className={cn(
+          'flex w-full items-center gap-3 rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 text-left transition-colors hover:bg-[#F7FAF6]',
+          open ? 'h-[38px] rounded-b-none border-b-0' : 'h-[42px]'
+        )}
+      >
+        <ChevronRight
+          className={cn('h-4 w-4 shrink-0 text-[#5A6B62] transition-transform', open && 'rotate-90')}
+        />
+        <span className="shrink-0 text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">
+          Summary
+        </span>
+        {!open && (
+          <span className="no-scrollbar flex min-w-0 items-baseline gap-x-5 overflow-x-auto">
+            {line.map((f) => (
+              <span key={f.k} title={f.tip} className="flex items-baseline gap-1.5 whitespace-nowrap">
+                <span className="text-[10.5px] font-bold uppercase tracking-[.08em] text-[#8FA79B]">
+                  {f.k}
+                </span>
+                <span className="doc-ref text-[12.5px] font-bold" style={{ color: f.fg || '#0A1F17' }}>
+                  {f.v}
+                </span>
+              </span>
+            ))}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="grid gap-2.5 rounded-[4px] rounded-t-none border border-t-0 border-[#D6E2D6] bg-[#F7FAF6] p-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr))]">
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function StockKpi({
   label,
   value,
@@ -444,10 +559,24 @@ function FactoryPicker({
       }}
       showCheckbox
     >
-      <SelectTrigger className="h-9 w-[15rem] text-xs">
+      {/* The trigger says WHICH site, not which site plus the word for
+          looking at all of it. "— whole site" is the meaningful half only
+          inside the open menu, where it distinguishes the site from the
+          companies listed under it; on the face of a closed control it is
+          six characters of nothing, and it was pushing the name itself into
+          an ellipsis. */}
+      <SelectTrigger className={cn('h-9 w-[15rem] text-xs', __WEB__ && '!w-auto !min-w-[150px] !max-w-[230px]')}>
         <span className="flex min-w-0 items-center gap-1.5">
-          <Factory className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <SelectValue />
+          <Factory className={cn('h-3.5 w-3.5 shrink-0 text-muted-foreground', __WEB__ && '!text-[#5A6B62]')} />
+          {__WEB__ ? (
+            <span className="truncate">
+              {current === 'factory'
+                ? site
+                : companies.find((c) => String(c.id) === current)?.name || site}
+            </span>
+          ) : (
+            <SelectValue />
+          )}
         </span>
       </SelectTrigger>
       <SelectContent>
@@ -462,7 +591,7 @@ function FactoryPicker({
   )
 }
 
-function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange, companyPicker, companySplit = {}, stagePicker, companyIds = [], openingFrom = '' }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[] }>; label?: string; range: { from: string; to: string }; onRange: (r: { from: string; to: string }) => void; companyPicker?: React.ReactNode; companySplit?: Record<number, Row[]>; stagePicker?: React.ReactNode; companyIds?: number[]; openingFrom?: string }): React.JSX.Element {
+function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange, companyPicker, companySplit = {}, stagePicker, companyIds = [], openingFrom = '' }: { rows: Row[]; breakdown: Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[] }>; label?: string; range: { from: string; to: string }; onRange: (r: { from: string; to: string }) => void; companyPicker?: React.ReactNode; companySplit?: Record<number, Row[]>; stagePicker?: React.ReactNode; companyIds?: number[]; openingFrom?: string }): React.JSX.Element {
   const ranged = !!(range.from || range.to)
   // A product with no opening, no movement and no closing balance is just noise
   // in a long list, so it can be folded away. Everything below — KPIs, section
@@ -733,13 +862,19 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
           Clear
         </Button>
       )}
+      {__WEB__ && (
+        <HelpTip
+          className="ml-auto mr-0.5 shrink-0 !text-[#8FA79B] hover:!text-[#0B3D2E] [&_svg]:!h-[17px] [&_svg]:!w-[17px]"
+          text="Closing = Opening + Receipt + Produced − Consumed − Packed − Dispatch. Balances move on their own: a purchase adds raw oil, a production run consumes inputs and adds outputs, a sale reduces finished goods. A negative closing is a real shortage, never blocked at save."
+        />
+      )}
       <Popover open={dlOpen} onOpenChange={setDlOpen}>
         <PopoverTrigger asChild>
           <Button
             size="icon"
             className={cn(
               'h-9 w-9 bg-emerald-700 text-white shadow-sm hover:bg-emerald-800',
-              __WEB__ && '!ml-auto !h-[38px] !w-[38px] !rounded-[4px] !bg-[#0B3D2E] hover:!bg-[#072B20]'
+              __WEB__ && '!h-[38px] !w-[38px] !rounded-[4px] !bg-[#0B3D2E] hover:!bg-[#072B20]'
             )}
             title="Download a register as Excel"
             aria-label="Download a register as Excel"
@@ -830,11 +965,10 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
         const IN_FG = '#0B6B45'
         const OUT_FG = '#8C2F26'
         return (
-          <>
-            <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6]">
-            <Table className="doc-ref min-w-[820px] text-[12px] [&_td]:border-l [&_td]:border-l-[#DCE7DB] [&_td]:px-[9px] [&_td]:py-2 [&_td:first-child]:border-l-0 [&_th]:h-10 [&_th]:px-[9px]">
+          <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6]">
+            <Table className="doc-ref min-w-[820px] text-[12px] [&_td]:border-l [&_td]:border-l-[#DCE7DB] [&_td]:px-[9px] [&_td]:py-[5px] [&_td:first-child]:border-l-0 [&_th]:h-11 [&_th]:px-[9px]">
               <TableHeader className="sticky top-0 z-10">
-                <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[28px] [&>th]:!p-0 [&>th]:!text-[10px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.13em] [&>th]:!text-[#8FBFA8]">
+                <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[30px] [&>th]:!p-0 [&>th]:!text-[11px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.1em] [&>th]:!text-[#8FBFA8]">
                   <TableHead />
                   {ranged && <TableHead className={cn('!text-center', SK_RULE, SK_OPEN)}>Open</TableHead>}
                   <TableHead colSpan={2} className={cn('!text-center !text-[#9FE3BF]', SK_RULE, SK_IN)}>In</TableHead>
@@ -869,7 +1003,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                         onClick={() => setShut((prev) => ({ ...prev, [grp.label]: !!open }))}
                         className="cursor-pointer !border-y !border-y-[#DCE7DB] !bg-[#EFF5EC] hover:!bg-[#E8F1E4]"
                       >
-                        <TableCell className="!py-2.5">
+                        <TableCell className="!py-[7px]">
                           <span className="flex items-center gap-2">
                             <ChevronRight
                               className={cn('h-4 w-4 shrink-0 text-[#5A6B62] transition-transform', open && 'rotate-90')}
@@ -910,7 +1044,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                           return (
                             <TableRow key={r.id as number} className="!border-b-[#DCE7DB] !bg-transparent">
                               <TableCell
-                                className="!py-2"
+                                className="!py-[5px]"
                                 style={mark === 'transparent' ? undefined : { boxShadow: `inset 3px 0 0 ${mark}` }}
                               >
                                 <span className="flex items-center gap-1.5">
@@ -920,7 +1054,29 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                               </TableCell>
                               {ranged && (
                                 <TableCell className={cn('text-right', SK_NUM, SK_BRULE, SK_BOPEN)}>
-                                  {fig(Number(r.opening) || 0, '#33473E')}
+                                  {/* Opening is two different things added
+                                      together — the count struck on the
+                                      opening morning, and everything that
+                                      moved between then and the From date —
+                                      and the row could not say which. */}
+                                  {Math.abs(Number(r.opening) || 0) > 1e-9 ? (
+                                    <CellWithWorkings
+                                      value={formatNum(r.opening)}
+                                      className="!text-[#33473E]"
+                                      title="What this product opened the period at"
+                                      lines={[
+                                        { left: 'Brought forward', mid: 'the counted opening', right: formatNum(r.opening_brought) },
+                                        {
+                                          left: 'Moved before this period',
+                                          mid: 'received, produced, consumed, dispatched',
+                                          right: formatNum((Number(r.opening) || 0) - (Number(r.opening_brought) || 0))
+                                        }
+                                      ]}
+                                      footer={`= ${formatNum(r.opening)} at the start of ${periodLabel}`}
+                                    />
+                                  ) : (
+                                    dash
+                                  )}
                                 </TableCell>
                               )}
                               <PartyCell
@@ -928,12 +1084,19 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                                 parties={breakdown[r.id as number]?.receipt || []}
                                 wash={cn(SK_NUM, SK_BRULE, SK_BIN)}
                               />
-                              <TableCell className={cn('text-right', SK_NUM, SK_BIN)}>
-                                {fig(Number(r.produced) || 0, IN_FG)}
-                              </TableCell>
-                              <TableCell className={cn('text-right', SK_NUM, SK_BRULE, SK_BOUT)}>
-                                {fig(Number(r.consumed) || 0, OUT_FG)}
-                              </TableCell>
+                              <PartyCell
+                                value={Number(r.produced)}
+                                parties={breakdown[r.id as number]?.produced || []}
+                                wash={cn(SK_NUM, SK_BIN)}
+                                caption="Produced by"
+                              />
+                              <PartyCell
+                                value={Number(r.consumed)}
+                                parties={breakdown[r.id as number]?.consumed || []}
+                                tone="text-rose-700"
+                                wash={cn(SK_NUM, SK_BRULE, SK_BOUT)}
+                                caption="Consumed by"
+                              />
                               <PartyCell
                                 value={Number(r.packed_out)}
                                 parties={breakdown[r.id as number]?.packed || []}
@@ -948,25 +1111,33 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                                 wash={cn(SK_NUM, SK_BOUT)}
                               />
                               <TableCell
-                                className={cn('!py-2', SK_BRULE)}
+                                className={cn('!py-[5px]', SK_BRULE)}
                                 style={{ background: neg ? '#FDF3F2' : '#F7FBF4' }}
                               >
-                                <span className="flex flex-col items-end">
-                                  <span
-                                    className="text-[13.5px] font-bold tracking-[-0.02em]"
-                                    style={{ color: neg ? '#B3261E' : '#0A1F17' }}
-                                  >
-                                    {formatNum(closing)}
-                                  </span>
-                                  <span className="mt-[5px] block h-1 w-full overflow-hidden bg-[#E4ECE3]">
-                                    <span
-                                      className="block h-full"
-                                      style={{
-                                        width: `${neg ? 100 : pct}%`,
-                                        background: neg ? '#B3261E' : pct < 12 ? '#C2700A' : '#12855A'
-                                      }}
-                                    />
-                                  </span>
+                                <span
+                                  className="block text-right text-[13.5px] font-bold tracking-[-0.02em]"
+                                  style={{ color: neg ? '#B3261E' : '#0A1F17' }}
+                                >
+                                  {/* The row's own sum, so the one figure
+                                      everybody reads can be checked without
+                                      adding six cells across by eye. */}
+                                  <CellWithWorkings
+                                    value={formatNum(closing)}
+                                    title={neg ? 'How this closed below nil' : 'How this closing was reached'}
+                                    lines={[
+                                      ...(ranged ? [{ left: 'Opening', right: formatNum(r.opening) }] : []),
+                                      { left: 'Receipt', right: `+ ${formatNum(r.received)}` },
+                                      { left: 'Produced', right: `+ ${formatNum(r.produced)}` },
+                                      { left: 'Consumed', right: `− ${formatNum(r.consumed)}` },
+                                      { left: 'Packed', right: `− ${formatNum(r.packed_out)}` },
+                                      { left: 'Dispatch', right: `− ${formatNum(r.sold)}` }
+                                    ]}
+                                    footer={
+                                      neg
+                                        ? `= ${formatNum(closing)} — more has gone out than ever came in, so the register is carrying a balance the mill never had`
+                                        : `= ${formatNum(closing)} MT`
+                                    }
+                                  />
                                 </span>
                               </TableCell>
                             </TableRow>
@@ -991,19 +1162,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                 </TableRow>
               </TableBody>
             </Table>
-            </div>
-            {/* What the closing column actually is, said once under the table
-                rather than in a tooltip nobody opens. Straight from the
-                handoff. */}
-            <div className="mt-2.5 flex items-start gap-2.5 px-1">
-              <Sigma className="mt-[1px] h-[15px] w-[15px] shrink-0 text-[#A8B8AE]" />
-              <p className="text-[11.5px] font-semibold leading-[1.5] text-[#5A6B62]">
-                Closing = Opening + Receipt + Produced − Consumed − Packed − Dispatch. Balances move on their
-                own: a purchase adds raw oil, a production run consumes inputs and adds outputs, a sale
-                reduces finished goods. A negative closing is a real shortage, never blocked at save.
-              </p>
-            </div>
-          </>
+          </div>
         )
       })()
     ) : (
@@ -1034,7 +1193,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                       Dispatch as another — without renaming or merging any
                       column. */}
                   {__WEB__ && (
-                    <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[28px] [&>th]:!p-0 [&>th]:!text-[10px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.13em] [&>th]:!text-[#8FBFA8]">
+                    <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[30px] [&>th]:!p-0 [&>th]:!text-[11px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.1em] [&>th]:!text-[#8FBFA8]">
                       <TableHead />
                       {ranged && <TableHead className={cn('!text-center', SK_RULE, SK_OPEN)}>Open</TableHead>}
                       <TableHead colSpan={2} className={cn('!text-center !text-[#9FE3BF]', SK_RULE, SK_IN)}>In</TableHead>
@@ -1051,7 +1210,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                           h.tone || 'text-slate-700',
                           h.r && 'text-right',
                           __WEB__ &&
-                            '!bg-transparent !text-[11px] !font-extrabold !tracking-[.07em] !text-[#8FBFA8]',
+                            '!bg-transparent !text-[12px] !font-extrabold !tracking-[.05em] !text-[#8FBFA8]',
                           __WEB__ && h.wash,
                           __WEB__ && h.fg,
                           __WEB__ && !h.r && '!text-white'
@@ -1174,7 +1333,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
 // hairline between column groups; the two opening sheets take the violet
 // instead, because they are the one surface that is not a register.
 const SK_HEAD =
-  '!bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&_th]:!h-10 [&_th]:!text-[9.5px] [&_th]:!font-extrabold [&_th]:!uppercase [&_th]:!tracking-[.11em] [&_th]:!text-[#8FBFA8]'
+  '!bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&_th]:!h-11 [&_th]:!text-[9.5px] [&_th]:!font-extrabold [&_th]:!uppercase [&_th]:!tracking-[.11em] [&_th]:!text-[#8FBFA8]'
 
 // The filter strip from the handoff: a white band under the menu, its controls
 // all 38px on a 4px corner in the sage outline. Applied as one descendant rule
@@ -1188,8 +1347,8 @@ const SK_BAR =
   // weight and one corner. Hover lifts the border rather than the fill: a
   // filling control on a white strip reads as selected, which none of these
   // are until you open them.
-  '[&_[role=combobox]]:hover:!border-[#8FA79B] [&_[data-slot=date-picker]]:hover:!border-[#8FA79B] ' +
-  "[&_[role=combobox]]:!h-[38px] [&_[role=combobox]]:!rounded-[4px] [&_[role=combobox]]:!border-[#C3D2C6] [&_[role=combobox]]:!bg-white [&_[role=combobox]]:!text-[12.5px] [&_[role=combobox]]:!font-bold [&_[role=combobox]]:!text-[#0A1F17] " +
+  '[&_[data-slot=select-trigger]]:hover:!border-[#8FA79B] [&_[data-slot=date-picker]]:hover:!border-[#8FA79B] [&_[data-slot=select-trigger]]:!shadow-none ' +
+  "[&_[data-slot=select-trigger]]:!h-[38px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12.5px] [&_[data-slot=select-trigger]]:!font-bold [&_[data-slot=select-trigger]]:!text-[#0A1F17] " +
   // A DatePicker is a Popover trigger, not an <input> — it renders a Button
   // carrying data-slot="date-picker". Reaching it by that slot rather than by
   // element is the difference between the dates going mono and the SEARCH box
@@ -1235,7 +1394,7 @@ const SK_NOTE =
 // the handoff draws form fields at 42px against the strip's 38px, because
 // typing a quantity into something is a heavier act than narrowing a list.
 const SK_FORM =
-  "[&_[role=combobox]]:!h-[42px] [&_[role=combobox]]:!rounded-[4px] [&_[role=combobox]]:!border-[#C3D2C6] [&_[role=combobox]]:!bg-white [&_[role=combobox]]:!text-[12.5px] [&_[role=combobox]]:!font-semibold [&_[role=combobox]]:!text-[#0A1F17] " +
+  "[&_[data-slot=select-trigger]]:!h-[42px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[12.5px] [&_[data-slot=select-trigger]]:!font-semibold [&_[data-slot=select-trigger]]:!text-[#0A1F17] " +
   '[&_input]:!h-[42px] [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[12.5px] [&_input]:!font-semibold [&_input]:!text-[#0A1F17] ' +
   '[&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62]'
 
@@ -1536,21 +1695,23 @@ function OpeningStock({
           The prose that used to sit here now lives behind the (i). Four lines
           explaining WHY are worth reading once; after that they are four lines
           between the reader and the work. */}
-      <div className={cn('overflow-hidden rounded-xl border border-[#d9d2b8] shadow-sm', __WEB__ && '!rounded-[4px] !border-[#0B3D2E] !shadow-none')}>
-        <div className={cn('flex flex-wrap items-center gap-x-6 gap-y-4 bg-gradient-to-r from-[#1a2c56] to-[#2c4a8c] px-6 py-5', __WEB__ && '!bg-none !bg-[#0B3D2E]')}>
-          <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/15 ring-1 ring-inset ring-white/20', __WEB__ && '!rounded-[4px] !bg-[#C7F03F]/[.16] !ring-[#C7F03F]/25')}>
-            <Layers className={cn('h-5 w-5 text-white', __WEB__ && '!text-[#C7F03F]')} />
+      <div className={cn('overflow-hidden rounded-xl border border-[#d9d2b8] shadow-sm', __WEB__ && '!rounded-[4px] !border-[#D6CEF5] !shadow-none')}>
+        <div className={cn('flex flex-wrap items-center gap-x-6 gap-y-4 bg-gradient-to-r from-[#1a2c56] to-[#2c4a8c] px-6 py-5', __WEB__ && '!items-center !gap-x-4 !gap-y-2.5 !border-b !border-b-[#D6CEF5] !bg-none !bg-[#EDE9FB] !px-4 !py-3')}>
+          <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/15 ring-1 ring-inset ring-white/20', __WEB__ && '!h-auto !w-auto !bg-transparent !ring-0')}>
+            <Layers className={cn('h-5 w-5 text-white', __WEB__ && '!h-[19px] !w-[19px] !text-[#5B4BA8]')} />
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
-              <h3 className="text-[16px] font-bold leading-tight text-white">Stock brought forward</h3>
+              <h3 className={cn('text-[16px] font-bold leading-tight text-white', __WEB__ && '!text-[11px] !font-extrabold !uppercase !tracking-[.13em] !text-[#3D3179]')}>{__WEB__ ? 'Counted on the opening morning' : 'Stock brought forward'}</h3>
               <InfoTip
-                className="text-white/60 hover:text-white"
+                className={cn('text-white/60 hover:text-white', __WEB__ && '!text-[#5B4BA8] hover:!text-[#3D3179]')}
                 text="The register works out every balance from movements — purchases in, production, dispatches out. Anything already in the tanks before the books opened was never a movement, so it has to be told once. Until it is, oil consumed since that morning reads as stock the mill never had, which is what puts a product below zero."
               />
             </div>
-            <p className="mt-1 text-[12px] leading-relaxed text-white/65">
-              What was in the tanks the morning the books began.
+            <p className={cn('mt-1 text-[12px] leading-relaxed text-white/65', __WEB__ && '!mt-0.5 !text-[11.5px] !font-semibold !leading-[1.5] !text-[#4A3D8C]')}>
+              {__WEB__
+                ? 'Book stock here is derived entirely from movements, so a mill already running needs this count once — the register starts from it and never reaches behind it.'
+                : 'What was in the tanks the morning the books began.'}
             </p>
           </div>
 
@@ -1559,8 +1720,8 @@ function OpeningStock({
               fields. They used to run along the same row as the title with
               their labels beside them and a caption stacked under each, four
               text runs deep in the space of one. */}
-          <div className={cn('shrink-0 rounded-xl bg-white/[0.08] p-3.5 ring-1 ring-inset ring-white/15', __WEB__ && '!rounded-[4px]')}>
-            <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
+          <div className={cn('shrink-0 rounded-xl bg-white/[0.08] p-3.5 ring-1 ring-inset ring-white/15', __WEB__ && '!rounded-none !bg-transparent !p-0 !ring-0')}>
+            <div className={cn('flex flex-wrap items-end gap-x-4 gap-y-3', __WEB__ && '!items-center !gap-x-3')}>
               {/* The factory, not a company picker. Switching company used to
                   rebuild this sheet for the other set of books; there is one
                   sheet per site now, so a switcher here would look like it
@@ -1568,26 +1729,26 @@ function OpeningStock({
               {!!facName && (
                 <>
                   <div>
-                    <div className="mb-1.5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-white/55">
+                    <div className={cn('mb-1.5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-white/55', __WEB__ && '!mb-1 !text-[9px] !font-extrabold !tracking-[.13em] !text-[#5B4BA8]')}>
                       Counting for
                       <InfoTip
-                        className="text-white/45 hover:text-white"
+                        className={cn('text-white/45 hover:text-white', __WEB__ && '!text-[#8478C4] hover:!text-[#3D3179]')}
                         text="Which plant's tanks are being counted. Opening stock belongs to the factory, not to a company: every company trading through this site reads and writes the same sheet, because there is one set of tanks. Purchases, sales and the ledgers stay with the company that booked them."
                       />
                     </div>
-                    <div className="flex h-10 w-[15rem] items-center gap-2 rounded-md border border-white/20 bg-white/10 px-3 text-[13px] font-semibold text-white">
-                      <Factory className="h-4 w-4 shrink-0 text-white/60" />
+                    <div className={cn('flex h-10 w-[15rem] items-center gap-2 rounded-md border border-white/20 bg-white/10 px-3 text-[13px] font-semibold text-white', __WEB__ && '!h-9 !w-auto !min-w-[130px] !rounded-[4px] !border-[#C7BCF0] !bg-white !px-3 !text-[12.5px] !font-bold !text-[#3D3179]')}>
+                      <Factory className={cn('h-4 w-4 shrink-0 text-white/60', __WEB__ && '!text-[#5B4BA8]')} />
                       <span className="truncate">{facName}</span>
                     </div>
                   </div>
-                  <div className="h-10 w-px self-end bg-white/15" />
+                  <div className={cn('h-10 w-px self-end bg-white/15', __WEB__ && '!h-6 !self-center !bg-[#D6CEF5]')} />
                 </>
               )}
               <div>
-                <div className="mb-1.5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-white/55">
-                  <span>Struck on <span className="text-amber-300">*</span></span>
+                <div className={cn('mb-1.5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-white/55', __WEB__ && '!mb-1 !text-[9px] !font-extrabold !tracking-[.13em] !text-[#5B4BA8]')}>
+                  <span>Struck on <span className={cn('text-amber-300', __WEB__ && '!text-[#B3261E]')}>*</span></span>
                   <InfoTip
-                    className="text-white/45 hover:text-white"
+                    className={cn('text-white/45 hover:text-white', __WEB__ && '!text-[#8478C4] hover:!text-[#3D3179]')}
                     text="The morning the books officially begin. Nothing before it is reconciled against these figures, and every register opens its default period from this day."
                   />
                 </div>
@@ -1596,7 +1757,12 @@ function OpeningStock({
                     'w-[11.5rem] [&_button]:h-10 [&_button]:text-[13px] [&_button]:font-semibold [&_button]:text-white [&_button:hover]:bg-white/20',
                     asOf
                       ? '[&_button]:border-white/20 [&_button]:bg-white/10'
-                      : '[&_button]:border-amber-300 [&_button]:bg-amber-400/20'
+                      : '[&_button]:border-amber-300 [&_button]:bg-amber-400/20',
+                    __WEB__ &&
+                      cn(
+                        '!w-[150px] [&_button]:!h-9 [&_button]:!rounded-[4px] [&_button]:!bg-white [&_button]:!text-[12.5px] [&_button]:!font-bold [&_button]:!text-[#3D3179] [&_button:hover]:!bg-[#F8F6FE]',
+                        asOf ? '[&_button]:!border-[#C7BCF0]' : '[&_button]:!border-[#B3261E]'
+                      )
                   )}
                 >
                   <DatePicker value={asOf} onChange={setAsOf} />
@@ -1606,18 +1772,18 @@ function OpeningStock({
 
             {/* One footer for the notes those fields used to carry stacked
                 underneath them — the warning, if there is one, first. */}
-            <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] leading-snug">
+            <div className={cn('mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] leading-snug', __WEB__ && '!mt-1.5')}>
               {!!dateNote && (
                 <>
-                  <span className="flex items-center gap-1 font-semibold text-amber-200">
+                  <span className={cn('flex items-center gap-1 font-semibold text-amber-200', __WEB__ && '!font-bold !text-[#8A5300]')}>
                     <AlertTriangle className="h-3 w-3 shrink-0" />
                     {dateNote.text}
-                    <InfoTip className="text-amber-200/70 hover:text-amber-100" text={dateNote.tip} />
+                    <InfoTip className={cn('text-amber-200/70 hover:text-amber-100', __WEB__ && '!text-[#C2700A] hover:!text-[#8A5300]')} text={dateNote.tip} />
                   </span>
-                  <span className="text-white/25">·</span>
+                  <span className={cn('text-white/25', __WEB__ && '!text-[#C7BCF0]')}>·</span>
                 </>
               )}
-              <span className="text-white/50">every register opens from this day</span>
+              <span className={cn('text-white/50', __WEB__ && '!font-semibold !text-[#8478C4]')}>every register opens from this day</span>
             </div>
           </div>
         </div>
@@ -1642,7 +1808,57 @@ function OpeningStock({
               '!grid-cols-[repeat(auto-fit,minmax(min(100%,180px),1fr))] !gap-2.5 !border-t-0 !bg-transparent !p-4'
           )}
         >
-          {[
+          {(__WEB__
+            ? (() => {
+                const moved = rows.reduce((t, r) => t + (Number(r.movement_closing) || 0), 0)
+                const blanks = rows.length - stats.entered
+                const shortNames = rows
+                  .filter((r) => Number(r.shortfall) > 0.0005 && !answeredOf(Number(r.id)))
+                  .map((r) => String(r.name))
+                return [
+                  {
+                    accent: '#5B4BA8',
+                    fg: '#3D3179',
+                    label: 'Register opens at',
+                    tip: 'The tank figure plus the work already in process, plus any adjustment. The register opens at this total, and the Day close screen shows the same total as the physical count for this date.',
+                    value: <span>{formatNum(stats.total)}</span>,
+                    unit: 'MT',
+                    note:
+                      `${stats.entered} of ${rows.length} products counted` +
+                      (stats.value > 0 ? ` · ${formatINR(stats.value)}` : '')
+                  },
+                  {
+                    accent: '#0B3D2E',
+                    fg: moved < -0.0005 ? '#8C2F26' : '#0A1F17',
+                    label: 'Movements since',
+                    tip: 'Everything the register has booked after the opening date — purchases in, production, dispatches out. Where this is negative it is the hole the opening figures have to fill; a product consumed before it was ever booked in reads as stock the mill never had.',
+                    value: <span>{formatNum(moved)}</span>,
+                    unit: 'MT',
+                    note: asOf ? `everything booked after ${formatDate(asOf)}` : 'pick the opening date first'
+                  },
+                  {
+                    accent: '#B3261E',
+                    fg: stats.stillShort ? '#B3261E' : '#0B6B45',
+                    label: 'Still closing negative',
+                    tip: 'How many products would STILL close below nil with what is typed right now. This is the number to drive to zero: while it is above zero, the register carries balances the mill never had.',
+                    value: <span>{stats.stillShort}</span>,
+                    unit: stats.stillShort === 1 ? 'product' : 'products',
+                    note: shortNames.length
+                      ? `drive this to nil: ${shortNames.slice(0, 3).join(', ')}${shortNames.length > 3 ? ` +${shortNames.length - 3} more` : ''}`
+                      : 'every product closes at nil or above'
+                  },
+                  {
+                    accent: '#C2700A',
+                    fg: blanks ? '#8A5300' : '#0B6B45',
+                    label: 'Not counted yet',
+                    tip: 'Products with nothing entered at all. A blank is not the same as a counted nil: blank stays off the register entirely, while a typed 0 says the tank was looked at and found empty.',
+                    value: <span>{blanks}</span>,
+                    unit: blanks === 1 ? 'product' : 'products',
+                    note: 'blank is not the same as a counted nil'
+                  }
+                ]
+              })()
+            : [
             {
               accent: '#5B4BA8',
               fg: '#3D3179',
@@ -1717,7 +1933,7 @@ function OpeningStock({
               value: <span className="text-[#1a2c56]">{formatINR(stats.value)}</span>,
               note: stats.value > 0 ? 'what the ledger would open at' : 'rates are optional — leave them blank to skip'
             }
-          ].map((k) => (
+          ]).map((k) => (
             <div
               key={k.label}
               className={cn(
@@ -1747,6 +1963,11 @@ function OpeningStock({
                 style={__WEB__ ? { color: k.fg } : undefined}
               >
                 {k.value}
+                {__WEB__ && 'unit' in k && !!k.unit && (
+                  <span className="ml-1.5 !text-[11px] !font-bold !text-[#5A6B62]" style={{ color: '#5A6B62' }}>
+                    {k.unit}
+                  </span>
+                )}
               </div>
               <div
                 className={cn(
@@ -1869,7 +2090,19 @@ function OpeningStock({
             <div className="overflow-x-auto">
               <table className={cn('ruled-cols w-full min-w-[1200px] bg-[#fffdf4] text-[13px]', __WEB__ && cn('!bg-white', '[&_input:focus]:!border-[#5B4BA8] [&_input:focus]:!ring-[#5B4BA8]/20 [&_input]:!rounded-[3px] [&_input]:!border-[#DCE7DB]'))}>
                 <thead>
-                  <tr className={cn('border-b border-[#e0d8bd] bg-[#faf6e8] text-left text-[10px] uppercase tracking-widest text-muted-foreground', __WEB__ && '!border-b-0 !bg-[#5B4BA8] !text-[11px] !font-extrabold !tracking-[.07em] !text-[#DAD2F5]')}>
+                  {/* What the sheet is actually asking, named once above the
+                      columns: what has happened since that morning, what was
+                      counted on it, and what the register therefore opens at. */}
+                  {__WEB__ && (
+                    <tr className="!bg-[#3D3179] text-left text-[11px] font-extrabold uppercase tracking-[.1em] text-[#C7BCF0]">
+                      <th className="h-[30px] p-0" />
+                      <th className="h-[30px] border-l border-l-white/20 bg-white/[.06] p-0 text-center">Since opening</th>
+                      <th colSpan={3} className="h-[30px] border-l border-l-white/20 bg-white/10 p-0 text-center text-white">Counted that morning</th>
+                      <th className="h-[30px] border-l border-l-white/20 bg-[#C7F03F]/[.16] p-0 text-center text-[#DDF58F]">Register opens at</th>
+                      <th colSpan={3} className="h-[30px] border-l border-l-white/20 p-0" />
+                    </tr>
+                  )}
+                  <tr className={cn('border-b border-[#e0d8bd] bg-[#faf6e8] text-left text-[10px] uppercase tracking-widest text-muted-foreground', __WEB__ && '!border-b-0 !bg-[#5B4BA8] !text-[12px] !font-extrabold !tracking-[.05em] !text-[#DAD2F5]')}>
                     <th className="pin-col min-w-[190px] px-3 py-2">Product</th>
                     <th className="w-[110px] px-3 py-2 text-right">
                       <span className="inline-flex items-center gap-1">
@@ -1951,24 +2184,54 @@ function OpeningStock({
                             ) : (
                               <span className="h-3.5 w-3.5 shrink-0" />
                             )}
-                            <span className="font-medium text-[#1a2c56]">{String(r.name)}</span>
-                            {r.code ? (
+                            <span className={cn('font-medium text-[#1a2c56]', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>{String(r.name)}</span>
+                            {!__WEB__ && r.code ? (
                               <span className="doc-ref rounded bg-[#f1ecd9] px-1.5 text-[10.5px] text-muted-foreground">
                                 {String(r.code)}
                               </span>
                             ) : null}
                             {short > 0.0005 && !answered && (
-                              <Badge variant="destructive" className="text-[10px]">Short</Badge>
+                              <Badge variant="destructive" className={cn('text-[10px]', __WEB__ && '!rounded-[2px] !border !border-[#F0D6D4] !bg-[#FDF3F2] !px-[6px] !py-[2px] !text-[9.5px] !font-extrabold !tracking-[.05em] !text-[#B3261E]')}>
+                                {__WEB__ ? 'STILL SHORT' : 'Short'}
+                              </Badge>
+                            )}
+                            {/* Blank and zero are different answers, and only
+                                one of them means the tank was looked at. */}
+                            {__WEB__ && !answered && (
+                              <span className="rounded-[2px] bg-[#EAF0E9] px-[6px] py-[2px] text-[9.5px] font-extrabold tracking-[.05em] text-[#5A6B62]">
+                                NOT COUNTED
+                              </span>
                             )}
                           </div>
+                          {/* Which product this actually is. RPL appears twice
+                              in this mill — once raw, once finished — so the
+                              name alone does not identify the row. */}
+                          {__WEB__ && (
+                            <div className="doc-ref mt-[3px] text-[10.5px] font-semibold text-[#5A6B62]">
+                              {[r.code ? String(r.code) : null, CAT_LABEL[String(r.category)] || null, 'MT']
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </div>
+                          )}
                         </td>
                         <td
                           className={cn(
                             'whitespace-nowrap px-3 py-1.5 text-right tabular-nums',
-                            Number(r.movement_closing) < -0.0005 ? 'font-semibold text-rose-700' : 'text-muted-foreground'
+                            Number(r.movement_closing) < -0.0005 ? 'font-semibold text-rose-700' : 'text-muted-foreground',
+                            __WEB__ && cn('doc-ref !text-[12.5px] !font-bold', SK_VRULE, '!bg-[#FCFDFB]')
                           )}
                         >
                           {formatNum(r.movement_closing)}
+                          {/* A bare negative here is the most misread figure on
+                              the page: it is not a loss, it is the size of the
+                              opening this row still needs. Naming it is the
+                              difference between "something is wrong" and "type
+                              this much". */}
+                          {__WEB__ && (
+                            <span className="mt-[2px] block text-[9px] font-extrabold uppercase tracking-[.06em] text-[#8FA79B]">
+                              {Number(r.movement_closing) < -0.0005 ? 'the hole to fill' : 'net added'}
+                            </span>
+                          )}
                         </td>
                         <td className="px-3 py-1.5">
                           <div className="flex items-center justify-end gap-1.5">
@@ -2547,7 +2810,19 @@ function DayCloseSection({
             caption under the total, where it belongs: it qualifies the figure
             rather than competing with it. */}
         {__WEB__ ? (
-          <div className="grid flex-1 gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr))]">
+          <div className="min-w-0 flex-1">
+          <KpiFold
+            line={[
+              { k: 'Book', v: `${formatNum(rows.reduce((a, r) => a + (Number(r.book_qty) || 0), 0))} MT` },
+              { k: 'Counted', v: `${formatNum(counted.reduce((a, r) => a + totalOf(r), 0))} MT` },
+              {
+                k: 'Difference',
+                v: formatNum(Math.abs(totalDiff) < 0.0005 ? 0 : totalDiff),
+                fg: Math.abs(totalDiff) < 0.0005 ? '#0B6B45' : '#8A5300'
+              },
+              { k: 'Value', v: formatINR(totalActualValue), fg: '#0B6B45' }
+            ]}
+          >
             <StockKpi
               label="Book qty"
               value={formatNum(rows.reduce((a, r) => a + (Number(r.book_qty) || 0), 0))}
@@ -2583,6 +2858,7 @@ function DayCloseSection({
               accent="#12855A"
               fg="#0B6B45"
             />
+          </KpiFold>
           </div>
         ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 flex-1">
@@ -2628,7 +2904,7 @@ function DayCloseSection({
                 follows from it — the four readings this sheet exists to
                 compare, named so the eye can find them. */}
             {__WEB__ && (
-              <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[28px] [&>th]:!p-0 [&>th]:!text-[10px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.13em] [&>th]:!text-[#8FBFA8]">
+              <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[30px] [&>th]:!p-0 [&>th]:!text-[11px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.1em] [&>th]:!text-[#8FBFA8]">
                 <TableHead colSpan={2} />
                 <TableHead className={cn('!text-center', SK_RULE, SK_OPEN)}>Books</TableHead>
                 <TableHead colSpan={3} className={cn('!text-center !text-[#C7F03F]', SK_RULE, SK_CLOSE)}>Counted</TableHead>
@@ -2814,10 +3090,15 @@ function SkuMultiSelect({
       <PopoverTrigger asChild>
         <button
           type="button"
+          // The same hook select.tsx exposes, so a strip that sizes its
+          // dropdowns sizes this one too. Without it this was the one control
+          // on the row still at 32px with a 6px corner.
+          data-slot="select-trigger"
           className={cn(
             'flex h-8 min-w-[11rem] max-w-xs items-center gap-1.5 rounded-md border bg-white px-2.5 text-[13px]',
             'focus:outline-none focus:ring-2 focus:ring-primary/40',
-            !value.length && 'text-muted-foreground'
+            !value.length && 'text-muted-foreground',
+            __WEB__ && '!min-w-[140px] !max-w-[190px] !shrink-0'
           )}
         >
           <span className="truncate">
@@ -3044,10 +3325,10 @@ function SkuOpeningStock({ onSaved }: { onSaved: () => void }): React.JSX.Elemen
             </p>
           </div>
           <div className="shrink-0 rounded-xl bg-white/[0.08] p-3.5 ring-1 ring-inset ring-white/15">
-            <div className="mb-1.5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-white/55">
+            <div className={cn('mb-1.5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-white/55', __WEB__ && '!mb-1 !text-[9px] !font-extrabold !tracking-[.13em] !text-[#5B4BA8]')}>
               <span>Counted on <span className="text-amber-300">*</span></span>
               <InfoTip
-                className="text-white/45 hover:text-white"
+                className={cn('text-white/45 hover:text-white', __WEB__ && '!text-[#8478C4] hover:!text-[#3D3179]')}
                 text="The morning the shelf was counted. Nothing before it is reconciled against these figures. It defaults to the day the tanks were counted, because the two halves of one stocktake belong on the same date."
               />
             </div>
@@ -3158,7 +3439,7 @@ function SkuOpeningStock({ onSaved }: { onSaved: () => void }): React.JSX.Elemen
         <div className="overflow-x-auto">
           <table className={cn('ruled-cols w-full min-w-[900px] bg-[#fffdf4] text-[13px]', __WEB__ && cn('!bg-white', '[&_input:focus]:!border-[#5B4BA8] [&_input:focus]:!ring-[#5B4BA8]/20 [&_input]:!rounded-[3px] [&_input]:!border-[#DCE7DB]'))}>
             <thead>
-              <tr className={cn('border-b border-[#e0d8bd] bg-[#faf6e8] text-left text-[10px] uppercase tracking-widest text-muted-foreground', __WEB__ && '!border-b-0 !bg-[#5B4BA8] !text-[11px] !font-extrabold !tracking-[.07em] !text-[#DAD2F5]')}>
+              <tr className={cn('border-b border-[#e0d8bd] bg-[#faf6e8] text-left text-[10px] uppercase tracking-widest text-muted-foreground', __WEB__ && '!border-b-0 !bg-[#5B4BA8] !text-[12px] !font-extrabold !tracking-[.05em] !text-[#DAD2F5]')}>
                 <th className="pin-col min-w-[220px] px-3 py-2">SKU</th>
                 <th className="w-[110px] px-3 py-2 text-right">Pack</th>
                 <th className="w-[130px] px-3 py-2 text-right">
@@ -3628,8 +3909,9 @@ function SkuStock(): React.JSX.Element {
           So they are grouped by what the reader is doing, and each group is one
           strip: WHICH VIEW AND WHEN (with its actions), WHAT IS IN VIEW, and
           WHAT IT COMES TO (with the warning that belongs to it). */}
-      <div className={cn('flex flex-wrap items-center gap-2', __WEB__ && SK_BAR)}>
-        <div className={cn('inline-flex shrink-0 rounded-lg border p-0.5', __WEB__ && SK_SEG)}>
+      <div className={cn('flex flex-wrap items-center gap-2', __WEB__ && cn(SK_BAR, '!gap-2.5'))}>
+        {!__WEB__ && (
+        <div className="inline-flex shrink-0 rounded-lg border p-0.5">
           {(
             [
               ['register', 'Register'],
@@ -3642,23 +3924,23 @@ function SkuStock(): React.JSX.Element {
               onClick={() => setSkuView(k)}
               className={cn(
                 'rounded-md px-3 py-1 text-[12.5px] font-semibold transition',
-                skuView === k ? 'bg-[#1a2c56] text-white' : 'text-muted-foreground hover:text-foreground',
-                __WEB__ && cn(SK_SEG_ITEM, skuView === k ? SK_SEG_ON : SK_SEG_OFF)
+                skuView === k ? 'bg-[#1a2c56] text-white' : 'text-muted-foreground hover:text-foreground'
               )}
             >
               {label}
             </button>
           ))}
         </div>
+        )}
         {skuView === 'register' && (
           <>
-        <span className="mx-0.5 hidden h-6 w-px shrink-0 bg-border sm:block" />
+        {!__WEB__ && <span className="mx-0.5 hidden h-6 w-px shrink-0 bg-border sm:block" />}
         <div className={cn('inline-flex rounded-lg border p-0.5', __WEB__ && SK_SEG)}>
           {(
             [
-              ['day', 'Day wise'],
+              ['day', __WEB__ ? 'Day' : 'Day wise'],
               ['range', 'Range'],
-              ['all', 'All time']
+              ['all', __WEB__ ? 'All' : 'All time']
             ] as const
           ).map(([k, label]) => (
             <button
@@ -3747,7 +4029,50 @@ function SkuStock(): React.JSX.Element {
             </Button>
           </div>
         )}
-        <div className="ml-auto flex items-center gap-2">
+        {__WEB__ && (
+          <>
+            <span className="mx-0.5 hidden h-[26px] w-px shrink-0 bg-[#DCE7DB] sm:block" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search SKU…"
+              className="!h-[38px] !min-w-[130px] !flex-1 !rounded-[4px] !border-[#C3D2C6] !text-[12.5px] !font-medium"
+            />
+            <SkuMultiSelect
+              skus={rows}
+              value={skuPick}
+              onChange={(v) => {
+                allPicked.current = v.length === rows.length
+                setSkuPick(v)
+              }}
+            />
+            {/* A switch with a label beside it was two objects for one binary,
+                and it did not line up with anything else on the strip. It is
+                the same toggle Book Stock uses now. */}
+            <Button
+              type="button"
+              variant={hideEmpty ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setHideEmpty(!hideEmpty)}
+              className={cn(
+                'shrink-0',
+                hideEmpty
+                  ? '!h-[38px] !gap-[7px] !rounded-[4px] !border !border-[#0B3D2E] !bg-[#0B3D2E] !px-[13px] !text-[12.5px] !font-bold !text-white hover:!bg-[#072B20]'
+                  : cn(SK_BTN, '!shrink-0 !text-[#5A6B62]')
+              )}
+            >
+              {hideEmpty ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              Untouched
+            </Button>
+            <span className="shrink-0 whitespace-nowrap text-[11px] font-bold text-[#8FA79B]">
+              {shown.length === rows.length
+                ? `${rows.length} SKUs`
+                : `${shown.length}/${rows.length}`}
+            </span>
+            <span className="mx-0.5 hidden h-[26px] w-px shrink-0 bg-[#DCE7DB] sm:block" />
+          </>
+        )}
+        <div className={cn('ml-auto flex items-center gap-2', __WEB__ && '!ml-0 !gap-2')}>
           <input
             ref={fileRef}
             type="file"
@@ -3758,17 +4083,34 @@ function SkuStock(): React.JSX.Element {
               if (f) void importCountSheet(f)
             }}
           />
-          <Button variant="outline" size="sm" onClick={downloadCountSheet} disabled={!shown.length}>
-            <Download className="h-4 w-4" /> Count sheet
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={downloadCountSheet}
+            disabled={!shown.length}
+            title={__WEB__ ? 'Download a blank count sheet for this day' : undefined}
+            className={cn(__WEB__ && '!h-[38px] !w-[38px] !rounded-[4px] !border-[#C3D2C6] !p-0 !text-[#33473E] hover:!bg-[#F7FAF6]')}
+          >
+            <Download className="h-4 w-4" /> {!__WEB__ && 'Count sheet'}
           </Button>
           <Button
             size="sm"
-            className="bg-emerald-600 hover:bg-emerald-700"
+            className={cn('bg-emerald-600 hover:bg-emerald-700', __WEB__ && cn(SK_BTN_GO, '!shrink-0'))}
             onClick={() => fileRef.current?.click()}
             disabled={importing}
           >
-            <Upload className="h-4 w-4" /> {importing ? 'Uploading…' : 'Upload closing'}
+            <Upload className="h-4 w-4" /> {importing ? 'Uploading…' : __WEB__ ? 'Upload' : 'Upload closing'}
           </Button>
+          {__WEB__ && (
+            <HelpTip
+              className="mr-0.5 shrink-0 !text-[#8FA79B] hover:!text-[#0B3D2E] [&_svg]:!h-[17px] [&_svg]:!w-[17px]"
+              text={
+                dayMode
+                  ? 'Day wise: opening (brought forward) + packed in on this date − dispatched on this date = closing. Rows with movement on the day are tinted. Closing (MT) = pieces × pack size (1 L counted as 1 KG). Use the sliders icon for one SKU, or Count sheet → Upload closing to set the whole day at once.'
+                  : 'All time: packs added − packs sold on dispatched PACKED sales = on hand. On hand (MT) = pieces × pack size (1 L counted as 1 KG).'
+              }
+            />
+          )}
           <ExcelButton
             filename={`packed-sku-stock-${spanMode === 'range' ? `${skuRange.from || 'start'}-to-${skuRange.to || todayISO()}` : sheetDate}`}
             sheetName="Packed SKU stock"
@@ -3808,18 +4150,21 @@ function SkuStock(): React.JSX.Element {
         )}
       </div>
 
-      {skuView === 'opening' ? (
+      {!__WEB__ && skuView === 'opening' ? (
         <SkuOpeningStock onSaved={() => void load()} />
       ) : (
       <>
-      {/* Row 2: what is in view. Quieter than the row above it on purpose —
-          these narrow the list, they do not change what is being asked. */}
-      <div className={cn('flex flex-wrap items-center gap-2 border-t pt-2', __WEB__ && cn(SK_BAR, '!mt-2'))}>
+      {/* The filters that used to sit here are on the strip above, which is
+          where they belong: narrowing the list and choosing the period are the
+          same act of deciding what to look at. Desktop keeps its own second
+          row — it has less width to play with and no reason to change. */}
+      {!__WEB__ && (
+      <div className="flex flex-wrap items-center gap-2 border-t pt-2">
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search SKU or product…"
-          className={cn('h-8 w-52 text-[13px]', __WEB__ && '!w-64')}
+          className="h-8 w-52 text-[13px]"
         />
         <SkuMultiSelect
           skus={rows}
@@ -3833,15 +4178,13 @@ function SkuStock(): React.JSX.Element {
           <Switch checked={hideEmpty} onCheckedChange={setHideEmpty} />
           Hide untouched
         </label>
-        {/* The SKU count was a stat card of its own, which spent a fifth of the
-            band on a number nobody reconciles. It belongs beside the filters
-            that change it. */}
         <span className="ml-auto text-[12px] text-muted-foreground">
           {shown.length === rows.length
             ? `${rows.length} SKUs`
             : `${shown.length} of ${rows.length} SKUs`}
         </span>
       </div>
+      )}
 
       {/* The band totals WHAT IS ON SCREEN. It used to total every SKU in the
           mill regardless of the filters right above it, so narrowing to one
@@ -3863,7 +4206,22 @@ function SkuStock(): React.JSX.Element {
                — two different questions wedged into one figure, and neither
                could be read at a glance. They get a card each. */
             <div className="space-y-2.5">
-              <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr))]">
+              <KpiFold
+                line={[
+                  { k: 'Closing', v: `${formatNum(sum(shown, handOf))} pcs` },
+                  { k: 'Tonnage', v: `${formatNum(shownMT)} MT` },
+                  { k: dayMode ? 'Packed in' : 'Packed', v: formatNum(sum(shown, inOf)), fg: '#0B6B45' },
+                  { k: dayMode ? 'Dispatched' : 'Sold', v: formatNum(sum(shown, outOf)), fg: '#8C2F26' },
+                  {
+                    k: 'Below zero',
+                    v: negatives ? `${negatives} SKU${negatives === 1 ? '' : 's'}` : 'none',
+                    fg: negatives ? '#B3261E' : '#0B6B45',
+                    tip: negatives
+                      ? 'More has been dispatched than was ever packed in. Either the packing was never entered, or the shelf was never counted. Open the SKU with the sliders icon to see the entries behind it, or strike an opening count on Opening Stock → Packed SKU if the packs predate the books.'
+                      : undefined
+                  }
+                ]}
+              >
                 <StockKpi
                   label={dayMode ? 'Closing' : 'On the shelf'}
                   value={formatNum(sum(shown, handOf))}
@@ -3894,8 +4252,8 @@ function SkuStock(): React.JSX.Element {
                   accent="#B3261E"
                   fg="#8C2F26"
                 />
-              </div>
-              {negatives > 0 && (
+              </KpiFold>
+              {!__WEB__ && negatives > 0 && (
                 <span className="inline-flex items-center gap-1.5 rounded-[3px] border border-[#F0D6D4] bg-[#FDF3F2] px-2.5 py-1 text-[11.5px] font-bold text-[#B3261E]">
                   <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
                   {negatives} below zero
@@ -3958,12 +4316,12 @@ function SkuStock(): React.JSX.Element {
                 table. Closing spans two because pieces and tonnage are one
                 answer counted twice. */}
             {__WEB__ && (
-              <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[28px] [&>th]:!p-0 [&>th]:!text-[10px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.13em] [&>th]:!text-[#8FBFA8]">
+              <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[30px] [&>th]:!p-0 [&>th]:!text-[11px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.1em] [&>th]:!text-[#8FBFA8]">
                 <TableHead colSpan={3} />
                 {dayMode && <TableHead className={cn('!text-center', SK_RULE, SK_OPEN)}>Open</TableHead>}
                 <TableHead className={cn('!text-center !text-[#9FE3BF]', SK_RULE, SK_IN)}>In</TableHead>
                 <TableHead className={cn('!text-center !text-[#F0AFAA]', SK_RULE, SK_OUT)}>Out</TableHead>
-                <TableHead colSpan={2} className={cn('!text-center !text-[#C7F03F]', SK_RULE, SK_CLOSE)}>Close</TableHead>
+                <TableHead className={cn('!text-center !text-[#C7F03F]', SK_RULE, SK_CLOSE)}>Close</TableHead>
                 <TableHead />
               </TableRow>
             )}
@@ -3985,11 +4343,13 @@ function SkuStock(): React.JSX.Element {
                 {dayMode ? 'Dispatch' : 'Sold'}
               </TableHead>
               <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && cn(SK_RULE, SK_CLOSE, '!text-[#C7F03F]'))}>
-                {dayMode ? 'Closing (pcs)' : 'On hand (pcs)'}
+                {dayMode ? 'Closing' : 'On hand'}
               </TableHead>
-              <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && cn(SK_CLOSE, '!text-[#C7F03F]'))}>
+              {!__WEB__ && (
+              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">
                 {dayMode ? 'Closing (MT)' : 'On hand (MT)'}
               </TableHead>
+              )}
               <TableHead className={cn('w-[64px] text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && SK_RULE)}>
                 Update
               </TableHead>
@@ -3997,10 +4357,10 @@ function SkuStock(): React.JSX.Element {
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={dayMode ? 9 : 8} className="py-12 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={(dayMode ? 9 : 8) - (__WEB__ ? 1 : 0)} className="py-12 text-center text-muted-foreground">Loading…</TableCell></TableRow>
             ) : shown.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={dayMode ? 9 : 8} className="py-12 text-center text-muted-foreground">
+                <TableCell colSpan={(dayMode ? 9 : 8) - (__WEB__ ? 1 : 0)} className="py-12 text-center text-muted-foreground">
                   {rows.length === 0
                     ? 'No SKUs. Add packagings under Masters → Packed SKU first.'
                     : 'No SKU matches this search.'}
@@ -4025,6 +4385,20 @@ function SkuStock(): React.JSX.Element {
                   // was simply wrong.
                   const asCases = (pieces: number): string =>
                     `${formatNum(pieces)} ${pieceLabel(r)}`
+                  // Pieces and tonnage are two different questions and the row
+                  // was only answering the second one at Closing. A pack count
+                  // means nothing across SKUs of different sizes — 45 boxes of
+                  // 8.4kg and 45 tins of 15kg are not comparable quantities —
+                  // so every count states what it weighs underneath it.
+                  const mtOf = (pieces: number): number =>
+                    (pieces * Number(r.base_per_pouch || 0)) / 1000
+                  const mtLine = (pieces: number): React.JSX.Element | null =>
+                    Math.abs(pieces) > 1e-9 && Number(r.base_per_pouch || 0) > 0 ? (
+                      <span className="whitespace-nowrap text-[11px] font-semibold text-[#33473E]">
+                        <span className="text-[#A8B8AE]">{' / '}</span>
+                        {formatNum(mtOf(pieces))} MT
+                      </span>
+                    ) : null
                   // Who took it. One line per invoice, so a party appearing on
                   // two invoices shows as two lines rather than one lump.
                   const outLines = ((part?.dispatch || []) as Row[]).map((dr) => ({
@@ -4106,6 +4480,7 @@ function SkuStock(): React.JSX.Element {
                           ) : (
                             '—'
                           )}
+                          {__WEB__ && mtLine(Number(r.opening) || 0)}
                         </TableCell>
                       )}
                       <TableCell className={cn('text-right font-medium tabular-nums text-emerald-700', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BIN))}>
@@ -4124,6 +4499,7 @@ function SkuStock(): React.JSX.Element {
                         ) : (
                           '—'
                         )}
+                        {__WEB__ && mtLine(inQty)}
                       </TableCell>
                       <TableCell className={cn('text-right font-medium tabular-nums text-red-600', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BOUT))}>
                         {outQty ? (
@@ -4137,6 +4513,7 @@ function SkuStock(): React.JSX.Element {
                         ) : (
                           '—'
                         )}
+                        {__WEB__ && mtLine(outQty)}
                       </TableCell>
                       <TableCell className={cn('text-right font-bold tabular-nums', onHand < -1e-6 ? 'text-red-600' : 'text-slate-900', __WEB__ && cn('doc-ref !text-[13px] !font-bold', SK_BRULE, SK_BCLOSE, onHand < -1e-6 ? '!text-[#B3261E]' : '!text-[#0A1F17]'))}>
                         <CellWithWorkings
@@ -4206,8 +4583,14 @@ function SkuStock(): React.JSX.Element {
                             ) : undefined
                           }
                         />
+                        {__WEB__ && mtLine(onHand)}
                       </TableCell>
-                      <TableCell className={cn('text-right tabular-nums text-violet-700', __WEB__ && cn(SK_NUM, SK_BCLOSE, '!text-[#33473E]'))}>{formatNum(skuMT(r))}</TableCell>
+                      {/* ...so the column that existed only to carry it goes.
+                          Two cells side by side saying the same thing is worse
+                          than either of them alone. */}
+                      {!__WEB__ && (
+                      <TableCell className="text-right tabular-nums text-violet-700">{formatNum(skuMT(r))}</TableCell>
+                      )}
                       <TableCell className="text-right">
                         <Button
                           variant="ghost"
@@ -4232,10 +4615,18 @@ function SkuStock(): React.JSX.Element {
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#F0AFAA]'))}>
                     {formatNum(shown.reduce((s, r) => s + (dayMode ? Number(r.sold_on) || 0 : Number(r.sold) || 0), 0))}
                   </TableCell>
-                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#C7F03F]'))}>
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, SK_CLOSE, '!font-bold', '!text-[#C7F03F]'))}>
                     {formatNum(shown.reduce((s, r) => s + (Number(r.on_hand) || 0), 0))}
+                    {__WEB__ && (
+                      <span className="whitespace-nowrap text-[11px] font-semibold text-[#DDF58F]">
+                        <span className="text-[#8FBFA8]">{' / '}</span>
+                        {formatNum(shownMT)} MT
+                      </span>
+                    )}
                   </TableCell>
-                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_CLOSE, '!font-bold !text-[#C7F03F]'))}>{formatNum(shownMT)} MT</TableCell>
+                  {!__WEB__ && (
+                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(shownMT)} MT</TableCell>
+                  )}
                   <TableCell />
                 </TableRow>
               </>
@@ -4243,11 +4634,13 @@ function SkuStock(): React.JSX.Element {
           </TableBody>
         </Table>
       </div>
+      {!__WEB__ && (
       <p className="text-xs text-muted-foreground">
         {dayMode
           ? 'Day wise: opening (brought forward) + packed in on this date − dispatched on this date = closing. Rows with movement on the day are tinted. Closing (MT) = pieces × pack size (1 L counted as 1 KG). Use the sliders icon for one SKU, or Count sheet → Upload closing to set the whole day at once.'
           : 'All time: packs added − packs sold on dispatched PACKED sales = on hand. On hand (MT) = pieces × pack size (1 L counted as 1 KG).'}
       </p>
+      )}
       </>
       )}
 
@@ -4729,7 +5122,14 @@ function MncStock(): React.JSX.Element {
           They were MiniStats — a different, smaller object saying the same
           kind of thing — which made this tab look like a different app. */}
       {__WEB__ ? (
-        <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr))]">
+        <KpiFold
+          line={[
+            { k: 'Parties', v: String(byParty.length) },
+            { k: 'Deposited', v: `${formatNum(tot.deposited)} MT`, fg: '#0B6B45' },
+            { k: 'Invoiced', v: `${formatNum(tot.invoiced)} MT`, fg: '#8C2F26' },
+            { k: mncRanged ? 'Closing' : 'Balance', v: `${formatNum(tot.balance)} MT`, fg: '#3D3179' }
+          ]}
+        >
           <StockKpi
             label="Parties"
             value={String(byParty.length)}
@@ -4762,7 +5162,7 @@ function MncStock(): React.JSX.Element {
             accent="#3D3179"
             fg="#3D3179"
           />
-        </div>
+        </KpiFold>
       ) : (
       <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
         <MiniStat label="Parties" value={String(byParty.length)} tone="violet" />
@@ -4821,12 +5221,12 @@ function MncStock(): React.JSX.Element {
         >
           <TableHeader>
             <TableRow>
-              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-[10px] font-semibold uppercase tracking-wide text-violet-900', __WEB__ && '!bg-[#3D3179] !text-[11px] !font-extrabold !tracking-[.07em] !text-white')}>Party / product</TableHead>
-              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && '!bg-[#3D3179] !text-[11px] !font-extrabold !tracking-[.07em] !text-[#C7BCF0]')}>Opening</TableHead>
-              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-emerald-700', __WEB__ && '!bg-[#3D3179] !text-[11px] !font-extrabold !tracking-[.07em] !text-[#9FE3BF]')}>Deposited</TableHead>
-              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-rose-700', __WEB__ && '!bg-[#3D3179] !text-[11px] !font-extrabold !tracking-[.07em] !text-[#F0AFAA]')}>Invoiced</TableHead>
-              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-violet-900', __WEB__ && '!bg-[#3D3179] !text-[11px] !font-extrabold !tracking-[.07em] !text-white')}>{mncRanged ? 'Closing' : 'Balance'}</TableHead>
-              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-[10px] font-semibold uppercase tracking-wide text-violet-900', __WEB__ && '!bg-[#3D3179] !text-[11px] !font-extrabold !tracking-[.07em] !text-white')}>UOM</TableHead>
+              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-[10px] font-semibold uppercase tracking-wide text-violet-900', __WEB__ && '!bg-[#3D3179] !text-[12px] !font-extrabold !tracking-[.05em] !text-white')}>Party / product</TableHead>
+              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && '!bg-[#3D3179] !text-[12px] !font-extrabold !tracking-[.05em] !text-[#C7BCF0]')}>Opening</TableHead>
+              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-emerald-700', __WEB__ && '!bg-[#3D3179] !text-[12px] !font-extrabold !tracking-[.05em] !text-[#9FE3BF]')}>Deposited</TableHead>
+              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-rose-700', __WEB__ && '!bg-[#3D3179] !text-[12px] !font-extrabold !tracking-[.05em] !text-[#F0AFAA]')}>Invoiced</TableHead>
+              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-right text-[10px] font-semibold uppercase tracking-wide text-violet-900', __WEB__ && '!bg-[#3D3179] !text-[12px] !font-extrabold !tracking-[.05em] !text-white')}>{mncRanged ? 'Closing' : 'Balance'}</TableHead>
+              <TableHead className={cn('sticky top-0 z-20 bg-violet-100 text-[10px] font-semibold uppercase tracking-wide text-violet-900', __WEB__ && '!bg-[#3D3179] !text-[12px] !font-extrabold !tracking-[.05em] !text-white')}>UOM</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -5436,15 +5836,34 @@ function Transfers(): React.JSX.Element {
 }
 
 export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => void }): React.JSX.Element {
-  const [stockGroup, setStockGroup] = useState<'book' | 'actual'>('book')
-  const [tab, setTab] = useState('raw')
-  const [bookView, setBookView] = useState<'register' | 'opening'>('register')
-  // The four figures above the register, folded away by default. They are a
-  // summary of the table right below them, so on a laptop they were costing a
-  // third of the screen to restate what the reader had come to read. Collapsed
-  // still says all four — as a line rather than four cards — which is enough
-  // to notice a negative balance and open it.
-  const [kpiOpen, setKpiOpen] = useState(false)
+  const [stockGroup, setStockGroup] = useState<'book' | 'actual'>(() =>
+    readStockView('group', ['book', 'actual'] as const, 'book')
+  )
+  // Explicitly a string: Tabs' onValueChange hands back a plain string, and
+  // letting the restore narrow this to a union makes setTab unassignable to it.
+  const [tab, setTab] = useState<string>(() =>
+    readStockView(
+      'tab',
+      ['raw', 'intermediate', 'finished', 'sku', 'mnc', 'transfers', 'dayclose'] as const,
+      'raw'
+    )
+  )
+  const [bookView, setBookView] = useState<'register' | 'opening'>(() =>
+    readStockView('bookView', ['register', 'opening'] as const, 'register')
+  )
+  // Which opening sheet: the tanks, or the packed shelf. The packed one used
+  // to hide behind a picker on the Packed SKU strip, which put "where the
+  // packed register starts" inside the packed register.
+  const [openingTab, setOpeningTab] = useState<'products' | 'sku'>(() =>
+    readStockView('openingTab', ['products', 'sku'] as const, 'products')
+  )
+
+  // Written as one object so the four can never be restored out of step with
+  // each other — a saved tab of 'sku' under a saved group of 'book' would show
+  // a register with no rows in it.
+  useEffect(() => {
+    writeStockView({ group: stockGroup, tab, bookView, openingTab })
+  }, [stockGroup, tab, bookView, openingTab])
   // Honour the note the opening sheet's company switcher left behind, so a
   // switch made there comes back to the opening sheet for the other company
   // instead of dropping the reader on the register. Runs once, then clears —
@@ -5460,7 +5879,7 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
     }
   }, [])
   const [rows, setRows] = useState<Row[]>([])
-  const [breakdown, setBreakdown] = useState<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[] }>>({})
+  const [breakdown, setBreakdown] = useState<Record<number, { receipt: Row[]; dispatch: Row[]; packed: Row[]; produced: Row[]; consumed: Row[] }>>({})
   const [range, setRange] = useState({ from: '', to: '' })
   const ranged = !!(range.from || range.to)
   // Alt+F2 broadcasts a period from anywhere.
@@ -5728,46 +6147,7 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
           ]
           return (
             <div className="mb-3">
-              {/* The header is the control. Collapsed it is a one-line reading
-                  of the same four figures; open, it is the four cards. */}
-              <button
-                type="button"
-                onClick={() => setKpiOpen((o) => !o)}
-                aria-expanded={kpiOpen}
-                className={cn(
-                  'flex w-full items-center gap-3 rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 text-left transition-colors hover:bg-[#F7FAF6]',
-                  kpiOpen ? 'h-[38px] rounded-b-none border-b-0' : 'h-[42px]'
-                )}
-              >
-                <ChevronRight
-                  className={cn(
-                    'h-4 w-4 shrink-0 text-[#5A6B62] transition-transform',
-                    kpiOpen && 'rotate-90'
-                  )}
-                />
-                <span className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">
-                  Summary
-                </span>
-                {!kpiOpen && (
-                  <span className="flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-0.5">
-                    {line.map((f) => (
-                      <span key={f.k} className="flex items-baseline gap-1.5 whitespace-nowrap">
-                        <span className="text-[10.5px] font-bold uppercase tracking-[.08em] text-[#8FA79B]">
-                          {f.k}
-                        </span>
-                        <span
-                          className="doc-ref text-[12.5px] font-bold"
-                          style={{ color: f.fg || '#0A1F17' }}
-                        >
-                          {f.v}
-                        </span>
-                      </span>
-                    ))}
-                  </span>
-                )}
-              </button>
-              {kpiOpen && (
-            <div className="grid gap-2.5 rounded-[4px] rounded-t-none border border-t-0 border-[#D6E2D6] bg-[#F7FAF6] p-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr))]">
+              <KpiFold line={line}>
               <StockKpi
                 label="Closing balance"
                 value={formatNum(closing)}
@@ -5799,13 +6179,50 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
                 accent={neg.length ? '#B3261E' : '#C3D2C6'}
                 fg={neg.length ? '#B3261E' : '#0A1F17'}
               />
-            </div>
-              )}
+              </KpiFold>
             </div>
           )
         })()}
         {stockGroup === 'book' && bookView === 'opening' ? (
+          __WEB__ ? (
+            /* Two sheets, one question: what was standing here the morning the
+               books opened. Oil in the tanks, and packs on the shelf. */
+            <div className="space-y-3">
+              <div className="flex items-end gap-1 border-b border-b-[#D6E2D6]">
+                {(
+                  [
+                    ['products', 'Products', Layers],
+                    ['sku', 'Packed SKU', Boxes]
+                  ] as const
+                ).map(([k, label, Icon]) => {
+                  const on = openingTab === k
+                  return (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => setOpeningTab(k)}
+                      className={cn(
+                        'flex h-[38px] items-center gap-2 border-b-2 px-3.5 text-[13px] font-bold transition-colors',
+                        on
+                          ? 'border-b-[#3D3179] text-[#0A1F17]'
+                          : 'border-b-transparent text-[#5A6B62] hover:text-[#0A1F17]'
+                      )}
+                    >
+                      <Icon className={cn('h-4 w-4 shrink-0', on ? 'text-[#5B4BA8]' : 'text-[#8FA79B]')} />
+                      {label}
+                    </button>
+                  )
+                })}
+              </div>
+              {openingTab === 'products' ? (
+                <OpeningStock companies={companies} onCompanyChange={onCompanyChange} />
+              ) : (
+                <SkuOpeningStock onSaved={() => undefined} />
+              )}
+            </div>
+          ) : (
           <OpeningStock companies={companies} onCompanyChange={onCompanyChange} />
+          )
         ) : (
         <Tabs value={tab} onValueChange={setTab}>
           {stockGroup !== 'book' && (
