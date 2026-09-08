@@ -2163,6 +2163,81 @@ async function listCompanies() {
   const res = await getClient().execute("SELECT * FROM companies ORDER BY name COLLATE NOCASE ASC");
   return toPlain(res);
 }
+async function listFactories() {
+  const res = await getClient().execute(
+    `SELECT f.*,
+            (SELECT COUNT(*) FROM companies c WHERE c.factory_id = f.id) AS company_count
+       FROM factories f
+      ORDER BY f.name COLLATE NOCASE ASC`
+  );
+  return toPlain(res);
+}
+async function saveFactory(v) {
+  const name = String(v?.name ?? "").trim();
+  if (!name) throw new Error("Factory name is required");
+  const location = String(v?.location ?? "").trim() || null;
+  const active = v?.active === void 0 ? 1 : v.active ? 1 : 0;
+  const id = Number(v?.id || 0);
+  if (id > 0) {
+    await getClient().execute({
+      sql: "UPDATE factories SET name = ?, location = ?, active = ? WHERE id = ?",
+      args: [name, location, active, id]
+    });
+    return { id };
+  }
+  const res = await getClient().execute({
+    sql: "INSERT INTO factories (name, location, active) VALUES (?, ?, ?)",
+    args: [name, location, active]
+  });
+  return { id: Number(res.lastInsertRowid) };
+}
+async function companiesOfFactory(factoryId) {
+  const c = getClient();
+  let fid = Number(factoryId || 0);
+  if (!fid) {
+    const own = await c.execute({
+      sql: "SELECT factory_id FROM companies WHERE id = ?",
+      args: [getActiveCompanyId()]
+    });
+    fid = Number(own.rows[0]?.factory_id || 0);
+  }
+  if (!fid) return [getActiveCompanyId()];
+  const res = await c.execute({
+    sql: "SELECT id FROM companies WHERE factory_id = ? ORDER BY id",
+    args: [fid]
+  });
+  const ids = res.rows.map((r) => Number(r.id)).filter((x) => x > 0);
+  return ids.length ? ids : [getActiveCompanyId()];
+}
+async function activeFactory() {
+  const res = await getClient().execute({
+    sql: `SELECT f.* FROM factories f
+            JOIN companies c ON c.factory_id = f.id
+           WHERE c.id = ?`,
+    args: [getActiveCompanyId()]
+  });
+  return toPlain(res)[0] || null;
+}
+async function factoryOfCompanies(companyIds) {
+  const ids = (companyIds || []).map(Number).filter((x) => x > 0);
+  if (!ids.length) ids.push(getActiveCompanyId());
+  const res = await getClient().execute({
+    sql: `SELECT DISTINCT factory_id FROM companies
+           WHERE id IN (${ids.map(() => "?").join(", ")}) AND factory_id IS NOT NULL`,
+    args: ids
+  });
+  if (res.rows.length !== 1) return 0;
+  return Number(res.rows[0].factory_id || 0);
+}
+async function coversWholeFactory(factoryId, companyIds) {
+  if (!factoryId) return false;
+  const all = await getClient().execute({
+    sql: "SELECT id FROM companies WHERE factory_id = ?",
+    args: [factoryId]
+  });
+  const have = new Set((companyIds || []).map(Number));
+  return all.rows.every((r) => have.has(Number(r.id)));
+}
 
 // src/main/repos.ts
 var TABLES = {
@@ -2229,7 +2304,7 @@ var TABLES = {
   sources: ["name", "transit_days", "active"],
   uoms: ["name", "active"],
   brokers: ["name", "contact_person", "phone", "brokerage_pct", "address", "note", "active"],
-  companies: ["name", "company_type", "colour", "active"],
+  companies: ["name", "company_type", "colour", "active", "factory_id"],
   packagings: ["name", "box_label", "pouch_label", "pouches_per_box", "unit_size", "unit_uom", "base_per_pouch", "base_uom", "product_id", "product_label", "active"]
 };
 var COMPANY_SCOPED_TABLES = /* @__PURE__ */ new Set(["banks", "nbfcs"]);
@@ -6521,7 +6596,7 @@ async function deleteLedgerEntry(partyType, id) {
 async function stockLevels(range, companyIds) {
   const c = getClient();
   const cidList = (companyIds || []).map(Number).filter((x) => x > 0);
-  if (!cidList.length) cidList.push(getActiveCompanyId());
+  if (!cidList.length) cidList.push(...await companiesOfFactory());
   const ph = cidList.map(() => "?").join(", ");
   const from = String(range?.from || "");
   const to = String(range?.to || "");
@@ -6662,7 +6737,9 @@ async function stockLevels(range, companyIds) {
       group: "GROUP BY ni.product_id"
     }
   };
-  const floor = await openingFloor(cidList);
+  const fid = await factoryOfCompanies(cidList);
+  const floor = await openingFloor(cidList, fid);
+  const whole = fid ? await coversWholeFactory(fid, cidList) : true;
   const slice = async (src, kind) => {
     if (kind === "opening" && !from) return /* @__PURE__ */ new Map();
     let sql = src.base;
@@ -6692,10 +6769,13 @@ async function stockLevels(range, companyIds) {
     return m;
   };
   const openingBalance = async () => {
-    const args = [...cidList];
-    let sql = `SELECT product_id AS pid,
-                      SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q
-               FROM stock_openings WHERE company_id IN (${ph})`;
+    const args = fid ? [fid] : [...cidList];
+    if (fid && !whole) return /* @__PURE__ */ new Map();
+    let sql = fid ? `SELECT product_id AS pid,
+                SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q
+           FROM stock_openings WHERE factory_id = ?` : `SELECT product_id AS pid,
+                SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q
+           FROM stock_openings WHERE company_id IN (${ph})`;
     if (to) {
       sql += " AND as_of <= ?";
       args.push(to);
@@ -6815,8 +6895,16 @@ async function productStockForCompany(companyId, productId) {
                             WHERE nt.note_type = 'debit' AND nt.party_type = 'supplier' AND nt.company_id = ? AND ni.product_id = ?`);
   return rec + prod + byProd + tIn - cons - sld - tOut + retIn - retOut;
 }
-async function openingFloor(cidList) {
+async function openingFloor(cidList, factoryId = 0) {
   if (!cidList.length) return "";
+  if (factoryId) {
+    const fr = await getClient().execute({
+      sql: "SELECT MIN(as_of) AS first FROM stock_openings WHERE factory_id = ?",
+      args: [factoryId]
+    });
+    const first = fr.rows[0]?.first;
+    return first ? String(first).slice(0, 10) : "";
+  }
   const ph = cidList.map(() => "?").join(", ");
   const res = await getClient().execute({
     sql: `SELECT COUNT(DISTINCT company_id) AS cos, MIN(as_of) AS first
@@ -6835,7 +6923,8 @@ async function stockPartyBreakdown(companyIds, range) {
   const multi = cidList.length > 1;
   const asked = String(range?.from || "");
   const to = String(range?.to || "");
-  const floor = await openingFloor(cidList);
+  const fid = await factoryOfCompanies(cidList);
+  const floor = await openingFloor(cidList, fid);
   const from = floor && (!asked || asked < floor) ? floor : asked;
   const bounds = (dateExpr) => {
     const parts = [];
@@ -7385,16 +7474,20 @@ function n6(v) {
 }
 async function listProduction(forModule) {
   const from = await visibleFromFor("production", forModule);
+  const cids = await companiesOfFactory();
+  const ph = cids.map(() => "?").join(", ");
   const res = await getClient().execute({
-    args: from ? [getActiveCompanyId(), from] : [getActiveCompanyId()],
+    args: from ? [...cids, from] : cids,
     sql: `
     SELECT p.*, pr.name AS product_name, pr.category AS product_category, f.name AS formulation_name,
-           sc.name AS subcategory_name, f.subcategory_id
+           sc.name AS subcategory_name, f.subcategory_id,
+           co.name AS company_name
     FROM production p
     LEFT JOIN products pr ON pr.id = p.product_id
     LEFT JOIN formulations f ON f.id = p.formulation_id
     LEFT JOIN formulation_subcategories sc ON sc.id = f.subcategory_id
-    WHERE p.company_id = ?${from ? " AND p.prod_date >= ?" : ""}
+    LEFT JOIN companies co ON co.id = p.company_id
+    WHERE p.company_id IN (${ph})${from ? " AND p.prod_date >= ?" : ""}
     ORDER BY p.prod_date DESC, p.id DESC
   `
   });
@@ -9930,6 +10023,57 @@ async function runStartupTasks() {
       PRIMARY KEY (company_id, account_id)
     )`);
   }).catch((e) => console.error("[openings] table failed:", e));
+  await runOnce("factories_v1", async () => {
+    const c = getClient();
+    await c.execute(`CREATE TABLE IF NOT EXISTS factories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      location TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    await c.execute("ALTER TABLE companies ADD COLUMN factory_id INTEGER REFERENCES factories(id)").catch((e) => {
+      if (!/duplicate column/i.test(String(e.message))) throw e;
+    });
+    await c.execute("CREATE INDEX IF NOT EXISTS idx_companies_factory ON companies(factory_id)");
+  }).catch((e) => console.error("[factory] table failed:", e));
+  await runOnce("factory_backfill_v1", async () => {
+    const c = getClient();
+    const have = await c.execute("SELECT COUNT(*) AS n FROM factories");
+    if (!Number(have.rows[0]?.n)) {
+      await c.execute({
+        sql: "INSERT INTO factories (name, location) VALUES (?, ?)",
+        args: ["Factory 1", null]
+      });
+    }
+    const first = await c.execute("SELECT id FROM factories ORDER BY id LIMIT 1");
+    const fid = Number(first.rows[0]?.id || 0);
+    if (fid) {
+      await c.execute({
+        sql: "UPDATE companies SET factory_id = ? WHERE factory_id IS NULL",
+        args: [fid]
+      });
+    }
+  }).catch((e) => console.error("[factory] backfill failed:", e));
+  await runOnce("factory_rename_placeholder_v1", async () => {
+    await getClient().execute({
+      sql: "UPDATE factories SET name = ?, location = NULL WHERE name = 'Ghaziabad'",
+      args: ["Factory 1"]
+    });
+  }).catch((e) => console.error("[factory] rename failed:", e));
+  await runOnce("stock_openings_factory_v1", async () => {
+    const c = getClient();
+    for (const t of ["stock_openings", "sku_openings"]) {
+      await c.execute(`ALTER TABLE ${t} ADD COLUMN factory_id INTEGER`).catch((e) => {
+        if (!/duplicate column/i.test(String(e.message))) throw e;
+      });
+      await c.execute(
+        `UPDATE ${t} SET factory_id = (SELECT co.factory_id FROM companies co WHERE co.id = ${t}.company_id)
+          WHERE factory_id IS NULL`
+      );
+      await c.execute(`CREATE INDEX IF NOT EXISTS idx_${t}_factory ON ${t}(factory_id)`);
+    }
+  }).catch((e) => console.error("[stock] openings factory column failed:", e));
   startRevisionWatcher();
 }
 
@@ -11138,9 +11282,15 @@ async function saveStockOpenings(rows, asOf, companyId) {
     const adj = n12(raw.adj_qty);
     const rate = raw?.rate === "" || raw?.rate == null ? null : n12(raw.rate);
     await c.execute({
-      sql: `INSERT INTO stock_openings (company_id, product_id, as_of, qty, pp_qty, adj_qty, rate, note, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      // The row still belongs to the company that struck it — that is what
+      // keeps the valuation per company — but it is also stamped with the
+      // factory, because the register reads openings by site. Written on the
+      // update branch too: a row entered before factories existed has a NULL
+      // there, and re-saving it is the moment to fill it in.
+      sql: `INSERT INTO stock_openings (company_id, factory_id, product_id, as_of, qty, pp_qty, adj_qty, rate, note, updated_at)
+            VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(company_id, product_id) DO UPDATE SET
+              factory_id = excluded.factory_id,
               as_of = excluded.as_of,
               qty = excluded.qty,
               pp_qty = excluded.pp_qty,
@@ -11148,7 +11298,7 @@ async function saveStockOpenings(rows, asOf, companyId) {
               rate = excluded.rate,
               note = excluded.note,
               updated_at = datetime('now')`,
-      args: [cid, pid, date, qty, pp, adj, rate, raw?.note ? String(raw.note).trim() : null]
+      args: [cid, cid, pid, date, qty, pp, adj, rate, raw?.note ? String(raw.note).trim() : null]
     });
     saved++;
   }
@@ -11349,21 +11499,26 @@ function span(when) {
 }
 async function skuOpeningDate(companyId) {
   const cid = n14(companyId) || getActiveCompanyId();
-  const res = await getClient().execute({
-    sql: "SELECT MIN(as_of) AS d FROM sku_openings WHERE company_id = ?",
-    args: [cid]
-  }).catch(() => null);
+  const fid = await factoryOfCompanies([cid]);
+  const res = await getClient().execute(
+    fid ? { sql: "SELECT MIN(as_of) AS d FROM sku_openings WHERE factory_id = ?", args: [fid] } : { sql: "SELECT MIN(as_of) AS d FROM sku_openings WHERE company_id = ?", args: [cid] }
+  ).catch(() => null);
   const d = res?.rows?.[0] ? res.rows[0].d : null;
   return d ? String(d).slice(0, 10) : "";
 }
 async function skuOpeningMap(cid) {
   const m = /* @__PURE__ */ new Map();
-  const res = await getClient().execute({ sql: "SELECT packaging_id, qty FROM sku_openings WHERE company_id = ?", args: [cid] }).catch(() => null);
+  const fid = await factoryOfCompanies([cid]);
+  const res = await getClient().execute(
+    fid ? { sql: "SELECT packaging_id, qty FROM sku_openings WHERE factory_id = ?", args: [fid] } : { sql: "SELECT packaging_id, qty FROM sku_openings WHERE company_id = ?", args: [cid] }
+  ).catch(() => null);
   for (const r of res ? toPlain17(res) : []) m.set(n14(r.packaging_id), n14(r.qty));
   return m;
 }
 async function listSkuStock(when) {
   const c = getClient();
+  const cids = await companiesOfFactory();
+  const cph = cids.map(() => "?").join(", ");
   const cid = getActiveCompanyId();
   const { from, to, ranged } = span(when);
   const round = (x) => Math.round((x + Number.EPSILON) * 1e6) / 1e6;
@@ -11401,17 +11556,17 @@ async function listSkuStock(when) {
     }
     return parts.join(" ");
   };
-  args.push(cid);
+  args.push(...cids);
   const sinceAdj = sinceFloor("adj_date");
-  args.push(cid);
+  args.push(...cids);
   const sinceSale = sinceFloor("s.sale_date");
-  args.push(cid);
+  args.push(...cids);
   const beforeAdj = before("adj_date");
-  args.push(cid);
+  args.push(...cids);
   const beforeSale = before("s.sale_date");
-  args.push(cid);
+  args.push(...cids);
   const withinAdj = within("adj_date");
-  args.push(cid);
+  args.push(...cids);
   const withinSale = within("s.sale_date");
   const res = await c.execute({
     sql: `
@@ -11421,25 +11576,25 @@ async function listSkuStock(when) {
            -- name typed on the SKU. Used to filter the packed-stock list.
            COALESCE(pr.name, pk.product_label) AS product_name,
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
-                     WHERE packaging_id = pk.id AND company_id = ?
+                     WHERE packaging_id = pk.id AND company_id IN (${cph})
                        ${sinceAdj}), 0) AS added,
            COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
                      WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
-                       AND s.status = 'done' AND s.company_id = ?
+                       AND s.status = 'done' AND s.company_id IN (${cph})
                        ${sinceSale}), 0) AS sold,
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
-                     WHERE packaging_id = pk.id AND company_id = ?
+                     WHERE packaging_id = pk.id AND company_id IN (${cph})
                        ${beforeAdj}), 0) AS added_before,
            COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
                      WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
-                       AND s.status = 'done' AND s.company_id = ?
+                       AND s.status = 'done' AND s.company_id IN (${cph})
                        ${beforeSale}), 0) AS sold_before,
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
-                     WHERE packaging_id = pk.id AND company_id = ?
+                     WHERE packaging_id = pk.id AND company_id IN (${cph})
                        ${withinAdj}), 0) AS added_on,
            COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
                      WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
-                       AND s.status = 'done' AND s.company_id = ?
+                       AND s.status = 'done' AND s.company_id IN (${cph})
                        ${withinSale}), 0) AS sold_on
     FROM packagings pk
     LEFT JOIN products pr ON pr.id = pk.product_id
@@ -11447,7 +11602,7 @@ async function listSkuStock(when) {
     ORDER BY pk.name COLLATE NOCASE ASC`,
     args
   });
-  const runs = await negativeRuns(cid, to);
+  const runs = await negativeRuns(cids, to);
   return toPlain17(res).map((r) => {
     const brought = openings.get(n14(r.id)) || 0;
     const opening = round(brought + n14(r.added_before) - n14(r.sold_before));
@@ -11470,26 +11625,27 @@ async function listSkuStock(when) {
     };
   });
 }
-async function negativeRuns(cid, upto) {
+async function negativeRuns(cids, upto) {
   const c = getClient();
+  const cph = cids.map(() => "?").join(", ");
   const res = await c.execute({
     sql: `
     SELECT sku, d, SUM(adj) AS adj, SUM(sale) AS sale FROM (
       SELECT packaging_id AS sku, substr(adj_date, 1, 10) AS d, SUM(delta) AS adj, 0 AS sale
         FROM sku_adjustments
-       WHERE company_id = ? AND (? IS NULL OR substr(adj_date, 1, 10) <= ?)
+       WHERE company_id IN (${cph}) AND (? IS NULL OR substr(adj_date, 1, 10) <= ?)
        GROUP BY packaging_id, d
       UNION ALL
       SELECT s.packaging_id, substr(s.sale_date, 1, 10), 0,
              SUM(s.boxes * pk.pouches_per_box + s.pouches)
         FROM sales s JOIN packagings pk ON pk.id = s.packaging_id
-       WHERE s.sale_type = 'PACKED' AND s.status = 'done' AND s.company_id = ?
+       WHERE s.sale_type = 'PACKED' AND s.status = 'done' AND s.company_id IN (${cph})
          AND (? IS NULL OR substr(s.sale_date, 1, 10) <= ?)
        GROUP BY s.packaging_id, substr(s.sale_date, 1, 10)
     )
     GROUP BY sku, d
     ORDER BY sku, d`,
-    args: [cid, upto, upto, cid, upto, upto]
+    args: [...cids, upto, upto, ...cids, upto, upto]
   });
   const byS = /* @__PURE__ */ new Map();
   for (const r of toPlain17(res)) {
@@ -11520,6 +11676,8 @@ async function negativeRuns(cid, upto) {
 }
 async function skuMovementBreakdown(when) {
   const c = getClient();
+  const cids = await companiesOfFactory();
+  const cph = cids.map(() => "?").join(", ");
   const cid = getActiveCompanyId();
   const { from: asked, to } = span(when);
   const floor = await skuOpeningDate(cid);
@@ -11543,20 +11701,20 @@ async function skuMovementBreakdown(when) {
     sql: `SELECT s.packaging_id AS sku, s.invoice_no, s.sale_date, s.customer,
                  SUM(s.boxes * pk.pouches_per_box + s.pouches) AS pieces, SUM(s.boxes) AS boxes
           FROM sales s JOIN packagings pk ON pk.id = s.packaging_id
-          WHERE s.sale_type = 'PACKED' AND s.status = 'done' AND s.company_id = ?
+          WHERE s.sale_type = 'PACKED' AND s.status = 'done' AND s.company_id IN (${cph})
             ${dispB.sql}
           GROUP BY s.packaging_id, s.invoice_group, s.customer
           ORDER BY s.sale_date, s.invoice_no`,
-    args: [cid, ...dispB.args]
+    args: [...cids, ...dispB.args]
   });
   const packed = await c.execute({
     sql: `SELECT packaging_id AS sku, adj_date, delta, note, created_by, created_at,
                  COALESCE(kind, CASE WHEN delta < 0 THEN 'correction' ELSE 'packing' END) AS kind,
                  kind AS kind_stated
           FROM sku_adjustments
-          WHERE company_id = ? ${adjB.sql}
+          WHERE company_id IN (${cph}) ${adjB.sql}
           ORDER BY adj_date, id`,
-    args: [cid, ...adjB.args]
+    args: [...cids, ...adjB.args]
   });
   const bySku = /* @__PURE__ */ new Map();
   const slot = (id) => {
@@ -11647,14 +11805,17 @@ async function saveSkuOpenings(rows, asOf, companyId) {
       continue;
     }
     await c.execute({
-      sql: `INSERT INTO sku_openings (company_id, packaging_id, as_of, qty, note, updated_at)
-            VALUES (?, ?, ?, ?, ?, datetime('now'))
+      // Stamped with the factory as well, for the same reason the loose-stock
+      // opening is: packed stock stands on the same floor.
+      sql: `INSERT INTO sku_openings (company_id, factory_id, packaging_id, as_of, qty, note, updated_at)
+            VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(company_id, packaging_id) DO UPDATE SET
+              factory_id = excluded.factory_id,
               as_of = excluded.as_of,
               qty = excluded.qty,
               note = excluded.note,
               updated_at = datetime('now')`,
-      args: [cid, pid, date, n14(raw.qty), raw?.note ? String(raw.note).trim() : null]
+      args: [cid, cid, pid, date, n14(raw.qty), raw?.note ? String(raw.note).trim() : null]
     });
     saved++;
   }
@@ -16425,6 +16586,10 @@ function registerIpc() {
     return ping();
   });
   handle("company:list", () => listCompanies());
+  handle("factory:list", () => listFactories());
+  handle("factory:save", (_e, v) => saveFactory(v));
+  handle("factory:active", () => activeFactory());
+  handle("factory:companies", (_e, factoryId) => companiesOfFactory(factoryId));
   handle("company:setActive", (_e, { id }) => setActiveCompany(id));
   handle("company:getActive", () => ({ id: getActiveCompanyId() }));
   handle("data:list", (_e, { table }) => list(table));
