@@ -673,7 +673,13 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
         <Button
           variant={hideIdle ? 'default' : 'outline'}
           size="sm"
-          className={cn('h-9 gap-1.5 text-xs', __WEB__ && (hideIdle ? SK_BTN_GO : SK_BTN))}
+          className={cn(
+            'h-9 gap-1.5 text-xs',
+            __WEB__ &&
+              (hideIdle
+                ? '!h-[38px] !gap-[7px] !rounded-[4px] !border !border-[#0B3D2E] !bg-[#0B3D2E] !px-[13px] !text-[12.5px] !font-bold !text-white hover:!bg-[#072B20]'
+                : cn(SK_BTN, '!text-[#5A6B62]'))
+          )}
           title={
             hideIdle
               ? `Showing only products with movement — ${idleCount} idle product${idleCount === 1 ? '' : 's'} hidden`
@@ -692,7 +698,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
           the period is not a named FY was the one showing an ellipsis. */}
       <FyPicker from={range.from} to={range.to} onRange={(f, t) => onRange({ from: f, to: t })} className={cn('h-9 w-28 text-xs', __WEB__ && '!w-[148px]')} />
       {/* Period for the register: opening balance before it, flows within it. */}
-      <span className={cn('text-[11px] font-semibold text-muted-foreground', __WEB__ && '!text-[10px] !font-extrabold !uppercase !tracking-[.11em] !text-[#8FA79B]')}>From</span>
+      {!__WEB__ && <span className="text-[11px] font-semibold text-muted-foreground">From</span>}
       <div className="w-40"><DatePicker value={range.from} onChange={(v) => onRange({ ...range, from: v })} max={range.to || undefined} /></div>
       {/* A From earlier than the opening changes nothing here, so say so
           rather than leaving the reader to wonder why the figures did not
@@ -720,7 +726,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
           </button>
         </span>
       )}
-      <span className={cn('text-[11px] font-semibold text-muted-foreground', __WEB__ && '!text-[10px] !font-extrabold !uppercase !tracking-[.11em] !text-[#8FA79B]')}>To</span>
+      <span className={cn('text-[11px] font-semibold text-muted-foreground', __WEB__ && '!-mx-1 !text-[11.5px] !font-semibold !text-[#8FA79B]')}>{__WEB__ ? 'to' : 'To'}</span>
       <div className="w-40"><DatePicker value={range.to} onChange={(v) => onRange({ ...range, to: v })} min={range.from || undefined} /></div>
       {ranged && (
         <Button variant="ghost" size="sm" className={cn('h-8 px-2 text-xs', __WEB__ && SK_CLEAR)} onClick={() => onRange({ from: '', to: '' })}>
@@ -826,7 +832,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
         return (
           <>
             <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6]">
-            <Table className="doc-ref ruled-slate min-w-[820px] text-[12px] [&_td]:px-[9px] [&_td]:py-2 [&_th]:h-10 [&_th]:px-[9px]">
+            <Table className="doc-ref min-w-[820px] text-[12px] [&_td]:border-l [&_td]:border-l-[#DCE7DB] [&_td]:px-[9px] [&_td]:py-2 [&_td:first-child]:border-l-0 [&_th]:h-10 [&_th]:px-[9px]">
               <TableHeader className="sticky top-0 z-10">
                 <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[28px] [&>th]:!p-0 [&>th]:!text-[10px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.13em] [&>th]:!text-[#8FBFA8]">
                   <TableHead />
@@ -902,7 +908,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                           const pct = inflow > 0 ? Math.max(0, Math.min(100, (closing / inflow) * 100)) : 0
                           const mark = neg ? '#B3261E' : pct < 12 && inflow > 0 ? '#C2700A' : 'transparent'
                           return (
-                            <TableRow key={r.id as number} className="!border-b-[#EAF0E9] !bg-transparent">
+                            <TableRow key={r.id as number} className="!border-b-[#DCE7DB] !bg-transparent">
                               <TableCell
                                 className="!py-2"
                                 style={mark === 'transparent' ? undefined : { boxShadow: `inset 3px 0 0 ${mark}` }}
@@ -910,9 +916,6 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                                 <span className="flex items-center gap-1.5">
                                   <span className="text-[12.5px] font-bold tracking-[-0.01em] text-[#0A1F17]">{r.name}</span>
                                   {neg && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-[#B3261E]" />}
-                                </span>
-                                <span className="mt-[3px] block text-[10.5px] font-semibold text-[#5A6B62]">
-                                  {r.code ? `${r.code} · MT` : 'MT'}
                                 </span>
                               </TableCell>
                               {ranged && (
@@ -1073,7 +1076,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                         // No hover tint here: a cell background paints over its row's, so
                         // with the column washes on, a row hover would light up the
                         // product name and nothing else. The washes are the guide.
-                        __WEB__ && '!border-b-[#EAF0E9] !bg-transparent'
+                        __WEB__ && '!border-b-[#DCE7DB] !bg-transparent'
                       )}
                     >
                       <TableCell className={cn('font-medium', __WEB__ && '!text-[12.5px] !font-bold !tracking-[-0.01em] !text-[#0A1F17]')}>{r.name}</TableCell>
@@ -1242,7 +1245,7 @@ const SK_FORM =
 // going out. So each group gets the palest wash of its own meaning — barely a
 // tint, enough to read as a block — and the hairline continues in the body's
 // lighter grey rather than the head's lime.
-const SK_BRULE = '!border-l !border-l-[#EAF0E9]'
+const SK_BRULE = '!border-l !border-l-[#C3D2C6]'
 const SK_BOPEN = '!bg-[#FCFDFB] !text-[#33473E]'
 const SK_BIN = '!bg-[#F5FBF7] !text-[#0B6B45]'
 const SK_BOUT = '!bg-[#FDF8F7] !text-[#8C2F26]'
@@ -1254,7 +1257,7 @@ const SK_VOPEN = '!bg-[#FBFAFE] !text-[#33473E]'
 const SK_VIN = '!bg-[#F5FBF7] !text-[#0B6B45]'
 const SK_VOUT = '!bg-[#FDF8F7] !text-[#8C2F26]'
 const SK_VCLOSE = '!bg-[#F4F1FD]'
-const SK_VRULE = '!border-l !border-l-[#EDE9FB]'
+const SK_VRULE = '!border-l !border-l-[#D6CEF5]'
 // Figures take doc-ref, not a second typeface. The handoff sets its numbers
 // in IBM Plex Mono; the app is set in Inter and stays that way, and doc-ref
 // already gets what the mono was wanted for — tabular figures on a fixed
@@ -1936,7 +1939,7 @@ function OpeningStock({
                           answered && 'row-answered bg-emerald-50/40',
                           // The sheet's head is violet, so its rows are too —
                           // the beige belonged to the design this replaced.
-                          __WEB__ && cn('!border-t-[#EDE9FB] hover:!bg-[#F8F6FE]', answered && '!bg-[#F3FAF5]')
+                          __WEB__ && cn('!border-t-[#D6CEF5] hover:!bg-[#F8F6FE]', answered && '!bg-[#F3FAF5]')
                         )}
                       >
                         <td className="pin-col px-3 py-1.5">
@@ -2671,7 +2674,7 @@ function DayCloseSection({
                       // tint would only reach the cells that have none. The
                       // disagreement is marked on the name instead, and the Gap
                       // column says it in figures.
-                      __WEB__ && '!border-b-[#EAF0E9] !bg-transparent hover:!bg-transparent'
+                      __WEB__ && '!border-b-[#DCE7DB] !bg-transparent hover:!bg-transparent'
                     )}
                   >
                     <TableCell className={cn('py-1.5 text-[13px] font-semibold', __WEB__ && cn('!text-[12.5px] !font-bold !text-[#0A1F17]', off && '!bg-[#FFFBF2] !shadow-[inset_3px_0_0_#C2700A]'))}>{r.name}</TableCell>
@@ -4063,7 +4066,7 @@ function SkuStock(): React.JSX.Element {
                         // more meaningfully. "Moved today" survives as a mark
                         // on the name cell — see below — because a cell
                         // background covers its row's anyway.
-                        __WEB__ && '!border-b-[#EAF0E9] !bg-transparent'
+                        __WEB__ && '!border-b-[#DCE7DB] !bg-transparent'
                       )}
                     >
                       <TableCell className={cn('font-medium', __WEB__ && cn('!text-[12.5px] !font-bold !text-[#0A1F17]', touched && '!bg-[#F5FBF7] !shadow-[inset_3px_0_0_#C7F03F]'))}>
@@ -4868,7 +4871,7 @@ function MncStock(): React.JSX.Element {
                       )
                       return (
                         <Fragment key={k}>
-                          <TableRow className={cn('cursor-pointer border-b', isOpen && 'bg-slate-100', __WEB__ && cn('!border-b-[#EDE9FB] !bg-transparent', isOpen && '!bg-transparent'))} onClick={() => toggle(k)}>
+                          <TableRow className={cn('cursor-pointer border-b', isOpen && 'bg-slate-100', __WEB__ && cn('!border-b-[#D6CEF5] !bg-transparent', isOpen && '!bg-transparent'))} onClick={() => toggle(k)}>
                             <TableCell className={cn('font-medium', __WEB__ && cn('!text-[12.5px] !font-bold !text-[#0A1F17]', isOpen && '!bg-[#F8F6FE] !shadow-[inset_3px_0_0_#5B4BA8]'))}>
                               <span className="inline-flex items-center gap-1.5">
                                 {isOpen ? <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground', __WEB__ && '!text-[#5B4BA8]')} /> : <ChevronRight className={cn('h-3.5 w-3.5 text-muted-foreground', __WEB__ && '!text-[#8FA79B]')} />}
@@ -5390,7 +5393,7 @@ function Transfers(): React.JSX.Element {
               <TableRow><TableCell colSpan={7} className={cn('py-10 text-center text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !text-[#8FA79B]')}>No transfers yet.</TableCell></TableRow>
             ) : (
               transfers.map((t) => (
-                <TableRow key={t.id as number} className={cn(__WEB__ && '!border-b-[#EAF0E9]')}>
+                <TableRow key={t.id as number} className={cn(__WEB__ && '!border-b-[#DCE7DB]')}>
                   <TableCell className={cn(__WEB__ && cn(SK_NUM, '!font-semibold !text-[#33473E]'))}>{formatDate(t.transfer_date)}</TableCell>
                   <TableCell>
                     {/* Direction is the one thing a transfer row is really
@@ -5563,7 +5566,26 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
   )
   // Book Stock's three stages, moved off their own tab strip and into the
   // filter row so the register starts higher up the screen.
-  const stagePicker = (
+  const stagePicker = __WEB__ ? (
+    <div className={cn('inline-flex shrink-0', SK_SEG)}>
+      {(['raw', 'intermediate', 'finished'] as const).map((k) => {
+        const on = tab === k
+        return (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setTab(k)}
+            className={cn('flex items-center gap-[7px]', SK_SEG_ITEM, on ? SK_SEG_ON : SK_SEG_OFF)}
+          >
+            {CAT_LABEL[k]}
+            <span className={cn('doc-ref text-[10.5px] font-bold', on ? 'text-[#C7F03F]' : 'text-[#8FA79B]')}>
+              {byCat(k).length}
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  ) : (
     <Select value={tab} onValueChange={setTab}>
       <SelectTrigger className="h-9 w-44 text-xs font-semibold">
         <SelectValue />
