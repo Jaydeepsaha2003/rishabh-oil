@@ -1089,7 +1089,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   </Button>
                 )}
               </div>
-              <label className={cn('ml-auto flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[13px] text-muted-foreground', __WEB__ && '!gap-2.5 !text-[12.5px] !font-bold !text-[#33473E]')}>
+              <label className={cn('ml-auto flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[13px] text-muted-foreground', __WEB__ && '!h-[38px] !gap-2.5 !rounded-[4px] !border !border-[#C3D2C6] !bg-white !px-3 !text-[12.5px] !font-bold !text-[#33473E] hover:!bg-[#F7FAF6]')}>
                 <Switch checked={showZero} onCheckedChange={setShowZero} />
                 Show settled {__WEB__ ? <span className="font-semibold text-[#7C9188]">(0 balance)</span> : '(0 balance)'}
                 {/* The count, so the switch can be seen to have done something
@@ -1185,9 +1185,23 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                 wrapperClassName={cn('max-h-[calc(100vh-215px)] rounded-xl', __WEB__ && '!rounded-[4px]')}
                 className={cn(
                   'min-w-[860px] text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:px-3 [&_th]:h-9',
-                  __WEB__ && '!min-w-[1460px] [&_td]:!whitespace-nowrap [&_th]:!whitespace-nowrap'
+                  __WEB__ &&
+                    '!min-w-[1074px] !table-fixed [&_td]:!whitespace-nowrap [&_td]:!truncate [&_td]:!px-2 [&_th]:!whitespace-nowrap [&_th]:!px-2 [&_th]:!text-[10.5px] [&_th]:!font-semibold [&_th]:!tracking-[.04em] [&_th_button]:!text-[10.5px] [&_th_button]:!font-semibold'
                 )}
               >
+                {/* The widths, stated once. table-fixed cannot read them off
+                    the header here — its first row is the group band, whose
+                    cells span three columns at a time — so a colgroup is the
+                    only place they can live. They add to 1074, the table's
+                    floor, so a 13" screen fits without zooming out and
+                    anything narrower slides. */}
+                {__WEB__ && (
+                  <colgroup>
+                    {[112, 91, 100, 69, 62, 69, 71, 69, 95, 65, 76, 128, 67].map((w, i) => (
+                      <col key={i} style={{ width: `${w}px` }} />
+                    ))}
+                  </colgroup>
+                )}
                 <TableHeader className={cn(__WEB__ && '[&_th]:!h-10')}>
                   {/* A band naming what the column sets below mean, so Opening
                       / Addition / Adjusted read as one idea and Dispatch as
@@ -1211,7 +1225,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                         { id: 'bargain_date', label: 'Date' },
                         { id: 'supplier', label: 'Supplier' },
                         { id: 'oil', label: 'Oil' },
-                        { id: 'condition', label: 'Condition' },
+                        { id: 'condition', label: __WEB__ ? 'Cond.' : 'Condition' },
                         { id: 'qty', label: 'Opening', right: true },
                         { id: 'addition', label: 'Addition', right: true },
                         { id: 'adjusted', label: 'Adjusted', right: true },
@@ -1367,7 +1381,9 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                               )}
                             />
                             <span className={cn('mr-1 tabular-nums text-muted-foreground', __WEB__ && '!mr-2 !text-[10.5px] !font-bold !text-[#5A6B62]')}>{seq}.</span>
-                            {row.bargain_no}
+                            <span className={cn(__WEB__ && '!truncate')} title={String(row.bargain_no || '')}>
+                              {row.bargain_no}
+                            </span>
                           </TableCell>
                           <TableCell className={cn('whitespace-nowrap text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !tabular-nums !text-[#5A6B62]')}>{formatDate(row.bargain_date)}</TableCell>
                           <TableCell className={cn('max-w-[160px] truncate', __WEB__ && '!text-[12.5px] !font-bold')} title={row.supplier_name ?? ''}>{row.supplier_name ?? '—'}</TableCell>

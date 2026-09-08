@@ -1230,6 +1230,29 @@ function SalesTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formPage, saving, header, items])
 
+  // Loaded, then in transit, then unloaded — the three dates can only run
+  // forwards, and the same day is fine. Returns the complaint or null. The
+  // main process refuses an out-of-order set as well and has to, being the
+  // only side a second window cannot go around; this exists so the answer
+  // arrives under the field rather than as a thrown error after the save.
+  function stageDateProblem(
+    loaded: unknown,
+    transit: unknown,
+    unloaded: unknown
+  ): string | null {
+    const d = (x: unknown): string => String(x || '').slice(0, 10)
+    const pairs: [string, string, string, string][] = [
+      ['loaded', d(loaded), 'In-transit', d(transit)],
+      ['in-transit', d(transit), 'Unloaded', d(unloaded)],
+      ['loaded', d(loaded), 'Unloaded', d(unloaded)]
+    ]
+    for (const [aName, a, bName, b] of pairs) {
+      if (!a || !b || a <= b) continue
+      return `${bName} date (${formatDate(b)}) cannot be before the ${aName} date (${formatDate(a)}).`
+    }
+    return null
+  }
+
   async function save(overrideItems?: Row[], excessResolved = false): Promise<void> {
     const lines = overrideItems ?? items
     if (!String(header.invoice_no || '').trim()) return void toast.error('Invoice number is required')
@@ -1259,6 +1282,10 @@ function SalesTab({
       if ((Number(it.rate) || 0) < 0) return void toast.error(`Item ${i + 1}: rate cannot be negative`)
     }
     if (isDld && !header.transporter_id) return void toast.error('Select a transporter for the FOR delivery')
+    {
+      const bad = stageDateProblem(header.loaded_date, header.transit_date, header.unloaded_date)
+      if (bad) return void toast.error(bad)
+    }
 
     // More on a line than its bargain has left: stop and ask where the extra goes
     // instead of failing the save. The server checks the balance as well, so this
@@ -1368,6 +1395,12 @@ function SalesTab({
 
   async function confirmUnload(): Promise<void> {
     if (!unloadInv) return
+    {
+      // Only the unloaded date is being set here, but it still has to land on
+      // or after the two the invoice already carries.
+      const bad = stageDateProblem(unloadInv.first.loaded_date, unloadInv.first.transit_date, unloadDate)
+      if (bad) return void toast.error(bad)
+    }
     const received: Record<string, number | null> = {}
     for (const l of unloadInv.lines) {
       const raw = unloadQty[String(l.id)]
@@ -1991,11 +2024,6 @@ function SalesTab({
                         than the desktop app's line-per-row breakdown (which
                         stays exactly as it was, below). */}
                     {__WEB__ && !unloadOnly && isOpen && (() => {
-                      const bargainNo = String(inv.lines.find((r) => r.sales_bargain_no)?.sales_bargain_no || '')
-                      const bargain = bargainNo ? bargains.find((b) => String(b.bargain_no) === bargainNo) : undefined
-                      const bq = Number(bargain?.qty) || 0
-                      const sold = Number(bargain?.sold_qty) || 0
-                      const pct = bq > 0 ? Math.min(100, Math.round((sold / bq) * 100)) : null
                       return (
                         <TableRow className="hover:bg-transparent">
                           <TableCell colSpan={colCount} className="border-b border-[#E4ECE3] bg-[#F7FAF6] p-0">
@@ -2005,8 +2033,9 @@ function SalesTab({
                                   Line items
                                 </div>
                                 <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
-                                  <div className="grid grid-cols-[1fr_120px_150px_160px] items-center bg-[#EAF0E9] text-[11px] font-extrabold uppercase tracking-[.08em] text-[#33473E]">
+                                  <div className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.4fr)_100px_130px_150px] items-center bg-[#EAF0E9] text-[11px] font-extrabold uppercase tracking-[.08em] text-[#33473E]">
                                     <div className="px-3 py-2.5">Product</div>
+                                    <div className="px-3 py-2.5">Bargain no</div>
                                     <div className="px-3 py-2.5 text-right">Qty</div>
                                     <div className="px-3 py-2.5 text-right">Rate</div>
                                     <div className="px-3 py-2.5 text-right">Amount</div>
@@ -2014,10 +2043,19 @@ function SalesTab({
                                   {inv.lines.map((r) => (
                                     <div
                                       key={r.id as number}
-                                      className="grid grid-cols-[1fr_120px_150px_160px] items-center border-b border-[#EAF0E9] text-[13.5px] last:border-0"
+                                      className={cn('grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.4fr)_100px_130px_150px] items-center border-b border-[#EAF0E9] text-[13.5px] last:border-0')}
                                     >
                                       <div className="truncate px-3 py-2.5 font-bold" title={String(r.packaging_name || r.product_name || '')}>
                                         {String(r.packaging_name || r.product_name || '—')}
+                                      </div>
+                                      {/* Long enough to run past its column on
+                                          most bargains, so it truncates and
+                                          carries the whole thing on hover. */}
+                                      <div
+                                        className={cn('truncate px-3 py-2.5 font-semibold', !r.sales_bargain_no && 'text-[#A8B8AE]')}
+                                        title={String(r.sales_bargain_no || '')}
+                                      >
+                                        {String(r.sales_bargain_no || '—')}
                                       </div>
                                       <div className="px-3 py-2.5 text-right tabular-nums">{formatNum(r.qty)}</div>
                                       <div className="px-3 py-2.5 text-right tabular-nums text-[#5A6B62]">{formatINR(r.rate)}</div>
@@ -2029,32 +2067,22 @@ function SalesTab({
                                 </div>
                               </div>
 
-                              <div className="flex w-[300px] flex-none flex-col gap-2.5">
-                                <div className="rounded-[4px] border border-[#D6E2D6] bg-white p-3">
-                                  <div className="text-[9.5px] font-extrabold uppercase tracking-[.14em] text-[#7C9188]">Bargain link</div>
-                                  <div className="mt-1.5 text-[14px] font-bold">{bargainNo || 'No bargain'}</div>
-                                  {pct != null && (
-                                    <>
-                                      <div className="mt-2.5 h-1.5 overflow-hidden rounded-sm bg-[#E4ECE3]">
-                                        <div className="h-full bg-[#12855A]" style={{ width: `${pct}%` }} />
-                                      </div>
-                                      <div className="mt-1.5 text-[11.5px] font-semibold text-[#5A6B62]">
-                                        {pct}% dispatched against bargain
-                                      </div>
-                                    </>
-                                  )}
+                              {/* All that is left of the side column: the
+                                  bargain went into the table beside the line
+                                  it belongs to, and the off-stock note only
+                                  repeated the tag on the row above. */}
+                              <div className="flex w-[300px] flex-none flex-col">
+                                {/* An empty copy of the "Line items" caption,
+                                    so the button starts level with the top of
+                                    the table rather than with the caption above
+                                    it — and stays level if the caption ever
+                                    changes size. */}
+                                <div
+                                  aria-hidden
+                                  className="mb-2 text-[9.5px] font-extrabold uppercase tracking-[.14em] text-transparent"
+                                >
+                                  &nbsp;
                                 </div>
-
-                                {untracked && (
-                                  <div className="flex gap-2.5 rounded-[4px] border-l-4 border-[#C2700A] bg-[#FFEDD0] px-3 py-2.5">
-                                    <AlertTriangle className="mt-0.5 h-[19px] w-[19px] shrink-0 text-[#C2700A]" />
-                                    <div className="text-[11.5px] font-semibold leading-[1.4] text-[#7A5410]">
-                                      <b className="text-[#8A5300]">Off-stock dispatch.</b> No matching finished-goods stock at
-                                      dispatch time.
-                                    </div>
-                                  </div>
-                                )}
-
                                 <button
                                   type="button"
                                   onClick={(e) => {
@@ -2159,9 +2187,11 @@ function SalesTab({
               variant="outline"
               disabled={invPage <= 1}
               onClick={() => setInvPage((v) => Math.max(1, v - 1))}
-              className={cn(__WEB__ && '!h-[34px] !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3 !text-[12.5px] !font-bold !text-[#0A1F17] hover:!bg-[#F7FAF6]')}
+              title="Previous page"
+              aria-label="Previous page"
+              className={cn(__WEB__ && '!h-[34px] !w-[34px] !rounded-[4px] !border-[#C3D2C6] !bg-white !p-0 !text-[#0A1F17] hover:!bg-[#F7FAF6]')}
             >
-              Previous
+              {__WEB__ ? <ChevronLeft className="h-[18px] w-[18px]" /> : 'Previous'}
             </Button>
             {/* Up to seven page buttons, always including the first, the last
                 and the ones either side of where the reader is — a register of
@@ -2202,9 +2232,11 @@ function SalesTab({
               variant="outline"
               disabled={invPage >= invPageCount}
               onClick={() => setInvPage((v) => Math.min(invPageCount, v + 1))}
-              className={cn(__WEB__ && '!h-[34px] !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3 !text-[12.5px] !font-bold !text-[#0A1F17] hover:!bg-[#F7FAF6]')}
+              title="Next page"
+              aria-label="Next page"
+              className={cn(__WEB__ && '!h-[34px] !w-[34px] !rounded-[4px] !border-[#C3D2C6] !bg-white !p-0 !text-[#0A1F17] hover:!bg-[#F7FAF6]')}
             >
-              Next
+              {__WEB__ ? <ChevronRight className="h-[18px] w-[18px]" /> : 'Next'}
             </Button>
           </div>
         </div>
@@ -4926,7 +4958,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
             </button>
           ))}
         </div>
-        <label className={cn('ml-auto flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[12px] text-muted-foreground', __WEB__ && '!gap-2.5 !text-[12.5px] !font-bold !text-[#33473E]')}>
+        <label className={cn('ml-auto flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap text-[12px] text-muted-foreground', __WEB__ && '!h-[38px] !gap-2.5 !rounded-[4px] !border !border-[#C3D2C6] !bg-white !px-3 !text-[12.5px] !font-bold !text-[#33473E] hover:!bg-[#F7FAF6]')}>
           <Switch checked={showZero} onCheckedChange={setShowZero} />
           Show settled {__WEB__ ? <span className="font-semibold text-[#7C9188]">(0 balance)</span> : '(0 balance)'}
           <span
@@ -5154,9 +5186,25 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
             the table slides sideways instead when it does not fit. */}
         <Table
           wrapperClassName={cn('rounded-lg', __WEB__ && '!rounded-[4px]')}
-          className={cn('min-w-[1180px] text-[13px]', __WEB__ && '!min-w-[1480px] [&_td]:!whitespace-nowrap [&_th]:!whitespace-nowrap')}
+          className={cn(
+            'min-w-[1180px] text-[13px]',
+            __WEB__ &&
+              '!min-w-[1074px] !table-fixed [&_td]:!whitespace-nowrap [&_td]:!truncate [&_td]:!px-2 [&_th]:!whitespace-nowrap [&_th]:!px-2'
+          )}
         >
-          <TableHeader className={cn(__WEB__ && '!bg-[#0B3D2E] [&_th]:!h-10 [&_th]:!text-[10.5px] [&_th]:!font-extrabold [&_th]:!uppercase [&_th]:!tracking-[.1em] [&_th]:!text-[#DCEFE4]')}>
+          {/* Fixed widths, because table-fixed reads the first row and this
+              header's first row is the band, whose cells span several columns
+              at a time — so a colgroup is the only place they can live. They
+              add to 1074, the table's floor, so a 13" screen fits without
+              zooming out and anything narrower slides. */}
+          {__WEB__ && (
+            <colgroup>
+              {[110, 80, 96, 116, 78, 80, 80, 104, 84, 76, 96, 74].map((w, i) => (
+                <col key={i} style={{ width: `${w}px` }} />
+              ))}
+            </colgroup>
+          )}
+          <TableHeader className={cn(__WEB__ && '!bg-[#0B3D2E] [&_th]:!h-10 [&_th]:!text-[10.5px] [&_th]:!font-semibold [&_th]:!uppercase [&_th]:!tracking-[.04em] [&_th]:!text-[#DCEFE4]')}>
             {/* A band naming what the column sets below mean, so Opening /
                 Addition / Adjusted read as one idea and Dispatch / Return as
                 another — without renaming or merging any column. */}
@@ -5182,7 +5230,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
               <TableHead className={cn('text-right', __WEB__ && SB_HGL)}>Dispatch</TableHead>
               <TableHead className={cn('text-right', __WEB__ && SB_HGR)}>Return</TableHead>
               <TableHead className={cn('text-right', __WEB__ && '!bg-[#C7F03F]/10 !text-[#C7F03F]')}>Balance</TableHead>
-              <TableHead className="w-[110px] text-right">Actions</TableHead>
+              <TableHead className={cn('w-[110px] text-right', __WEB__ && '!w-auto')}>Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>

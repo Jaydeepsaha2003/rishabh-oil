@@ -25,7 +25,7 @@ export async function listFacilities(): Promise<Row[]> {
             -- Blocked, not opened: a sanctioned facility carries whatever the
             -- bank has blocked against it, which is the figure it holds even
             -- when the bill came in for less. Same rule as getLcLimit in lc.ts.
-            COALESCE((SELECT SUM(COALESCE(l.blocked_amount, l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
+            COALESCE((SELECT SUM(COALESCE(NULLIF(l.blocked_amount, 0), l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
                        WHERE r.lc_id = l.id AND r.posted = 1), 0)) FROM letters_of_credit l
                        WHERE l.facility_id = f.id AND l.status != 'closed'), 0) AS lc_committed,
             COALESCE((SELECT SUM(i.amount) FROM lc_issuances i
@@ -155,7 +155,7 @@ export async function facilityHeadroom(facilityId: number, excludeLcId = 0): Pro
   const f = await c.execute({ sql: 'SELECT * FROM bank_facilities WHERE id = ?', args: [facilityId] })
   if (!f.rows.length) throw new Error('That facility no longer exists')
   const lc = await c.execute({
-    sql: `SELECT COALESCE(SUM(COALESCE(l.blocked_amount, l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
+    sql: `SELECT COALESCE(SUM(COALESCE(NULLIF(l.blocked_amount, 0), l.amount) - COALESCE((SELECT SUM(r.amount) FROM lc_repayments r
                  WHERE r.lc_id = l.id AND r.posted = 1), 0)), 0) AS a
           FROM letters_of_credit l WHERE l.facility_id = ? AND l.status != 'closed' AND l.id != ?`,
     args: [facilityId, excludeLcId]

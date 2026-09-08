@@ -205,7 +205,7 @@ export async function getLcLimit(bankId?: number, from?: string, to?: string): P
     // opened: the bank is holding the figure it blocked whether or not the bill
     // came in for that much. Interest and margin still work off the open
     // amount, which is why only the limit sums coalesce this way.
-    sql: `SELECT stage, COALESCE(SUM(COALESCE(blocked_amount, amount)), 0) AS total, COUNT(*) AS cnt FROM letters_of_credit
+    sql: `SELECT stage, COALESCE(SUM(COALESCE(NULLIF(blocked_amount, 0), amount)), 0) AS total, COUNT(*) AS cnt FROM letters_of_credit
           WHERE company_id = ? AND COALESCE(facility_type, 'lc') = 'lc' AND preclosed_date IS NULL
             ${bank ? 'AND our_bank_id = ?' : ''}
             ${f ? 'AND open_date >= ?' : ''}
@@ -260,7 +260,7 @@ export async function listBankLcLimits(): Promise<Row[]> {
                  COALESCE(l.convertible_limit, 0) AS convertible_limit,
                  COALESCE(l.convertible_enabled, 0) AS convertible_enabled,
                  (SELECT COUNT(*) FROM letters_of_credit x WHERE x.company_id = ? AND x.our_bank_id = b.id) AS lc_count,
-                 COALESCE((SELECT SUM(COALESCE(x.blocked_amount, x.amount)) FROM letters_of_credit x
+                 COALESCE((SELECT SUM(COALESCE(NULLIF(x.blocked_amount, 0), x.amount)) FROM letters_of_credit x
                            WHERE x.company_id = ? AND x.our_bank_id = b.id
                              AND COALESCE(x.facility_type, 'lc') = 'lc' AND x.preclosed_date IS NULL), 0) AS utilized
           FROM banks b

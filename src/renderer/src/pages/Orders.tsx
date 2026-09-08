@@ -764,8 +764,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     // detail in the first cell they were already tall enough — the extra
     // padding just cost a tanker or two off the visible list.
     return <TableRow key={row.id} className={cn(__WEB__ && '[&>td]:!py-2')}>
-      <TableCell><div className={cn('font-medium', __WEB__ && '!text-[14px] !font-extrabold !text-[#0A1F17]', !String(row.tanker_no || '').trim() && 'italic text-muted-foreground')}>{String(row.tanker_no || '').trim() || 'No number yet'}</div><div className={cn('text-xs text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12.5px] !font-semibold !text-[#5A6B62]')}>{row.status === 'supplier_factory' ? `Entered ${formatDate(row.loaded_date)}` : `Loaded ${formatDate(row.loaded_date)}`}</div>{!!row.gate_entry_no && (
-          <div className={cn('mt-0.5 text-[11px] text-sky-700', __WEB__ && '!text-[12.5px] !font-semibold !text-[#1B4E82]')}>
+      <TableCell><div className={cn('font-medium', __WEB__ && '!text-[13px] !font-extrabold !text-[#0A1F17]', !String(row.tanker_no || '').trim() && 'italic text-muted-foreground')}>{String(row.tanker_no || '').trim() || 'No number yet'}</div><div className={cn('text-xs text-muted-foreground', __WEB__ && '!mt-0.5 !whitespace-nowrap !text-[11.5px] !font-semibold !text-[#5A6B62]')}>{row.status === 'supplier_factory' ? `Entered ${formatDate(row.loaded_date)}` : `Loaded ${formatDate(row.loaded_date)}`}</div>{!!row.gate_entry_no && (
+          <div className={cn('mt-0.5 text-[11px] text-sky-700', __WEB__ && '!text-[11.5px] !font-semibold !text-[#1B4E82]')}>
             Gate {row.gate_entry_no}
             {row.gate_tanker_no && String(row.gate_tanker_no).trim() !== String(row.tanker_no || '').trim()
               ? ` · vehicle ${row.gate_tanker_no}`
@@ -773,13 +773,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             {Number(row.gate_qty) > 0 ? ` · weighed ${formatNum(row.gate_qty)}` : ''}
           </div>
         )}{!!row.last_replacement && (
-          <div className={cn('mt-0.5 text-[11px] text-amber-700', __WEB__ && '!text-[12.5px] !font-semibold !text-[#8A5300]')} title="Tanker replaced en route">
+          <div className={cn('mt-0.5 text-[11px] text-amber-700', __WEB__ && '!text-[11.5px] !font-semibold !text-[#8A5300]')} title="Tanker replaced en route">
             Replaced: {row.last_replacement}
           </div>
         )}</TableCell>
       <TableCell>
-        <div className={cn(__WEB__ && 'text-[14px] font-extrabold text-[#0B3D2E]')}>{row.supplier_name}</div>
-        <div className={cn('text-xs text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12.5px] !font-semibold !text-[#33473E]')}>
+        <div className={cn(__WEB__ && 'text-[13px] font-extrabold text-[#0B3D2E]')}>{row.supplier_name}</div>
+        <div className={cn('text-xs text-muted-foreground', __WEB__ && '!mt-0.5 !text-[11.5px] !font-semibold !text-[#33473E]')}>
           {row.bargain_no}
           {row.extra_bargain_no && (
             <span title={`Split: ${formatNum((Number(row.loaded_qty) || 0) - (Number(row.extra_qty) || 0))} ${row.uom} + ${formatNum(row.extra_qty)} ${row.uom} excess`}>
@@ -794,20 +794,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       <TableCell
         className={cn(
           'text-right tabular-nums',
-          __WEB__ && (Number(row.loaded_qty) > 0 ? '!text-[15px] !font-bold' : '!text-[15px] !text-[#A8B8AE]')
+          __WEB__ && (Number(row.loaded_qty) > 0 ? '!text-[13.5px] !font-bold' : '!text-[13.5px] !text-[#A8B8AE]')
         )}
       >
         {Number(row.loaded_qty) > 0 ? `${formatNum(row.loaded_qty)} ${row.uom}` : 'Not loaded'}
       </TableCell>
-      <TableCell>{row.payment_mode === 'pending' ? <span className={cn('text-muted-foreground', __WEB__ && '!text-[12px] !font-extrabold !text-[#A8B8AE]')}>Not decided</span> : row.payment_mode === 'supplier_finance' ? <Badge variant="warning" className={cn(__WEB__ && '!rounded-[2px] !border-0 !bg-[#FFEDD0] !px-2.5 !py-[5px] !text-[12px] !font-extrabold !tracking-[.03em] !text-[#8A5300]')}>Supplier financed</Badge> : <Badge variant="muted" className={cn(__WEB__ && '!rounded-[2px] !border-0 !bg-[#EAF0E9] !px-2.5 !py-[5px] !text-[12px] !font-extrabold !tracking-[.03em] !text-[#33473E]')}>Paid by us</Badge>}</TableCell>
-      <TableCell className={cn(__WEB__ && (row.invoice_no ? '!text-[13.5px] !font-bold' : ''))}>
-        {row.invoice_no || <span className={cn('text-muted-foreground', __WEB__ && '!text-[13.5px] !text-[#A8B8AE]')}>Not entered</span>}
+      <TableCell>{row.payment_mode === 'pending' ? <span className={cn('text-muted-foreground', __WEB__ && '!text-[11px] !font-extrabold !text-[#A8B8AE]')}>Not decided</span> : row.payment_mode === 'supplier_finance' ? <Badge variant="warning" className={cn(__WEB__ && '!whitespace-nowrap !rounded-[2px] !border-0 !bg-[#FFEDD0] !px-2 !py-1 !text-[11px] !font-extrabold !tracking-[.03em] !text-[#8A5300]')}>Supplier financed</Badge> : <Badge variant="muted" className={cn(__WEB__ && '!whitespace-nowrap !rounded-[2px] !border-0 !bg-[#EAF0E9] !px-2 !py-1 !text-[11px] !font-extrabold !tracking-[.03em] !text-[#33473E]')}>Paid by us</Badge>}</TableCell>
+      <TableCell className={cn(__WEB__ && (row.invoice_no ? '!whitespace-nowrap !text-[12.5px] !font-bold' : ''))}>
+        {row.invoice_no || <span className={cn('text-muted-foreground', __WEB__ && '!text-[12.5px] !text-[#A8B8AE]')}>Not entered</span>}
       </TableCell>
       <TableCell>
         <StatusBadge status={row.status} />
         {(() => {
           const d = tankerDelay(row)
-          return d ? <div className={cn('mt-1 text-[11px] font-medium', d.tone)}>{d.label}</div> : null
+          return d ? <div className={cn('mt-1 text-[11px] font-medium', d.tone, __WEB__ && '!mt-1 !whitespace-nowrap !text-[10.5px]')}>{d.label}</div> : null
         })()}
       </TableCell>
       {/* Moving the tanker on is the only action worth a real button — undo,
@@ -825,7 +825,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 // that turns the Action column into a wall of dark blocks —
                 // so it wears a light green tint instead, which still reads
                 // as the row's one button without shouting over the data.
-                __WEB__ && '!h-[34px] !gap-1.5 !rounded-[3px] !border-[#BFE3CB] !bg-[#E9F5EE] !px-3.5 !text-[12.5px] !font-extrabold !tracking-[.02em] !text-[#0B6B45] hover:!bg-[#DCEFE4] hover:!text-[#0B3D2E]'
+                __WEB__ && '!h-[30px] !gap-1.5 !rounded-[3px] !border-[#BFE3CB] !bg-[#E9F5EE] !px-2.5 !text-[11.5px] !font-extrabold !tracking-[.02em] !text-[#0B6B45] hover:!bg-[#DCEFE4] hover:!text-[#0B3D2E]'
               )}
               onClick={() => openTankerAction(row)}
             >
@@ -869,7 +869,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     // height is paid several times down the page.
     const th = cn(
       'text-[10px] font-semibold uppercase tracking-wide',
-      __WEB__ && '!h-8 !py-0 !text-[10.5px] !font-extrabold !tracking-[.1em] !text-[#33473E]'
+      __WEB__ && '!h-[30px] !py-0 !text-[10px] !font-extrabold !tracking-[.08em] !text-[#33473E]'
     )
     return <TableHeader><TableRow className={cn('bg-muted/60', __WEB__ && '!border-b-[#D6E2D6] !bg-[#EAF0E9] hover:!bg-[#EAF0E9]')}>
       <TableHead className={th}>Tanker</TableHead><TableHead className={th}>Supplier / bargain</TableHead><TableHead className={cn(th, 'text-right')}>Loaded qty</TableHead>

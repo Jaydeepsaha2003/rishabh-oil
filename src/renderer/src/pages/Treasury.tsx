@@ -64,9 +64,12 @@ const round2 = (v: number): number => Math.round(v * 100) / 100
 // is a lone KPI tile; in a row of six it makes every figure start at a
 // different x, so they cannot be compared down the row. Left-aligned on the
 // website, and the label small caps over the money.
-const LIMIT_CELL = __WEB__ ? '!bg-white !px-3.5 !py-3 !text-left' : ''
-const LIMIT_K = __WEB__ ? '!text-[9px] !font-extrabold !tracking-[.12em] !text-[#5A6B62]' : ''
-const LIMIT_V = __WEB__ ? '!mt-1 !whitespace-nowrap !text-[14.5px] !font-bold !text-[#0A1F17]' : ''
+// Five cells across the card now, so each has room the left-aligned version
+// did not: the figure is centred under its own label and set large enough to
+// be read from the far side of a desk, which is how a KPI row is used.
+const LIMIT_CELL = __WEB__ ? '!bg-white !px-3 !py-3.5 !text-center' : ''
+const LIMIT_K = __WEB__ ? '!text-[10px] !font-extrabold !tracking-[.12em] !text-[#5A6B62]' : ''
+const LIMIT_V = __WEB__ ? '!mt-1.5 !whitespace-nowrap !text-[17px] !font-bold !tracking-[-0.02em] !text-[#0A1F17]' : ''
 
 function daysTo(date: unknown): number | null {
   const s = String(date || '').slice(0, 10)
@@ -254,7 +257,7 @@ const LC_FIELDS = __WEB__
   // back to normal case — a required asterisk does not care, but a
   // parenthetical like "(repayments go out of this)" is a sentence and gets
   // hard to read shouted.
-  ? '[&_label]:!min-h-[18px] [&_label]:!items-center [&_label]:!text-[11px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.1em] [&_label]:!text-[#33473E] [&_label>span]:!normal-case [&_label>span]:!tracking-normal [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=select-trigger]]:!font-semibold [&_[data-slot=date-picker]]:!h-11 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!text-[13.5px] [&_[data-slot=date-picker]]:!font-semibold'
+  ? '[&_label]:!min-h-[18px] [&_label]:!items-center [&_label]:!text-[11px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.1em] [&_label]:!text-[#33473E] [&_label>span]:!normal-case [&_label>span]:!tracking-normal [&_input]:!h-11 [&_input]:!rounded-[4px] [&_input]:!border-[#9FB6A6] [&_input]:!text-[13px] [&_input]:!font-bold [&_[data-slot=select-trigger]]:!h-11 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#9FB6A6] [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=select-trigger]]:!font-semibold [&_[data-slot=date-picker]]:!h-11 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#9FB6A6] [&_[data-slot=date-picker]]:!text-[13.5px] [&_[data-slot=date-picker]]:!font-semibold'
   : ''
 
 // A row of preview figures: hairline cells, label small caps over the money,
@@ -279,6 +282,13 @@ const LC_ACT_GO =
   '!h-[30px] !rounded-[3px] !border-0 !bg-[#0B3D2E] !px-2.5 !text-[11.5px] !font-extrabold !leading-none !text-white hover:!bg-[#0F4A38]'
 const LC_ACT_2ND =
   '!h-[30px] !w-[70px] !rounded-[3px] !border !border-[#C3D2C6] !bg-white !px-0 !text-[11.5px] !font-extrabold !leading-none !text-[#33473E] hover:!bg-[#F7FAF6]'
+// Column banding for the register header, from the second handoff. A hairline
+// opens each group; the middle two groups sit on a barely-there white wash and
+// the money pair on a lime one, so Open amount and Payment rec read as the
+// answer the row exists to give.
+const LC_RULE = '!border-l !border-l-[#C7F03F]/20'
+const LC_COL_WASH = '!bg-white/[0.03]'
+const LC_MONEY = '!bg-[#C7F03F]/[0.09]'
 const LC_HEAD =
   __WEB__
     ? '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&>th]:!h-auto [&>th]:!bg-[#0B3D2E] [&>th]:!py-3 [&>th]:!text-[10.5px] [&>th]:!font-semibold [&>th]:!tracking-[.06em] [&>th]:!text-white [&_button]:!text-[10.5px] [&_button]:!font-semibold [&_button]:!uppercase [&_button]:!tracking-[.06em] [&_button]:!text-white'
@@ -329,6 +339,17 @@ interface Props {
 //
 // Opens on hover AND on click: hover to glance, click to keep it open while
 // reading the numbers off.
+// The card is the arithmetic, so it is set like one: a forest band naming the
+// figure, the open amount at the top, each deduction on its own ruled line with
+// its working underneath, and the answer in green at the foot. Hairlines rather
+// than gaps between the lines — a subtraction is a column, not a list.
+const LC_HOVER =
+  '!w-[23rem] !rounded-[4px] !border-[#C3D2C6] !p-0 !text-[13px] !shadow-[0_14px_32px_rgba(10,31,23,.18)]'
+const LC_HOVER_ROW = '!items-center !py-[11px]'
+const LC_HOVER_RULE = '!border-b !border-b-[#EAF0E9]'
+const LC_HOVER_K = '!text-[13px] !font-medium !text-[#33473E]'
+const LC_HOVER_V = 'doc-ref !text-[14px] !font-bold !text-[#0A1F17]'
+
 function PayableBreakdown({ l, children }: { l: Row; children: React.ReactNode }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const amount = n(l.amount)
@@ -367,18 +388,18 @@ function PayableBreakdown({ l, children }: { l: Row; children: React.ReactNode }
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="w-[19rem] p-0 text-[12px]"
+        className={cn('w-[19rem] p-0 text-[12px]', __WEB__ && LC_HOVER)}
         onMouseEnter={() => setOpen(true)}
         onMouseLeave={() => setOpen(false)}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="rounded-t-md bg-[#1a2c56] px-3 py-2 text-[11px] font-semibold uppercase tracking-widest text-white">
+        <div className={cn('rounded-t-md bg-[#1a2c56] px-3 py-2 text-[11px] font-semibold uppercase tracking-widest text-white', __WEB__ && '!rounded-t-[3px] !bg-[#0B3D2E] !px-4 !py-2.5 !text-[11px] !font-extrabold !tracking-[.14em]')}>
           Payment rec
         </div>
-        <div className="space-y-1.5 px-3 py-2.5">
-          <div className="flex items-baseline justify-between gap-3">
-            <span className="text-muted-foreground">Open amount</span>
-            <span className="font-medium tabular-nums">{formatINR(amount)}</span>
+        <div className={cn('space-y-1.5 px-3 py-2.5', __WEB__ && '!space-y-0 !px-4 !py-0')}>
+          <div className={cn('flex items-baseline justify-between gap-3', __WEB__ && cn(LC_HOVER_ROW, LC_HOVER_RULE))}>
+            <span className={cn('text-muted-foreground', __WEB__ && LC_HOVER_K)}>Open amount</span>
+            <span className={cn('font-medium tabular-nums', __WEB__ && LC_HOVER_V)}>{formatINR(amount)}</span>
           </div>
 
           {upfront ? (
@@ -388,40 +409,40 @@ function PayableBreakdown({ l, children }: { l: Row; children: React.ReactNode }
             </div>
           ) : (
             <>
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="text-muted-foreground">
+              <div className={cn('flex items-baseline justify-between gap-3', __WEB__ && '!items-center !pt-[11px]')}>
+                <span className={cn('text-muted-foreground', __WEB__ && LC_HOVER_K)}>
                   less Interest
-                  <span className="ml-1 text-[10.5px] text-muted-foreground/70">
+                  <span className={cn('ml-1 text-[10.5px] text-muted-foreground/70', __WEB__ && '!ml-1.5 !text-[11.5px] !font-semibold !text-[#5A6B62]')}>
                     {rate}% · {days}d
                   </span>
                 </span>
-                <span className="tabular-nums text-rose-700">− {formatINR(interest)}</span>
+                <span className={cn('tabular-nums text-rose-700', __WEB__ && cn(LC_HOVER_V, '!text-[#B3261E]'))}>− {formatINR(interest)}</span>
               </div>
               {/* The sum itself, so the rate and the day count can be checked
                   against the bank's own working rather than guessed at. */}
-              <div className="doc-ref pl-2 text-[10.5px] text-muted-foreground/70">
+              <div className={cn('doc-ref pl-2 text-[10.5px] text-muted-foreground/70', __WEB__ && cn('!pl-0 !pb-[11px] !pt-1 !text-[11.5px] !font-medium !text-[#0A1F17]', LC_HOVER_RULE))}>
                 {formatINR(base)} × {rate}% × {days} ÷ 365
               </div>
               {/* Where the base is not the open amount, say what it is — two
                   LCs at the same rate on the same amount otherwise carry
                   different interest for no reason the reader can see. */}
               {Math.abs(base - amount) > 0.005 && (
-                <div className="pl-2 text-[10.5px] leading-snug text-muted-foreground/70">
+                <div className={cn('pl-2 text-[10.5px] leading-snug text-muted-foreground/70', __WEB__ && cn('!pl-0 !pb-[11px] !text-[11.5px] !font-medium !text-[#0A1F17]', LC_HOVER_RULE))}>
                   on {String(l.interest_basis || 'an adjusted base')} — {lcInterestBaseWorking(l)}
                 </div>
               )}
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="text-muted-foreground">less Bank charges</span>
-                <span className="tabular-nums text-rose-700">− {formatINR(charges)}</span>
+              <div className={cn('flex items-baseline justify-between gap-3', __WEB__ && cn(LC_HOVER_ROW, LC_HOVER_RULE))}>
+                <span className={cn('text-muted-foreground', __WEB__ && LC_HOVER_K)}>less Bank charges</span>
+                <span className={cn('tabular-nums text-rose-700', __WEB__ && cn(LC_HOVER_V, '!text-[#B3261E]'))}>− {formatINR(charges)}</span>
               </div>
             </>
           )}
 
-          <div className="!mt-2 flex items-baseline justify-between gap-3 border-t pt-2">
-            <span className="font-semibold">
+          <div className={cn('!mt-2 flex items-baseline justify-between gap-3 border-t pt-2', __WEB__ && '!mt-0 !items-start !gap-4 !border-t-0 !py-3')}>
+            <span className={cn('font-semibold', __WEB__ && '!text-[13.5px] !font-bold !leading-[1.35] !text-[#0A1F17]')}>
               {paid == null ? 'Would reach' : 'Paid to'} {party}
             </span>
-            <span className="font-bold tabular-nums text-emerald-700">{formatINR(net)}</span>
+            <span className={cn('font-bold tabular-nums text-emerald-700', __WEB__ && cn(LC_HOVER_V, '!shrink-0 !text-[15px] !font-extrabold !text-[#0B6B45]'))}>{formatINR(net)}</span>
           </div>
 
           {/* The bill the bank raised need not match the arithmetic above it —
@@ -440,7 +461,7 @@ function PayableBreakdown({ l, children }: { l: Row; children: React.ReactNode }
             </div>
           )}
         </div>
-        <div className="rounded-b-md border-t bg-muted/40 px-3 py-2 text-[10.5px] leading-snug text-muted-foreground">
+        <div className={cn('rounded-b-md border-t bg-muted/40 px-3 py-2 text-[10.5px] leading-snug text-muted-foreground', __WEB__ && '!rounded-b-[3px] !border-t-[#E4ECE3] !bg-[#F1F5EF] !px-4 !py-3 !text-[12px] !leading-[1.55] !text-[#5A6B62]')}>
           The bank keeps its interest and commission out of the credit before releasing the rest. You repay
           the <b>open amount</b> at maturity, not this figure.
         </div>
@@ -1164,32 +1185,51 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
 
   // ---------------- LC facility limit (Fixed + Convertible) ----------------
   const [lcLimitOpen, setLcLimitOpen] = useState(false)
+  // One limit per bank, edited together. The sanction is granted by a bank,
+  // not by the company as a whole, and this company runs two of them — a form
+  // that could only hold one at a time meant opening it twice to answer "what
+  // are we sanctioned for". Keyed by bank id, as strings so the inputs stay
+  // controlled while they are being typed into.
   const [lcLimitForm, setLcLimitForm] = useState<Row>({})
+  const [lcBankLimits, setLcBankLimits] = useState<Record<string, string>>({})
+  const [lcLimitLoading, setLcLimitLoading] = useState(false)
+  async function openLcLimits(): Promise<void> {
+    setLcLimitOpen(true)
+    setLcLimitLoading(true)
+    try {
+      const rows = await window.api.lc.bankLimits().catch(() => [] as Row[])
+      const m: Record<string, string> = {}
+      for (const b of banks) {
+        const hit = rows.find((r) => Number(r.bank_id) === Number(b.id))
+        m[String(b.id)] = n(hit?.fixed_limit) ? String(n(hit?.fixed_limit)) : ''
+      }
+      setLcBankLimits(m)
+    } finally {
+      setLcLimitLoading(false)
+    }
+  }
   const [lcLimitSaving, setLcLimitSaving] = useState(false)
 
+  // Every bank's limit at once — see openLcLimits above, which loads them.
   function openLcLimit(): void {
-    // A limit belongs to one bank, so the dialog opens on the bank in view —
-    // or the only bank on file when the page is showing all of them.
-    const only = banks.length === 1 ? String(banks[0].id) : ''
-    setLcLimitForm({
-      bank_id: activeBank || only,
-      fixed_limit: lcLimit ? String(lcLimit.fixed_limit ?? 0) : '0',
-      convertible_limit: lcLimit ? String(lcLimit.convertible_limit ?? 0) : '0',
-      convertible_enabled: !!lcLimit?.convertible_enabled
-    })
-    setLcLimitOpen(true)
+    void openLcLimits()
   }
 
   async function saveLcLimitForm(): Promise<void> {
     setLcLimitSaving(true)
     try {
-      await window.api.lc.saveLimit({
-        bank_id: n(lcLimitForm.bank_id),
-        fixed_limit: n(lcLimitForm.fixed_limit),
-        convertible_limit: n(lcLimitForm.convertible_limit),
-        convertible_enabled: !!lcLimitForm.convertible_enabled
-      })
-      toast.success('LC limit updated')
+      // Every bank in one go. Convertible is written as nothing on purpose:
+      // the facility is a single sanctioned figure now, and leaving the old
+      // column enabled would keep adding to a total nobody can see or edit.
+      for (const b of banks) {
+        await window.api.lc.saveLimit({
+          bank_id: Number(b.id),
+          fixed_limit: n(lcBankLimits[String(b.id)]),
+          convertible_limit: 0,
+          convertible_enabled: false
+        })
+      }
+      toast.success(`LC limits updated for ${banks.length} bank${banks.length === 1 ? '' : 's'}`)
       setLcLimitOpen(false)
       load()
     } catch (e) {
@@ -1850,6 +1890,17 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lcsBase, lcBankCol, lcPartyCol, lcMatCol, lcSearch])
 
+  // The LC no column carried a fixed 170px whatever was in it, which is two
+  // wasted columns' worth on a bank that numbers its credits LC-30 and not
+  // enough for one that numbers them 027LC03262370010. It is measured from the
+  // longest number actually on screen instead — the chevron, the gap and the
+  // cell's own padding, then 8.2px per character at the 12.5px the number is
+  // set in — and clamped so neither extreme runs away with the table.
+  const lcNoColWidth = useMemo(() => {
+    const longest = lcsFiltered.reduce((m, l) => Math.max(m, String(l.lc_no || '').length), 0)
+    return Math.round(Math.min(244, Math.max(138, 36 + longest * 8.2)))
+  }, [lcsFiltered])
+
   // Who did what to one LC — the same dialog every other register uses.
   const hist = useHistoryDialog()
   const openHistory = (l: Row): void =>
@@ -2259,7 +2310,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
             </div>
           )}
 
-          <TabsContent value="tracker" className="mt-4">
+          <TabsContent value="tracker" className={cn('mt-4', __WEB__ && '!mt-0')}>
             <div className={cn('rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#D6E2D6] !bg-white !shadow-none')}>
               <div
                 className={cn(
@@ -2394,7 +2445,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
             </div>
           </TabsContent>
 
-          <TabsContent value="lc" className="mt-4 space-y-3">
+          <TabsContent value="lc" className={cn('mt-4 space-y-3', __WEB__ && '!mt-0')}>
             {lcLimit && (
               <div className={cn('rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg', __WEB__ && '!overflow-hidden !rounded-[4px] !border-[#D6E2D6] !bg-white !shadow-none')}>
                 <div
@@ -2472,26 +2523,15 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                     made large is a KPI in the row below now, beside the limit
                     it is measured against, which is where it is read.
 
-                    What is NOT dropped with it: a facility drawn past its own
-                    limit. The Available tile says so by going red and
-                    negative, and this line says it in words, because "there is
-                    no room to open another LC" is not something to leave to a
-                    minus sign. Only when actually over — the 90%-drawn nudge
-                    went with the strip. */}
+                    An over-drawn facility used to say so here in words too.
+                    The Available tile already goes red and negative for it, so
+                    the banner was the same fact twice across the full width of
+                    the card; the tile keeps the job. */}
                 {__WEB__ && (() => {
-                  const over = n(lcLimit.available) < 0
                   const ranged = !!(lcLimit.period_from || lcLimit.period_to)
-                  if (!over && !ranged && !lcStageFilter) return null
+                  if (!ranged && !lcStageFilter) return null
                   return (
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-t-[#E4ECE3] px-4 py-2.5">
-                      {over && (
-                        <span className="flex items-center gap-2">
-                          <AlertTriangle className="h-[17px] w-[17px] shrink-0 text-[#B3261E]" />
-                          <span className="text-[12px] font-bold text-[#8C2F26]">
-                            Over the facility by {formatINR(Math.abs(n(lcLimit.available)))} — no headroom left.
-                          </span>
-                        </span>
-                      )}
                       {ranged && (
                         <span className="text-[11.5px] font-semibold text-[#5A6B62]">
                           LCs opened {formatDate(lcLimit.period_from)} to {formatDate(lcLimit.period_to)}
@@ -2512,24 +2552,28 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 <div
                   className={cn(
                     'grid grid-cols-2 gap-px bg-[#e5dfc8] p-px sm:grid-cols-3 lg:grid-cols-7',
-                    __WEB__ && '!gap-px !border-t !border-t-[#E4ECE3] !bg-[#E4ECE3] !p-0'
+                    // Seven tracks for five cells left two empty columns of
+                    // ground on the right, so the strip stopped short of the
+                    // card it sits in. Fixed and Convertible are gone on the
+                    // website, so the count here is five and the row runs the
+                    // full width.
+                    __WEB__ && '!grid-cols-2 sm:!grid-cols-3 lg:!grid-cols-5 !gap-px !border-t !border-t-[#E4ECE3] !bg-[#E4ECE3] !p-0'
                   )}
                 >
-                  <div className={cn('bg-[#fffdf4] px-3 py-2.5 text-center', LIMIT_CELL)}>
-                    <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-muted-foreground', LIMIT_K)}>Fixed</div>
-                    <div className={cn('text-[15px] font-bold tabular-nums text-[#1a2c56]', LIMIT_V)}>{formatINR(lcLimit.fixed_limit)}</div>
-                  </div>
-                  <div className={cn('bg-[#fffdf4] px-3 py-2.5 text-center', LIMIT_CELL)}>
-                    <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-muted-foreground', LIMIT_K)}>
-                      Convertible {!lcLimit.convertible_enabled && <span className="text-muted-foreground/60">(off)</span>}
+                  {/* Fixed and Convertible are gone from the strip. With the
+                      convertible facility retired, Fixed only ever repeated
+                      the total standing beside it. The total is the sanction
+                      now, so it takes the forest and the lime figure — it is
+                      what every other cell here is measured against. */}
+                  {!__WEB__ && (
+                    <div className={cn('bg-[#fffdf4] px-3 py-2.5 text-center', LIMIT_CELL)}>
+                      <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-muted-foreground', LIMIT_K)}>Fixed</div>
+                      <div className={cn('text-[15px] font-bold tabular-nums text-[#1a2c56]', LIMIT_V)}>{formatINR(lcLimit.fixed_limit)}</div>
                     </div>
-                    <div className={cn('text-[15px] font-bold tabular-nums', lcLimit.convertible_enabled ? 'text-[#1a2c56]' : 'text-muted-foreground/50 line-through', LIMIT_V, !lcLimit.convertible_enabled && __WEB__ && '!text-[#8FA79B]')}>
-                      {formatINR(lcLimit.convertible_limit)}
-                    </div>
-                  </div>
-                  <div className={cn('bg-[#1a2c56] px-3 py-2.5 text-center', LIMIT_CELL, __WEB__ && '!bg-[#F1F5EF]')}>
-                    <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-white/70', LIMIT_K, __WEB__ && '!text-[#33473E]')}>Total LC Limit</div>
-                    <div className={cn('text-[15px] font-bold tabular-nums text-white', LIMIT_V, __WEB__ && '!text-[#0A1F17]')}>{formatINR(lcLimit.total_limit)}</div>
+                  )}
+                  <div className={cn('bg-[#1a2c56] px-3 py-2.5 text-center', LIMIT_CELL, __WEB__ && '!bg-[#0B3D2E]')}>
+                    <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-white/70', LIMIT_K, __WEB__ && '!text-[#8FBFA8]')}>Total LC Limit</div>
+                    <div className={cn('text-[15px] font-bold tabular-nums text-white', LIMIT_V, __WEB__ && '!text-[#C7F03F]')}>{formatINR(lcLimit.total_limit)}</div>
                   </div>
                   {/* The one figure that decides whether another LC can be
                       opened at all, next to the limit it comes out of. Red and
@@ -2665,7 +2709,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           className={cn(
                             'h-8 w-[9.5rem] text-[11px] font-semibold uppercase tracking-wide',
                             lcDuePeriod !== 'all' && 'border-[#1a2c56] bg-[#1a2c56] text-white',
-                            __WEB__ && '!h-[38px] !w-[10.5rem] !rounded-[4px] !border-[#C3D2C6] !text-[12px] !font-bold !normal-case !tracking-normal',
+                            __WEB__ && '!h-[38px] !w-[9rem] !rounded-[4px] !border-[#C3D2C6] !text-[12px] !font-bold !normal-case !tracking-normal',
                             __WEB__ && lcDuePeriod !== 'all' && '!border-[#0B3D2E] !bg-[#0B3D2E] !text-white'
                           )}
                         >
@@ -2681,6 +2725,13 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       </Select>
                     </span>
                     <div className={cn('h-4 w-px bg-[#e5dfc8]', __WEB__ && '!h-6 !bg-[#C3D2C6]')} />
+                    <div
+                      className={cn(
+                        'flex flex-wrap items-center gap-2',
+                        __WEB__ &&
+                          '!gap-[3px] !rounded-[4px] !border !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px] !shadow-[inset_0_1px_2px_rgba(10,31,23,.05)]'
+                      )}
+                    >
                     {(
                       [
                         // Named for what it now shows — a chip labelled "All" that
@@ -2703,11 +2754,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         className={cn(
                           'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
                           lcStatusFilter === p.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50',
-                          __WEB__ && '!h-[38px] !rounded-[4px] !px-3.5 !text-[12.5px] !font-extrabold !capitalize !tracking-normal',
+                          __WEB__ && '!h-[32px] !rounded-[2px] !border-0 !px-3 !text-[12.5px] !font-extrabold !capitalize !tracking-normal',
                           __WEB__ &&
                             (lcStatusFilter === p.key
-                              ? '!border-[#0B3D2E] !bg-[#0B3D2E] !text-white'
-                              : '!border-[#C3D2C6] !bg-white !text-[#33473E] hover:!bg-[#F7FAF6]')
+                              ? '!bg-[#0B3D2E] !text-white'
+                              : '!bg-transparent !text-[#5A6B62] hover:!bg-white/70')
                         )}
                       >
                         {p.label}
@@ -2722,11 +2773,11 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         className={cn(
                           'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide capitalize transition-colors',
                           lcPurposeFilter === p ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50',
-                          __WEB__ && '!h-[38px] !rounded-[4px] !px-3.5 !text-[12.5px] !font-extrabold !capitalize !tracking-normal',
+                          __WEB__ && '!h-[32px] !rounded-[2px] !border-0 !px-3 !text-[12.5px] !font-extrabold !capitalize !tracking-normal',
                           __WEB__ &&
                             (lcPurposeFilter === p
-                              ? '!border-[#0B3D2E] !bg-[#0B3D2E] !text-white'
-                              : '!border-[#C3D2C6] !bg-white !text-[#33473E] hover:!bg-[#F7FAF6]')
+                              ? '!bg-[#0B3D2E] !text-white'
+                              : '!bg-transparent !text-[#5A6B62] hover:!bg-white/70')
                         )}
                       >
                         {/* The real word, not the stored key leaning on CSS
@@ -2736,8 +2787,9 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         {__WEB__ && <ChipCount n={lcChipCounts[p]} on={lcPurposeFilter === p} />}
                       </button>
                     ))}
+                    </div>
                     {__WEB__ && (
-                      <div className="ml-auto flex h-[38px] min-w-[150px] flex-1 basis-[150px] items-center gap-2.5 rounded-[4px] border border-[#C3D2C6] bg-white px-3">
+                      <div className="ml-auto flex h-[38px] min-w-[112px] flex-1 basis-[112px] items-center gap-2 rounded-[4px] border border-[#C3D2C6] bg-white px-2.5">
                         <Search className="h-4 w-4 shrink-0 text-[#5A6B62]" />
                         <input
                           value={lcSearch}
@@ -2762,7 +2814,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         <Button
                           size="sm"
                           variant="outline"
-                          className="!h-[38px] !shrink-0 !gap-1.5 !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3.5 !text-[12.5px] !font-bold !text-[#0A1F17] hover:!bg-[#F7FAF6] hover:!text-[#0A1F17]"
+                          className="!h-[38px] !shrink-0 !gap-1.5 !rounded-[4px] !border-[#C3D2C6] !bg-white !px-3 !text-[12.5px] !font-bold !text-[#0A1F17] hover:!bg-[#F7FAF6] hover:!text-[#0A1F17]"
                           disabled={lcExporting || lcsFiltered.length === 0}
                           onClick={() => void downloadLcRegister()}
                         >
@@ -2770,7 +2822,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         </Button>
                         <Button
                           size="sm"
-                          className="!h-[38px] !shrink-0 !gap-1.5 !rounded-[4px] !bg-[#C7F03F] !px-4 !text-[13px] !font-extrabold !text-[#0B3D2E] !shadow-none hover:!bg-[#B9E62F]"
+                          className="!h-[38px] !shrink-0 !gap-1.5 !rounded-[4px] !bg-[#C7F03F] !px-3 !text-[12.5px] !font-extrabold !text-[#0B3D2E] !shadow-none hover:!bg-[#B9E62F]"
                           onClick={() =>
                             setLcForm({
                               open_date: todayISO(),
@@ -2789,7 +2841,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         </Button>
                       </>
                     )}
-                    <div className={cn('ml-auto flex gap-1 rounded-md border border-[#d9d2b8] bg-white p-0.5', __WEB__ && '!ml-0 !shrink-0 !gap-[3px] !rounded-[4px] !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px]')}>
+                    <div className={cn('ml-auto flex gap-1 rounded-md border border-[#d9d2b8] bg-white p-0.5', __WEB__ && '!hidden')}>
                       <Button
                         size="icon"
                         variant={lcView === 'cards' ? 'default' : 'ghost'}
@@ -2813,7 +2865,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               )}
             </div>
 
-            {lcView === 'cards' ? (
+            {!__WEB__ && lcView === 'cards' ? (
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 <Card className={cn('flex items-center justify-center border-dashed p-6', __WEB__ && '!rounded-[4px] !border-[#A9BFB2] !bg-white !shadow-none')}>
                   <Button
@@ -3053,40 +3105,57 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                 )}
               </div>
               <div className="overflow-x-auto">
-              <Table className={cn('ruled-cols text-[13px]', __WEB__ && '!min-w-[1242px] !table-fixed')}>
+              <Table
+                className={cn(
+                  'ruled-cols text-[13px]',
+                  // 6px of gutter rather than 8: nine columns pay for that
+                  // twice each, and the 36px it gives back is a column's worth
+                  // of LC number.
+                  __WEB__ &&
+                    '!min-w-[1020px] !table-fixed [&_td]:!px-1.5 [&_th]:!px-1.5 [&_td:first-child]:!pl-2 [&_td:first-child]:!pr-1 [&_th:first-child]:!pl-2 [&_th:first-child]:!pr-1'
+                )}
+              >
                 <TableHeader className="sticky top-0 z-10">
                   <TableRow className={cn('border-b-2 border-[#1a2c56]/20 bg-[#dce6f5] hover:bg-[#dce6f5]', LC_HEAD)}>
-                    <TableHead className={cn('h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[192px]')}>
+                    {/* Width by inline style, not a utility: the class would
+                        carry !important and no measured value could beat it. */}
+                    <TableHead
+                      className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]"
+                      style={__WEB__ ? { width: `${lcNoColWidth}px` } : undefined}
+                    >
                       <ColumnFilter label="LC no · bank" options={colOptions.bank} value={lcBankCol} onApply={setLcBankCol} />
                     </TableHead>
-                    <TableHead className={cn('h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[160px]')}>
+                    <TableHead className={cn('h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[142px]')}>
                       <ColumnFilter label="Supplier" options={colOptions.party} value={lcPartyCol} onApply={setLcPartyCol} />
                     </TableHead>
-                    <TableHead className={cn('h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[116px]')}>
+                    <TableHead className={cn('h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && cn('!w-[104px]', LC_RULE, LC_COL_WASH))}>
                       {/* By maturity MONTH — a tick list of individual days
                           would be as long as the register itself. */}
                       <ColumnFilter label="Validity" options={colOptions.mat} value={lcMatCol} onApply={setLcMatCol} />
                     </TableHead>
-                    <TableHead className={cn('h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[96px]')}>Days left</TableHead>
-                    <TableHead className={cn('h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[72px]')}>Int. days</TableHead>
+                    <TableHead className={cn('h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && cn('!w-[84px]', LC_COL_WASH))}>Days left</TableHead>
+                    <TableHead className={cn('h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && cn('!w-[64px]', LC_RULE, LC_COL_WASH))}>Int. days</TableHead>
                     <TableHead
-                      className={cn('h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[96px]')}
+                      className={cn('h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && cn('!w-[84px]', LC_COL_WASH))}
                       title="Interest for the days between preclosure and the LC's original maturity — the stretch that never happened"
                     >
-                      Premature int.
+                      {/* "Premature int." never fitted its column. The word on
+                          its own is what the handoff uses, and the hover still
+                          carries the full explanation. */}
+                      {__WEB__ ? 'Premature' : 'Premature int.'}
                     </TableHead>
-                    <TableHead className={cn('h-9 w-[150px] min-w-[150px] whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[152px] !min-w-0')}>
+                    <TableHead className={cn('h-9 w-[150px] min-w-[150px] whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && cn('!w-[134px] !min-w-0', LC_RULE, LC_MONEY))}>
                       Open amount
                     </TableHead>
                     <TableHead
-                      className={cn('h-9 w-[165px] min-w-[165px] whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[162px] !min-w-0')}
+                      className={cn('h-9 w-[165px] min-w-[165px] whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && cn('!w-[142px] !min-w-0', LC_MONEY))}
                       title="What reaches the beneficiary — the open amount less the interest and commission the bank keeps"
                     >
                       {/* Lime, like the balance column on every other register:
                           this is the figure the register exists to report. */}
                       <span className={cn(__WEB__ && '!text-[#C7F03F]')}>Payment rec</span>
                     </TableHead>
-                    <TableHead className={cn('h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!w-[196px]')}>
+                    <TableHead className={cn('h-9 whitespace-nowrap text-right text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && cn('!w-[176px]', LC_RULE))}>
                       <span className={cn(__WEB__ && '!text-white')}>Actions</span>
                     </TableHead>
                   </TableRow>
@@ -3400,7 +3469,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
             )}
           </TabsContent>
 
-          <TabsContent value="bd" className="mt-4">
+          <TabsContent value="bd" className={cn('mt-4', __WEB__ && '!mt-0')}>
             <BillDiscounting
               companies={companies}
               activeCompany={activeCompany}
@@ -3549,72 +3618,47 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               __WEB__ && cn(LC_BODY, LC_FIELDS, '[&_input]:!tabular-nums')
             )}
           >
-            {/* The limit is sanctioned against one of OUR accounts, so it is
-                always saved against a bank rather than the company as a whole. */}
-            <div className="grid gap-1.5">
-              <Label>My bank <span className="text-red-600">*</span></Label>
-              <Select
-                value={String(lcLimitForm.bank_id ?? '')}
-                onValueChange={(v) => setLcLimitForm((p) => ({ ...p, bank_id: v }))}
-              >
-                <SelectTrigger><SelectValue placeholder="Which bank sanctioned this limit" /></SelectTrigger>
-                <SelectContent>
-                  {banks.map((b) => <SelectItem key={String(b.id)} value={String(b.id)}>{b.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-1.5">
-              <Label>Fixed limit (₹) *</Label>
-              <Input type="number" value={lcLimitForm.fixed_limit ?? ''} onChange={(e) => setLcLimitForm({ ...lcLimitForm, fixed_limit: e.target.value })} />
-            </div>
-            {/* The switch and the field it governs, in one box. They were two
-                separate rows, so a disabled amount box sat under a switch that
-                had nothing visibly to do with it — and the box turns green
-                when the limit is live, which is the state the total depends on. */}
-            <div
-              className={cn(
-                'flex items-center justify-between rounded-md border px-3 py-2',
-                __WEB__ && '!flex-col !items-stretch !gap-3 !rounded-[4px] !p-4',
-                __WEB__ && (lcLimitForm.convertible_enabled ? '!border-[#BFE3CB] !bg-[#F4FBF6]' : '!border-[#D6E2D6] !bg-white')
-              )}
-            >
-              <div className={cn(__WEB__ && '!flex !items-start !justify-between !gap-3')}>
-                <div className="min-w-0">
-                  <Label className={cn(__WEB__ && '!text-[11px] !font-extrabold !normal-case !tracking-normal !text-[#0A1F17]')}>Convertible limit</Label>
-                  <p className={cn('text-[10px] text-muted-foreground', __WEB__ && '!mt-1 !text-[11.5px] !font-semibold !leading-relaxed !text-[#5A6B62]')}>When on, this adds to the Fixed limit to make the total.</p>
-                </div>
-                <Switch
-                  checked={!!lcLimitForm.convertible_enabled}
-                  onCheckedChange={(v) => setLcLimitForm({ ...lcLimitForm, convertible_enabled: v })}
-                />
+            {/* One row per bank. The sanction belongs to the bank that
+                granted it, and the facility is the sum of them — so they are
+                set side by side and totalled underneath, rather than one at a
+                time behind a picker. */}
+            {lcLimitLoading ? (
+              <div className="px-1 py-6 text-center text-[12.5px] font-semibold text-[#5A6B62]">Loading limits…</div>
+            ) : banks.length === 0 ? (
+              <div className="px-1 py-6 text-center text-[12.5px] font-semibold text-[#5A6B62]">
+                No banks yet — add one under Manage Banks first.
               </div>
-              <div className={cn('grid gap-1.5', !__WEB__ && 'hidden')}>
-                <Label>Convertible limit (₹)</Label>
-                <Input
-                  type="number"
-                  disabled={!lcLimitForm.convertible_enabled}
-                  value={lcLimitForm.convertible_limit ?? ''}
-                  onChange={(e) => setLcLimitForm({ ...lcLimitForm, convertible_limit: e.target.value })}
-                  className={cn(__WEB__ && !lcLimitForm.convertible_enabled && '!bg-[#F1F5EF] !text-[#8FA79B]')}
-                />
+            ) : (
+              <div className="overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+                {banks.map((b, i) => (
+                  <div
+                    key={String(b.id)}
+                    className={cn(
+                      'flex flex-wrap items-center gap-3 px-3.5 py-3',
+                      i > 0 && 'border-t border-t-[#EAF0E9]'
+                    )}
+                  >
+                    <span className="min-w-0 flex-1 truncate text-[13px] font-bold text-[#0A1F17]">{b.name}</span>
+                    <Input
+                      type="number"
+                      placeholder="0"
+                      className="!h-11 !w-[180px] !flex-none !rounded-[4px] !border-[#9FB6A6] !text-right !text-[14px] !font-bold !tabular-nums"
+                      value={lcBankLimits[String(b.id)] ?? ''}
+                      onChange={(e) =>
+                        setLcBankLimits((prev) => ({ ...prev, [String(b.id)]: e.target.value }))
+                      }
+                    />
+                  </div>
+                ))}
               </div>
-            </div>
-            <div className={cn('grid gap-1.5', __WEB__ && '!hidden')}>
-              <Label>Convertible limit (₹)</Label>
-              <Input
-                type="number"
-                disabled={!lcLimitForm.convertible_enabled}
-                value={lcLimitForm.convertible_limit ?? ''}
-                onChange={(e) => setLcLimitForm({ ...lcLimitForm, convertible_limit: e.target.value })}
-              />
-            </div>
-            {/* The sum the two fields above make, said in the forest the
-                facility card uses for the same figure — this is what the
-                register will measure every LC against. */}
+            )}
+            {/* The facility the register measures every LC against. */}
             <div className={cn('flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2', __WEB__ && '!flex-wrap !gap-2.5 !rounded-[4px] !border-0 !bg-[#0B3D2E] !px-4 !py-3.5')}>
-              <span className={cn('text-[11px] font-semibold uppercase tracking-wide text-muted-foreground', __WEB__ && '!text-[9.5px] !font-extrabold !tracking-[.13em] !text-[#8FBFA8]')}>Total LC limit</span>
+              <span className={cn('text-[11px] font-semibold uppercase tracking-wide text-muted-foreground', __WEB__ && '!text-[9.5px] !font-extrabold !tracking-[.13em] !text-[#8FBFA8]')}>
+                Total LC limit
+              </span>
               <span className={cn('text-[15px] font-bold tabular-nums', __WEB__ && '!ml-auto !whitespace-nowrap !text-[21px] !tracking-[-0.035em] !text-[#C7F03F]')}>
-                {formatINR(n(lcLimitForm.fixed_limit) + (lcLimitForm.convertible_enabled ? n(lcLimitForm.convertible_limit) : 0))}
+                {formatINR(banks.reduce((t, b) => t + n(lcBankLimits[String(b.id)]), 0))}
               </span>
             </div>
           </div>

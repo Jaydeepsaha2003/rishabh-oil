@@ -66,7 +66,37 @@ function resolveStageDates(
   if (t >= 1 && !loaded) loaded = today
   if (t >= 2 && !transit) transit = today
   if (t >= 3 && !unloaded) unloaded = today
+  assertStageDateOrder(loaded, transit, unloaded)
   return { loaded_date: loaded, transit_date: transit, unloaded_date: unloaded }
+}
+
+// A tanker is loaded, then it travels, then it is emptied — so the three dates
+// can only run forwards. Same day is fine and common (a short haul is loaded
+// and unloaded before evening); going backwards is not, and it quietly
+// corrupts every report that dates a sale by the stage it reached.
+//
+// Checked here rather than at each caller: create, edit and advance-a-stage
+// all resolve their dates through this one function, so this is the only place
+// the three can be seen together.
+function assertStageDateOrder(
+  loaded: string | null,
+  transit: string | null,
+  unloaded: string | null
+): void {
+  const pairs: [string, string | null, string, string | null][] = [
+    ['Loaded', loaded, 'In transit', transit],
+    ['In transit', transit, 'Unloaded', unloaded],
+    ['Loaded', loaded, 'Unloaded', unloaded]
+  ]
+  for (const [aName, a, bName, b] of pairs) {
+    if (!a || !b) continue
+    if (a.slice(0, 10) > b.slice(0, 10)) {
+      throw new Error(
+        `${bName} date (${b.slice(0, 10)}) cannot be before the ${aName.toLowerCase()} date ` +
+          `(${a.slice(0, 10)}) — a sale is loaded, then in transit, then unloaded.`
+      )
+    }
+  }
 }
 
 // Today in local time (YYYY-MM-DD). Fine in the main process (not a workflow).
