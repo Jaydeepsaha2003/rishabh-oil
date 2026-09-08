@@ -18,6 +18,22 @@ self.addEventListener('activate', (event) => {
   )
 })
 
-self.addEventListener('fetch', (event) => {
-  event.respondWith(fetch(event.request))
-})
+// The handler exists, and does nothing. That is the whole point.
+//
+// It used to be `event.respondWith(fetch(event.request))`, which reads like a
+// no-op and is not one: calling respondWith takes the request AWAY from the
+// browser and makes this worker answer it. The browser's own handling — its
+// retries, its range requests, its connection reuse — is replaced by one bare
+// fetch with no fallback, so a single blip fails the request outright.
+//
+// That is not theoretical. A deploy replaces index.html and the hashed assets
+// together; load the page in that window and the stylesheet request can fail,
+// and with respondWith in the way it fails hard rather than being retried. The
+// result is the app rendering with no CSS at all — and because a service
+// worker survives Ctrl+Shift+R, it stays broken until the worker is
+// unregistered by hand.
+//
+// Returning without calling respondWith lets the request fall through to the
+// browser untouched, which is what "network only" was always meant to be. The
+// listener still counts for installability.
+self.addEventListener('fetch', () => {})
