@@ -1247,6 +1247,14 @@ const SK_BOPEN = '!bg-[#FCFDFB] !text-[#33473E]'
 const SK_BIN = '!bg-[#F5FBF7] !text-[#0B6B45]'
 const SK_BOUT = '!bg-[#FDF8F7] !text-[#8C2F26]'
 const SK_BCLOSE = '!bg-[#F2F7EE]'
+// Consignment and the opening sheets are the two surfaces on this page that
+// are not the mill's own register — someone else's oil, and the day before the
+// books start — so their bodies wash violet where a register washes green.
+const SK_VOPEN = '!bg-[#FBFAFE] !text-[#33473E]'
+const SK_VIN = '!bg-[#F5FBF7] !text-[#0B6B45]'
+const SK_VOUT = '!bg-[#FDF8F7] !text-[#8C2F26]'
+const SK_VCLOSE = '!bg-[#F4F1FD]'
+const SK_VRULE = '!border-l !border-l-[#EDE9FB]'
 // Figures take doc-ref, not a second typeface. The handoff sets its numbers
 // in IBM Plex Mono; the app is set in Inter and stays that way, and doc-ref
 // already gets what the mono was wanted for — tabular figures on a fixed
@@ -1856,7 +1864,7 @@ function OpeningStock({
                 slide sideways instead — it still fills a wide screen, and the
                 Note column takes any slack there is. */}
             <div className="overflow-x-auto">
-              <table className="ruled-cols w-full min-w-[1200px] bg-[#fffdf4] text-[13px]">
+              <table className={cn('ruled-cols w-full min-w-[1200px] bg-[#fffdf4] text-[13px]', __WEB__ && cn('!bg-white', '[&_input:focus]:!border-[#5B4BA8] [&_input:focus]:!ring-[#5B4BA8]/20 [&_input]:!rounded-[3px] [&_input]:!border-[#DCE7DB]'))}>
                 <thead>
                   <tr className={cn('border-b border-[#e0d8bd] bg-[#faf6e8] text-left text-[10px] uppercase tracking-widest text-muted-foreground', __WEB__ && '!border-b-0 !bg-[#5B4BA8] !text-[11px] !font-extrabold !tracking-[.07em] !text-[#DAD2F5]')}>
                     <th className="pin-col min-w-[190px] px-3 py-2">Product</th>
@@ -1925,7 +1933,10 @@ function OpeningStock({
                           'border-t border-[#f0ead2] transition-colors hover:bg-[#fbf6e4]',
                           // row-answered is read by .pin-col in main.css, which
                           // has to repaint the tint opaquely — see the note there.
-                          answered && 'row-answered bg-emerald-50/40'
+                          answered && 'row-answered bg-emerald-50/40',
+                          // The sheet's head is violet, so its rows are too —
+                          // the beige belonged to the design this replaced.
+                          __WEB__ && cn('!border-t-[#EDE9FB] hover:!bg-[#F8F6FE]', answered && '!bg-[#F3FAF5]')
                         )}
                       >
                         <td className="pin-col px-3 py-1.5">
@@ -3142,7 +3153,7 @@ function SkuOpeningStock({ onSaved }: { onSaved: () => void }): React.JSX.Elemen
 
       <div className="overflow-hidden rounded-xl border border-[#d9d2b8] shadow-sm">
         <div className="overflow-x-auto">
-          <table className="ruled-cols w-full min-w-[900px] bg-[#fffdf4] text-[13px]">
+          <table className={cn('ruled-cols w-full min-w-[900px] bg-[#fffdf4] text-[13px]', __WEB__ && cn('!bg-white', '[&_input:focus]:!border-[#5B4BA8] [&_input:focus]:!ring-[#5B4BA8]/20 [&_input]:!rounded-[3px] [&_input]:!border-[#DCE7DB]'))}>
             <thead>
               <tr className={cn('border-b border-[#e0d8bd] bg-[#faf6e8] text-left text-[10px] uppercase tracking-widest text-muted-foreground', __WEB__ && '!border-b-0 !bg-[#5B4BA8] !text-[11px] !font-extrabold !tracking-[.07em] !text-[#DAD2F5]')}>
                 <th className="pin-col min-w-[220px] px-3 py-2">SKU</th>
@@ -4824,15 +4835,15 @@ function MncStock(): React.JSX.Element {
               <>
                 {byParty.map((g) => (
                   <Fragment key={g.name}>
-                    <TableRow className="border-y-2 border-violet-300 bg-violet-50 hover:bg-violet-50">
-                      <TableCell className="text-[11px] font-bold uppercase tracking-wide text-violet-900">
+                    <TableRow className={cn('border-y-2 border-violet-300 bg-violet-50 hover:bg-violet-50', __WEB__ && '!border-y !border-y-[#DAD2F5] !bg-[#F3F0FC] hover:!bg-[#EDE9FB]')}>
+                      <TableCell className={cn('text-[11px] font-bold uppercase tracking-wide text-violet-900', __WEB__ && '!text-[11px] !font-extrabold !tracking-[.11em] !text-[#3D3179]')}>
                         {g.name}
-                        <span className="ml-1 font-medium normal-case tracking-normal text-violet-500">· {g.rows.length} product{g.rows.length === 1 ? '' : 's'}</span>
+                        <span className={cn('ml-1 font-medium normal-case tracking-normal text-violet-500', __WEB__ && '!text-[10.5px] !font-bold !text-[#5B4BA8]')}>· {g.rows.length} product{g.rows.length === 1 ? '' : 's'}</span>
                       </TableCell>
-                      <TableCell className="text-right text-[11px] font-bold tabular-nums text-slate-700">{g.opening ? formatNum(g.opening) : '—'}</TableCell>
-                      <TableCell className="text-right text-[11px] font-bold tabular-nums text-violet-900">{formatNum(g.deposited)}</TableCell>
-                      <TableCell className="text-right text-[11px] font-bold tabular-nums text-violet-900">{formatNum(g.invoiced)}</TableCell>
-                      <TableCell className="text-right text-[11px] font-bold tabular-nums text-violet-900">{formatNum(g.balance)}</TableCell>
+                      <TableCell className={cn('text-right text-[11px] font-bold tabular-nums text-slate-700', __WEB__ && cn(SK_NUM, SK_VRULE, '!font-bold !text-[#33473E]'))}>{g.opening ? formatNum(g.opening) : '—'}</TableCell>
+                      <TableCell className={cn('text-right text-[11px] font-bold tabular-nums text-violet-900', __WEB__ && cn(SK_NUM, SK_VRULE, '!font-bold !text-[#0B6B45]'))}>{formatNum(g.deposited)}</TableCell>
+                      <TableCell className={cn('text-right text-[11px] font-bold tabular-nums text-violet-900', __WEB__ && cn(SK_NUM, SK_VRULE, '!font-bold !text-[#8C2F26]'))}>{formatNum(g.invoiced)}</TableCell>
+                      <TableCell className={cn('text-right text-[11px] font-bold tabular-nums text-violet-900', __WEB__ && cn(SK_NUM, SK_VRULE, '!bg-[#E9E4FA] !font-bold !text-[#3D3179]'))}>{formatNum(g.balance)}</TableCell>
                       <TableCell />
                     </TableRow>
                     {g.rows.map((r) => {
@@ -4857,23 +4868,23 @@ function MncStock(): React.JSX.Element {
                       )
                       return (
                         <Fragment key={k}>
-                          <TableRow className={cn('cursor-pointer border-b', isOpen && 'bg-slate-100')} onClick={() => toggle(k)}>
-                            <TableCell className="font-medium">
+                          <TableRow className={cn('cursor-pointer border-b', isOpen && 'bg-slate-100', __WEB__ && cn('!border-b-[#EDE9FB] !bg-transparent', isOpen && '!bg-transparent'))} onClick={() => toggle(k)}>
+                            <TableCell className={cn('font-medium', __WEB__ && cn('!text-[12.5px] !font-bold !text-[#0A1F17]', isOpen && '!bg-[#F8F6FE] !shadow-[inset_3px_0_0_#5B4BA8]'))}>
                               <span className="inline-flex items-center gap-1.5">
-                                {isOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                                {isOpen ? <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground', __WEB__ && '!text-[#5B4BA8]')} /> : <ChevronRight className={cn('h-3.5 w-3.5 text-muted-foreground', __WEB__ && '!text-[#8FA79B]')} />}
                                 {r.product_code || r.product_name}
                               </span>
                             </TableCell>
-                            <TableCell className="text-right tabular-nums text-slate-600">
+                            <TableCell className={cn('text-right tabular-nums text-slate-600', __WEB__ && cn(SK_NUM, SK_VRULE, SK_VOPEN))}>
                               {(() => {
                                 const o = openingFor(r)
                                 return o ? formatNum(o) : '—'
                               })()}
                             </TableCell>
-                            <TableCell className="text-right tabular-nums text-emerald-700">{formatNum(r.deposited)}</TableCell>
-                            <TableCell className="text-right tabular-nums text-rose-700">{Number(r.invoiced) ? formatNum(r.invoiced) : '—'}</TableCell>
-                            <TableCell className={cn('text-right font-bold tabular-nums', Number(r.balance) < -1e-9 ? 'text-red-600' : 'text-violet-900')}>{formatNum(r.balance)}</TableCell>
-                            <TableCell className="text-muted-foreground">
+                            <TableCell className={cn('text-right tabular-nums text-emerald-700', __WEB__ && cn(SK_NUM, SK_VRULE, SK_VIN))}>{formatNum(r.deposited)}</TableCell>
+                            <TableCell className={cn('text-right tabular-nums text-rose-700', __WEB__ && cn(SK_NUM, SK_VRULE, SK_VOUT))}>{Number(r.invoiced) ? formatNum(r.invoiced) : '—'}</TableCell>
+                            <TableCell className={cn('text-right font-bold tabular-nums', Number(r.balance) < -1e-9 ? 'text-red-600' : 'text-violet-900', __WEB__ && cn('doc-ref !text-[13px] !font-bold', SK_VRULE, SK_VCLOSE, Number(r.balance) < -1e-9 ? '!text-[#B3261E]' : '!text-[#3D3179]'))}>{formatNum(r.balance)}</TableCell>
+                            <TableCell className={cn('text-muted-foreground', __WEB__ && cn(SK_VRULE, '!text-[11.5px] !font-semibold !text-[#5A6B62]'))}>
                               <span className="flex items-center justify-between gap-2">
                                 {r.uom || 'MT'}
                                 {openingLotFor(r.supplier_id, r.product_id) && (
@@ -5047,12 +5058,12 @@ function MncStock(): React.JSX.Element {
                     })}
                   </Fragment>
                 ))}
-                <TableRow className="border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
-                  <TableCell className="text-[11px] font-bold uppercase tracking-wide text-amber-900">Grand total</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totOpening)}</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(tot.deposited)}</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(tot.invoiced)}</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(tot.balance)}</TableCell>
+                <TableRow className={cn('border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100', __WEB__ && '!border-0 !bg-[#3D3179] hover:!bg-[#3D3179]')}>
+                  <TableCell className={cn('text-[11px] font-bold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.09em] !text-white')}>Grand total</TableCell>
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, '!font-bold !text-[#C7BCF0]'))}>{formatNum(totOpening)}</TableCell>
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, '!font-bold !text-[#9FE3BF]'))}>{formatNum(tot.deposited)}</TableCell>
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, '!font-bold !text-[#F0AFAA]'))}>{formatNum(tot.invoiced)}</TableCell>
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, '!bg-white/[.07] !text-[14px] !font-bold !text-white'))}>{formatNum(tot.balance)}</TableCell>
                   <TableCell />
                 </TableRow>
               </>
@@ -5376,20 +5387,34 @@ function Transfers(): React.JSX.Element {
           </TableHeader>
           <TableBody>
             {transfers.length === 0 ? (
-              <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No transfers yet.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={7} className={cn('py-10 text-center text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !text-[#8FA79B]')}>No transfers yet.</TableCell></TableRow>
             ) : (
               transfers.map((t) => (
-                <TableRow key={t.id as number}>
-                  <TableCell>{formatDate(t.transfer_date)}</TableCell>
+                <TableRow key={t.id as number} className={cn(__WEB__ && '!border-b-[#EAF0E9]')}>
+                  <TableCell className={cn(__WEB__ && cn(SK_NUM, '!font-semibold !text-[#33473E]'))}>{formatDate(t.transfer_date)}</TableCell>
                   <TableCell>
-                    <Badge variant={t.direction === 'out' ? 'secondary' : 'default'}>
+                    {/* Direction is the one thing a transfer row is really
+                        saying, so it takes the in/out colours the rest of the
+                        page uses for the same idea rather than a grey pill. */}
+                    <Badge
+                      variant={t.direction === 'out' ? 'secondary' : 'default'}
+                      className={cn(
+                        __WEB__ &&
+                          cn(
+                            '!rounded-[2px] !px-[7px] !py-[2px] !text-[9.5px] !font-extrabold !uppercase !tracking-[.09em]',
+                            t.direction === 'out'
+                              ? '!bg-[#FDF3F2] !text-[#8C2F26]'
+                              : '!bg-[#F1FAF4] !text-[#0B6B45]'
+                          )
+                      )}
+                    >
                       {t.direction === 'out' ? 'Out' : 'In'}
                     </Badge>
                   </TableCell>
-                  <TableCell className="font-medium">{t.product_code || t.product_name}</TableCell>
-                  <TableCell className="text-muted-foreground">{t.from_company_name} → {t.to_company_name}</TableCell>
-                  <TableCell className="text-right tabular-nums">{formatNum(t.qty)} {t.uom}</TableCell>
-                  <TableCell className="max-w-[200px] truncate text-muted-foreground">{t.note || '—'}</TableCell>
+                  <TableCell className={cn('font-medium', __WEB__ && '!text-[12.5px] !font-bold !text-[#0A1F17]')}>{t.product_code || t.product_name}</TableCell>
+                  <TableCell className={cn('text-muted-foreground', __WEB__ && '!text-[11.5px] !font-semibold !text-[#5A6B62]')}>{t.from_company_name} → {t.to_company_name}</TableCell>
+                  <TableCell className={cn('text-right tabular-nums', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BCLOSE, '!font-bold !text-[#0A1F17]'))}>{formatNum(t.qty)} {t.uom}</TableCell>
+                  <TableCell className={cn('max-w-[200px] truncate text-muted-foreground', __WEB__ && cn(SK_BRULE, '!text-[11.5px] !font-medium !text-[#5A6B62]'))}>{t.note || '—'}</TableCell>
                   <TableCell className="text-right">
                     {t.direction === 'out' && (
                       <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => remove(t)}>
