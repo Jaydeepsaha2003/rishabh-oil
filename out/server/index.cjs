@@ -2248,7 +2248,7 @@ var TABLES = {
   nbfcs: ["name", "finance_type", "tds_pct", "interest_pct", "interest_days", "days_year", "days_incl_start", "sanctioned_limit", "note", "active", "company_id"],
   categories: ["name", "applies_to", "note", "active"],
   oil_types: ["code", "name", "active"],
-  products: ["code", "name", "category", "material_type", "uom", "active"],
+  products: ["code", "name", "category", "material_type", "uom", "active", "show_in_stock"],
   suppliers: [
     "name",
     "supplier_type",
@@ -2488,8 +2488,8 @@ async function assertNotInUse(table, id) {
   const held = [];
   for (const d of deps) {
     const r = await c.execute({ sql: `SELECT COUNT(*) AS n FROM ${d.table} WHERE ${d.column} = ?`, args: [id] }).catch(() => null);
-    const n25 = r ? Number(r.rows[0].n) : 0;
-    if (n25 > 0) held.push(`${n25} ${d.label}${n25 === 1 ? "" : "s"}`);
+    const n26 = r ? Number(r.rows[0].n) : 0;
+    if (n26 > 0) held.push(`${n26} ${d.label}${n26 === 1 ? "" : "s"}`);
   }
   if (!held.length) return;
   const who = await c.execute({ sql: `SELECT name FROM ${table} WHERE id = ?`, args: [id] });
@@ -3216,7 +3216,7 @@ async function dumpSql(from) {
 }
 function stamp() {
   const d = /* @__PURE__ */ new Date();
-  const p = (n25) => String(n25).padStart(2, "0");
+  const p = (n26) => String(n26).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
 }
 async function snapshotGz() {
@@ -4152,8 +4152,8 @@ async function nextBargainNo(oilTypeId, supplierId, bargainDate) {
   let maxSeq = 0;
   for (const r of existing.rows) {
     const parts = String(r.bargain_no).split("/");
-    const n25 = parseInt(parts[parts.length - 1] ?? "0", 10);
-    if (!Number.isNaN(n25) && n25 > maxSeq) maxSeq = n25;
+    const n26 = parseInt(parts[parts.length - 1] ?? "0", 10);
+    if (!Number.isNaN(n26) && n26 > maxSeq) maxSeq = n26;
   }
   const serial = String(maxSeq + 1).padStart(2, "0");
   return `${oil}/${dayMonth(bargainDate)}/${party}/${serial}`;
@@ -6788,7 +6788,17 @@ async function stockLevels(range, companyIds) {
   };
   const keys = Object.keys(SOURCES);
   const [products, brought, ...maps] = await Promise.all([
-    c.execute("SELECT id, code, name, category, material_type, active FROM products ORDER BY category, name"),
+    // show_in_stock is the switch on the Products page. Filtered here rather
+    // than in the page, because stockLevels() is what BOTH stock sheets are
+    // built from — Book Stock reads it directly and the opening sheet maps
+    // over it — so one WHERE keeps the two in step instead of two filters that
+    // can drift. COALESCE, so a row written before the column existed still
+    // shows.
+    c.execute(
+      `SELECT id, code, name, category, material_type, active FROM products
+        WHERE COALESCE(show_in_stock, 1) = 1
+        ORDER BY category, name`
+    ),
     openingBalance(),
     ...keys.map((k) => slice(SOURCES[k], "period")),
     ...keys.map((k) => slice(SOURCES[k], "opening"))
@@ -6946,7 +6956,7 @@ async function stockPartyBreakdown(companyIds, range) {
   const recB = bounds(recDateExpr);
   const dispB = bounds("s.sale_date");
   const out = {};
-  const ensure = (pid) => out[pid] ??= { receipt: [], dispatch: [], packed: [] };
+  const ensure = (pid) => out[pid] ??= { receipt: [], dispatch: [], packed: [], produced: [], consumed: [] };
   const rec = await c.execute({
     sql: `SELECT o.oil_type_id AS pid, COALESCE(s.name, 'Unknown') AS party, co.name AS company, SUM(o.received_qty) AS qty
           FROM orders o
@@ -6960,7 +6970,7 @@ async function stockPartyBreakdown(companyIds, range) {
   });
   for (const r of rec.rows)
     ensure(Number(r.pid)).receipt.push({
-      party: multi ? `${r.party} \xB7 ${r.company || ""}` : String(r.party),
+      party: multi ? `${r.company || "\u2014"} \xB7 ${r.party}` : String(r.party),
       qty: Number(r.qty) || 0
     });
   const disp = await c.execute({
@@ -6979,7 +6989,49 @@ async function stockPartyBreakdown(companyIds, range) {
   });
   for (const r of disp.rows)
     ensure(Number(r.pid)).dispatch.push({
-      party: multi ? `${r.party} \xB7 ${r.company || ""}` : String(r.party),
+      party: multi ? `${r.company || "\u2014"} \xB7 ${r.party}` : String(r.party),
+      qty: Number(r.qty) || 0
+    });
+  const prodB = bounds("p.prod_date");
+  const made = await c.execute({
+    sql: `SELECT pid, party, company, SUM(qty) AS qty FROM (
+            SELECT p.product_id AS pid, COALESCE(r.name, 'Production run') AS party,
+                   co.name AS company, p.qty AS qty
+              FROM production p
+              LEFT JOIN formulations r ON r.id = p.formulation_id
+              LEFT JOIN companies co ON co.id = p.company_id
+             WHERE p.company_id IN (${ph}) ${prodB.sql}
+            UNION ALL
+            SELECT i.product_id AS pid, COALESCE(r.name, 'Production run') || ' \xB7 by-product' AS party,
+                   co.name AS company, i.qty AS qty
+              FROM production_items i
+              JOIN production p ON p.id = i.production_id
+              LEFT JOIN formulations r ON r.id = p.formulation_id
+              LEFT JOIN companies co ON co.id = p.company_id
+             WHERE i.kind = 'output' AND p.company_id IN (${ph}) ${prodB.sql}
+          ) GROUP BY pid, party, company HAVING SUM(qty) > 0 ORDER BY qty DESC`,
+    args: [...cidList, ...prodB.args, ...cidList, ...prodB.args]
+  });
+  for (const r of made.rows)
+    ensure(Number(r.pid)).produced.push({
+      party: multi ? `${r.company || "\u2014"} \xB7 ${r.party}` : String(r.party),
+      qty: Number(r.qty) || 0
+    });
+  const used = await c.execute({
+    sql: `SELECT i.product_id AS pid, COALESCE(r.name, 'Production run') AS party,
+                 co.name AS company, SUM(i.qty) AS qty
+            FROM production_items i
+            JOIN production p ON p.id = i.production_id
+            LEFT JOIN formulations r ON r.id = p.formulation_id
+            LEFT JOIN companies co ON co.id = p.company_id
+           WHERE i.kind = 'input' AND p.company_id IN (${ph}) ${prodB.sql}
+           GROUP BY i.product_id, r.name, p.company_id
+          HAVING SUM(i.qty) > 0 ORDER BY qty DESC`,
+    args: [...cidList, ...prodB.args]
+  });
+  for (const r of used.rows)
+    ensure(Number(r.pid)).consumed.push({
+      party: multi ? `${r.company || "\u2014"} \xB7 ${r.party}` : String(r.party),
       qty: Number(r.qty) || 0
     });
   const noteB = bounds("nt.note_date");
@@ -7002,13 +7054,13 @@ async function stockPartyBreakdown(companyIds, range) {
   };
   for (const r of await noteSide("credit", "customer", "customers"))
     ensure(Number(r.pid)).dispatch.push({
-      party: `${multi ? `${r.party} \xB7 ${r.company || ""}` : String(r.party)} \u2014 return ${r.note_no}`,
+      party: `${multi ? `${r.company || "\u2014"} \xB7 ${r.party}` : String(r.party)} \u2014 return ${r.note_no}`,
       qty: -(Number(r.qty) || 0),
       isReturn: true
     });
   for (const r of await noteSide("debit", "supplier", "suppliers"))
     ensure(Number(r.pid)).receipt.push({
-      party: `${multi ? `${r.party} \xB7 ${r.company || ""}` : String(r.party)} \u2014 return ${r.note_no}`,
+      party: `${multi ? `${r.company || "\u2014"} \xB7 ${r.party}` : String(r.party)} \u2014 return ${r.note_no}`,
       qty: -(Number(r.qty) || 0),
       isReturn: true
     });
@@ -9842,9 +9894,9 @@ async function runStartupTasks() {
     const cols = new Set(info.rows.map((r) => String(r.name)));
     if (cols.size === 0 || cols.has("bd_id")) return;
     const count = await c.execute("SELECT COUNT(*) AS n FROM bd_parties");
-    const n25 = Number(count.rows[0].n);
-    if (n25 > 0) {
-      console.error(`[bd] bd_parties has the retired party+entries shape AND ${n25} row(s) \u2014 leaving it for a human`);
+    const n26 = Number(count.rows[0].n);
+    if (n26 > 0) {
+      console.error(`[bd] bd_parties has the retired party+entries shape AND ${n26} row(s) \u2014 leaving it for a human`);
       return;
     }
     await c.execute("DROP TABLE IF EXISTS bd_entries");
@@ -10090,6 +10142,32 @@ async function runStartupTasks() {
     );
     await c.execute("CREATE INDEX IF NOT EXISTS idx_production_factory ON production(factory_id)");
   }).catch((e) => console.error("[production] factory column failed:", e));
+  await runOnce("products_show_in_stock_v1", async () => {
+    const c = getClient();
+    await c.execute("ALTER TABLE products ADD COLUMN show_in_stock INTEGER NOT NULL DEFAULT 1").catch((e) => {
+      if (!/duplicate column/i.test(String(e.message))) throw e;
+    });
+    await c.execute("UPDATE products SET show_in_stock = 1 WHERE show_in_stock IS NULL");
+  }).catch((e) => console.error("[products] show_in_stock column failed:", e));
+  await runOnce("outside_tankers_v1", async () => {
+    const c = getClient();
+    await c.execute(`CREATE TABLE IF NOT EXISTS outside_tankers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER,
+      log_date TEXT NOT NULL,
+      slot TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      product_id INTEGER,
+      party_id INTEGER,
+      tankers INTEGER NOT NULL DEFAULT 0,
+      note TEXT,
+      created_by TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )`);
+    await c.execute(
+      "CREATE INDEX IF NOT EXISTS idx_outside_tankers_day ON outside_tankers(company_id, log_date)"
+    );
+  }).catch((e) => console.error("[gate] outside tanker diary failed:", e));
   startRevisionWatcher();
 }
 
@@ -11389,8 +11467,91 @@ async function seedOpeningDayCount(companyId, date) {
   }
 }
 
+// src/main/outsidetankers.ts
+var n13 = (v) => Number(v || 0);
+var OUTSIDE_SLOTS = ["08:00", "16:00", "20:00"];
+async function listOutsideTankers(date) {
+  const c = getClient();
+  const day = String(date || "").slice(0, 10);
+  const args = [getActiveCompanyId()];
+  let where = "WHERE t.company_id = ?";
+  if (day) {
+    where += " AND t.log_date = ?";
+    args.push(day);
+  }
+  const res = await c.execute({
+    sql: `SELECT t.*,
+                 p.name AS product_name,
+                 p.code AS product_code,
+                 COALESCE(s.name, cu.name) AS party_name
+            FROM outside_tankers t
+            LEFT JOIN products p ON p.id = t.product_id
+            LEFT JOIN suppliers s ON s.id = t.party_id AND t.kind = 'purchase'
+            LEFT JOIN customers cu ON cu.id = t.party_id AND t.kind = 'sales'
+            ${where}
+           ORDER BY t.log_date DESC, t.slot, t.id`,
+    args
+  });
+  const rows = res.rows;
+  const seen = /* @__PURE__ */ new Map();
+  return rows.map((r) => {
+    const k = String(r.log_date);
+    const sl = (seen.get(k) || 0) + 1;
+    seen.set(k, sl);
+    return { ...r, sl_no: sl };
+  });
+}
+async function saveOutsideTanker(v) {
+  const c = getClient();
+  const day = String(v.log_date || "").slice(0, 10);
+  if (!day) throw new Error("Pick the date this count was taken");
+  const slot = String(v.slot || "");
+  if (!OUTSIDE_SLOTS.includes(slot))
+    throw new Error("Pick which round this is \u2014 8 AM, 4 PM or 8 PM");
+  const kind = String(v.kind || "");
+  if (kind !== "purchase" && kind !== "sales")
+    throw new Error("Say whether these are purchase or sales tankers");
+  const tankers = Math.round(n13(v.tankers));
+  if (tankers < 0) throw new Error("A tanker count cannot be negative");
+  const args = [
+    getActiveCompanyId(),
+    day,
+    slot,
+    kind,
+    n13(v.product_id) || null,
+    n13(v.party_id) || null,
+    tankers,
+    String(v.note || "").trim() || null,
+    String(v.created_by || "") || null
+  ];
+  if (n13(v.id)) {
+    await c.execute({
+      sql: `UPDATE outside_tankers
+               SET log_date = ?, slot = ?, kind = ?, product_id = ?, party_id = ?,
+                   tankers = ?, note = ?
+             WHERE id = ? AND company_id = ?`,
+      args: [day, slot, kind, args[4], args[5], tankers, args[7], n13(v.id), getActiveCompanyId()]
+    });
+    return { id: n13(v.id) };
+  }
+  const res = await c.execute({
+    sql: `INSERT INTO outside_tankers
+            (company_id, log_date, slot, kind, product_id, party_id, tankers, note, created_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args
+  });
+  return { id: Number(res.lastInsertRowid || 0) };
+}
+async function removeOutsideTanker(id) {
+  await getClient().execute({
+    sql: "DELETE FROM outside_tankers WHERE id = ? AND company_id = ?",
+    args: [n13(id), getActiveCompanyId()]
+  });
+  return { ok: true };
+}
+
 // src/main/stockcount.ts
-function n13(v) {
+function n14(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
@@ -11493,8 +11654,8 @@ async function saveStockCounts(date, items) {
     const hasActual = it.actual_qty !== "" && it.actual_qty != null;
     const hasPp = it.pp_qty !== "" && it.pp_qty != null;
     if (!hasActual && !hasPp) continue;
-    const pid = n13(it.product_id);
-    const actualQty = n13(it.actual_qty);
+    const pid = n14(it.product_id);
+    const actualQty = n14(it.actual_qty);
     const rate = rates.get(pid) || 0;
     await c.execute({
       sql: `INSERT INTO stock_counts (company_id, count_date, product_id, book_qty, actual_qty, rate, actual_value, pp_qty, note)
@@ -11510,11 +11671,11 @@ async function saveStockCounts(date, items) {
         getActiveCompanyId(),
         date,
         pid,
-        n13(it.book_qty),
+        n14(it.book_qty),
         actualQty,
         rate,
         actualQty * rate,
-        hasPp ? n13(it.pp_qty) : null,
+        hasPp ? n14(it.pp_qty) : null,
         it.note || null
       ]
     });
@@ -11531,7 +11692,7 @@ function toPlain17(res) {
     return o;
   });
 }
-function n14(v) {
+function n15(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
@@ -11546,7 +11707,7 @@ function span(when) {
   return { from: from || null, to: to || null, ranged: !!(from || to) };
 }
 async function skuOpeningDate(companyId) {
-  const cid = n14(companyId) || getActiveCompanyId();
+  const cid = n15(companyId) || getActiveCompanyId();
   const fid = await factoryOfCompanies([cid]);
   const res = await getClient().execute(
     fid ? { sql: "SELECT MIN(as_of) AS d FROM sku_openings WHERE factory_id = ?", args: [fid] } : { sql: "SELECT MIN(as_of) AS d FROM sku_openings WHERE company_id = ?", args: [cid] }
@@ -11560,7 +11721,7 @@ async function skuOpeningMap(cid) {
   const res = await getClient().execute(
     fid ? { sql: "SELECT packaging_id, qty FROM sku_openings WHERE factory_id = ?", args: [fid] } : { sql: "SELECT packaging_id, qty FROM sku_openings WHERE company_id = ?", args: [cid] }
   ).catch(() => null);
-  for (const r of res ? toPlain17(res) : []) m.set(n14(r.packaging_id), n14(r.qty));
+  for (const r of res ? toPlain17(res) : []) m.set(n15(r.packaging_id), n15(r.qty));
   return m;
 }
 async function listSkuStock(when) {
@@ -11652,12 +11813,12 @@ async function listSkuStock(when) {
   });
   const runs = await negativeRuns(cids, to);
   return toPlain17(res).map((r) => {
-    const brought = openings.get(n14(r.id)) || 0;
-    const opening = round(brought + n14(r.added_before) - n14(r.sold_before));
-    const addedOn = round(n14(r.added_on));
-    const soldOn = round(n14(r.sold_on));
-    const onHand = ranged ? round(opening + addedOn - soldOn) : round(brought + n14(r.added) - n14(r.sold));
-    const run = onHand < -1e-6 ? runs.get(n14(r.id)) : void 0;
+    const brought = openings.get(n15(r.id)) || 0;
+    const opening = round(brought + n15(r.added_before) - n15(r.sold_before));
+    const addedOn = round(n15(r.added_on));
+    const soldOn = round(n15(r.sold_on));
+    const onHand = ranged ? round(opening + addedOn - soldOn) : round(brought + n15(r.added) - n15(r.sold));
+    const run = onHand < -1e-6 ? runs.get(n15(r.id)) : void 0;
     return {
       ...r,
       opening,
@@ -11697,7 +11858,7 @@ async function negativeRuns(cids, upto) {
   });
   const byS = /* @__PURE__ */ new Map();
   for (const r of toPlain17(res)) {
-    const k = n14(r.sku);
+    const k = n15(r.sku);
     byS.set(k, [...byS.get(k) || [], r]);
   }
   const out = /* @__PURE__ */ new Map();
@@ -11707,7 +11868,7 @@ async function negativeRuns(cids, upto) {
     let trigger = null;
     for (const day of days) {
       const before = bal;
-      bal = Math.round((bal + n14(day.adj) - n14(day.sale)) * 1e6) / 1e6;
+      bal = Math.round((bal + n15(day.adj) - n15(day.sale)) * 1e6) / 1e6;
       if (bal < -1e-6) {
         if (since === null) {
           since = String(day.d);
@@ -11770,12 +11931,12 @@ async function skuMovementBreakdown(when) {
     bySku.set(id, cur);
     return cur;
   };
-  for (const r of toPlain17(disp)) slot(n14(r.sku)).dispatch.push(r);
-  for (const r of toPlain17(packed)) slot(n14(r.sku)).packed_in.push(r);
+  for (const r of toPlain17(disp)) slot(n15(r.sku)).dispatch.push(r);
+  for (const r of toPlain17(packed)) slot(n15(r.sku)).packed_in.push(r);
   return Array.from(bySku.values());
 }
 async function listSkuOpenings(companyId, asOfIn) {
-  const cid = n14(companyId) || getActiveCompanyId();
+  const cid = n15(companyId) || getActiveCompanyId();
   const c = getClient();
   const asOf = String(asOfIn || "").slice(0, 10) || await skuOpeningDate(cid);
   const saved = await skuOpeningMap(cid);
@@ -11787,7 +11948,7 @@ async function listSkuOpenings(companyId, asOfIn) {
     fidL ? { sql: "SELECT packaging_id, note FROM sku_openings WHERE factory_id = ?", args: [fidL] } : { sql: "SELECT packaging_id, note FROM sku_openings WHERE company_id = ?", args: [cid] }
   ).catch(() => null);
   for (const r of savedRows ? toPlain17(savedRows) : []) {
-    if (r.note) notes.set(n14(r.packaging_id), String(r.note));
+    if (r.note) notes.set(n15(r.packaging_id), String(r.note));
   }
   const moved = await c.execute({
     sql: `SELECT pk.id,
@@ -11802,7 +11963,7 @@ async function listSkuOpenings(companyId, asOfIn) {
     args: [...cidsL, asOf, asOf, ...cidsL, asOf, asOf]
   });
   const movedBy = /* @__PURE__ */ new Map();
-  for (const r of toPlain17(moved)) movedBy.set(n14(r.id), r);
+  for (const r of toPlain17(moved)) movedBy.set(n15(r.id), r);
   const skus = await c.execute({
     sql: `SELECT pk.id, pk.name, pk.pouches_per_box, pk.base_per_pouch, pk.base_uom,
                  pk.unit_size, pk.unit_uom, pk.box_label, pk.pouch_label,
@@ -11813,10 +11974,10 @@ async function listSkuOpenings(companyId, asOfIn) {
   });
   const round = (x) => Math.round((x + Number.EPSILON) * 1e6) / 1e6;
   const rows = toPlain17(skus).map((p) => {
-    const id = n14(p.id);
+    const id = n15(p.id);
     const mv = movedBy.get(id);
-    const fromMovement = round(n14(mv?.packed_in) - n14(mv?.dispatched));
-    const entered = saved.has(id) ? n14(saved.get(id)) : null;
+    const fromMovement = round(n15(mv?.packed_in) - n15(mv?.dispatched));
+    const entered = saved.has(id) ? n15(saved.get(id)) : null;
     return {
       ...p,
       qty: entered,
@@ -11825,7 +11986,7 @@ async function listSkuOpenings(companyId, asOfIn) {
       // the hole an opening figure is there to fill.
       movement_closing: fromMovement,
       shortfall: fromMovement < 0 ? round(-fromMovement) : 0,
-      closing: round(fromMovement + n14(entered))
+      closing: round(fromMovement + n15(entered))
     };
   });
   return {
@@ -11833,13 +11994,13 @@ async function listSkuOpenings(companyId, asOfIn) {
     as_of: asOf,
     rows,
     entered_count: rows.filter((r) => r.qty != null).length,
-    total_qty: round(rows.reduce((t, r) => t + n14(r.qty), 0)),
-    negative_count: rows.filter((r) => n14(r.movement_closing) < -5e-4).length,
-    still_negative: rows.filter((r) => n14(r.closing) < -5e-4).length
+    total_qty: round(rows.reduce((t, r) => t + n15(r.qty), 0)),
+    negative_count: rows.filter((r) => n15(r.movement_closing) < -5e-4).length,
+    still_negative: rows.filter((r) => n15(r.closing) < -5e-4).length
   };
 }
 async function saveSkuOpenings(rows, asOf, companyId) {
-  const cid = n14(companyId) || getActiveCompanyId();
+  const cid = n15(companyId) || getActiveCompanyId();
   const date = String(asOf || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the date this opening is counted on");
   const c = getClient();
@@ -11848,7 +12009,7 @@ async function saveSkuOpenings(rows, asOf, companyId) {
   let saved = 0;
   let cleared = 0;
   for (const raw of Array.isArray(rows) ? rows : []) {
-    const pid = n14(raw?.packaging_id ?? raw?.id);
+    const pid = n15(raw?.packaging_id ?? raw?.id);
     if (!pid) continue;
     const blank = raw?.qty === "" || raw?.qty == null;
     if (blank) {
@@ -11871,14 +12032,14 @@ async function saveSkuOpenings(rows, asOf, companyId) {
               qty = excluded.qty,
               note = excluded.note,
               updated_at = datetime('now')`,
-      args: [cid, cid, pid, date, n14(raw.qty), raw?.note ? String(raw.note).trim() : null]
+      args: [cid, cid, pid, date, n15(raw.qty), raw?.note ? String(raw.note).trim() : null]
     });
     saved++;
   }
   return { saved, cleared };
 }
 async function listSkuAdjustments(packagingId) {
-  const pid = n14(packagingId);
+  const pid = n15(packagingId);
   if (!pid) return [];
   const MT = `
     CASE
@@ -11919,7 +12080,7 @@ async function listSkuAdjustments(packagingId) {
   });
   return toPlain17(res).map((r) => ({
     ...r,
-    mt: Math.round(n14(r.mt) * 1e3) / 1e3,
+    mt: Math.round(n15(r.mt) * 1e3) / 1e3,
     // Only a packing entry moves oil between the tank and the shelf; see the
     // packedOut source in stock.ts, which filters on exactly this.
     moves_bulk: String(r.kind) === "packing"
@@ -11927,21 +12088,21 @@ async function listSkuAdjustments(packagingId) {
 }
 async function deleteSkuAdjustment(id) {
   const c = getClient();
-  const rid = n14(id);
+  const rid = n15(id);
   if (!rid) throw new Error("Nothing to remove");
   const res = await c.execute({
     sql: "SELECT id, packaging_id FROM sku_adjustments WHERE id = ? AND company_id = ?",
     args: [rid, getActiveCompanyId()]
   });
   if (!res.rows.length) throw new Error("That entry is not on this company's books");
-  const pkg = n14(res.rows[0].packaging_id);
+  const pkg = n15(res.rows[0].packaging_id);
   await c.execute({ sql: "DELETE FROM sku_adjustments WHERE id = ?", args: [rid] });
   return { id: rid, packaging_id: pkg };
 }
 async function adjustSkuStock(packagingId, delta, note, date, kind) {
   const c = getClient();
-  const pid = n14(packagingId);
-  const d = n14(delta);
+  const pid = n15(packagingId);
+  const d = n15(delta);
   if (!pid) throw new Error("Select an SKU");
   if (d === 0) throw new Error("Enter a quantity to add or remove");
   const pkg = await c.execute({ sql: "SELECT id FROM packagings WHERE id = ?", args: [pid] });
@@ -11977,7 +12138,7 @@ function toPlain18(res) {
     return o;
   });
 }
-function n15(v) {
+function n16(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
@@ -12042,14 +12203,14 @@ async function validateVoucher(v) {
   const lines = (v.lines || []).map((l) => ({
     account: String(l.account || "").trim(),
     group: l.group,
-    dr: n15(l.dr),
-    cr: n15(l.cr),
+    dr: n16(l.dr),
+    cr: n16(l.cr),
     allocs: (l.allocs || []).map((a) => ({
       method: a.method,
       ref_name: a.ref_name ? String(a.ref_name).trim() : null,
       order_id: a.order_id ? Number(a.order_id) : null,
       sale_invoice_group: a.sale_invoice_group ? String(a.sale_invoice_group).trim() : null,
-      amount: n15(a.amount)
+      amount: n16(a.amount)
     })).filter((a) => a.amount > 4e-3)
   })).filter((l) => l.account && (l.dr > 4e-3 || l.cr > 4e-3));
   if (lines.length < 2) throw new Error("A voucher needs at least one Dr and one Cr line");
@@ -12170,7 +12331,7 @@ async function createVoucher(v) {
     vchType: v.vchType,
     vchNo: v.vchNo || null,
     narration: v.narration || null,
-    companyId: v.companyId ? n15(v.companyId) : void 0,
+    companyId: v.companyId ? n16(v.companyId) : void 0,
     lines
   });
   await writeAllocs(res.id, lines);
@@ -12205,7 +12366,7 @@ async function updateVoucher(id, v) {
     const accountId = await getOrCreateAccount(l.account, l.group);
     await c.execute({
       sql: "INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, ?, ?)",
-      args: [id, accountId, n15(l.dr), n15(l.cr)]
+      args: [id, accountId, n16(l.dr), n16(l.cr)]
     });
   }
   await writeAllocs(id, lines);
@@ -12306,7 +12467,7 @@ async function trialBalance(from, to, companyId) {
       args
     });
     const m = /* @__PURE__ */ new Map();
-    for (const r of res.rows) m.set(Number(r.aid), { dr: n15(r.dr), cr: n15(r.cr) });
+    for (const r of res.rows) m.set(Number(r.aid), { dr: n16(r.dr), cr: n16(r.cr) });
     return m;
   };
   const accounts = toPlain18(await c.execute("SELECT id, name, acc_group FROM ledger_accounts ORDER BY acc_group, name"));
@@ -12367,7 +12528,7 @@ async function listPendingRefs(accountName, companyId, side) {
       args: [cid, name]
     });
     for (const b of toPlain18(r)) {
-      bills.push({ ref: String(b.ref), bill_date: String(b.bill_date || ""), amount: n15(b.amount), order_id: n15(b.order_id), sale_invoice_group: null });
+      bills.push({ ref: String(b.ref), bill_date: String(b.bill_date || ""), amount: n16(b.amount), order_id: n16(b.order_id), sale_invoice_group: null });
     }
   } else if (group === "Sundry Debtors") {
     const r = await c.execute({
@@ -12386,7 +12547,7 @@ async function listPendingRefs(accountName, companyId, side) {
       args: [cid, name]
     });
     for (const b of toPlain18(r)) {
-      bills.push({ ref: String(b.ref), bill_date: String(b.bill_date || ""), amount: n15(b.amount), order_id: null, sale_invoice_group: String(b.grp) });
+      bills.push({ ref: String(b.ref), bill_date: String(b.bill_date || ""), amount: n16(b.amount), order_id: null, sale_invoice_group: String(b.grp) });
     }
   }
   const realRefs = new Set(bills.map((b) => b.ref));
@@ -12402,10 +12563,10 @@ async function listPendingRefs(accountName, companyId, side) {
   const madeRows = [];
   for (const m of toPlain18(made)) {
     if (realRefs.has(String(m.ref))) {
-      madeRows.push({ ref: `${m.ref} (duplicate ref \u2014 check this)`, bill_date: String(m.bill_date || ""), amount: n15(m.amount), order_id: null, sale_invoice_group: null });
+      madeRows.push({ ref: `${m.ref} (duplicate ref \u2014 check this)`, bill_date: String(m.bill_date || ""), amount: n16(m.amount), order_id: null, sale_invoice_group: null });
       continue;
     }
-    madeRows.push({ ref: String(m.ref), bill_date: String(m.bill_date || ""), amount: n15(m.amount), order_id: null, sale_invoice_group: null });
+    madeRows.push({ ref: String(m.ref), bill_date: String(m.bill_date || ""), amount: n16(m.amount), order_id: null, sale_invoice_group: null });
   }
   const settled = await c.execute({
     sql: `SELECT ba.ref_name AS ref, ba.order_id AS order_id, ba.sale_invoice_group AS sale_invoice_group,
@@ -12422,7 +12583,7 @@ async function listPendingRefs(accountName, companyId, side) {
   const matches = (s2, b) => {
     const hasIds = !!s2.order_id || !!s2.sale_invoice_group;
     if (hasIds) {
-      if (b.order_id != null && n15(s2.order_id) === b.order_id) return true;
+      if (b.order_id != null && n16(s2.order_id) === b.order_id) return true;
       if (b.sale_invoice_group != null && String(s2.sale_invoice_group || "") === b.sale_invoice_group) return true;
       return false;
     }
@@ -12437,7 +12598,7 @@ async function listPendingRefs(accountName, companyId, side) {
           vch_type: s.vch_type,
           vch_no: s.vch_no,
           narration: s.narration,
-          amount: round25(n15(s.amount))
+          amount: round25(n16(s.amount))
         });
       }
     }
@@ -12445,16 +12606,16 @@ async function listPendingRefs(accountName, companyId, side) {
   };
   return [...bills, ...madeRows].map((b) => {
     const settlements = settlementsFor(b);
-    const paid = round25(settlements.reduce((t, x) => t + n15(x.amount), 0));
+    const paid = round25(settlements.reduce((t, x) => t + n16(x.amount), 0));
     return {
       ref: b.ref,
       bill_date: b.bill_date,
-      amount: n15(b.amount),
+      amount: n16(b.amount),
       order_id: b.order_id,
       sale_invoice_group: b.sale_invoice_group,
       paid,
       settlements,
-      pending: round25(n15(b.amount) - paid)
+      pending: round25(n16(b.amount) - paid)
     };
   }).filter((b) => b.pending > 5e-3).sort((a, b) => a.bill_date.localeCompare(b.bill_date));
 }
@@ -12476,7 +12637,7 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
     sql: `SELECT credit_period_days FROM ${master} WHERE TRIM(UPPER(name)) = ? LIMIT 1`,
     args: [name]
   });
-  const creditDays = cp.rows.length ? n15(cp.rows[0].credit_period_days) : 0;
+  const creditDays = cp.rows.length ? n16(cp.rows[0].credit_period_days) : 0;
   const bills = await listPendingRefs(accountName, cid, opts.side);
   const dayMs = 864e5;
   const asOfMs = Date.parse(`${asOf}T00:00:00Z`);
@@ -12493,9 +12654,9 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
     return {
       bill_date: billDate,
       ref: b.ref,
-      opening: round25(n15(b.amount)),
-      paid: round25(n15(b.paid)),
-      pending: round25(n15(b.pending)),
+      opening: round25(n16(b.amount)),
+      paid: round25(n16(b.paid)),
+      pending: round25(n16(b.pending)),
       settlements: Array.isArray(b.settlements) ? b.settlements : [],
       due_on: dueOn,
       overdue_days: overdue,
@@ -12509,8 +12670,8 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
               WHERE jl.account_id = ? AND je.company_id = ? AND je.entry_date <= ?`,
     args: [accountId, cid, asOf]
   }) : null;
-  const balance = balRes ? n15(balRes.rows[0]?.bal) : 0;
-  const totalPending = round25(rows.reduce((t, r) => t + n15(r.pending), 0));
+  const balance = balRes ? n16(balRes.rows[0]?.bal) : 0;
+  const totalPending = round25(rows.reduce((t, r) => t + n16(r.pending), 0));
   const billsSigned = debtor ? totalPending : -totalPending;
   const onAccount = round25(balance - billsSigned);
   return {
@@ -12518,8 +12679,8 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
     debtor,
     credit_days: creditDays,
     rows,
-    total_opening: round25(rows.reduce((t, r) => t + n15(r.opening), 0)),
-    total_paid: round25(rows.reduce((t, r) => t + n15(r.paid), 0)),
+    total_opening: round25(rows.reduce((t, r) => t + n16(r.opening), 0)),
+    total_paid: round25(rows.reduce((t, r) => t + n16(r.paid), 0)),
     total_pending: totalPending,
     balance: round25(balance),
     on_account: onAccount
@@ -12551,8 +12712,8 @@ async function tradingAccount(from, to, companyId) {
     m.set(String(r.code), {
       code: r.code,
       name: r.name,
-      purchase_qty: n15(r.qty),
-      purchase_value: n15(r.value),
+      purchase_qty: n16(r.qty),
+      purchase_value: n16(r.value),
       sale_qty: 0,
       sale_value: 0
     });
@@ -12560,13 +12721,13 @@ async function tradingAccount(from, to, companyId) {
   for (const r of toPlain18(sales)) {
     const key3 = String(r.code);
     const g = m.get(key3) || { code: key3, name: r.name, purchase_qty: 0, purchase_value: 0, sale_qty: 0, sale_value: 0 };
-    g.sale_qty = n15(r.qty);
-    g.sale_value = n15(r.value);
+    g.sale_qty = n16(r.qty);
+    g.sale_value = n16(r.value);
     m.set(key3, g);
   }
   const list2 = Array.from(m.values()).map((g) => ({
     ...g,
-    gross: Math.round((n15(g.sale_value) - n15(g.purchase_value)) * 100) / 100
+    gross: Math.round((n16(g.sale_value) - n16(g.purchase_value)) * 100) / 100
   }));
   return list2.sort((a, b) => String(a.code).localeCompare(String(b.code)));
 }
@@ -12579,7 +12740,7 @@ function toPlain19(res) {
     return o;
   });
 }
-function n16(v) {
+function n17(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
@@ -12602,7 +12763,7 @@ async function nextNoteNo(type, companyId) {
 }
 async function listNotes(companyId) {
   const res = await getClient().execute({
-    args: [companyId ? n16(companyId) : getActiveCompanyId()],
+    args: [companyId ? n17(companyId) : getActiveCompanyId()],
     sql: `SELECT nt.*,
             CASE nt.party_type WHEN 'supplier' THEN s.name WHEN 'customer' THEN c.name WHEN 'transporter' THEN tr.name END AS party_name,
             (SELECT COUNT(*) FROM note_items ni WHERE ni.note_id = nt.id) AS item_count,
@@ -12633,23 +12794,23 @@ var PARTY_KINDS = {
 };
 async function createNote(v, existingId) {
   const c = getClient();
-  const cid = v.company_id ? n16(v.company_id) : getActiveCompanyId();
+  const cid = v.company_id ? n17(v.company_id) : getActiveCompanyId();
   const type = v.note_type === "credit" ? "credit" : "debit";
   const requested = String(v.party_type || "").trim().toLowerCase();
   const partyType = requested in PARTY_KINDS ? requested : type === "debit" ? "supplier" : "customer";
   const kind = PARTY_KINDS[partyType];
-  const partyId = n16(v.party_id);
+  const partyId = n17(v.party_id);
   if (!partyId) throw new Error(`Select the ${partyType}`);
   const rawItems = Array.isArray(v.items) ? v.items : [];
   const items = rawItems.map((it) => ({
-    product_id: it.product_id ? n16(it.product_id) : null,
+    product_id: it.product_id ? n17(it.product_id) : null,
     description: it.description ? String(it.description).trim() : null,
-    qty: n16(it.qty),
-    rate: n16(it.rate),
-    amount: round26(n16(it.qty) * n16(it.rate))
+    qty: n17(it.qty),
+    rate: n17(it.rate),
+    amount: round26(n17(it.qty) * n17(it.rate))
   })).filter((it) => it.amount > 0 || it.qty > 0);
-  const base = items.length ? round26(items.reduce((s, it) => s + it.amount, 0)) : round26(n16(v.base_amount));
-  const gstPct = n16(v.gst_pct);
+  const base = items.length ? round26(items.reduce((s, it) => s + it.amount, 0)) : round26(n17(v.base_amount));
+  const gstPct = n17(v.gst_pct);
   if (base <= 0) throw new Error("Enter a base amount (or item lines) greater than zero");
   const gst = round26(base * (gstPct / 100));
   const rawTotal = round26(base + gst);
@@ -12657,7 +12818,7 @@ async function createNote(v, existingId) {
   const roundOff = round26(total - rawTotal);
   const againstRef = v.against_invoice ? String(v.against_invoice).trim() : null;
   const wantsBargain = type === "credit" && partyType === "customer";
-  const bargainId = wantsBargain && v.bargain_id ? n16(v.bargain_id) : 0;
+  const bargainId = wantsBargain && v.bargain_id ? n17(v.bargain_id) : 0;
   const partyRes = await c.execute({
     sql: `SELECT name FROM ${kind.master} WHERE id = ?`,
     args: [partyId]
@@ -12675,16 +12836,16 @@ async function createNote(v, existingId) {
     if (prior.journal_entry_id != null) {
       await c.execute({
         sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
-        args: [n16(prior.journal_entry_id)]
+        args: [n17(prior.journal_entry_id)]
       });
-      await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [n16(prior.journal_entry_id)] });
-      await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [n16(prior.journal_entry_id)] });
+      await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [n17(prior.journal_entry_id)] });
+      await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [n17(prior.journal_entry_id)] });
     }
     const priorLedger = String(prior.ledger_table || "");
     if (["customer_ledger", "transporter_ledger", "supplier_ledger"].includes(priorLedger) && prior.ledger_id != null) {
-      await c.execute({ sql: `DELETE FROM ${priorLedger} WHERE id = ?`, args: [n16(prior.ledger_id)] });
+      await c.execute({ sql: `DELETE FROM ${priorLedger} WHERE id = ?`, args: [n17(prior.ledger_id)] });
     }
-    await c.execute({ sql: "DELETE FROM note_items WHERE note_id = ?", args: [n16(existingId)] });
+    await c.execute({ sql: "DELETE FROM note_items WHERE note_id = ?", args: [n17(existingId)] });
   }
   const date = String(v.note_date || todayISO()).slice(0, 10);
   const narration = v.narration ? String(v.narration).trim() : null;
@@ -12803,13 +12964,13 @@ async function createNote(v, existingId) {
   return { id: noteId, note_no: noteNo };
 }
 async function updateNote(id, v) {
-  return createNote(v, n16(id));
+  return createNote(v, n17(id));
 }
 async function deleteNote(id, companyId) {
   const c = getClient();
   const res = await c.execute({
     sql: "SELECT * FROM notes WHERE id = ? AND company_id = ?",
-    args: [id, companyId ? n16(companyId) : getActiveCompanyId()]
+    args: [id, companyId ? n17(companyId) : getActiveCompanyId()]
   });
   if (!res.rows.length) return { id };
   const note = res.rows[0];
@@ -12881,7 +13042,7 @@ function toPlain21(res) {
     return o;
   });
 }
-var n17 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+var n18 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
 async function dashboardStats() {
   const c = getClient();
   const cid = getActiveCompanyId();
@@ -12955,11 +13116,11 @@ async function dashboardStats() {
   for (const r of levels) {
     const cat = String(r.category || "other");
     if (!stockCats[cat]) stockCats[cat] = { qty: 0, products: 0 };
-    if (Math.abs(n17(r.stock)) > 1e-9) {
-      stockCats[cat].qty += n17(r.stock);
+    if (Math.abs(n18(r.stock)) > 1e-9) {
+      stockCats[cat].qty += n18(r.stock);
       stockCats[cat].products++;
     }
-    if (n17(r.stock) < -1e-9) negatives.push({ name: r.name, category: r.category, stock: n17(r.stock) });
+    if (n18(r.stock) < -1e-9) negatives.push({ name: r.name, category: r.category, stock: n18(r.stock) });
   }
   return {
     purchaseMonths: purchaseMonths.reverse(),
@@ -12974,34 +13135,34 @@ async function dashboardStats() {
     purBargains: purBargains[0] || { cnt: 0, qty: 0 },
     saleBargains: saleBargains[0] || { cnt: 0, qty: 0 },
     tankers,
-    consignmentBalance: n17(consignment[0]?.bal),
+    consignmentBalance: n18(consignment[0]?.bal),
     stockCats,
     negatives: negatives.sort((a, b) => a.stock - b.stock)
   };
 }
 
 // src/main/lcInterest.ts
-var n18 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+var n19 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
 var round27 = (v) => Math.round(v * 100) / 100;
 function lcInterestBase(lc) {
-  const amount = n18(lc?.amount);
-  const adj = n18(lc?.interest_adj);
+  const amount = n19(lc?.amount);
+  const adj = n19(lc?.interest_adj);
   if (!lc?.interest_excl_charges && !adj) return amount;
-  const gross = lc?.interest_excl_charges ? round27(amount - n18(lc?.charges)) : amount;
+  const gross = lc?.interest_excl_charges ? round27(amount - n19(lc?.charges)) : amount;
   const adjusted = round27(gross + adj);
   return Math.max(0, adjusted);
 }
 function lcInterest(lc) {
-  return round27(lcInterestBase(lc) * n18(lc?.interest_pct) * n18(lc?.usance_days) / (100 * 365));
+  return round27(lcInterestBase(lc) * n19(lc?.interest_pct) * n19(lc?.usance_days) / (100 * 365));
 }
 function lcInterestBasis(lc) {
   const base = lc?.interest_excl_charges ? "open amount less bank charges" : "open amount";
-  const adj = round27(n18(lc?.interest_adj));
+  const adj = round27(n19(lc?.interest_adj));
   if (Math.abs(adj) < 5e-3) return base;
   return `${base} ${adj < 0 ? "less" : "plus"} an adjustment of ${Math.abs(adj).toFixed(2)}`;
 }
 function lcInterestBaseIsCustom(lc) {
-  return !!lc?.interest_excl_charges || Math.abs(n18(lc?.interest_adj)) >= 5e-3;
+  return !!lc?.interest_excl_charges || Math.abs(n19(lc?.interest_adj)) >= 5e-3;
 }
 
 // src/main/treasury.ts
@@ -13012,7 +13173,7 @@ function toPlain22(res) {
     return o;
   });
 }
-function n19(v) {
+function n20(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
@@ -13082,7 +13243,7 @@ function assertNotFuture(date, what) {
   if (d && d > todayISO5()) throw new Error(`${what} cannot be a future date`);
 }
 async function bankAccountFor(lc) {
-  const id = n19(lc.our_bank_id);
+  const id = n20(lc.our_bank_id);
   if (!id) return "BANK A/C";
   const r = await getClient().execute({ sql: "SELECT name FROM banks WHERE id = ?", args: [id] });
   const name = String(r.rows[0]?.name || "").trim();
@@ -13090,7 +13251,7 @@ async function bankAccountFor(lc) {
 }
 var LC_PAYABLE_GROUP = "Current Liabilities";
 async function lcPayable(lc) {
-  const id = n19(lc.our_bank_id);
+  const id = n20(lc.our_bank_id);
   if (id) {
     const r = await getClient().execute({ sql: "SELECT name FROM banks WHERE id = ?", args: [id] });
     const own = String(r.rows[0]?.name || "").trim().toUpperCase();
@@ -13104,8 +13265,8 @@ async function postLcOpening(lcId) {
   const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [lcId] });
   if (!res.rows.length) return;
   const lc = toPlain22(res)[0];
-  await dropEntry(n19(lc.journal_entry_id) || null);
-  const margin = round28(n19(lc.amount) * n19(lc.margin_pct) / 100);
+  await dropEntry(n20(lc.journal_entry_id) || null);
+  const margin = round28(n20(lc.amount) * n20(lc.margin_pct) / 100);
   if (margin < 5e-3) {
     await c.execute({ sql: "UPDATE letters_of_credit SET journal_entry_id = NULL WHERE id = ?", args: [lcId] });
     return;
@@ -13115,7 +13276,7 @@ async function postLcOpening(lcId) {
     vchType: "CONTRA",
     vchNo: String(lc.lc_no || ""),
     narration: `LC ${lc.lc_no} \u2014 margin ${margin.toFixed(2)} lodged with ${lc.bank}`,
-    companyId: n19(lc.company_id) || void 0,
+    companyId: n20(lc.company_id) || void 0,
     lines: [
       { account: "LC MARGIN A/C", group: "Deposits (Asset)", dr: margin },
       { account: await bankAccountFor(lc), group: "Bank Accounts", cr: margin }
@@ -13130,7 +13291,7 @@ async function postLcFees(lcId) {
     args: [lcId]
   });
   if (!res.rows.length) return;
-  await dropEntry(n19(res.rows[0].charges_journal_entry_id) || null);
+  await dropEntry(n20(res.rows[0].charges_journal_entry_id) || null);
   await c.execute({ sql: "UPDATE letters_of_credit SET charges_journal_entry_id = NULL WHERE id = ?", args: [lcId] });
 }
 async function postLcUpfrontInterest(lcId, dateIn) {
@@ -13139,9 +13300,9 @@ async function postLcUpfrontInterest(lcId, dateIn) {
   if (!res.rows.length) throw new Error("LC not found");
   const lc = toPlain22(res)[0];
   const bankAcc = await bankAccountFor(lc);
-  await dropEntry(n19(lc.interest_journal_entry_id) || null);
+  await dropEntry(n20(lc.interest_journal_entry_id) || null);
   const interest = lcInterest(lc);
-  const charges = round28(n19(lc.charges));
+  const charges = round28(n20(lc.charges));
   const total = round28(interest + charges);
   if (total < 5e-3) {
     await c.execute({ sql: "UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?", args: [lcId] });
@@ -13152,7 +13313,7 @@ async function postLcUpfrontInterest(lcId, dateIn) {
     vchType: "JOURNAL",
     vchNo: String(lc.lc_no || ""),
     narration: `LC ${lc.lc_no} \u2014 interest ${interest.toFixed(2)} and charges ${charges.toFixed(2)} paid upfront from the bank, per its statement` + (lcInterestBaseIsCustom(lc) ? ` (interest on ${lcInterestBasis(lc)})` : ""),
-    companyId: n19(lc.company_id) || void 0,
+    companyId: n20(lc.company_id) || void 0,
     lines: [
       { account: "INTEREST A/C", group: "Indirect Expenses", dr: interest },
       { account: "BANK CHARGES A/C", group: "Indirect Expenses", dr: charges },
@@ -13185,7 +13346,7 @@ async function syncLcFeeAdjustment(lcId) {
     args: [lcId]
   });
   const delta = lcFeeDelta();
-  await dropEntry(n19(lc.fee_adjust_journal_entry_id) || null);
+  await dropEntry(n20(lc.fee_adjust_journal_entry_id) || null);
   const party = String(lc.supplier_name || "").trim();
   if (delta === 0 || !party) {
     await c.execute({
@@ -13201,7 +13362,7 @@ async function syncLcFeeAdjustment(lcId) {
     vchType: "JOURNAL",
     vchNo: String(lc.lc_no || ""),
     narration: retained ? `LC ${lc.lc_no} \u2014 ${size.toFixed(2)} of the bill was retained by ${lc.bank} as interest and charges, so it never reached ${party}; their account is credited back by that much` : `LC ${lc.lc_no} \u2014 ${lc.bank} released ${size.toFixed(2)} to ${party} beyond the bill as drawn, so their account is debited by that much`,
-    companyId: n19(lc.company_id) || void 0,
+    companyId: n20(lc.company_id) || void 0,
     lines: retained ? [
       { account: bankAcc, group: "Bank Accounts", dr: size },
       { account: party, group: "Sundry Creditors", cr: size }
@@ -13223,7 +13384,7 @@ async function refreshLcUpfrontInterest(lcId) {
     sql: "SELECT interest_journal_entry_id FROM letters_of_credit WHERE id = ?",
     args: [lcId]
   });
-  const jeId = n19(res.rows[0]?.interest_journal_entry_id);
+  const jeId = n20(res.rows[0]?.interest_journal_entry_id);
   if (!jeId) return;
   const je = await c.execute({ sql: "SELECT entry_date FROM journal_entries WHERE id = ?", args: [jeId] });
   const date = String(je.rows[0]?.entry_date || "").slice(0, 10);
@@ -13233,7 +13394,7 @@ async function dropLcUpfrontInterest(lcId) {
   const c = getClient();
   const res = await c.execute({ sql: "SELECT interest_journal_entry_id FROM letters_of_credit WHERE id = ?", args: [lcId] });
   if (res.rows.length && res.rows[0].interest_journal_entry_id) {
-    await dropEntry(n19(res.rows[0].interest_journal_entry_id));
+    await dropEntry(n20(res.rows[0].interest_journal_entry_id));
     await c.execute({ sql: "UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?", args: [lcId] });
     await resyncLcSettlement(lcId);
   }
@@ -13251,7 +13412,7 @@ async function postLcMarginRelease(lcId, amount, dateIn) {
     vchType: "RECEIPT",
     vchNo: String(lc.lc_no || ""),
     narration: `LC ${lc.lc_no} preclosed \u2014 margin of ${value.toFixed(2)} refunded by ${lc.bank}`,
-    companyId: n19(lc.company_id) || void 0,
+    companyId: n20(lc.company_id) || void 0,
     lines: [
       { account: bankAcc, group: "Bank Accounts", dr: value },
       { account: "LC MARGIN A/C", group: "Deposits (Asset)", cr: value }
@@ -13279,7 +13440,7 @@ async function postLcPrematureInterestRebate(lcId, direction, amount, dateIn) {
     vchType: "JOURNAL",
     vchNo: String(lc.lc_no || ""),
     narration: `LC ${lc.lc_no} preclosed \u2014 interest of ${value.toFixed(2)} reversed for the days that will not happen${direction === "pay_to_party" ? ", and passed on to the supplier" : ""}`,
-    companyId: n19(lc.company_id) || void 0,
+    companyId: n20(lc.company_id) || void 0,
     lines: [
       { account: payable, group: LC_PAYABLE_GROUP, dr: value },
       { account: "INTEREST A/C", group: "Indirect Expenses", cr: value }
@@ -13294,7 +13455,7 @@ async function postLcPrematureInterestRebate(lcId, direction, amount, dateIn) {
       vchType: "PAYMENT",
       vchNo: String(lc.lc_no || ""),
       narration: `LC ${lc.lc_no} \u2014 preclosure interest rebate of ${value.toFixed(2)} paid on to ${party}`,
-      companyId: n19(lc.company_id) || void 0,
+      companyId: n20(lc.company_id) || void 0,
       lines: [
         { account: party, group: "Sundry Creditors", dr: value },
         { account: bankAcc, group: "Bank Accounts", cr: value }
@@ -13329,18 +13490,18 @@ async function outstandingSaleRefsForLc(lcId) {
   });
   const dealRows = toPlain22(dealsRes);
   if (!dealRows.length) throw new Error("This LC has no linked Trading deal to receive payment against");
-  const dealIds = dealRows.map((d) => n19(d.id));
+  const dealIds = dealRows.map((d) => n20(d.id));
   const linksRes = await c.execute({
     sql: `SELECT deal_id, sale_id FROM trading_deal_sales WHERE deal_id IN (${dealIds.join(",")})`,
     args: []
   });
   const saleIdsByDeal = /* @__PURE__ */ new Map();
   for (const r of toPlain22(linksRes)) {
-    const k = n19(r.deal_id);
-    saleIdsByDeal.set(k, [...saleIdsByDeal.get(k) ?? [], n19(r.sale_id)]);
+    const k = n20(r.deal_id);
+    saleIdsByDeal.set(k, [...saleIdsByDeal.get(k) ?? [], n20(r.sale_id)]);
   }
   const saleIds = Array.from(
-    new Set(dealRows.flatMap((d) => saleIdsByDeal.get(n19(d.id)) ?? (n19(d.sale_id) ? [n19(d.sale_id)] : [])))
+    new Set(dealRows.flatMap((d) => saleIdsByDeal.get(n20(d.id)) ?? (n20(d.sale_id) ? [n20(d.sale_id)] : [])))
   );
   if (!saleIds.length) throw new Error("This LC's linked Trading deal has no sale invoice yet");
   const salesRes = await c.execute({
@@ -13356,7 +13517,7 @@ async function outstandingSaleRefsForLc(lcId) {
     invoice_no: String(s.invoice_no || ""),
     sale_date: String(s.sale_date || ""),
     customer_name: String(s.customer_name || "").trim(),
-    due: round28(n19(s.due))
+    due: round28(n20(s.due))
   })).filter((s) => s.key);
   if (!bills.length) throw new Error("This LC's linked Trading deal has no sale invoice yet");
   const keys = bills.map((b) => b.key);
@@ -13367,10 +13528,10 @@ async function outstandingSaleRefsForLc(lcId) {
           JOIN journal_entries je ON je.id = jl.entry_id
           WHERE ba.method = 'agst_ref' AND je.company_id = ? AND COALESCE(ba.sale_invoice_group, ba.ref_name) IN (${keys.map(() => "?").join(",")})
           GROUP BY key`,
-    args: [n19(lc.company_id) || getActiveCompanyId(), ...keys]
+    args: [n20(lc.company_id) || getActiveCompanyId(), ...keys]
   });
   const settledMap = /* @__PURE__ */ new Map();
-  for (const r of toPlain22(settledRes)) settledMap.set(String(r.key), n19(r.amt));
+  for (const r of toPlain22(settledRes)) settledMap.set(String(r.key), n20(r.amt));
   const refs = bills.map((b) => ({ ...b, due: round28(b.due - (settledMap.get(b.key) || 0)) })).filter((b) => b.due > 5e-3);
   return { lc, customerName, refs };
 }
@@ -13385,7 +13546,7 @@ async function postLcPaymentIn(lcId, amount, dateIn, selectedKeys) {
   const outstanding = wanted ? refs.filter((r) => wanted.has(r.key)) : refs;
   if (!outstanding.length) throw new Error("Every sale invoice on this deal is already fully paid");
   const totalDue = round28(outstanding.reduce((s, o) => s + o.due, 0));
-  const value = round28(n19(amount));
+  const value = round28(n20(amount));
   if (value < 5e-3) throw new Error("Enter the amount received");
   if (value > totalDue + 5e-3) {
     throw new Error(`Only ${totalDue.toFixed(2)} is still receivable on the ${wanted ? "selected invoice(s)" : "LC's deal(s)"}`);
@@ -13399,7 +13560,7 @@ async function postLcPaymentIn(lcId, amount, dateIn, selectedKeys) {
     vchType: "RECEIPT",
     vchNo: String(lc.lc_no || ""),
     narration: `LC ${lc.lc_no} \u2014 payment IN of ${value.toFixed(2)} received from ` + (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(", ") : byParty[0]?.party || customerName),
-    companyId: n19(lc.company_id) || void 0,
+    companyId: n20(lc.company_id) || void 0,
     lines: [
       { account: bankAcc, group: "Bank Accounts", dr: value },
       ...byParty.map((b) => ({ account: b.party, group: "Sundry Debtors", cr: b.amount }))
@@ -13437,18 +13598,18 @@ async function outstandingSaleRefsForBd(bdId) {
   });
   const dealRows = toPlain22(dealsRes);
   if (!dealRows.length) throw new Error("This bill has no linked Trading deal to receive payment against");
-  const dealIds = dealRows.map((d) => n19(d.id));
+  const dealIds = dealRows.map((d) => n20(d.id));
   const linksRes = await c.execute({
     sql: `SELECT deal_id, sale_id FROM trading_deal_sales WHERE deal_id IN (${dealIds.join(",")})`,
     args: []
   });
   const saleIdsByDeal = /* @__PURE__ */ new Map();
   for (const r of toPlain22(linksRes)) {
-    const k = n19(r.deal_id);
-    saleIdsByDeal.set(k, [...saleIdsByDeal.get(k) ?? [], n19(r.sale_id)]);
+    const k = n20(r.deal_id);
+    saleIdsByDeal.set(k, [...saleIdsByDeal.get(k) ?? [], n20(r.sale_id)]);
   }
   const saleIds = Array.from(
-    new Set(dealRows.flatMap((d) => saleIdsByDeal.get(n19(d.id)) ?? (n19(d.sale_id) ? [n19(d.sale_id)] : [])))
+    new Set(dealRows.flatMap((d) => saleIdsByDeal.get(n20(d.id)) ?? (n20(d.sale_id) ? [n20(d.sale_id)] : [])))
   );
   if (!saleIds.length) throw new Error("This bill's linked Trading deal has no sale invoice yet");
   const salesRes = await c.execute({
@@ -13464,7 +13625,7 @@ async function outstandingSaleRefsForBd(bdId) {
     invoice_no: String(x.invoice_no || ""),
     sale_date: String(x.sale_date || ""),
     customer_name: String(x.customer_name || "").trim(),
-    due: round28(n19(x.due))
+    due: round28(n20(x.due))
   })).filter((x) => x.key);
   if (!bills.length) throw new Error("This bill's linked Trading deal has no sale invoice yet");
   const keys = bills.map((b) => b.key);
@@ -13476,10 +13637,10 @@ async function outstandingSaleRefsForBd(bdId) {
           WHERE ba.method = 'agst_ref' AND je.company_id = ?
             AND COALESCE(ba.sale_invoice_group, ba.ref_name) IN (${keys.map(() => "?").join(",")})
           GROUP BY key`,
-    args: [n19(bd.company_id) || getActiveCompanyId(), ...keys]
+    args: [n20(bd.company_id) || getActiveCompanyId(), ...keys]
   });
   const settled = /* @__PURE__ */ new Map();
-  for (const r of toPlain22(settledRes)) settled.set(String(r.key), n19(r.amt));
+  for (const r of toPlain22(settledRes)) settled.set(String(r.key), n20(r.amt));
   const refs = bills.map((b) => ({ ...b, due: round28(b.due - (settled.get(b.key) || 0)) })).filter((b) => b.due > 5e-3);
   return { bd, customerName, refs };
 }
@@ -13497,7 +13658,7 @@ async function postBdPaymentIn(bdId, amount, dateIn, selectedKeys) {
   const outstanding = wanted ? refs.filter((r) => wanted.has(r.key)) : refs;
   if (!outstanding.length) throw new Error("Every sale invoice on this deal is already fully paid");
   const totalDue = round28(outstanding.reduce((t, o) => t + o.due, 0));
-  const value = round28(n19(amount));
+  const value = round28(n20(amount));
   if (value < 5e-3) throw new Error("Enter the amount received");
   if (value > totalDue + 5e-3) {
     throw new Error(
@@ -13513,7 +13674,7 @@ async function postBdPaymentIn(bdId, amount, dateIn, selectedKeys) {
     vchType: "RECEIPT",
     vchNo: String(bd.bd_no || ""),
     narration: `Bill Discounting ${bd.bd_no} \u2014 payment IN of ${value.toFixed(2)} received from ` + (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(", ") : byParty[0]?.party || customerName),
-    companyId: n19(bd.company_id) || void 0,
+    companyId: n20(bd.company_id) || void 0,
     lines: [
       { account: "BANK A/C", group: "Bank Accounts", dr: value },
       ...byParty.map((b) => ({ account: b.party, group: "Sundry Debtors", cr: b.amount }))
@@ -13537,7 +13698,7 @@ async function deleteBdPaymentIn(paymentInId) {
   const c = getClient();
   const res = await c.execute({ sql: "SELECT journal_entry_id FROM bd_payment_ins WHERE id = ?", args: [paymentInId] });
   if (!res.rows.length) throw new Error("That receipt no longer exists");
-  const je = n19(res.rows[0].journal_entry_id);
+  const je = n20(res.rows[0].journal_entry_id);
   if (je) {
     await c.execute({
       sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
@@ -13571,7 +13732,7 @@ async function listLcPaymentIns(lcId) {
 async function deleteLcPaymentIn(id) {
   const c = getClient();
   const res = await c.execute({ sql: "SELECT journal_entry_id FROM lc_payment_ins WHERE id = ?", args: [id] });
-  if (res.rows.length && res.rows[0].journal_entry_id) await dropEntry(n19(res.rows[0].journal_entry_id));
+  if (res.rows.length && res.rows[0].journal_entry_id) await dropEntry(n20(res.rows[0].journal_entry_id));
   await c.execute({ sql: "DELETE FROM lc_payment_ins WHERE id = ?", args: [id] });
   return { id };
 }
@@ -13606,16 +13767,16 @@ async function settleLcBillsCombined(issuanceIds, dateIn, reuseEntryId) {
   const party = String(first.supplier_name || "").trim();
   if (!party) throw new Error("The LC has no supplier party \u2014 set it on the LC first");
   const date = String(dateIn || todayISO5()).slice(0, 10);
-  const total = round28(bills.reduce((s2, b) => s2 + n19(b.amount), 0));
+  const total = round28(bills.reduce((s2, b) => s2 + n20(b.amount), 0));
   const payable = await lcPayable(first);
   const feeLines = [];
   let fees = 0;
   const seen = /* @__PURE__ */ new Set();
   for (const b of bills) {
-    const lcId = n19(b.lc_id);
+    const lcId = n20(b.lc_id);
     if (seen.has(lcId)) continue;
     seen.add(lcId);
-    if (n19(b.interest_journal_entry_id)) continue;
+    if (n20(b.interest_journal_entry_id)) continue;
     const interest = lcInterest({
       amount: b.lc_amount,
       charges: b.lc_charges,
@@ -13624,7 +13785,7 @@ async function settleLcBillsCombined(issuanceIds, dateIn, reuseEntryId) {
       interest_excl_charges: b.interest_excl_charges,
       interest_adj: b.interest_adj
     });
-    const charges = round28(n19(b.lc_charges));
+    const charges = round28(n20(b.lc_charges));
     if (interest > 5e-3) feeLines.push({ account: "INTEREST A/C", group: "Indirect Expenses", dr: interest });
     if (charges > 5e-3) feeLines.push({ account: "BANK CHARGES A/C", group: "Indirect Expenses", dr: charges });
     fees = round28(fees + interest + charges);
@@ -13648,7 +13809,7 @@ async function settleLcBillsCombined(issuanceIds, dateIn, reuseEntryId) {
       const basis = fees > 5e-3 && lcInterestBaseIsCustom(first) ? ` (interest on ${lcInterestBasis(first)})` : "";
       return `LC ${first.lc_no}${named}${many} matured \u2014 ${first.bank} paid ${party} ${total.toFixed(2)}${kept}${basis}`;
     })(),
-    companyId: n19(first.company_id) || void 0,
+    companyId: n20(first.company_id) || void 0,
     lines: [
       { account: party, group: "Sundry Creditors", dr: total },
       ...feeLines,
@@ -13657,7 +13818,7 @@ async function settleLcBillsCombined(issuanceIds, dateIn, reuseEntryId) {
   });
   for (const b of bills) {
     const ref = b.invoice_no ? String(b.invoice_no) : b.bill_no ? String(b.bill_no) : null;
-    await allocAgainst(je.id, party, ref, round28(n19(b.amount)));
+    await allocAgainst(je.id, party, ref, round28(n20(b.amount)));
   }
   await c.execute({
     sql: `UPDATE lc_issuances SET status = 'settled', settled_date = ?, journal_entry_id = ?
@@ -13671,14 +13832,14 @@ async function resyncLcSettlement(lcId) {
   const res = await c.execute({
     sql: `SELECT id, journal_entry_id, settled_date FROM lc_issuances
            WHERE lc_id = ? AND journal_entry_id IS NOT NULL ORDER BY journal_entry_id, id`,
-    args: [n19(lcId)]
+    args: [n20(lcId)]
   });
   if (!res.rows.length) return;
   const groups = /* @__PURE__ */ new Map();
   for (const r of toPlain22(res)) {
-    const je = n19(r.journal_entry_id);
+    const je = n20(r.journal_entry_id);
     if (!groups.has(je)) groups.set(je, { ids: [], date: String(r.settled_date || "").slice(0, 10) });
-    groups.get(je).ids.push(n19(r.id));
+    groups.get(je).ids.push(n20(r.id));
   }
   const live = [];
   for (const [entryId, g] of groups) {
@@ -13697,12 +13858,12 @@ async function dropOrphanLcSettlements(lcId, keep = []) {
   const c = getClient();
   const lc = await c.execute({
     sql: "SELECT lc_no, company_id FROM letters_of_credit WHERE id = ?",
-    args: [n19(lcId)]
+    args: [n20(lcId)]
   });
   if (!lc.rows.length) return 0;
   const lcNo = String(lc.rows[0].lc_no || "").trim();
   if (!lcNo) return 0;
-  const skip = keep.filter((x) => n19(x) > 0);
+  const skip = keep.filter((x) => n20(x) > 0);
   const res = await c.execute({
     sql: `SELECT je.id FROM journal_entries je
            WHERE je.company_id = ?
@@ -13711,16 +13872,16 @@ async function dropOrphanLcSettlements(lcId, keep = []) {
              AND je.narration LIKE '%matured%'
              AND NOT EXISTS (SELECT 1 FROM lc_issuances i WHERE i.journal_entry_id = je.id)
              ${skip.length ? `AND je.id NOT IN (${skip.map(() => "?").join(",")})` : ""}`,
-    args: [n19(lc.rows[0].company_id), lcNo, ...skip]
+    args: [n20(lc.rows[0].company_id), lcNo, ...skip]
   });
-  for (const r of res.rows) await dropEntry(n19(r.id));
+  for (const r of res.rows) await dropEntry(n20(r.id));
   return res.rows.length;
 }
 async function reopenLcBill(issuanceId) {
   const c = getClient();
   const res = await c.execute({ sql: "SELECT journal_entry_id FROM lc_issuances WHERE id = ?", args: [issuanceId] });
   if (!res.rows.length) throw new Error("LC bill not found");
-  const entryId = n19(res.rows[0].journal_entry_id) || null;
+  const entryId = n20(res.rows[0].journal_entry_id) || null;
   await dropEntry(entryId);
   const sql = entryId ? "UPDATE lc_issuances SET status = 'outstanding', settled_date = NULL, journal_entry_id = NULL WHERE journal_entry_id = ?" : "UPDATE lc_issuances SET status = 'outstanding', settled_date = NULL, journal_entry_id = NULL WHERE id = ?";
   await c.execute({ sql, args: [entryId || issuanceId] });
@@ -13752,21 +13913,21 @@ async function postLcRepaymentEntry(repaymentId) {
   const rep = toPlain22(res)[0];
   const bankAcc = await bankAccountFor(rep);
   const payable = await lcPayable(rep);
-  await dropEntry(n19(rep.journal_entry_id) || null);
-  await dropEntry(n19(rep.fee_journal_entry_id) || null);
-  const ownFeeJe = n19(rep.fee_journal_entry_id) || null;
-  const upfrontStillDue = !!rep.interest_upfront && (!n19(rep.lc_interest_journal_entry_id) || n19(rep.lc_interest_journal_entry_id) === ownFeeJe);
+  await dropEntry(n20(rep.journal_entry_id) || null);
+  await dropEntry(n20(rep.fee_journal_entry_id) || null);
+  const ownFeeJe = n20(rep.fee_journal_entry_id) || null;
+  const upfrontStillDue = !!rep.interest_upfront && (!n20(rep.lc_interest_journal_entry_id) || n20(rep.lc_interest_journal_entry_id) === ownFeeJe);
   const upfrontInterest = upfrontStillDue ? lcInterest({
-    amount: n19(rep.lc_open_amount),
-    interest_pct: n19(rep.lc_interest_pct),
-    usance_days: n19(rep.lc_usance_days),
+    amount: n20(rep.lc_open_amount),
+    interest_pct: n20(rep.lc_interest_pct),
+    usance_days: n20(rep.lc_usance_days),
     interest_excl_charges: rep.lc_interest_excl_charges,
-    interest_adj: n19(rep.lc_interest_adj)
+    interest_adj: n20(rep.lc_interest_adj)
   }) : 0;
-  const upfrontCharges = upfrontStillDue ? round28(n19(rep.lc_charges)) : 0;
-  const total = round28(n19(rep.amount));
-  const comm = round28(n19(rep.comm_charges));
-  const extra = round28(n19(rep.bank_charges) + upfrontCharges);
+  const upfrontCharges = upfrontStillDue ? round28(n20(rep.lc_charges)) : 0;
+  const total = round28(n20(rep.amount));
+  const comm = round28(n20(rep.comm_charges));
+  const extra = round28(n20(rep.bank_charges) + upfrontCharges);
   const onTheDay = round28(comm + extra + upfrontInterest);
   const date = String(rep.repay_date || todayISO5()).slice(0, 10);
   let feeJe = null;
@@ -13781,25 +13942,25 @@ async function postLcRepaymentEntry(repaymentId) {
       vchType: "JOURNAL",
       vchNo: rep.lc_no ? String(rep.lc_no) : null,
       narration: upfrontStillDue ? `LC ${rep.lc_no} \u2014 ${rep.bank || "the bank"} charged ${onTheDay.toFixed(2)} on settlement (interest never reconciled upfront, caught at repayment)` : `LC ${rep.lc_no} \u2014 ${rep.bank || "the bank"} charged ${onTheDay.toFixed(2)} on settlement`,
-      companyId: n19(rep.company_id) || void 0,
+      companyId: n20(rep.company_id) || void 0,
       lines
     });
     feeJe = je2.id;
     if (upfrontStillDue) {
       await c.execute({
         sql: "UPDATE letters_of_credit SET interest_journal_entry_id = ? WHERE id = ?",
-        args: [je2.id, n19(rep.lc_id)]
+        args: [je2.id, n20(rep.lc_id)]
       });
     }
-  } else if (n19(rep.lc_interest_journal_entry_id) === ownFeeJe && ownFeeJe) {
-    await c.execute({ sql: "UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?", args: [n19(rep.lc_id)] });
+  } else if (n20(rep.lc_interest_journal_entry_id) === ownFeeJe && ownFeeJe) {
+    await c.execute({ sql: "UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?", args: [n20(rep.lc_id)] });
   }
   const je = await postJournal({
     date,
     vchType: "PAYMENT",
     vchNo: rep.lc_no ? String(rep.lc_no) : null,
     narration: `LC ${rep.lc_no} repaid to ${rep.bank || "the bank"}`,
-    companyId: n19(rep.company_id) || void 0,
+    companyId: n20(rep.company_id) || void 0,
     lines: [
       { account: payable, group: LC_PAYABLE_GROUP, dr: total },
       { account: bankAcc, group: "Bank Accounts", cr: total }
@@ -13812,18 +13973,18 @@ async function postLcRepaymentEntry(repaymentId) {
 }
 async function saveLcRepayment(v) {
   const c = getClient();
-  const lcId = n19(v.lc_id);
+  const lcId = n20(v.lc_id);
   if (!lcId) throw new Error("Pick the LC this repayment is against");
-  const amount = n19(v.amount);
+  const amount = n20(v.amount);
   if (amount <= 0) throw new Error("Enter the repayment amount");
   const lcRes = await c.execute({ sql: "SELECT amount FROM letters_of_credit WHERE id = ?", args: [lcId] });
   if (!lcRes.rows.length) throw new Error("LC not found");
-  const openAmount = n19(lcRes.rows[0].amount);
+  const openAmount = n20(lcRes.rows[0].amount);
   if (amount < openAmount - 5e-3) {
     throw new Error(`The repayment (${amount.toFixed(2)}) cannot be less than the LC's open amount (${openAmount.toFixed(2)})`);
   }
-  const commCharges = round28(n19(v.comm_charges));
-  const bankCharges = round28(n19(v.bank_charges));
+  const commCharges = round28(n20(v.comm_charges));
+  const bankCharges = round28(n20(v.bank_charges));
   const excess = round28(amount - openAmount);
   if (excess > 5e-3) {
     if (Math.abs(commCharges + bankCharges - excess) > 5e-3) {
@@ -13839,7 +14000,7 @@ async function saveLcRepayment(v) {
   assertNotFuture(v.repay_date ? String(v.repay_date).slice(0, 10) : "", "The repayment date");
   const args = [
     lcId,
-    v.party_id ? n19(v.party_id) : null,
+    v.party_id ? n20(v.party_id) : null,
     amount,
     maturityCharges,
     commCharges,
@@ -13851,7 +14012,7 @@ async function saveLcRepayment(v) {
   ];
   let id;
   if (v.id) {
-    id = n19(v.id);
+    id = n20(v.id);
     const prev = await c.execute({
       sql: "SELECT posted, journal_entry_id, fee_journal_entry_id FROM lc_repayments WHERE id = ?",
       args: [id]
@@ -13862,9 +14023,9 @@ async function saveLcRepayment(v) {
             repay_date = ?, posted = ?, document_path = ?, note = ? WHERE id = ?`,
       args: [...args, id]
     });
-    if (n19(prev.rows[0].posted) && !posted) {
-      const oldFeeJe = n19(prev.rows[0].fee_journal_entry_id) || null;
-      await dropEntry(n19(prev.rows[0].journal_entry_id) || null);
+    if (n20(prev.rows[0].posted) && !posted) {
+      const oldFeeJe = n20(prev.rows[0].fee_journal_entry_id) || null;
+      await dropEntry(n20(prev.rows[0].journal_entry_id) || null);
       await dropEntry(oldFeeJe);
       await c.execute({
         sql: "UPDATE lc_repayments SET journal_entry_id = NULL, fee_journal_entry_id = NULL WHERE id = ?",
@@ -13902,8 +14063,8 @@ async function deleteLcRepayment(id) {
     args: [id]
   });
   if (res.rows.length) {
-    await dropEntry(n19(res.rows[0].journal_entry_id) || null);
-    await dropEntry(n19(res.rows[0].fee_journal_entry_id) || null);
+    await dropEntry(n20(res.rows[0].journal_entry_id) || null);
+    await dropEntry(n20(res.rows[0].fee_journal_entry_id) || null);
   }
   await c.execute({ sql: "DELETE FROM lc_repayments WHERE id = ?", args: [id] });
   return { id };
@@ -13976,7 +14137,7 @@ async function listPaymentTracker() {
     ref: String(r.ref || ""),
     detail: `${r.bank || ""}${r.invoice_no ? ` \xB7 inv ${r.invoice_no}` : ""}`,
     party: String(r.party || ""),
-    amount: n19(r.amount),
+    amount: n20(r.amount),
     due_date: r.due_date ? String(r.due_date) : null,
     status: String(r.status || "outstanding"),
     settled: String(r.status || "outstanding") === "settled"
@@ -13998,7 +14159,7 @@ async function listPaymentTracker() {
     ref: String(r.bd_no || ""),
     detail: `${r.nbfc_name || ""}${r.finance_type ? ` \xB7 ${r.finance_type}` : ""}`,
     party: String(r.party_name || ""),
-    amount: n19(r.amount),
+    amount: n20(r.amount),
     due_date: r.maturity_date ? String(r.maturity_date) : null,
     status: String(r.status || "open"),
     settled: String(r.status || "") === "repaid"
@@ -14124,7 +14285,7 @@ function toPlain24(res) {
     return o;
   });
 }
-var n20 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+var n21 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
 async function listFacilities() {
   const res = await getClient().execute({
     sql: `SELECT f.*,
@@ -14147,13 +14308,13 @@ async function listFacilities() {
     args: [getActiveCompanyId()]
   });
   return toPlain24(res).map((f) => {
-    const committed = n20(f.lc_committed) + n20(f.other_outstanding);
+    const committed = n21(f.lc_committed) + n21(f.other_outstanding);
     return {
       ...f,
       total_outstanding: committed,
-      available: n20(f.sanctioned_limit) - committed,
+      available: n21(f.sanctioned_limit) - committed,
       // What would be left if everything currently planned were also drawn.
-      available_after_planned: n20(f.sanctioned_limit) - committed - n20(f.planned)
+      available_after_planned: n21(f.sanctioned_limit) - committed - n21(f.planned)
     };
   });
 }
@@ -14174,7 +14335,7 @@ function facilityArgs(v) {
   return FACILITY_COLS.map((k) => {
     const val = v[k];
     if (val === "" || val === void 0 || val === null) return FACILITY_FALLBACK[k] ?? null;
-    if (k === "sanctioned_limit") return n20(val);
+    if (k === "sanctioned_limit") return n21(val);
     if (k === "active") return val ? 1 : 0;
     return String(val);
   });
@@ -14199,9 +14360,9 @@ async function updateFacility(id, v) {
 async function deleteFacility(id) {
   const c = getClient();
   const lc = await c.execute({ sql: "SELECT COUNT(*) AS n FROM letters_of_credit WHERE facility_id = ?", args: [id] });
-  if (n20(lc.rows[0].n) > 0) {
+  if (n21(lc.rows[0].n) > 0) {
     throw new Error(
-      `${n20(lc.rows[0].n)} LC(s) draw against this facility \u2014 unlink them first, or switch the facility off instead so its history stays.`
+      `${n21(lc.rows[0].n)} LC(s) draw against this facility \u2014 unlink them first, or switch the facility off instead so its history stays.`
     );
   }
   await c.execute({ sql: "DELETE FROM facility_exposures WHERE facility_id = ?", args: [id] });
@@ -14210,12 +14371,12 @@ async function deleteFacility(id) {
 }
 async function saveExposure(v) {
   const c = getClient();
-  const facilityId = n20(v.facility_id);
+  const facilityId = n21(v.facility_id);
   if (!facilityId) throw new Error("Pick the facility this balance sits under");
   if (!String(v.label || "").trim()) throw new Error("Name this balance (e.g. the account it belongs to)");
   const args = [
     String(v.label).trim(),
-    n20(v.amount),
+    n21(v.amount),
     String(v.kind || "outstanding"),
     v.as_of ? String(v.as_of).slice(0, 10) : null,
     v.note ? String(v.note).trim() : null
@@ -14223,9 +14384,9 @@ async function saveExposure(v) {
   if (v.id) {
     await c.execute({
       sql: "UPDATE facility_exposures SET label = ?, amount = ?, kind = ?, as_of = ?, note = ? WHERE id = ?",
-      args: [...args, n20(v.id)]
+      args: [...args, n21(v.id)]
     });
-    return { id: n20(v.id) };
+    return { id: n21(v.id) };
   }
   const res = await c.execute({
     sql: `INSERT INTO facility_exposures (facility_id, label, amount, kind, as_of, note)
@@ -14252,9 +14413,9 @@ async function facilityHeadroom(facilityId, excludeLcId = 0) {
     sql: "SELECT COALESCE(SUM(amount), 0) AS a FROM facility_exposures WHERE facility_id = ? AND kind = 'outstanding'",
     args: [facilityId]
   });
-  const sanctioned = n20(f.rows[0].sanctioned_limit);
-  const lcCommitted = n20(lc.rows[0].a);
-  const otherOutstanding = n20(other.rows[0].a);
+  const sanctioned = n21(f.rows[0].sanctioned_limit);
+  const lcCommitted = n21(lc.rows[0].a);
+  const otherOutstanding = n21(other.rows[0].a);
   return {
     facility_id: facilityId,
     name: f.rows[0].name,
@@ -14274,7 +14435,7 @@ function toPlain25(res) {
     return o;
   });
 }
-function n21(v) {
+function n22(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
@@ -14283,8 +14444,8 @@ function round29(v) {
 }
 function netAvailable(lc, issued) {
   const interest = lc.interest_upfront ? 0 : lcInterest(lc);
-  const charges = lc.interest_upfront ? 0 : round29(n21(lc.charges));
-  return round29(n21(lc.amount) - interest - charges - issued);
+  const charges = lc.interest_upfront ? 0 : round29(n22(lc.charges));
+  return round29(n22(lc.amount) - interest - charges - issued);
 }
 async function listLCs() {
   const res = await getClient().execute({
@@ -14319,10 +14480,10 @@ async function listLCs() {
   `
   });
   return toPlain25(res).map((l) => {
-    const linkedCount = n21(l.linked_invoice_count);
-    const margin = Math.round(n21(l.amount) * n21(l.margin_pct) / 100 * 100) / 100;
+    const linkedCount = n22(l.linked_invoice_count);
+    const margin = Math.round(n22(l.amount) * n22(l.margin_pct) / 100 * 100) / 100;
     const interest = lcInterest(l);
-    const rawCharges = Math.round(n21(l.charges) * 100) / 100;
+    const rawCharges = Math.round(n22(l.charges) * 100) / 100;
     const chargedInterest = l.interest_upfront ? 0 : interest;
     const charges = l.interest_upfront ? 0 : rawCharges;
     const compliant = String(l.purpose || "") !== "trading" || linkedCount > 0 && !!l.receivable_party_id;
@@ -14333,7 +14494,7 @@ async function listLCs() {
       // Back-calculated: the open amount is the limit struck with the bank —
       // interest and charges come OUT of it, not added on top (unless both
       // are paid upfront from the bank instead — see interest_upfront).
-      lc_net_available: Math.round((n21(l.amount) - chargedInterest - charges) * 100) / 100,
+      lc_net_available: Math.round((n22(l.amount) - chargedInterest - charges) * 100) / 100,
       // What the beneficiary was ACTUALLY paid: the bills the bank honoured.
       //
       // lc_net_available above is a back-calculation — open amount less what
@@ -14344,8 +14505,8 @@ async function listLCs() {
       //
       // A recorded amount beats a formula, every time. Until a bill exists
       // there is nothing recorded, so the expectation stands in — and says so.
-      paid_to_party: n21(l.utilized) > 4e-3 ? round29(n21(l.utilized)) : null,
-      paid_expected: Math.round((n21(l.amount) - chargedInterest - charges) * 100) / 100,
+      paid_to_party: n22(l.utilized) > 4e-3 ? round29(n22(l.utilized)) : null,
+      paid_expected: Math.round((n22(l.amount) - chargedInterest - charges) * 100) / 100,
       // What's actually left to issue bills against — interest and charges
       // come out of the open amount before issued bills reduce it further.
       // The shortfall an over-drawn LC used to show as a negative balance is
@@ -14355,15 +14516,15 @@ async function listLCs() {
       interest_basis: lcInterestBasis(l),
       interest_base_amount: lcInterestBase(l),
       fee_adjustment: lcFeeDelta(),
-      available: round29(netAvailable(l, n21(l.utilized)) - lcFeeDelta()),
+      available: round29(netAvailable(l, n22(l.utilized)) - lcFeeDelta()),
       // What's still owed against the LC's full sanctioned limit, net of
       // repayments — explicitly requested this way even for an LC that's
       // barely drawn down, so it reads as the limit's outstanding exposure.
       // Against the limit, so the blocked figure less what has been repaid.
-      outstanding: Math.round(((n21(l.blocked_amount) || n21(l.amount)) - n21(l.repaid)) * 100) / 100,
+      outstanding: Math.round(((n22(l.blocked_amount) || n22(l.amount)) - n22(l.repaid)) * 100) / 100,
       // Resolved once here so the register and the forms never have to repeat
       // the fallback — and cannot disagree about it.
-      blocked_effective: round29(n21(l.blocked_amount) || n21(l.amount)),
+      blocked_effective: round29(n22(l.blocked_amount) || n22(l.amount)),
       compliant,
       display_status: !compliant ? "non_compliant" : String(l.workflow_status || "in_progress")
     };
@@ -14372,10 +14533,10 @@ async function listLCs() {
 async function getLcLimit(bankId, from, to) {
   const c = getClient();
   const cid = getActiveCompanyId();
-  let bank = n21(bankId);
+  let bank = n22(bankId);
   if (bank) {
     const owner = await c.execute({ sql: "SELECT company_id FROM banks WHERE id = ?", args: [bank] });
-    if (n21(owner.rows[0]?.company_id) !== cid) bank = 0;
+    if (n22(owner.rows[0]?.company_id) !== cid) bank = 0;
   }
   const limitRes = bank ? await c.execute({
     sql: "SELECT fixed_limit, convertible_limit, convertible_enabled FROM bank_lc_limits WHERE company_id = ? AND bank_id = ?",
@@ -14388,7 +14549,7 @@ async function getLcLimit(bankId, from, to) {
     args: [cid]
   });
   let limit = limitRes.rows.length ? toPlain25(limitRes)[0] : { fixed_limit: 0, convertible_limit: 0, convertible_enabled: 0 };
-  if (!bank && n21(limit.fixed_limit) === 0 && n21(limit.convertible_limit) === 0) {
+  if (!bank && n22(limit.fixed_limit) === 0 && n22(limit.convertible_limit) === 0) {
     const legacy = await c.execute({
       sql: "SELECT fixed_limit, convertible_limit, convertible_enabled FROM lc_limits WHERE company_id = ?",
       args: [cid]
@@ -14414,8 +14575,8 @@ async function getLcLimit(bankId, from, to) {
   let periodCount = 0;
   for (const r of toPlain25(sumsRes)) {
     const stage = String(r.stage || "application");
-    if (stage in byStage) byStage[stage] = n21(r.total);
-    periodCount += n21(r.cnt);
+    if (stage in byStage) byStage[stage] = n22(r.total);
+    periodCount += n22(r.cnt);
   }
   const totalCountRes = await c.execute({
     sql: `SELECT COUNT(*) AS cnt FROM letters_of_credit
@@ -14423,14 +14584,14 @@ async function getLcLimit(bankId, from, to) {
             ${bank ? "AND our_bank_id = ?" : ""}`,
     args: bank ? [cid, bank] : [cid]
   });
-  const totalCount = n21(totalCountRes.rows[0]?.cnt);
-  const totalLimit = round29(n21(limit.fixed_limit) + (limit.convertible_enabled ? n21(limit.convertible_limit) : 0));
+  const totalCount = n22(totalCountRes.rows[0]?.cnt);
+  const totalLimit = round29(n22(limit.fixed_limit) + (limit.convertible_enabled ? n22(limit.convertible_limit) : 0));
   const utilized = round29(byStage.application + byStage.open + byStage.payment_received);
   return {
     bank_id: bank || null,
-    fixed_limit: n21(limit.fixed_limit),
-    convertible_limit: n21(limit.convertible_limit),
-    convertible_enabled: !!n21(limit.convertible_enabled),
+    fixed_limit: n22(limit.fixed_limit),
+    convertible_limit: n22(limit.convertible_limit),
+    convertible_enabled: !!n22(limit.convertible_enabled),
     total_limit: totalLimit,
     lc_count: totalCount,
     period_lc_count: periodCount,
@@ -14461,16 +14622,16 @@ async function listBankLcLimits() {
     args: [cid, cid, cid, cid]
   });
   return toPlain25(res).map((r) => {
-    const total = round29(n21(r.fixed_limit) + (n21(r.convertible_enabled) ? n21(r.convertible_limit) : 0));
-    return { ...r, convertible_enabled: !!n21(r.convertible_enabled), total_limit: total, available: round29(total - n21(r.utilized)) };
+    const total = round29(n22(r.fixed_limit) + (n22(r.convertible_enabled) ? n22(r.convertible_limit) : 0));
+    return { ...r, convertible_enabled: !!n22(r.convertible_enabled), total_limit: total, available: round29(total - n22(r.utilized)) };
   });
 }
 async function saveLcLimit(v) {
   const cid = getActiveCompanyId();
-  const bankId = n21(v.bank_id);
+  const bankId = n22(v.bank_id);
   if (!bankId) throw new Error("Pick which bank this limit is sanctioned by");
   const owner = await getClient().execute({ sql: "SELECT company_id FROM banks WHERE id = ?", args: [bankId] });
-  if (n21(owner.rows[0]?.company_id) !== cid) throw new Error("That bank belongs to a different company");
+  if (n22(owner.rows[0]?.company_id) !== cid) throw new Error("That bank belongs to a different company");
   await getClient().execute({
     sql: `INSERT INTO bank_lc_limits (company_id, bank_id, fixed_limit, convertible_limit, convertible_enabled, updated_at)
           VALUES (?, ?, ?, ?, ?, datetime('now'))
@@ -14479,13 +14640,13 @@ async function saveLcLimit(v) {
             convertible_limit = excluded.convertible_limit,
             convertible_enabled = excluded.convertible_enabled,
             updated_at = excluded.updated_at`,
-    args: [cid, bankId, n21(v.fixed_limit), n21(v.convertible_limit), v.convertible_enabled ? 1 : 0]
+    args: [cid, bankId, n22(v.fixed_limit), n22(v.convertible_limit), v.convertible_enabled ? 1 : 0]
   });
   return { id: bankId };
 }
 async function syncLinkedOrders(lcId, orderIds) {
   const c = getClient();
-  const ids = Array.isArray(orderIds) ? orderIds.map((x) => n21(x)).filter((x) => x > 0) : [];
+  const ids = Array.isArray(orderIds) ? orderIds.map((x) => n22(x)).filter((x) => x > 0) : [];
   if (ids.length) {
     const taken = await c.execute({
       sql: `SELECT lo.order_id, o.invoice_no, l.lc_no
@@ -14513,16 +14674,16 @@ async function syncPaymentReceivedIssuance(lcId, v) {
   if (!paymentDate) return;
   const c = getClient();
   const existing = await c.execute({ sql: "SELECT COUNT(*) AS n FROM lc_issuances WHERE lc_id = ?", args: [lcId] });
-  if (n21(existing.rows[0]?.n) === 0) {
+  if (n22(existing.rows[0]?.n) === 0) {
     const issueDate = String(v.open_date || paymentDate).slice(0, 10);
     const dueDate = String(v.expiry_date || paymentDate).slice(0, 10);
-    const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n21(x)).filter((x) => x > 0) : [];
+    const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n22(x)).filter((x) => x > 0) : [];
     if (ids.length) {
       let remaining = netAvailable(v, 0);
       for (const oid of ids) {
         const o = await c.execute({ sql: "SELECT invoice_no, net_amount FROM orders WHERE id = ?", args: [oid] });
         if (!o.rows.length) continue;
-        const issueAmount = Math.min(remaining, n21(o.rows[0].net_amount));
+        const issueAmount = Math.min(remaining, n22(o.rows[0].net_amount));
         if (issueAmount <= 5e-3) continue;
         await c.execute({
           sql: `INSERT INTO lc_issuances (lc_id, issue_date, amount, order_id, bill_no, due_date, status)
@@ -14604,31 +14765,31 @@ function lcArgs(v) {
     if (k === "our_bank_id" || k === "party_id" || k === "amount" || k === "blocked_amount" || k === "interest_pct" || k === "charges" || k === "usance_days" || k === "margin_pct" || k === "facility_id" || k === "receivable_party_id" || k === "interest_upfront" || // Signed: a negative adjustment is the ordinary case, so this must not
     // be floored or read as a string.
     k === "interest_adj") {
-      return n21(val);
+      return n22(val);
     }
     return val;
   });
 }
 async function assertWithinFacility(v, excludeLcId = 0) {
-  const facilityId = n21(v.facility_id);
+  const facilityId = n22(v.facility_id);
   if (!facilityId || v.force_over_limit) return;
   const h = await facilityHeadroom(facilityId, excludeLcId);
-  const amount = n21(v.blocked_amount) || n21(v.amount);
-  if (amount > n21(h.available) + 5e-3) {
+  const amount = n22(v.blocked_amount) || n22(v.amount);
+  if (amount > n22(h.available) + 5e-3) {
     throw new Error(
       `${h.name} has ${Number(h.available).toFixed(2)} left of its ${Number(h.sanctioned).toFixed(2)} sanction (${Number(h.lc_committed).toFixed(2)} on other LCs, ${Number(h.other_outstanding).toFixed(2)} other outstanding). This LC of ${amount.toFixed(2)} would exceed it.`
     );
   }
 }
 async function assertWithinInvoiceCover(v) {
-  const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n21(x)).filter((x) => x > 0) : [];
+  const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n22(x)).filter((x) => x > 0) : [];
   if (!ids.length) return;
   const res = await getClient().execute({
     sql: `SELECT COALESCE(SUM(net_amount), 0) AS total FROM orders WHERE id IN (${ids.map(() => "?").join(", ")})`,
     args: ids
   });
-  const total = n21(res.rows[0]?.total);
-  const amount = n21(v.amount);
+  const total = n22(res.rows[0]?.total);
+  const amount = n22(v.amount);
   if (amount > total + 5e-3) {
     throw new Error(
       `The open amount (${amount.toFixed(2)}) cannot exceed the ${total.toFixed(2)} total of the selected invoices.`
@@ -14644,7 +14805,7 @@ async function assertLcNoNotTaken(v, id) {
   const lcNo = String(v.lc_no || "").trim();
   if (!lcNo) return;
   const c = getClient();
-  const cid = n21(v.company_id) || getActiveCompanyId();
+  const cid = n22(v.company_id) || getActiveCompanyId();
   if (id) {
     const own = await c.execute({ sql: "SELECT lc_no FROM letters_of_credit WHERE id = ?", args: [id] });
     const was = String(own.rows[0]?.lc_no || "").trim();
@@ -14654,7 +14815,7 @@ async function assertLcNoNotTaken(v, id) {
     sql: `SELECT id, lc_no, bank, amount, open_date FROM letters_of_credit
            WHERE company_id = ? AND UPPER(TRIM(COALESCE(lc_no,''))) = ? AND id <> ?
            ORDER BY id LIMIT 1`,
-    args: [cid, lcNo.toUpperCase(), n21(id)]
+    args: [cid, lcNo.toUpperCase(), n22(id)]
   });
   if (!res.rows.length) return;
   const clash = toPlain25(res)[0];
@@ -14665,20 +14826,20 @@ async function assertLcNoNotTaken(v, id) {
 }
 async function assertHasLinkedInvoice(v) {
   if (String(v.stage || "application") === "application") return;
-  const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n21(x)).filter((x) => x > 0) : [];
+  const ids = Array.isArray(v.linked_order_ids) ? v.linked_order_ids.map((x) => n22(x)).filter((x) => x > 0) : [];
   if (ids.length) return;
   if (await getSetting("lc_require_linked_invoice") === "0") return;
   const res = await getClient().execute({
     sql: `SELECT COUNT(*) AS n FROM orders
           WHERE supplier_id = ? AND company_id = ? AND COALESCE(is_trading, 0) = ? AND order_date <= ?`,
     args: [
-      n21(v.party_id),
-      n21(v.company_id) || getActiveCompanyId(),
+      n22(v.party_id),
+      n22(v.company_id) || getActiveCompanyId(),
       String(v.purpose || "") === "trading" ? 1 : 0,
       String(v.open_date || "").slice(0, 10)
     ]
   });
-  if (n21(res.rows[0]?.n) === 0) return;
+  if (n22(res.rows[0]?.n) === 0) return;
   throw new Error(
     "Link at least one purchase invoice before the LC leaves Application \u2014 an LC that is Open or has received payment must name the invoice(s) it covers."
   );
@@ -14690,23 +14851,23 @@ function assertPaymentReceivedNotBeforeOpen(v) {
 }
 async function resizeAutoLcBill(lcId) {
   const c = getClient();
-  const lcRes = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n21(lcId)] });
+  const lcRes = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [n22(lcId)] });
   if (!lcRes.rows.length) return;
   const lc = toPlain25(lcRes)[0];
   const res = await c.execute({
     sql: "SELECT id, amount, order_id, bill_no FROM lc_issuances WHERE lc_id = ?",
-    args: [n21(lcId)]
+    args: [n22(lcId)]
   });
   if (res.rows.length !== 1) return;
   const bill = toPlain25(res)[0];
-  if (n21(bill.order_id)) return;
+  if (n22(bill.order_id)) return;
   if (String(bill.bill_no || "").trim()) return;
   const want = netAvailable(lc, 0);
   if (want <= 5e-3) return;
-  if (Math.abs(want - n21(bill.amount)) < 5e-3) return;
+  if (Math.abs(want - n22(bill.amount)) < 5e-3) return;
   await c.execute({
     sql: "UPDATE lc_issuances SET amount = ? WHERE id = ?",
-    args: [round29(want), n21(bill.id)]
+    args: [round29(want), n22(bill.id)]
   });
 }
 async function syncLcVouchers(id) {
@@ -14745,11 +14906,11 @@ async function syncLcVouchers(id) {
   return `The LC saved, but ${problems.join(" and ")} could not be re-posted \u2014 the books are out of step until that is fixed.`;
 }
 async function assertOwnBankBelongsToCompany(v) {
-  const bankId = n21(v.our_bank_id);
+  const bankId = n22(v.our_bank_id);
   if (!bankId) return;
-  const cid = n21(v.company_id) || getActiveCompanyId();
+  const cid = n22(v.company_id) || getActiveCompanyId();
   const owner = await getClient().execute({ sql: "SELECT company_id FROM banks WHERE id = ?", args: [bankId] });
-  if (n21(owner.rows[0]?.company_id) !== cid) {
+  if (n22(owner.rows[0]?.company_id) !== cid) {
     throw new Error("That bank belongs to a different company \u2014 pick one of this company's own banks");
   }
 }
@@ -14816,7 +14977,7 @@ async function precloseLC(id, v) {
   const interestStart = lc.payment_received_date || lc.opened_date || lc.open_date;
   if (!interestStart) throw new Error("The LC has no date yet to count interest days from");
   const actualDays = Math.max(0, daysBetween2(String(interestStart), precloseDate));
-  const prematureInterest = round29(n21(v.premature_interest));
+  const prematureInterest = round29(n22(v.premature_interest));
   const rebateDirection = v.premature_interest_direction === "pay_to_party" ? "pay_to_party" : "credit_to_us";
   await c.execute({
     sql: `UPDATE letters_of_credit SET usance_days = ?, preclosed_date = ?, preclose_premature_interest = ?,
@@ -14835,15 +14996,15 @@ async function precloseLC(id, v) {
   }
   await saveLcRepayment({
     lc_id: id,
-    amount: n21(v.amount),
-    comm_charges: n21(v.comm_charges),
-    bank_charges: n21(v.bank_charges),
+    amount: n22(v.amount),
+    comm_charges: n22(v.comm_charges),
+    bank_charges: n22(v.bank_charges),
     repay_date: precloseDate,
     posted: true,
     note: "Preclosure repayment"
   });
   if (v.release_margin) {
-    const margin = round29(n21(lc.amount) * n21(lc.margin_pct) / 100);
+    const margin = round29(n22(lc.amount) * n22(lc.margin_pct) / 100);
     const settlement = await postLcMarginRelease(id, margin, precloseDate);
     if (settlement) {
       await c.execute({
@@ -14864,14 +15025,14 @@ async function unPrecloseLC(id) {
   if (!lc.preclosed_date) throw new Error("This LC is not preclosed, so there is nothing to undo");
   const removed = [];
   if (lc.preclose_payout_journal_entry_id) {
-    await dropTreasuryEntry(n21(lc.preclose_payout_journal_entry_id));
+    await dropTreasuryEntry(n22(lc.preclose_payout_journal_entry_id));
   }
   if (lc.preclose_interest_journal_entry_id) {
-    await dropTreasuryEntry(n21(lc.preclose_interest_journal_entry_id));
+    await dropTreasuryEntry(n22(lc.preclose_interest_journal_entry_id));
     removed.push("premature-interest rebate voucher");
   }
   if (lc.preclose_journal_entry_id) {
-    await dropTreasuryEntry(n21(lc.preclose_journal_entry_id));
+    await dropTreasuryEntry(n22(lc.preclose_journal_entry_id));
     removed.push("margin-release voucher");
   }
   const reps = await c.execute({
@@ -14880,12 +15041,12 @@ async function unPrecloseLC(id) {
     args: [id, String(lc.preclosed_date).slice(0, 10)]
   });
   for (const r of reps.rows) {
-    if (r.journal_entry_id) await dropTreasuryEntry(n21(r.journal_entry_id));
-    await c.execute({ sql: "DELETE FROM lc_repayments WHERE id = ?", args: [n21(r.id)] });
+    if (r.journal_entry_id) await dropTreasuryEntry(n22(r.journal_entry_id));
+    await c.execute({ sql: "DELETE FROM lc_repayments WHERE id = ?", args: [n22(r.id)] });
   }
   if (reps.rows.length) removed.push(`${reps.rows.length} preclosure repayment row(s)`);
   const interestStart = lc.payment_received_date || lc.opened_date || lc.open_date;
-  const plannedDays = interestStart && lc.expiry_date ? Math.max(0, daysBetween2(String(interestStart), String(lc.expiry_date))) : n21(lc.usance_days);
+  const plannedDays = interestStart && lc.expiry_date ? Math.max(0, daysBetween2(String(interestStart), String(lc.expiry_date))) : n22(lc.usance_days);
   await c.execute({
     sql: `UPDATE letters_of_credit
              SET usance_days = ?, preclosed_date = NULL, preclose_premature_interest = NULL,
@@ -14939,8 +15100,8 @@ async function dropTreasuryEntry(entryId) {
 }
 async function issueLC(v) {
   const c = getClient();
-  const lcId = n21(v.lc_id);
-  const amount = n21(v.amount);
+  const lcId = n22(v.lc_id);
+  const amount = n22(v.amount);
   if (amount <= 0) throw new Error("Enter the issuance amount");
   const lcRes = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [lcId] });
   if (!lcRes.rows.length) throw new Error("LC not found");
@@ -14948,7 +15109,7 @@ async function issueLC(v) {
     sql: "SELECT COALESCE(SUM(amount), 0) AS u FROM lc_issuances WHERE lc_id = ?",
     args: [lcId]
   });
-  const available = netAvailable(lcRes.rows[0], n21(used.rows[0].u));
+  const available = netAvailable(lcRes.rows[0], n22(used.rows[0].u));
   if (amount > available + 5e-3) {
     throw new Error(`Issuance exceeds available LC balance (${available.toFixed(2)})`);
   }
@@ -14960,7 +15121,7 @@ async function issueLC(v) {
   let dueDate = String(v.due_date || "").slice(0, 10);
   if (!dueDate) {
     const d = /* @__PURE__ */ new Date(`${issueDate}T00:00:00`);
-    d.setDate(d.getDate() + (n21(lc.usance_days) || 0));
+    d.setDate(d.getDate() + (n22(lc.usance_days) || 0));
     dueDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   }
   const ins = await c.execute({
@@ -14970,7 +15131,7 @@ async function issueLC(v) {
       lcId,
       issueDate,
       amount,
-      v.order_id ? n21(v.order_id) : null,
+      v.order_id ? n22(v.order_id) : null,
       v.bill_no || null,
       v.note || null,
       dueDate
@@ -14992,7 +15153,7 @@ async function deleteLCIssuance(id) {
   if (res.rows.length) {
     await c.execute({
       sql: "UPDATE letters_of_credit SET status = 'open' WHERE id = ? AND status = 'utilized'",
-      args: [n21(res.rows[0].lc_id)]
+      args: [n22(res.rows[0].lc_id)]
     });
   }
   return { id };
@@ -15008,7 +15169,7 @@ function toPlain26(res) {
     return o;
   });
 }
-function n22(v) {
+function n23(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
@@ -15171,7 +15332,7 @@ async function listBankStatementLines(filter) {
   const args = [];
   if (filter?.import_id) {
     where.push("import_id = ?");
-    args.push(n22(filter.import_id));
+    args.push(n23(filter.import_id));
   }
   if (filter?.status) {
     const statuses = (Array.isArray(filter.status) ? filter.status : [filter.status]).map(String).filter(Boolean);
@@ -15195,7 +15356,7 @@ async function suggestBankLineMatch(lineId) {
   const lineRes = await c.execute({ sql: "SELECT * FROM bank_statement_lines WHERE id = ?", args: [lineId] });
   if (!lineRes.rows.length) throw new Error("Statement line not found");
   const line = toPlain26(lineRes)[0];
-  const amount = n22(line.debit) > 0 ? n22(line.debit) : n22(line.credit);
+  const amount = n23(line.debit) > 0 ? n23(line.debit) : n23(line.credit);
   const narration = String(line.narration || "").toUpperCase();
   const lcRes = await c.execute(
     `SELECT id, lc_no, charges, opened_date, open_date, amount, interest_pct, usance_days,
@@ -15205,23 +15366,23 @@ async function suggestBankLineMatch(lineId) {
   for (const lc of toPlain26(lcRes)) {
     const lcNo = String(lc.lc_no || "").toUpperCase();
     if (!lcNo || !narration.includes(lcNo)) continue;
-    if (!n22(lc.interest_upfront) && n22(lc.charges) > 0 && Math.abs(n22(lc.charges) - amount) <= AMOUNT_TOLERANCE) {
+    if (!n23(lc.interest_upfront) && n23(lc.charges) > 0 && Math.abs(n23(lc.charges) - amount) <= AMOUNT_TOLERANCE) {
       return {
         category: "lc",
         link_type: "lc_opening",
-        link_ref_id: n22(lc.id),
-        label: `LC ${lc.lc_no} \u2014 opening commission/charges ${n22(lc.charges).toFixed(2)}`
+        link_ref_id: n23(lc.id),
+        label: `LC ${lc.lc_no} \u2014 opening commission/charges ${n23(lc.charges).toFixed(2)}`
       };
     }
-    if (n22(lc.interest_upfront)) {
+    if (n23(lc.interest_upfront)) {
       const interest = lcInterest(lc);
-      const charges = round210(n22(lc.charges));
+      const charges = round210(n23(lc.charges));
       const total = round210(interest + charges);
       if (total > 0 && Math.abs(total - amount) <= AMOUNT_TOLERANCE) {
         return {
           category: "lc",
           link_type: "lc_interest",
-          link_ref_id: n22(lc.id),
+          link_ref_id: n23(lc.id),
           label: `LC ${lc.lc_no} \u2014 interest ${interest.toFixed(2)} + charges ${charges.toFixed(2)} paid upfront (${total.toFixed(2)})`
         };
       }
@@ -15231,12 +15392,12 @@ async function suggestBankLineMatch(lineId) {
       args: [lc.id]
     });
     for (const rep of toPlain26(repRes)) {
-      const total = round210(n22(rep.amount) + n22(rep.maturity_charges));
+      const total = round210(n23(rep.amount) + n23(rep.maturity_charges));
       if (Math.abs(total - amount) <= AMOUNT_TOLERANCE && withinDateWindow(String(rep.repay_date), String(line.txn_date), DATE_WINDOW_DAYS)) {
         return {
           category: "lc",
           link_type: "lc_repayment",
-          link_ref_id: n22(rep.id),
+          link_ref_id: n23(rep.id),
           label: `LC ${lc.lc_no} \u2014 repayment ${total.toFixed(2)} on ${rep.repay_date}`
         };
       }
@@ -15260,8 +15421,8 @@ async function suggestBankLineMatch(lineId) {
       best = {
         category: "oil",
         link_type: "payment",
-        link_ref_id: n22(pay.id),
-        label: `Payment to ${pay.party_name || pay.party_type} \u2014 ${n22(pay.amount).toFixed(2)} on ${pay.payment_date}`
+        link_ref_id: n23(pay.id),
+        label: `Payment to ${pay.party_name || pay.party_type} \u2014 ${n23(pay.amount).toFixed(2)} on ${pay.payment_date}`
       };
       if (nameMatches) break;
     }
@@ -15273,14 +15434,14 @@ async function reverseLcInterestLink(lineId) {
   const cur = await c.execute({ sql: "SELECT link_type, link_ref_id FROM bank_statement_lines WHERE id = ?", args: [lineId] });
   const row = cur.rows[0];
   if (!row || !row.link_ref_id) return;
-  if (String(row.link_type) === "lc_interest") await dropLcUpfrontInterest(n22(row.link_ref_id));
+  if (String(row.link_type) === "lc_interest") await dropLcUpfrontInterest(n23(row.link_ref_id));
 }
 async function reconcileBankLine(lineId, v) {
   const category = String(v.category || "").trim();
   if (!category) throw new Error("Pick what this line is");
   const c = getClient();
   const linkType = v.link_type ? String(v.link_type) : null;
-  const linkRefId = v.link_ref_id ? n22(v.link_ref_id) : null;
+  const linkRefId = v.link_ref_id ? n23(v.link_ref_id) : null;
   if (linkType === "lc_interest" && linkRefId) {
     const line = await c.execute({ sql: "SELECT txn_date FROM bank_statement_lines WHERE id = ?", args: [lineId] });
     await postLcUpfrontInterest(linkRefId, String(line.rows[0]?.txn_date || ""));
@@ -15329,7 +15490,7 @@ function toPlain27(res) {
     return o;
   });
 }
-function n23(v) {
+function n24(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
@@ -15342,21 +15503,21 @@ function daysBetween3(a, b) {
   return Math.round(((/* @__PURE__ */ new Date(`${b}T00:00:00`)).getTime() - (/* @__PURE__ */ new Date(`${a}T00:00:00`)).getTime()) / 864e5);
 }
 function bdCalc(bd) {
-  const amount = n23(bd.amount);
-  const invoice = n23(bd.invoice_amount);
+  const amount = n24(bd.amount);
+  const invoice = n24(bd.invoice_amount);
   const from = String(bd.payment_received_date || "").slice(0, 10);
   const to = String(bd.maturity_date || "").slice(0, 10);
   const inclStart = bd.days_incl_start ? 1 : 0;
   const intDays = from && to ? Math.max(0, daysBetween3(from, to) + inclStart) : 0;
   const marginBase = invoice > 0 ? invoice : amount;
-  const marginAmount = round211(marginBase * n23(bd.margin_pct) / 100);
+  const marginAmount = round211(marginBase * n24(bd.margin_pct) / 100);
   const sanctionedAmount = round211(marginBase - marginAmount);
   const drawn = invoice > 0 ? amount : sanctionedAmount;
   const undrawnAmount = round211(sanctionedAmount - drawn);
-  const daysYear = n23(bd.days_year) || 360;
+  const daysYear = n24(bd.days_year) || 360;
   const openAmount = drawn;
-  const interestAmount = round211(openAmount * n23(bd.interest_pct) * intDays / (100 * daysYear));
-  const tdsAmount = round211(interestAmount * n23(bd.tds_pct) / 100);
+  const interestAmount = round211(openAmount * n24(bd.interest_pct) * intDays / (100 * daysYear));
+  const tdsAmount = round211(interestAmount * n24(bd.tds_pct) / 100);
   const netInterest = round211(interestAmount - tdsAmount);
   const receiptAmount = bd.interest_upfront ? openAmount : round211(openAmount - interestAmount);
   return {
@@ -15414,15 +15575,15 @@ async function repaidSoFar(bd) {
     sql: "SELECT COALESCE(SUM(amount), 0) AS paid, COUNT(*) AS parts FROM bd_repayments WHERE bd_id = ?",
     args: [Number(bd.id)]
   });
-  if (n23(r.rows[0].parts) > 0) return round211(n23(r.rows[0].paid));
-  return String(bd.status) === "repaid" ? round211(n23(bd.repaid_amount)) : 0;
+  if (n24(r.rows[0].parts) > 0) return round211(n24(r.rows[0].paid));
+  return String(bd.status) === "repaid" ? round211(n24(bd.repaid_amount)) : 0;
 }
 async function dropRepayEntries(bd) {
   const c = getClient();
   const parts = await c.execute({ sql: "SELECT journal_entry_id FROM bd_repayments WHERE bd_id = ?", args: [Number(bd.id)] });
-  for (const r of parts.rows) await dropEntry2(n23(r.journal_entry_id) || null);
+  for (const r of parts.rows) await dropEntry2(n24(r.journal_entry_id) || null);
   await c.execute({ sql: "DELETE FROM bd_repayments WHERE bd_id = ?", args: [Number(bd.id)] });
-  await dropEntry2(n23(bd.repay_journal_entry_id) || null);
+  await dropEntry2(n24(bd.repay_journal_entry_id) || null);
 }
 function partyName(bd) {
   return String(bd.party_type === "supplier" ? bd.supplier_name : bd.customer_name || "").trim();
@@ -15430,7 +15591,7 @@ function partyName(bd) {
 async function postBdOpening(bdId) {
   const c = getClient();
   const bd = await loadBd(bdId);
-  await dropEntry2(n23(bd.journal_entry_id) || null);
+  await dropEntry2(n24(bd.journal_entry_id) || null);
   if (!bd.payment_received_date) {
     await c.execute({ sql: "UPDATE bill_discountings SET journal_entry_id = NULL WHERE id = ?", args: [bdId] });
     return;
@@ -15438,12 +15599,12 @@ async function postBdOpening(bdId) {
   const calc = bdCalc(bd);
   const upfront = !!bd.interest_upfront;
   const interest = upfront ? 0 : calc.interestAmount;
-  const amount = n23(bd.amount);
+  const amount = n24(bd.amount);
   if (calc.marginAmount < 5e-3 && interest < 5e-3 && amount < 5e-3) {
     await c.execute({ sql: "UPDATE bill_discountings SET journal_entry_id = NULL WHERE id = ?", args: [bdId] });
     return;
   }
-  const marginWithheld = n23(bd.invoice_amount) > 0 ? 0 : calc.marginAmount;
+  const marginWithheld = n24(bd.invoice_amount) > 0 ? 0 : calc.marginAmount;
   const lines = [{ account: "BANK A/C", group: "Bank Accounts", dr: calc.receiptAmount }];
   if (marginWithheld > 5e-3) lines.push({ account: "BD MARGIN A/C", group: "Deposits (Asset)", dr: marginWithheld });
   if (interest > 5e-3) lines.push({ account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: interest });
@@ -15453,7 +15614,7 @@ async function postBdOpening(bdId) {
     vchType: "RECEIPT",
     vchNo: String(bd.bd_no || ""),
     narration: `Bill Discounting ${bd.bd_no || ""} (${bd.finance_type}) opened with ${bd.nbfc_name || "the NBFC"} \u2014 margin ${calc.marginAmount.toFixed(2)}, interest ${interest.toFixed(2)}` + (upfront ? " (interest settled separately on reconciliation)" : ""),
-    companyId: n23(bd.company_id) || void 0,
+    companyId: n24(bd.company_id) || void 0,
     lines
   });
   await c.execute({ sql: "UPDATE bill_discountings SET journal_entry_id = ? WHERE id = ?", args: [je.id, bdId] });
@@ -15468,7 +15629,7 @@ async function postBdUpfrontInterest(bdId, dateIn) {
     vchType: "JOURNAL",
     vchNo: String(bd.bd_no || ""),
     narration: `Bill Discounting ${bd.bd_no} \u2014 interest ${calc.interestAmount.toFixed(2)} (TDS ${calc.tdsAmount.toFixed(2)}) settled upfront, per the bank statement`,
-    companyId: n23(bd.company_id) || void 0,
+    companyId: n24(bd.company_id) || void 0,
     lines: [
       { account: "INTEREST ON BILL DISCOUNTING A/C", group: "Indirect Expenses", dr: calc.interestAmount },
       { account: "TDS ON INTEREST PAYABLE A/C", group: "Duties & Taxes", cr: calc.tdsAmount },
@@ -15479,14 +15640,14 @@ async function postBdUpfrontInterest(bdId, dateIn) {
 }
 async function postBdMarginRelease(bd) {
   const calc = bdCalc(bd);
-  if (n23(bd.invoice_amount) > 0) return null;
+  if (n24(bd.invoice_amount) > 0) return null;
   if (calc.marginAmount < 5e-3) return null;
   const je = await postJournal({
     date: String(bd.repaid_date || todayISO6()).slice(0, 10),
     vchType: "RECEIPT",
     vchNo: String(bd.bd_no || ""),
     narration: `Bill Discounting ${bd.bd_no} repaid \u2014 margin of ${calc.marginAmount.toFixed(2)} refunded by ${bd.nbfc_name || "the NBFC"}`,
-    companyId: n23(bd.company_id) || void 0,
+    companyId: n24(bd.company_id) || void 0,
     lines: [
       { account: "BANK A/C", group: "Bank Accounts", dr: calc.marginAmount },
       { account: "BD MARGIN A/C", group: "Deposits (Asset)", cr: calc.marginAmount }
@@ -15494,7 +15655,7 @@ async function postBdMarginRelease(bd) {
   });
   await getClient().execute({
     sql: "UPDATE bill_discountings SET margin_release_journal_entry_id = ? WHERE id = ?",
-    args: [je.id, n23(bd.id)]
+    args: [je.id, n24(bd.id)]
   });
   return { id: je.id };
 }
@@ -15522,30 +15683,30 @@ var BD_COLS = [
 function bdArgs(v) {
   return BD_COLS.map((k) => {
     if (k === "interest_upfront" || k === "days_incl_start") return v[k] ? 1 : 0;
-    if (k === "days_year") return n23(v[k]) || 360;
-    if (["amount", "margin_pct", "interest_pct", "tds_pct"].includes(k)) return n23(v[k]);
+    if (k === "days_year") return n24(v[k]) || 360;
+    if (["amount", "margin_pct", "interest_pct", "tds_pct"].includes(k)) return n24(v[k]);
     if (k === "invoice_amount") {
       const val2 = v[k];
-      return val2 === "" || val2 === void 0 || val2 === null ? null : n23(val2);
+      return val2 === "" || val2 === void 0 || val2 === null ? null : n24(val2);
     }
-    if (k === "nbfc_id" || k === "receivable_party_id") return v[k] ? n23(v[k]) : null;
+    if (k === "nbfc_id" || k === "receivable_party_id") return v[k] ? n24(v[k]) : null;
     const val = v[k];
     return val === "" || val === void 0 || val === null ? null : String(val);
   });
 }
 function withPrimaryParty(v) {
   if (!Array.isArray(v.party_ids)) return v;
-  const ids = v.party_ids.map((x) => n23(x)).filter((x) => x > 0);
+  const ids = v.party_ids.map((x) => n24(x)).filter((x) => x > 0);
   return ids.length ? { ...v, party_id: ids[0] } : v;
 }
 async function syncBdParties(bdId, partyType, partyIds, split) {
   const c = getClient();
-  const ids = Array.isArray(partyIds) ? Array.from(new Set(partyIds.map((x) => n23(x)).filter((x) => x > 0))) : [];
+  const ids = Array.isArray(partyIds) ? Array.from(new Set(partyIds.map((x) => n24(x)).filter((x) => x > 0))) : [];
   await c.execute({ sql: "DELETE FROM bd_parties WHERE bd_id = ?", args: [bdId] });
   for (const pid of ids) {
     await c.execute({
       sql: "INSERT OR IGNORE INTO bd_parties (bd_id, party_type, party_id, amount) VALUES (?, ?, ?, ?)",
-      args: [bdId, partyType, pid, split ? n23(split[String(pid)]) : 0]
+      args: [bdId, partyType, pid, split ? n24(split[String(pid)]) : 0]
     });
   }
   return ids.length ? ids[0] : null;
@@ -15564,7 +15725,7 @@ async function listBdParties(bdId) {
 }
 async function syncBdLinkedOrders(bdId, orderIds) {
   const c = getClient();
-  const ids = Array.isArray(orderIds) ? orderIds.map((x) => n23(x)).filter((x) => x > 0) : [];
+  const ids = Array.isArray(orderIds) ? orderIds.map((x) => n24(x)).filter((x) => x > 0) : [];
   if (ids.length) {
     const taken = await c.execute({
       sql: `SELECT bo.order_id, o.invoice_no, b.bd_no
@@ -15605,9 +15766,9 @@ async function validateBd(v) {
   if (!["PID", "SID"].includes(String(v.finance_type))) throw new Error("Choose PID or SID");
   const partyType = String(v.finance_type) === "PID" ? "supplier" : "customer";
   if (String(v.party_type) !== partyType) throw new Error("Party type must follow the finance type");
-  const partyIds = Array.isArray(v.party_ids) ? Array.from(new Set(v.party_ids.map((x) => n23(x)).filter((x) => x > 0))) : n23(v.party_id) ? [n23(v.party_id)] : [];
+  const partyIds = Array.isArray(v.party_ids) ? Array.from(new Set(v.party_ids.map((x) => n24(x)).filter((x) => x > 0))) : n24(v.party_id) ? [n24(v.party_id)] : [];
   if (!partyIds.length) throw new Error(partyType === "supplier" ? "Choose the supplier" : "Choose the customer");
-  if (n23(v.amount) <= 0) throw new Error("Enter the open amount");
+  if (n24(v.amount) <= 0) throw new Error("Enter the open amount");
   if (!v.maturity_date) throw new Error("Enter the maturity date");
   if (v.payment_received_date && String(v.maturity_date).slice(0, 10) < String(v.payment_received_date).slice(0, 10)) {
     throw new Error("Maturity date cannot be before the payment received date");
@@ -15618,11 +15779,11 @@ async function validateBd(v) {
     args: partyIds
   });
   if (found.rows.length !== partyIds.length) throw new Error("One of the parties no longer exists");
-  const inactive = found.rows.find((r) => !n23(r.active));
+  const inactive = found.rows.find((r) => !n24(r.active));
   if (inactive) throw new Error(`${String(inactive.name)} is marked inactive`);
   if (partyIds.length > 1) {
     const split = v.party_amounts || {};
-    const given = partyIds.map((pid) => round211(n23(split[String(pid)])));
+    const given = partyIds.map((pid) => round211(n24(split[String(pid)])));
     if (given.some((x) => x <= 0)) {
       throw new Error("Give each party its sanctioned amount");
     }
@@ -15651,7 +15812,7 @@ async function listBd(filter) {
   }
   if (filter?.nbfc_id) {
     where.push("bd.nbfc_id = ?");
-    args.push(n23(filter.nbfc_id));
+    args.push(n24(filter.nbfc_id));
   }
   const res = await getClient().execute({
     sql: `SELECT bd.*, nb.name AS nbfc_name, nb.finance_type AS nbfc_finance_type,
@@ -15689,16 +15850,16 @@ async function listBd(filter) {
     args
   });
   return toPlain27(res).map((bd) => {
-    const parts = n23(bd.repay_parts);
+    const parts = n24(bd.repay_parts);
     const repaidTotal = round211(
-      parts > 0 ? n23(bd.parts_paid) : String(bd.status) === "repaid" ? n23(bd.repaid_amount) : 0
+      parts > 0 ? n24(bd.parts_paid) : String(bd.status) === "repaid" ? n24(bd.repaid_amount) : 0
     );
     return {
       ...bd,
       party_name: partyName(bd),
       ...bdCalc(bd),
       repaid_total: repaidTotal,
-      outstanding_amount: round211(Math.max(0, n23(bd.amount) - repaidTotal)),
+      outstanding_amount: round211(Math.max(0, n24(bd.amount) - repaidTotal)),
       repay_parts: parts,
       // Three stages, in the order a bill goes through them: opened and waiting
       // on the NBFC's money, live once it has landed, wound up once repaid.
@@ -15717,7 +15878,7 @@ async function createBd(v) {
     args: [getActiveCompanyId(), ...bdArgs(v)]
   });
   const id = Number(res.lastInsertRowid);
-  const partyIds = Array.isArray(v.party_ids) ? v.party_ids : n23(v.party_id) ? [n23(v.party_id)] : [];
+  const partyIds = Array.isArray(v.party_ids) ? v.party_ids : n24(v.party_id) ? [n24(v.party_id)] : [];
   await syncBdParties(id, String(v.party_type), partyIds, v.party_amounts);
   if (Array.isArray(v.linked_order_ids)) await syncBdLinkedOrders(id, v.linked_order_ids);
   await postBdOpening(id);
@@ -15729,18 +15890,18 @@ async function updateBd(id, v) {
   await validateBd(v);
   v = withPrimaryParty(v);
   const paid = await repaidSoFar(cur);
-  if (paid > 0 && n23(v.amount) - paid < -4e-3) {
+  if (paid > 0 && n24(v.amount) - paid < -4e-3) {
     throw new Error(`${inr(paid)} has already been repaid on this bill \u2014 the amount cannot be set below that`);
   }
   await getClient().execute({
     sql: `UPDATE bill_discountings SET ${BD_COLS.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`,
     args: [...bdArgs(v), id]
   });
-  if (Array.isArray(v.party_ids) || n23(v.party_id)) {
+  if (Array.isArray(v.party_ids) || n24(v.party_id)) {
     await syncBdParties(
       id,
       String(v.party_type),
-      Array.isArray(v.party_ids) ? v.party_ids : [n23(v.party_id)],
+      Array.isArray(v.party_ids) ? v.party_ids : [n24(v.party_id)],
       v.party_amounts
     );
   }
@@ -15751,11 +15912,11 @@ async function updateBd(id, v) {
 async function deleteBd(id) {
   const c = getClient();
   const bd = await loadBd(id);
-  await dropEntry2(n23(bd.journal_entry_id) || null);
+  await dropEntry2(n24(bd.journal_entry_id) || null);
   await dropRepayEntries(bd);
-  await dropEntry2(n23(bd.margin_release_journal_entry_id) || null);
+  await dropEntry2(n24(bd.margin_release_journal_entry_id) || null);
   const ins = await c.execute({ sql: "SELECT journal_entry_id FROM bd_payment_ins WHERE bd_id = ?", args: [id] });
-  for (const r of ins.rows) await dropEntry2(n23(r.journal_entry_id) || null);
+  for (const r of ins.rows) await dropEntry2(n24(r.journal_entry_id) || null);
   await c.execute({ sql: "DELETE FROM bd_payment_ins WHERE bd_id = ?", args: [id] });
   await c.execute({ sql: "DELETE FROM bd_linked_orders WHERE bd_id = ?", args: [id] });
   await c.execute({ sql: "DELETE FROM bd_parties WHERE bd_id = ?", args: [id] });
@@ -15776,11 +15937,11 @@ async function repayBd(id, v) {
   if (!bd.payment_received_date) {
     throw new Error("Mark the payment received first \u2014 there is nothing to repay until the NBFC has funded this bill");
   }
-  const face = n23(bd.amount);
+  const face = n24(bd.amount);
   const already = await repaidSoFar(bd);
   const due = round211(face - already);
   if (due <= 4e-3) throw new Error("There is nothing left to repay on this bill");
-  const asked = v.amount === void 0 || v.amount === null || String(v.amount).trim() === "" ? due : round211(n23(v.amount));
+  const asked = v.amount === void 0 || v.amount === null || String(v.amount).trim() === "" ? due : round211(n24(v.amount));
   if (asked <= 0) throw new Error("Enter the amount being repaid");
   if (asked - due > 4e-3) {
     throw new Error(
@@ -15796,8 +15957,8 @@ async function repayBd(id, v) {
   }
   const settleVia = v.settle_via === "party" ? "party" : "bank";
   let party = partyName(bd);
-  if (settleVia === "party" && n23(v.party_id) && n23(v.party_id) !== n23(bd.party_id)) {
-    const chosen = (await listBdParties(id)).find((p) => n23(p.party_id) === n23(v.party_id));
+  if (settleVia === "party" && n24(v.party_id) && n24(v.party_id) !== n24(bd.party_id)) {
+    const chosen = (await listBdParties(id)).find((p) => n24(p.party_id) === n24(v.party_id));
     if (!chosen) throw new Error("That party is not on this bill");
     party = String(chosen.name || "").trim();
   }
@@ -15819,7 +15980,7 @@ async function repayBd(id, v) {
     vchType: "PAYMENT",
     vchNo: String(bd.bd_no || ""),
     narration: `Bill Discounting ${bd.bd_no} ${closed && already <= 4e-3 ? "repaid" : closed ? "closed \u2014 final part repayment" : "part repayment"} to ${bd.nbfc_name || "the NBFC"}` + (closed ? "" : ` \u2014 ${inr(left)} still outstanding`) + (settleVia === "party" ? ` \u2014 settled against ${party}` : ""),
-    companyId: n23(bd.company_id) || void 0,
+    companyId: n24(bd.company_id) || void 0,
     lines
   });
   if (settleVia === "party") await allocAgainst2(je.id, party, v.ref || null, asked);
@@ -15850,9 +16011,9 @@ async function listBdRepayments(bdId) {
           WHERE r.bd_id = ? ORDER BY r.repay_date, r.id`,
     args: [bdId]
   });
-  let left = n23(bd.amount);
+  let left = n24(bd.amount);
   return toPlain27(res).map((r) => {
-    left = round211(left - n23(r.amount));
+    left = round211(left - n24(r.amount));
     return { ...r, balance_after: left };
   });
 }
@@ -15892,13 +16053,13 @@ async function deleteBdRepayment(repaymentId) {
   if (!res.rows.length) throw new Error("That repayment no longer exists");
   const part = toPlain27(res)[0];
   const bdId = Number(part.bd_id);
-  await dropEntry2(n23(part.journal_entry_id) || null);
+  await dropEntry2(n24(part.journal_entry_id) || null);
   await c.execute({ sql: "DELETE FROM bd_repayments WHERE id = ?", args: [repaymentId] });
   const bd = await loadBd(bdId);
   const paid = await repaidSoFar({ ...bd, status: "open" });
-  const closed = n23(bd.amount) - paid <= 4e-3;
-  if (!closed && n23(bd.margin_release_journal_entry_id)) {
-    await dropEntry2(n23(bd.margin_release_journal_entry_id));
+  const closed = n24(bd.amount) - paid <= 4e-3;
+  if (!closed && n24(bd.margin_release_journal_entry_id)) {
+    await dropEntry2(n24(bd.margin_release_journal_entry_id));
   }
   await c.execute({
     sql: `UPDATE bill_discountings
@@ -15908,7 +16069,7 @@ async function deleteBdRepayment(repaymentId) {
       closed ? "repaid" : "open",
       closed ? String(bd.repaid_date || "").slice(0, 10) || null : null,
       paid > 0 ? paid : null,
-      closed ? n23(bd.margin_release_journal_entry_id) || null : null,
+      closed ? n24(bd.margin_release_journal_entry_id) || null : null,
       bdId
     ]
   });
@@ -15936,7 +16097,7 @@ async function unmarkBdPaymentReceived(id) {
   if (paid > 4e-3) {
     throw new Error(`${inr(paid)} has already been repaid on this bill \u2014 remove the repayments before undoing the receipt`);
   }
-  await dropEntry2(n23(bd.journal_entry_id) || null);
+  await dropEntry2(n24(bd.journal_entry_id) || null);
   await c.execute({
     sql: "UPDATE bill_discountings SET payment_received_date = NULL, journal_entry_id = NULL WHERE id = ?",
     args: [id]
@@ -15947,7 +16108,7 @@ async function reopenBd(id) {
   const c = getClient();
   const bd = await loadBd(id);
   await dropRepayEntries(bd);
-  await dropEntry2(n23(bd.margin_release_journal_entry_id) || null);
+  await dropEntry2(n24(bd.margin_release_journal_entry_id) || null);
   await c.execute({
     sql: "UPDATE bill_discountings SET status = 'open', repaid_date = NULL, repaid_amount = NULL, repay_journal_entry_id = NULL, margin_release_journal_entry_id = NULL WHERE id = ?",
     args: [id]
@@ -15976,13 +16137,13 @@ async function bdLimits() {
     args: [cid, cid, cid, cid]
   });
   const perNbfc = toPlain27(res).map((r) => {
-    const sanctioned = round211(n23(r.sanctioned));
-    const utilised = round211(n23(r.utilised));
+    const sanctioned = round211(n24(r.sanctioned));
+    const utilised = round211(n24(r.utilised));
     return {
       ...r,
       sanctioned,
       utilised,
-      committed: round211(n23(r.committed)),
+      committed: round211(n24(r.committed)),
       // No sanctioned figure means nothing to be available OUT of — reported as
       // null so the screen can say "not set" rather than showing a negative.
       available: sanctioned > 0 ? round211(sanctioned - utilised) : null,
@@ -15990,16 +16151,16 @@ async function bdLimits() {
     };
   });
   const combinedRaw = await getSetting(`bd_combined_limit_${cid}`);
-  const combined = combinedRaw == null || String(combinedRaw).trim() === "" ? null : round211(n23(combinedRaw));
-  const utilisedTotal = round211(perNbfc.reduce((t, r) => t + n23(r.utilised), 0));
-  const sanctionedTotal = round211(perNbfc.reduce((t, r) => t + n23(r.sanctioned), 0));
+  const combined = combinedRaw == null || String(combinedRaw).trim() === "" ? null : round211(n24(combinedRaw));
+  const utilisedTotal = round211(perNbfc.reduce((t, r) => t + n24(r.utilised), 0));
+  const sanctionedTotal = round211(perNbfc.reduce((t, r) => t + n24(r.sanctioned), 0));
   return {
     per_nbfc: perNbfc,
     // The sum of what each NBFC has sanctioned. Not the same thing as the
     // combined ceiling: a group limit can sit below the sum of its lines.
     sanctioned_sum: sanctionedTotal,
     utilised_total: utilisedTotal,
-    committed_total: round211(perNbfc.reduce((t, r) => t + n23(r.committed), 0)),
+    committed_total: round211(perNbfc.reduce((t, r) => t + n24(r.committed), 0)),
     combined_limit: combined,
     combined_available: combined == null ? null : round211(combined - utilisedTotal),
     combined_used_pct: combined && combined > 0 ? Math.round(utilisedTotal / combined * 1e3) / 10 : null,
@@ -16036,7 +16197,7 @@ async function bdLimits() {
 }
 async function setBdCombinedLimit(value) {
   const cid = getActiveCompanyId();
-  const raw = value == null || String(value).trim() === "" ? "" : String(round211(n23(value)));
+  const raw = value == null || String(value).trim() === "" ? "" : String(round211(n24(value)));
   await setSetting(`bd_combined_limit_${cid}`, raw);
   return { value: raw === "" ? null : Number(raw) };
 }
@@ -16046,13 +16207,13 @@ async function bdKpis() {
   const awaiting = all.filter((r) => String(r.stage) === "awaiting");
   return {
     count: rows.length,
-    outstanding_total: round211(rows.reduce((s, r) => s + n23(r.outstanding_amount), 0)),
-    margin_total: round211(rows.reduce((s, r) => s + n23(r.marginAmount), 0)),
-    interest_total: round211(rows.reduce((s, r) => s + n23(r.interestAmount), 0)),
-    tds_total: round211(rows.reduce((s, r) => s + n23(r.tdsAmount), 0)),
-    receipt_total: round211(rows.reduce((s, r) => s + n23(r.receiptAmount), 0)),
+    outstanding_total: round211(rows.reduce((s, r) => s + n24(r.outstanding_amount), 0)),
+    margin_total: round211(rows.reduce((s, r) => s + n24(r.marginAmount), 0)),
+    interest_total: round211(rows.reduce((s, r) => s + n24(r.interestAmount), 0)),
+    tds_total: round211(rows.reduce((s, r) => s + n24(r.tdsAmount), 0)),
+    receipt_total: round211(rows.reduce((s, r) => s + n24(r.receiptAmount), 0)),
     awaiting_count: awaiting.length,
-    awaiting_total: round211(awaiting.reduce((s, r) => s + n23(r.amount), 0))
+    awaiting_total: round211(awaiting.reduce((s, r) => s + n24(r.amount), 0))
   };
 }
 
@@ -16064,12 +16225,12 @@ function toPlain28(res) {
     return o;
   });
 }
-var n24 = (v) => Number(v) || 0;
+var n25 = (v) => Number(v) || 0;
 var round212 = (v) => Math.round(v * 100) / 100;
 var todayISO7 = () => (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
 async function listTransporterFreight(side, opts = {}) {
   const c = getClient();
-  const cid = opts.companyId ? n24(opts.companyId) : getActiveCompanyId();
+  const cid = opts.companyId ? n25(opts.companyId) : getActiveCompanyId();
   const args = [cid];
   const where = ["l.company_id = ?", "l.entry_type IN ('freight', 'shortage_penalty')"];
   where.push(side === "purchase" ? "l.order_id IS NOT NULL" : "l.sale_id IS NOT NULL");
@@ -16086,7 +16247,7 @@ async function listTransporterFreight(side, opts = {}) {
   }
   if (opts.transporterId) {
     where.push("l.transporter_id = ?");
-    args.push(n24(opts.transporterId));
+    args.push(n25(opts.transporterId));
   }
   if (opts.state === "unbilled") where.push("l.bill_id IS NULL");
   if (opts.state === "billed") where.push("l.bill_id IS NOT NULL");
@@ -16143,11 +16304,11 @@ async function listTransporterFreight(side, opts = {}) {
 }
 async function transporterFreightKpis(side, opts = {}) {
   const rows = await listTransporterFreight(side, { ...opts, state: "all" });
-  const total = round212(rows.reduce((t, r) => t + n24(r.amount), 0));
-  const unbilled = round212(rows.filter((r) => r.bill_id == null).reduce((t, r) => t + n24(r.amount), 0));
+  const total = round212(rows.reduce((t, r) => t + n25(r.amount), 0));
+  const unbilled = round212(rows.filter((r) => r.bill_id == null).reduce((t, r) => t + n25(r.amount), 0));
   const parties = new Set(rows.filter((r) => r.bill_id == null).map((r) => String(r.transporter_id)));
   const provisional = round212(
-    rows.filter((r) => r.bill_id == null && n24(r.provisional) === 1).reduce((t, r) => t + n24(r.amount), 0)
+    rows.filter((r) => r.bill_id == null && n25(r.provisional) === 1).reduce((t, r) => t + n25(r.amount), 0)
   );
   return {
     lines: rows.length,
@@ -16168,7 +16329,7 @@ async function listTransporterBills(companyId) {
           LEFT JOIN transporters t ON t.id = b.transporter_id
           WHERE b.company_id = ?
           ORDER BY b.id DESC`,
-    args: [companyId ? n24(companyId) : getActiveCompanyId()]
+    args: [companyId ? n25(companyId) : getActiveCompanyId()]
   });
   return toPlain28(res);
 }
@@ -16184,11 +16345,11 @@ async function dropEntry3(entryId) {
 }
 async function createTransporterBill(v, existingId) {
   const c = getClient();
-  const cid = v.company_id ? n24(v.company_id) : getActiveCompanyId();
-  const transporterId = n24(v.transporter_id);
+  const cid = v.company_id ? n25(v.company_id) : getActiveCompanyId();
+  const transporterId = n25(v.transporter_id);
   if (!transporterId) throw new Error("Select the transporter");
   const side = v.side === "sales" ? "sales" : "purchase";
-  const lineIds = (Array.isArray(v.line_ids) ? v.line_ids : []).map(n24).filter((x) => x > 0);
+  const lineIds = (Array.isArray(v.line_ids) ? v.line_ids : []).map(n25).filter((x) => x > 0);
   if (!lineIds.length) throw new Error("Tick at least one freight line for this bill");
   const ph = lineIds.map(() => "?").join(", ");
   const linesRes = await c.execute({
@@ -16199,8 +16360,8 @@ async function createTransporterBill(v, existingId) {
   const picked = toPlain28(linesRes);
   if (picked.length !== lineIds.length) throw new Error("Some of those freight lines no longer exist");
   for (const l of picked) {
-    if (n24(l.transporter_id) !== transporterId) throw new Error("Every line on one bill must belong to the same transporter");
-    if (l.bill_id != null && n24(l.bill_id) !== n24(existingId)) throw new Error("One of those lines is already on another bill");
+    if (n25(l.transporter_id) !== transporterId) throw new Error("Every line on one bill must belong to the same transporter");
+    if (l.bill_id != null && n25(l.bill_id) !== n25(existingId)) throw new Error("One of those lines is already on another bill");
     if (l.note_id != null) {
       throw new Error("That shortage is already on a debit note \u2014 leave it off the bill, which books the freight in full");
     }
@@ -16208,15 +16369,15 @@ async function createTransporterBill(v, existingId) {
       throw new Error("That shortage was written off \u2014 leave it off the bill, which books the freight in full");
     }
   }
-  const accrued = round212(picked.filter((l) => n24(l.accrued) === 1).reduce((t, l) => t + n24(l.amount), 0));
-  const unaccrued = round212(picked.filter((l) => n24(l.accrued) !== 1).reduce((t, l) => t + n24(l.amount), 0));
+  const accrued = round212(picked.filter((l) => n25(l.accrued) === 1).reduce((t, l) => t + n25(l.amount), 0));
+  const unaccrued = round212(picked.filter((l) => n25(l.accrued) !== 1).reduce((t, l) => t + n25(l.amount), 0));
   const lineTotal = round212(accrued + unaccrued);
-  const adjustment = round212(n24(v.adjustment));
+  const adjustment = round212(n25(v.adjustment));
   const taxable = round212(lineTotal + adjustment);
   if (taxable <= 0) throw new Error("The bill nets to zero or less \u2014 check the adjustment");
-  const gstPct = n24(v.gst_pct);
+  const gstPct = n25(v.gst_pct);
   const gst = round212(taxable * gstPct / 100);
-  const tdsPct = n24(v.tds_pct);
+  const tdsPct = n25(v.tds_pct);
   const tds = round212(taxable * tdsPct / 100);
   const raw = round212(taxable + gst - tds);
   const total = Math.round(raw);
@@ -16230,7 +16391,7 @@ async function createTransporterBill(v, existingId) {
   const prior = existingId ? (await c.execute({ sql: "SELECT * FROM transporter_bills WHERE id = ? AND company_id = ?", args: [existingId, cid] })).rows[0] : void 0;
   if (existingId && !prior) throw new Error("That bill no longer exists");
   if (prior) {
-    await dropEntry3(n24(prior.journal_entry_id) || null);
+    await dropEntry3(n25(prior.journal_entry_id) || null);
     await c.execute({ sql: "UPDATE transporter_ledger SET bill_id = NULL WHERE bill_id = ?", args: [existingId] });
   }
   const je = await postJournal({
@@ -16317,14 +16478,14 @@ async function createTransporterBill(v, existingId) {
 }
 async function raiseFreightShortageNote(lineId, v = {}) {
   const c = getClient();
-  const cid = v.companyId ? n24(v.companyId) : getActiveCompanyId();
+  const cid = v.companyId ? n25(v.companyId) : getActiveCompanyId();
   const r = await c.execute({
     sql: `SELECT l.*, s.invoice_no AS sale_invoice, o.invoice_no AS order_invoice
             FROM transporter_ledger l
             LEFT JOIN sales s ON s.id = l.sale_id
             LEFT JOIN orders o ON o.id = l.order_id
            WHERE l.id = ? AND l.company_id = ?`,
-    args: [n24(lineId), cid]
+    args: [n25(lineId), cid]
   });
   if (!r.rows.length) throw new Error("That freight line no longer exists");
   const line = toPlain28(r)[0];
@@ -16338,7 +16499,7 @@ async function raiseFreightShortageNote(lineId, v = {}) {
   if (line.bill_id != null) {
     throw new Error("That shortage is already netted into a booked bill \u2014 delete the bill first if it should be claimed separately");
   }
-  const amount = round212(Math.abs(n24(line.amount)));
+  const amount = round212(Math.abs(n25(line.amount)));
   if (amount <= 0) throw new Error("Nothing to claim on this line");
   if (!line.transporter_id) throw new Error("This line has no transporter to raise a note against");
   const inv = String(line.sale_invoice || line.order_invoice || "");
@@ -16347,7 +16508,7 @@ async function raiseFreightShortageNote(lineId, v = {}) {
     company_id: cid,
     note_type: "debit",
     party_type: "transporter",
-    party_id: n24(line.transporter_id),
+    party_id: n25(line.transporter_id),
     note_date: String(v.date || line.entry_date || todayISO7()).slice(0, 10),
     against_account: inward ? "FREIGHT INWARD A/C" : "FREIGHT OUTWARD A/C",
     base_amount: amount,
@@ -16357,14 +16518,14 @@ async function raiseFreightShortageNote(lineId, v = {}) {
   });
   await c.execute({
     sql: "UPDATE transporter_ledger SET note_id = ? WHERE id = ?",
-    args: [note.id, n24(lineId)]
+    args: [note.id, n25(lineId)]
   });
   await bumpRevision();
   return { note_id: note.id, note_no: note.note_no };
 }
 async function waiveFreightShortage(lineId, v) {
   const c = getClient();
-  const cid = v.companyId ? n24(v.companyId) : getActiveCompanyId();
+  const cid = v.companyId ? n25(v.companyId) : getActiveCompanyId();
   const reason = String(v.reason || "").trim();
   if (!reason) throw new Error("Say why this shortage is not the transporter's \u2014 a waiver without a reason cannot be reviewed later");
   const r = await c.execute({
@@ -16376,7 +16537,7 @@ async function waiveFreightShortage(lineId, v) {
             LEFT JOIN sales s ON s.id = l.sale_id
             LEFT JOIN products sp ON sp.id = s.product_id
            WHERE l.id = ? AND l.company_id = ?`,
-    args: [n24(lineId), cid]
+    args: [n25(lineId), cid]
   });
   if (!r.rows.length) throw new Error("That freight line no longer exists");
   const line = toPlain28(r)[0];
@@ -16384,7 +16545,7 @@ async function waiveFreightShortage(lineId, v) {
   if (line.note_id != null) throw new Error("A debit note has already been raised on this shortage \u2014 delete it first");
   if (line.waived_at != null) throw new Error("This shortage has already been written off");
   if (line.bill_id != null) throw new Error("That shortage is already netted into a booked bill \u2014 delete the bill first");
-  const amount = round212(Math.abs(n24(line.amount)));
+  const amount = round212(Math.abs(n25(line.amount)));
   if (amount <= 0) throw new Error("Nothing to write off on this line");
   const inward = line.order_id != null;
   const goods = inward ? `${String(line.oil_code || line.oil_name || "OIL").toUpperCase()} PUR A/C` : `${String(line.sale_code || line.sale_name || "FG").toUpperCase()} SALE A/C`;
@@ -16404,17 +16565,17 @@ async function waiveFreightShortage(lineId, v) {
     sql: `UPDATE transporter_ledger
              SET waived_at = ?, waived_by = ?, waived_reason = ?, waived_entry_id = ?
            WHERE id = ?`,
-    args: [todayISO7(), getCurrentUser().username || null, reason, je.id ?? null, n24(lineId)]
+    args: [todayISO7(), getCurrentUser().username || null, reason, je.id ?? null, n25(lineId)]
   });
   await bumpRevision();
-  return { id: n24(lineId), entry_id: je.id ?? null };
+  return { id: n25(lineId), entry_id: je.id ?? null };
 }
 async function unwaiveFreightShortage(lineId, companyId) {
   const c = getClient();
-  const cid = companyId ? n24(companyId) : getActiveCompanyId();
+  const cid = companyId ? n25(companyId) : getActiveCompanyId();
   const r = await c.execute({
     sql: "SELECT waived_entry_id FROM transporter_ledger WHERE id = ? AND company_id = ?",
-    args: [n24(lineId), cid]
+    args: [n25(lineId), cid]
   });
   if (!r.rows.length) throw new Error("That freight line no longer exists");
   const entryId = r.rows[0].waived_entry_id;
@@ -16422,28 +16583,28 @@ async function unwaiveFreightShortage(lineId, companyId) {
     sql: `UPDATE transporter_ledger
              SET waived_at = NULL, waived_by = NULL, waived_reason = NULL, waived_entry_id = NULL
            WHERE id = ?`,
-    args: [n24(lineId)]
+    args: [n25(lineId)]
   });
-  if (entryId != null) await dropEntry3(n24(entryId));
+  if (entryId != null) await dropEntry3(n25(entryId));
   await bumpRevision();
-  return { id: n24(lineId) };
+  return { id: n25(lineId) };
 }
 async function unraiseFreightShortageNote(lineId, companyId) {
   const c = getClient();
-  const cid = companyId ? n24(companyId) : getActiveCompanyId();
+  const cid = companyId ? n25(companyId) : getActiveCompanyId();
   const r = await c.execute({
     sql: "SELECT note_id FROM transporter_ledger WHERE id = ? AND company_id = ?",
-    args: [n24(lineId), cid]
+    args: [n25(lineId), cid]
   });
   if (!r.rows.length) throw new Error("That freight line no longer exists");
   const noteId = r.rows[0].note_id;
-  await c.execute({ sql: "UPDATE transporter_ledger SET note_id = NULL WHERE id = ?", args: [n24(lineId)] });
-  if (noteId != null) await deleteNote(n24(noteId), cid);
+  await c.execute({ sql: "UPDATE transporter_ledger SET note_id = NULL WHERE id = ?", args: [n25(lineId)] });
+  if (noteId != null) await deleteNote(n25(noteId), cid);
   await bumpRevision();
-  return { id: n24(lineId) };
+  return { id: n25(lineId) };
 }
 async function updateTransporterBill(id, v) {
-  return createTransporterBill(v, n24(id));
+  return createTransporterBill(v, n25(id));
 }
 async function listOrphanedTransporterBills(companyId) {
   const res = await getClient().execute({
@@ -16456,7 +16617,7 @@ async function listOrphanedTransporterBills(companyId) {
              AND tb.journal_entry_id IS NOT NULL
              AND tb.journal_entry_id NOT IN (SELECT id FROM journal_entries)
            ORDER BY tb.id`,
-    args: [companyId ? n24(companyId) : getActiveCompanyId()]
+    args: [companyId ? n25(companyId) : getActiveCompanyId()]
   });
   return toPlain28(res);
 }
@@ -16464,11 +16625,11 @@ async function deleteTransporterBill(id, companyId) {
   const c = getClient();
   const res = await c.execute({
     sql: "SELECT * FROM transporter_bills WHERE id = ? AND company_id = ?",
-    args: [id, companyId ? n24(companyId) : getActiveCompanyId()]
+    args: [id, companyId ? n25(companyId) : getActiveCompanyId()]
   });
   if (!res.rows.length) throw new Error("That transporter bill no longer exists in this company");
   const bill = res.rows[0];
-  await dropEntry3(n24(bill.journal_entry_id) || null);
+  await dropEntry3(n25(bill.journal_entry_id) || null);
   await c.execute({ sql: "UPDATE transporter_ledger SET bill_id = NULL WHERE bill_id = ?", args: [id] });
   await c.execute({ sql: "DELETE FROM transporter_bills WHERE id = ?", args: [id] });
   return { id };
@@ -16889,6 +17050,9 @@ function registerIpc() {
   );
   handle("sales:cancelInvoiceNo", (_e, { values }) => cancelInvoiceNo(values));
   handle("sales:uncancelInvoiceNo", (_e, { values }) => uncancelInvoiceNo(values));
+  handle("outsideTanker:list", (_e, { date } = {}) => listOutsideTankers(date));
+  handle("outsideTanker:save", (_e, v) => saveOutsideTanker(v));
+  handle("outsideTanker:remove", (_e, { id }) => removeOutsideTanker(id));
   handle(
     "stockOpening:list",
     (_e, { companyId } = {}) => listStockOpenings(companyId)
@@ -17214,7 +17378,7 @@ function stamp2() {
 async function countAll(c) {
   const names = await userTables(c);
   if (!names.length) return { tables: 0, rows: 0 };
-  const union = names.map((n25) => `SELECT COUNT(*) AS k FROM "${n25}"`).join(" UNION ALL ");
+  const union = names.map((n26) => `SELECT COUNT(*) AS k FROM "${n26}"`).join(" UNION ALL ");
   const res = await c.execute(union);
   let rows = 0;
   for (const r of res.rows) rows += Number(r.k) || 0;
