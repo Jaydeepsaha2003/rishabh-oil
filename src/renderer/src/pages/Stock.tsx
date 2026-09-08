@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowRightLeft, BookOpen, Boxes, Building2, CalendarCheck, CalendarRange, ClipboardCheck, Factory, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
+import { AlertTriangle, ArrowRightLeft, BookOpen, Boxes, Building2, CalendarCheck, CalendarRange, ClipboardCheck, Factory, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Plus, Sigma, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -267,19 +267,23 @@ function PartyCell({
   parties,
   uom,
   tone,
+  wash,
   caption
 }: {
   value: number
   parties: Row[]
   uom?: string
   tone?: string
+  // The column-group wash. Separate from `tone` because tone is the figure's
+  // own colour — in or out — and the wash is which block the column sits in.
+  wash?: string
   // Named above the lines when the breakdown is not "who did we trade with" —
   // the packing hover lists SKUs, and a list of SKUs with no heading reads like
   // a list of customers.
   caption?: string
 }): React.JSX.Element {
   const cell = <span className="tabular-nums">{formatNum(value)}</span>
-  const cls = cn('text-right tabular-nums', tone || 'text-emerald-700')
+  const cls = cn('text-right tabular-nums', tone || 'text-emerald-700', wash)
   if (!parties || parties.length === 0) {
     return <TableCell className={cls}>{value ? cell : '—'}</TableCell>
   }
@@ -679,14 +683,20 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
           striking an opening means. */}
       {!!openingFrom && (!range.from || range.from < openingFrom) && (
         <span
-          className="flex items-center gap-1 rounded-md bg-amber-100 px-2 py-1 text-[10.5px] font-semibold text-amber-900"
+          className={cn(
+            'flex items-center gap-1 rounded-md bg-amber-100 px-2 py-1 text-[10.5px] font-semibold text-amber-900',
+            // Not a warning — nothing is wrong. It is the opening count
+            // telling you where the register starts, so it takes the violet
+            // the handoff reserves for exactly that.
+            __WEB__ && cn(SK_NOTE, '!rounded-[4px] !border-l-[3px] !px-2.5 !py-1 !text-[11px] !font-bold !text-[#3D3179]')
+          )}
           title={`The opening stock was counted on ${formatDate(openingFrom)}, and a counted tank already accounts for everything bought and consumed before it. So the register starts there whatever From says — reaching back earlier would count those movements a second time. They are still on their own documents: the purchase, the dispatch, the production run.`}
         >
-          <AlertTriangle className="h-3 w-3 shrink-0" />
+          <AlertTriangle className={cn('h-3 w-3 shrink-0', __WEB__ && '!text-[#5B4BA8]')} />
           register begins {formatDate(openingFrom)}
           <button
             type="button"
-            className="ml-0.5 underline underline-offset-2 hover:no-underline"
+            className={cn('ml-0.5 underline underline-offset-2 hover:no-underline', __WEB__ && '!font-extrabold !text-[#5B4BA8]')}
             onClick={() => onRange({ ...range, from: openingFrom })}
           >
             set From
@@ -785,7 +795,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
           const gSum = (k: string): number => grp.rows.reduce((s, r) => s + (Number(r[k]) || 0), 0)
           const gStock = gSum('stock')
           return (
-            <div key={grp.label} className="overflow-hidden rounded-xl border bg-card shadow-sm">
+            <div key={grp.label} className={cn('overflow-hidden rounded-xl border bg-card shadow-sm', __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !shadow-none')}>
               <div
                 className={cn(
                   'flex items-center justify-between bg-[#1a2c56] px-3.5 py-2',
@@ -837,16 +847,30 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                 </TableHeader>
                 <TableBody>
                   {grp.rows.map((r, i) => (
-                    <TableRow key={r.id as number} className={cn('border-b', i % 2 === 1 && 'bg-muted/30')}>
-                      <TableCell className="font-medium">{r.name}</TableCell>
+                    /* The zebra goes on the website: striping rows ACROSS the
+                       column washes cross-hatches the grid and both readings
+                       get harder. The washes do the work the stripes were
+                       doing, and they run the way the meaning does. */
+                    <TableRow
+                      key={r.id as number}
+                      className={cn(
+                        'border-b',
+                        i % 2 === 1 && 'bg-muted/30',
+                        // No hover tint here: a cell background paints over its row's, so
+                        // with the column washes on, a row hover would light up the
+                        // product name and nothing else. The washes are the guide.
+                        __WEB__ && '!border-b-[#EAF0E9] !bg-transparent'
+                      )}
+                    >
+                      <TableCell className={cn('font-medium', __WEB__ && '!text-[12.5px] !font-bold !tracking-[-0.01em] !text-[#0A1F17]')}>{r.name}</TableCell>
                       {ranged && (
-                        <TableCell className="text-right tabular-nums text-slate-700">
+                        <TableCell className={cn('text-right tabular-nums text-slate-700', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BOPEN))}>
                           {Number(r.opening) ? formatNum(r.opening) : '—'}
                         </TableCell>
                       )}
-                      <PartyCell value={Number(r.received)} parties={breakdown[r.id as number]?.receipt || []} />
-                      <TableCell className="text-right tabular-nums text-emerald-700">{Number(r.produced) ? formatNum(r.produced) : '—'}</TableCell>
-                      <TableCell className="text-right tabular-nums text-rose-700">{Number(r.consumed) ? formatNum(r.consumed) : '—'}</TableCell>
+                      <PartyCell value={Number(r.received)} parties={breakdown[r.id as number]?.receipt || []} wash={__WEB__ ? cn(SK_NUM, SK_BRULE, SK_BIN) : undefined} />
+                      <TableCell className={cn('text-right tabular-nums text-emerald-700', __WEB__ && cn(SK_NUM, SK_BIN))}>{Number(r.produced) ? formatNum(r.produced) : '—'}</TableCell>
+                      <TableCell className={cn('text-right tabular-nums text-rose-700', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BOUT))}>{Number(r.consumed) ? formatNum(r.consumed) : '—'}</TableCell>
                       {/* Oil drawn out of the tank to be packed into SKUs. It is
                           the answer to "the DALDA left but nobody sold it" —
                           without the column the tonnage simply vanishes, and
@@ -855,51 +879,75 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                         value={Number(r.packed_out)}
                         parties={breakdown[r.id as number]?.packed || []}
                         tone="text-rose-700"
+                        wash={__WEB__ ? cn(SK_NUM, SK_BOUT) : undefined}
                         caption="Packed into"
                       />
-                      <PartyCell value={Number(r.sold)} parties={breakdown[r.id as number]?.dispatch || []} tone="text-rose-700" />
+                      <PartyCell value={Number(r.sold)} parties={breakdown[r.id as number]?.dispatch || []} tone="text-rose-700" wash={__WEB__ ? cn(SK_NUM, SK_BOUT) : undefined} />
                       <TableCell
                         className={cn(
                           'text-right font-bold tabular-nums',
-                          Number(r.stock) < -1e-9 ? 'text-red-600' : 'text-sky-900'
+                          Number(r.stock) < -1e-9 ? 'text-red-600' : 'text-sky-900',
+                          __WEB__ &&
+                            cn(
+                              '!font-mono !text-[13.5px] !font-bold !tracking-[-0.02em]',
+                              SK_BRULE,
+                              SK_BCLOSE,
+                              Number(r.stock) < -1e-9 ? '!text-[#B3261E]' : '!text-[#0A1F17]'
+                            )
                         )}
                       >
                         {formatNum(r.stock)}
                       </TableCell>
                     </TableRow>
                   ))}
-                  <TableRow className="border-t-2 border-teal-500 bg-teal-50 hover:bg-teal-50">
-                    <TableCell className="text-[11px] font-bold uppercase tracking-wide text-teal-900">
+                  {/* The section's own total, in the pale sage the handoff
+                      gives a summary row — one step darker than the body so it
+                      closes the block without competing with the grand total
+                      below. */}
+                  <TableRow className={cn('border-t-2 border-teal-500 bg-teal-50 hover:bg-teal-50', __WEB__ && '!border-t !border-t-[#DCE7DB] !bg-[#EFF5EC] hover:!bg-[#EFF5EC]')}>
+                    <TableCell className={cn('text-[11px] font-bold uppercase tracking-wide text-teal-900', __WEB__ && '!text-[11px] !font-extrabold !tracking-[.11em] !text-[#0A1F17]')}>
                       {titleCase(grp.label)} total
                     </TableCell>
-                    {ranged && <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('opening'))}</TableCell>}
-                    <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('received'))}</TableCell>
-                    <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('produced'))}</TableCell>
-                    <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('consumed'))}</TableCell>
-                    <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('packed_out'))}</TableCell>
-                    <TableCell className="text-right font-bold tabular-nums text-teal-900">{formatNum(gSum('sold'))}</TableCell>
-                    <TableCell className={cn('text-right font-bold tabular-nums', gStock < -1e-9 ? 'text-red-600' : 'text-teal-900')}>{formatNum(gStock)}</TableCell>
+                    {ranged && <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, SK_BRULE, '!font-bold !text-[#33473E]'))}>{formatNum(gSum('opening'))}</TableCell>}
+                    <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, SK_BRULE, '!font-bold !text-[#0B6B45]'))}>{formatNum(gSum('received'))}</TableCell>
+                    <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, '!font-bold !text-[#0B6B45]'))}>{formatNum(gSum('produced'))}</TableCell>
+                    <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, SK_BRULE, '!font-bold !text-[#8C2F26]'))}>{formatNum(gSum('consumed'))}</TableCell>
+                    <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, '!font-bold !text-[#8C2F26]'))}>{formatNum(gSum('packed_out'))}</TableCell>
+                    <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, '!font-bold !text-[#8C2F26]'))}>{formatNum(gSum('sold'))}</TableCell>
+                    <TableCell className={cn('text-right font-bold tabular-nums', gStock < -1e-9 ? 'text-red-600' : 'text-teal-900', __WEB__ && cn('!font-mono !text-[13px] !font-bold !tracking-[-0.02em]', SK_BRULE, '!bg-[#EAF2E6]', gStock < -1e-9 ? '!text-[#B3261E]' : '!text-[#0A1F17]'))}>{formatNum(gStock)}</TableCell>
                   </TableRow>
                 </TableBody>
               </Table>
             </div>
           )
         })}
+        {/* What the closing column actually is, said once under the table
+            rather than in a tooltip nobody opens. Straight from the handoff. */}
+        {__WEB__ && (
+          <div className="flex items-start gap-2.5 px-1 pt-0.5">
+            <Sigma className="mt-[1px] h-[15px] w-[15px] shrink-0 text-[#A8B8AE]" />
+            <p className="text-[11.5px] font-semibold leading-[1.5] text-[#5A6B62]">
+              Closing = Opening + Receipt + Produced − Consumed − Packed − Dispatch. Balances move on their
+              own: a purchase adds raw oil, a production run consumes inputs and adds outputs, a sale reduces
+              finished goods. A negative closing is a real shortage, never blocked at save.
+            </p>
+          </div>
+        )}
         {groups.length > 1 && (
-          <div className="overflow-hidden rounded-xl border-2 border-amber-500 bg-amber-100 shadow-sm">
+          <div className={cn('overflow-hidden rounded-xl border-2 border-amber-500 bg-amber-100 shadow-sm', __WEB__ && '!rounded-[4px] !border !border-[#0B3D2E] !bg-[#0B3D2E] !shadow-none')}>
             <Table className="ruled-slate min-w-[820px] text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:h-9 [&_th]:px-3">
               <TableBody>
-                <TableRow className="bg-amber-100 hover:bg-amber-100">
-                  <TableCell className="text-[11px] font-bold uppercase tracking-wide text-amber-900">
+                <TableRow className={cn('bg-amber-100 hover:bg-amber-100', __WEB__ && '!border-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E]')}>
+                  <TableCell className={cn('text-[11px] font-bold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.09em] !text-white')}>
                     Grand total across every category
                   </TableCell>
-                  {ranged && <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.opening)}</TableCell>}
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.received)}</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.produced)}</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.consumed)}</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.packed_out)}</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.sold)}</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(totals.stock)}</TableCell>
+                  {ranged && <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#C3D2C6]'))}>{formatNum(totals.opening)}</TableCell>}
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#9FE3BF]'))}>{formatNum(totals.received)}</TableCell>
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#9FE3BF]'))}>{formatNum(totals.produced)}</TableCell>
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#F0AFAA]'))}>{formatNum(totals.consumed)}</TableCell>
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#F0AFAA]'))}>{formatNum(totals.packed_out)}</TableCell>
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#F0AFAA]'))}>{formatNum(totals.sold)}</TableCell>
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn('!font-mono !text-[14px] !font-bold !tracking-[-0.02em]', SK_RULE, SK_CLOSE, '!text-[#C7F03F]'))}>{formatNum(totals.stock)}</TableCell>
                 </TableRow>
               </TableBody>
             </Table>
@@ -972,6 +1020,29 @@ const SK_BTN_GO =
 // and it says so in its own colour rather than borrowing the warning amber.
 const SK_NOTE =
   '!rounded-[4px] !border !border-[#D6CEF5] !border-l-4 !border-l-[#5B4BA8] !bg-[#EDE9FB] !px-3.5 !py-[11px]'
+
+// An entry form, as opposed to a filter strip. Same vocabulary, one size up:
+// the handoff draws form fields at 42px against the strip's 38px, because
+// typing a quantity into something is a heavier act than narrowing a list.
+const SK_FORM =
+  "[&_[role=combobox]]:!h-[42px] [&_[role=combobox]]:!rounded-[4px] [&_[role=combobox]]:!border-[#C3D2C6] [&_[role=combobox]]:!bg-white [&_[role=combobox]]:!text-[12.5px] [&_[role=combobox]]:!font-semibold [&_[role=combobox]]:!text-[#0A1F17] " +
+  '[&_input]:!h-[42px] [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[12.5px] [&_input]:!font-semibold [&_input]:!text-[#0A1F17] ' +
+  '[&_label]:!text-[10px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.13em] [&_label]:!text-[#5A6B62]'
+
+// The same four groups again, carried down into the body. The head alone was
+// only half the idea: below it the eye still met eight identical white columns
+// and had to count across to know whether a figure was something coming in or
+// going out. So each group gets the palest wash of its own meaning — barely a
+// tint, enough to read as a block — and the hairline continues in the body's
+// lighter grey rather than the head's lime.
+const SK_BRULE = '!border-l !border-l-[#EAF0E9]'
+const SK_BOPEN = '!bg-[#FCFDFB] !text-[#33473E]'
+const SK_BIN = '!bg-[#F5FBF7] !text-[#0B6B45]'
+const SK_BOUT = '!bg-[#FDF8F7] !text-[#8C2F26]'
+const SK_BCLOSE = '!bg-[#F2F7EE]'
+// Figures go mono so the decimal points line up down a column; the app's
+// tabular-nums gets the digits even but not the separators.
+const SK_NUM = '!font-mono !text-[12.5px] !font-semibold'
 
 const SK_RULE = '!border-l !border-l-[#C7F03F]/[.18]'
 const SK_OPEN = '!bg-white/[0.03]'
@@ -4401,12 +4472,52 @@ function MncStock(): React.JSX.Element {
 
   return (
     <div className="space-y-3">
+      {/* The same four cards as every other view, in consignment's violet.
+          They were MiniStats — a different, smaller object saying the same
+          kind of thing — which made this tab look like a different app. */}
+      {__WEB__ ? (
+        <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr))]">
+          <StockKpi
+            label="Parties"
+            value={String(byParty.length)}
+            unit={byParty.length === 1 ? 'supplier' : 'suppliers'}
+            sub="holding stock at this site"
+            accent="#5B4BA8"
+            fg="#3D3179"
+          />
+          <StockKpi
+            label={mncRanged ? 'Deposited (period)' : 'Deposited'}
+            value={formatNum(tot.deposited)}
+            unit="MT"
+            sub="brought in and still theirs"
+            accent="#12855A"
+            fg="#0B6B45"
+          />
+          <StockKpi
+            label={mncRanged ? 'Invoiced (period)' : 'Invoiced (became ours)'}
+            value={formatNum(tot.invoiced)}
+            unit="MT"
+            sub="billed to us, so now our stock"
+            accent="#B3261E"
+            fg="#8C2F26"
+          />
+          <StockKpi
+            label={mncRanged ? 'Closing (supplier owned)' : 'Balance (supplier owned)'}
+            value={formatNum(tot.balance)}
+            unit="MT"
+            sub="in our tanks, on their books"
+            accent="#3D3179"
+            fg="#3D3179"
+          />
+        </div>
+      ) : (
       <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
         <MiniStat label="Parties" value={String(byParty.length)} tone="violet" />
         <MiniStat label={mncRanged ? 'Deposited (period)' : 'Deposited'} value={formatNum(tot.deposited)} tone="emerald" />
         <MiniStat label={mncRanged ? 'Invoiced (period)' : 'Invoiced (became ours)'} value={formatNum(tot.invoiced)} tone="rose" />
         <MiniStat label={mncRanged ? 'Closing (supplier owned)' : 'Balance (supplier owned)'} value={formatNum(tot.balance)} tone="violet" />
       </div>
+      )}
       <div className={cn('flex flex-wrap items-center justify-between gap-2', __WEB__ && SK_BAR)}>
         <div className="flex flex-wrap items-center gap-2">
           <FyPicker from={mncFrom} to={mncTo} onRange={(f, t) => { setMncFrom(f); setMncTo(t) }} className="h-9 w-28 text-xs" />
@@ -4450,9 +4561,9 @@ function MncStock(): React.JSX.Element {
         />
         </div>
       </div>
-      <div className="rounded-xl border bg-card shadow-sm">
+      <div className={cn('rounded-xl border bg-card shadow-sm', __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !shadow-none')}>
         <Table
-          wrapperClassName="max-h-[calc(100vh-330px)] rounded-xl"
+          wrapperClassName={cn('max-h-[calc(100vh-330px)] rounded-xl', __WEB__ && '!rounded-[4px]')}
           className="min-w-[720px] text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3"
         >
           <TableHeader>
@@ -4959,9 +5070,14 @@ function Transfers(): React.JSX.Element {
 
   return (
     <div className="space-y-5">
-      <div className="rounded-xl border bg-card p-5 shadow-sm">
-        <h3 className="mb-1 font-medium">Transfer stock to another company</h3>
-        <p className="mb-4 text-xs text-muted-foreground">
+      {/* The one entry form on this page. It takes the strip's control
+          sizing so a Select here is the same object as a Select on a filter
+          bar — the handoff draws its form fields taller than its filters, at
+          42px, because typing into something is a heavier act than narrowing
+          a list. */}
+      <div className={cn('rounded-xl border bg-card p-5 shadow-sm', __WEB__ && cn('!rounded-[4px] !border-[#D6E2D6] !shadow-none', SK_FORM))}>
+        <h3 className={cn('mb-1 font-medium', __WEB__ && '!text-[14px] !font-extrabold !tracking-[-0.01em] !text-[#0A1F17]')}>Transfer stock to another company</h3>
+        <p className={cn('mb-4 text-xs text-muted-foreground', __WEB__ && '!text-[11.5px] !font-semibold !leading-[1.55] !text-[#5A6B62]')}>
           Moves stock out of <b>{activeName}</b> and into the destination company. This is a physical stock move only — it does not create a sale or any ledger entry.
         </p>
         <div className="grid gap-4 md:grid-cols-4">
@@ -4998,7 +5114,7 @@ function Transfers(): React.JSX.Element {
             <Input value={form.note ?? ''} onChange={(e) => setForm((p) => ({ ...p, note: e.target.value }))} />
           </div>
           <div className="flex items-end">
-            <Button className="w-full" onClick={submit} disabled={saving}>
+            <Button className={cn('w-full', __WEB__ && cn(SK_BTN_GO, '!h-[42px] !w-full'))} onClick={submit} disabled={saving}>
               <ArrowRightLeft className="h-4 w-4" /> {saving ? 'Transferring…' : 'Transfer'}
             </Button>
           </div>
@@ -5006,7 +5122,7 @@ function Transfers(): React.JSX.Element {
         {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
       </div>
 
-      <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+      <div className={cn('overflow-hidden rounded-xl border bg-card shadow-sm', __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !shadow-none')}>
         <Table>
           <TableHeader>
             <TableRow className={cn(__WEB__ && SK_HEAD)}>

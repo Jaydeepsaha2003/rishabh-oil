@@ -8,6 +8,11 @@
 // renders, because App.tsx calls it on mount.
 import '../preload/index'
 import '../renderer/src/main'
+import { watchForNewVersion } from './version-watch'
+
+// A tab left open across a deploy keeps running the bundle it started with;
+// this offers it a reload rather than letting it quietly show an old build.
+watchForNewVersion()
 
 // Installable web app. The worker itself caches nothing (see public/sw.js) —
 // it exists so the browser offers "Install", and registering after load keeps
