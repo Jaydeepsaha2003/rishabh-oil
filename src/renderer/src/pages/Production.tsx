@@ -65,16 +65,16 @@ export function Production(): React.JSX.Element {
   // that its output landed in the same tank. The company filter is a
   // breakdown of the site, not a different register.
   const [factoryName, setFactoryName] = useState('')
-  const [companies, setCompanies] = useState<Row[]>([])
-  const [coFilter, setCoFilter] = useState(0)
   const [prodFilter, setProdFilter] = useState(0)
   // Recipe OR its sub-category in one control: a mill reads "which recipe" and
   // "which kind of recipe" as the same question asked at two zooms, and two
   // dropdowns for it would take a third of the row.
   const [recipeFilter, setRecipeFilter] = useState('')
+  // No company filter: a batch belongs to the plant floor, and the register is
+  // the factory's. Which books it was costed into is not a way anyone wants to
+  // read a production log.
   const visible = rows.filter(
     (r) =>
-      (!coFilter || Number(r.company_id) === coFilter) &&
       (!prodFilter || Number(r.product_id) === prodFilter) &&
       (!recipeFilter ||
         (recipeFilter.startsWith('sub:')
@@ -93,7 +93,7 @@ export function Production(): React.JSX.Element {
     .sort((a, b) => a[1].localeCompare(b[1]))
   const subOptions = [...new Map(rows.filter((r) => r.subcategory_id).map((r) => [String(r.subcategory_id), String(r.subcategory_name || '')])).entries()]
     .sort((a, b) => a[1].localeCompare(b[1]))
-  const anyFilter = !!(coFilter || prodFilter || recipeFilter)
+  const anyFilter = !!(prodFilter || recipeFilter)
   const paged = usePaged(visible)
   // Days the reader has OPENED, by their own date — every day starts folded.
   //
@@ -139,16 +139,14 @@ export function Production(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [p, pr, f, s, fac, cos] = await Promise.all([
+    const [p, pr, f, s, fac] = await Promise.all([
       window.api.production.list(),
       window.api.data.list('products'),
       window.api.formulations.list(),
       window.api.stock.list(),
-      window.api.factory.active().catch(() => null),
-      window.api.company.list().catch(() => [] as Row[])
+      window.api.factory.active().catch(() => null)
     ])
     setFactoryName(String(fac?.name || ''))
-    setCompanies(cos)
     setRows(p)
     setProducts(pr.filter((x) => x.active))
     setFormulations(f)
@@ -1204,7 +1202,6 @@ export function Production(): React.JSX.Element {
                 variant="ghost"
                 className="!h-9 !px-2.5 !text-[12px] !font-extrabold !uppercase !tracking-[.04em] !text-[#5A6B62]"
                 onClick={() => {
-                  setCoFilter(0)
                   setProdFilter(0)
                   setRecipeFilter('')
                 }}
@@ -1212,23 +1209,13 @@ export function Production(): React.JSX.Element {
                 Clear
               </Button>
             )}
-            {__WEB__ && companies.length > 1 && (
-              <Select value={coFilter ? String(coFilter) : 'all'} onValueChange={(v) => setCoFilter(v === 'all' ? 0 : Number(v))}>
-                <SelectTrigger className="h-9 w-[14rem] text-xs">
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <Factory className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <SelectValue />
-                  </span>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">{factoryName || 'Factory'} — whole site</SelectItem>
-                  {companies.map((c) => (
-                    <SelectItem key={String(c.id)} value={String(c.id)}>
-                      Booked by {String(c.name)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            {/* The site, stated rather than chosen. There is one register per
+                factory now, so a picker here would have nothing to pick. */}
+            {__WEB__ && !!factoryName && (
+              <span className="flex h-9 items-center gap-1.5 rounded-md border border-input bg-muted/40 px-3 text-xs font-semibold text-foreground">
+                <Factory className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                {factoryName}
+              </span>
             )}
             <ExcelButton
               filename={`production-${todayISO()}`}
@@ -1373,15 +1360,6 @@ export function Production(): React.JSX.Element {
                       {row.formulation_name && (
                         <div className={cn('text-xs font-normal text-muted-foreground', __WEB__ && '!mt-0.5 !text-[12px] !font-bold !text-[#33473E]')}>
                           {row.formulation_name}
-                        </div>
-                      )}
-                      {/* Whose books the batch was booked under. The register
-                          is the whole site's now, so with two companies at one
-                          plant the row has to say which one — and with only
-                          one it would say nothing worth the line. */}
-                      {__WEB__ && companies.length > 1 && row.company_name && (
-                        <div className="mt-0.5 text-[11.5px] font-semibold text-[#5A6B62]">
-                          Booked by {String(row.company_name)}
                         </div>
                       )}
                     </TableCell>

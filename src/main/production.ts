@@ -1,6 +1,6 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
-import { getActiveCompanyId, companiesOfFactory } from './company'
+import { getActiveCompanyId, companiesOfFactory, factoryOfCompanies } from './company'
 import { stockMap, productStockAvailable } from './stock'
 import { visibleFromFor } from './access-gate'
 // One copy of the recipe arithmetic, shared with the entry sheet in the
@@ -44,14 +44,20 @@ export async function listProduction(forModule?: string): Promise<Row[]> {
   // rows are never fetched; `forModule` lets a page that only borrows this
   // register (Accounts, Treasury) keep its own window instead of this one.
   const from = await visibleFromFor('production', forModule)
-  // The whole FACTORY's production, not one company's. A batch is run on the
-  // plant floor; which company's books it was booked under does not change
-  // that it happened, or that its output landed in the same tank. The company
-  // is still on every row, so the page can filter by it.
+  // Straight off the batch's own factory. It used to be found by asking which
+  // companies belong to the site — the same answer, but indirect, and it made
+  // production look like a company fact when it is a plant-floor one. Older
+  // rows written before the column existed are still reached through their
+  // company, so nothing disappears while a database is mid-upgrade.
+  const fid = await factoryOfCompanies([getActiveCompanyId()])
   const cids = await companiesOfFactory()
   const ph = cids.map(() => '?').join(', ')
+  const where = fid
+    ? `(p.factory_id = ? OR (p.factory_id IS NULL AND p.company_id IN (${ph})))`
+    : `p.company_id IN (${ph})`
+  const scopeArgs = fid ? [fid, ...cids] : cids
   const res = await getClient().execute({
-    args: from ? [...cids, from] : cids,
+    args: from ? [...scopeArgs, from] : scopeArgs,
     sql: `
     SELECT p.*, pr.name AS product_name, pr.category AS product_category, f.name AS formulation_name,
            sc.name AS subcategory_name, f.subcategory_id,
@@ -61,7 +67,7 @@ export async function listProduction(forModule?: string): Promise<Row[]> {
     LEFT JOIN formulations f ON f.id = p.formulation_id
     LEFT JOIN formulation_subcategories sc ON sc.id = f.subcategory_id
     LEFT JOIN companies co ON co.id = p.company_id
-    WHERE p.company_id IN (${ph})${from ? ' AND p.prod_date >= ?' : ''}
+    WHERE ${where}${from ? ' AND p.prod_date >= ?' : ''}
     ORDER BY p.prod_date DESC, p.id DESC
   `
   })
@@ -161,8 +167,9 @@ export async function createProduction(v: Row): Promise<{ id: number }> {
   }
 
   const ins = await c.execute({
-    sql: 'INSERT INTO production (company_id, prod_date, product_id, qty, uom, note, formulation_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    args: [getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', v.note || null, fid || null]
+    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, formulation_id)
+          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?)`,
+    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || 'MT', v.note || null, fid || null]
   })
   const id = Number(ins.lastInsertRowid)
 
@@ -314,8 +321,9 @@ export async function createSaleProduction(
   const consumption = await formulationConsumption(productId, qty)
   if (!consumption.length) return
   const ins = await c.execute({
-    sql: 'INSERT INTO production (company_id, prod_date, product_id, qty, uom, note, sale_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    args: [getActiveCompanyId(), prodDate, productId, qty, uom || 'MT', 'Auto — finished dispatch', saleId]
+    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, sale_id)
+          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?)`,
+    args: [getActiveCompanyId(), getActiveCompanyId(), prodDate, productId, qty, uom || 'MT', 'Auto — finished dispatch', saleId]
   })
   const id = Number(ins.lastInsertRowid)
   for (const cn of consumption) {

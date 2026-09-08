@@ -829,5 +829,28 @@ export async function runStartupTasks(): Promise<void> {
     }
   }).catch((e) => console.error('[stock] openings factory column failed:', e))
 
+  // Production belongs to the FACTORY outright, not to the company that
+  // happened to book it. Until now the register found a site's batches by
+  // asking which companies belong to it — true, but indirect, and it left the
+  // page offering a company filter for something that is not a company fact.
+  //
+  // company_id stays on every row: it still records whose books the batch was
+  // costed into, which is what keeps valuation per company.
+  await runOnce('production_factory_v1', async () => {
+    const c = getClient()
+    await c
+      .execute('ALTER TABLE production ADD COLUMN factory_id INTEGER')
+      .catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+    // Each existing batch inherits the factory of the company that booked it,
+    // so nothing has to be re-entered and no run changes hands.
+    await c.execute(
+      `UPDATE production SET factory_id = (SELECT co.factory_id FROM companies co WHERE co.id = production.company_id)
+        WHERE factory_id IS NULL`
+    )
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_production_factory ON production(factory_id)')
+  }).catch((e) => console.error('[production] factory column failed:', e))
+
   startRevisionWatcher()
 }
