@@ -154,8 +154,21 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
     (t, r) => t + (n(r.qty) + n(r.pp_qty) + n(r.adj_qty)) * n(r.rate),
     0
   )
+  // The site this sheet belongs to, read off the payload by the screen so the
+  // name shown is the one the save will actually write against.
+  const facName = fid
+    ? String(
+        (
+          await c
+            .execute({ sql: 'SELECT name FROM factories WHERE id = ?', args: [fid] })
+            .catch(() => null)
+        )?.rows?.[0]?.name || ''
+      )
+    : ''
   return {
     company_id: cid,
+    factory_id: fid || null,
+    factory_name: facName || null,
     as_of: asOf,
     books_from: (await getBooksFrom(cid)) || null,
     rows,

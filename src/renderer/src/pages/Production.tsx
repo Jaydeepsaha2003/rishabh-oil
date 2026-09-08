@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowDownLeft, ArrowLeft, Boxes, CalendarDays, CheckCircle2, ChevronRight, Factory, Info, Pencil, Plus, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowDownLeft, ArrowLeft, Beaker, Boxes, CalendarDays, CheckCircle2, ChevronRight, Factory, Pencil, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -67,7 +67,33 @@ export function Production(): React.JSX.Element {
   const [factoryName, setFactoryName] = useState('')
   const [companies, setCompanies] = useState<Row[]>([])
   const [coFilter, setCoFilter] = useState(0)
-  const visible = coFilter ? rows.filter((r) => Number(r.company_id) === coFilter) : rows
+  const [prodFilter, setProdFilter] = useState(0)
+  // Recipe OR its sub-category in one control: a mill reads "which recipe" and
+  // "which kind of recipe" as the same question asked at two zooms, and two
+  // dropdowns for it would take a third of the row.
+  const [recipeFilter, setRecipeFilter] = useState('')
+  const visible = rows.filter(
+    (r) =>
+      (!coFilter || Number(r.company_id) === coFilter) &&
+      (!prodFilter || Number(r.product_id) === prodFilter) &&
+      (!recipeFilter ||
+        (recipeFilter.startsWith('sub:')
+          ? String(r.subcategory_id ?? '') === recipeFilter.slice(4)
+          : String(r.formulation_id ?? '') === recipeFilter))
+  )
+  // Only what has actually been produced — a picker offering every product in
+  // the masters would be mostly dead options on a page about batches that ran.
+  const prodOptions = [...new Map(rows.filter((r) => r.product_id).map((r) => [Number(r.product_id), String(r.product_name || '')])).entries()]
+    .sort((a, b) => a[1].localeCompare(b[1]))
+  // A batch whose formulation was later deleted keeps its id and loses its
+  // name — the LEFT JOIN has nothing to give. Left as-is those became blank,
+  // unreadable rows in the dropdown, so they are named after the id and marked
+  // removed: the batches are still real and still need to be reachable.
+  const recipeOptions = [...new Map(rows.filter((r) => r.formulation_id).map((r) => [String(r.formulation_id), String(r.formulation_name || '').trim() || `Recipe #${r.formulation_id} — removed`])).entries()]
+    .sort((a, b) => a[1].localeCompare(b[1]))
+  const subOptions = [...new Map(rows.filter((r) => r.subcategory_id).map((r) => [String(r.subcategory_id), String(r.subcategory_name || '')])).entries()]
+    .sort((a, b) => a[1].localeCompare(b[1]))
+  const anyFilter = !!(coFilter || prodFilter || recipeFilter)
   const paged = usePaged(visible)
   // Days the reader has OPENED, by their own date — every day starts folded.
   //
@@ -1137,6 +1163,55 @@ export function Production(): React.JSX.Element {
         hint="Every batch run at this factory, whichever company booked it — production is work on the plant floor, and its output lands in one set of tanks. Recording a run consumes the formula's input products from stock and adds the produced output. The formula must total 100%."
         actions={
           <div className="flex items-center gap-2">
+            {__WEB__ && prodOptions.length > 1 && (
+              <Select value={prodFilter ? String(prodFilter) : 'all'} onValueChange={(v) => setProdFilter(v === 'all' ? 0 : Number(v))}>
+                <SelectTrigger className="h-9 w-[11rem] text-xs">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <Boxes className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <SelectValue />
+                  </span>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All products</SelectItem>
+                  {prodOptions.map(([id, name]) => (
+                    <SelectItem key={id} value={String(id)}>{name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            {__WEB__ && (recipeOptions.length > 1 || subOptions.length > 0) && (
+              <Select value={recipeFilter || 'all'} onValueChange={(v) => setRecipeFilter(v === 'all' ? '' : v)}>
+                <SelectTrigger className="h-9 w-[12rem] text-xs">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <Beaker className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <SelectValue />
+                  </span>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All recipes</SelectItem>
+                  {subOptions.map(([id, name]) => (
+                    <SelectItem key={`sub-${id}`} value={`sub:${id}`}>{name} — whole group</SelectItem>
+                  ))}
+                  {recipeOptions.map(([id, name]) => (
+                    <SelectItem key={`f-${id}`} value={id}>{name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            {__WEB__ && anyFilter && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="!h-9 !px-2.5 !text-[12px] !font-extrabold !uppercase !tracking-[.04em] !text-[#5A6B62]"
+                onClick={() => {
+                  setCoFilter(0)
+                  setProdFilter(0)
+                  setRecipeFilter('')
+                }}
+              >
+                Clear
+              </Button>
+            )}
             {__WEB__ && companies.length > 1 && (
               <Select value={coFilter ? String(coFilter) : 'all'} onValueChange={(v) => setCoFilter(v === 'all' ? 0 : Number(v))}>
                 <SelectTrigger className="h-9 w-[14rem] text-xs">
@@ -1182,18 +1257,6 @@ export function Production(): React.JSX.Element {
         }
       />
       <div className={cn('px-4 py-6', __WEB__ && '!py-4')}>
-        {/* What recording a run does to stock. It was only in the header's ⓘ
-            tooltip, which is where a reader looks last — and this page moves
-            real quantities in and out of the tanks. */}
-        {__WEB__ && (
-          <div className="mb-3 flex items-start gap-2.5 rounded-[4px] border border-[#D6E2D6] bg-white px-4 py-3">
-            <Info className="h-[19px] w-[19px] shrink-0 text-[#5A6B62]" />
-            <span className="text-[12.5px] font-semibold leading-relaxed text-[#33473E]">
-              Recording a run consumes the formula&apos;s input products from stock and adds the produced output. The
-              formula must total 100%.
-            </span>
-          </div>
-        )}
         <div className={cn('rounded-lg border bg-card', __WEB__ && '!overflow-x-auto !rounded-[4px] !border-[#D6E2D6] !bg-white')}>
           <Table className={cn(__WEB__ && '!min-w-[840px]')}>
             <TableHeader>

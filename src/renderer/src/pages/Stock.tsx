@@ -1031,30 +1031,11 @@ function OpeningStock({
   // lookup, so the name on screen is the company the save will actually write
   // into — the two cannot disagree.
   const cid = Number(data?.company_id || 0)
-  // Only companies still in use can be switched to, same as the sidebar: this
-  // makes one active, and reviving a closed company is not a stock decision.
-  const switchable = useMemo(() => companies.filter((c) => c.active), [companies])
-
-  // Switching discards this sheet and rebuilds it for the other company, so
-  // anything typed and unsaved would go with it. Say so before it happens.
-  function switchTo(v: string): void {
-    if (!onCompanyChange || Number(v) === cid) return
-    if (
-      dirty &&
-      !window.confirm(
-        'Switch company? The figures typed on this sheet are not saved yet, and switching discards them.'
-      )
-    ) {
-      return
-    }
-    try {
-      sessionStorage.setItem(RESUME_OPENING, '1')
-    } catch {
-      // no storage on this device — the reader lands on the register instead
-    }
-    onCompanyChange(v)
-  }
-
+  // The SITE this sheet belongs to. Opening stock is the oil standing in the
+  // tanks that morning, and the tanks are not divided between the companies
+  // trading through the plant — so there is one sheet per factory, and the
+  // company only records who struck it.
+  const facName = String(data?.factory_name || '')
   // The one thing worth saying about the struck-on date, if anything at all:
   // it is not set, the ledger has no start of its own to agree with, or the two
   // disagree. Resolved here so the banner shows a single footer line rather
@@ -1122,32 +1103,24 @@ function OpeningStock({
               text runs deep in the space of one. */}
           <div className="shrink-0 rounded-xl bg-white/[0.08] p-3.5 ring-1 ring-inset ring-white/15">
             <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
-              {!!onCompanyChange && !!cid && switchable.length > 1 && (
+              {/* The factory, not a company picker. Switching company used to
+                  rebuild this sheet for the other set of books; there is one
+                  sheet per site now, so a switcher here would look like it
+                  changed the figures and change nothing. */}
+              {!!facName && (
                 <>
                   <div>
                     <div className="mb-1.5 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-white/55">
                       Counting for
                       <InfoTip
                         className="text-white/45 hover:text-white"
-                        text="Whose tanks are being counted. Each company keeps its own opening — one company's figures are never read into another's register. Switching here switches the whole app, exactly as the sidebar does."
+                        text="Which plant's tanks are being counted. Opening stock belongs to the factory, not to a company: every company trading through this site reads and writes the same sheet, because there is one set of tanks. Purchases, sales and the ledgers stay with the company that booked them."
                       />
                     </div>
-                    <Select value={String(cid)} onValueChange={switchTo}>
-                      <SelectTrigger
-                        title="Switch company"
-                        className="h-10 w-[15rem] border-white/20 bg-white/10 text-[13px] font-semibold text-white hover:bg-white/20 [&>svg]:opacity-70"
-                      >
-                        <span className="flex min-w-0 items-center gap-2">
-                          <Building2 className="h-4 w-4 shrink-0 text-white/60" />
-                          <SelectValue placeholder="Select company" />
-                        </span>
-                      </SelectTrigger>
-                      <SelectContent className="min-w-[15rem]">
-                        {switchable.map((c) => (
-                          <SelectItem key={String(c.id)} value={String(c.id)}>{c.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <div className="flex h-10 w-[15rem] items-center gap-2 rounded-md border border-white/20 bg-white/10 px-3 text-[13px] font-semibold text-white">
+                      <Factory className="h-4 w-4 shrink-0 text-white/60" />
+                      <span className="truncate">{facName}</span>
+                    </div>
                   </div>
                   <div className="h-10 w-px self-end bg-white/15" />
                 </>

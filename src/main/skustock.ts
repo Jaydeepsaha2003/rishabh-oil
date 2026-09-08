@@ -382,9 +382,19 @@ export async function listSkuOpenings(companyId?: number, asOfIn?: string): Prom
   // nobody asked. Falls back to what is saved once it is.
   const asOf = String(asOfIn || '').slice(0, 10) || (await skuOpeningDate(cid))
   const saved = await skuOpeningMap(cid)
+  // One packed-opening sheet per SITE, the same as the bulk one. The shelf is
+  // shared by whichever companies trade through the plant, so a second company
+  // must not open a blank sheet and be invited to count the same pouches again.
+  const fidL = await factoryOfCompanies([cid])
+  const cidsL = fidL ? await companiesOfFactory(fidL) : [cid]
+  const cphL = cidsL.map(() => '?').join(', ')
   const notes = new Map<number, string>()
   const savedRows = await c
-    .execute({ sql: 'SELECT packaging_id, note FROM sku_openings WHERE company_id = ?', args: [cid] })
+    .execute(
+      fidL
+        ? { sql: 'SELECT packaging_id, note FROM sku_openings WHERE factory_id = ?', args: [fidL] }
+        : { sql: 'SELECT packaging_id, note FROM sku_openings WHERE company_id = ?', args: [cid] }
+    )
     .catch(() => null)
   for (const r of savedRows ? toPlain(savedRows) : []) {
     if (r.note) notes.set(n(r.packaging_id), String(r.note))
@@ -396,14 +406,14 @@ export async function listSkuOpenings(companyId?: number, asOfIn?: string): Prom
   const moved = await c.execute({
     sql: `SELECT pk.id,
                  COALESCE((SELECT SUM(a.delta) FROM sku_adjustments a
-                           WHERE a.packaging_id = pk.id AND a.company_id = ?
+                           WHERE a.packaging_id = pk.id AND a.company_id IN (${cphL})
                              AND (? = '' OR substr(a.adj_date, 1, 10) >= ?)), 0) AS packed_in,
                  COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
                            WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
-                             AND s.status = 'done' AND s.company_id = ?
+                             AND s.status = 'done' AND s.company_id IN (${cphL})
                              AND (? = '' OR substr(s.sale_date, 1, 10) >= ?)), 0) AS dispatched
           FROM packagings pk WHERE pk.active = 1`,
-    args: [cid, asOf, asOf, cid, asOf, asOf]
+    args: [...cidsL, asOf, asOf, ...cidsL, asOf, asOf]
   })
   const movedBy = new Map<number, Row>()
   for (const r of toPlain(moved)) movedBy.set(n(r.id), r)
@@ -456,6 +466,14 @@ export async function saveSkuOpenings(
   const date = String(asOf || '').slice(0, 10)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Pick the date this opening is counted on')
   const c = getClient()
+  // One row per packaging per SITE. Matched by hand rather than with ON
+  // CONFLICT, for the same reason the bulk sheet is: the table's only unique
+  // key is the pre-factory (company_id, packaging_id).
+  const fidS = await factoryOfCompanies([cid])
+  const keyedS = (extra: string): { sql: string; args: (string | number | null)[] } =>
+    fidS
+      ? { sql: `factory_id = ?${extra}`, args: [fidS] }
+      : { sql: `company_id = ?${extra}`, args: [cid] }
   let saved = 0
   let cleared = 0
   for (const raw of Array.isArray(rows) ? rows : []) {
@@ -463,9 +481,10 @@ export async function saveSkuOpenings(
     if (!pid) continue
     const blank = raw?.qty === '' || raw?.qty == null
     if (blank) {
+      const k = keyedS(' AND packaging_id = ?')
       const res = await c.execute({
-        sql: 'DELETE FROM sku_openings WHERE company_id = ? AND packaging_id = ?',
-        args: [cid, pid]
+        sql: `DELETE FROM sku_openings WHERE ${k.sql}`,
+        args: [...k.args, pid]
       })
       if (Number(res.rowsAffected) > 0) cleared++
       continue
