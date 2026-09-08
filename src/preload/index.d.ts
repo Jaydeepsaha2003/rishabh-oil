@@ -65,6 +65,12 @@ export interface Api {
     setActive: (id: number) => Promise<{ id: number }>
     getActive: () => Promise<{ id: number }>
   }
+  factory: {
+    list: () => Promise<Row[]>
+    save: (v: Row) => Promise<{ id: number }>
+    active: () => Promise<Row | null>
+    companies: (factoryId?: number) => Promise<number[]>
+  }
   consignment: {
     list: (forModule?: string) => Promise<Row[]>
     summary: (range?: { from?: string; to?: string }) => Promise<Row[]>

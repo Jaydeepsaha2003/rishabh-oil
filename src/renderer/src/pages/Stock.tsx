@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowRightLeft, Boxes, Building2, CalendarRange, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
+import { AlertTriangle, ArrowRightLeft, Boxes, Building2, CalendarRange, Factory, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -346,50 +346,49 @@ function PartyCell({
   )
 }
 
-// One company, several, or all — the book registers aggregate whatever is
-// picked. An empty selection means the active company, so the default view is
-// unchanged.
-function CompanyPicker({
+// Stock is read by FACTORY. The oil stands in one set of tanks and the tanks
+// do not know which company paid for it — one company can buy while another
+// manufactures, and that is still one physical stock.
+//
+// So the default is the whole site, and the company entries below it are a
+// BREAKDOWN of that site, not a different register. Picking one narrows the
+// movements to that company's own purchases and sales; the opening drops to
+// zero there, because the opening belongs to the site and crediting one
+// company with all of it would hand it oil the other company paid for.
+function FactoryPicker({
   companies,
   value,
   onChange,
-  activeId
+  factoryName
 }: {
   companies: Row[]
   value: number[]
   onChange: (ids: number[]) => void
-  activeId: number
+  factoryName: string
 }): React.JSX.Element {
-  // Same grammar as the Tanker Movement filter: one dropdown offering the
-  // active company, every company together, or any single company.
-  const all = companies.length > 1 && companies.every((c) => value.includes(Number(c.id)))
-  const current = value.length === 0 ? 'active' : all ? 'all' : value.length === 1 ? String(value[0]) : 'all'
+  const current = value.length === 0 || value.length === companies.length ? 'factory' : String(value[0])
+  const site = factoryName || 'Factory'
   return (
     <Select
       value={current}
       onValueChange={(v) => {
-        if (v === 'active') onChange([])
-        else if (v === 'all') onChange(companies.map((c) => Number(c.id)))
+        if (v === 'factory') onChange([])
         else onChange([Number(v)])
       }}
       showCheckbox
     >
-      <SelectTrigger className="h-9 w-[13rem] text-xs">
+      <SelectTrigger className="h-9 w-[15rem] text-xs">
         <span className="flex min-w-0 items-center gap-1.5">
-          <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <Factory className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <SelectValue />
         </span>
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value="active">
-          Active company
-          {companies.find((c) => Number(c.id) === activeId)?.name
-            ? ` — ${companies.find((c) => Number(c.id) === activeId)?.name}`
-            : ''}
-        </SelectItem>
-        <SelectItem value="all">All companies</SelectItem>
+        <SelectItem value="factory">{site} — whole site</SelectItem>
         {companies.map((c) => (
-          <SelectItem key={String(c.id)} value={String(c.id)}>{c.name}</SelectItem>
+          <SelectItem key={String(c.id)} value={String(c.id)}>
+            {c.name} — movements only
+          </SelectItem>
         ))}
       </SelectContent>
     </Select>
@@ -4821,6 +4820,7 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
     // when it arrives or the first paint keeps the unfloored dates.
   }, [globalRangeStock.version, openingFrom]) // eslint-disable-line react-hooks/exhaustive-deps
   const [companies, setCompanies] = useState<Row[]>([])
+  const [factoryName, setFactoryName] = useState('')
   const [activeCid, setActiveCid] = useState(0)
   const [cids, setCids] = useState<number[]>([])
   // Per-company rows under each product when more than one company is in view,
@@ -4829,12 +4829,14 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
 
   const load = useCallback(async () => {
     const sel = cids.length ? cids : undefined
-    const [s, b, cs, active] = await Promise.all([
+    const [s, b, cs, active, fac] = await Promise.all([
       window.api.stock.list(range.from || range.to ? range : undefined, sel),
       window.api.stock.breakdown(sel, range.from || range.to ? range : undefined),
       window.api.company.list(),
-      window.api.company.getActive()
+      window.api.company.getActive(),
+      window.api.factory.active().catch(() => null)
     ])
+    setFactoryName(String(fac?.name || ''))
     setRows(s)
     setBreakdown(b)
     setCompanies(cs)
@@ -4870,7 +4872,12 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
 
   const byCat = useMemo(() => (cat: string): Row[] => rows.filter((r) => r.category === cat), [rows])
   const companyPicker = (
-    <CompanyPicker companies={companies} value={cids} onChange={setCids} activeId={activeCid} />
+    <FactoryPicker
+      companies={companies}
+      value={cids}
+      onChange={setCids}
+      factoryName={factoryName}
+    />
   )
   // Book Stock's three stages, moved off their own tab strip and into the
   // filter row so the register starts higher up the screen.

@@ -128,7 +128,15 @@ import {
   completeGateEntry,
   deleteGateEntry, saveGateWeights, skipGateWeighment, partyCategories,
   rejectGateEntry, unrejectGateEntry, gateEntriesFor } from './gate'
-import { listCompanies, setActiveCompany, getActiveCompanyId } from './company'
+import {
+  listCompanies,
+  setActiveCompany,
+  getActiveCompanyId,
+  listFactories,
+  saveFactory,
+  companiesOfFactory,
+  activeFactory
+} from './company'
 import {
   needsApproval,
   submitApprovalRequest,
@@ -435,6 +443,12 @@ export function registerIpc(): void {
   })
 
   handle('company:list', () => listCompanies())
+  // Factories: the physical sites stock and production belong to. Companies
+  // are attached to one; everything else about a company is unchanged.
+  handle('factory:list', () => listFactories())
+  handle('factory:save', (_e, v: Record<string, unknown>) => saveFactory(v))
+  handle('factory:active', () => activeFactory())
+  handle('factory:companies', (_e, factoryId?: number) => companiesOfFactory(factoryId))
   handle('company:setActive', (_e, { id }: { id: number }) => setActiveCompany(id))
   handle('company:getActive', () => ({ id: getActiveCompanyId() }))
 

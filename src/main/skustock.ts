@@ -1,6 +1,6 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient, todayISO } from './db'
-import { getActiveCompanyId } from './company'
+import { getActiveCompanyId, companiesOfFactory, factoryOfCompanies } from './company'
 import { getCurrentUser } from './currentUser'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -50,13 +50,19 @@ function span(when?: SkuWhen): { from: string | null; to: string | null; ranged:
 //
 // Empty when the shelf has never been counted, and then nothing changes: the
 // register carries its whole history forward the way it always did.
+// Packed stock stands on the same floor as the loose oil, so its opening is
+// the SITE's, exactly as stock_openings is. One opening set per factory means
+// the day-zero cut is always defined, even when only one of the companies
+// sharing the plant ever struck an opening.
 export async function skuOpeningDate(companyId?: number): Promise<string> {
   const cid = n(companyId) || getActiveCompanyId()
+  const fid = await factoryOfCompanies([cid])
   const res = await getClient()
-    .execute({
-      sql: 'SELECT MIN(as_of) AS d FROM sku_openings WHERE company_id = ?',
-      args: [cid]
-    })
+    .execute(
+      fid
+        ? { sql: 'SELECT MIN(as_of) AS d FROM sku_openings WHERE factory_id = ?', args: [fid] }
+        : { sql: 'SELECT MIN(as_of) AS d FROM sku_openings WHERE company_id = ?', args: [cid] }
+    )
     .catch(() => null)
   const d = res?.rows?.[0] ? (res.rows[0] as unknown as Row).d : null
   return d ? String(d).slice(0, 10) : ''
@@ -64,8 +70,13 @@ export async function skuOpeningDate(companyId?: number): Promise<string> {
 
 async function skuOpeningMap(cid: number): Promise<Map<number, number>> {
   const m = new Map<number, number>()
+  const fid = await factoryOfCompanies([cid])
   const res = await getClient()
-    .execute({ sql: 'SELECT packaging_id, qty FROM sku_openings WHERE company_id = ?', args: [cid] })
+    .execute(
+      fid
+        ? { sql: 'SELECT packaging_id, qty FROM sku_openings WHERE factory_id = ?', args: [fid] }
+        : { sql: 'SELECT packaging_id, qty FROM sku_openings WHERE company_id = ?', args: [cid] }
+    )
     .catch(() => null)
   for (const r of res ? toPlain(res) : []) m.set(n(r.packaging_id), n(r.qty))
   return m
@@ -81,6 +92,10 @@ async function skuOpeningMap(cid: number): Promise<Map<number, number>> {
 // closing. Without a date the row carries the running to-date figures.
 export async function listSkuStock(when?: SkuWhen): Promise<Row[]> {
   const c = getClient()
+  // Every company at this site. A pouch packed under one company's books and
+  // sold under another's is one pouch on one shelf.
+  const cids = await companiesOfFactory()
+  const cph = cids.map(() => '?').join(', ')
   const cid = getActiveCompanyId()
   const { from, to, ranged } = span(when)
   const round = (x: number): number => Math.round((x + Number.EPSILON) * 1e6) / 1e6
@@ -129,17 +144,17 @@ export async function listSkuStock(when?: SkuWhen): Promise<Row[]> {
     return parts.join(' ')
   }
   // Assembled in the order the SQL below consumes them.
-  args.push(cid)
+  args.push(...cids)
   const sinceAdj = sinceFloor('adj_date')
-  args.push(cid)
+  args.push(...cids)
   const sinceSale = sinceFloor('s.sale_date')
-  args.push(cid)
+  args.push(...cids)
   const beforeAdj = before('adj_date')
-  args.push(cid)
+  args.push(...cids)
   const beforeSale = before('s.sale_date')
-  args.push(cid)
+  args.push(...cids)
   const withinAdj = within('adj_date')
-  args.push(cid)
+  args.push(...cids)
   const withinSale = within('s.sale_date')
 
   const res = await c.execute({
@@ -150,25 +165,25 @@ export async function listSkuStock(when?: SkuWhen): Promise<Row[]> {
            -- name typed on the SKU. Used to filter the packed-stock list.
            COALESCE(pr.name, pk.product_label) AS product_name,
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
-                     WHERE packaging_id = pk.id AND company_id = ?
+                     WHERE packaging_id = pk.id AND company_id IN (${cph})
                        ${sinceAdj}), 0) AS added,
            COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
                      WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
-                       AND s.status = 'done' AND s.company_id = ?
+                       AND s.status = 'done' AND s.company_id IN (${cph})
                        ${sinceSale}), 0) AS sold,
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
-                     WHERE packaging_id = pk.id AND company_id = ?
+                     WHERE packaging_id = pk.id AND company_id IN (${cph})
                        ${beforeAdj}), 0) AS added_before,
            COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
                      WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
-                       AND s.status = 'done' AND s.company_id = ?
+                       AND s.status = 'done' AND s.company_id IN (${cph})
                        ${beforeSale}), 0) AS sold_before,
            COALESCE((SELECT SUM(delta) FROM sku_adjustments
-                     WHERE packaging_id = pk.id AND company_id = ?
+                     WHERE packaging_id = pk.id AND company_id IN (${cph})
                        ${withinAdj}), 0) AS added_on,
            COALESCE((SELECT SUM(s.boxes * pk.pouches_per_box + s.pouches) FROM sales s
                      WHERE s.packaging_id = pk.id AND s.sale_type = 'PACKED'
-                       AND s.status = 'done' AND s.company_id = ?
+                       AND s.status = 'done' AND s.company_id IN (${cph})
                        ${withinSale}), 0) AS sold_on
     FROM packagings pk
     LEFT JOIN products pr ON pr.id = pk.product_id
@@ -179,7 +194,7 @@ export async function listSkuStock(when?: SkuWhen): Promise<Row[]> {
   // Only worth replaying the history when something is actually negative, but
   // that is not known until the rows are mapped -- and the check is one query
   // either way, so it is simply always done.
-  const runs = await negativeRuns(cid, to)
+  const runs = await negativeRuns(cids, to)
   return toPlain(res).map((r) => {
     // What the shelf was counted at on day zero, if it ever was.
     const brought = openings.get(n(r.id)) || 0
@@ -218,26 +233,29 @@ export async function listSkuStock(when?: SkuWhen): Promise<Row[]> {
 //
 // One query for every SKU, and the walk is in JS -- SQLite window functions
 // would do it too, but not legibly, and this runs over a few hundred rows.
-async function negativeRuns(cid: number, upto: string | null): Promise<Map<number, Row>> {
+// Replays the shelf day by day to find where it first went below zero. Reads
+// the whole site, because that is what the register it explains reads.
+async function negativeRuns(cids: number[], upto: string | null): Promise<Map<number, Row>> {
   const c = getClient()
+  const cph = cids.map(() => '?').join(', ')
   const res = await c.execute({
     sql: `
     SELECT sku, d, SUM(adj) AS adj, SUM(sale) AS sale FROM (
       SELECT packaging_id AS sku, substr(adj_date, 1, 10) AS d, SUM(delta) AS adj, 0 AS sale
         FROM sku_adjustments
-       WHERE company_id = ? AND (? IS NULL OR substr(adj_date, 1, 10) <= ?)
+       WHERE company_id IN (${cph}) AND (? IS NULL OR substr(adj_date, 1, 10) <= ?)
        GROUP BY packaging_id, d
       UNION ALL
       SELECT s.packaging_id, substr(s.sale_date, 1, 10), 0,
              SUM(s.boxes * pk.pouches_per_box + s.pouches)
         FROM sales s JOIN packagings pk ON pk.id = s.packaging_id
-       WHERE s.sale_type = 'PACKED' AND s.status = 'done' AND s.company_id = ?
+       WHERE s.sale_type = 'PACKED' AND s.status = 'done' AND s.company_id IN (${cph})
          AND (? IS NULL OR substr(s.sale_date, 1, 10) <= ?)
        GROUP BY s.packaging_id, substr(s.sale_date, 1, 10)
     )
     GROUP BY sku, d
     ORDER BY sku, d`,
-    args: [cid, upto, upto, cid, upto, upto]
+    args: [...cids, upto, upto, ...cids, upto, upto]
   })
 
   const byS = new Map<number, Row[]>()
@@ -280,8 +298,12 @@ async function negativeRuns(cid: number, upto: string | null): Promise<Map<numbe
 //
 // Fetched for EVERY SKU in one pair of queries rather than per SKU on hover --
 // a tooltip must not cost a round trip, and forty of them must not cost forty.
+// The hover detail behind a register cell, so it must be scoped exactly as the
+// register is — the whole site.
 export async function skuMovementBreakdown(when?: SkuWhen): Promise<Row[]> {
   const c = getClient()
+  const cids = await companiesOfFactory()
+  const cph = cids.map(() => '?').join(', ')
   const cid = getActiveCompanyId()
   const { from: asked, to } = span(when)
   // Day zero applies here as well, or the hover would list packs from before
@@ -313,11 +335,11 @@ export async function skuMovementBreakdown(when?: SkuWhen): Promise<Row[]> {
     sql: `SELECT s.packaging_id AS sku, s.invoice_no, s.sale_date, s.customer,
                  SUM(s.boxes * pk.pouches_per_box + s.pouches) AS pieces, SUM(s.boxes) AS boxes
           FROM sales s JOIN packagings pk ON pk.id = s.packaging_id
-          WHERE s.sale_type = 'PACKED' AND s.status = 'done' AND s.company_id = ?
+          WHERE s.sale_type = 'PACKED' AND s.status = 'done' AND s.company_id IN (${cph})
             ${dispB.sql}
           GROUP BY s.packaging_id, s.invoice_group, s.customer
           ORDER BY s.sale_date, s.invoice_no`,
-    args: [cid, ...dispB.args]
+    args: [...cids, ...dispB.args]
   })
 
   // Packing / correction entries, by SKU. `kind` is NULL on everything entered
@@ -328,9 +350,9 @@ export async function skuMovementBreakdown(when?: SkuWhen): Promise<Row[]> {
                  COALESCE(kind, CASE WHEN delta < 0 THEN 'correction' ELSE 'packing' END) AS kind,
                  kind AS kind_stated
           FROM sku_adjustments
-          WHERE company_id = ? ${adjB.sql}
+          WHERE company_id IN (${cph}) ${adjB.sql}
           ORDER BY adj_date, id`,
-    args: [cid, ...adjB.args]
+    args: [...cids, ...adjB.args]
   })
 
   const bySku = new Map<number, Row>()
@@ -449,14 +471,17 @@ export async function saveSkuOpenings(
       continue
     }
     await c.execute({
-      sql: `INSERT INTO sku_openings (company_id, packaging_id, as_of, qty, note, updated_at)
-            VALUES (?, ?, ?, ?, ?, datetime('now'))
+      // Stamped with the factory as well, for the same reason the loose-stock
+      // opening is: packed stock stands on the same floor.
+      sql: `INSERT INTO sku_openings (company_id, factory_id, packaging_id, as_of, qty, note, updated_at)
+            VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(company_id, packaging_id) DO UPDATE SET
+              factory_id = excluded.factory_id,
               as_of = excluded.as_of,
               qty = excluded.qty,
               note = excluded.note,
               updated_at = datetime('now')`,
-      args: [cid, pid, date, n(raw.qty), raw?.note ? String(raw.note).trim() : null]
+      args: [cid, cid, pid, date, n(raw.qty), raw?.note ? String(raw.note).trim() : null]
     })
     saved++
   }

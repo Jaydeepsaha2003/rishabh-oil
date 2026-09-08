@@ -221,9 +221,15 @@ export async function saveStockOpenings(
     const adj = n(raw.adj_qty)
     const rate = raw?.rate === '' || raw?.rate == null ? null : n(raw.rate)
     await c.execute({
-      sql: `INSERT INTO stock_openings (company_id, product_id, as_of, qty, pp_qty, adj_qty, rate, note, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      // The row still belongs to the company that struck it — that is what
+      // keeps the valuation per company — but it is also stamped with the
+      // factory, because the register reads openings by site. Written on the
+      // update branch too: a row entered before factories existed has a NULL
+      // there, and re-saving it is the moment to fill it in.
+      sql: `INSERT INTO stock_openings (company_id, factory_id, product_id, as_of, qty, pp_qty, adj_qty, rate, note, updated_at)
+            VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(company_id, product_id) DO UPDATE SET
+              factory_id = excluded.factory_id,
               as_of = excluded.as_of,
               qty = excluded.qty,
               pp_qty = excluded.pp_qty,
@@ -231,7 +237,7 @@ export async function saveStockOpenings(
               rate = excluded.rate,
               note = excluded.note,
               updated_at = datetime('now')`,
-      args: [cid, pid, date, qty, pp, adj, rate, raw?.note ? String(raw.note).trim() : null]
+      args: [cid, cid, pid, date, qty, pp, adj, rate, raw?.note ? String(raw.note).trim() : null]
     })
     saved++
   }

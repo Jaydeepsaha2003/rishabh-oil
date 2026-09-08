@@ -1,6 +1,6 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
-import { getActiveCompanyId } from './company'
+import { getActiveCompanyId, companiesOfFactory } from './company'
 import { stockMap, productStockAvailable } from './stock'
 import { visibleFromFor } from './access-gate'
 // One copy of the recipe arithmetic, shared with the entry sheet in the
@@ -44,16 +44,24 @@ export async function listProduction(forModule?: string): Promise<Row[]> {
   // rows are never fetched; `forModule` lets a page that only borrows this
   // register (Accounts, Treasury) keep its own window instead of this one.
   const from = await visibleFromFor('production', forModule)
+  // The whole FACTORY's production, not one company's. A batch is run on the
+  // plant floor; which company's books it was booked under does not change
+  // that it happened, or that its output landed in the same tank. The company
+  // is still on every row, so the page can filter by it.
+  const cids = await companiesOfFactory()
+  const ph = cids.map(() => '?').join(', ')
   const res = await getClient().execute({
-    args: from ? [getActiveCompanyId(), from] : [getActiveCompanyId()],
+    args: from ? [...cids, from] : cids,
     sql: `
     SELECT p.*, pr.name AS product_name, pr.category AS product_category, f.name AS formulation_name,
-           sc.name AS subcategory_name, f.subcategory_id
+           sc.name AS subcategory_name, f.subcategory_id,
+           co.name AS company_name
     FROM production p
     LEFT JOIN products pr ON pr.id = p.product_id
     LEFT JOIN formulations f ON f.id = p.formulation_id
     LEFT JOIN formulation_subcategories sc ON sc.id = f.subcategory_id
-    WHERE p.company_id = ?${from ? ' AND p.prod_date >= ?' : ''}
+    LEFT JOIN companies co ON co.id = p.company_id
+    WHERE p.company_id IN (${ph})${from ? ' AND p.prod_date >= ?' : ''}
     ORDER BY p.prod_date DESC, p.id DESC
   `
   })

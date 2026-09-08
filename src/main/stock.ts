@@ -1,13 +1,21 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
-import { getActiveCompanyId } from './company'
+import {
+  getActiveCompanyId,
+  companiesOfFactory,
+  factoryOfCompanies,
+  coversWholeFactory
+} from './company'
 import { getSetting } from './repos'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
 
 // Stock per product is derived from movements (no stored balance), scoped to
-// the ACTIVE COMPANY:
+// the ACTIVE COMPANY'S FACTORY — every company that runs out of the same
+// plant, because the oil in the tank belongs to the tank and not to whichever
+// set of books it was purchased under. One company buying and another
+// manufacturing is one physical stock, and reading it two ways was the bug:
 //   + raw received on purchase orders   (orders.received_qty where status='received', by oil_type_id)
 //   + produced output                   (production.qty)
 //   − consumed in production            (production_items.qty)
@@ -21,10 +29,12 @@ export async function stockLevels(
   companyIds?: number[]
 ): Promise<Row[]> {
   const c = getClient()
-  // One company, several, or all — no selection means the active company, so
-  // every existing caller keeps its behaviour.
+  // One company, several, or all. No selection means the active company's
+  // FACTORY — every company at that site — because stock is physical. An
+  // explicit list still wins, so the company filter on the register keeps
+  // working and a caller that wants one company's books can ask for it.
   const cidList = (companyIds || []).map(Number).filter((x) => x > 0)
-  if (!cidList.length) cidList.push(getActiveCompanyId())
+  if (!cidList.length) cidList.push(...(await companiesOfFactory()))
   const ph = cidList.map(() => '?').join(', ')
   const from = String(range?.from || '')
   const to = String(range?.to || '')
@@ -173,7 +183,14 @@ export async function stockLevels(
     }
   } as const
 
-  const floor = await openingFloor(cidList)
+  const fid = await factoryOfCompanies(cidList)
+  const floor = await openingFloor(cidList, fid)
+  // The opening belongs to the whole site, so it is only brought forward when
+  // the whole site is in view. Filter down to one of the companies sharing the
+  // plant and you get its MOVEMENTS since the books opened — adding the site's
+  // entire opening to one company's flows would credit it with oil the other
+  // company paid for.
+  const whole = fid ? await coversWholeFactory(fid, cidList) : true
 
   const slice = async (
     src: { base: string; date: string; group: string },
@@ -219,12 +236,20 @@ export async function stockLevels(
   // Bounded by `to` only: a range that ends before the books began has no
   // opening to bring forward yet.
   const openingBalance = async (): Promise<Map<number, number>> => {
-    const args: (string | number)[] = [...cidList]
+    const args: (string | number)[] = fid ? [fid] : [...cidList]
     // Raw + PP (work in process) + the count's own adjustment: the register
     // opens at the TOTAL that was counted, not at the tank figure alone.
-    let sql = `SELECT product_id AS pid,
-                      SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q
-               FROM stock_openings WHERE company_id IN (${ph})`
+    // Keyed to the FACTORY: the opening is the oil standing in the tank, and
+    // the tank is not divided between companies. Filtering the register down
+    // to one company narrows the movements, not the opening it starts from.
+    if (fid && !whole) return new Map()
+    let sql = fid
+      ? `SELECT product_id AS pid,
+                SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q
+           FROM stock_openings WHERE factory_id = ?`
+      : `SELECT product_id AS pid,
+                SUM(qty + COALESCE(pp_qty, 0) + COALESCE(adj_qty, 0)) AS q
+           FROM stock_openings WHERE company_id IN (${ph})`
     if (to) {
       sql += ' AND as_of <= ?'
       args.push(to)
@@ -402,8 +427,20 @@ async function productStockForCompany(companyId: number, productId: number): Pro
 // Applied only when EVERY selected company has an opening of its own: rolling
 // two companies together must never cut one company's history short with the
 // other's later start date. A company with no opening keeps its full history.
-async function openingFloor(cidList: number[]): Promise<string> {
+async function openingFloor(cidList: number[], factoryId = 0): Promise<string> {
   if (!cidList.length) return ''
+  // One opening set per factory, so the cut is simply the day that site's
+  // books opened — there is no need to check that every company has an
+  // opening of its own, which is what used to drop the cut entirely when a
+  // second company at the same plant had none.
+  if (factoryId) {
+    const fr = await getClient().execute({
+      sql: 'SELECT MIN(as_of) AS first FROM stock_openings WHERE factory_id = ?',
+      args: [factoryId]
+    })
+    const first = (fr.rows[0] as unknown as Row | undefined)?.first
+    return first ? String(first).slice(0, 10) : ''
+  }
   const ph = cidList.map(() => '?').join(', ')
   const res = await getClient().execute({
     sql: `SELECT COUNT(DISTINCT company_id) AS cos, MIN(as_of) AS first
@@ -435,7 +472,8 @@ export async function stockPartyBreakdown(
   // how a cell showing 0 came to have a tooltip listing 159.675 MT.
   const asked = String(range?.from || '')
   const to = String(range?.to || '')
-  const floor = await openingFloor(cidList)
+  const fid = await factoryOfCompanies(cidList)
+  const floor = await openingFloor(cidList, fid)
   const from = floor && (!asked || asked < floor) ? floor : asked
   const bounds = (dateExpr: string): { sql: string; args: string[] } => {
     const parts: string[] = []

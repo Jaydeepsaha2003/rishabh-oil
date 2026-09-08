@@ -89,6 +89,15 @@ const api = {
       ipcRenderer.invoke('company:setActive', { id }),
     getActive: (): Promise<{ id: number }> => ipcRenderer.invoke('company:getActive')
   },
+  // The physical site a company's stock and production belong to. Purchases,
+  // sales and the ledgers stay with the company itself.
+  factory: {
+    list: (): Promise<Row[]> => ipcRenderer.invoke('factory:list'),
+    save: (v: Row): Promise<{ id: number }> => ipcRenderer.invoke('factory:save', v),
+    active: (): Promise<Row | null> => ipcRenderer.invoke('factory:active'),
+    companies: (factoryId?: number): Promise<number[]> =>
+      ipcRenderer.invoke('factory:companies', factoryId)
+  },
   consignment: {
     list: (forModule?: string): Promise<Row[]> => ipcRenderer.invoke('consignment:list', { forModule }),
     summary: (range?: { from?: string; to?: string }): Promise<Row[]> =>

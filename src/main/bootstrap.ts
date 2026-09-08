@@ -734,5 +734,100 @@ export async function runStartupTasks(): Promise<void> {
       PRIMARY KEY (company_id, account_id)
     )`)
   }).catch((e) => console.error('[openings] table failed:', e))
+
+  // ---------------------------------------------------------------- factories
+  // Stock and production are PHYSICAL: they happen at a site, not in a set of
+  // books. Two companies can trade through one plant — one buying, one
+  // manufacturing — and the oil in the tank belongs to the tank, not to
+  // whichever company's ledger it was booked under.
+  //
+  // A factory is therefore just a named site with companies attached. There is
+  // deliberately NO factory_id on orders, sales or production: stockLevels()
+  // already filters by company_id IN (...), so a factory resolves to its
+  // companies and the existing filters do the work. A factory stamped on the
+  // movement row could disagree with the company's own factory; a lookup
+  // cannot.
+  await runOnce('factories_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS factories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      location TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`)
+    await c
+      .execute('ALTER TABLE companies ADD COLUMN factory_id INTEGER REFERENCES factories(id)')
+      .catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_companies_factory ON companies(factory_id)')
+  }).catch((e) => console.error('[factory] table failed:', e))
+
+  // Every existing company runs out of the one plant that exists today, so
+  // they all land on it. Named Ghaziabad because that is the site; rename it
+  // in Settings without touching anything that points at it.
+  //
+  // Guarded on there being no factories at all rather than on runOnce alone:
+  // if someone has already created their own, this must not add a second.
+  await runOnce('factory_backfill_v1', async () => {
+    const c = getClient()
+    const have = await c.execute('SELECT COUNT(*) AS n FROM factories')
+    if (!Number(have.rows[0]?.n)) {
+      await c.execute({
+        sql: 'INSERT INTO factories (name, location) VALUES (?, ?)',
+        args: ['Factory 1', null]
+      })
+    }
+    const first = await c.execute('SELECT id FROM factories ORDER BY id LIMIT 1')
+    const fid = Number(first.rows[0]?.id || 0)
+    if (fid) {
+      await c.execute({
+        sql: 'UPDATE companies SET factory_id = ? WHERE factory_id IS NULL',
+        args: [fid]
+      })
+    }
+  }).catch((e) => console.error('[factory] backfill failed:', e))
+
+  // The first cut of this seeded the site by name. It is renamed from Settings
+  // once the real one is decided, so the seed is a placeholder now — and any
+  // database that already took the old name gets it back, unless someone has
+  // since renamed it themselves.
+  await runOnce('factory_rename_placeholder_v1', async () => {
+    await getClient().execute({
+      sql: "UPDATE factories SET name = ?, location = NULL WHERE name = 'Ghaziabad'",
+      args: ['Factory 1']
+    })
+  }).catch((e) => console.error('[factory] rename failed:', e))
+
+  // Opening stock belongs to the FACTORY, not to a company. It is the oil
+  // standing in the tank on the day the books opened, and the tank does not
+  // know which company paid for it.
+  //
+  // This also settles an arithmetic problem the company-level version had. The
+  // register cuts history at the opening date, but only when every company in
+  // view has an opening of its own — otherwise one company's later start would
+  // truncate another's history. With two companies at one site and an opening
+  // on only one of them, that rule dropped the cut entirely and replayed the
+  // pre-opening movements on top of the opening balance. Keyed to the factory
+  // there is exactly one opening set per site, so the cut is always defined.
+  await runOnce('stock_openings_factory_v1', async () => {
+    const c = getClient()
+    for (const t of ['stock_openings', 'sku_openings']) {
+      await c
+        .execute(`ALTER TABLE ${t} ADD COLUMN factory_id INTEGER`)
+        .catch((e: unknown) => {
+          if (!/duplicate column/i.test(String((e as Error).message))) throw e
+        })
+      // Each existing row inherits the factory of the company that wrote it,
+      // so nothing has to be re-entered.
+      await c.execute(
+        `UPDATE ${t} SET factory_id = (SELECT co.factory_id FROM companies co WHERE co.id = ${t}.company_id)
+          WHERE factory_id IS NULL`
+      )
+      await c.execute(`CREATE INDEX IF NOT EXISTS idx_${t}_factory ON ${t}(factory_id)`)
+    }
+  }).catch((e) => console.error('[stock] openings factory column failed:', e))
+
   startRevisionWatcher()
 }
