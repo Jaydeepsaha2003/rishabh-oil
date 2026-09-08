@@ -7,7 +7,6 @@ import {
   Boxes,
   Briefcase,
   Building2,
-  Factory,
   BookOpenText,
   ClipboardCheck,
   Contact,

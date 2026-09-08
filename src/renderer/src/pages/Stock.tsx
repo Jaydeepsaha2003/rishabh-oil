@@ -650,13 +650,13 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
         <MiniStat label={negatives ? `In stock · ${negatives} negative` : 'In stock'} value={formatNum(totals.stock)} tone={negatives ? 'amber' : 'sky'} />
       </div>
     )}
-    <div className="flex flex-wrap items-center justify-end gap-2">
+    <div className={cn('flex flex-wrap items-center justify-end gap-2', __WEB__ && SK_BAR)}>
       {stagePicker}
       {idleCount > 0 && (
         <Button
           variant={hideIdle ? 'default' : 'outline'}
           size="sm"
-          className="h-9 gap-1.5 text-xs"
+          className={cn('h-9 gap-1.5 text-xs', __WEB__ && (hideIdle ? SK_BTN_GO : SK_BTN))}
           title={
             hideIdle
               ? `Showing only products with movement — ${idleCount} idle product${idleCount === 1 ? '' : 's'} hidden`
@@ -671,7 +671,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
       {companyPicker}
       <FyPicker from={range.from} to={range.to} onRange={(f, t) => onRange({ from: f, to: t })} className="h-9 w-28 text-xs" />
       {/* Period for the register: opening balance before it, flows within it. */}
-      <span className="text-[11px] font-semibold text-muted-foreground">From</span>
+      <span className={cn('text-[11px] font-semibold text-muted-foreground', __WEB__ && '!text-[12px] !text-[#5A6B62]')}>From</span>
       <div className="w-40"><DatePicker value={range.from} onChange={(v) => onRange({ ...range, from: v })} max={range.to || undefined} /></div>
       {/* A From earlier than the opening changes nothing here, so say so
           rather than leaving the reader to wonder why the figures did not
@@ -693,10 +693,10 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
           </button>
         </span>
       )}
-      <span className="text-[11px] font-semibold text-muted-foreground">To</span>
+      <span className={cn('text-[11px] font-semibold text-muted-foreground', __WEB__ && '!text-[12px] !text-[#5A6B62]')}>To</span>
       <div className="w-40"><DatePicker value={range.to} onChange={(v) => onRange({ ...range, to: v })} min={range.from || undefined} /></div>
       {ranged && (
-        <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={() => onRange({ from: '', to: '' })}>
+        <Button variant="ghost" size="sm" className={cn('h-8 px-2 text-xs', __WEB__ && SK_CLEAR)} onClick={() => onRange({ from: '', to: '' })}>
           Clear
         </Button>
       )}
@@ -704,7 +704,10 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
         <PopoverTrigger asChild>
           <Button
             size="icon"
-            className="h-9 w-9 bg-emerald-700 text-white shadow-sm hover:bg-emerald-800"
+            className={cn(
+              'h-9 w-9 bg-emerald-700 text-white shadow-sm hover:bg-emerald-800',
+              __WEB__ && '!h-[38px] !w-[38px] !rounded-[4px] !bg-[#0B3D2E] hover:!bg-[#072B20]'
+            )}
             title="Download a register as Excel"
             aria-label="Download a register as Excel"
           >
@@ -919,6 +922,56 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
 // instead, because they are the one surface that is not a register.
 const SK_HEAD =
   '!bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&_th]:!h-9 [&_th]:!text-[9.5px] [&_th]:!font-extrabold [&_th]:!uppercase [&_th]:!tracking-[.11em] [&_th]:!text-[#8FBFA8]'
+
+// The filter strip from the handoff: a white band under the menu, its controls
+// all 38px on a 4px corner in the sage outline. Applied as one descendant rule
+// rather than at each call site, because a strip is built from six different
+// components — a Select, two DatePickers, a Switch, an Input, a Popover
+// trigger — and the one thing that must be true of them is that they line up.
+// Dates go mono, so a column of them reads as a column.
+const SK_BAR =
+  '!rounded-[4px] !border !border-[#D6E2D6] !bg-white !px-3 !py-2.5 ' +
+  "[&_[role=combobox]]:!h-[38px] [&_[role=combobox]]:!rounded-[4px] [&_[role=combobox]]:!border-[#C3D2C6] [&_[role=combobox]]:!bg-white [&_[role=combobox]]:!text-[12.5px] [&_[role=combobox]]:!font-bold [&_[role=combobox]]:!text-[#0A1F17] " +
+  // A DatePicker is a Popover trigger, not an <input> — it renders a Button
+  // carrying data-slot="date-picker". Reaching it by that slot rather than by
+  // element is the difference between the dates going mono and the SEARCH box
+  // going mono while the dates keep the app's default height.
+  "[&_[data-slot=date-picker]]:!h-[38px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!font-mono [&_[data-slot=date-picker]]:!text-[12.5px] [&_[data-slot=date-picker]]:!font-medium [&_[data-slot=date-picker]]:!text-[#0A1F17] " +
+  '[&_input]:!h-[38px] [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[12.5px] [&_input]:!font-medium [&_input]:!text-[#0A1F17]'
+
+// The segmented control — Register/Opening, Day wise/Range/All time. A tray in
+// the pale sage with the live segment lifted out of it in forest, rather than
+// the app's blue pill: on this page the forest is what "selected" looks like.
+const SK_SEG = '!gap-[3px] !rounded-[4px] !border !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px]'
+const SK_SEG_ON = '!rounded-[2px] !bg-[#0B3D2E] !px-3 !text-[12px] !font-extrabold !text-white'
+const SK_SEG_OFF =
+  '!rounded-[2px] !bg-transparent !px-3 !text-[12px] !font-bold !text-[#5A6B62] hover:!bg-white/70 hover:!text-[#0A1F17]'
+const SK_SEG_ITEM = '!h-[30px] !py-0 !leading-none !transition-colors'
+
+// Radix drives the tab strip off data-state rather than a ternary, so the live
+// segment has to be described the same way — same tray, same lift, one styling
+// vocabulary for both kinds of picker on the page.
+const SK_TAB =
+  '!h-[30px] !rounded-[2px] !px-3 !py-0 !text-[12px] !font-bold !leading-none !text-[#5A6B62] !shadow-none data-[state=active]:!bg-[#0B3D2E] data-[state=active]:!font-extrabold data-[state=active]:!text-white'
+
+// CLEAR is a link, not a button: it undoes a filter rather than doing
+// anything, and giving it a border would put it on a level with the controls
+// it cancels.
+const SK_CLEAR =
+  '!h-[38px] !px-2.5 !text-[11.5px] !font-extrabold !tracking-[.05em] !text-[#0B6B45] hover:!bg-[#EAF0E9] hover:!text-[#0B3D2E]'
+
+// A control that carries an action rather than a filter: the outlined button
+// from the handoff, and its lime primary.
+const SK_BTN =
+  '!h-[38px] !gap-[7px] !rounded-[4px] !border !border-[#C3D2C6] !bg-white !px-[13px] !text-[12.5px] !font-bold !text-[#0A1F17] hover:!bg-[#F7FAF6]'
+const SK_BTN_GO =
+  '!h-[38px] !gap-1.5 !rounded-[4px] !border-0 !bg-[#C7F03F] !px-[15px] !text-[12.5px] !font-extrabold !text-[#0B3D2E] hover:!bg-[#B9E52C]'
+
+// The violet notice, from the handoff. Reserved for things the opening count
+// is telling you — it is the one surface on the page that is not a register,
+// and it says so in its own colour rather than borrowing the warning amber.
+const SK_NOTE =
+  '!rounded-[4px] !border !border-[#D6CEF5] !border-l-4 !border-l-[#5B4BA8] !bg-[#EDE9FB] !px-3.5 !py-[11px]'
 
 const SK_RULE = '!border-l !border-l-[#C7F03F]/[.18]'
 const SK_OPEN = '!bg-white/[0.03]'
@@ -1192,10 +1245,10 @@ function OpeningStock({
           The prose that used to sit here now lives behind the (i). Four lines
           explaining WHY are worth reading once; after that they are four lines
           between the reader and the work. */}
-      <div className="overflow-hidden rounded-xl border border-[#d9d2b8] shadow-sm">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-4 bg-gradient-to-r from-[#1a2c56] to-[#2c4a8c] px-6 py-5">
-          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/15 ring-1 ring-inset ring-white/20">
-            <Layers className="h-5 w-5 text-white" />
+      <div className={cn('overflow-hidden rounded-xl border border-[#d9d2b8] shadow-sm', __WEB__ && '!rounded-[4px] !border-[#0B3D2E] !shadow-none')}>
+        <div className={cn('flex flex-wrap items-center gap-x-6 gap-y-4 bg-gradient-to-r from-[#1a2c56] to-[#2c4a8c] px-6 py-5', __WEB__ && '!bg-none !bg-[#0B3D2E]')}>
+          <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/15 ring-1 ring-inset ring-white/20', __WEB__ && '!rounded-[4px] !bg-[#C7F03F]/[.16] !ring-[#C7F03F]/25')}>
+            <Layers className={cn('h-5 w-5 text-white', __WEB__ && '!text-[#C7F03F]')} />
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
@@ -1215,7 +1268,7 @@ function OpeningStock({
               fields. They used to run along the same row as the title with
               their labels beside them and a caption stacked under each, four
               text runs deep in the space of one. */}
-          <div className="shrink-0 rounded-xl bg-white/[0.08] p-3.5 ring-1 ring-inset ring-white/15">
+          <div className={cn('shrink-0 rounded-xl bg-white/[0.08] p-3.5 ring-1 ring-inset ring-white/15', __WEB__ && '!rounded-[4px]')}>
             <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
               {/* The factory, not a company picker. Switching company used to
                   rebuild this sheet for the other set of books; there is one
@@ -1422,8 +1475,8 @@ function OpeningStock({
           why merging would be wrong, is behind the (i) — it is the same
           sentence every time and does not need re-reading on every visit. */}
       {clashes.length > 0 && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-2">
-          <span className="flex items-center gap-1.5 text-[12px] font-bold text-amber-900">
+        <div className={cn('flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-2', __WEB__ && '!rounded-[4px] !border-[#F0DCB4] !border-l-4 !border-l-[#C2700A] !bg-[#FFFBF2]')}>
+          <span className={cn('flex items-center gap-1.5 text-[12px] font-bold text-amber-900', __WEB__ && '!text-[12.5px] !font-extrabold !text-[#8A5300]')}>
             <AlertTriangle className="h-3.5 w-3.5" />
             {clashes.length === 1 ? 'One product name is' : `${clashes.length} product names are`} used twice
             <InfoTip
@@ -1450,16 +1503,16 @@ function OpeningStock({
       )}
 
       {/* --------------------------------------------------------- filters */}
-      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-[#e0d8bd] bg-white px-4 py-3 shadow-sm">
+      <div className={cn('flex flex-wrap items-center gap-3 rounded-xl border border-[#e0d8bd] bg-white px-4 py-3 shadow-sm', __WEB__ && cn(SK_BAR, '!shadow-none'))}>
         <Input
           placeholder="Find a product…"
-          className="h-10 w-64 text-[13px]"
+          className={cn('h-10 w-64 text-[13px]', __WEB__ && '!w-72')}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
         {/* A statement of where the sheet stands, not a control. */}
         <div className="flex items-center gap-2 text-[12px]">
-          <span className="font-semibold text-[#1a2c56]">
+          <span className={cn('font-semibold text-[#1a2c56]', __WEB__ && '!text-[12.5px] !font-extrabold !text-[#0B3D2E]')}>
             {stats.entered} of {rows.length} filled in
           </span>
           {(() => {
@@ -1482,7 +1535,7 @@ function OpeningStock({
               Unsaved changes
             </span>
           )}
-          <Button onClick={save} disabled={saving || !dirty} className="h-10 bg-[#1a2c56] px-5 hover:bg-[#24407e]">
+          <Button onClick={save} disabled={saving || !dirty} className={cn('h-10 bg-[#1a2c56] px-5 hover:bg-[#24407e]', __WEB__ && SK_BTN_GO)}>
             {saving ? 'Saving…' : 'Save opening stock'}
           </Button>
         </div>
@@ -1493,9 +1546,9 @@ function OpeningStock({
         const catRows = shown.filter((r) => String(r.category) === cat)
         if (!catRows.length) return null
         return (
-          <div key={cat} className="overflow-hidden rounded-xl border border-[#d9d2b8] shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#d9d2b8] bg-[#f1ecd9] px-4 py-2.5">
-              <span className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+          <div key={cat} className={cn('overflow-hidden rounded-xl border border-[#d9d2b8] shadow-sm', __WEB__ && '!rounded-[4px] !border-[#D6CEF5] !shadow-none')}>
+            <div className={cn('flex flex-wrap items-center justify-between gap-2 border-b border-[#d9d2b8] bg-[#f1ecd9] px-4 py-2.5', __WEB__ && '!border-b-[#D6CEF5] !bg-[#F8F6FE]')}>
+              <span className={cn('text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]', __WEB__ && '!text-[10px] !font-extrabold !tracking-[.16em] !text-[#3D3179]')}>
                 {CAT_LABEL[cat]}
               </span>
               <span className="flex items-center gap-3 text-[11px] tabular-nums text-muted-foreground">
@@ -1957,7 +2010,7 @@ function DayClose(): React.JSX.Element {
                   type="button"
                   title="Previous day"
                   onClick={() => setDate(shiftDate(date, -1))}
-                  className="flex h-9 w-7 shrink-0 items-center justify-center rounded-md border bg-white hover:bg-muted"
+                  className={cn('flex h-9 w-7 shrink-0 items-center justify-center rounded-md border bg-white hover:bg-muted', __WEB__ && '!h-[38px] !w-[30px] !rounded-[4px] !border-[#C3D2C6] !text-[#33473E] hover:!bg-[#EAF0E9]')}
                 >
                   <ChevronLeft className="h-4 w-4" />
                 </button>
@@ -1986,9 +2039,9 @@ function DayClose(): React.JSX.Element {
                 </Button>
               </div>
             </div>
-            <TabsList>
+            <TabsList className={cn(__WEB__ && SK_SEG)}>
               {DAY_SECTIONS.map((s) => (
-                <TabsTrigger key={s.key} value={s.key}>{s.title}</TabsTrigger>
+                <TabsTrigger key={s.key} value={s.key} className={cn(__WEB__ && SK_TAB)}>{s.title}</TabsTrigger>
               ))}
             </TabsList>
           </div>
@@ -3276,8 +3329,8 @@ function SkuStock(): React.JSX.Element {
           So they are grouped by what the reader is doing, and each group is one
           strip: WHICH VIEW AND WHEN (with its actions), WHAT IS IN VIEW, and
           WHAT IT COMES TO (with the warning that belongs to it). */}
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="inline-flex shrink-0 rounded-lg border p-0.5">
+      <div className={cn('flex flex-wrap items-center gap-2', __WEB__ && SK_BAR)}>
+        <div className={cn('inline-flex shrink-0 rounded-lg border p-0.5', __WEB__ && SK_SEG)}>
           {(
             [
               ['register', 'Register'],
@@ -3290,7 +3343,8 @@ function SkuStock(): React.JSX.Element {
               onClick={() => setSkuView(k)}
               className={cn(
                 'rounded-md px-3 py-1 text-[12.5px] font-semibold transition',
-                skuView === k ? 'bg-[#1a2c56] text-white' : 'text-muted-foreground hover:text-foreground'
+                skuView === k ? 'bg-[#1a2c56] text-white' : 'text-muted-foreground hover:text-foreground',
+                __WEB__ && cn(SK_SEG_ITEM, skuView === k ? SK_SEG_ON : SK_SEG_OFF)
               )}
             >
               {label}
@@ -3300,7 +3354,7 @@ function SkuStock(): React.JSX.Element {
         {skuView === 'register' && (
           <>
         <span className="mx-0.5 hidden h-6 w-px shrink-0 bg-border sm:block" />
-        <div className="inline-flex rounded-lg border p-0.5">
+        <div className={cn('inline-flex rounded-lg border p-0.5', __WEB__ && SK_SEG)}>
           {(
             [
               ['day', 'Day wise'],
@@ -3321,7 +3375,8 @@ function SkuStock(): React.JSX.Element {
               }}
               className={cn(
                 'rounded-md px-3 py-1 text-[13px] font-medium transition',
-                spanMode === k ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
+                spanMode === k ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+                __WEB__ && cn(SK_SEG_ITEM, spanMode === k ? SK_SEG_ON : SK_SEG_OFF)
               )}
             >
               {label}
@@ -3460,12 +3515,12 @@ function SkuStock(): React.JSX.Element {
       <>
       {/* Row 2: what is in view. Quieter than the row above it on purpose —
           these narrow the list, they do not change what is being asked. */}
-      <div className="flex flex-wrap items-center gap-2 border-t pt-2">
+      <div className={cn('flex flex-wrap items-center gap-2 border-t pt-2', __WEB__ && cn(SK_BAR, '!mt-2'))}>
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search SKU or product…"
-          className="h-8 w-52 text-[13px]"
+          className={cn('h-8 w-52 text-[13px]', __WEB__ && '!w-64')}
         />
         <SkuMultiSelect
           skus={rows}
@@ -4352,21 +4407,21 @@ function MncStock(): React.JSX.Element {
         <MiniStat label={mncRanged ? 'Invoiced (period)' : 'Invoiced (became ours)'} value={formatNum(tot.invoiced)} tone="rose" />
         <MiniStat label={mncRanged ? 'Closing (supplier owned)' : 'Balance (supplier owned)'} value={formatNum(tot.balance)} tone="violet" />
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className={cn('flex flex-wrap items-center justify-between gap-2', __WEB__ && SK_BAR)}>
         <div className="flex flex-wrap items-center gap-2">
           <FyPicker from={mncFrom} to={mncTo} onRange={(f, t) => { setMncFrom(f); setMncTo(t) }} className="h-9 w-28 text-xs" />
-          <span className="text-[11px] font-semibold text-muted-foreground">From</span>
+          <span className={cn('text-[11px] font-semibold text-muted-foreground', __WEB__ && '!text-[12px] !text-[#5A6B62]')}>From</span>
           <div className="w-40"><DatePicker value={mncFrom} onChange={(v) => setMncFrom(v || '')} max={mncTo || undefined} /></div>
-          <span className="text-[11px] font-semibold text-muted-foreground">To</span>
+          <span className={cn('text-[11px] font-semibold text-muted-foreground', __WEB__ && '!text-[12px] !text-[#5A6B62]')}>To</span>
           <div className="w-40"><DatePicker value={mncTo} onChange={(v) => setMncTo(v || '')} min={mncFrom || undefined} /></div>
           {mncRanged && (
-            <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={() => { setMncFrom(''); setMncTo('') }}>
+            <Button variant="ghost" size="sm" className={cn('h-8 px-2 text-xs', __WEB__ && SK_CLEAR)} onClick={() => { setMncFrom(''); setMncTo('') }}>
               Clear
             </Button>
           )}
         </div>
         <div className="flex items-center gap-2">
-        <Button size="sm" variant="outline" onClick={() => openOpeningStock()}>
+        <Button size="sm" variant="outline" className={cn(__WEB__ && SK_BTN)} onClick={() => openOpeningStock()}>
           <Plus className="h-4 w-4" /> Add opening stock
         </Button>
         <ExcelButton
@@ -5294,11 +5349,19 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
         ) : (
         <Tabs value={tab} onValueChange={setTab}>
           {stockGroup !== 'book' && (
-            <TabsList>
-              <TabsTrigger value="sku">Packed SKU</TabsTrigger>
-              <TabsTrigger value="mnc">MNC / Consignment</TabsTrigger>
-              <TabsTrigger value="transfers">Transfers</TabsTrigger>
-              <TabsTrigger value="dayclose">Day close (actual vs book)</TabsTrigger>
+            <TabsList className={cn(__WEB__ && SK_SEG)}>
+              {(
+                [
+                  ['sku', 'Packed SKU'],
+                  ['mnc', 'MNC / Consignment'],
+                  ['transfers', 'Transfers'],
+                  ['dayclose', 'Day close (actual vs book)']
+                ] as const
+              ).map(([k, label]) => (
+                <TabsTrigger key={k} value={k} className={cn(__WEB__ && SK_TAB)}>
+                  {label}
+                </TabsTrigger>
+              ))}
             </TabsList>
           )}
           <TabsContent value="raw" className="mt-1">
