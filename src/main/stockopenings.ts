@@ -1,6 +1,6 @@
 import type { ResultSet } from '@libsql/client'
 import { getClient } from './db'
-import { getActiveCompanyId } from './company'
+import { getActiveCompanyId, companiesOfFactory, factoryOfCompanies } from './company'
 import { getBooksFrom } from './openings'
 import { stockLevels } from './stock'
 import { productValuationRates } from './stock'
@@ -32,8 +32,20 @@ const r2 = (v: number): number => Math.round(v * 100) / 100
 // company and stock has no business disagreeing with it, so that is the
 // default — but it is only a default, because a mill may count its tanks on a
 // different morning from the one its accountant closed the books on.
+// The day this SITE's books opened. Opening stock is the oil standing in the
+// tank that morning, and the tank is not divided between the companies that
+// trade through it — one buys, another manufactures, one set of tanks.
 export async function stockOpeningDate(companyId?: number): Promise<string> {
   const cid = n(companyId) || getActiveCompanyId()
+  const fid0 = await factoryOfCompanies([cid])
+  if (fid0) {
+    const fr = await getClient().execute({
+      sql: 'SELECT as_of FROM stock_openings WHERE factory_id = ? ORDER BY as_of LIMIT 1',
+      args: [fid0]
+    })
+    const d0 = fr.rows[0] ? (fr.rows[0] as unknown as Row).as_of : null
+    if (d0) return String(d0).slice(0, 10)
+  }
   const existing = await getClient().execute({
     sql: 'SELECT as_of FROM stock_openings WHERE company_id = ? ORDER BY as_of LIMIT 1',
     args: [cid]
@@ -63,14 +75,28 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
   // Stock register to anyone who widens the period by hand — they are simply
   // not what this screen is about.
   const asOf = await stockOpeningDate(cid)
+  // One sheet per factory. Read by site, and the book-stock column beside it
+  // is read the same way, or the sheet would compare the site's opening with
+  // one company's movements.
+  const fid = await factoryOfCompanies([cid])
+  const scope = fid ? await companiesOfFactory(fid) : [cid]
   const [saved, levels, rates, dupes] = await Promise.all([
-    c.execute({
-      sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
-                   COALESCE(adj_qty, 0) AS adj_qty, rate, as_of, note
-            FROM stock_openings WHERE company_id = ?`,
-      args: [cid]
-    }),
-    stockLevels(asOf ? { from: asOf } : undefined, [cid]),
+    c.execute(
+      fid
+        ? {
+            sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
+                         COALESCE(adj_qty, 0) AS adj_qty, rate, as_of, note
+                  FROM stock_openings WHERE factory_id = ?`,
+            args: [fid]
+          }
+        : {
+            sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
+                         COALESCE(adj_qty, 0) AS adj_qty, rate, as_of, note
+                  FROM stock_openings WHERE company_id = ?`,
+            args: [cid]
+          }
+    ),
+    stockLevels(asOf ? { from: asOf } : undefined, scope),
     productValuationRates().catch(() => new Map<number, number>()),
     duplicateProductNames()
   ])
@@ -195,6 +221,19 @@ export async function saveStockOpenings(
   const date = String(asOf || '').slice(0, 10)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Pick the date this opening is struck on')
   const c = getClient()
+  // The sheet belongs to the SITE, so a product has one opening row per
+  // factory however many companies trade through it. company_id is still
+  // stamped, as a record of who struck it.
+  const fid = await factoryOfCompanies([cid])
+  // Matched by hand rather than with ON CONFLICT: the table's unique key is
+  // still (company_id, product_id) from before factories existed, and adding a
+  // second one would mean merging any rows that collide — a delete, on opening
+  // stock, to satisfy a constraint. Not worth it. An UPDATE that affects
+  // nothing tells us to INSERT just as well.
+  const keyed = (extra: string): { sql: string; args: (string | number | null)[] } =>
+    fid
+      ? { sql: `factory_id = ?${extra}`, args: [fid] }
+      : { sql: `company_id = ?${extra}`, args: [cid] }
 
   let saved = 0
   let cleared = 0
@@ -209,9 +248,10 @@ export async function saveStockOpenings(
     const adjBlank = raw?.adj_qty === '' || raw?.adj_qty == null
     const blank = rawBlank && ppBlank && adjBlank
     if (blank) {
+      const k = keyed(' AND product_id = ?')
       const res = await c.execute({
-        sql: 'DELETE FROM stock_openings WHERE company_id = ? AND product_id = ?',
-        args: [cid, pid]
+        sql: `DELETE FROM stock_openings WHERE ${k.sql}`,
+        args: [...k.args, pid]
       })
       if (Number(res.rowsAffected) > 0) cleared++
       continue
@@ -220,25 +260,26 @@ export async function saveStockOpenings(
     const pp = n(raw.pp_qty)
     const adj = n(raw.adj_qty)
     const rate = raw?.rate === '' || raw?.rate == null ? null : n(raw.rate)
-    await c.execute({
-      // The row still belongs to the company that struck it — that is what
-      // keeps the valuation per company — but it is also stamped with the
-      // factory, because the register reads openings by site. Written on the
-      // update branch too: a row entered before factories existed has a NULL
-      // there, and re-saving it is the moment to fill it in.
-      sql: `INSERT INTO stock_openings (company_id, factory_id, product_id, as_of, qty, pp_qty, adj_qty, rate, note, updated_at)
-            VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            ON CONFLICT(company_id, product_id) DO UPDATE SET
-              factory_id = excluded.factory_id,
-              as_of = excluded.as_of,
-              qty = excluded.qty,
-              pp_qty = excluded.pp_qty,
-              adj_qty = excluded.adj_qty,
-              rate = excluded.rate,
-              note = excluded.note,
-              updated_at = datetime('now')`,
-      args: [cid, cid, pid, date, qty, pp, adj, rate, raw?.note ? String(raw.note).trim() : null]
+    const note = raw?.note ? String(raw.note).trim() : null
+    // Update the site's row for this product if there is one, otherwise write
+    // it. Two statements rather than an upsert, because the only unique key on
+    // this table is the pre-factory one.
+    const k = keyed(' AND product_id = ?')
+    const upd = await c.execute({
+      sql: `UPDATE stock_openings
+               SET factory_id = COALESCE(factory_id, (SELECT factory_id FROM companies WHERE id = ?)),
+                   as_of = ?, qty = ?, pp_qty = ?, adj_qty = ?, rate = ?, note = ?,
+                   updated_at = datetime('now')
+             WHERE ${k.sql}`,
+      args: [cid, date, qty, pp, adj, rate, note, ...k.args, pid]
     })
+    if (!Number(upd.rowsAffected)) {
+      await c.execute({
+        sql: `INSERT INTO stock_openings (company_id, factory_id, product_id, as_of, qty, pp_qty, adj_qty, rate, note, updated_at)
+              VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        args: [cid, cid, pid, date, qty, pp, adj, rate, note]
+      })
+    }
     saved++
   }
 
@@ -256,13 +297,26 @@ export async function saveStockOpenings(
 // the morning the books start. Rewritten each save so the two cannot drift.
 async function seedOpeningDayCount(companyId: number, date: string): Promise<void> {
   const c = getClient()
+  // Read by SITE — the opening it mirrors belongs to the factory now, and a
+  // company that did not happen to strike the row would otherwise mirror
+  // nothing and leave day one reading as a variance.
+  const fid = await factoryOfCompanies([companyId])
   const rows = toPlain(
-    await c.execute({
-      sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
-                   COALESCE(adj_qty, 0) AS adj_qty, rate
-            FROM stock_openings WHERE company_id = ? AND as_of = ?`,
-      args: [companyId, date]
-    })
+    await c.execute(
+      fid
+        ? {
+            sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
+                         COALESCE(adj_qty, 0) AS adj_qty, rate
+                  FROM stock_openings WHERE factory_id = ? AND as_of = ?`,
+            args: [fid, date]
+          }
+        : {
+            sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
+                         COALESCE(adj_qty, 0) AS adj_qty, rate
+                  FROM stock_openings WHERE company_id = ? AND as_of = ?`,
+            args: [companyId, date]
+          }
+    )
   )
   for (const r of rows) {
     await c

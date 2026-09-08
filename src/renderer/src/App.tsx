@@ -30,6 +30,7 @@ import { Brokers } from './pages/Brokers'
 import { Packaging } from './pages/Packaging'
 import { Approvals } from './pages/Approvals'
 import { Companies } from './pages/Companies'
+import { Factories } from './pages/Factories'
 import { NotificationBell } from './components/NotificationBell'
 import { GlobalDateRangeDialog } from './components/GlobalDateRangeDialog'
 import { GlobalDateRangeProvider } from './lib/globalDateRange'
@@ -517,6 +518,7 @@ function App(): React.JSX.Element {
         {view === 'brokers' && <Brokers />}
         {view === 'packaging' && <Packaging />}
         {view === 'companies' && <Companies />}
+        {view === 'factories' && <Factories />}
         {view === 'approvals' && <Approvals />}
         {view === 'settings' && <Settings user={user} />}
       </main>

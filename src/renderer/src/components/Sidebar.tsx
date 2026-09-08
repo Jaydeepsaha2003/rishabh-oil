@@ -7,6 +7,7 @@ import {
   Boxes,
   Briefcase,
   Building2,
+  Factory,
   BookOpenText,
   ClipboardCheck,
   Contact,
@@ -65,6 +66,7 @@ export type Page =
   | 'brokers'
   | 'packaging'
   | 'companies'
+  | 'factories'
   | 'approvals'
 
 const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
@@ -92,6 +94,7 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   packaging: { label: 'Packed SKU', icon: Package },
   trading: { label: 'Trading', icon: Repeat },
   companies: { label: 'Companies', icon: Building2 },
+  factories: { label: 'Factories', icon: Factory },
   approvals: { label: 'Approvals', icon: ClipboardCheck },
   settings: { label: 'Settings', icon: SettingsIcon }
 }
@@ -104,7 +107,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Trading', ids: ['trading'] },
   { label: 'Accounts', ids: ['accounts', 'treasury', 'bankRecon'] },
   { label: 'Masters', ids: ['categories', 'suppliers', 'transporters', 'customers', 'ports', 'banks', 'brokers', 'packaging'] },
-  { label: 'System', ids: ['companies', 'approvals', 'settings'] }
+  { label: 'System', ids: ['companies', 'factories', 'approvals', 'settings'] }
 ]
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
