@@ -889,7 +889,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                           Number(r.stock) < -1e-9 ? 'text-red-600' : 'text-sky-900',
                           __WEB__ &&
                             cn(
-                              '!font-mono !text-[13.5px] !font-bold !tracking-[-0.02em]',
+                              'doc-ref !text-[13.5px] !font-bold !tracking-[-0.02em]',
                               SK_BRULE,
                               SK_BCLOSE,
                               Number(r.stock) < -1e-9 ? '!text-[#B3261E]' : '!text-[#0A1F17]'
@@ -914,7 +914,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                     <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, SK_BRULE, '!font-bold !text-[#8C2F26]'))}>{formatNum(gSum('consumed'))}</TableCell>
                     <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, '!font-bold !text-[#8C2F26]'))}>{formatNum(gSum('packed_out'))}</TableCell>
                     <TableCell className={cn('text-right font-bold tabular-nums text-teal-900', __WEB__ && cn(SK_NUM, '!font-bold !text-[#8C2F26]'))}>{formatNum(gSum('sold'))}</TableCell>
-                    <TableCell className={cn('text-right font-bold tabular-nums', gStock < -1e-9 ? 'text-red-600' : 'text-teal-900', __WEB__ && cn('!font-mono !text-[13px] !font-bold !tracking-[-0.02em]', SK_BRULE, '!bg-[#EAF2E6]', gStock < -1e-9 ? '!text-[#B3261E]' : '!text-[#0A1F17]'))}>{formatNum(gStock)}</TableCell>
+                    <TableCell className={cn('text-right font-bold tabular-nums', gStock < -1e-9 ? 'text-red-600' : 'text-teal-900', __WEB__ && cn('doc-ref !text-[13px] !font-bold !tracking-[-0.02em]', SK_BRULE, '!bg-[#EAF2E6]', gStock < -1e-9 ? '!text-[#B3261E]' : '!text-[#0A1F17]'))}>{formatNum(gStock)}</TableCell>
                   </TableRow>
                 </TableBody>
               </Table>
@@ -947,7 +947,7 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#F0AFAA]'))}>{formatNum(totals.consumed)}</TableCell>
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#F0AFAA]'))}>{formatNum(totals.packed_out)}</TableCell>
                   <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#F0AFAA]'))}>{formatNum(totals.sold)}</TableCell>
-                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn('!font-mono !text-[14px] !font-bold !tracking-[-0.02em]', SK_RULE, SK_CLOSE, '!text-[#C7F03F]'))}>{formatNum(totals.stock)}</TableCell>
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn('doc-ref !text-[14px] !font-bold !tracking-[-0.02em]', SK_RULE, SK_CLOSE, '!text-[#C7F03F]'))}>{formatNum(totals.stock)}</TableCell>
                 </TableRow>
               </TableBody>
             </Table>
@@ -984,7 +984,7 @@ const SK_BAR =
   // carrying data-slot="date-picker". Reaching it by that slot rather than by
   // element is the difference between the dates going mono and the SEARCH box
   // going mono while the dates keep the app's default height.
-  "[&_[data-slot=date-picker]]:!h-[38px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!font-mono [&_[data-slot=date-picker]]:!text-[12.5px] [&_[data-slot=date-picker]]:!font-medium [&_[data-slot=date-picker]]:!text-[#0A1F17] " +
+  "[&_[data-slot=date-picker]]:!h-[38px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[12.5px] [&_[data-slot=date-picker]]:!font-medium [&_[data-slot=date-picker]]:!text-[#0A1F17] " +
   '[&_input]:!h-[38px] [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[12.5px] [&_input]:!font-medium [&_input]:!text-[#0A1F17]'
 
 // The segmented control — Register/Opening, Day wise/Range/All time. A tray in
@@ -1040,9 +1040,11 @@ const SK_BOPEN = '!bg-[#FCFDFB] !text-[#33473E]'
 const SK_BIN = '!bg-[#F5FBF7] !text-[#0B6B45]'
 const SK_BOUT = '!bg-[#FDF8F7] !text-[#8C2F26]'
 const SK_BCLOSE = '!bg-[#F2F7EE]'
-// Figures go mono so the decimal points line up down a column; the app's
-// tabular-nums gets the digits even but not the separators.
-const SK_NUM = '!font-mono !text-[12.5px] !font-semibold'
+// Figures take doc-ref, not a second typeface. The handoff sets its numbers
+// in IBM Plex Mono; the app is set in Inter and stays that way, and doc-ref
+// already gets what the mono was wanted for — tabular figures on a fixed
+// pitch, a slashed zero, a little tracking — out of the font we have.
+const SK_NUM = 'doc-ref !text-[12.5px] !font-semibold'
 
 const SK_RULE = '!border-l !border-l-[#C7F03F]/[.18]'
 const SK_OPEN = '!bg-white/[0.03]'
@@ -2446,45 +2448,50 @@ function DayCloseSection({
                       // A counted row that disagrees with the books is what the
                       // whole sheet exists to surface — tint the line, not just
                       // the one figure.
-                      off && 'bg-amber-50/70 hover:bg-amber-50'
+                      off && 'bg-amber-50/70 hover:bg-amber-50',
+                      // On the website the columns carry the tinting, so a row
+                      // tint would only reach the cells that have none. The
+                      // disagreement is marked on the name instead, and the Gap
+                      // column says it in figures.
+                      __WEB__ && '!border-b-[#EAF0E9] !bg-transparent hover:!bg-transparent'
                     )}
                   >
-                    <TableCell className="py-1.5 text-[13px] font-semibold">{r.name}</TableCell>
+                    <TableCell className={cn('py-1.5 text-[13px] font-semibold', __WEB__ && cn('!text-[12.5px] !font-bold !text-[#0A1F17]', off && '!bg-[#FFFBF2] !shadow-[inset_3px_0_0_#C2700A]'))}>{r.name}</TableCell>
                     <TableCell className="py-1.5">
-                      <span className="rounded border border-[#d9d2b8] bg-[#f4f1e2] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#1a2c56]">
+                      <span className={cn('rounded border border-[#d9d2b8] bg-[#f4f1e2] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#1a2c56]', __WEB__ && '!rounded-[2px] !border-[#DCE7DB] !bg-[#EAF0E9] !px-[7px] !text-[9.5px] !font-extrabold !tracking-[.09em] !text-[#33473E]')}>
                         {CAT_LABEL[r.category] || r.category}
                       </span>
                     </TableCell>
-                    <TableCell className="py-1.5 text-right text-[13px] tabular-nums text-muted-foreground">{formatNum(r.book_qty)}</TableCell>
-                    <TableCell className="bg-[#f2f7ff]/70 py-1.5 text-right">
+                    <TableCell className={cn('py-1.5 text-right text-[13px] tabular-nums text-muted-foreground', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BOPEN))}>{formatNum(r.book_qty)}</TableCell>
+                    <TableCell className={cn('bg-[#f2f7ff]/70 py-1.5 text-right', __WEB__ && cn(SK_BRULE, '!bg-[#F6FBEE]'))}>
                       <Input
                         type="number"
-                        className="h-7 w-28 bg-white text-right text-[13px]"
+                        className={cn('h-7 w-28 bg-white text-right text-[13px]', __WEB__ && '!h-[30px] !rounded-[3px] !border-[#C3D2C6] !text-[12.5px] !font-bold')}
                         placeholder="—"
                         value={r.actual_qty ?? ''}
                         onChange={(e) => setField(r.product_id, 'actual_qty', e.target.value)}
                       />
                     </TableCell>
-                    <TableCell className="bg-[#f2f7ff]/70 py-1.5 text-right">
+                    <TableCell className={cn('bg-[#f2f7ff]/70 py-1.5 text-right', __WEB__ && '!bg-[#F6FBEE]')}>
                       <Input
                         type="number"
-                        className="h-7 w-24 bg-white text-right text-[13px]"
+                        className={cn('h-7 w-24 bg-white text-right text-[13px]', __WEB__ && '!h-[30px] !rounded-[3px] !border-[#DCE7DB] !text-[12.5px] !font-semibold')}
                         placeholder="—"
                         value={r.pp_qty ?? ''}
                         onChange={(e) => setField(r.product_id, 'pp_qty', e.target.value)}
                       />
                     </TableCell>
-                    <TableCell className="py-1.5 text-right text-[13px] font-bold tabular-nums">
+                    <TableCell className={cn('py-1.5 text-right text-[13px] font-bold tabular-nums', __WEB__ && cn('doc-ref !text-[13px] !font-bold', '!bg-[#F6FBEE] !text-[#0A1F17]'))}>
                       {has ? formatNum(totalOf(r)) : '—'}
                     </TableCell>
-                    <TableCell className={cn('py-1.5 text-right text-[13px] font-semibold tabular-nums', off ? (diff > 0 ? 'text-amber-700' : 'text-red-600') : 'text-muted-foreground')}>
+                    <TableCell className={cn('py-1.5 text-right text-[13px] font-semibold tabular-nums', off ? (diff > 0 ? 'text-amber-700' : 'text-red-600') : 'text-muted-foreground', __WEB__ && cn(SK_NUM, SK_BRULE, '!bg-[#FFFBF2] !font-bold', off ? '!text-[#8A5300]' : '!text-[#8FA79B]'))}>
                       {has ? formatNum(diff) : '—'}
                     </TableCell>
-                    <TableCell className="py-1.5 text-right text-[13px] tabular-nums text-muted-foreground">{rateOf(r) ? formatNum(rateOf(r)) : '—'}</TableCell>
-                    <TableCell className="py-1.5 text-right text-[13px] font-medium tabular-nums">{has ? formatINR(actualValueOf(r)) : '—'}</TableCell>
-                    <TableCell className="py-1.5">
+                    <TableCell className={cn('py-1.5 text-right text-[13px] tabular-nums text-muted-foreground', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BOPEN, '!font-medium !text-[#5A6B62]'))}>{rateOf(r) ? formatNum(rateOf(r)) : '—'}</TableCell>
+                    <TableCell className={cn('py-1.5 text-right text-[13px] font-medium tabular-nums', __WEB__ && cn(SK_NUM, SK_BOPEN, '!font-bold !text-[#0A1F17]'))}>{has ? formatINR(actualValueOf(r)) : '—'}</TableCell>
+                    <TableCell className={cn('py-1.5', __WEB__ && SK_BRULE)}>
                       <Input
-                        className="h-7 bg-white text-[13px]"
+                        className={cn('h-7 bg-white text-[13px]', __WEB__ && '!h-[30px] !rounded-[3px] !border-[#DCE7DB] !text-[12.5px] !font-medium')}
                         placeholder="optional"
                         value={r.note ?? ''}
                         onChange={(e) => setField(r.product_id, 'note', e.target.value)}
@@ -2495,21 +2502,21 @@ function DayCloseSection({
               })
             )}
             {!loading && rows.length > 0 && (
-              <TableRow className="border-t-2 border-[#1a2c56] bg-[#f0ecd9] text-[#1a2c56] hover:bg-[#f0ecd9]">
-                <TableCell colSpan={2} className="py-2 text-[12px] font-bold uppercase tracking-widest">Grand total</TableCell>
-                <TableCell className="py-2 text-right text-[13px] font-bold tabular-nums">
+              <TableRow className={cn('border-t-2 border-[#1a2c56] bg-[#f0ecd9] text-[#1a2c56] hover:bg-[#f0ecd9]', __WEB__ && '!border-0 !bg-[#0B3D2E] !text-white hover:!bg-[#0B3D2E]')}>
+                <TableCell colSpan={2} className={cn('py-2 text-[12px] font-bold uppercase tracking-widest', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.09em] !text-white')}>Grand total</TableCell>
+                <TableCell className={cn('py-2 text-right text-[13px] font-bold tabular-nums', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold !text-[#C3D2C6]'))}>
                   {formatNum(rows.reduce((a, r) => a + (Number(r.book_qty) || 0), 0))}
                 </TableCell>
-                <TableCell className="py-2 text-right text-[13px] font-bold tabular-nums">
+                <TableCell className={cn('py-2 text-right text-[13px] font-bold tabular-nums', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold !text-[#C3D2C6]'))}>
                   {formatNum(rows.reduce((a, r) => a + (Number(r.actual_qty) || 0), 0))}
                 </TableCell>
-                <TableCell className="py-2 text-right text-[13px] font-bold tabular-nums">
+                <TableCell className={cn('py-2 text-right text-[13px] font-bold tabular-nums', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold !text-[#C3D2C6]'))}>
                   {formatNum(rows.reduce((a, r) => a + (Number(r.pp_qty) || 0), 0))}
                 </TableCell>
-                <TableCell className="py-2 text-right text-[13px] font-bold tabular-nums">
+                <TableCell className={cn('py-2 text-right text-[13px] font-bold tabular-nums', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold !text-[#C3D2C6]'))}>
                   {formatNum(rows.reduce((a, r) => a + totalOf(r), 0))}
                 </TableCell>
-                <TableCell className="py-2 text-right text-[13px] font-bold tabular-nums">
+                <TableCell className={cn('py-2 text-right text-[13px] font-bold tabular-nums', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold !text-[#C3D2C6]'))}>
                   {formatNum(
                     rows.reduce(
                       (a, r) =>
@@ -2519,7 +2526,7 @@ function DayCloseSection({
                   )}
                 </TableCell>
                 <TableCell className="py-2" />
-                <TableCell className="py-2 text-right text-[13px] font-bold tabular-nums">
+                <TableCell className={cn('py-2 text-right text-[13px] font-bold tabular-nums', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold !text-[#C3D2C6]'))}>
                   {formatINR(rows.reduce((a, r) => a + actualValueOf(r), 0))}
                 </TableCell>
                 <TableCell className="py-2" />
@@ -3718,14 +3725,29 @@ function SkuStock(): React.JSX.Element {
         )
       })()}
 
-      <div className="rounded-xl border bg-card shadow-sm">
+      <div className={cn('rounded-xl border bg-card shadow-sm', __WEB__ && '!rounded-[4px] !border-[#D6E2D6] !shadow-none')}>
         <Table
-          wrapperClassName="max-h-[calc(100vh-360px)] rounded-xl"
-          className="text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3"
+          wrapperClassName={cn('max-h-[calc(100vh-360px)] rounded-xl', __WEB__ && '!rounded-[4px]')}
+          className={cn('text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3', __WEB__ && 'doc-ref')}
         >
           <TableHeader className="sticky top-0 z-10">
-            <TableRow className={cn('bg-slate-200 hover:bg-slate-200', __WEB__ && SK_HEAD)}>
-              <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-slate-700">SKU</TableHead>
+            {/* The same four readings as the Book Stock register — what it
+                opened at, what came in, what went out, what it closed at — so
+                a reader moving between the two tabs is not learning a second
+                table. Closing spans two because pieces and tonnage are one
+                answer counted twice. */}
+            {__WEB__ && (
+              <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[26px] [&>th]:!p-0 [&>th]:!text-[9px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.16em] [&>th]:!text-[#8FBFA8]">
+                <TableHead colSpan={3} />
+                {dayMode && <TableHead className={cn('!text-center', SK_RULE, SK_OPEN)}>Open</TableHead>}
+                <TableHead className={cn('!text-center !text-[#9FE3BF]', SK_RULE, SK_IN)}>In</TableHead>
+                <TableHead className={cn('!text-center !text-[#F0AFAA]', SK_RULE, SK_OUT)}>Out</TableHead>
+                <TableHead colSpan={2} className={cn('!text-center !text-[#C7F03F]', SK_RULE, SK_CLOSE)}>Close</TableHead>
+                <TableHead />
+              </TableRow>
+            )}
+            <TableRow className={cn('bg-slate-200 hover:bg-slate-200', __WEB__ && cn(SK_HEAD, '!border-b-0'))}>
+              <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && '!text-white')}>SKU</TableHead>
               <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-slate-700">Pack</TableHead>
               {/* The unit every figure on the row is counted in — the SKU's own
                   Type off the Packed SKU master. Without it the numbers across
@@ -3733,21 +3755,21 @@ function SkuStock(): React.JSX.Element {
                   does not say whether 3,303 is jars, tins or pouches. */}
               <TableHead className="text-[10px] font-semibold uppercase tracking-wide text-slate-700">Type</TableHead>
               {dayMode && (
-                <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">Opening</TableHead>
+                <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && cn(SK_RULE, SK_OPEN))}>Opening</TableHead>
               )}
-              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+              <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && cn(SK_RULE, SK_IN))}>
                 {dayMode ? 'Packed in' : 'Packed (total)'}
               </TableHead>
-              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+              <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && cn(SK_RULE, SK_OUT))}>
                 {dayMode ? 'Dispatch' : 'Sold'}
               </TableHead>
-              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+              <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && cn(SK_RULE, SK_CLOSE, '!text-[#C7F03F]'))}>
                 {dayMode ? 'Closing (pcs)' : 'On hand (pcs)'}
               </TableHead>
-              <TableHead className="text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+              <TableHead className={cn('text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && cn(SK_CLOSE, '!text-[#C7F03F]'))}>
                 {dayMode ? 'Closing (MT)' : 'On hand (MT)'}
               </TableHead>
-              <TableHead className="w-[64px] text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+              <TableHead className={cn('w-[64px] text-right text-[10px] font-semibold uppercase tracking-wide text-slate-700', __WEB__ && SK_RULE)}>
                 Update
               </TableHead>
             </TableRow>
@@ -3814,9 +3836,19 @@ function SkuStock(): React.JSX.Element {
                   return (
                     <TableRow
                       key={r.id as number}
-                      className={cn('border-b', i % 2 === 1 && 'bg-muted/30', touched && 'bg-sky-50/70 hover:bg-sky-50')}
+                      className={cn(
+                        'border-b',
+                        i % 2 === 1 && 'bg-muted/30',
+                        touched && 'bg-sky-50/70 hover:bg-sky-50',
+                        // The zebra and the moved-today tint both painted the
+                        // whole row, which the column washes now do better and
+                        // more meaningfully. "Moved today" survives as a mark
+                        // on the name cell — see below — because a cell
+                        // background covers its row's anyway.
+                        __WEB__ && '!border-b-[#EAF0E9] !bg-transparent'
+                      )}
                     >
-                      <TableCell className="font-medium">
+                      <TableCell className={cn('font-medium', __WEB__ && cn('!text-[12.5px] !font-bold !text-[#0A1F17]', touched && '!bg-[#F5FBF7] !shadow-[inset_3px_0_0_#C7F03F]'))}>
                         <div className="flex items-center gap-1.5">
                           <span>{r.name}</span>
                           {/* A correction that only shows up if somebody thinks
@@ -3832,14 +3864,14 @@ function SkuStock(): React.JSX.Element {
                           )}
                         </div>
                       </TableCell>
-                      <TableCell className="whitespace-nowrap text-muted-foreground">{unitLabel(r)}</TableCell>
+                      <TableCell className={cn('whitespace-nowrap text-muted-foreground', __WEB__ && '!text-[11.5px] !font-semibold !text-[#5A6B62]')}>{unitLabel(r)}</TableCell>
                       <TableCell className="whitespace-nowrap">
-                        <span className="rounded bg-slate-100 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                        <span className={cn('rounded bg-slate-100 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-slate-600', __WEB__ && '!rounded-[2px] !border !border-[#DCE7DB] !bg-[#EAF0E9] !px-[7px] !py-[2px] !text-[9.5px] !font-extrabold !tracking-[.09em] !text-[#33473E]')}>
                           {pieceLabel(r)}
                         </span>
                       </TableCell>
                       {dayMode && (
-                        <TableCell className="text-right tabular-nums text-muted-foreground">
+                        <TableCell className={cn('text-right tabular-nums text-muted-foreground', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BOPEN))}>
                           {Number(r.opening) ? (
                             <CellWithWorkings
                               value={formatNum(r.opening)}
@@ -3855,7 +3887,7 @@ function SkuStock(): React.JSX.Element {
                           )}
                         </TableCell>
                       )}
-                      <TableCell className="text-right font-medium tabular-nums text-emerald-700">
+                      <TableCell className={cn('text-right font-medium tabular-nums text-emerald-700', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BIN))}>
                         {inQty ? (
                           <CellWithWorkings
                             value={formatNum(inQty)}
@@ -3872,7 +3904,7 @@ function SkuStock(): React.JSX.Element {
                           '—'
                         )}
                       </TableCell>
-                      <TableCell className="text-right font-medium tabular-nums text-red-600">
+                      <TableCell className={cn('text-right font-medium tabular-nums text-red-600', __WEB__ && cn(SK_NUM, SK_BRULE, SK_BOUT))}>
                         {outQty ? (
                           <CellWithWorkings
                             value={formatNum(outQty)}
@@ -3885,7 +3917,7 @@ function SkuStock(): React.JSX.Element {
                           '—'
                         )}
                       </TableCell>
-                      <TableCell className={cn('text-right font-bold tabular-nums', onHand < -1e-6 ? 'text-red-600' : 'text-slate-900')}>
+                      <TableCell className={cn('text-right font-bold tabular-nums', onHand < -1e-6 ? 'text-red-600' : 'text-slate-900', __WEB__ && cn('doc-ref !text-[13px] !font-bold', SK_BRULE, SK_BCLOSE, onHand < -1e-6 ? '!text-[#B3261E]' : '!text-[#0A1F17]'))}>
                         <CellWithWorkings
                           value={formatNum(onHand)}
                           className={onHand < -1e-6 ? 'text-red-600' : 'text-slate-900'}
@@ -3954,7 +3986,7 @@ function SkuStock(): React.JSX.Element {
                           }
                         />
                       </TableCell>
-                      <TableCell className="text-right tabular-nums text-violet-700">{formatNum(skuMT(r))}</TableCell>
+                      <TableCell className={cn('text-right tabular-nums text-violet-700', __WEB__ && cn(SK_NUM, SK_BCLOSE, '!text-[#33473E]'))}>{formatNum(skuMT(r))}</TableCell>
                       <TableCell className="text-right">
                         <Button
                           variant="ghost"
@@ -3969,20 +4001,20 @@ function SkuStock(): React.JSX.Element {
                     </TableRow>
                   )
                 })}
-                <TableRow className="border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100">
-                  <TableCell colSpan={dayMode ? 4 : 3} className="font-bold uppercase tracking-wide text-amber-900">
+                <TableRow className={cn('border-t-2 border-amber-500 bg-amber-100 hover:bg-amber-100', __WEB__ && '!border-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E]')}>
+                  <TableCell colSpan={dayMode ? 4 : 3} className={cn('font-bold uppercase tracking-wide text-amber-900', __WEB__ && '!text-[11.5px] !font-extrabold !tracking-[.09em] !text-white')}>
                     Total{shown.length !== rows.length ? ' (filtered)' : ''}
                   </TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#9FE3BF]'))}>
                     {formatNum(shown.reduce((s, r) => s + (dayMode ? Number(r.added_on) || 0 : Number(r.added) || 0), 0))}
                   </TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#F0AFAA]'))}>
                     {formatNum(shown.reduce((s, r) => s + (dayMode ? Number(r.sold_on) || 0 : Number(r.sold) || 0), 0))}
                   </TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_RULE, '!font-bold', '!text-[#C7F03F]'))}>
                     {formatNum(shown.reduce((s, r) => s + (Number(r.on_hand) || 0), 0))}
                   </TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-amber-900">{formatNum(shownMT)} MT</TableCell>
+                  <TableCell className={cn('text-right font-bold tabular-nums text-amber-900', __WEB__ && cn(SK_NUM, SK_CLOSE, '!font-bold !text-[#C7F03F]'))}>{formatNum(shownMT)} MT</TableCell>
                   <TableCell />
                 </TableRow>
               </>
@@ -5172,6 +5204,12 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
   const [stockGroup, setStockGroup] = useState<'book' | 'actual'>('book')
   const [tab, setTab] = useState('raw')
   const [bookView, setBookView] = useState<'register' | 'opening'>('register')
+  // The four figures above the register, folded away by default. They are a
+  // summary of the table right below them, so on a laptop they were costing a
+  // third of the screen to restate what the reader had come to read. Collapsed
+  // still says all four — as a line rather than four cards — which is enough
+  // to notice a negative balance and open it.
+  const [kpiOpen, setKpiOpen] = useState(false)
   // Honour the note the opening sheet's company switcher left behind, so a
   // switch made there comes back to the opening sheet for the other company
   // instead of dropping the reader on the register. Runs once, then clears —
@@ -5424,8 +5462,58 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
           const inQty = t('received') + t('produced')
           const outQty = t('consumed') + t('sold') + t('packed_out')
           const neg = inView.filter((r) => Number(r.stock) < -1e-9)
+          const line: { k: string; v: string; fg?: string }[] = [
+            { k: 'Closing', v: `${formatNum(closing)} MT` },
+            { k: 'In', v: formatNum(inQty), fg: '#0B6B45' },
+            { k: 'Out', v: formatNum(outQty), fg: '#8C2F26' },
+            {
+              k: 'Negative',
+              v: neg.length ? `${neg.length} product${neg.length === 1 ? '' : 's'}` : 'none',
+              fg: neg.length ? '#B3261E' : '#0B6B45'
+            }
+          ]
           return (
-            <div className="mb-3 grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr))]">
+            <div className="mb-3">
+              {/* The header is the control. Collapsed it is a one-line reading
+                  of the same four figures; open, it is the four cards. */}
+              <button
+                type="button"
+                onClick={() => setKpiOpen((o) => !o)}
+                aria-expanded={kpiOpen}
+                className={cn(
+                  'flex w-full items-center gap-3 rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 text-left transition-colors hover:bg-[#F7FAF6]',
+                  kpiOpen ? 'h-[38px] rounded-b-none border-b-0' : 'h-[42px]'
+                )}
+              >
+                <ChevronRight
+                  className={cn(
+                    'h-4 w-4 shrink-0 text-[#5A6B62] transition-transform',
+                    kpiOpen && 'rotate-90'
+                  )}
+                />
+                <span className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">
+                  Summary
+                </span>
+                {!kpiOpen && (
+                  <span className="flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-0.5">
+                    {line.map((f) => (
+                      <span key={f.k} className="flex items-baseline gap-1.5 whitespace-nowrap">
+                        <span className="text-[10.5px] font-bold uppercase tracking-[.08em] text-[#8FA79B]">
+                          {f.k}
+                        </span>
+                        <span
+                          className="doc-ref text-[12.5px] font-bold"
+                          style={{ color: f.fg || '#0A1F17' }}
+                        >
+                          {f.v}
+                        </span>
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </button>
+              {kpiOpen && (
+            <div className="grid gap-2.5 rounded-[4px] rounded-t-none border border-t-0 border-[#D6E2D6] bg-[#F7FAF6] p-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr))]">
               <StockKpi
                 label="Closing balance"
                 value={formatNum(closing)}
@@ -5457,6 +5545,8 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
                 accent={neg.length ? '#B3261E' : '#C3D2C6'}
                 fg={neg.length ? '#B3261E' : '#0A1F17'}
               />
+            </div>
+              )}
             </div>
           )
         })()}
