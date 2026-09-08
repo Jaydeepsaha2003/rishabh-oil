@@ -11409,6 +11409,36 @@ async function runStartupTasks() {
     await resyncLcSettlement2(num2(lc.id));
     console.log(`[lc9] bill ${num2(bill.amount)} -> ${correct}, settlement voucher re-posted`);
   }).catch((e) => console.error("[lc9] gross bill fix failed:", e));
+  await runOnce("lc5_upfront_flag_v1", async () => {
+    const c = getClient();
+    const res = await c.execute({
+      sql: `SELECT id, lc_no, amount, interest_upfront, interest_journal_entry_id,
+                   (SELECT COALESCE(SUM(i.amount), 0) FROM lc_issuances i WHERE i.lc_id = l.id) billed
+              FROM letters_of_credit l
+             WHERE lc_no = 'LC-5' AND ABS(amount - 12000000) < 1 AND interest_upfront = 1`,
+      args: []
+    });
+    if (res.rows.length !== 1) {
+      console.log("[lc5] skipped \u2014 expected one upfront LC-5 at 1,20,00,000, found", res.rows.length);
+      return;
+    }
+    const r = res.rows[0];
+    const num2 = (v) => Number(v || 0);
+    if (num2(r.billed) >= num2(r.amount) - 5e-3) {
+      console.log("[lc5] skipped \u2014 billed at or above the open amount, the flag is correct");
+      return;
+    }
+    if (r.interest_journal_entry_id != null) {
+      console.log("[lc5] skipped \u2014 it now carries an upfront interest voucher; clearing the flag would strand it");
+      return;
+    }
+    console.log("[lc5] BEFORE", JSON.stringify(r));
+    await c.execute({
+      sql: "UPDATE letters_of_credit SET interest_upfront = 0 WHERE id = ?",
+      args: [num2(r.id)]
+    });
+    console.log("[lc5] interest_upfront cleared \u2014 expectation now matches the recorded bill");
+  }).catch((e) => console.error("[lc5] upfront flag fix failed:", e));
   startRevisionWatcher();
 }
 
