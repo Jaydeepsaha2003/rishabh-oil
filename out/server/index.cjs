@@ -7475,10 +7475,13 @@ function n6(v) {
 }
 async function listProduction(forModule) {
   const from = await visibleFromFor("production", forModule);
+  const fid = await factoryOfCompanies([getActiveCompanyId()]);
   const cids = await companiesOfFactory();
   const ph = cids.map(() => "?").join(", ");
+  const where = fid ? `(p.factory_id = ? OR (p.factory_id IS NULL AND p.company_id IN (${ph})))` : `p.company_id IN (${ph})`;
+  const scopeArgs = fid ? [fid, ...cids] : cids;
   const res = await getClient().execute({
-    args: from ? [...cids, from] : cids,
+    args: from ? [...scopeArgs, from] : scopeArgs,
     sql: `
     SELECT p.*, pr.name AS product_name, pr.category AS product_category, f.name AS formulation_name,
            sc.name AS subcategory_name, f.subcategory_id,
@@ -7488,7 +7491,7 @@ async function listProduction(forModule) {
     LEFT JOIN formulations f ON f.id = p.formulation_id
     LEFT JOIN formulation_subcategories sc ON sc.id = f.subcategory_id
     LEFT JOIN companies co ON co.id = p.company_id
-    WHERE p.company_id IN (${ph})${from ? " AND p.prod_date >= ?" : ""}
+    WHERE ${where}${from ? " AND p.prod_date >= ?" : ""}
     ORDER BY p.prod_date DESC, p.id DESC
   `
   });
@@ -7551,8 +7554,9 @@ async function createProduction(v) {
     }
   }
   const ins = await c.execute({
-    sql: "INSERT INTO production (company_id, prod_date, product_id, qty, uom, note, formulation_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    args: [getActiveCompanyId(), v.prod_date, productId, qty, v.uom || "MT", v.note || null, fid || null]
+    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, formulation_id)
+          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?)`,
+    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || "MT", v.note || null, fid || null]
   });
   const id = Number(ins.lastInsertRowid);
   for (const l of lines) {
@@ -10075,6 +10079,17 @@ async function runStartupTasks() {
       await c.execute(`CREATE INDEX IF NOT EXISTS idx_${t}_factory ON ${t}(factory_id)`);
     }
   }).catch((e) => console.error("[stock] openings factory column failed:", e));
+  await runOnce("production_factory_v1", async () => {
+    const c = getClient();
+    await c.execute("ALTER TABLE production ADD COLUMN factory_id INTEGER").catch((e) => {
+      if (!/duplicate column/i.test(String(e.message))) throw e;
+    });
+    await c.execute(
+      `UPDATE production SET factory_id = (SELECT co.factory_id FROM companies co WHERE co.id = production.company_id)
+        WHERE factory_id IS NULL`
+    );
+    await c.execute("CREATE INDEX IF NOT EXISTS idx_production_factory ON production(factory_id)");
+  }).catch((e) => console.error("[production] factory column failed:", e));
   startRevisionWatcher();
 }
 
