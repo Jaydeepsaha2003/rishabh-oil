@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowRightLeft, Boxes, Building2, CalendarRange, Factory, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
+import { AlertTriangle, ArrowRightLeft, BookOpen, Boxes, Building2, CalendarCheck, CalendarRange, ClipboardCheck, Factory, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Eye, EyeOff, Layers, Plus, SlidersHorizontal, TrendingDown, TrendingUp, Trash2, Upload, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Dialog,
@@ -346,6 +346,60 @@ function PartyCell({
   )
 }
 
+// The three things a reader comes to this page to do, from the handoff. They
+// were two strips before — a Book/Actual pair with a Register/Opening pair
+// tucked under one of them — which made "where the register starts" look like
+// a mode of the register rather than the thing the register is built on.
+//
+// Each carries a subtitle because the labels alone do not separate them: "Book
+// Stock" and "Actual Stock" are the same three words rearranged until you are
+// told one is what the ledger says and the other is what somebody counted.
+const STOCK_MENUS = [
+  { key: 'book', label: 'Book Stock', sub: 'WHAT THE BOOKS SAY', icon: BookOpen },
+  { key: 'actual', label: 'Actual Stock', sub: 'WHAT WAS COUNTED', icon: ClipboardCheck },
+  { key: 'opening', label: 'Opening Stock', sub: 'WHERE IT ALL STARTS', icon: CalendarCheck }
+] as const
+
+type StockMenu = (typeof STOCK_MENUS)[number]['key']
+
+// A figure, what it is measured in, and the one line that says why it matters.
+// The accent is a 3px rule along the top rather than a tint behind the whole
+// card: four tinted cards in a row read as four warnings.
+function StockKpi({
+  label,
+  value,
+  unit,
+  sub,
+  accent,
+  fg
+}: {
+  label: string
+  value: string
+  unit?: string
+  sub: string
+  accent: string
+  fg?: string
+}): React.JSX.Element {
+  return (
+    <div
+      className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3"
+      style={{ borderTop: `3px solid ${accent}` }}
+    >
+      <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">{label}</div>
+      <div className="mt-1.5 flex items-baseline gap-1.5">
+        <div
+          className="doc-ref min-w-0 truncate text-[21px] font-bold tracking-[-0.03em]"
+          style={{ color: fg || '#0A1F17' }}
+        >
+          {value}
+        </div>
+        {!!unit && <div className="text-[11px] font-bold text-[#5A6B62]">{unit}</div>}
+      </div>
+      <div className="mt-1 text-[11.5px] font-semibold leading-[1.45] text-[#5A6B62]">{sub}</div>
+    </div>
+  )
+}
+
 // Stock is read by FACTORY. The oil stands in one set of tanks and the tanks
 // do not know which company paid for it — one company can buy while another
 // manufactures, and that is still one physical stock.
@@ -584,12 +638,18 @@ function StockTable({ rows: allRows, breakdown, label = 'stock', range, onRange,
 
   return (
     <div className="space-y-3">
-    <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
-      <MiniStat label="Products" value={String(rows.length)} tone="slate" />
-      <MiniStat label="Total in" value={formatNum(inFlow)} tone="emerald" />
-      <MiniStat label="Total out" value={formatNum(outFlow)} tone="rose" />
-      <MiniStat label={negatives ? `In stock · ${negatives} negative` : 'In stock'} value={formatNum(totals.stock)} tone={negatives ? 'amber' : 'sky'} />
-    </div>
+    {/* Superseded on the website by the KPI row above the menu's tables, which
+        says the same four things and names the products that closed negative
+        instead of only counting them. Two strips of the same figures, one
+        under the other, is worse than either. */}
+    {!__WEB__ && (
+      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+        <MiniStat label="Products" value={String(rows.length)} tone="slate" />
+        <MiniStat label="Total in" value={formatNum(inFlow)} tone="emerald" />
+        <MiniStat label="Total out" value={formatNum(outFlow)} tone="rose" />
+        <MiniStat label={negatives ? `In stock · ${negatives} negative` : 'In stock'} value={formatNum(totals.stock)} tone={negatives ? 'amber' : 'sky'} />
+      </div>
+    )}
     <div className="flex flex-wrap items-center justify-end gap-2">
       {stagePicker}
       {idleCount > 0 && (
@@ -1173,9 +1233,21 @@ function OpeningStock({
 
             The grid's own gap draws the dividers, so they land correctly at
             every breakpoint instead of only at the widest one. */}
-        <div className="grid grid-cols-2 gap-px border-t border-[#d9d2b8] bg-[#e6dfc4] lg:grid-cols-4">
+        {/* The handoff gives the opening its own colour — a violet used
+            nowhere else in the app, because "where the register starts" is not
+            a warning, not a result and not money. It is a beginning, and it
+            wanted a hue that says so. */}
+        <div
+          className={cn(
+            'grid grid-cols-2 gap-px border-t border-[#d9d2b8] bg-[#e6dfc4] lg:grid-cols-4',
+            __WEB__ &&
+              '!grid-cols-[repeat(auto-fit,minmax(min(100%,180px),1fr))] !gap-2.5 !border-t-0 !bg-transparent !p-4'
+          )}
+        >
           {[
             {
+              accent: '#5B4BA8',
+              fg: '#3D3179',
               label: 'Opening total',
               tip: 'The tank figure plus the work already in process. The register opens at this total, and the Day close screen shows the same total as the physical count for this date.',
               value: <span className="text-[#1a2c56]">{formatNum(stats.total)}</span>,
@@ -1186,6 +1258,8 @@ function OpeningStock({
                   : '')
             },
             {
+              accent: '#C2700A',
+              fg: '#8A5300',
               label: 'Answered',
               tip: 'How many products have an opening entered — Raw or PP counts. A blank is not the same as zero: blank means not yet counted and stays off the register entirely.',
               value: (
@@ -1220,6 +1294,8 @@ function OpeningStock({
               )
             },
             {
+              accent: '#B3261E',
+              fg: '#B3261E',
               label: 'Below zero',
               tip: 'Products the register would carry as a negative balance. The first number counts them on movements since the opening date alone — each has been consumed or dispatched more than it was booked in, which is the hole an opening figure is here to fill. The second counts how many would STILL close negative with what is typed right now, and is the one to drive to nil.',
               value: (
@@ -1236,21 +1312,52 @@ function OpeningStock({
               note: 'to begin with → with what is typed'
             },
             {
+              accent: '#12855A',
+              fg: '#0B6B45',
               label: 'Opening value',
               tip: '(Raw + PP) × rate, summed. Only needed if the opening is to be posted to the ledger as well as the stock register; leave the rates blank otherwise.',
               value: <span className="text-[#1a2c56]">{formatINR(stats.value)}</span>,
               note: stats.value > 0 ? 'what the ledger would open at' : 'rates are optional — leave them blank to skip'
             }
           ].map((k) => (
-            <div key={k.label} className="bg-[#fffdf4] px-5 py-4">
+            <div
+              key={k.label}
+              className={cn(
+                'bg-[#fffdf4] px-5 py-4',
+                __WEB__ && '!rounded-[4px] !border !border-[#D6E2D6] !bg-white !px-3.5 !py-3'
+              )}
+              style={__WEB__ ? { borderTop: `3px solid ${k.accent}` } : undefined}
+            >
               <div className="flex items-center gap-1">
-                <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                <span
+                  className={cn(
+                    'text-[10px] font-bold uppercase tracking-widest text-muted-foreground',
+                    __WEB__ && '!text-[9.5px] !font-extrabold !tracking-[.13em] !text-[#5A6B62]'
+                  )}
+                >
                   {k.label}
                 </span>
                 <InfoTip text={k.tip} />
               </div>
-              <div className="mt-1.5 text-[22px] font-bold leading-none tabular-nums">{k.value}</div>
-              <div className="mt-2 text-[10.5px] leading-snug text-muted-foreground">{k.note}</div>
+              {/* text-inherit so the figure takes the card's own accent rather
+                  than the navy each value carries for the desktop. */}
+              <div
+                className={cn(
+                  'mt-1.5 text-[22px] font-bold leading-none tabular-nums',
+                  __WEB__ && 'doc-ref !mt-1.5 !text-[21px] !tracking-[-0.03em] [&_span]:!text-inherit'
+                )}
+                style={__WEB__ ? { color: k.fg } : undefined}
+              >
+                {k.value}
+              </div>
+              <div
+                className={cn(
+                  'mt-2 text-[10.5px] leading-snug text-muted-foreground',
+                  __WEB__ && '!mt-1 !text-[11.5px] !font-semibold !leading-[1.45] !text-[#5A6B62]'
+                )}
+              >
+                {k.note}
+              </div>
             </div>
           ))}
         </div>
@@ -2033,12 +2140,57 @@ function DayCloseSection({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
+        {/* The handoff leads on the two figures being compared — what the
+            register carries and what was actually counted — rather than on how
+            many rows have been filled in. The count of products moves into the
+            caption under the total, where it belongs: it qualifies the figure
+            rather than competing with it. */}
+        {__WEB__ ? (
+          <div className="grid flex-1 gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr))]">
+            <StockKpi
+              label="Book qty"
+              value={formatNum(rows.reduce((a, r) => a + (Number(r.book_qty) || 0), 0))}
+              unit="MT"
+              sub="what the register carries for this date"
+              accent="#0B3D2E"
+            />
+            <StockKpi
+              label="Counted total"
+              value={formatNum(counted.reduce((a, r) => a + totalOf(r), 0))}
+              unit="MT"
+              sub={`${counted.length} of ${rows.length} products counted`}
+              accent="#C7F03F"
+            />
+            <StockKpi
+              label="Net difference"
+              value={formatNum(Math.abs(totalDiff) < 0.0005 ? 0 : totalDiff)}
+              unit="MT"
+              sub={
+                Math.abs(totalDiff) < 0.0005
+                  ? 'books and count agree'
+                  : totalDiff > 0
+                    ? 'physical stock is short of the books'
+                    : 'more counted than the books carry'
+              }
+              accent="#C2700A"
+              fg={Math.abs(totalDiff) < 0.0005 ? '#0B6B45' : '#8A5300'}
+            />
+            <StockKpi
+              label="Actual value"
+              value={formatINR(totalActualValue)}
+              sub={mismatches ? `${mismatches} product${mismatches === 1 ? '' : 's'} disagree with the books` : 'counted total at the rates below'}
+              accent="#12855A"
+              fg="#0B6B45"
+            />
+          </div>
+        ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 flex-1">
           <StatCard label="Products counted" value={`${counted.length} / ${rows.length}`} />
           <StatCard label="Mismatches" value={String(mismatches)} tone={mismatches ? 'text-amber-700' : 'text-emerald-700'} />
           <StatCard label="Net difference (book − actual)" value={`${formatNum(totalDiff)}`} tone={Math.abs(totalDiff) > 0.0005 ? 'text-amber-700' : ''} />
           <StatCard label="Section actual value" value={formatINR(totalActualValue)} />
         </div>
+        )}
         <div className="flex items-center gap-2">
           <input
             ref={fileRef}
@@ -3284,11 +3436,59 @@ function SkuStock(): React.JSX.Element {
         const part = shown.length !== rows.length
         const all = (v: string): string | undefined => (part ? `of ${v}` : undefined)
         return (
-          // Three figures on ONE strip. Pieces and tonnes are two readings of a
-          // single closing balance so they sit together, the SKU count moved up
-          // beside the filters that change it, and the below-zero warning rides
-          // here rather than claiming a band of its own — it is a fact about
-          // these very figures.
+          __WEB__ ? (
+            /* Four cards, same language as Book Stock and the opening sheet.
+               Pieces and tonnage were one cell reading "1,621 pcs · 23.943 MT"
+               — two different questions wedged into one figure, and neither
+               could be read at a glance. They get a card each. */
+            <div className="space-y-2.5">
+              <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr))]">
+                <StockKpi
+                  label={dayMode ? 'Closing' : 'On the shelf'}
+                  value={formatNum(sum(shown, handOf))}
+                  unit="pcs"
+                  sub={`${shown.length} SKU${shown.length === 1 ? '' : 's'}${part ? ` of ${rows.length}` : ''}`}
+                  accent="#C7F03F"
+                />
+                <StockKpi
+                  label="As tonnage"
+                  value={formatNum(shownMT)}
+                  unit="MT"
+                  sub="each count at its own pack size"
+                  accent="#0B3D2E"
+                />
+                <StockKpi
+                  label={dayMode ? 'Packed in' : 'Packed (total)'}
+                  value={formatNum(sum(shown, inOf))}
+                  unit="pcs"
+                  sub={dayMode ? 'on the day shown' : 'since the counted morning'}
+                  accent="#12855A"
+                  fg="#0B6B45"
+                />
+                <StockKpi
+                  label={dayMode ? 'Dispatched' : 'Sold (packed)'}
+                  value={formatNum(sum(shown, outOf))}
+                  unit="pcs"
+                  sub={dayMode ? 'on the day shown' : 'since the counted morning'}
+                  accent="#B3261E"
+                  fg="#8C2F26"
+                />
+              </div>
+              {negatives > 0 && (
+                <span className="inline-flex items-center gap-1.5 rounded-[3px] border border-[#F0D6D4] bg-[#FDF3F2] px-2.5 py-1 text-[11.5px] font-bold text-[#B3261E]">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  {negatives} below zero
+                  <InfoTip
+                    className="text-[#B3261E] hover:text-[#8C2F26]"
+                    text="More has been dispatched than was ever packed in. Either the packing was never entered, or the shelf was never counted. Open the SKU with the sliders icon to see the entries behind it, or strike an opening count on the Opening stock tab if the packs predate the books."
+                  />
+                </span>
+              )}
+            </div>
+          ) : (
+          /* Desktop keeps the one strip: three figures, pieces and tonnes read
+             together as one closing balance, and the below-zero warning riding
+             alongside rather than claiming a band of its own. */
           <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border bg-muted/20 px-3.5 py-2">
             <Figure
               label={dayMode ? 'Packed in' : 'Packed (total)'}
@@ -3321,6 +3521,7 @@ function SkuStock(): React.JSX.Element {
               </span>
             )}
           </div>
+          )
         )
       })()}
 
@@ -4875,6 +5076,60 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
       <div className="p-5">
         {/* Two families: what the books say, and what was physically counted or
             is held for someone else. Switching family lands on its first tab. */}
+        {/* Website: one menu of three, per the handoff. Opening Stock is a peer
+            of the other two rather than a mode hidden under Book Stock — it is
+            where the register begins, not a way of looking at it. The state
+            underneath is unchanged, so every existing view still lands exactly
+            where it did. */}
+        {__WEB__ ? (
+          <div className="mb-3 flex flex-wrap items-end gap-1 border-b border-b-[#D6E2D6]">
+            {STOCK_MENUS.map((m) => {
+              const on = m.key === (bookView === 'opening' && stockGroup === 'book' ? 'opening' : stockGroup)
+              const Icon = m.icon
+              return (
+                <button
+                  key={m.key}
+                  type="button"
+                  onClick={() => {
+                    if (m.key === 'opening') {
+                      setStockGroup('book')
+                      setBookView('opening')
+                      return
+                    }
+                    setStockGroup(m.key)
+                    setBookView('register')
+                    setTab(m.key === 'book' ? 'raw' : 'sku')
+                  }}
+                  className={cn(
+                    'flex h-[46px] items-center gap-[9px] rounded-t-[4px] px-4 text-left transition-colors',
+                    'border-b-[3px]',
+                    on ? 'border-b-[#C7F03F] bg-[#F1F5EF]' : 'border-b-transparent hover:bg-[#F7FAF6]'
+                  )}
+                >
+                  <Icon className={cn('h-[19px] w-[19px] shrink-0', on ? 'text-[#0B3D2E]' : 'text-[#8CA396]')} />
+                  <span className="min-w-0">
+                    <span
+                      className={cn(
+                        'block whitespace-nowrap text-[13.5px] font-extrabold tracking-[-0.01em]',
+                        on ? 'text-[#0A1F17]' : 'text-[#5A6B62]'
+                      )}
+                    >
+                      {m.label}
+                    </span>
+                    <span
+                      className={cn(
+                        'block whitespace-nowrap text-[10px] font-bold tracking-[.02em]',
+                        on ? 'text-[#0B6B45]' : 'text-[#8CA396]'
+                      )}
+                    >
+                      {m.sub}
+                    </span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        ) : (
         <div className="mb-3 inline-flex rounded-lg border p-0.5">
           {([
             { key: 'book', label: 'Book Stock', first: 'raw' },
@@ -4893,12 +5148,13 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
             </button>
           ))}
         </div>
+        )}
         {/* Opening stock is not a stage of the register — it is where the
             register starts — so it is its own view rather than a fourth stage
             inside the stage picker. Kept out of `tab` on purpose: that value is
             raw / intermediate / finished, so a tab trigger for the register
             would go dark the moment anyone picked Intermediate. */}
-        {stockGroup === 'book' && (
+        {!__WEB__ && stockGroup === 'book' && (
           <div className="mb-3 ml-2 inline-flex rounded-lg border p-0.5 align-top">
             {([
               { key: 'register', label: 'Register' },
@@ -4918,6 +5174,54 @@ export function Stock({ onCompanyChange }: { onCompanyChange?: (id: string) => v
             ))}
           </div>
         )}
+        {/* Four figures the register cannot state for itself: what it comes
+            to, what came in, what went out, and whether anything closed below
+            nil. The last is the one worth the space — a negative balance is a
+            bookkeeping hole, and it used to be findable only by reading every
+            row of every category. */}
+        {__WEB__ && stockGroup === 'book' && bookView !== 'opening' && (() => {
+          const inView = rows.filter((r) => r.category === tab)
+          const t = (k: string): number => inView.reduce((a, r) => a + (Number(r[k]) || 0), 0)
+          const closing = t('stock')
+          const inQty = t('received') + t('produced')
+          const outQty = t('consumed') + t('sold') + t('packed_out')
+          const neg = inView.filter((r) => Number(r.stock) < -1e-9)
+          return (
+            <div className="mb-3 grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr))]">
+              <StockKpi
+                label="Closing balance"
+                value={formatNum(closing)}
+                unit="MT"
+                sub={`${inView.length} product${inView.length === 1 ? '' : 's'} in view`}
+                accent="#C7F03F"
+              />
+              <StockKpi
+                label="In this period"
+                value={formatNum(inQty)}
+                unit="MT"
+                sub={`${formatNum(t('received'))} received · ${formatNum(t('produced'))} produced`}
+                accent="#12855A"
+                fg="#0B6B45"
+              />
+              <StockKpi
+                label="Out this period"
+                value={formatNum(outQty)}
+                unit="MT"
+                sub={`${formatNum(t('consumed'))} consumed · ${formatNum(t('packed_out'))} packed · ${formatNum(t('sold'))} dispatched`}
+                accent="#B3261E"
+                fg="#8C2F26"
+              />
+              <StockKpi
+                label="Negative balances"
+                value={String(neg.length)}
+                unit={neg.length === 1 ? 'product' : 'products'}
+                sub={neg.length ? neg.map((r) => String(r.name)).join(', ') : 'Every product closes at nil or above'}
+                accent={neg.length ? '#B3261E' : '#C3D2C6'}
+                fg={neg.length ? '#B3261E' : '#0A1F17'}
+              />
+            </div>
+          )
+        })()}
         {stockGroup === 'book' && bookView === 'opening' ? (
           <OpeningStock companies={companies} onCompanyChange={onCompanyChange} />
         ) : (
