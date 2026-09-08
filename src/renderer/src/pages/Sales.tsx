@@ -229,6 +229,16 @@ function BargainSection({ title, children }: { title: string; children: React.Re
 const SB_G = '!bg-[#FBFDFA]'
 const SB_GL = '!bg-[#FBFDFA] !border-l !border-l-[#EAF0E9]'
 const SB_GR = '!bg-[#FBFDFA] !border-r !border-r-[#EAF0E9]'
+// The register has two jobs and they want opposite things. Collapsed it is a
+// summary of eight customers and has to fit a 13" screen, so the columns are
+// pinned and anything longer than its column is cut. Expanded the reader is
+// looking at one bargain and its number is the thing they came for — a number
+// ending in "..." is no use — so the widths come off the content instead and
+// the table slides sideways if it needs to.
+const SB_FIT = '!table-fixed [&_td]:!truncate'
+const SB_CELLS =
+  '!min-w-[1074px] [&_td]:!whitespace-nowrap [&_td]:!px-2 [&_th]:!whitespace-nowrap [&_th]:!px-2'
+
 const SB_BAL = '!bg-[#EFF5EC]'
 const SB_HG = '!bg-white/[0.04]'
 const SB_HGL = '!bg-white/[0.04] !border-l !border-l-[#C7F03F]/20'
@@ -5188,8 +5198,7 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
           wrapperClassName={cn('rounded-lg', __WEB__ && '!rounded-[4px]')}
           className={cn(
             'min-w-[1180px] text-[13px]',
-            __WEB__ &&
-              '!min-w-[1074px] !table-fixed [&_td]:!whitespace-nowrap [&_td]:!truncate [&_td]:!px-2 [&_th]:!whitespace-nowrap [&_th]:!px-2'
+            __WEB__ && cn(SB_CELLS, !q && openGroups.size === 0 && SB_FIT)
           )}
         >
           {/* Fixed widths, because table-fixed reads the first row and this

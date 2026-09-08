@@ -1185,8 +1185,12 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                 wrapperClassName={cn('max-h-[calc(100vh-215px)] rounded-xl', __WEB__ && '!rounded-[4px]')}
                 className={cn(
                   'min-w-[860px] text-[12px] [&_td]:px-3 [&_td]:py-2 [&_th]:px-3 [&_th]:h-9',
+                  // Same two jobs as the sales register: pinned columns while
+                  // it is a summary, content-sized once a group is open and the
+                  // reader needs the bargain number in full.
                   __WEB__ &&
-                    '!min-w-[1074px] !table-fixed [&_td]:!whitespace-nowrap [&_td]:!truncate [&_td]:!px-2 [&_th]:!whitespace-nowrap [&_th]:!px-2 [&_th]:!text-[10.5px] [&_th]:!font-semibold [&_th]:!tracking-[.04em] [&_th_button]:!text-[10.5px] [&_th_button]:!font-semibold'
+                    '!min-w-[1074px] [&_td]:!whitespace-nowrap [&_td]:!px-2 [&_th]:!whitespace-nowrap [&_th]:!px-2 [&_th]:!text-[10.5px] [&_th]:!font-semibold [&_th]:!tracking-[.04em] [&_th_button]:!text-[10.5px] [&_th_button]:!font-semibold',
+                  __WEB__ && groupedByOil && !q && openGroups.size === 0 && '!table-fixed [&_td]:!truncate'
                 )}
               >
                 {/* The widths, stated once. table-fixed cannot read them off

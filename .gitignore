@@ -3,7 +3,13 @@ out/
 dist/
 dist-electron/
 release/
+# Secrets. The bare name was not enough: .env.local, .env.production and any
+# .env.<something>-backup fall outside it, and one of those holding a Turso
+# auth token was a `git add -A` away from being committed. The example file is
+# the template and stays tracked.
 .env
+.env.*
+!.env.example
 *.log
 .DS_Store
 
