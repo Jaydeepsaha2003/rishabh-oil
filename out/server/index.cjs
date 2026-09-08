@@ -4,6 +4,13 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
     for (let key3 of __getOwnPropNames(from))
@@ -21,14 +28,11 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// src/server/index.ts
-var import_node_path5 = require("node:path");
-
-// src/main/db.ts
-var import_web = require("@libsql/client");
-
 // src/main/schema.ts
-var SCHEMA_SQL = `
+var SCHEMA_SQL;
+var init_schema = __esm({
+  "src/main/schema.ts"() {
+    SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT
@@ -584,63 +588,68 @@ INSERT OR IGNORE INTO app_settings (key, value) VALUES ('default_uom', 'MT');
 INSERT OR IGNORE INTO app_settings (key, value) VALUES ('log_retention_days', '30');
 INSERT OR IGNORE INTO uoms (name) VALUES ('MT'), ('TON'), ('KG'), ('LTR'), ('QUINTAL');
 `;
+  }
+});
 
 // src/server/electron-shim.ts
-var import_node_path = require("node:path");
-var import_node_fs = require("node:fs");
-var handlers = /* @__PURE__ */ new Map();
-var ipcMain = {
-  handle(channel, fn) {
-    handlers.set(channel, fn);
-  },
-  removeHandler(channel) {
-    handlers.delete(channel);
-  },
-  on() {
+var import_node_path, import_node_fs, handlers, ipcMain, dataDir, app, notOnTheWeb, shell, dialog;
+var init_electron_shim = __esm({
+  "src/server/electron-shim.ts"() {
+    import_node_path = require("node:path");
+    import_node_fs = require("node:fs");
+    handlers = /* @__PURE__ */ new Map();
+    ipcMain = {
+      handle(channel, fn) {
+        handlers.set(channel, fn);
+      },
+      removeHandler(channel) {
+        handlers.delete(channel);
+      },
+      on() {
+      }
+    };
+    dataDir = process.env.DATA_DIR || (0, import_node_path.join)(process.cwd(), ".server-data");
+    app = {
+      getPath(name) {
+        const dir = name === "userData" ? dataDir : (0, import_node_path.join)(dataDir, name);
+        try {
+          (0, import_node_fs.mkdirSync)(dir, { recursive: true });
+        } catch {
+        }
+        return dir;
+      },
+      getVersion() {
+        return process.env.APP_VERSION || "0.0.0-web";
+      },
+      getName() {
+        return "rishabh-oil-web";
+      },
+      whenReady() {
+        return Promise.resolve();
+      },
+      on() {
+      },
+      quit() {
+      },
+      isPackaged: true
+    };
+    notOnTheWeb = (what) => () => {
+      throw new Error(`${what} is only available in the desktop app`);
+    };
+    shell = {
+      openExternal: notOnTheWeb("Opening a link from the server"),
+      openPath: notOnTheWeb("Opening a file on the server"),
+      showItemInFolder: notOnTheWeb("Showing a file on the server")
+    };
+    dialog = {
+      showOpenDialog: notOnTheWeb("Choosing a file from the server"),
+      showSaveDialog: notOnTheWeb("Saving a file from the server"),
+      showMessageBox: notOnTheWeb("A message box")
+    };
   }
-};
-var dataDir = process.env.DATA_DIR || (0, import_node_path.join)(process.cwd(), ".server-data");
-var app = {
-  getPath(name) {
-    const dir = name === "userData" ? dataDir : (0, import_node_path.join)(dataDir, name);
-    try {
-      (0, import_node_fs.mkdirSync)(dir, { recursive: true });
-    } catch {
-    }
-    return dir;
-  },
-  getVersion() {
-    return process.env.APP_VERSION || "0.0.0-web";
-  },
-  getName() {
-    return "rishabh-oil-web";
-  },
-  whenReady() {
-    return Promise.resolve();
-  },
-  on() {
-  },
-  quit() {
-  },
-  isPackaged: true
-};
-var notOnTheWeb = (what) => () => {
-  throw new Error(`${what} is only available in the desktop app`);
-};
-var shell = {
-  openExternal: notOnTheWeb("Opening a link from the server"),
-  openPath: notOnTheWeb("Opening a file on the server"),
-  showItemInFolder: notOnTheWeb("Showing a file on the server")
-};
-var dialog = {
-  showOpenDialog: notOnTheWeb("Choosing a file from the server"),
-  showSaveDialog: notOnTheWeb("Saving a file from the server"),
-  showMessageBox: notOnTheWeb("A message box")
-};
+});
 
 // src/main/config.ts
-var import_fs = require("fs");
-var import_path = require("path");
 function configPath() {
   return (0, import_path.join)(app.getPath("userData"), "rishabh-oil-config.json");
 }
@@ -658,9 +667,16 @@ function saveStoredConfig(url, authToken) {
   (0, import_fs.mkdirSync)((0, import_path.dirname)(p), { recursive: true });
   (0, import_fs.writeFileSync)(p, JSON.stringify({ url, authToken }, null, 2), "utf-8");
 }
+var import_fs, import_path;
+var init_config = __esm({
+  "src/main/config.ts"() {
+    init_electron_shim();
+    import_fs = require("fs");
+    import_path = require("path");
+  }
+});
 
 // src/main/db.ts
-var client = null;
 function getConfiguredUrl() {
   return getStoredConfig().url || process.env.MAIN_VITE_TURSO_DATABASE_URL || process.env.MAIN_VITE_TURSO_DATABASE_URL || process.env.TURSO_DATABASE_URL || "";
 }
@@ -719,1227 +735,6 @@ function getClient() {
   client = withStreamRecovery((0, import_web.createClient)({ url, authToken }));
   return client;
 }
-var MIGRATIONS = [
-  "ALTER TABLE bargains ADD COLUMN opening_qty REAL",
-  "ALTER TABLE bargains ADD COLUMN base_rate REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE bargains ADD COLUMN duty REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE bargains ADD COLUMN allowed_shortage_pct REAL",
-  "ALTER TABLE orders ADD COLUMN is_registered_transporter INTEGER NOT NULL DEFAULT 1",
-  "ALTER TABLE orders ADD COLUMN tanker_no TEXT",
-  "ALTER TABLE orders ADD COLUMN posting INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE orders ADD COLUMN final_taxable_value REAL DEFAULT 0",
-  "ALTER TABLE orders ADD COLUMN final_gst_amount REAL DEFAULT 0",
-  "ALTER TABLE orders ADD COLUMN final_tds_amount REAL DEFAULT 0",
-  "ALTER TABLE orders ADD COLUMN final_net_amount REAL DEFAULT 0",
-  "ALTER TABLE supplier_ledger ADD COLUMN payment_id INTEGER",
-  "ALTER TABLE transporter_ledger ADD COLUMN payment_id INTEGER",
-  "ALTER TABLE users ADD COLUMN permissions TEXT",
-  "ALTER TABLE transporters ADD COLUMN company_type TEXT",
-  "ALTER TABLE transporters ADD COLUMN gst_pct REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE transporters ADD COLUMN tds_pct REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE transporters ADD COLUMN tds_threshold REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE transporters ADD COLUMN tds_pct_above REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE suppliers ADD COLUMN tds_threshold REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE suppliers ADD COLUMN tds_pct_above REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE suppliers ADD COLUMN tds_above_only INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE orders ADD COLUMN port_entry_date TEXT",
-  "ALTER TABLE orders ADD COLUMN payment_cleared_date TEXT",
-  "ALTER TABLE orders ADD COLUMN financed_by_party INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE orders ADD COLUMN dispatch_date TEXT",
-  "ALTER TABLE orders ADD COLUMN outside_factory_date TEXT",
-  "ALTER TABLE orders ADD COLUMN inside_factory_date TEXT",
-  "ALTER TABLE orders ADD COLUMN received_date TEXT",
-  "ALTER TABLE orders ADD COLUMN credit_interest_days REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE orders ADD COLUMN credit_interest_amount REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE sales ADD COLUMN sales_bargain_id INTEGER",
-  "ALTER TABLE sales ADD COLUMN customer_id INTEGER",
-  "ALTER TABLE payment_allocations ADD COLUMN sale_id INTEGER",
-  // bargains/orders keep a legacy oil_types FK; mirror products so it is satisfied.
-  `INSERT OR IGNORE INTO oil_types (id, code, name, active)
-     SELECT id, COALESCE(code, name, 'GEN'), COALESCE(name, code, 'PRODUCT'), 1 FROM products`,
-  // default UOM switched from ton to MT
-  "UPDATE app_settings SET value = 'MT' WHERE key = 'default_uom' AND value = 'ton'",
-  "ALTER TABLE suppliers ADD COLUMN supplier_type TEXT",
-  "ALTER TABLE orders ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
-  "ALTER TABLE gate_entries ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'",
-  "ALTER TABLE bargains ADD COLUMN broker_id INTEGER",
-  "ALTER TABLE orders ADD COLUMN round_off REAL NOT NULL DEFAULT 0",
-  // multi-company: every business document belongs to a company (masters and
-  // gate entries stay shared). Existing data lands in company 1.
-  "ALTER TABLE bargains ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
-  "ALTER TABLE orders ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
-  "ALTER TABLE purchase_tankers ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
-  "ALTER TABLE sales ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
-  "ALTER TABLE sales_bargains ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
-  "ALTER TABLE production ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
-  "ALTER TABLE payments ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
-  "ALTER TABLE bill_discounts ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
-  "ALTER TABLE letters_of_credit ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
-  "ALTER TABLE journal_entries ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
-  // Free-text remarks on bargains and purchase invoices.
-  "ALTER TABLE bargains ADD COLUMN remarks TEXT",
-  "ALTER TABLE orders ADD COLUMN remarks TEXT",
-  // Invoice rate above bargain rate = freight billed by the supplier: the
-  // difference is kept as per-ton freight data but NO transporter ledger posts.
-  "ALTER TABLE orders ADD COLUMN freight_paid_to_supplier INTEGER NOT NULL DEFAULT 0",
-  // Consignment purchase: goods were already at our site (no tanker movement,
-  // no transporter, booked straight to received) — drawn from consignment stock.
-  "ALTER TABLE orders ADD COLUMN is_consignment INTEGER NOT NULL DEFAULT 0",
-  // Packaging master: reusable pack definitions with Box -> Pouch -> base
-  // nesting. base per box = pouches_per_box * base_per_pouch.
-  `CREATE TABLE IF NOT EXISTS packagings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    box_label TEXT NOT NULL DEFAULT 'Box',
-    pouch_label TEXT NOT NULL DEFAULT 'Pouch',
-    pouches_per_box REAL NOT NULL DEFAULT 1,
-    base_per_pouch REAL NOT NULL DEFAULT 1,
-    base_uom TEXT NOT NULL DEFAULT 'L',
-    active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  // Sales bargains carry a default sale type (LOOSE/PACKED), packaging and
-  // freight term (FREIGHT_ON_GOODS = customer arranges; DLD = we deliver).
-  "ALTER TABLE sales_bargains ADD COLUMN sale_type TEXT NOT NULL DEFAULT 'LOOSE'",
-  "ALTER TABLE sales_bargains ADD COLUMN packaging_id INTEGER",
-  "ALTER TABLE sales_bargains ADD COLUMN freight_term TEXT NOT NULL DEFAULT 'FREIGHT_ON_GOODS'",
-  // Each sale can override the bargain's type/freight; PACKED stores boxes +
-  // loose pouches, DLD stores the transporter and freight.
-  "ALTER TABLE sales ADD COLUMN sale_type TEXT NOT NULL DEFAULT 'LOOSE'",
-  "ALTER TABLE sales ADD COLUMN packaging_id INTEGER",
-  "ALTER TABLE sales ADD COLUMN boxes REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE sales ADD COLUMN pouches REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE sales ADD COLUMN freight_term TEXT NOT NULL DEFAULT 'FREIGHT_ON_GOODS'",
-  "ALTER TABLE sales ADD COLUMN transporter_id INTEGER",
-  "ALTER TABLE sales ADD COLUMN transport_rate REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE sales ADD COLUMN transport_amount REAL NOT NULL DEFAULT 0",
-  // Sale-linked freight lives in the transporter ledger (DLD deliveries).
-  "ALTER TABLE transporter_ledger ADD COLUMN sale_id INTEGER",
-  // Packaging SKUs: capture the unit size in its natural unit (KG/GM/L/ML);
-  // base_per_pouch/base_uom are derived from these for stock conversion.
-  "ALTER TABLE packagings ADD COLUMN unit_size REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE packagings ADD COLUMN unit_uom TEXT NOT NULL DEFAULT 'KG'",
-  // Output GST on sales (bargain carries the default rate; the sale stores the
-  // rate applied and the computed amount).
-  "ALTER TABLE sales_bargains ADD COLUMN gst_pct REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE sales_bargains ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
-  // Link the sales bargain to the customer master by id, so renaming a customer
-  // reflects everywhere (the stored name is kept only as a fallback label).
-  "ALTER TABLE sales_bargains ADD COLUMN customer_id INTEGER",
-  "ALTER TABLE sales ADD COLUMN gst_pct REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE sales ADD COLUMN gst_amount REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE sales ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
-  // Three-stage dispatch tracking for sales (loaded → transit → unloaded),
-  // mirroring purchase tankers. Any of the three means the goods have left the
-  // factory (status 'done'); 'pending' = not yet dispatched. Existing fulfilled
-  // sales are treated as already unloaded/delivered.
-  "ALTER TABLE sales ADD COLUMN dispatch_stage TEXT",
-  "UPDATE sales SET dispatch_stage = 'unloaded' WHERE status = 'done' AND dispatch_stage IS NULL",
-  // Allow dispatching a sale without booking stock (off-stock / untracked) after
-  // an explicit confirmation. Such a sale does not draw from or affect stock.
-  "ALTER TABLE sales ADD COLUMN track_stock INTEGER NOT NULL DEFAULT 1",
-  // Date stamped at each dispatch stage (loaded → in transit → unloaded).
-  "ALTER TABLE sales ADD COLUMN loaded_date TEXT",
-  "ALTER TABLE sales ADD COLUMN transit_date TEXT",
-  "ALTER TABLE sales ADD COLUMN unloaded_date TEXT",
-  // Existing delivered sales: assume unloaded on the sale date.
-  "UPDATE sales SET unloaded_date = sale_date WHERE dispatch_stage = 'unloaded' AND unloaded_date IS NULL",
-  // Reverse-charge (RCM) flag for individual transporters (GTA). Informational
-  // for now — freight is billed without GST and GST is self-accounted by us.
-  "ALTER TABLE transporters ADD COLUMN reverse_charge INTEGER NOT NULL DEFAULT 0",
-  // Gate OUT entries: outgoing sale dispatches tracked at the gate, alongside
-  // the existing inbound (purchase tanker) entries. direction 'in' | 'out';
-  // out entries link the sale being dispatched.
-  "ALTER TABLE gate_entries ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'",
-  "ALTER TABLE gate_entries ADD COLUMN sale_id INTEGER",
-  // Receipt classification + gross/tare weighment. Net (received_qty) = gross − tare.
-  "ALTER TABLE gate_entries ADD COLUMN rec_type TEXT NOT NULL DEFAULT 'OIL'",
-  "ALTER TABLE gate_entries ADD COLUMN gross_weight REAL",
-  "ALTER TABLE gate_entries ADD COLUMN tare_weight REAL",
-  // Optional manual gate no (the physical gate-register number) — the system
-  // serial (gate_entry_no) is always auto-assigned; this can be typed or blank.
-  "ALTER TABLE gate_entries ADD COLUMN ref_no TEXT",
-  // Multi-item sales invoices: line items share an invoice_group. Existing
-  // single sales each become their own group. gate-out links the group.
-  "ALTER TABLE sales ADD COLUMN invoice_group TEXT",
-  "UPDATE sales SET invoice_group = 'LEGACY-' || id WHERE invoice_group IS NULL",
-  "ALTER TABLE gate_entries ADD COLUMN invoice_group TEXT",
-  // Direct MNC arrival: the goods belong to a direct-purchase party and never
-  // travelled on one of our purchase tankers, so there is no tanker to pick —
-  // the gateman types the vehicle number and names the party right here, and the
-  // accountant's validation step is then only about which oil it is.
-  "ALTER TABLE gate_entries ADD COLUMN supplier_id INTEGER",
-  "ALTER TABLE gate_entries ADD COLUMN is_direct_mnc INTEGER NOT NULL DEFAULT 0",
-  // Manual additional interest (₹ per unit) on a purchase invoice — folds into
-  // the adjusted bargain rate.
-  "ALTER TABLE orders ADD COLUMN additional_interest REAL NOT NULL DEFAULT 0",
-  // Dated log of bargain balance top-ups / removals, so an addition made in a
-  // month shows under "Addition" in the bargain register for that month.
-  // kind = 'purchase' | 'sales'; delta > 0 add, < 0 remove.
-  `CREATE TABLE IF NOT EXISTS bargain_adjustments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind TEXT NOT NULL,
-    bargain_id INTEGER NOT NULL,
-    delta REAL NOT NULL,
-    adj_date TEXT NOT NULL,
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  // Approval queue: master-list creations by non-admins park here (on hold)
-  // until an admin approves (inserts into the real table) or rejects (reason
-  // shown back to the requester). Real master tables only ever hold approved
-  // rows, so existing dropdowns/consumers need no filtering.
-  `CREATE TABLE IF NOT EXISTS approval_requests (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    table_name TEXT NOT NULL,
-    action TEXT NOT NULL DEFAULT 'create',
-    payload TEXT NOT NULL,
-    label TEXT,
-    requested_by INTEGER,
-    requested_by_name TEXT,
-    requested_at TEXT NOT NULL DEFAULT (datetime('now')),
-    status TEXT NOT NULL DEFAULT 'pending',
-    decided_by INTEGER,
-    decided_by_name TEXT,
-    decided_at TEXT,
-    reason TEXT,
-    created_id INTEGER
-  )`,
-  // Consignment stock: supplier goods lying at our place, off-books until
-  // invoiced. Created here (not in SCHEMA_SQL) so it also lands on existing DBs.
-  `CREATE TABLE IF NOT EXISTS consignment_stock (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_id INTEGER NOT NULL DEFAULT 1,
-    supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
-    product_id INTEGER NOT NULL REFERENCES products(id),
-    qty REAL NOT NULL,
-    uom TEXT NOT NULL DEFAULT 'MT',
-    deposit_date TEXT NOT NULL,
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  // Audit trail: attribute each logged action to a company, section and record.
-  "ALTER TABLE user_logs ADD COLUMN company_id INTEGER",
-  "ALTER TABLE user_logs ADD COLUMN entity TEXT",
-  "ALTER TABLE user_logs ADD COLUMN entity_id INTEGER",
-  // Inter-company stock movement: qty leaves the source company's stock and
-  // adds to the destination company's stock (physical move, not a sale).
-  `CREATE TABLE IF NOT EXISTS stock_transfers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    from_company_id INTEGER NOT NULL,
-    to_company_id INTEGER NOT NULL,
-    product_id INTEGER NOT NULL REFERENCES products(id),
-    qty REAL NOT NULL,
-    uom TEXT NOT NULL DEFAULT 'MT',
-    transfer_date TEXT NOT NULL,
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  // Party ledgers are company books too — doc-linked rows inherit the parent
-  // document's company; manual rows take the company they were entered in.
-  "ALTER TABLE supplier_ledger ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
-  "ALTER TABLE transporter_ledger ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
-  "ALTER TABLE customer_ledger ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
-  // Excess loading: qty loaded beyond the chosen bargain's balance is booked
-  // against an auto-created bargain line; the split is remembered per tanker.
-  "ALTER TABLE purchase_tankers ADD COLUMN extra_bargain_id INTEGER",
-  "ALTER TABLE purchase_tankers ADD COLUMN extra_qty REAL NOT NULL DEFAULT 0",
-  // Self-healing: doc-linked party-ledger rows always belong to their parent
-  // document's company (covers rows written before these columns existed).
-  `UPDATE supplier_ledger SET company_id = COALESCE(
-     (SELECT o.company_id FROM orders o WHERE o.id = supplier_ledger.order_id),
-     (SELECT p.company_id FROM payments p WHERE p.id = supplier_ledger.payment_id),
-     company_id)`,
-  `UPDATE transporter_ledger SET company_id = COALESCE(
-     (SELECT o.company_id FROM orders o WHERE o.id = transporter_ledger.order_id),
-     (SELECT p.company_id FROM payments p WHERE p.id = transporter_ledger.payment_id),
-     company_id)`,
-  `UPDATE customer_ledger SET company_id = COALESCE(
-     (SELECT s.company_id FROM sales s WHERE s.id = customer_ledger.sale_id),
-     (SELECT p.company_id FROM payments p WHERE p.id = customer_ledger.payment_id),
-     company_id)`,
-  "ALTER TABLE suppliers ADD COLUMN opening_purchase_amount REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE suppliers ADD COLUMN opening_purchase_date TEXT",
-  // bargain condition renamed to EX/DLD
-  "UPDATE bargains SET bargain_type = 'EX' WHERE bargain_type = 'Ex'",
-  "UPDATE bargains SET bargain_type = 'DLD' WHERE bargain_type = 'Delivered'",
-  "UPDATE orders SET bargain_type = 'EX' WHERE bargain_type = 'Ex'",
-  "UPDATE orders SET bargain_type = 'DLD' WHERE bargain_type = 'Delivered'",
-  "ALTER TABLE purchase_tankers ADD COLUMN krfl_weighment_doc_no TEXT",
-  "ALTER TABLE purchase_tankers ADD COLUMN krfl_weighment_photo TEXT",
-  "ALTER TABLE purchase_tankers ADD COLUMN outside_weighment_doc_no TEXT",
-  "ALTER TABLE purchase_tankers ADD COLUMN outside_weighment_photo TEXT",
-  `INSERT INTO purchase_tankers
-    (order_id, tanker_no, loaded_date, bargain_id, supplier_id, oil_type_id, loaded_qty, uom,
-     payment_mode, status, transit_date, source_id, expected_delivery_date, outside_factory_date,
-     inside_factory_date, empty_date, received_qty, transporter_id, transport_rate_per_ton,
-     transport_amount, shortage_charge_amount)
-   SELECT o.id, COALESCE(NULLIF(o.tanker_no, ''), 'Legacy-' || o.id),
-          COALESCE(o.port_entry_date, o.loaded_date, o.order_date), o.bargain_id, o.supplier_id,
-          o.oil_type_id, o.ordered_qty, o.uom,
-          CASE WHEN o.financed_by_party = 1 THEN 'supplier_finance' ELSE 'paid_by_us' END,
-          CASE
-            WHEN o.status IN ('received', 'delivered') THEN 'empty'
-            WHEN o.status = 'inside_factory' THEN 'inside_factory'
-            WHEN o.status = 'outside_factory' THEN 'outside_factory'
-            WHEN o.status = 'in_transit' THEN 'transit'
-            ELSE 'loaded'
-          END,
-          o.dispatch_date, o.source_id, o.expected_delivery_date, o.outside_factory_date,
-          o.inside_factory_date, COALESCE(o.received_date, o.delivered_date), o.received_qty,
-          o.transporter_id, o.transport_rate_per_ton, o.transport_amount, o.shortage_charge_amount
-   FROM orders o
-   WHERE NOT EXISTS (SELECT 1 FROM purchase_tankers pt WHERE pt.order_id = o.id)
-     -- Consignment / direct purchases are tanker-less BY DESIGN: the goods are
-     -- already at our site. Giving them a stand-in tanker would put them back
-     -- into tanker movement and, worse, make the bargain register count their
-     -- quantity twice (once via the tanker, once via the lots / the invoice).
-     AND o.is_consignment = 0`,
-  // Remove stand-in tankers this backfill created for consignment purchases
-  // before the guard above existed. Only rows it generated itself are touched.
-  `DELETE FROM purchase_tankers
-   WHERE tanker_no = 'Legacy-' || order_id
-     AND order_id IN (SELECT id FROM orders WHERE is_consignment = 1)`,
-  // Order status is now derived from its tankers (loaded → received). Remap
-  // leftovers from the earlier order lifecycle; the OLD 'loaded'→'at_port'
-  // remap is gone — it ran every boot and corrupted freshly created purchases.
-  "UPDATE orders SET status = 'received' WHERE status = 'delivered'",
-  "UPDATE orders SET status = 'loaded' WHERE status IN ('at_port', 'ordered', 'payment_cleared', 'in_transit', 'outside_factory', 'inside_factory')",
-  // Snapshot of the weighted-average valuation rate used for a day's physical
-  // count, so a saved count keeps the value it was booked at.
-  "ALTER TABLE stock_counts ADD COLUMN rate REAL",
-  // Links an auto-generated production run to the sale whose dispatch triggered
-  // it. When a finished good that has a formulation is dispatched, we record a
-  // production (consumes the recipe's raw/intermediate inputs, outputs the
-  // dispatched qty) so raw stock is drawn down at dispatch. NULL = manual run.
-  "ALTER TABLE production ADD COLUMN sale_id INTEGER",
-  // Packed finished stock per SKU (packaging): a lightweight, company-scoped
-  // count. on-hand = SUM(delta) − packed units sold. delta > 0 packs in,
-  // < 0 removes. Dated so the balance reflects when it changed.
-  `CREATE TABLE IF NOT EXISTS sku_adjustments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_id INTEGER NOT NULL DEFAULT 1,
-    packaging_id INTEGER NOT NULL,
-    delta REAL NOT NULL,
-    adj_date TEXT NOT NULL,
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  // Tally-style Debit / Credit notes. A debit note reduces a supplier payable
-  // (purchase return / rate cut); a credit note reduces a customer receivable
-  // (sales return / allowance). Each posts a double-entry journal voucher AND a
-  // signed party-ledger row; those ids are kept so a delete reverses both.
-  `CREATE TABLE IF NOT EXISTS notes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_id INTEGER NOT NULL DEFAULT 1,
-    note_type TEXT NOT NULL,
-    note_no TEXT NOT NULL,
-    note_date TEXT NOT NULL,
-    party_type TEXT NOT NULL,
-    party_id INTEGER NOT NULL,
-    against_account TEXT NOT NULL,
-    base_amount REAL NOT NULL DEFAULT 0,
-    gst_pct REAL NOT NULL DEFAULT 0,
-    gst_amount REAL NOT NULL DEFAULT 0,
-    total_amount REAL NOT NULL DEFAULT 0,
-    narration TEXT,
-    journal_entry_id INTEGER,
-    ledger_table TEXT,
-    ledger_id INTEGER,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  // Classification of a sales bargain (mirrors the purchase-bargain type tabs):
-  // FINISHED_OIL | FATTY | SCRAP | SPENT_EARTH | MISC.
-  "ALTER TABLE sales_bargains ADD COLUMN sale_category TEXT NOT NULL DEFAULT 'FINISHED_OIL'",
-  // Invoice-level round off on sales (mirrors purchases). Stored on the FIRST
-  // line of the invoice group (others 0) so summing lines never double-counts.
-  "ALTER TABLE sales ADD COLUMN round_off REAL NOT NULL DEFAULT 0",
-  // Products get a material Category (OIL / HUSK / PACKAGING / CHEMICAL / MISC)
-  // above the existing raw/intermediate/finished classification, which becomes
-  // the Sub-category. The DEFAULT backfills every existing product as OIL.
-  "ALTER TABLE products ADD COLUMN material_type TEXT NOT NULL DEFAULT 'OIL'",
-  // A packed SKU belongs to a finished product (DALDA 15 KG TIN → DALDA), so
-  // packed pieces can be reconciled in tonnage against that product's stock.
-  "ALTER TABLE packagings ADD COLUMN product_id INTEGER",
-  // Consignment lots now start life as a GATE ENTRY: the gateman passes the
-  // tanker, the accountant validates it into consignment stock. This records
-  // which gate entry a lot came from so it can't be validated twice.
-  "ALTER TABLE consignment_stock ADD COLUMN gate_entry_id INTEGER",
-  "ALTER TABLE consignment_stock ADD COLUMN tanker_no TEXT",
-  // Which purchase invoice drew this lot (NULL = still pending booking), so the
-  // purchase form can list the exact tankers waiting to be invoiced.
-  "ALTER TABLE consignment_stock ADD COLUMN order_id INTEGER",
-  // Per-tanker bargain allocation, mirroring purchase_tankers: one tanker can be
-  // split across two bargains (extra_qty goes to extra_bargain_id).
-  "ALTER TABLE consignment_stock ADD COLUMN bargain_id INTEGER",
-  "ALTER TABLE consignment_stock ADD COLUMN extra_bargain_id INTEGER",
-  "ALTER TABLE consignment_stock ADD COLUMN extra_qty REAL",
-  // Opening balance rather than an arrival: the stock the MNC already held with
-  // us when the books started, entered by hand with no gate entry behind it.
-  "ALTER TABLE consignment_stock ADD COLUMN is_opening INTEGER NOT NULL DEFAULT 0",
-  // The gate weighment and the allowed shortage that produced the net qty, so
-  // the register can show how the figure was arrived at.
-  "ALTER TABLE consignment_stock ADD COLUMN weighed_qty REAL",
-  "ALTER TABLE consignment_stock ADD COLUMN shortage_pct REAL",
-  // Per-SKU selling rates agreed on a sales bargain. Filled from a downloaded
-  // sheet, then offered when a sale line on that bargain picks the SKU.
-  `CREATE TABLE IF NOT EXISTS sales_bargain_sku_rates (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sales_bargain_id INTEGER NOT NULL REFERENCES sales_bargains(id),
-    packaging_id INTEGER NOT NULL REFERENCES packagings(id),
-    rate_per_case REAL,
-    rate_per_mt REAL,
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (sales_bargain_id, packaging_id)
-  )`,
-  "CREATE INDEX IF NOT EXISTS idx_sbsr_bargain ON sales_bargain_sku_rates(sales_bargain_id)",
-  // Tally-style bill-wise adjustments on payment/receipt voucher lines:
-  // agst_ref settles a named bill, advance/new_ref create one, on_account
-  // leaves the money unallocated.
-  `CREATE TABLE IF NOT EXISTS journal_bill_allocs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    line_id INTEGER NOT NULL REFERENCES journal_lines(id),
-    account_id INTEGER NOT NULL REFERENCES ledger_accounts(id),
-    method TEXT NOT NULL,
-    ref_name TEXT,
-    amount REAL NOT NULL
-  )`,
-  "CREATE INDEX IF NOT EXISTS idx_jba_line ON journal_bill_allocs(line_id)",
-  "CREATE INDEX IF NOT EXISTS idx_jba_account ON journal_bill_allocs(account_id)",
-  // Which customers buy which packed SKUs — narrows the sales-bargain rate
-  // card to the SKUs that party actually trades in.
-  // A gate entry can be recorded without any weighment — it completes on the
-  // spot instead of waiting at the weighbridge, and carries no gate figure.
-  "ALTER TABLE gate_entries ADD COLUMN no_weighment INTEGER NOT NULL DEFAULT 0",
-  // A manually-entered vehicle can belong to either side of the trade.
-  "ALTER TABLE gate_entries ADD COLUMN customer_id INTEGER",
-  // The plain gate-register line: a vehicle, who it is with, and what it
-  // carries. No weighment, no document behind it.
-  // Product/material categories as a master, so OIL, HUSK, SCRAP and whatever
-  // the mill adds later live in one place instead of being hard-coded in every
-  // screen. Referenced BY NAME, so existing rows keep working untouched.
-  `CREATE TABLE IF NOT EXISTS categories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    note TEXT,
-    active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  // Seed from whatever the books already use, so nothing vanishes on upgrade.
-  `INSERT OR IGNORE INTO categories (name)
-     SELECT DISTINCT UPPER(TRIM(material_type)) FROM products
-      WHERE COALESCE(TRIM(material_type), '') != ''`,
-  `INSERT OR IGNORE INTO categories (name)
-     SELECT DISTINCT UPPER(TRIM(supplier_type)) FROM suppliers
-      WHERE COALESCE(TRIM(supplier_type), '') != ''`,
-  `INSERT OR IGNORE INTO categories (name) VALUES
-     ('OIL'), ('HUSK'), ('FATTY'), ('SCRAP'), ('SPENT EARTH'), ('PACKAGING'), ('CHEMICAL'), ('MISCELLANEOUS')`,
-  // Which side of the trade a category belongs to: bought, sold, or both.
-  "ALTER TABLE categories ADD COLUMN applies_to TEXT NOT NULL DEFAULT 'both'",
-  // A customer can be tagged with the category it trades in, the way a supplier
-  // already is — that is what lets the gate narrow the party list honestly.
-  "ALTER TABLE customers ADD COLUMN category TEXT",
-  // PP = presentation stock counted alongside the physical count.
-  "ALTER TABLE stock_counts ADD COLUMN pp_qty REAL",
-  "ALTER TABLE gate_entries ADD COLUMN person TEXT",
-  "ALTER TABLE gate_entries ADD COLUMN entry_kind TEXT NOT NULL DEFAULT 'standard'",
-  "ALTER TABLE notes ADD COLUMN against_ref TEXT",
-  // Treasury: usance/margin on LCs, due-dated LC bills, and the discounting
-  // economics (rate, interest, net) with the journal entries they posted.
-  "ALTER TABLE letters_of_credit ADD COLUMN usance_days INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE letters_of_credit ADD COLUMN margin_pct REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE letters_of_credit ADD COLUMN journal_entry_id INTEGER",
-  "ALTER TABLE lc_issuances ADD COLUMN due_date TEXT",
-  "ALTER TABLE lc_issuances ADD COLUMN status TEXT NOT NULL DEFAULT 'outstanding'",
-  "ALTER TABLE lc_issuances ADD COLUMN settled_date TEXT",
-  "ALTER TABLE lc_issuances ADD COLUMN journal_entry_id INTEGER",
-  "ALTER TABLE bill_discounts ADD COLUMN customer_id INTEGER",
-  "ALTER TABLE bill_discounts ADD COLUMN invoice_group TEXT",
-  "ALTER TABLE bill_discounts ADD COLUMN rate_pct REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE bill_discounts ADD COLUMN charges REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE bill_discounts ADD COLUMN interest_amount REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE bill_discounts ADD COLUMN net_received REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE bill_discounts ADD COLUMN journal_entry_id INTEGER",
-  "ALTER TABLE bill_discounts ADD COLUMN realize_entry_id INTEGER",
-  // Every restatement of an MNC opening balance keeps its old figure, so a
-  // mistaken change (or deletion) can be seen and put back.
-  `CREATE TABLE IF NOT EXISTS consignment_opening_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_id INTEGER NOT NULL,
-    supplier_id INTEGER NOT NULL,
-    product_id INTEGER NOT NULL,
-    action TEXT NOT NULL,
-    old_qty REAL,
-    new_qty REAL,
-    uom TEXT,
-    deposit_date TEXT,
-    note TEXT,
-    changed_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  `CREATE TABLE IF NOT EXISTS packaging_parties (
-    packaging_id INTEGER NOT NULL REFERENCES packagings(id),
-    customer_id INTEGER NOT NULL REFERENCES customers(id),
-    PRIMARY KEY (packaging_id, customer_id)
-  )`,
-  // How a consignment / direct purchase invoice is spread across bargains. The
-  // quantity is typed, not tanker-wise, so the allocation belongs to the invoice
-  // rather than to a tanker — and it is the single source the bargain register
-  // reads for these purchases.
-  `CREATE TABLE IF NOT EXISTS order_bargains (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    order_id INTEGER NOT NULL REFERENCES orders(id),
-    bargain_id INTEGER NOT NULL REFERENCES bargains(id),
-    qty REAL NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  "CREATE INDEX IF NOT EXISTS idx_order_bargains_bargain ON order_bargains(bargain_id)",
-  "CREATE INDEX IF NOT EXISTS idx_order_bargains_order ON order_bargains(order_id)",
-  // Consignment invoices booked before this table existed keep their single
-  // bargain link; give each one the row the register now expects.
-  `INSERT INTO order_bargains (order_id, bargain_id, qty)
-   SELECT o.id, o.bargain_id, o.ordered_qty FROM orders o
-   WHERE o.is_consignment = 1 AND o.bargain_id IS NOT NULL
-     AND EXISTS (SELECT 1 FROM bargains b WHERE b.id = o.bargain_id)
-     AND NOT EXISTS (SELECT 1 FROM order_bargains ob WHERE ob.order_id = o.id)`,
-  // Parties whose goods are already at our site (consignment / MNC suppliers):
-  // purchases from them skip the tanker movement entirely — no send-to-supplier,
-  // no transit/outside/inside/empty. Booked straight to received.
-  "ALTER TABLE suppliers ADD COLUMN skip_tanker_stages INTEGER NOT NULL DEFAULT 0",
-  // Optional item lines on a debit/credit note (product × qty × rate). When
-  // present they compute the note's base amount; ledger-only (no stock move).
-  `CREATE TABLE IF NOT EXISTS note_items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    note_id INTEGER NOT NULL,
-    product_id INTEGER,
-    description TEXT,
-    qty REAL NOT NULL DEFAULT 0,
-    rate REAL NOT NULL DEFAULT 0,
-    amount REAL NOT NULL DEFAULT 0
-  )`,
-  // The sanctioned facility a bank grants, sitting ABOVE individual LCs: each
-  // LC draws against it, so headroom is the sanction less everything already
-  // committed. Without this an LC only knew its own amount and nothing stopped
-  // the bank's overall limit being exceeded.
-  `CREATE TABLE IF NOT EXISTS bank_facilities (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_id INTEGER NOT NULL DEFAULT 1,
-    name TEXT NOT NULL,
-    bank TEXT NOT NULL,
-    facility_type TEXT NOT NULL DEFAULT 'lc',
-    sanctioned_limit REAL NOT NULL DEFAULT 0,
-    sanction_date TEXT,
-    review_date TEXT,
-    note TEXT,
-    active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  // Outstanding that consumes the sanction but is NOT one of our LCs — the
-  // legacy accounts and the DIL EXIM balance the notes call out. Kept as named
-  // lines so the available figure can always be broken back down into what
-  // makes it up, rather than being a single unexplained number.
-  `CREATE TABLE IF NOT EXISTS facility_exposures (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    facility_id INTEGER NOT NULL REFERENCES bank_facilities(id),
-    label TEXT NOT NULL,
-    amount REAL NOT NULL DEFAULT 0,
-    kind TEXT NOT NULL DEFAULT 'outstanding',
-    as_of TEXT,
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  "ALTER TABLE letters_of_credit ADD COLUMN facility_id INTEGER",
-  // Why the LC was opened — the notes head the LC record with its purpose, so
-  // a register can be read without opening every one to remember what it was for.
-  "ALTER TABLE letters_of_credit ADD COLUMN purpose TEXT",
-  // FDs held as security. The notes ask for the FD NUMBER to be the link, with
-  // the bank, amount, maturity and lien visible from whatever it secures.
-  `CREATE TABLE IF NOT EXISTS fixed_deposits (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_id INTEGER NOT NULL DEFAULT 1,
-    fd_no TEXT NOT NULL,
-    bank TEXT NOT NULL,
-    amount REAL NOT NULL DEFAULT 0,
-    start_date TEXT,
-    maturity_date TEXT,
-    interest_pct REAL NOT NULL DEFAULT 0,
-    lien_status TEXT NOT NULL DEFAULT 'free',
-    facility_id INTEGER,
-    lc_id INTEGER,
-    note TEXT,
-    active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  // A hand-written reference kept alongside the auto-generated bargain_no —
-  // e.g. the number the party quotes on their own paperwork — never used for
-  // anything but display.
-  "ALTER TABLE sales_bargains ADD COLUMN manual_bargain_no TEXT",
-  // Trading LCs: the purchase invoice the LC was opened against, the party the
-  // sale proceeds (repayment) will come from, and a workflow status distinct
-  // from the open/utilized/closed lifecycle — the notes ask for In Progress /
-  // On Hold as something the user sets, separate from whether it's drawn.
-  "ALTER TABLE letters_of_credit ADD COLUMN linked_order_id INTEGER",
-  "ALTER TABLE letters_of_credit ADD COLUMN receivable_party_id INTEGER",
-  "ALTER TABLE letters_of_credit ADD COLUMN workflow_status TEXT NOT NULL DEFAULT 'in_progress'",
-  // A repayment against an LC's exposure — the money coming back from the
-  // receivable party. `posted` gates whether it has hit the books yet: a
-  // repayment can be logged (with its bank document) before being confirmed.
-  `CREATE TABLE IF NOT EXISTS lc_repayments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    lc_id INTEGER NOT NULL REFERENCES letters_of_credit(id),
-    party_id INTEGER,
-    amount REAL NOT NULL DEFAULT 0,
-    repay_date TEXT,
-    posted INTEGER NOT NULL DEFAULT 0,
-    document_path TEXT,
-    journal_entry_id INTEGER,
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  "CREATE INDEX IF NOT EXISTS idx_lc_repayments_lc ON lc_repayments(lc_id)",
-  // Trading purchases/sales: bought from one party and sold straight to
-  // another, never actually landing in our stock — no bargain, no tanker,
-  // and (the one thing nothing else already gave us) excluded from every
-  // stock computation via affects_stock.
-  "ALTER TABLE orders ADD COLUMN is_trading INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE orders ADD COLUMN affects_stock INTEGER NOT NULL DEFAULT 1",
-  "ALTER TABLE sales ADD COLUMN is_trading INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE sales ADD COLUMN affects_stock INTEGER NOT NULL DEFAULT 1",
-  // FOR (DLD) sales: by default freight is recovered from the customer on top
-  // of the goods value. This flips it — freight is deducted from the invoice
-  // total instead, the transporter is still paid in full by us.
-  "ALTER TABLE sales ADD COLUMN deduct_freight INTEGER NOT NULL DEFAULT 0",
-  // The LC's own lifecycle, as the client works it day to day — separate from
-  // the internal open/utilized/closed status (still used for facility
-  // headroom) and from the Trading compliance flag.
-  "ALTER TABLE letters_of_credit ADD COLUMN stage TEXT NOT NULL DEFAULT 'application'",
-  // The fixed deposit lodged as security for the LC — mandatory in the UI.
-  "ALTER TABLE letters_of_credit ADD COLUMN fd_no TEXT",
-  // Entered at the Payment received stage, alongside maturity date — usance
-  // days (relabeled Interest days) is then calculated from the two rather
-  // than typed by hand.
-  "ALTER TABLE letters_of_credit ADD COLUMN payment_received_date TEXT",
-  // open_date already carries the Application date (see the earlier
-  // Open date -> Application date relabel); the LC's actual opening — a
-  // later, separate step — gets its own column.
-  "ALTER TABLE letters_of_credit ADD COLUMN opened_date TEXT",
-  // Swapping a tanker mid-transit (accident, breakdown) keeps the same
-  // purchase_tankers row — bargain/order/financials stay put — but its
-  // number changes and whatever quantity was lost comes off loaded_qty, so
-  // the bargain balance and the gate's later weighment both reconcile
-  // against what the replacement can actually still deliver.
-  "ALTER TABLE purchase_tankers ADD COLUMN loss_qty REAL NOT NULL DEFAULT 0",
-  `CREATE TABLE IF NOT EXISTS tanker_replacements (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    tanker_id INTEGER NOT NULL REFERENCES purchase_tankers(id),
-    old_tanker_no TEXT,
-    new_tanker_no TEXT NOT NULL,
-    loss_qty REAL NOT NULL DEFAULT 0,
-    reason TEXT,
-    replaced_date TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  "CREATE INDEX IF NOT EXISTS idx_tanker_replacements_tanker ON tanker_replacements(tanker_id)",
-  // Which of the party's open invoices this LC covers — one LC can now cover
-  // several, so it's a table rather than the single linked_order_id column.
-  `CREATE TABLE IF NOT EXISTS lc_linked_orders (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    lc_id INTEGER NOT NULL REFERENCES letters_of_credit(id),
-    order_id INTEGER NOT NULL REFERENCES orders(id),
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(lc_id, order_id)
-  )`,
-  "CREATE INDEX IF NOT EXISTS idx_lc_linked_orders_lc ON lc_linked_orders(lc_id)",
-  // LC repayment is US repaying the BANK (an outflow), not the receivable
-  // party paying us — the bank often deducts a variable maturity charge at
-  // the same moment, debited from our account as one combined withdrawal
-  // alongside the repayment itself.
-  "ALTER TABLE lc_repayments ADD COLUMN maturity_charges REAL NOT NULL DEFAULT 0",
-  // Bank statement reconciliation: an import batch (one per uploaded file) and
-  // its lines. A line either LINKS to a payment/LC entry already posted
-  // elsewhere (no new posting — just marks it reconciled) or falls to 'misc'
-  // when nothing recognizes it. sub_entry_* is a manual party/purpose note,
-  // independent of the reconciliation status itself.
-  `CREATE TABLE IF NOT EXISTS bank_statement_imports (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    bank TEXT NOT NULL,
-    file_name TEXT,
-    company_id INTEGER NOT NULL DEFAULT 1,
-    imported_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  `CREATE TABLE IF NOT EXISTS bank_statement_lines (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    import_id INTEGER NOT NULL REFERENCES bank_statement_imports(id),
-    bank TEXT NOT NULL,
-    txn_date TEXT NOT NULL,
-    narration TEXT,
-    debit REAL NOT NULL DEFAULT 0,
-    credit REAL NOT NULL DEFAULT 0,
-    balance REAL,
-    category TEXT,
-    link_type TEXT,
-    link_ref_id INTEGER,
-    status TEXT NOT NULL DEFAULT 'pending',
-    sub_entry_enabled INTEGER NOT NULL DEFAULT 0,
-    sub_entry_note TEXT,
-    reviewed_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  "CREATE INDEX IF NOT EXISTS idx_bank_statement_lines_import ON bank_statement_lines(import_id)",
-  "CREATE INDEX IF NOT EXISTS idx_bank_statement_lines_status ON bank_statement_lines(status)",
-  // Bill Discounting: no stages like an LC — just submit an invoice and the
-  // discounter pays out T/T+1 on its own advice, so there's nothing here to
-  // gate on dates the way LCs are. Each party carries its own rate/limit
-  // (PID/SID, security, interest terms); entries draw against that limit.
-  `CREATE TABLE IF NOT EXISTS bd_parties (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_id INTEGER NOT NULL DEFAULT 1,
-    party_name TEXT NOT NULL,
-    discounter TEXT,
-    rate_pct REAL NOT NULL DEFAULT 0,
-    finance_type TEXT NOT NULL DEFAULT 'PID',
-    purpose TEXT,
-    security_given INTEGER NOT NULL DEFAULT 0,
-    interest_bearing INTEGER NOT NULL DEFAULT 0,
-    interest_payment_schedule TEXT,
-    sanctioned_limit REAL NOT NULL DEFAULT 0,
-    active INTEGER NOT NULL DEFAULT 1,
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  `CREATE TABLE IF NOT EXISTS bd_entries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    bd_party_id INTEGER NOT NULL REFERENCES bd_parties(id),
-    invoice_no TEXT,
-    amount REAL NOT NULL DEFAULT 0,
-    submitted_date TEXT NOT NULL,
-    payment_date TEXT,
-    status TEXT NOT NULL DEFAULT 'submitted',
-    repaid_date TEXT,
-    interest_amount REAL NOT NULL DEFAULT 0,
-    interest_received_date TEXT,
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  "CREATE INDEX IF NOT EXISTS idx_bd_entries_party ON bd_entries(bd_party_id)",
-  // Purchase & Sales Trading: one dedicated screen for a raw-product
-  // pass-through deal (buy from a supplier, sell the same quantity straight
-  // to a customer) — no tanker movement, no stock entries. Reuses the
-  // existing orders/sales is_trading path under the hood; this table just
-  // links the resulting purchase + sale as one deal for its own listing.
-  `CREATE TABLE IF NOT EXISTS trading_deals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_id INTEGER NOT NULL DEFAULT 1,
-    deal_date TEXT NOT NULL,
-    product_id INTEGER NOT NULL REFERENCES products(id),
-    order_id INTEGER REFERENCES orders(id),
-    sale_id INTEGER REFERENCES sales(id),
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  // Bill-wise settlement used to tie a payment/receipt only to a free-typed
-  // ref_name string matched against a supplier/customer's invoice_no — two
-  // orders sharing (or missing) an invoice number could collide or miss
-  // entirely. order_id is an exact link for purchases (one order = one
-  // bill); sales invoices can span several `sales` rows sharing one
-  // invoice_group, so that system-generated group id is the exact link
-  // there instead of a single row id.
-  "ALTER TABLE journal_bill_allocs ADD COLUMN order_id INTEGER REFERENCES orders(id)",
-  "ALTER TABLE journal_bill_allocs ADD COLUMN sale_invoice_group TEXT",
-  // A Gate In vehicle weighed Tare-only (arriving empty, before its Gross
-  // comes later at Gate Out) can be flagged so it surfaces in Gate Out's own
-  // "Awaiting Gross" picker instead of only sitting in Gate In's queue.
-  "ALTER TABLE gate_entries ADD COLUMN awaiting_gross_out INTEGER NOT NULL DEFAULT 0",
-  // Whether a supplier/transporter's business is Trading or Manufacturing.
-  // The DEFAULT backfills every existing row to Manufacturing (the historical
-  // assumption); new rows can choose either from here on.
-  "ALTER TABLE suppliers ADD COLUMN business_type TEXT NOT NULL DEFAULT 'Manufacturing'",
-  "ALTER TABLE customers ADD COLUMN business_type TEXT NOT NULL DEFAULT 'Manufacturing'",
-  // A packed SKU that does not pack one of the finished products (product_id)
-  // can instead carry a short product name typed by hand. Exactly one of the
-  // two is used — the linked product's name wins when both are set.
-  "ALTER TABLE packagings ADD COLUMN product_label TEXT",
-  // A trading deal buys across several purchase invoices and sells across
-  // several sale invoices, so its orders/sales are listed here rather than in
-  // the single trading_deals.order_id / sale_id pair. Those two columns stay
-  // as they are and still point at the deal's first invoice on each side, so
-  // deals booked before this — which have no rows here at all — keep reading
-  // and deleting exactly as they did.
-  `CREATE TABLE IF NOT EXISTS trading_deal_orders (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    deal_id INTEGER NOT NULL REFERENCES trading_deals(id),
-    order_id INTEGER NOT NULL REFERENCES orders(id),
-    line_no INTEGER NOT NULL DEFAULT 0
-  )`,
-  `CREATE TABLE IF NOT EXISTS trading_deal_sales (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    deal_id INTEGER NOT NULL REFERENCES trading_deals(id),
-    sale_id INTEGER NOT NULL REFERENCES sales(id),
-    line_no INTEGER NOT NULL DEFAULT 0
-  )`,
-  "CREATE INDEX IF NOT EXISTS idx_tdo_deal ON trading_deal_orders(deal_id)",
-  "CREATE INDEX IF NOT EXISTS idx_tds_deal ON trading_deal_sales(deal_id)",
-  // TDS the customer withholds on a sale invoice, mirroring the purchase side.
-  // Defaults to 0, so every sale booked before this — and every sale that
-  // never sets a rate — keeps exactly the receivable it already had.
-  "ALTER TABLE sales ADD COLUMN tds_pct REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE sales ADD COLUMN tds_amount REAL NOT NULL DEFAULT 0",
-  // A refining recipe is not only what goes in: by-product and loss
-  // percentages are struck on the CPO going IN, not the RPO coming out — 5.7%
-  // fatty acid + 1% dead loss means 6.7% of the input never becomes product,
-  // so 100 MT of RPO actually takes 100/0.933 = 107.18 MT of CPO (see
-  // recipeTor() in production.ts), not 106.7. Each line now says which kind it
-  // is — 'input' is consumed, 'output' is a by-product that lands in stock,
-  // 'loss' is written off. Everything already recorded is an input, which is
-  // exactly what the default leaves it as.
-  "ALTER TABLE formulation_items ADD COLUMN kind TEXT NOT NULL DEFAULT 'input'",
-  "ALTER TABLE production_items ADD COLUMN kind TEXT NOT NULL DEFAULT 'input'",
-  // A challan that gives no quantity is a real answer, and a different one
-  // from "nobody has filled this in yet" — the gate records it as NA so the
-  // shortage column knows there is nothing to compare the weighed net against.
-  "ALTER TABLE gate_entries ADD COLUMN dispatch_na INTEGER NOT NULL DEFAULT 0",
-  // A vehicle taken in empty and weighed out loaded made two movements on
-  // one record. entry_date is when it arrived; this is the day it left, so
-  // the register can show both rather than only the one it started as.
-  "ALTER TABLE gate_entries ADD COLUMN out_date TEXT",
-  // A repayment covering more than the LC's own open amount is covering bank
-  // charges too — split so the two kinds of charge post to their own ledger
-  // accounts instead of one generic bucket. maturity_charges (their sum)
-  // stays in sync for bank-reconciliation matching, which already reads it.
-  "ALTER TABLE lc_repayments ADD COLUMN comm_charges REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE lc_repayments ADD COLUMN bank_charges REAL NOT NULL DEFAULT 0",
-  // Pre-closure: the LC is wound up before its bills/maturity would naturally
-  // settle it. Interest is recalculated over the days actually elapsed
-  // (open date -> preclose date) rather than the full planned usance, and
-  // whatever's left of the open amount either comes back to us or covers a
-  // remaining balance still owed to the party — the user picks which.
-  "ALTER TABLE letters_of_credit ADD COLUMN preclosed_date TEXT",
-  "ALTER TABLE letters_of_credit ADD COLUMN preclose_settlement_direction TEXT",
-  "ALTER TABLE letters_of_credit ADD COLUMN preclose_settlement_amount REAL",
-  "ALTER TABLE letters_of_credit ADD COLUMN preclose_journal_entry_id INTEGER",
-  // Overall LC facility limit per company — Fixed (always on) plus an
-  // optional Convertible top-up — separate from any one LC's own open
-  // amount, so the book as a whole can be tracked against what the bank has
-  // actually sanctioned across every LC together.
-  `CREATE TABLE IF NOT EXISTS lc_limits (
-    company_id INTEGER PRIMARY KEY,
-    fixed_limit REAL NOT NULL DEFAULT 0,
-    convertible_limit REAL NOT NULL DEFAULT 0,
-    convertible_enabled INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  // Some parties (e.g. Bunge-style deals) pay LC interest upfront straight
-  // from the bank account instead of it coming out of the open amount — the
-  // Open Amount then equals what the supplier actually receives, and interest
-  // is calculated for reference only, posted later when its own bank
-  // statement line is reconciled (see bankRecon.ts's 'lc_interest' link).
-  "ALTER TABLE letters_of_credit ADD COLUMN interest_upfront INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE letters_of_credit ADD COLUMN interest_journal_entry_id INTEGER",
-  // Premature-closure interest: the days between preclose and the LC's
-  // original maturity that never happen still carry an interest cost. Stored
-  // for record regardless of route; only routed to the bank does it get its
-  // own deferred posting (see bankRecon.ts's 'lc_preclose_interest' link) —
-  // routed to the party, it's already netted into preclose_settlement_amount.
-  "ALTER TABLE letters_of_credit ADD COLUMN preclose_premature_interest REAL",
-  "ALTER TABLE letters_of_credit ADD COLUMN preclose_interest_route TEXT",
-  "ALTER TABLE letters_of_credit ADD COLUMN preclose_interest_journal_entry_id INTEGER",
-  // A Trading LC finances one round trip — buy from the supplier, resell to
-  // the customer — so it's struck against the whole deal, not a bare purchase
-  // invoice. NULL until an LC picks this deal; a deal can only back one LC at
-  // a time.
-  "ALTER TABLE trading_deals ADD COLUMN lc_id INTEGER REFERENCES letters_of_credit(id)",
-  // A by-product line's own % of input can be auto-calculated instead of
-  // typed by hand — e.g. Fatty Acid = Oil FFA% x (1 + loss multiplier%) +
-  // moisture loss%. The three inputs are kept alongside the computed qty so
-  // the recipe stays auditable (why it's 5.7%, not just that it is).
-  "ALTER TABLE formulation_items ADD COLUMN auto_calc INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE formulation_items ADD COLUMN ffa_pct REAL",
-  "ALTER TABLE formulation_items ADD COLUMN loss_multiplier_pct REAL",
-  "ALTER TABLE formulation_items ADD COLUMN moisture_pct REAL",
-  // An INPUT line's own auto-calc goes one step further than a by-product's:
-  // a blended recipe (several raw oils, each its own quality) needs its own
-  // TOR multiplier per ingredient — 1/(1 - fatty acid% - dead loss%) — rather
-  // than one loss shared across the whole blend. Dead loss is the recipe's
-  // own shared 'loss' line total (always present, same for every input), not
-  // a per-input value — this column shipped briefly but is unused now.
-  "ALTER TABLE formulation_items ADD COLUMN dead_loss_pct REAL",
-  // The fatty acid an auto-calculated input line throws off is a REAL
-  // by-product, not just a yield reduction — it lands in stock under
-  // whichever product this names, summed across every input that names the
-  // same one. NULL means this input's own fatty acid isn't tracked as stock.
-  "ALTER TABLE formulation_items ADD COLUMN byproduct_product_id INTEGER REFERENCES products(id)",
-  // A gate entry that will never be completed — the tanker it was cut for
-  // never took delivery (party refused, redirected elsewhere) — gets marked
-  // Rejected with a reason, rather than deleted outright or left stuck
-  // forever in "Pending weight". Keeps the paper trail; any stock/invoice
-  // correction (a Credit Note, say) is handled separately, on purpose.
-  "ALTER TABLE gate_entries ADD COLUMN rejected_at TEXT",
-  "ALTER TABLE gate_entries ADD COLUMN rejected_reason TEXT",
-  // The round trip's last leg: the customer's payment for the resale actually
-  // lands, closing a Trading LC out — Application -> Open -> Payment received
-  // -> Preclose/Repayment -> Payment IN. Distinct from payment_received_date
-  // (that's the BANK paying the SUPPLIER; this is the CUSTOMER paying US). A
-  // deal's sale side can be paid across more than one receipt (a part-payment,
-  // or one per invoice on a multi-invoice deal), so — like lc_repayments —
-  // this is its own table rather than a single scalar on the LC; "closed"
-  // itself is computed live from what's still outstanding, not stored here.
-  `CREATE TABLE IF NOT EXISTS lc_payment_ins (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    lc_id INTEGER NOT NULL REFERENCES letters_of_credit(id),
-    pay_date TEXT NOT NULL,
-    amount REAL NOT NULL DEFAULT 0,
-    journal_entry_id INTEGER,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  "CREATE INDEX IF NOT EXISTS idx_lc_payment_ins_lc ON lc_payment_ins(lc_id)",
-  // A sale invoice the customer refused to accept before it ever left through
-  // the gate (or was turned back before unloading) — marked Rejected with a
-  // reason rather than deleted, same reasoning as gate_entries above: the
-  // invoice stays on record for GST/audit, and a Credit Note against it is
-  // the actual correction, done separately. Applies to every line row sharing
-  // the invoice_group, since that's the unit every other invoice-level action
-  // (setInvoiceStage, deleteSaleInvoice) already operates on.
-  "ALTER TABLE sales ADD COLUMN rejected_at TEXT",
-  "ALTER TABLE sales ADD COLUMN rejected_reason TEXT",
-  // A product can have more than one formulation (e.g. RPO's CPO-based recipe
-  // and its SHEA-based one) — recording which one a run actually used, so the
-  // consumption behind a past production entry can always be traced back to
-  // the exact recipe, even after a newer one is added for the same product.
-  "ALTER TABLE production ADD COLUMN formulation_id INTEGER REFERENCES formulations(id)",
-  // The bank's interest and charges come out of an LC's open amount BEFORE the
-  // beneficiary is paid, so a bill issued for the gross overpays the party on
-  // paper. When interest/charges are later revised the shortfall moves with
-  // them, so it is corrected by its own re-postable voucher (Dr Bank / Cr the
-  // party, allocated On Account) rather than by rewriting the original
-  // settlement — the payment that actually happened stays on the record and
-  // the correction sits beside it.
-  "ALTER TABLE letters_of_credit ADD COLUMN fee_adjust_journal_entry_id INTEGER",
-  // OUR OWN bank accounts — the ones money actually moves out of for LC
-  // repayments and other transactions. Deliberately NOT the same thing as an
-  // LC's discounting bank (letters_of_credit.bank), which is the institution
-  // that FINANCES the LC and is somebody else's bank, not ours.
-  `CREATE TABLE IF NOT EXISTS banks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    branch TEXT,
-    account_no TEXT,
-    ifsc TEXT,
-    note TEXT,
-    active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_banks_name ON banks(name)",
-  // Superseded by our_bank_id below: this briefly held the DISCOUNTING bank,
-  // which does not belong in our own-accounts master. Left in place unused
-  // rather than dropped, since dropping a referenced column is not worth the
-  // risk for a column nothing now reads.
-  "ALTER TABLE letters_of_credit ADD COLUMN bank_id INTEGER REFERENCES banks(id)",
-  // Which of OUR accounts this LC's money moves through — the one a repayment
-  // goes out of. The financing side stays on `bank` (the discounting bank).
-  "ALTER TABLE letters_of_credit ADD COLUMN our_bank_id INTEGER REFERENCES banks(id)",
-  "CREATE INDEX IF NOT EXISTS idx_lc_our_bank ON letters_of_credit(our_bank_id)",
-  // Each bank sanctions its own LC limit, per company — the single company-wide
-  // figure lc_limits held can't express "how much of THIS bank's line is used"
-  // once there is more than one bank. lc_limits is left in place untouched; the
-  // rows it held are copied across by backfillBankMaster() below.
-  `CREATE TABLE IF NOT EXISTS bank_lc_limits (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_id INTEGER NOT NULL,
-    bank_id INTEGER NOT NULL REFERENCES banks(id),
-    fixed_limit REAL NOT NULL DEFAULT 0,
-    convertible_limit REAL NOT NULL DEFAULT 0,
-    convertible_enabled INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_lc_limits ON bank_lc_limits(company_id, bank_id)",
-  // A bank ACCOUNT belongs to one company's books, not to the business in
-  // general — the SAME real-world bank used by two companies gets its own
-  // separate row per company, same as any other company-scoped record. The
-  // one bank that existed before this (shared, used by both companies) is
-  // left as-is here; splitting its existing links is a data fix, not schema.
-  "ALTER TABLE banks ADD COLUMN company_id INTEGER REFERENCES companies(id)",
-  "DROP INDEX IF EXISTS idx_banks_name",
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_banks_company_name ON banks(company_id, name)",
-  // A per-bargain override on an invoice that spans more than one bargain —
-  // each bargain's own additional interest (₹/unit) and its own interest
-  // days, added straight into THAT bargain's line instead of one shared
-  // figure applied to every line alike. Absent for a bargain means it just
-  // inherits the invoice's shared additional interest / interest days.
-  `CREATE TABLE IF NOT EXISTS order_bargain_interest (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    order_id INTEGER NOT NULL REFERENCES orders(id),
-    bargain_id INTEGER NOT NULL REFERENCES bargains(id),
-    additional_interest REAL NOT NULL DEFAULT 0,
-    interest_days INTEGER NOT NULL DEFAULT 0
-  )`,
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_order_bargain_interest ON order_bargain_interest(order_id, bargain_id)",
-  // A Trading party can be the same real-world PAN as an existing
-  // Manufacturing party, entered as its own row so a trading deal never mixes
-  // with the manufacturing relationship's bargains/tankers. Linking the two
-  // means the TDS slab (which the law applies per PAN, not per row) sums
-  // both rows' taxable value together instead of quietly restarting the
-  // slab at zero for whichever row a given invoice happens to sit under.
-  "ALTER TABLE suppliers ADD COLUMN linked_party_id INTEGER REFERENCES suppliers(id)",
-  "ALTER TABLE customers ADD COLUMN linked_party_id INTEGER REFERENCES customers(id)",
-  // Bill Discounting replaces the old party+entries tracker (bd_parties /
-  // bd_entries — both confirmed empty) with one LC-style record per bill,
-  // plus a proper NBFC master. Both old tables are dropped outright.
-  // A tanker's EX/DLD condition, as chosen per tanker when it's sent to the
-  // supplier. The picker for this already existed on that dialog but the value
-  // was thrown away on save, so freight and the shortage penalty always fell
-  // back to the bargain's own type — silently ignoring the choice. NULL means
-  // "not overridden", which keeps every existing tanker reading from its
-  // bargain exactly as before.
-  "ALTER TABLE purchase_tankers ADD COLUMN condition TEXT",
-  // Whether the round off on this invoice was typed by hand. Previously the
-  // form inferred it from "the stored value isn't zero", which froze a figure
-  // that was correct for the OLD totals the moment anything else was edited —
-  // so the invoice total quietly stopped landing on a whole rupee. Recording
-  // the intent explicitly means auto can keep itself right while a genuine
-  // manual override is respected AND visible as one.
-  "ALTER TABLE sales ADD COLUMN round_off_manual INTEGER NOT NULL DEFAULT 0",
-  // What the transporter actually delivered, captured when the invoice is
-  // marked Unloaded. Null until then — a zero would read as "nothing arrived"
-  // rather than "not weighed yet".
-  "ALTER TABLE sales ADD COLUMN received_qty REAL",
-  // --- Transporter billing -------------------------------------------------
-  // A transporter runs several tankers over a month and raises ONE bill for the
-  // lot, so their freight must not land on their ledger tanker by tanker. Each
-  // freight line now accrues to a control account and only reaches the
-  // transporter's own ledger when their bill is entered against it.
-  //   accrued          1 once the accrual voucher exists for this line
-  //   accrual_entry_id the voucher that accrued it (so an edit can reverse it)
-  //   bill_id          the transporter bill that has since settled it
-  "ALTER TABLE transporter_ledger ADD COLUMN accrued INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE transporter_ledger ADD COLUMN accrual_entry_id INTEGER",
-  "ALTER TABLE transporter_ledger ADD COLUMN bill_id INTEGER",
-  `CREATE TABLE IF NOT EXISTS transporter_bills (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_id INTEGER NOT NULL DEFAULT 1,
-    transporter_id INTEGER NOT NULL REFERENCES transporters(id),
-    -- 'purchase' = freight on inward tankers, 'sales' = on outward deliveries.
-    side TEXT NOT NULL DEFAULT 'purchase',
-    bill_no TEXT,
-    bill_date TEXT NOT NULL,
-    taxable REAL NOT NULL DEFAULT 0,
-    gst_pct REAL NOT NULL DEFAULT 0,
-    gst_amount REAL NOT NULL DEFAULT 0,
-    tds_pct REAL NOT NULL DEFAULT 0,
-    tds_amount REAL NOT NULL DEFAULT 0,
-    round_off REAL NOT NULL DEFAULT 0,
-    total REAL NOT NULL DEFAULT 0,
-    journal_entry_id INTEGER,
-    ledger_id INTEGER,
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  "ALTER TABLE orders ADD COLUMN round_off_manual INTEGER NOT NULL DEFAULT 0",
-  // These two used to retire the old party+entries tracker. They are NO-OPS
-  // now, and must stay no-ops, because the NAME bd_parties was later reused
-  // for a completely different table — the party links on a discounted bill,
-  // created by runOnce('bd_parties_v1'). Migrations replay from whatever index
-  // a database has reached, so leaving the DROP here meant one replay wiped
-  // the live table while the runOnce marker said "already created" and never
-  // brought it back. That is exactly how Bill Discounting (and, through a
-  // shared Promise.all, the whole LC screen) went blank.
-  //
-  // Kept as statements rather than deleted so every later migration keeps its
-  // index — the list is applied BY COUNT, so removing entries would silently
-  // skip real work on databases already past this point.
-  "SELECT 1 /* was: DROP TABLE IF EXISTS bd_entries */",
-  "SELECT 1 /* was: DROP TABLE IF EXISTS bd_parties */",
-  `CREATE TABLE IF NOT EXISTS nbfcs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_id INTEGER NOT NULL DEFAULT 1,
-    name TEXT NOT NULL,
-    finance_type TEXT NOT NULL DEFAULT 'BOTH',
-    tds_pct REAL NOT NULL DEFAULT 0,
-    interest_pct REAL NOT NULL DEFAULT 0,
-    interest_days REAL NOT NULL DEFAULT 0,
-    days_year REAL NOT NULL DEFAULT 360,
-    active INTEGER NOT NULL DEFAULT 1,
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  `CREATE TABLE IF NOT EXISTS bill_discountings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_id INTEGER NOT NULL DEFAULT 1,
-    bd_no TEXT,
-    nbfc_id INTEGER REFERENCES nbfcs(id),
-    finance_type TEXT NOT NULL DEFAULT 'PID',
-    party_type TEXT NOT NULL DEFAULT 'supplier',
-    party_id INTEGER,
-    purpose TEXT NOT NULL DEFAULT 'manufacturing',
-    amount REAL NOT NULL DEFAULT 0,
-    payment_received_date TEXT,
-    maturity_date TEXT,
-    margin_pct REAL NOT NULL DEFAULT 0,
-    interest_pct REAL NOT NULL DEFAULT 0,
-    tds_pct REAL NOT NULL DEFAULT 0,
-    interest_upfront INTEGER NOT NULL DEFAULT 0,
-    days_year REAL NOT NULL DEFAULT 360,
-    status TEXT NOT NULL DEFAULT 'open',
-    repaid_date TEXT,
-    repaid_amount REAL,
-    journal_entry_id INTEGER,
-    repay_journal_entry_id INTEGER,
-    margin_release_journal_entry_id INTEGER,
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  // Bill discounting counts interest on a 360-day year, not 365 — the
-  // convention the mill's own working sheet uses. Kept per record (with an
-  // NBFC-level default) rather than hard-coded, since it is a term that is
-  // negotiated like the rate is.
-  "ALTER TABLE bill_discountings ADD COLUMN days_year REAL NOT NULL DEFAULT 360",
-  "ALTER TABLE nbfcs ADD COLUMN days_year REAL NOT NULL DEFAULT 360",
-  // A transporter's bill rarely lands exactly on what the tanker lines add up
-  // to — a rate agreed later, detention, a negotiated reduction. The difference
-  // is recorded rather than the freight lines being edited, so the register
-  // still shows what each tanker earned and the bill still shows what was
-  // actually agreed. Positive adds, negative reduces.
-  "ALTER TABLE transporter_bills ADD COLUMN adjustment REAL NOT NULL DEFAULT 0",
-  "ALTER TABLE transporter_bills ADD COLUMN adjustment_note TEXT",
-  // The clock time a vehicle was booked in or out. entry_date alone answers
-  // "which day" — a gate register also has to answer "when", both to sequence
-  // two vehicles on the same day and to settle a dispute about detention.
-  "ALTER TABLE gate_entries ADD COLUMN entry_time TEXT",
-  // A customer credit note is a sales return: the goods come back, so the
-  // quantity has to go back onto the bargain it was drawn from. The note
-  // remembers which bargain it credited, and the adjustment log row remembers
-  // which note put it there, so altering or deleting the note reverses it.
-  "ALTER TABLE notes ADD COLUMN bargain_id INTEGER",
-  "ALTER TABLE bargain_adjustments ADD COLUMN note_id INTEGER",
-  // The clock time the vehicle LEFT, the counterpart to entry_time. out_date
-  // alone answers which day it went out; a gate register has to answer when,
-  // both to sequence two departures on one day and to settle detention.
-  "ALTER TABLE gate_entries ADD COLUMN out_time TEXT",
-  // A packed sale is negotiated and billed PER CASE, so the per-case rate is
-  // what the line's value has to be struck on. It used to be converted to a
-  // per-MT rate and the amount taken as qty x that — and the conversion cannot
-  // be exact for a case weight like 13.395 KG, which silently understated the
-  // line. The per-MT rate is still stored for reporting; this is the figure the
-  // money now comes from.
-  "ALTER TABLE sales ADD COLUMN rate_per_case REAL",
-  // ---------------------------------------------------------------------
-  // Indexes on the columns the registers' CORRELATED SUBQUERIES filter on.
-  // Without them every such subquery is a full table scan, and the registers
-  // run one per row: the sales-bargain register alone does ~6 subqueries over
-  // `sales` for each of its bargains, so 27 bargains x 6 x 169 rows is ~27,000
-  // rows read for one refresh — and every open page refetches on every write.
-  // Rows read is what the hosting plan is metered on, so this is the single
-  // biggest lever on the bill. Pure lookup speed: no behaviour changes.
-  // ---------------------------------------------------------------------
-  "CREATE INDEX IF NOT EXISTS idx_sales_bargain ON sales(sales_bargain_id)",
-  "CREATE INDEX IF NOT EXISTS idx_sales_group ON sales(invoice_group)",
-  "CREATE INDEX IF NOT EXISTS idx_sales_company_date ON sales(company_id, sale_date)",
-  "CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id)",
-  "CREATE INDEX IF NOT EXISTS idx_sales_invoice_no ON sales(invoice_no)",
-  "CREATE INDEX IF NOT EXISTS idx_pt_bargain ON purchase_tankers(bargain_id)",
-  "CREATE INDEX IF NOT EXISTS idx_pt_extra_bargain ON purchase_tankers(extra_bargain_id)",
-  "CREATE INDEX IF NOT EXISTS idx_pt_company ON purchase_tankers(company_id)",
-  "CREATE INDEX IF NOT EXISTS idx_orders_company_date ON orders(company_id, order_date)",
-  "CREATE INDEX IF NOT EXISTS idx_orders_invoice_no ON orders(invoice_no)",
-  "CREATE INDEX IF NOT EXISTS idx_je_sale ON journal_entries(sale_id)",
-  "CREATE INDEX IF NOT EXISTS idx_je_order ON journal_entries(order_id)",
-  "CREATE INDEX IF NOT EXISTS idx_je_payment ON journal_entries(payment_id)",
-  "CREATE INDEX IF NOT EXISTS idx_je_company_date ON journal_entries(company_id, entry_date)",
-  "CREATE INDEX IF NOT EXISTS idx_jba_account ON journal_bill_allocs(account_id)",
-  "CREATE INDEX IF NOT EXISTS idx_cl_sale ON customer_ledger(sale_id)",
-  "CREATE INDEX IF NOT EXISTS idx_cl_customer ON customer_ledger(customer_id)",
-  "CREATE INDEX IF NOT EXISTS idx_sl_order ON supplier_ledger(order_id)",
-  "CREATE INDEX IF NOT EXISTS idx_sl_supplier ON supplier_ledger(supplier_id)",
-  "CREATE INDEX IF NOT EXISTS idx_tl_sale ON transporter_ledger(sale_id)",
-  "CREATE INDEX IF NOT EXISTS idx_tl_order ON transporter_ledger(order_id)",
-  "CREATE INDEX IF NOT EXISTS idx_tl_bill ON transporter_ledger(bill_id)",
-  "CREATE INDEX IF NOT EXISTS idx_tl_transporter ON transporter_ledger(transporter_id)",
-  "CREATE INDEX IF NOT EXISTS idx_gate_group ON gate_entries(invoice_group)",
-  "CREATE INDEX IF NOT EXISTS idx_gate_tanker ON gate_entries(tanker_id)",
-  "CREATE INDEX IF NOT EXISTS idx_gate_sale ON gate_entries(sale_id)",
-  "CREATE INDEX IF NOT EXISTS idx_gate_company_date ON gate_entries(company_id, entry_date)",
-  "CREATE INDEX IF NOT EXISTS idx_notes_je ON notes(journal_entry_id)",
-  "CREATE INDEX IF NOT EXISTS idx_notes_company ON notes(company_id)",
-  "CREATE INDEX IF NOT EXISTS idx_note_items_note ON note_items(note_id)",
-  "CREATE INDEX IF NOT EXISTS idx_badj_bargain ON bargain_adjustments(kind, bargain_id)",
-  "CREATE INDEX IF NOT EXISTS idx_badj_note ON bargain_adjustments(note_id)",
-  "CREATE INDEX IF NOT EXISTS idx_production_sale ON production(sale_id)",
-  "CREATE INDEX IF NOT EXISTS idx_bd_company ON bill_discountings(company_id)",
-  "CREATE INDEX IF NOT EXISTS idx_lc_issuances_lc ON lc_issuances(lc_id)",
-  // A discounted bill is not always cleared in one go: an NBFC will take it
-  // back in instalments, and until now the only way to record that was to wait
-  // and post the whole thing at the end, which left the facility reading as
-  // fully outstanding money that had already gone back. Each part now gets its
-  // own dated row and its own voucher, and the bill closes when the parts add
-  // up to it. Bills repaid in full before this keep their single figure on the
-  // parent row and are read from there, so nothing already posted moves.
-  `CREATE TABLE IF NOT EXISTS bd_repayments (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  bd_id INTEGER NOT NULL REFERENCES bill_discountings(id),
-  repay_date TEXT NOT NULL,
-  amount REAL NOT NULL DEFAULT 0,
-  settle_via TEXT NOT NULL DEFAULT 'bank',
-  ref TEXT,
-  journal_entry_id INTEGER,
-  note TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);`,
-  "CREATE INDEX IF NOT EXISTS idx_bd_repay_bd ON bd_repayments(bd_id)",
-  // What a bill is discounted for is not always the whole invoice behind it, so
-  // the invoice's own value is worth recording next to the amount opened
-  // against it — it is what tells you how much of the invoice was financed.
-  // Informational: nothing is priced off it.
-  "ALTER TABLE bill_discountings ADD COLUMN invoice_amount REAL",
-  // ---------------------------------------------------------------------
-  // Second pass on rows read, aimed at what the measurements actually show:
-  // this database is small (~7,300 rows), so the bill is driven by how OFTEN
-  // a query runs and how much of a table it has to walk each time -- not by
-  // table size. These cover the tables that were still being walked whole.
-  //
-  // user_logs is the biggest table in the database and had no index at all.
-  // The activity log runs two DISTINCT sweeps over the entire table on every
-  // open, purely to fill its two filter dropdowns -- so opening it read every
-  // row twice over. It also filters by username, entity, action and date, and
-  // the nightly cleanup deletes by date.
-  // ---------------------------------------------------------------------
-  "CREATE INDEX IF NOT EXISTS idx_ulogs_username ON user_logs(username)",
-  "CREATE INDEX IF NOT EXISTS idx_ulogs_entity ON user_logs(entity)",
-  "CREATE INDEX IF NOT EXISTS idx_ulogs_created ON user_logs(created_at)",
-  "CREATE INDEX IF NOT EXISTS idx_ulogs_action ON user_logs(action)",
-  // production_items is joined to its parent on every stock figure and read
-  // per product by the stock registers' correlated subqueries.
-  "CREATE INDEX IF NOT EXISTS idx_pitems_production ON production_items(production_id)",
-  "CREATE INDEX IF NOT EXISTS idx_pitems_kind_product ON production_items(kind, product_id)",
-  // The SKU stock register runs SIX correlated subqueries per SKU -- three over
-  // the adjustments and three over sales -- and each was scanning its whole
-  // table. Both sides filter on the packaging (the SKU) within a company.
-  "CREATE INDEX IF NOT EXISTS idx_skuadj_pkg ON sku_adjustments(company_id, packaging_id)",
-  "CREATE INDEX IF NOT EXISTS idx_sales_pkg_type ON sales(packaging_id, sale_type)",
-  // A stock count is looked up by its date within a company.
-  "CREATE INDEX IF NOT EXISTS idx_scounts_company_date ON stock_counts(company_id, count_date)",
-  "CREATE INDEX IF NOT EXISTS idx_scounts_product ON stock_counts(product_id)",
-  // Bill Discounting: the register filters by NBFC and by finance type, and
-  // every mutation re-reads the bill by id (already the primary key).
-  "CREATE INDEX IF NOT EXISTS idx_bd_nbfc ON bill_discountings(nbfc_id)",
-  "CREATE INDEX IF NOT EXISTS idx_bd_company_status ON bill_discountings(company_id, status)"
-  // ---------------------------------------------------------------------
-  // NOTE FOR LATER, learned the hard way: this list is applied BY COUNT.
-  // Startup stores how many entries it has run and executes only the ones
-  // past that mark, so
-  //   - a statement inserted into the middle sits below the mark and never
-  //     runs at all, silently, on every existing install; and
-  //   - swapping entries around does not help either, because the count is
-  //     unchanged and the mark still covers them.
-  // Only APPENDING works. Anything that must run on installs already past
-  // the mark belongs in a runOnce() instead, keyed by name -- see
-  // 'ulogs_entity_index_v1' in index.ts.
-  // ---------------------------------------------------------------------
-  //
-  // companies.company_type and companies.colour were tried here, twice: once
-  // in the middle of the list (never reached), then appended — by which point
-  // the first attempt had already bumped the stored count PAST the new length,
-  // so the loop had nothing left to run and one of the two columns was left
-  // missing. They are unconditional ALTERs in bootstrap.ts now, which no count
-  // can defeat.
-];
 async function backfillBargainSerials(c) {
   const res = await c.execute("SELECT id, bargain_no FROM bargains");
   for (const r of res.rows) {
@@ -1980,7 +775,6 @@ async function rebuildStockCountsForCompanies(c) {
   await c.execute("DROP TABLE stock_counts");
   await c.execute("ALTER TABLE stock_counts_new RENAME TO stock_counts");
 }
-var APPLIED_KEY = "schema_applied_count";
 async function initDb() {
   try {
     const c = getClient();
@@ -2025,14 +819,6 @@ async function initDb() {
     console.error("[db] init skipped/failed:", err.message);
   }
 }
-var cachedRevision = 0;
-var revisionInFlight = false;
-var revisionTimer = null;
-var POLL_MIN_MS = 15e3;
-var POLL_MAX_MS = 12e4;
-var QUIET_BEFORE_BACKOFF = 8;
-var pollMs = POLL_MIN_MS;
-var quietPolls = 0;
 function resetPollInterval() {
   pollMs = POLL_MIN_MS;
   quietPolls = 0;
@@ -2087,7 +873,6 @@ async function runDaily(key3, fn) {
     args: [flag, today]
   });
 }
-var invalidators = [];
 function onDataChanged(fn) {
   invalidators.push(fn);
 }
@@ -2123,16 +908,1261 @@ async function ping() {
     return { ok: false, message: err.message };
   }
 }
+var import_web, client, MIGRATIONS, APPLIED_KEY, cachedRevision, revisionInFlight, revisionTimer, POLL_MIN_MS, POLL_MAX_MS, QUIET_BEFORE_BACKOFF, pollMs, quietPolls, invalidators;
+var init_db = __esm({
+  "src/main/db.ts"() {
+    import_web = require("@libsql/client");
+    init_schema();
+    init_config();
+    client = null;
+    MIGRATIONS = [
+      "ALTER TABLE bargains ADD COLUMN opening_qty REAL",
+      "ALTER TABLE bargains ADD COLUMN base_rate REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE bargains ADD COLUMN duty REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE bargains ADD COLUMN allowed_shortage_pct REAL",
+      "ALTER TABLE orders ADD COLUMN is_registered_transporter INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE orders ADD COLUMN tanker_no TEXT",
+      "ALTER TABLE orders ADD COLUMN posting INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE orders ADD COLUMN final_taxable_value REAL DEFAULT 0",
+      "ALTER TABLE orders ADD COLUMN final_gst_amount REAL DEFAULT 0",
+      "ALTER TABLE orders ADD COLUMN final_tds_amount REAL DEFAULT 0",
+      "ALTER TABLE orders ADD COLUMN final_net_amount REAL DEFAULT 0",
+      "ALTER TABLE supplier_ledger ADD COLUMN payment_id INTEGER",
+      "ALTER TABLE transporter_ledger ADD COLUMN payment_id INTEGER",
+      "ALTER TABLE users ADD COLUMN permissions TEXT",
+      "ALTER TABLE transporters ADD COLUMN company_type TEXT",
+      "ALTER TABLE transporters ADD COLUMN gst_pct REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE transporters ADD COLUMN tds_pct REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE transporters ADD COLUMN tds_threshold REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE transporters ADD COLUMN tds_pct_above REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE suppliers ADD COLUMN tds_threshold REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE suppliers ADD COLUMN tds_pct_above REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE suppliers ADD COLUMN tds_above_only INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE orders ADD COLUMN port_entry_date TEXT",
+      "ALTER TABLE orders ADD COLUMN payment_cleared_date TEXT",
+      "ALTER TABLE orders ADD COLUMN financed_by_party INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE orders ADD COLUMN dispatch_date TEXT",
+      "ALTER TABLE orders ADD COLUMN outside_factory_date TEXT",
+      "ALTER TABLE orders ADD COLUMN inside_factory_date TEXT",
+      "ALTER TABLE orders ADD COLUMN received_date TEXT",
+      "ALTER TABLE orders ADD COLUMN credit_interest_days REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE orders ADD COLUMN credit_interest_amount REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE sales ADD COLUMN sales_bargain_id INTEGER",
+      "ALTER TABLE sales ADD COLUMN customer_id INTEGER",
+      "ALTER TABLE payment_allocations ADD COLUMN sale_id INTEGER",
+      // bargains/orders keep a legacy oil_types FK; mirror products so it is satisfied.
+      `INSERT OR IGNORE INTO oil_types (id, code, name, active)
+     SELECT id, COALESCE(code, name, 'GEN'), COALESCE(name, code, 'PRODUCT'), 1 FROM products`,
+      // default UOM switched from ton to MT
+      "UPDATE app_settings SET value = 'MT' WHERE key = 'default_uom' AND value = 'ton'",
+      "ALTER TABLE suppliers ADD COLUMN supplier_type TEXT",
+      "ALTER TABLE orders ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
+      "ALTER TABLE gate_entries ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'",
+      "ALTER TABLE bargains ADD COLUMN broker_id INTEGER",
+      "ALTER TABLE orders ADD COLUMN round_off REAL NOT NULL DEFAULT 0",
+      // multi-company: every business document belongs to a company (masters and
+      // gate entries stay shared). Existing data lands in company 1.
+      "ALTER TABLE bargains ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE orders ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE purchase_tankers ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE sales ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE sales_bargains ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE production ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE payments ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE bill_discounts ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE letters_of_credit ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE journal_entries ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
+      // Free-text remarks on bargains and purchase invoices.
+      "ALTER TABLE bargains ADD COLUMN remarks TEXT",
+      "ALTER TABLE orders ADD COLUMN remarks TEXT",
+      // Invoice rate above bargain rate = freight billed by the supplier: the
+      // difference is kept as per-ton freight data but NO transporter ledger posts.
+      "ALTER TABLE orders ADD COLUMN freight_paid_to_supplier INTEGER NOT NULL DEFAULT 0",
+      // Consignment purchase: goods were already at our site (no tanker movement,
+      // no transporter, booked straight to received) — drawn from consignment stock.
+      "ALTER TABLE orders ADD COLUMN is_consignment INTEGER NOT NULL DEFAULT 0",
+      // Packaging master: reusable pack definitions with Box -> Pouch -> base
+      // nesting. base per box = pouches_per_box * base_per_pouch.
+      `CREATE TABLE IF NOT EXISTS packagings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    box_label TEXT NOT NULL DEFAULT 'Box',
+    pouch_label TEXT NOT NULL DEFAULT 'Pouch',
+    pouches_per_box REAL NOT NULL DEFAULT 1,
+    base_per_pouch REAL NOT NULL DEFAULT 1,
+    base_uom TEXT NOT NULL DEFAULT 'L',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      // Sales bargains carry a default sale type (LOOSE/PACKED), packaging and
+      // freight term (FREIGHT_ON_GOODS = customer arranges; DLD = we deliver).
+      "ALTER TABLE sales_bargains ADD COLUMN sale_type TEXT NOT NULL DEFAULT 'LOOSE'",
+      "ALTER TABLE sales_bargains ADD COLUMN packaging_id INTEGER",
+      "ALTER TABLE sales_bargains ADD COLUMN freight_term TEXT NOT NULL DEFAULT 'FREIGHT_ON_GOODS'",
+      // Each sale can override the bargain's type/freight; PACKED stores boxes +
+      // loose pouches, DLD stores the transporter and freight.
+      "ALTER TABLE sales ADD COLUMN sale_type TEXT NOT NULL DEFAULT 'LOOSE'",
+      "ALTER TABLE sales ADD COLUMN packaging_id INTEGER",
+      "ALTER TABLE sales ADD COLUMN boxes REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE sales ADD COLUMN pouches REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE sales ADD COLUMN freight_term TEXT NOT NULL DEFAULT 'FREIGHT_ON_GOODS'",
+      "ALTER TABLE sales ADD COLUMN transporter_id INTEGER",
+      "ALTER TABLE sales ADD COLUMN transport_rate REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE sales ADD COLUMN transport_amount REAL NOT NULL DEFAULT 0",
+      // Sale-linked freight lives in the transporter ledger (DLD deliveries).
+      "ALTER TABLE transporter_ledger ADD COLUMN sale_id INTEGER",
+      // Packaging SKUs: capture the unit size in its natural unit (KG/GM/L/ML);
+      // base_per_pouch/base_uom are derived from these for stock conversion.
+      "ALTER TABLE packagings ADD COLUMN unit_size REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE packagings ADD COLUMN unit_uom TEXT NOT NULL DEFAULT 'KG'",
+      // Output GST on sales (bargain carries the default rate; the sale stores the
+      // rate applied and the computed amount).
+      "ALTER TABLE sales_bargains ADD COLUMN gst_pct REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE sales_bargains ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
+      // Link the sales bargain to the customer master by id, so renaming a customer
+      // reflects everywhere (the stored name is kept only as a fallback label).
+      "ALTER TABLE sales_bargains ADD COLUMN customer_id INTEGER",
+      "ALTER TABLE sales ADD COLUMN gst_pct REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE sales ADD COLUMN gst_amount REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE sales ADD COLUMN gst_type TEXT NOT NULL DEFAULT 'CGST_SGST'",
+      // Three-stage dispatch tracking for sales (loaded → transit → unloaded),
+      // mirroring purchase tankers. Any of the three means the goods have left the
+      // factory (status 'done'); 'pending' = not yet dispatched. Existing fulfilled
+      // sales are treated as already unloaded/delivered.
+      "ALTER TABLE sales ADD COLUMN dispatch_stage TEXT",
+      "UPDATE sales SET dispatch_stage = 'unloaded' WHERE status = 'done' AND dispatch_stage IS NULL",
+      // Allow dispatching a sale without booking stock (off-stock / untracked) after
+      // an explicit confirmation. Such a sale does not draw from or affect stock.
+      "ALTER TABLE sales ADD COLUMN track_stock INTEGER NOT NULL DEFAULT 1",
+      // Date stamped at each dispatch stage (loaded → in transit → unloaded).
+      "ALTER TABLE sales ADD COLUMN loaded_date TEXT",
+      "ALTER TABLE sales ADD COLUMN transit_date TEXT",
+      "ALTER TABLE sales ADD COLUMN unloaded_date TEXT",
+      // Existing delivered sales: assume unloaded on the sale date.
+      "UPDATE sales SET unloaded_date = sale_date WHERE dispatch_stage = 'unloaded' AND unloaded_date IS NULL",
+      // Reverse-charge (RCM) flag for individual transporters (GTA). Informational
+      // for now — freight is billed without GST and GST is self-accounted by us.
+      "ALTER TABLE transporters ADD COLUMN reverse_charge INTEGER NOT NULL DEFAULT 0",
+      // Gate OUT entries: outgoing sale dispatches tracked at the gate, alongside
+      // the existing inbound (purchase tanker) entries. direction 'in' | 'out';
+      // out entries link the sale being dispatched.
+      "ALTER TABLE gate_entries ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'",
+      "ALTER TABLE gate_entries ADD COLUMN sale_id INTEGER",
+      // Receipt classification + gross/tare weighment. Net (received_qty) = gross − tare.
+      "ALTER TABLE gate_entries ADD COLUMN rec_type TEXT NOT NULL DEFAULT 'OIL'",
+      "ALTER TABLE gate_entries ADD COLUMN gross_weight REAL",
+      "ALTER TABLE gate_entries ADD COLUMN tare_weight REAL",
+      // Optional manual gate no (the physical gate-register number) — the system
+      // serial (gate_entry_no) is always auto-assigned; this can be typed or blank.
+      "ALTER TABLE gate_entries ADD COLUMN ref_no TEXT",
+      // Multi-item sales invoices: line items share an invoice_group. Existing
+      // single sales each become their own group. gate-out links the group.
+      "ALTER TABLE sales ADD COLUMN invoice_group TEXT",
+      "UPDATE sales SET invoice_group = 'LEGACY-' || id WHERE invoice_group IS NULL",
+      "ALTER TABLE gate_entries ADD COLUMN invoice_group TEXT",
+      // Direct MNC arrival: the goods belong to a direct-purchase party and never
+      // travelled on one of our purchase tankers, so there is no tanker to pick —
+      // the gateman types the vehicle number and names the party right here, and the
+      // accountant's validation step is then only about which oil it is.
+      "ALTER TABLE gate_entries ADD COLUMN supplier_id INTEGER",
+      "ALTER TABLE gate_entries ADD COLUMN is_direct_mnc INTEGER NOT NULL DEFAULT 0",
+      // Manual additional interest (₹ per unit) on a purchase invoice — folds into
+      // the adjusted bargain rate.
+      "ALTER TABLE orders ADD COLUMN additional_interest REAL NOT NULL DEFAULT 0",
+      // Dated log of bargain balance top-ups / removals, so an addition made in a
+      // month shows under "Addition" in the bargain register for that month.
+      // kind = 'purchase' | 'sales'; delta > 0 add, < 0 remove.
+      `CREATE TABLE IF NOT EXISTS bargain_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    bargain_id INTEGER NOT NULL,
+    delta REAL NOT NULL,
+    adj_date TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      // Approval queue: master-list creations by non-admins park here (on hold)
+      // until an admin approves (inserts into the real table) or rejects (reason
+      // shown back to the requester). Real master tables only ever hold approved
+      // rows, so existing dropdowns/consumers need no filtering.
+      `CREATE TABLE IF NOT EXISTS approval_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_name TEXT NOT NULL,
+    action TEXT NOT NULL DEFAULT 'create',
+    payload TEXT NOT NULL,
+    label TEXT,
+    requested_by INTEGER,
+    requested_by_name TEXT,
+    requested_at TEXT NOT NULL DEFAULT (datetime('now')),
+    status TEXT NOT NULL DEFAULT 'pending',
+    decided_by INTEGER,
+    decided_by_name TEXT,
+    decided_at TEXT,
+    reason TEXT,
+    created_id INTEGER
+  )`,
+      // Consignment stock: supplier goods lying at our place, off-books until
+      // invoiced. Created here (not in SCHEMA_SQL) so it also lands on existing DBs.
+      `CREATE TABLE IF NOT EXISTS consignment_stock (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    qty REAL NOT NULL,
+    uom TEXT NOT NULL DEFAULT 'MT',
+    deposit_date TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      // Audit trail: attribute each logged action to a company, section and record.
+      "ALTER TABLE user_logs ADD COLUMN company_id INTEGER",
+      "ALTER TABLE user_logs ADD COLUMN entity TEXT",
+      "ALTER TABLE user_logs ADD COLUMN entity_id INTEGER",
+      // Inter-company stock movement: qty leaves the source company's stock and
+      // adds to the destination company's stock (physical move, not a sale).
+      `CREATE TABLE IF NOT EXISTS stock_transfers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_company_id INTEGER NOT NULL,
+    to_company_id INTEGER NOT NULL,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    qty REAL NOT NULL,
+    uom TEXT NOT NULL DEFAULT 'MT',
+    transfer_date TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      // Party ledgers are company books too — doc-linked rows inherit the parent
+      // document's company; manual rows take the company they were entered in.
+      "ALTER TABLE supplier_ledger ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE transporter_ledger ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE customer_ledger ADD COLUMN company_id INTEGER NOT NULL DEFAULT 1",
+      // Excess loading: qty loaded beyond the chosen bargain's balance is booked
+      // against an auto-created bargain line; the split is remembered per tanker.
+      "ALTER TABLE purchase_tankers ADD COLUMN extra_bargain_id INTEGER",
+      "ALTER TABLE purchase_tankers ADD COLUMN extra_qty REAL NOT NULL DEFAULT 0",
+      // Self-healing: doc-linked party-ledger rows always belong to their parent
+      // document's company (covers rows written before these columns existed).
+      `UPDATE supplier_ledger SET company_id = COALESCE(
+     (SELECT o.company_id FROM orders o WHERE o.id = supplier_ledger.order_id),
+     (SELECT p.company_id FROM payments p WHERE p.id = supplier_ledger.payment_id),
+     company_id)`,
+      `UPDATE transporter_ledger SET company_id = COALESCE(
+     (SELECT o.company_id FROM orders o WHERE o.id = transporter_ledger.order_id),
+     (SELECT p.company_id FROM payments p WHERE p.id = transporter_ledger.payment_id),
+     company_id)`,
+      `UPDATE customer_ledger SET company_id = COALESCE(
+     (SELECT s.company_id FROM sales s WHERE s.id = customer_ledger.sale_id),
+     (SELECT p.company_id FROM payments p WHERE p.id = customer_ledger.payment_id),
+     company_id)`,
+      "ALTER TABLE suppliers ADD COLUMN opening_purchase_amount REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE suppliers ADD COLUMN opening_purchase_date TEXT",
+      // bargain condition renamed to EX/DLD
+      "UPDATE bargains SET bargain_type = 'EX' WHERE bargain_type = 'Ex'",
+      "UPDATE bargains SET bargain_type = 'DLD' WHERE bargain_type = 'Delivered'",
+      "UPDATE orders SET bargain_type = 'EX' WHERE bargain_type = 'Ex'",
+      "UPDATE orders SET bargain_type = 'DLD' WHERE bargain_type = 'Delivered'",
+      "ALTER TABLE purchase_tankers ADD COLUMN krfl_weighment_doc_no TEXT",
+      "ALTER TABLE purchase_tankers ADD COLUMN krfl_weighment_photo TEXT",
+      "ALTER TABLE purchase_tankers ADD COLUMN outside_weighment_doc_no TEXT",
+      "ALTER TABLE purchase_tankers ADD COLUMN outside_weighment_photo TEXT",
+      `INSERT INTO purchase_tankers
+    (order_id, tanker_no, loaded_date, bargain_id, supplier_id, oil_type_id, loaded_qty, uom,
+     payment_mode, status, transit_date, source_id, expected_delivery_date, outside_factory_date,
+     inside_factory_date, empty_date, received_qty, transporter_id, transport_rate_per_ton,
+     transport_amount, shortage_charge_amount)
+   SELECT o.id, COALESCE(NULLIF(o.tanker_no, ''), 'Legacy-' || o.id),
+          COALESCE(o.port_entry_date, o.loaded_date, o.order_date), o.bargain_id, o.supplier_id,
+          o.oil_type_id, o.ordered_qty, o.uom,
+          CASE WHEN o.financed_by_party = 1 THEN 'supplier_finance' ELSE 'paid_by_us' END,
+          CASE
+            WHEN o.status IN ('received', 'delivered') THEN 'empty'
+            WHEN o.status = 'inside_factory' THEN 'inside_factory'
+            WHEN o.status = 'outside_factory' THEN 'outside_factory'
+            WHEN o.status = 'in_transit' THEN 'transit'
+            ELSE 'loaded'
+          END,
+          o.dispatch_date, o.source_id, o.expected_delivery_date, o.outside_factory_date,
+          o.inside_factory_date, COALESCE(o.received_date, o.delivered_date), o.received_qty,
+          o.transporter_id, o.transport_rate_per_ton, o.transport_amount, o.shortage_charge_amount
+   FROM orders o
+   WHERE NOT EXISTS (SELECT 1 FROM purchase_tankers pt WHERE pt.order_id = o.id)
+     -- Consignment / direct purchases are tanker-less BY DESIGN: the goods are
+     -- already at our site. Giving them a stand-in tanker would put them back
+     -- into tanker movement and, worse, make the bargain register count their
+     -- quantity twice (once via the tanker, once via the lots / the invoice).
+     AND o.is_consignment = 0`,
+      // Remove stand-in tankers this backfill created for consignment purchases
+      // before the guard above existed. Only rows it generated itself are touched.
+      `DELETE FROM purchase_tankers
+   WHERE tanker_no = 'Legacy-' || order_id
+     AND order_id IN (SELECT id FROM orders WHERE is_consignment = 1)`,
+      // Order status is now derived from its tankers (loaded → received). Remap
+      // leftovers from the earlier order lifecycle; the OLD 'loaded'→'at_port'
+      // remap is gone — it ran every boot and corrupted freshly created purchases.
+      "UPDATE orders SET status = 'received' WHERE status = 'delivered'",
+      "UPDATE orders SET status = 'loaded' WHERE status IN ('at_port', 'ordered', 'payment_cleared', 'in_transit', 'outside_factory', 'inside_factory')",
+      // Snapshot of the weighted-average valuation rate used for a day's physical
+      // count, so a saved count keeps the value it was booked at.
+      "ALTER TABLE stock_counts ADD COLUMN rate REAL",
+      // Links an auto-generated production run to the sale whose dispatch triggered
+      // it. When a finished good that has a formulation is dispatched, we record a
+      // production (consumes the recipe's raw/intermediate inputs, outputs the
+      // dispatched qty) so raw stock is drawn down at dispatch. NULL = manual run.
+      "ALTER TABLE production ADD COLUMN sale_id INTEGER",
+      // Packed finished stock per SKU (packaging): a lightweight, company-scoped
+      // count. on-hand = SUM(delta) − packed units sold. delta > 0 packs in,
+      // < 0 removes. Dated so the balance reflects when it changed.
+      `CREATE TABLE IF NOT EXISTS sku_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    packaging_id INTEGER NOT NULL,
+    delta REAL NOT NULL,
+    adj_date TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      // Tally-style Debit / Credit notes. A debit note reduces a supplier payable
+      // (purchase return / rate cut); a credit note reduces a customer receivable
+      // (sales return / allowance). Each posts a double-entry journal voucher AND a
+      // signed party-ledger row; those ids are kept so a delete reverses both.
+      `CREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    note_type TEXT NOT NULL,
+    note_no TEXT NOT NULL,
+    note_date TEXT NOT NULL,
+    party_type TEXT NOT NULL,
+    party_id INTEGER NOT NULL,
+    against_account TEXT NOT NULL,
+    base_amount REAL NOT NULL DEFAULT 0,
+    gst_pct REAL NOT NULL DEFAULT 0,
+    gst_amount REAL NOT NULL DEFAULT 0,
+    total_amount REAL NOT NULL DEFAULT 0,
+    narration TEXT,
+    journal_entry_id INTEGER,
+    ledger_table TEXT,
+    ledger_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      // Classification of a sales bargain (mirrors the purchase-bargain type tabs):
+      // FINISHED_OIL | FATTY | SCRAP | SPENT_EARTH | MISC.
+      "ALTER TABLE sales_bargains ADD COLUMN sale_category TEXT NOT NULL DEFAULT 'FINISHED_OIL'",
+      // Invoice-level round off on sales (mirrors purchases). Stored on the FIRST
+      // line of the invoice group (others 0) so summing lines never double-counts.
+      "ALTER TABLE sales ADD COLUMN round_off REAL NOT NULL DEFAULT 0",
+      // Products get a material Category (OIL / HUSK / PACKAGING / CHEMICAL / MISC)
+      // above the existing raw/intermediate/finished classification, which becomes
+      // the Sub-category. The DEFAULT backfills every existing product as OIL.
+      "ALTER TABLE products ADD COLUMN material_type TEXT NOT NULL DEFAULT 'OIL'",
+      // A packed SKU belongs to a finished product (DALDA 15 KG TIN → DALDA), so
+      // packed pieces can be reconciled in tonnage against that product's stock.
+      "ALTER TABLE packagings ADD COLUMN product_id INTEGER",
+      // Consignment lots now start life as a GATE ENTRY: the gateman passes the
+      // tanker, the accountant validates it into consignment stock. This records
+      // which gate entry a lot came from so it can't be validated twice.
+      "ALTER TABLE consignment_stock ADD COLUMN gate_entry_id INTEGER",
+      "ALTER TABLE consignment_stock ADD COLUMN tanker_no TEXT",
+      // Which purchase invoice drew this lot (NULL = still pending booking), so the
+      // purchase form can list the exact tankers waiting to be invoiced.
+      "ALTER TABLE consignment_stock ADD COLUMN order_id INTEGER",
+      // Per-tanker bargain allocation, mirroring purchase_tankers: one tanker can be
+      // split across two bargains (extra_qty goes to extra_bargain_id).
+      "ALTER TABLE consignment_stock ADD COLUMN bargain_id INTEGER",
+      "ALTER TABLE consignment_stock ADD COLUMN extra_bargain_id INTEGER",
+      "ALTER TABLE consignment_stock ADD COLUMN extra_qty REAL",
+      // Opening balance rather than an arrival: the stock the MNC already held with
+      // us when the books started, entered by hand with no gate entry behind it.
+      "ALTER TABLE consignment_stock ADD COLUMN is_opening INTEGER NOT NULL DEFAULT 0",
+      // The gate weighment and the allowed shortage that produced the net qty, so
+      // the register can show how the figure was arrived at.
+      "ALTER TABLE consignment_stock ADD COLUMN weighed_qty REAL",
+      "ALTER TABLE consignment_stock ADD COLUMN shortage_pct REAL",
+      // Per-SKU selling rates agreed on a sales bargain. Filled from a downloaded
+      // sheet, then offered when a sale line on that bargain picks the SKU.
+      `CREATE TABLE IF NOT EXISTS sales_bargain_sku_rates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sales_bargain_id INTEGER NOT NULL REFERENCES sales_bargains(id),
+    packaging_id INTEGER NOT NULL REFERENCES packagings(id),
+    rate_per_case REAL,
+    rate_per_mt REAL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (sales_bargain_id, packaging_id)
+  )`,
+      "CREATE INDEX IF NOT EXISTS idx_sbsr_bargain ON sales_bargain_sku_rates(sales_bargain_id)",
+      // Tally-style bill-wise adjustments on payment/receipt voucher lines:
+      // agst_ref settles a named bill, advance/new_ref create one, on_account
+      // leaves the money unallocated.
+      `CREATE TABLE IF NOT EXISTS journal_bill_allocs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    line_id INTEGER NOT NULL REFERENCES journal_lines(id),
+    account_id INTEGER NOT NULL REFERENCES ledger_accounts(id),
+    method TEXT NOT NULL,
+    ref_name TEXT,
+    amount REAL NOT NULL
+  )`,
+      "CREATE INDEX IF NOT EXISTS idx_jba_line ON journal_bill_allocs(line_id)",
+      "CREATE INDEX IF NOT EXISTS idx_jba_account ON journal_bill_allocs(account_id)",
+      // Which customers buy which packed SKUs — narrows the sales-bargain rate
+      // card to the SKUs that party actually trades in.
+      // A gate entry can be recorded without any weighment — it completes on the
+      // spot instead of waiting at the weighbridge, and carries no gate figure.
+      "ALTER TABLE gate_entries ADD COLUMN no_weighment INTEGER NOT NULL DEFAULT 0",
+      // A manually-entered vehicle can belong to either side of the trade.
+      "ALTER TABLE gate_entries ADD COLUMN customer_id INTEGER",
+      // The plain gate-register line: a vehicle, who it is with, and what it
+      // carries. No weighment, no document behind it.
+      // Product/material categories as a master, so OIL, HUSK, SCRAP and whatever
+      // the mill adds later live in one place instead of being hard-coded in every
+      // screen. Referenced BY NAME, so existing rows keep working untouched.
+      `CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    note TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      // Seed from whatever the books already use, so nothing vanishes on upgrade.
+      `INSERT OR IGNORE INTO categories (name)
+     SELECT DISTINCT UPPER(TRIM(material_type)) FROM products
+      WHERE COALESCE(TRIM(material_type), '') != ''`,
+      `INSERT OR IGNORE INTO categories (name)
+     SELECT DISTINCT UPPER(TRIM(supplier_type)) FROM suppliers
+      WHERE COALESCE(TRIM(supplier_type), '') != ''`,
+      `INSERT OR IGNORE INTO categories (name) VALUES
+     ('OIL'), ('HUSK'), ('FATTY'), ('SCRAP'), ('SPENT EARTH'), ('PACKAGING'), ('CHEMICAL'), ('MISCELLANEOUS')`,
+      // Which side of the trade a category belongs to: bought, sold, or both.
+      "ALTER TABLE categories ADD COLUMN applies_to TEXT NOT NULL DEFAULT 'both'",
+      // A customer can be tagged with the category it trades in, the way a supplier
+      // already is — that is what lets the gate narrow the party list honestly.
+      "ALTER TABLE customers ADD COLUMN category TEXT",
+      // PP = presentation stock counted alongside the physical count.
+      "ALTER TABLE stock_counts ADD COLUMN pp_qty REAL",
+      "ALTER TABLE gate_entries ADD COLUMN person TEXT",
+      "ALTER TABLE gate_entries ADD COLUMN entry_kind TEXT NOT NULL DEFAULT 'standard'",
+      "ALTER TABLE notes ADD COLUMN against_ref TEXT",
+      // Treasury: usance/margin on LCs, due-dated LC bills, and the discounting
+      // economics (rate, interest, net) with the journal entries they posted.
+      "ALTER TABLE letters_of_credit ADD COLUMN usance_days INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE letters_of_credit ADD COLUMN margin_pct REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE letters_of_credit ADD COLUMN journal_entry_id INTEGER",
+      "ALTER TABLE lc_issuances ADD COLUMN due_date TEXT",
+      "ALTER TABLE lc_issuances ADD COLUMN status TEXT NOT NULL DEFAULT 'outstanding'",
+      "ALTER TABLE lc_issuances ADD COLUMN settled_date TEXT",
+      "ALTER TABLE lc_issuances ADD COLUMN journal_entry_id INTEGER",
+      "ALTER TABLE bill_discounts ADD COLUMN customer_id INTEGER",
+      "ALTER TABLE bill_discounts ADD COLUMN invoice_group TEXT",
+      "ALTER TABLE bill_discounts ADD COLUMN rate_pct REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE bill_discounts ADD COLUMN charges REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE bill_discounts ADD COLUMN interest_amount REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE bill_discounts ADD COLUMN net_received REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE bill_discounts ADD COLUMN journal_entry_id INTEGER",
+      "ALTER TABLE bill_discounts ADD COLUMN realize_entry_id INTEGER",
+      // Every restatement of an MNC opening balance keeps its old figure, so a
+      // mistaken change (or deletion) can be seen and put back.
+      `CREATE TABLE IF NOT EXISTS consignment_opening_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    supplier_id INTEGER NOT NULL,
+    product_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    old_qty REAL,
+    new_qty REAL,
+    uom TEXT,
+    deposit_date TEXT,
+    note TEXT,
+    changed_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      `CREATE TABLE IF NOT EXISTS packaging_parties (
+    packaging_id INTEGER NOT NULL REFERENCES packagings(id),
+    customer_id INTEGER NOT NULL REFERENCES customers(id),
+    PRIMARY KEY (packaging_id, customer_id)
+  )`,
+      // How a consignment / direct purchase invoice is spread across bargains. The
+      // quantity is typed, not tanker-wise, so the allocation belongs to the invoice
+      // rather than to a tanker — and it is the single source the bargain register
+      // reads for these purchases.
+      `CREATE TABLE IF NOT EXISTS order_bargains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL REFERENCES orders(id),
+    bargain_id INTEGER NOT NULL REFERENCES bargains(id),
+    qty REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      "CREATE INDEX IF NOT EXISTS idx_order_bargains_bargain ON order_bargains(bargain_id)",
+      "CREATE INDEX IF NOT EXISTS idx_order_bargains_order ON order_bargains(order_id)",
+      // Consignment invoices booked before this table existed keep their single
+      // bargain link; give each one the row the register now expects.
+      `INSERT INTO order_bargains (order_id, bargain_id, qty)
+   SELECT o.id, o.bargain_id, o.ordered_qty FROM orders o
+   WHERE o.is_consignment = 1 AND o.bargain_id IS NOT NULL
+     AND EXISTS (SELECT 1 FROM bargains b WHERE b.id = o.bargain_id)
+     AND NOT EXISTS (SELECT 1 FROM order_bargains ob WHERE ob.order_id = o.id)`,
+      // Parties whose goods are already at our site (consignment / MNC suppliers):
+      // purchases from them skip the tanker movement entirely — no send-to-supplier,
+      // no transit/outside/inside/empty. Booked straight to received.
+      "ALTER TABLE suppliers ADD COLUMN skip_tanker_stages INTEGER NOT NULL DEFAULT 0",
+      // Optional item lines on a debit/credit note (product × qty × rate). When
+      // present they compute the note's base amount; ledger-only (no stock move).
+      `CREATE TABLE IF NOT EXISTS note_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id INTEGER NOT NULL,
+    product_id INTEGER,
+    description TEXT,
+    qty REAL NOT NULL DEFAULT 0,
+    rate REAL NOT NULL DEFAULT 0,
+    amount REAL NOT NULL DEFAULT 0
+  )`,
+      // The sanctioned facility a bank grants, sitting ABOVE individual LCs: each
+      // LC draws against it, so headroom is the sanction less everything already
+      // committed. Without this an LC only knew its own amount and nothing stopped
+      // the bank's overall limit being exceeded.
+      `CREATE TABLE IF NOT EXISTS bank_facilities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    name TEXT NOT NULL,
+    bank TEXT NOT NULL,
+    facility_type TEXT NOT NULL DEFAULT 'lc',
+    sanctioned_limit REAL NOT NULL DEFAULT 0,
+    sanction_date TEXT,
+    review_date TEXT,
+    note TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      // Outstanding that consumes the sanction but is NOT one of our LCs — the
+      // legacy accounts and the DIL EXIM balance the notes call out. Kept as named
+      // lines so the available figure can always be broken back down into what
+      // makes it up, rather than being a single unexplained number.
+      `CREATE TABLE IF NOT EXISTS facility_exposures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    facility_id INTEGER NOT NULL REFERENCES bank_facilities(id),
+    label TEXT NOT NULL,
+    amount REAL NOT NULL DEFAULT 0,
+    kind TEXT NOT NULL DEFAULT 'outstanding',
+    as_of TEXT,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      "ALTER TABLE letters_of_credit ADD COLUMN facility_id INTEGER",
+      // Why the LC was opened — the notes head the LC record with its purpose, so
+      // a register can be read without opening every one to remember what it was for.
+      "ALTER TABLE letters_of_credit ADD COLUMN purpose TEXT",
+      // FDs held as security. The notes ask for the FD NUMBER to be the link, with
+      // the bank, amount, maturity and lien visible from whatever it secures.
+      `CREATE TABLE IF NOT EXISTS fixed_deposits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    fd_no TEXT NOT NULL,
+    bank TEXT NOT NULL,
+    amount REAL NOT NULL DEFAULT 0,
+    start_date TEXT,
+    maturity_date TEXT,
+    interest_pct REAL NOT NULL DEFAULT 0,
+    lien_status TEXT NOT NULL DEFAULT 'free',
+    facility_id INTEGER,
+    lc_id INTEGER,
+    note TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      // A hand-written reference kept alongside the auto-generated bargain_no —
+      // e.g. the number the party quotes on their own paperwork — never used for
+      // anything but display.
+      "ALTER TABLE sales_bargains ADD COLUMN manual_bargain_no TEXT",
+      // Trading LCs: the purchase invoice the LC was opened against, the party the
+      // sale proceeds (repayment) will come from, and a workflow status distinct
+      // from the open/utilized/closed lifecycle — the notes ask for In Progress /
+      // On Hold as something the user sets, separate from whether it's drawn.
+      "ALTER TABLE letters_of_credit ADD COLUMN linked_order_id INTEGER",
+      "ALTER TABLE letters_of_credit ADD COLUMN receivable_party_id INTEGER",
+      "ALTER TABLE letters_of_credit ADD COLUMN workflow_status TEXT NOT NULL DEFAULT 'in_progress'",
+      // A repayment against an LC's exposure — the money coming back from the
+      // receivable party. `posted` gates whether it has hit the books yet: a
+      // repayment can be logged (with its bank document) before being confirmed.
+      `CREATE TABLE IF NOT EXISTS lc_repayments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lc_id INTEGER NOT NULL REFERENCES letters_of_credit(id),
+    party_id INTEGER,
+    amount REAL NOT NULL DEFAULT 0,
+    repay_date TEXT,
+    posted INTEGER NOT NULL DEFAULT 0,
+    document_path TEXT,
+    journal_entry_id INTEGER,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      "CREATE INDEX IF NOT EXISTS idx_lc_repayments_lc ON lc_repayments(lc_id)",
+      // Trading purchases/sales: bought from one party and sold straight to
+      // another, never actually landing in our stock — no bargain, no tanker,
+      // and (the one thing nothing else already gave us) excluded from every
+      // stock computation via affects_stock.
+      "ALTER TABLE orders ADD COLUMN is_trading INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE orders ADD COLUMN affects_stock INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE sales ADD COLUMN is_trading INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE sales ADD COLUMN affects_stock INTEGER NOT NULL DEFAULT 1",
+      // FOR (DLD) sales: by default freight is recovered from the customer on top
+      // of the goods value. This flips it — freight is deducted from the invoice
+      // total instead, the transporter is still paid in full by us.
+      "ALTER TABLE sales ADD COLUMN deduct_freight INTEGER NOT NULL DEFAULT 0",
+      // The LC's own lifecycle, as the client works it day to day — separate from
+      // the internal open/utilized/closed status (still used for facility
+      // headroom) and from the Trading compliance flag.
+      "ALTER TABLE letters_of_credit ADD COLUMN stage TEXT NOT NULL DEFAULT 'application'",
+      // The fixed deposit lodged as security for the LC — mandatory in the UI.
+      "ALTER TABLE letters_of_credit ADD COLUMN fd_no TEXT",
+      // Entered at the Payment received stage, alongside maturity date — usance
+      // days (relabeled Interest days) is then calculated from the two rather
+      // than typed by hand.
+      "ALTER TABLE letters_of_credit ADD COLUMN payment_received_date TEXT",
+      // open_date already carries the Application date (see the earlier
+      // Open date -> Application date relabel); the LC's actual opening — a
+      // later, separate step — gets its own column.
+      "ALTER TABLE letters_of_credit ADD COLUMN opened_date TEXT",
+      // Swapping a tanker mid-transit (accident, breakdown) keeps the same
+      // purchase_tankers row — bargain/order/financials stay put — but its
+      // number changes and whatever quantity was lost comes off loaded_qty, so
+      // the bargain balance and the gate's later weighment both reconcile
+      // against what the replacement can actually still deliver.
+      "ALTER TABLE purchase_tankers ADD COLUMN loss_qty REAL NOT NULL DEFAULT 0",
+      `CREATE TABLE IF NOT EXISTS tanker_replacements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tanker_id INTEGER NOT NULL REFERENCES purchase_tankers(id),
+    old_tanker_no TEXT,
+    new_tanker_no TEXT NOT NULL,
+    loss_qty REAL NOT NULL DEFAULT 0,
+    reason TEXT,
+    replaced_date TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      "CREATE INDEX IF NOT EXISTS idx_tanker_replacements_tanker ON tanker_replacements(tanker_id)",
+      // Which of the party's open invoices this LC covers — one LC can now cover
+      // several, so it's a table rather than the single linked_order_id column.
+      `CREATE TABLE IF NOT EXISTS lc_linked_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lc_id INTEGER NOT NULL REFERENCES letters_of_credit(id),
+    order_id INTEGER NOT NULL REFERENCES orders(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(lc_id, order_id)
+  )`,
+      "CREATE INDEX IF NOT EXISTS idx_lc_linked_orders_lc ON lc_linked_orders(lc_id)",
+      // LC repayment is US repaying the BANK (an outflow), not the receivable
+      // party paying us — the bank often deducts a variable maturity charge at
+      // the same moment, debited from our account as one combined withdrawal
+      // alongside the repayment itself.
+      "ALTER TABLE lc_repayments ADD COLUMN maturity_charges REAL NOT NULL DEFAULT 0",
+      // Bank statement reconciliation: an import batch (one per uploaded file) and
+      // its lines. A line either LINKS to a payment/LC entry already posted
+      // elsewhere (no new posting — just marks it reconciled) or falls to 'misc'
+      // when nothing recognizes it. sub_entry_* is a manual party/purpose note,
+      // independent of the reconciliation status itself.
+      `CREATE TABLE IF NOT EXISTS bank_statement_imports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bank TEXT NOT NULL,
+    file_name TEXT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    imported_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      `CREATE TABLE IF NOT EXISTS bank_statement_lines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    import_id INTEGER NOT NULL REFERENCES bank_statement_imports(id),
+    bank TEXT NOT NULL,
+    txn_date TEXT NOT NULL,
+    narration TEXT,
+    debit REAL NOT NULL DEFAULT 0,
+    credit REAL NOT NULL DEFAULT 0,
+    balance REAL,
+    category TEXT,
+    link_type TEXT,
+    link_ref_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    sub_entry_enabled INTEGER NOT NULL DEFAULT 0,
+    sub_entry_note TEXT,
+    reviewed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      "CREATE INDEX IF NOT EXISTS idx_bank_statement_lines_import ON bank_statement_lines(import_id)",
+      "CREATE INDEX IF NOT EXISTS idx_bank_statement_lines_status ON bank_statement_lines(status)",
+      // Bill Discounting: no stages like an LC — just submit an invoice and the
+      // discounter pays out T/T+1 on its own advice, so there's nothing here to
+      // gate on dates the way LCs are. Each party carries its own rate/limit
+      // (PID/SID, security, interest terms); entries draw against that limit.
+      `CREATE TABLE IF NOT EXISTS bd_parties (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    party_name TEXT NOT NULL,
+    discounter TEXT,
+    rate_pct REAL NOT NULL DEFAULT 0,
+    finance_type TEXT NOT NULL DEFAULT 'PID',
+    purpose TEXT,
+    security_given INTEGER NOT NULL DEFAULT 0,
+    interest_bearing INTEGER NOT NULL DEFAULT 0,
+    interest_payment_schedule TEXT,
+    sanctioned_limit REAL NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      `CREATE TABLE IF NOT EXISTS bd_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bd_party_id INTEGER NOT NULL REFERENCES bd_parties(id),
+    invoice_no TEXT,
+    amount REAL NOT NULL DEFAULT 0,
+    submitted_date TEXT NOT NULL,
+    payment_date TEXT,
+    status TEXT NOT NULL DEFAULT 'submitted',
+    repaid_date TEXT,
+    interest_amount REAL NOT NULL DEFAULT 0,
+    interest_received_date TEXT,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      "CREATE INDEX IF NOT EXISTS idx_bd_entries_party ON bd_entries(bd_party_id)",
+      // Purchase & Sales Trading: one dedicated screen for a raw-product
+      // pass-through deal (buy from a supplier, sell the same quantity straight
+      // to a customer) — no tanker movement, no stock entries. Reuses the
+      // existing orders/sales is_trading path under the hood; this table just
+      // links the resulting purchase + sale as one deal for its own listing.
+      `CREATE TABLE IF NOT EXISTS trading_deals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    deal_date TEXT NOT NULL,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    order_id INTEGER REFERENCES orders(id),
+    sale_id INTEGER REFERENCES sales(id),
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      // Bill-wise settlement used to tie a payment/receipt only to a free-typed
+      // ref_name string matched against a supplier/customer's invoice_no — two
+      // orders sharing (or missing) an invoice number could collide or miss
+      // entirely. order_id is an exact link for purchases (one order = one
+      // bill); sales invoices can span several `sales` rows sharing one
+      // invoice_group, so that system-generated group id is the exact link
+      // there instead of a single row id.
+      "ALTER TABLE journal_bill_allocs ADD COLUMN order_id INTEGER REFERENCES orders(id)",
+      "ALTER TABLE journal_bill_allocs ADD COLUMN sale_invoice_group TEXT",
+      // A Gate In vehicle weighed Tare-only (arriving empty, before its Gross
+      // comes later at Gate Out) can be flagged so it surfaces in Gate Out's own
+      // "Awaiting Gross" picker instead of only sitting in Gate In's queue.
+      "ALTER TABLE gate_entries ADD COLUMN awaiting_gross_out INTEGER NOT NULL DEFAULT 0",
+      // Whether a supplier/transporter's business is Trading or Manufacturing.
+      // The DEFAULT backfills every existing row to Manufacturing (the historical
+      // assumption); new rows can choose either from here on.
+      "ALTER TABLE suppliers ADD COLUMN business_type TEXT NOT NULL DEFAULT 'Manufacturing'",
+      "ALTER TABLE customers ADD COLUMN business_type TEXT NOT NULL DEFAULT 'Manufacturing'",
+      // A packed SKU that does not pack one of the finished products (product_id)
+      // can instead carry a short product name typed by hand. Exactly one of the
+      // two is used — the linked product's name wins when both are set.
+      "ALTER TABLE packagings ADD COLUMN product_label TEXT",
+      // A trading deal buys across several purchase invoices and sells across
+      // several sale invoices, so its orders/sales are listed here rather than in
+      // the single trading_deals.order_id / sale_id pair. Those two columns stay
+      // as they are and still point at the deal's first invoice on each side, so
+      // deals booked before this — which have no rows here at all — keep reading
+      // and deleting exactly as they did.
+      `CREATE TABLE IF NOT EXISTS trading_deal_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id INTEGER NOT NULL REFERENCES trading_deals(id),
+    order_id INTEGER NOT NULL REFERENCES orders(id),
+    line_no INTEGER NOT NULL DEFAULT 0
+  )`,
+      `CREATE TABLE IF NOT EXISTS trading_deal_sales (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id INTEGER NOT NULL REFERENCES trading_deals(id),
+    sale_id INTEGER NOT NULL REFERENCES sales(id),
+    line_no INTEGER NOT NULL DEFAULT 0
+  )`,
+      "CREATE INDEX IF NOT EXISTS idx_tdo_deal ON trading_deal_orders(deal_id)",
+      "CREATE INDEX IF NOT EXISTS idx_tds_deal ON trading_deal_sales(deal_id)",
+      // TDS the customer withholds on a sale invoice, mirroring the purchase side.
+      // Defaults to 0, so every sale booked before this — and every sale that
+      // never sets a rate — keeps exactly the receivable it already had.
+      "ALTER TABLE sales ADD COLUMN tds_pct REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE sales ADD COLUMN tds_amount REAL NOT NULL DEFAULT 0",
+      // A refining recipe is not only what goes in: by-product and loss
+      // percentages are struck on the CPO going IN, not the RPO coming out — 5.7%
+      // fatty acid + 1% dead loss means 6.7% of the input never becomes product,
+      // so 100 MT of RPO actually takes 100/0.933 = 107.18 MT of CPO (see
+      // recipeTor() in production.ts), not 106.7. Each line now says which kind it
+      // is — 'input' is consumed, 'output' is a by-product that lands in stock,
+      // 'loss' is written off. Everything already recorded is an input, which is
+      // exactly what the default leaves it as.
+      "ALTER TABLE formulation_items ADD COLUMN kind TEXT NOT NULL DEFAULT 'input'",
+      "ALTER TABLE production_items ADD COLUMN kind TEXT NOT NULL DEFAULT 'input'",
+      // A challan that gives no quantity is a real answer, and a different one
+      // from "nobody has filled this in yet" — the gate records it as NA so the
+      // shortage column knows there is nothing to compare the weighed net against.
+      "ALTER TABLE gate_entries ADD COLUMN dispatch_na INTEGER NOT NULL DEFAULT 0",
+      // A vehicle taken in empty and weighed out loaded made two movements on
+      // one record. entry_date is when it arrived; this is the day it left, so
+      // the register can show both rather than only the one it started as.
+      "ALTER TABLE gate_entries ADD COLUMN out_date TEXT",
+      // A repayment covering more than the LC's own open amount is covering bank
+      // charges too — split so the two kinds of charge post to their own ledger
+      // accounts instead of one generic bucket. maturity_charges (their sum)
+      // stays in sync for bank-reconciliation matching, which already reads it.
+      "ALTER TABLE lc_repayments ADD COLUMN comm_charges REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE lc_repayments ADD COLUMN bank_charges REAL NOT NULL DEFAULT 0",
+      // Pre-closure: the LC is wound up before its bills/maturity would naturally
+      // settle it. Interest is recalculated over the days actually elapsed
+      // (open date -> preclose date) rather than the full planned usance, and
+      // whatever's left of the open amount either comes back to us or covers a
+      // remaining balance still owed to the party — the user picks which.
+      "ALTER TABLE letters_of_credit ADD COLUMN preclosed_date TEXT",
+      "ALTER TABLE letters_of_credit ADD COLUMN preclose_settlement_direction TEXT",
+      "ALTER TABLE letters_of_credit ADD COLUMN preclose_settlement_amount REAL",
+      "ALTER TABLE letters_of_credit ADD COLUMN preclose_journal_entry_id INTEGER",
+      // Overall LC facility limit per company — Fixed (always on) plus an
+      // optional Convertible top-up — separate from any one LC's own open
+      // amount, so the book as a whole can be tracked against what the bank has
+      // actually sanctioned across every LC together.
+      `CREATE TABLE IF NOT EXISTS lc_limits (
+    company_id INTEGER PRIMARY KEY,
+    fixed_limit REAL NOT NULL DEFAULT 0,
+    convertible_limit REAL NOT NULL DEFAULT 0,
+    convertible_enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      // Some parties (e.g. Bunge-style deals) pay LC interest upfront straight
+      // from the bank account instead of it coming out of the open amount — the
+      // Open Amount then equals what the supplier actually receives, and interest
+      // is calculated for reference only, posted later when its own bank
+      // statement line is reconciled (see bankRecon.ts's 'lc_interest' link).
+      "ALTER TABLE letters_of_credit ADD COLUMN interest_upfront INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE letters_of_credit ADD COLUMN interest_journal_entry_id INTEGER",
+      // Premature-closure interest: the days between preclose and the LC's
+      // original maturity that never happen still carry an interest cost. Stored
+      // for record regardless of route; only routed to the bank does it get its
+      // own deferred posting (see bankRecon.ts's 'lc_preclose_interest' link) —
+      // routed to the party, it's already netted into preclose_settlement_amount.
+      "ALTER TABLE letters_of_credit ADD COLUMN preclose_premature_interest REAL",
+      "ALTER TABLE letters_of_credit ADD COLUMN preclose_interest_route TEXT",
+      "ALTER TABLE letters_of_credit ADD COLUMN preclose_interest_journal_entry_id INTEGER",
+      // A Trading LC finances one round trip — buy from the supplier, resell to
+      // the customer — so it's struck against the whole deal, not a bare purchase
+      // invoice. NULL until an LC picks this deal; a deal can only back one LC at
+      // a time.
+      "ALTER TABLE trading_deals ADD COLUMN lc_id INTEGER REFERENCES letters_of_credit(id)",
+      // A by-product line's own % of input can be auto-calculated instead of
+      // typed by hand — e.g. Fatty Acid = Oil FFA% x (1 + loss multiplier%) +
+      // moisture loss%. The three inputs are kept alongside the computed qty so
+      // the recipe stays auditable (why it's 5.7%, not just that it is).
+      "ALTER TABLE formulation_items ADD COLUMN auto_calc INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE formulation_items ADD COLUMN ffa_pct REAL",
+      "ALTER TABLE formulation_items ADD COLUMN loss_multiplier_pct REAL",
+      "ALTER TABLE formulation_items ADD COLUMN moisture_pct REAL",
+      // An INPUT line's own auto-calc goes one step further than a by-product's:
+      // a blended recipe (several raw oils, each its own quality) needs its own
+      // TOR multiplier per ingredient — 1/(1 - fatty acid% - dead loss%) — rather
+      // than one loss shared across the whole blend. Dead loss is the recipe's
+      // own shared 'loss' line total (always present, same for every input), not
+      // a per-input value — this column shipped briefly but is unused now.
+      "ALTER TABLE formulation_items ADD COLUMN dead_loss_pct REAL",
+      // The fatty acid an auto-calculated input line throws off is a REAL
+      // by-product, not just a yield reduction — it lands in stock under
+      // whichever product this names, summed across every input that names the
+      // same one. NULL means this input's own fatty acid isn't tracked as stock.
+      "ALTER TABLE formulation_items ADD COLUMN byproduct_product_id INTEGER REFERENCES products(id)",
+      // A gate entry that will never be completed — the tanker it was cut for
+      // never took delivery (party refused, redirected elsewhere) — gets marked
+      // Rejected with a reason, rather than deleted outright or left stuck
+      // forever in "Pending weight". Keeps the paper trail; any stock/invoice
+      // correction (a Credit Note, say) is handled separately, on purpose.
+      "ALTER TABLE gate_entries ADD COLUMN rejected_at TEXT",
+      "ALTER TABLE gate_entries ADD COLUMN rejected_reason TEXT",
+      // The round trip's last leg: the customer's payment for the resale actually
+      // lands, closing a Trading LC out — Application -> Open -> Payment received
+      // -> Preclose/Repayment -> Payment IN. Distinct from payment_received_date
+      // (that's the BANK paying the SUPPLIER; this is the CUSTOMER paying US). A
+      // deal's sale side can be paid across more than one receipt (a part-payment,
+      // or one per invoice on a multi-invoice deal), so — like lc_repayments —
+      // this is its own table rather than a single scalar on the LC; "closed"
+      // itself is computed live from what's still outstanding, not stored here.
+      `CREATE TABLE IF NOT EXISTS lc_payment_ins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lc_id INTEGER NOT NULL REFERENCES letters_of_credit(id),
+    pay_date TEXT NOT NULL,
+    amount REAL NOT NULL DEFAULT 0,
+    journal_entry_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      "CREATE INDEX IF NOT EXISTS idx_lc_payment_ins_lc ON lc_payment_ins(lc_id)",
+      // A sale invoice the customer refused to accept before it ever left through
+      // the gate (or was turned back before unloading) — marked Rejected with a
+      // reason rather than deleted, same reasoning as gate_entries above: the
+      // invoice stays on record for GST/audit, and a Credit Note against it is
+      // the actual correction, done separately. Applies to every line row sharing
+      // the invoice_group, since that's the unit every other invoice-level action
+      // (setInvoiceStage, deleteSaleInvoice) already operates on.
+      "ALTER TABLE sales ADD COLUMN rejected_at TEXT",
+      "ALTER TABLE sales ADD COLUMN rejected_reason TEXT",
+      // A product can have more than one formulation (e.g. RPO's CPO-based recipe
+      // and its SHEA-based one) — recording which one a run actually used, so the
+      // consumption behind a past production entry can always be traced back to
+      // the exact recipe, even after a newer one is added for the same product.
+      "ALTER TABLE production ADD COLUMN formulation_id INTEGER REFERENCES formulations(id)",
+      // The bank's interest and charges come out of an LC's open amount BEFORE the
+      // beneficiary is paid, so a bill issued for the gross overpays the party on
+      // paper. When interest/charges are later revised the shortfall moves with
+      // them, so it is corrected by its own re-postable voucher (Dr Bank / Cr the
+      // party, allocated On Account) rather than by rewriting the original
+      // settlement — the payment that actually happened stays on the record and
+      // the correction sits beside it.
+      "ALTER TABLE letters_of_credit ADD COLUMN fee_adjust_journal_entry_id INTEGER",
+      // OUR OWN bank accounts — the ones money actually moves out of for LC
+      // repayments and other transactions. Deliberately NOT the same thing as an
+      // LC's discounting bank (letters_of_credit.bank), which is the institution
+      // that FINANCES the LC and is somebody else's bank, not ours.
+      `CREATE TABLE IF NOT EXISTS banks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    branch TEXT,
+    account_no TEXT,
+    ifsc TEXT,
+    note TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_banks_name ON banks(name)",
+      // Superseded by our_bank_id below: this briefly held the DISCOUNTING bank,
+      // which does not belong in our own-accounts master. Left in place unused
+      // rather than dropped, since dropping a referenced column is not worth the
+      // risk for a column nothing now reads.
+      "ALTER TABLE letters_of_credit ADD COLUMN bank_id INTEGER REFERENCES banks(id)",
+      // Which of OUR accounts this LC's money moves through — the one a repayment
+      // goes out of. The financing side stays on `bank` (the discounting bank).
+      "ALTER TABLE letters_of_credit ADD COLUMN our_bank_id INTEGER REFERENCES banks(id)",
+      "CREATE INDEX IF NOT EXISTS idx_lc_our_bank ON letters_of_credit(our_bank_id)",
+      // Each bank sanctions its own LC limit, per company — the single company-wide
+      // figure lc_limits held can't express "how much of THIS bank's line is used"
+      // once there is more than one bank. lc_limits is left in place untouched; the
+      // rows it held are copied across by backfillBankMaster() below.
+      `CREATE TABLE IF NOT EXISTS bank_lc_limits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    bank_id INTEGER NOT NULL REFERENCES banks(id),
+    fixed_limit REAL NOT NULL DEFAULT 0,
+    convertible_limit REAL NOT NULL DEFAULT 0,
+    convertible_enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_lc_limits ON bank_lc_limits(company_id, bank_id)",
+      // A bank ACCOUNT belongs to one company's books, not to the business in
+      // general — the SAME real-world bank used by two companies gets its own
+      // separate row per company, same as any other company-scoped record. The
+      // one bank that existed before this (shared, used by both companies) is
+      // left as-is here; splitting its existing links is a data fix, not schema.
+      "ALTER TABLE banks ADD COLUMN company_id INTEGER REFERENCES companies(id)",
+      "DROP INDEX IF EXISTS idx_banks_name",
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_banks_company_name ON banks(company_id, name)",
+      // A per-bargain override on an invoice that spans more than one bargain —
+      // each bargain's own additional interest (₹/unit) and its own interest
+      // days, added straight into THAT bargain's line instead of one shared
+      // figure applied to every line alike. Absent for a bargain means it just
+      // inherits the invoice's shared additional interest / interest days.
+      `CREATE TABLE IF NOT EXISTS order_bargain_interest (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL REFERENCES orders(id),
+    bargain_id INTEGER NOT NULL REFERENCES bargains(id),
+    additional_interest REAL NOT NULL DEFAULT 0,
+    interest_days INTEGER NOT NULL DEFAULT 0
+  )`,
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_order_bargain_interest ON order_bargain_interest(order_id, bargain_id)",
+      // A Trading party can be the same real-world PAN as an existing
+      // Manufacturing party, entered as its own row so a trading deal never mixes
+      // with the manufacturing relationship's bargains/tankers. Linking the two
+      // means the TDS slab (which the law applies per PAN, not per row) sums
+      // both rows' taxable value together instead of quietly restarting the
+      // slab at zero for whichever row a given invoice happens to sit under.
+      "ALTER TABLE suppliers ADD COLUMN linked_party_id INTEGER REFERENCES suppliers(id)",
+      "ALTER TABLE customers ADD COLUMN linked_party_id INTEGER REFERENCES customers(id)",
+      // Bill Discounting replaces the old party+entries tracker (bd_parties /
+      // bd_entries — both confirmed empty) with one LC-style record per bill,
+      // plus a proper NBFC master. Both old tables are dropped outright.
+      // A tanker's EX/DLD condition, as chosen per tanker when it's sent to the
+      // supplier. The picker for this already existed on that dialog but the value
+      // was thrown away on save, so freight and the shortage penalty always fell
+      // back to the bargain's own type — silently ignoring the choice. NULL means
+      // "not overridden", which keeps every existing tanker reading from its
+      // bargain exactly as before.
+      "ALTER TABLE purchase_tankers ADD COLUMN condition TEXT",
+      // Whether the round off on this invoice was typed by hand. Previously the
+      // form inferred it from "the stored value isn't zero", which froze a figure
+      // that was correct for the OLD totals the moment anything else was edited —
+      // so the invoice total quietly stopped landing on a whole rupee. Recording
+      // the intent explicitly means auto can keep itself right while a genuine
+      // manual override is respected AND visible as one.
+      "ALTER TABLE sales ADD COLUMN round_off_manual INTEGER NOT NULL DEFAULT 0",
+      // What the transporter actually delivered, captured when the invoice is
+      // marked Unloaded. Null until then — a zero would read as "nothing arrived"
+      // rather than "not weighed yet".
+      "ALTER TABLE sales ADD COLUMN received_qty REAL",
+      // --- Transporter billing -------------------------------------------------
+      // A transporter runs several tankers over a month and raises ONE bill for the
+      // lot, so their freight must not land on their ledger tanker by tanker. Each
+      // freight line now accrues to a control account and only reaches the
+      // transporter's own ledger when their bill is entered against it.
+      //   accrued          1 once the accrual voucher exists for this line
+      //   accrual_entry_id the voucher that accrued it (so an edit can reverse it)
+      //   bill_id          the transporter bill that has since settled it
+      "ALTER TABLE transporter_ledger ADD COLUMN accrued INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE transporter_ledger ADD COLUMN accrual_entry_id INTEGER",
+      "ALTER TABLE transporter_ledger ADD COLUMN bill_id INTEGER",
+      `CREATE TABLE IF NOT EXISTS transporter_bills (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    transporter_id INTEGER NOT NULL REFERENCES transporters(id),
+    -- 'purchase' = freight on inward tankers, 'sales' = on outward deliveries.
+    side TEXT NOT NULL DEFAULT 'purchase',
+    bill_no TEXT,
+    bill_date TEXT NOT NULL,
+    taxable REAL NOT NULL DEFAULT 0,
+    gst_pct REAL NOT NULL DEFAULT 0,
+    gst_amount REAL NOT NULL DEFAULT 0,
+    tds_pct REAL NOT NULL DEFAULT 0,
+    tds_amount REAL NOT NULL DEFAULT 0,
+    round_off REAL NOT NULL DEFAULT 0,
+    total REAL NOT NULL DEFAULT 0,
+    journal_entry_id INTEGER,
+    ledger_id INTEGER,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      "ALTER TABLE orders ADD COLUMN round_off_manual INTEGER NOT NULL DEFAULT 0",
+      // These two used to retire the old party+entries tracker. They are NO-OPS
+      // now, and must stay no-ops, because the NAME bd_parties was later reused
+      // for a completely different table — the party links on a discounted bill,
+      // created by runOnce('bd_parties_v1'). Migrations replay from whatever index
+      // a database has reached, so leaving the DROP here meant one replay wiped
+      // the live table while the runOnce marker said "already created" and never
+      // brought it back. That is exactly how Bill Discounting (and, through a
+      // shared Promise.all, the whole LC screen) went blank.
+      //
+      // Kept as statements rather than deleted so every later migration keeps its
+      // index — the list is applied BY COUNT, so removing entries would silently
+      // skip real work on databases already past this point.
+      "SELECT 1 /* was: DROP TABLE IF EXISTS bd_entries */",
+      "SELECT 1 /* was: DROP TABLE IF EXISTS bd_parties */",
+      `CREATE TABLE IF NOT EXISTS nbfcs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    name TEXT NOT NULL,
+    finance_type TEXT NOT NULL DEFAULT 'BOTH',
+    tds_pct REAL NOT NULL DEFAULT 0,
+    interest_pct REAL NOT NULL DEFAULT 0,
+    interest_days REAL NOT NULL DEFAULT 0,
+    days_year REAL NOT NULL DEFAULT 360,
+    active INTEGER NOT NULL DEFAULT 1,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      `CREATE TABLE IF NOT EXISTS bill_discountings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL DEFAULT 1,
+    bd_no TEXT,
+    nbfc_id INTEGER REFERENCES nbfcs(id),
+    finance_type TEXT NOT NULL DEFAULT 'PID',
+    party_type TEXT NOT NULL DEFAULT 'supplier',
+    party_id INTEGER,
+    purpose TEXT NOT NULL DEFAULT 'manufacturing',
+    amount REAL NOT NULL DEFAULT 0,
+    payment_received_date TEXT,
+    maturity_date TEXT,
+    margin_pct REAL NOT NULL DEFAULT 0,
+    interest_pct REAL NOT NULL DEFAULT 0,
+    tds_pct REAL NOT NULL DEFAULT 0,
+    interest_upfront INTEGER NOT NULL DEFAULT 0,
+    days_year REAL NOT NULL DEFAULT 360,
+    status TEXT NOT NULL DEFAULT 'open',
+    repaid_date TEXT,
+    repaid_amount REAL,
+    journal_entry_id INTEGER,
+    repay_journal_entry_id INTEGER,
+    margin_release_journal_entry_id INTEGER,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+      // Bill discounting counts interest on a 360-day year, not 365 — the
+      // convention the mill's own working sheet uses. Kept per record (with an
+      // NBFC-level default) rather than hard-coded, since it is a term that is
+      // negotiated like the rate is.
+      "ALTER TABLE bill_discountings ADD COLUMN days_year REAL NOT NULL DEFAULT 360",
+      "ALTER TABLE nbfcs ADD COLUMN days_year REAL NOT NULL DEFAULT 360",
+      // A transporter's bill rarely lands exactly on what the tanker lines add up
+      // to — a rate agreed later, detention, a negotiated reduction. The difference
+      // is recorded rather than the freight lines being edited, so the register
+      // still shows what each tanker earned and the bill still shows what was
+      // actually agreed. Positive adds, negative reduces.
+      "ALTER TABLE transporter_bills ADD COLUMN adjustment REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE transporter_bills ADD COLUMN adjustment_note TEXT",
+      // The clock time a vehicle was booked in or out. entry_date alone answers
+      // "which day" — a gate register also has to answer "when", both to sequence
+      // two vehicles on the same day and to settle a dispute about detention.
+      "ALTER TABLE gate_entries ADD COLUMN entry_time TEXT",
+      // A customer credit note is a sales return: the goods come back, so the
+      // quantity has to go back onto the bargain it was drawn from. The note
+      // remembers which bargain it credited, and the adjustment log row remembers
+      // which note put it there, so altering or deleting the note reverses it.
+      "ALTER TABLE notes ADD COLUMN bargain_id INTEGER",
+      "ALTER TABLE bargain_adjustments ADD COLUMN note_id INTEGER",
+      // The clock time the vehicle LEFT, the counterpart to entry_time. out_date
+      // alone answers which day it went out; a gate register has to answer when,
+      // both to sequence two departures on one day and to settle detention.
+      "ALTER TABLE gate_entries ADD COLUMN out_time TEXT",
+      // A packed sale is negotiated and billed PER CASE, so the per-case rate is
+      // what the line's value has to be struck on. It used to be converted to a
+      // per-MT rate and the amount taken as qty x that — and the conversion cannot
+      // be exact for a case weight like 13.395 KG, which silently understated the
+      // line. The per-MT rate is still stored for reporting; this is the figure the
+      // money now comes from.
+      "ALTER TABLE sales ADD COLUMN rate_per_case REAL",
+      // ---------------------------------------------------------------------
+      // Indexes on the columns the registers' CORRELATED SUBQUERIES filter on.
+      // Without them every such subquery is a full table scan, and the registers
+      // run one per row: the sales-bargain register alone does ~6 subqueries over
+      // `sales` for each of its bargains, so 27 bargains x 6 x 169 rows is ~27,000
+      // rows read for one refresh — and every open page refetches on every write.
+      // Rows read is what the hosting plan is metered on, so this is the single
+      // biggest lever on the bill. Pure lookup speed: no behaviour changes.
+      // ---------------------------------------------------------------------
+      "CREATE INDEX IF NOT EXISTS idx_sales_bargain ON sales(sales_bargain_id)",
+      "CREATE INDEX IF NOT EXISTS idx_sales_group ON sales(invoice_group)",
+      "CREATE INDEX IF NOT EXISTS idx_sales_company_date ON sales(company_id, sale_date)",
+      "CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id)",
+      "CREATE INDEX IF NOT EXISTS idx_sales_invoice_no ON sales(invoice_no)",
+      "CREATE INDEX IF NOT EXISTS idx_pt_bargain ON purchase_tankers(bargain_id)",
+      "CREATE INDEX IF NOT EXISTS idx_pt_extra_bargain ON purchase_tankers(extra_bargain_id)",
+      "CREATE INDEX IF NOT EXISTS idx_pt_company ON purchase_tankers(company_id)",
+      "CREATE INDEX IF NOT EXISTS idx_orders_company_date ON orders(company_id, order_date)",
+      "CREATE INDEX IF NOT EXISTS idx_orders_invoice_no ON orders(invoice_no)",
+      "CREATE INDEX IF NOT EXISTS idx_je_sale ON journal_entries(sale_id)",
+      "CREATE INDEX IF NOT EXISTS idx_je_order ON journal_entries(order_id)",
+      "CREATE INDEX IF NOT EXISTS idx_je_payment ON journal_entries(payment_id)",
+      "CREATE INDEX IF NOT EXISTS idx_je_company_date ON journal_entries(company_id, entry_date)",
+      "CREATE INDEX IF NOT EXISTS idx_jba_account ON journal_bill_allocs(account_id)",
+      "CREATE INDEX IF NOT EXISTS idx_cl_sale ON customer_ledger(sale_id)",
+      "CREATE INDEX IF NOT EXISTS idx_cl_customer ON customer_ledger(customer_id)",
+      "CREATE INDEX IF NOT EXISTS idx_sl_order ON supplier_ledger(order_id)",
+      "CREATE INDEX IF NOT EXISTS idx_sl_supplier ON supplier_ledger(supplier_id)",
+      "CREATE INDEX IF NOT EXISTS idx_tl_sale ON transporter_ledger(sale_id)",
+      "CREATE INDEX IF NOT EXISTS idx_tl_order ON transporter_ledger(order_id)",
+      "CREATE INDEX IF NOT EXISTS idx_tl_bill ON transporter_ledger(bill_id)",
+      "CREATE INDEX IF NOT EXISTS idx_tl_transporter ON transporter_ledger(transporter_id)",
+      "CREATE INDEX IF NOT EXISTS idx_gate_group ON gate_entries(invoice_group)",
+      "CREATE INDEX IF NOT EXISTS idx_gate_tanker ON gate_entries(tanker_id)",
+      "CREATE INDEX IF NOT EXISTS idx_gate_sale ON gate_entries(sale_id)",
+      "CREATE INDEX IF NOT EXISTS idx_gate_company_date ON gate_entries(company_id, entry_date)",
+      "CREATE INDEX IF NOT EXISTS idx_notes_je ON notes(journal_entry_id)",
+      "CREATE INDEX IF NOT EXISTS idx_notes_company ON notes(company_id)",
+      "CREATE INDEX IF NOT EXISTS idx_note_items_note ON note_items(note_id)",
+      "CREATE INDEX IF NOT EXISTS idx_badj_bargain ON bargain_adjustments(kind, bargain_id)",
+      "CREATE INDEX IF NOT EXISTS idx_badj_note ON bargain_adjustments(note_id)",
+      "CREATE INDEX IF NOT EXISTS idx_production_sale ON production(sale_id)",
+      "CREATE INDEX IF NOT EXISTS idx_bd_company ON bill_discountings(company_id)",
+      "CREATE INDEX IF NOT EXISTS idx_lc_issuances_lc ON lc_issuances(lc_id)",
+      // A discounted bill is not always cleared in one go: an NBFC will take it
+      // back in instalments, and until now the only way to record that was to wait
+      // and post the whole thing at the end, which left the facility reading as
+      // fully outstanding money that had already gone back. Each part now gets its
+      // own dated row and its own voucher, and the bill closes when the parts add
+      // up to it. Bills repaid in full before this keep their single figure on the
+      // parent row and are read from there, so nothing already posted moves.
+      `CREATE TABLE IF NOT EXISTS bd_repayments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bd_id INTEGER NOT NULL REFERENCES bill_discountings(id),
+  repay_date TEXT NOT NULL,
+  amount REAL NOT NULL DEFAULT 0,
+  settle_via TEXT NOT NULL DEFAULT 'bank',
+  ref TEXT,
+  journal_entry_id INTEGER,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);`,
+      "CREATE INDEX IF NOT EXISTS idx_bd_repay_bd ON bd_repayments(bd_id)",
+      // What a bill is discounted for is not always the whole invoice behind it, so
+      // the invoice's own value is worth recording next to the amount opened
+      // against it — it is what tells you how much of the invoice was financed.
+      // Informational: nothing is priced off it.
+      "ALTER TABLE bill_discountings ADD COLUMN invoice_amount REAL",
+      // ---------------------------------------------------------------------
+      // Second pass on rows read, aimed at what the measurements actually show:
+      // this database is small (~7,300 rows), so the bill is driven by how OFTEN
+      // a query runs and how much of a table it has to walk each time -- not by
+      // table size. These cover the tables that were still being walked whole.
+      //
+      // user_logs is the biggest table in the database and had no index at all.
+      // The activity log runs two DISTINCT sweeps over the entire table on every
+      // open, purely to fill its two filter dropdowns -- so opening it read every
+      // row twice over. It also filters by username, entity, action and date, and
+      // the nightly cleanup deletes by date.
+      // ---------------------------------------------------------------------
+      "CREATE INDEX IF NOT EXISTS idx_ulogs_username ON user_logs(username)",
+      "CREATE INDEX IF NOT EXISTS idx_ulogs_entity ON user_logs(entity)",
+      "CREATE INDEX IF NOT EXISTS idx_ulogs_created ON user_logs(created_at)",
+      "CREATE INDEX IF NOT EXISTS idx_ulogs_action ON user_logs(action)",
+      // production_items is joined to its parent on every stock figure and read
+      // per product by the stock registers' correlated subqueries.
+      "CREATE INDEX IF NOT EXISTS idx_pitems_production ON production_items(production_id)",
+      "CREATE INDEX IF NOT EXISTS idx_pitems_kind_product ON production_items(kind, product_id)",
+      // The SKU stock register runs SIX correlated subqueries per SKU -- three over
+      // the adjustments and three over sales -- and each was scanning its whole
+      // table. Both sides filter on the packaging (the SKU) within a company.
+      "CREATE INDEX IF NOT EXISTS idx_skuadj_pkg ON sku_adjustments(company_id, packaging_id)",
+      "CREATE INDEX IF NOT EXISTS idx_sales_pkg_type ON sales(packaging_id, sale_type)",
+      // A stock count is looked up by its date within a company.
+      "CREATE INDEX IF NOT EXISTS idx_scounts_company_date ON stock_counts(company_id, count_date)",
+      "CREATE INDEX IF NOT EXISTS idx_scounts_product ON stock_counts(product_id)",
+      // Bill Discounting: the register filters by NBFC and by finance type, and
+      // every mutation re-reads the bill by id (already the primary key).
+      "CREATE INDEX IF NOT EXISTS idx_bd_nbfc ON bill_discountings(nbfc_id)",
+      "CREATE INDEX IF NOT EXISTS idx_bd_company_status ON bill_discountings(company_id, status)"
+      // ---------------------------------------------------------------------
+      // NOTE FOR LATER, learned the hard way: this list is applied BY COUNT.
+      // Startup stores how many entries it has run and executes only the ones
+      // past that mark, so
+      //   - a statement inserted into the middle sits below the mark and never
+      //     runs at all, silently, on every existing install; and
+      //   - swapping entries around does not help either, because the count is
+      //     unchanged and the mark still covers them.
+      // Only APPENDING works. Anything that must run on installs already past
+      // the mark belongs in a runOnce() instead, keyed by name -- see
+      // 'ulogs_entity_index_v1' in index.ts.
+      // ---------------------------------------------------------------------
+      //
+      // companies.company_type and companies.colour were tried here, twice: once
+      // in the middle of the list (never reached), then appended — by which point
+      // the first attempt had already bumped the stored count PAST the new length,
+      // so the loop had nothing left to run and one of the two columns was left
+      // missing. They are unconditional ALTERs in bootstrap.ts now, which no count
+      // can defeat.
+    ];
+    APPLIED_KEY = "schema_applied_count";
+    cachedRevision = 0;
+    revisionInFlight = false;
+    revisionTimer = null;
+    POLL_MIN_MS = 15e3;
+    POLL_MAX_MS = 12e4;
+    QUIET_BEFORE_BACKOFF = 8;
+    pollMs = POLL_MIN_MS;
+    quietPolls = 0;
+    invalidators = [];
+  }
+});
 
 // src/main/requestContext.ts
-var import_node_async_hooks = require("node:async_hooks");
-var store = new import_node_async_hooks.AsyncLocalStorage();
 function runInRequestContext(ctx, fn) {
   return store.run(ctx, fn);
 }
 function currentRequestContext() {
   return store.getStore();
 }
+var import_node_async_hooks, store;
+var init_requestContext = __esm({
+  "src/main/requestContext.ts"() {
+    import_node_async_hooks = require("node:async_hooks");
+    store = new import_node_async_hooks.AsyncLocalStorage();
+  }
+});
 
 // src/main/company.ts
 function toPlain(res) {
@@ -2142,7 +2172,6 @@ function toPlain(res) {
     return o;
   });
 }
-var activeCompanyId = 1;
 function getActiveCompanyId() {
   const ctx = currentRequestContext();
   if (ctx) return ctx.companyId;
@@ -2238,77 +2267,16 @@ async function coversWholeFactory(factoryId, companyIds) {
   const have = new Set((companyIds || []).map(Number));
   return all.rows.every((r) => have.has(Number(r.id)));
 }
+var activeCompanyId;
+var init_company = __esm({
+  "src/main/company.ts"() {
+    init_db();
+    init_requestContext();
+    activeCompanyId = 1;
+  }
+});
 
 // src/main/repos.ts
-var TABLES = {
-  banks: ["name", "branch", "account_no", "ifsc", "note", "active", "company_id"],
-  // days_year belongs here: the Manage NBFCs form offers it, but a column
-  // missing from this list is silently DROPPED by pickKeys — so changing the
-  // year basis from 360 to 365 saved without complaint and changed nothing.
-  nbfcs: ["name", "finance_type", "tds_pct", "interest_pct", "interest_days", "days_year", "days_incl_start", "sanctioned_limit", "note", "active", "company_id"],
-  categories: ["name", "applies_to", "note", "active"],
-  oil_types: ["code", "name", "active"],
-  products: ["code", "name", "category", "material_type", "uom", "active", "show_in_stock"],
-  suppliers: [
-    "name",
-    "supplier_type",
-    "company_type",
-    "business_type",
-    "linked_party_id",
-    "gstin",
-    "state",
-    "gst_pct",
-    "tds_pct",
-    "tds_threshold",
-    "tds_pct_above",
-    "tds_above_only",
-    "credit_period_days",
-    "adds_interest",
-    "interest_pct",
-    "interest_days",
-    "opening_purchase_amount",
-    "opening_purchase_date",
-    "skip_tanker_stages",
-    "active"
-  ],
-  transporters: [
-    "name",
-    "company_type",
-    "contact",
-    "gst_pct",
-    "tds_pct",
-    "tds_threshold",
-    "tds_pct_above",
-    "default_rate_per_ton",
-    "reverse_charge",
-    "active"
-  ],
-  customers: [
-    "name",
-    "category",
-    "company_type",
-    "business_type",
-    "linked_party_id",
-    "gstin",
-    "state",
-    "gst_pct",
-    "tds_pct",
-    "tds_threshold",
-    "tds_above_only",
-    "adds_interest",
-    "interest_pct",
-    "interest_days",
-    "credit_period_days",
-    "active"
-  ],
-  sources: ["name", "transit_days", "active"],
-  uoms: ["name", "active"],
-  brokers: ["name", "contact_person", "phone", "brokerage_pct", "address", "note", "active"],
-  companies: ["name", "company_type", "colour", "active", "factory_id"],
-  factories: ["name", "location", "active"],
-  packagings: ["name", "box_label", "pouch_label", "pouches_per_box", "unit_size", "unit_uom", "base_per_pouch", "base_uom", "product_id", "product_label", "active"]
-};
-var COMPANY_SCOPED_TABLES = /* @__PURE__ */ new Set(["banks", "nbfcs"]);
 function assertTable(table) {
   const cols = TABLES[table];
   if (!cols) throw new Error(`Unknown table: ${table}`);
@@ -2345,8 +2313,6 @@ async function assertUniqueName(table, values, excludeId) {
     throw new Error(`"${String(hit.rows[0].name)}" already exists \u2014 give this one a different name`);
   }
 }
-var masterCache = /* @__PURE__ */ new Map();
-onDataChanged(() => masterCache.clear());
 async function list(table) {
   assertTable(table);
   const scoped = COMPANY_SCOPED_TABLES.has(table);
@@ -2391,7 +2357,6 @@ async function create(table, values) {
   });
   return { id: Number(res.lastInsertRowid) };
 }
-var LEDGER_MASTERS = /* @__PURE__ */ new Set(["customers", "suppliers", "transporters", "brokers"]);
 async function renameLedgerAccount(oldName, newName) {
   const c = getClient();
   const from = String(oldName || "").trim().toUpperCase();
@@ -2429,58 +2394,6 @@ async function update(table, id, values) {
   if (priorName) await renameLedgerAccount(priorName, String(values.name || ""));
   return { id };
 }
-var DEPENDENTS = {
-  banks: [
-    { table: "letters_of_credit", column: "our_bank_id", label: "LC" },
-    { table: "bank_lc_limits", column: "bank_id", label: "sanctioned limit" }
-  ],
-  nbfcs: [{ table: "bill_discountings", column: "nbfc_id", label: "discounted bill" }],
-  suppliers: [
-    { table: "bargains", column: "supplier_id", label: "purchase bargain" },
-    { table: "orders", column: "supplier_id", label: "purchase" },
-    { table: "purchase_tankers", column: "supplier_id", label: "tanker" },
-    { table: "consignment_stock", column: "supplier_id", label: "consignment lot" },
-    { table: "supplier_ledger", column: "supplier_id", label: "ledger entry" },
-    { table: "gate_entries", column: "supplier_id", label: "gate entry" }
-  ],
-  customers: [
-    { table: "sales", column: "customer_id", label: "sale" },
-    { table: "sales_bargains", column: "customer_id", label: "sales bargain" },
-    { table: "customer_ledger", column: "customer_id", label: "ledger entry" },
-    { table: "gate_entries", column: "customer_id", label: "gate entry" },
-    { table: "packaging_parties", column: "customer_id", label: "packed-SKU link" }
-  ],
-  products: [
-    { table: "sales", column: "product_id", label: "sale" },
-    { table: "sales_bargains", column: "product_id", label: "sales bargain" },
-    { table: "orders", column: "oil_type_id", label: "purchase" },
-    { table: "production", column: "product_id", label: "production run" },
-    { table: "production_items", column: "product_id", label: "production input" },
-    { table: "formulation_items", column: "product_id", label: "formulation line" },
-    { table: "consignment_stock", column: "product_id", label: "consignment lot" },
-    { table: "stock_counts", column: "product_id", label: "day-close count" },
-    { table: "stock_transfers", column: "product_id", label: "stock transfer" },
-    { table: "packagings", column: "product_id", label: "packed SKU" }
-  ],
-  transporters: [
-    { table: "purchase_tankers", column: "transporter_id", label: "tanker" },
-    { table: "orders", column: "transporter_id", label: "purchase" },
-    { table: "sales", column: "transporter_id", label: "sale" },
-    { table: "transporter_ledger", column: "transporter_id", label: "ledger entry" }
-  ],
-  sources: [{ table: "bargains", column: "source_id", label: "purchase bargain" }],
-  brokers: [{ table: "bargains", column: "broker_id", label: "purchase bargain" }],
-  packagings: [
-    { table: "sales", column: "packaging_id", label: "sale" },
-    { table: "sales_bargains", column: "packaging_id", label: "sales bargain" },
-    { table: "sales_bargain_sku_rates", column: "packaging_id", label: "rate-card line" },
-    { table: "packaging_parties", column: "packaging_id", label: "party link" }
-  ],
-  oil_types: [
-    { table: "bargains", column: "oil_type_id", label: "purchase bargain" },
-    { table: "purchase_tankers", column: "oil_type_id", label: "tanker" }
-  ]
-};
 async function assertNotInUse(table, id) {
   const deps = DEPENDENTS[table];
   if (!deps) return;
@@ -2523,10 +2436,139 @@ async function allSettings() {
   for (const r of res.rows) out[r.key] = r.value;
   return out;
 }
+var TABLES, COMPANY_SCOPED_TABLES, masterCache, LEDGER_MASTERS, DEPENDENTS;
+var init_repos = __esm({
+  "src/main/repos.ts"() {
+    init_db();
+    init_company();
+    TABLES = {
+      banks: ["name", "branch", "account_no", "ifsc", "note", "active", "company_id"],
+      // days_year belongs here: the Manage NBFCs form offers it, but a column
+      // missing from this list is silently DROPPED by pickKeys — so changing the
+      // year basis from 360 to 365 saved without complaint and changed nothing.
+      nbfcs: ["name", "finance_type", "tds_pct", "interest_pct", "interest_days", "days_year", "days_incl_start", "sanctioned_limit", "note", "active", "company_id"],
+      categories: ["name", "applies_to", "note", "active"],
+      oil_types: ["code", "name", "active"],
+      products: ["code", "name", "category", "material_type", "uom", "active", "show_in_stock"],
+      suppliers: [
+        "name",
+        "supplier_type",
+        "company_type",
+        "business_type",
+        "linked_party_id",
+        "gstin",
+        "state",
+        "gst_pct",
+        "tds_pct",
+        "tds_threshold",
+        "tds_pct_above",
+        "tds_above_only",
+        "credit_period_days",
+        "adds_interest",
+        "interest_pct",
+        "interest_days",
+        "opening_purchase_amount",
+        "opening_purchase_date",
+        "skip_tanker_stages",
+        "active"
+      ],
+      transporters: [
+        "name",
+        "company_type",
+        "contact",
+        "gst_pct",
+        "tds_pct",
+        "tds_threshold",
+        "tds_pct_above",
+        "default_rate_per_ton",
+        "reverse_charge",
+        "active"
+      ],
+      customers: [
+        "name",
+        "category",
+        "company_type",
+        "business_type",
+        "linked_party_id",
+        "gstin",
+        "state",
+        "gst_pct",
+        "tds_pct",
+        "tds_threshold",
+        "tds_above_only",
+        "adds_interest",
+        "interest_pct",
+        "interest_days",
+        "credit_period_days",
+        "active"
+      ],
+      sources: ["name", "transit_days", "active"],
+      uoms: ["name", "active"],
+      brokers: ["name", "contact_person", "phone", "brokerage_pct", "address", "note", "active"],
+      companies: ["name", "company_type", "colour", "active", "factory_id"],
+      factories: ["name", "location", "active"],
+      packagings: ["name", "box_label", "pouch_label", "pouches_per_box", "unit_size", "unit_uom", "base_per_pouch", "base_uom", "product_id", "product_label", "active"]
+    };
+    COMPANY_SCOPED_TABLES = /* @__PURE__ */ new Set(["banks", "nbfcs"]);
+    masterCache = /* @__PURE__ */ new Map();
+    onDataChanged(() => masterCache.clear());
+    LEDGER_MASTERS = /* @__PURE__ */ new Set(["customers", "suppliers", "transporters", "brokers"]);
+    DEPENDENTS = {
+      banks: [
+        { table: "letters_of_credit", column: "our_bank_id", label: "LC" },
+        { table: "bank_lc_limits", column: "bank_id", label: "sanctioned limit" }
+      ],
+      nbfcs: [{ table: "bill_discountings", column: "nbfc_id", label: "discounted bill" }],
+      suppliers: [
+        { table: "bargains", column: "supplier_id", label: "purchase bargain" },
+        { table: "orders", column: "supplier_id", label: "purchase" },
+        { table: "purchase_tankers", column: "supplier_id", label: "tanker" },
+        { table: "consignment_stock", column: "supplier_id", label: "consignment lot" },
+        { table: "supplier_ledger", column: "supplier_id", label: "ledger entry" },
+        { table: "gate_entries", column: "supplier_id", label: "gate entry" }
+      ],
+      customers: [
+        { table: "sales", column: "customer_id", label: "sale" },
+        { table: "sales_bargains", column: "customer_id", label: "sales bargain" },
+        { table: "customer_ledger", column: "customer_id", label: "ledger entry" },
+        { table: "gate_entries", column: "customer_id", label: "gate entry" },
+        { table: "packaging_parties", column: "customer_id", label: "packed-SKU link" }
+      ],
+      products: [
+        { table: "sales", column: "product_id", label: "sale" },
+        { table: "sales_bargains", column: "product_id", label: "sales bargain" },
+        { table: "orders", column: "oil_type_id", label: "purchase" },
+        { table: "production", column: "product_id", label: "production run" },
+        { table: "production_items", column: "product_id", label: "production input" },
+        { table: "formulation_items", column: "product_id", label: "formulation line" },
+        { table: "consignment_stock", column: "product_id", label: "consignment lot" },
+        { table: "stock_counts", column: "product_id", label: "day-close count" },
+        { table: "stock_transfers", column: "product_id", label: "stock transfer" },
+        { table: "packagings", column: "product_id", label: "packed SKU" }
+      ],
+      transporters: [
+        { table: "purchase_tankers", column: "transporter_id", label: "tanker" },
+        { table: "orders", column: "transporter_id", label: "purchase" },
+        { table: "sales", column: "transporter_id", label: "sale" },
+        { table: "transporter_ledger", column: "transporter_id", label: "ledger entry" }
+      ],
+      sources: [{ table: "bargains", column: "source_id", label: "purchase bargain" }],
+      brokers: [{ table: "bargains", column: "broker_id", label: "purchase bargain" }],
+      packagings: [
+        { table: "sales", column: "packaging_id", label: "sale" },
+        { table: "sales_bargains", column: "packaging_id", label: "sales bargain" },
+        { table: "sales_bargain_sku_rates", column: "packaging_id", label: "rate-card line" },
+        { table: "packaging_parties", column: "packaging_id", label: "party link" }
+      ],
+      oil_types: [
+        { table: "bargains", column: "oil_type_id", label: "purchase bargain" },
+        { table: "purchase_tankers", column: "oil_type_id", label: "tanker" }
+      ]
+    };
+  }
+});
 
 // src/main/openings.ts
-var n = (v) => Number(v ?? 0) || 0;
-var round2 = (v) => Math.round(v * 100) / 100;
 function key(companyId) {
   return `books_from:${companyId}`;
 }
@@ -2640,6 +2682,16 @@ async function openingMap(companyId) {
   }
   return m;
 }
+var n, round2;
+var init_openings = __esm({
+  "src/main/openings.ts"() {
+    init_db();
+    init_company();
+    init_repos();
+    n = (v) => Number(v ?? 0) || 0;
+    round2 = (v) => Math.round(v * 100) / 100;
+  }
+});
 
 // src/main/journal.ts
 function toPlain2(res) {
@@ -3103,13 +3155,1117 @@ async function addManualJournal(d) {
     ]
   });
 }
+var init_journal = __esm({
+  "src/main/journal.ts"() {
+    init_db();
+    init_company();
+    init_openings();
+  }
+});
+
+// src/main/lcInterest.ts
+function lcInterestBase(lc) {
+  const amount = n8(lc?.amount);
+  const adj = n8(lc?.interest_adj);
+  if (!lc?.interest_excl_charges && !adj) return amount;
+  const gross = lc?.interest_excl_charges ? round24(amount - n8(lc?.charges)) : amount;
+  const adjusted = round24(gross + adj);
+  return Math.max(0, adjusted);
+}
+function lcInterest(lc) {
+  return round24(lcInterestBase(lc) * n8(lc?.interest_pct) * n8(lc?.usance_days) / (100 * 365));
+}
+function lcInterestBasis(lc) {
+  const base = lc?.interest_excl_charges ? "open amount less bank charges" : "open amount";
+  const adj = round24(n8(lc?.interest_adj));
+  if (Math.abs(adj) < 5e-3) return base;
+  return `${base} ${adj < 0 ? "less" : "plus"} an adjustment of ${Math.abs(adj).toFixed(2)}`;
+}
+function lcInterestBaseIsCustom(lc) {
+  return !!lc?.interest_excl_charges || Math.abs(n8(lc?.interest_adj)) >= 5e-3;
+}
+var n8, round24;
+var init_lcInterest = __esm({
+  "src/main/lcInterest.ts"() {
+    n8 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+    round24 = (v) => Math.round(v * 100) / 100;
+  }
+});
+
+// src/main/treasury.ts
+var treasury_exports = {};
+__export(treasury_exports, {
+  deleteBdPaymentIn: () => deleteBdPaymentIn,
+  deleteLcPaymentIn: () => deleteLcPaymentIn,
+  deleteLcRepayment: () => deleteLcRepayment,
+  dropLcUpfrontInterest: () => dropLcUpfrontInterest,
+  duePeriodOf: () => duePeriodOf,
+  lcFeeDelta: () => lcFeeDelta,
+  listAllLcRepayments: () => listAllLcRepayments,
+  listBdOpenTradingInvoices: () => listBdOpenTradingInvoices,
+  listBdPaymentIns: () => listBdPaymentIns,
+  listLcOpenTradingInvoices: () => listLcOpenTradingInvoices,
+  listLcPaymentIns: () => listLcPaymentIns,
+  listLcRepayments: () => listLcRepayments,
+  listPaymentTracker: () => listPaymentTracker,
+  postBdPaymentIn: () => postBdPaymentIn,
+  postLcFees: () => postLcFees,
+  postLcMarginRelease: () => postLcMarginRelease,
+  postLcOpening: () => postLcOpening,
+  postLcPaymentIn: () => postLcPaymentIn,
+  postLcPrematureInterestRebate: () => postLcPrematureInterestRebate,
+  postLcRepaymentEntry: () => postLcRepaymentEntry,
+  postLcUpfrontInterest: () => postLcUpfrontInterest,
+  refreshLcUpfrontInterest: () => refreshLcUpfrontInterest,
+  reopenLcBill: () => reopenLcBill,
+  resyncLcSettlement: () => resyncLcSettlement,
+  saveLcRepayment: () => saveLcRepayment,
+  settleLcBill: () => settleLcBill,
+  settleLcBillsCombined: () => settleLcBillsCombined,
+  syncLcFeeAdjustment: () => syncLcFeeAdjustment,
+  treasuryAlerts: () => treasuryAlerts
+});
+function toPlain12(res) {
+  return res.rows.map((r) => {
+    const o = {};
+    for (const col of res.columns) o[col] = r[col];
+    return o;
+  });
+}
+function n9(v) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+}
+function todayISO3() {
+  const d = /* @__PURE__ */ new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function daysBetween(a, b) {
+  return Math.round(((/* @__PURE__ */ new Date(`${b}T00:00:00`)).getTime() - (/* @__PURE__ */ new Date(`${a}T00:00:00`)).getTime()) / 864e5);
+}
+function duePeriodOf(daysLeft) {
+  if (daysLeft == null) return "none";
+  if (daysLeft < 0) return "overdue";
+  if (daysLeft <= 1) return "t1";
+  if (daysLeft <= 7) return "week";
+  if (daysLeft <= 14) return "fortnight";
+  if (daysLeft <= 30) return "month";
+  if (daysLeft <= 90) return "quarter";
+  return "later";
+}
+async function dropEntry(entryId) {
+  if (!entryId) return;
+  const c = getClient();
+  await c.execute({
+    sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
+    args: [entryId]
+  });
+  await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [entryId] });
+  await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [entryId] });
+}
+async function allocAgainst(entryId, partyName2, ref, amount) {
+  const c = getClient();
+  const line = await c.execute({
+    sql: `SELECT jl.id, jl.account_id FROM journal_lines jl
+          JOIN ledger_accounts a ON a.id = jl.account_id
+          WHERE jl.entry_id = ? AND a.name = ? LIMIT 1`,
+    args: [entryId, partyName2.toUpperCase()]
+  });
+  if (!line.rows.length) return;
+  await c.execute({
+    sql: "INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount) VALUES (?, ?, ?, ?, ?)",
+    args: [Number(line.rows[0].id), Number(line.rows[0].account_id), ref ? "agst_ref" : "on_account", ref, amount]
+  });
+}
+function planReceipt(outstanding, value, fallbackParty) {
+  const takes = [];
+  let remaining = value;
+  for (const o of [...outstanding].sort((a, b) => b.due - a.due)) {
+    if (remaining <= 5e-3) break;
+    const amount = round25(Math.min(remaining, o.due));
+    takes.push({ party: (o.customer_name || fallbackParty).trim() || fallbackParty, key: o.key, amount });
+    remaining -= amount;
+  }
+  const totals = /* @__PURE__ */ new Map();
+  for (const t of takes) totals.set(t.party, round25((totals.get(t.party) || 0) + t.amount));
+  const byParty = Array.from(totals, ([party, amount]) => ({ party, amount }));
+  const drift = round25(value - byParty.reduce((a, b) => a + b.amount, 0));
+  if (Math.abs(drift) > 5e-4 && byParty.length) {
+    const biggest = byParty.reduce((a, b) => b.amount > a.amount ? b : a);
+    biggest.amount = round25(biggest.amount + drift);
+  }
+  return { takes, byParty };
+}
+function assertNotFuture(date, what) {
+  const d = String(date || "").slice(0, 10);
+  if (d && d > todayISO3()) throw new Error(`${what} cannot be a future date`);
+}
+async function bankAccountFor(lc) {
+  const id = n9(lc.our_bank_id);
+  if (!id) return "BANK A/C";
+  const r = await getClient().execute({ sql: "SELECT name FROM banks WHERE id = ?", args: [id] });
+  const name = String(r.rows[0]?.name || "").trim();
+  return name ? `${name.toUpperCase()} A/C` : "BANK A/C";
+}
+async function lcPayable(lc) {
+  const id = n9(lc.our_bank_id);
+  if (id) {
+    const r = await getClient().execute({ sql: "SELECT name FROM banks WHERE id = ?", args: [id] });
+    const own = String(r.rows[0]?.name || "").trim().toUpperCase();
+    if (own) return `LC PAYABLE - ${own}`;
+  }
+  const bank = String(lc.bank || "").trim().toUpperCase();
+  return bank ? `LC PAYABLE - ${bank}` : "LC PAYABLE";
+}
+async function postLcOpening(lcId) {
+  const c = getClient();
+  const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [lcId] });
+  if (!res.rows.length) return;
+  const lc = toPlain12(res)[0];
+  await dropEntry(n9(lc.journal_entry_id) || null);
+  const margin = round25(n9(lc.amount) * n9(lc.margin_pct) / 100);
+  if (margin < 5e-3) {
+    await c.execute({ sql: "UPDATE letters_of_credit SET journal_entry_id = NULL WHERE id = ?", args: [lcId] });
+    return;
+  }
+  const je = await postJournal({
+    date: String(lc.open_date || todayISO3()),
+    vchType: "CONTRA",
+    vchNo: String(lc.lc_no || ""),
+    narration: `LC ${lc.lc_no} \u2014 margin ${margin.toFixed(2)} lodged with ${lc.bank}`,
+    companyId: n9(lc.company_id) || void 0,
+    lines: [
+      { account: "LC MARGIN A/C", group: "Deposits (Asset)", dr: margin },
+      { account: await bankAccountFor(lc), group: "Bank Accounts", cr: margin }
+    ]
+  });
+  await c.execute({ sql: "UPDATE letters_of_credit SET journal_entry_id = ? WHERE id = ?", args: [je.id, lcId] });
+}
+async function postLcFees(lcId) {
+  const c = getClient();
+  const res = await c.execute({
+    sql: "SELECT charges_journal_entry_id FROM letters_of_credit WHERE id = ?",
+    args: [lcId]
+  });
+  if (!res.rows.length) return;
+  await dropEntry(n9(res.rows[0].charges_journal_entry_id) || null);
+  await c.execute({ sql: "UPDATE letters_of_credit SET charges_journal_entry_id = NULL WHERE id = ?", args: [lcId] });
+}
+async function postLcUpfrontInterest(lcId, dateIn) {
+  const c = getClient();
+  const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [lcId] });
+  if (!res.rows.length) throw new Error("LC not found");
+  const lc = toPlain12(res)[0];
+  const bankAcc = await bankAccountFor(lc);
+  await dropEntry(n9(lc.interest_journal_entry_id) || null);
+  const interest = lcInterest(lc);
+  const charges = round25(n9(lc.charges));
+  const total = round25(interest + charges);
+  if (total < 5e-3) {
+    await c.execute({ sql: "UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?", args: [lcId] });
+    return null;
+  }
+  const je = await postJournal({
+    date: String(dateIn || todayISO3()).slice(0, 10),
+    vchType: "JOURNAL",
+    vchNo: String(lc.lc_no || ""),
+    narration: `LC ${lc.lc_no} \u2014 interest ${interest.toFixed(2)} and charges ${charges.toFixed(2)} paid upfront from the bank, per its statement` + (lcInterestBaseIsCustom(lc) ? ` (interest on ${lcInterestBasis(lc)})` : ""),
+    companyId: n9(lc.company_id) || void 0,
+    lines: [
+      { account: "INTEREST A/C", group: "Indirect Expenses", dr: interest },
+      { account: "BANK CHARGES A/C", group: "Indirect Expenses", dr: charges },
+      { account: bankAcc, group: "Bank Accounts", cr: total }
+    ]
+  });
+  await c.execute({ sql: "UPDATE letters_of_credit SET interest_journal_entry_id = ? WHERE id = ?", args: [je.id, lcId] });
+  await resyncLcSettlement(lcId);
+  return { id: je.id };
+}
+function lcFeeDelta() {
+  return 0;
+}
+async function syncLcFeeAdjustment(lcId) {
+  const c = getClient();
+  const res = await c.execute({
+    sql: `SELECT l.*, s.name AS supplier_name
+          FROM letters_of_credit l
+          LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+          WHERE l.id = ?`,
+    args: [lcId]
+  });
+  if (!res.rows.length) return 0;
+  const lc = toPlain12(res)[0];
+  const bankAcc = await bankAccountFor(lc);
+  const iss = await c.execute({
+    sql: `SELECT COALESCE(SUM(CASE WHEN status = 'settled' THEN amount ELSE 0 END), 0) AS settled,
+                 COUNT(CASE WHEN order_id IS NOT NULL THEN 1 END) AS linked
+          FROM lc_issuances WHERE lc_id = ?`,
+    args: [lcId]
+  });
+  const delta = lcFeeDelta();
+  await dropEntry(n9(lc.fee_adjust_journal_entry_id) || null);
+  const party = String(lc.supplier_name || "").trim();
+  if (delta === 0 || !party) {
+    await c.execute({
+      sql: "UPDATE letters_of_credit SET fee_adjust_journal_entry_id = NULL WHERE id = ?",
+      args: [lcId]
+    });
+    return 0;
+  }
+  const size = round25(Math.abs(delta));
+  const retained = delta < 0;
+  const je = await postJournal({
+    date: String(lc.payment_received_date || lc.open_date || todayISO3()).slice(0, 10),
+    vchType: "JOURNAL",
+    vchNo: String(lc.lc_no || ""),
+    narration: retained ? `LC ${lc.lc_no} \u2014 ${size.toFixed(2)} of the bill was retained by ${lc.bank} as interest and charges, so it never reached ${party}; their account is credited back by that much` : `LC ${lc.lc_no} \u2014 ${lc.bank} released ${size.toFixed(2)} to ${party} beyond the bill as drawn, so their account is debited by that much`,
+    companyId: n9(lc.company_id) || void 0,
+    lines: retained ? [
+      { account: bankAcc, group: "Bank Accounts", dr: size },
+      { account: party, group: "Sundry Creditors", cr: size }
+    ] : [
+      { account: party, group: "Sundry Creditors", dr: size },
+      { account: bankAcc, group: "Bank Accounts", cr: size }
+    ]
+  });
+  await allocAgainst(je.id, party, null, size);
+  await c.execute({
+    sql: "UPDATE letters_of_credit SET fee_adjust_journal_entry_id = ? WHERE id = ?",
+    args: [je.id, lcId]
+  });
+  return delta;
+}
+async function refreshLcUpfrontInterest(lcId) {
+  const c = getClient();
+  const res = await c.execute({
+    sql: "SELECT interest_journal_entry_id FROM letters_of_credit WHERE id = ?",
+    args: [lcId]
+  });
+  const jeId = n9(res.rows[0]?.interest_journal_entry_id);
+  if (!jeId) return;
+  const je = await c.execute({ sql: "SELECT entry_date FROM journal_entries WHERE id = ?", args: [jeId] });
+  const date = String(je.rows[0]?.entry_date || "").slice(0, 10);
+  await postLcUpfrontInterest(lcId, date || void 0);
+}
+async function dropLcUpfrontInterest(lcId) {
+  const c = getClient();
+  const res = await c.execute({ sql: "SELECT interest_journal_entry_id FROM letters_of_credit WHERE id = ?", args: [lcId] });
+  if (res.rows.length && res.rows[0].interest_journal_entry_id) {
+    await dropEntry(n9(res.rows[0].interest_journal_entry_id));
+    await c.execute({ sql: "UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?", args: [lcId] });
+    await resyncLcSettlement(lcId);
+  }
+}
+async function postLcMarginRelease(lcId, amount, dateIn) {
+  const c = getClient();
+  const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [lcId] });
+  if (!res.rows.length) throw new Error("LC not found");
+  const lc = toPlain12(res)[0];
+  const bankAcc = await bankAccountFor(lc);
+  const value = round25(amount);
+  if (value < 5e-3) return null;
+  const je = await postJournal({
+    date: String(dateIn || todayISO3()).slice(0, 10),
+    vchType: "RECEIPT",
+    vchNo: String(lc.lc_no || ""),
+    narration: `LC ${lc.lc_no} preclosed \u2014 margin of ${value.toFixed(2)} refunded by ${lc.bank}`,
+    companyId: n9(lc.company_id) || void 0,
+    lines: [
+      { account: bankAcc, group: "Bank Accounts", dr: value },
+      { account: "LC MARGIN A/C", group: "Deposits (Asset)", cr: value }
+    ]
+  });
+  return { id: je.id };
+}
+async function postLcPrematureInterestRebate(lcId, direction, amount, dateIn) {
+  const c = getClient();
+  const res = await c.execute({
+    sql: `SELECT l.*, s.name AS supplier_name FROM letters_of_credit l
+          LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+          WHERE l.id = ?`,
+    args: [lcId]
+  });
+  if (!res.rows.length) throw new Error("LC not found");
+  const lc = toPlain12(res)[0];
+  const bankAcc = await bankAccountFor(lc);
+  const payable = await lcPayable(lc);
+  const value = round25(amount);
+  if (value < 5e-3) return null;
+  const date = String(dateIn || todayISO3()).slice(0, 10);
+  const je = await postJournal({
+    date,
+    vchType: "JOURNAL",
+    vchNo: String(lc.lc_no || ""),
+    narration: `LC ${lc.lc_no} preclosed \u2014 interest of ${value.toFixed(2)} reversed for the days that will not happen${direction === "pay_to_party" ? ", and passed on to the supplier" : ""}`,
+    companyId: n9(lc.company_id) || void 0,
+    lines: [
+      { account: payable, group: LC_PAYABLE_GROUP, dr: value },
+      { account: "INTEREST A/C", group: "Indirect Expenses", cr: value }
+    ]
+  });
+  let payoutId;
+  if (direction === "pay_to_party") {
+    const party = String(lc.supplier_name || "").trim();
+    if (!party) throw new Error("The LC has no supplier party \u2014 set it on the LC first");
+    const pay = await postJournal({
+      date,
+      vchType: "PAYMENT",
+      vchNo: String(lc.lc_no || ""),
+      narration: `LC ${lc.lc_no} \u2014 preclosure interest rebate of ${value.toFixed(2)} paid on to ${party}`,
+      companyId: n9(lc.company_id) || void 0,
+      lines: [
+        { account: party, group: "Sundry Creditors", dr: value },
+        { account: bankAcc, group: "Bank Accounts", cr: value }
+      ]
+    });
+    payoutId = pay.id;
+  }
+  return { id: je.id, payoutId };
+}
+async function outstandingSaleRefsForLc(lcId) {
+  const c = getClient();
+  const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [lcId] });
+  if (!res.rows.length) throw new Error("LC not found");
+  const lc = toPlain12(res)[0];
+  if (String(lc.purpose || "") !== "trading") throw new Error("Payment IN only applies to a Trading LC");
+  if (!lc.receivable_party_id) throw new Error("Set the party payment will be received from on this LC first");
+  const custRes = await c.execute({ sql: "SELECT name FROM customers WHERE id = ?", args: [Number(lc.receivable_party_id)] });
+  const customerName = String(custRes.rows[0]?.name || "").trim();
+  if (!customerName) throw new Error("The receivable party could not be found");
+  const dealsRes = await c.execute({
+    sql: `SELECT DISTINCT td.id, td.sale_id
+          FROM trading_deals td
+          WHERE EXISTS (
+            SELECT 1 FROM lc_linked_orders lo
+            WHERE lo.lc_id = ?
+              AND lo.order_id IN (
+                SELECT order_id FROM trading_deal_orders WHERE deal_id = td.id
+                UNION SELECT td.order_id
+              )
+          )`,
+    args: [lcId]
+  });
+  const dealRows = toPlain12(dealsRes);
+  if (!dealRows.length) throw new Error("This LC has no linked Trading deal to receive payment against");
+  const dealIds = dealRows.map((d) => n9(d.id));
+  const linksRes = await c.execute({
+    sql: `SELECT deal_id, sale_id FROM trading_deal_sales WHERE deal_id IN (${dealIds.join(",")})`,
+    args: []
+  });
+  const saleIdsByDeal = /* @__PURE__ */ new Map();
+  for (const r of toPlain12(linksRes)) {
+    const k = n9(r.deal_id);
+    saleIdsByDeal.set(k, [...saleIdsByDeal.get(k) ?? [], n9(r.sale_id)]);
+  }
+  const saleIds = Array.from(
+    new Set(dealRows.flatMap((d) => saleIdsByDeal.get(n9(d.id)) ?? (n9(d.sale_id) ? [n9(d.sale_id)] : [])))
+  );
+  if (!saleIds.length) throw new Error("This LC's linked Trading deal has no sale invoice yet");
+  const salesRes = await c.execute({
+    sql: `SELECT COALESCE(sl.invoice_group, sl.invoice_no) AS key, MIN(sl.invoice_no) AS invoice_no,
+                 MIN(sl.sale_date) AS sale_date, MIN(cu.name) AS customer_name,
+                 SUM(sl.amount + sl.gst_amount + sl.round_off - sl.tds_amount) AS due
+          FROM sales sl LEFT JOIN customers cu ON cu.id = sl.customer_id
+          WHERE sl.id IN (${saleIds.join(",")}) GROUP BY key`,
+    args: []
+  });
+  const bills = toPlain12(salesRes).map((s) => ({
+    key: String(s.key || "").trim(),
+    invoice_no: String(s.invoice_no || ""),
+    sale_date: String(s.sale_date || ""),
+    customer_name: String(s.customer_name || "").trim(),
+    due: round25(n9(s.due))
+  })).filter((s) => s.key);
+  if (!bills.length) throw new Error("This LC's linked Trading deal has no sale invoice yet");
+  const keys = bills.map((b) => b.key);
+  const settledRes = await c.execute({
+    sql: `SELECT COALESCE(ba.sale_invoice_group, ba.ref_name) AS key, SUM(ba.amount) AS amt
+          FROM journal_bill_allocs ba
+          JOIN journal_lines jl ON jl.id = ba.line_id
+          JOIN journal_entries je ON je.id = jl.entry_id
+          WHERE ba.method = 'agst_ref' AND je.company_id = ? AND COALESCE(ba.sale_invoice_group, ba.ref_name) IN (${keys.map(() => "?").join(",")})
+          GROUP BY key`,
+    args: [n9(lc.company_id) || getActiveCompanyId(), ...keys]
+  });
+  const settledMap = /* @__PURE__ */ new Map();
+  for (const r of toPlain12(settledRes)) settledMap.set(String(r.key), n9(r.amt));
+  const refs = bills.map((b) => ({ ...b, due: round25(b.due - (settledMap.get(b.key) || 0)) })).filter((b) => b.due > 5e-3);
+  return { lc, customerName, refs };
+}
+async function listLcOpenTradingInvoices(lcId) {
+  const { refs } = await outstandingSaleRefsForLc(lcId).catch(() => ({ refs: [] }));
+  return refs;
+}
+async function postLcPaymentIn(lcId, amount, dateIn, selectedKeys) {
+  const { lc, customerName, refs } = await outstandingSaleRefsForLc(lcId);
+  const bankAcc = await bankAccountFor(lc);
+  const wanted = Array.isArray(selectedKeys) && selectedKeys.length ? new Set(selectedKeys.map(String)) : null;
+  const outstanding = wanted ? refs.filter((r) => wanted.has(r.key)) : refs;
+  if (!outstanding.length) throw new Error("Every sale invoice on this deal is already fully paid");
+  const totalDue = round25(outstanding.reduce((s, o) => s + o.due, 0));
+  const value = round25(n9(amount));
+  if (value < 5e-3) throw new Error("Enter the amount received");
+  if (value > totalDue + 5e-3) {
+    throw new Error(`Only ${totalDue.toFixed(2)} is still receivable on the ${wanted ? "selected invoice(s)" : "LC's deal(s)"}`);
+  }
+  const c = getClient();
+  const date = String(dateIn || todayISO3()).slice(0, 10);
+  assertNotFuture(date, "The date the payment was received");
+  const { takes, byParty } = planReceipt(outstanding, value, customerName);
+  const je = await postJournal({
+    date,
+    vchType: "RECEIPT",
+    vchNo: String(lc.lc_no || ""),
+    narration: `LC ${lc.lc_no} \u2014 payment IN of ${value.toFixed(2)} received from ` + (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(", ") : byParty[0]?.party || customerName),
+    companyId: n9(lc.company_id) || void 0,
+    lines: [
+      { account: bankAcc, group: "Bank Accounts", dr: value },
+      ...byParty.map((b) => ({ account: b.party, group: "Sundry Debtors", cr: b.amount }))
+    ]
+  });
+  for (const t of takes) await allocAgainst(je.id, t.party, t.key, t.amount);
+  await c.execute({
+    sql: "INSERT INTO lc_payment_ins (lc_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, ?)",
+    args: [lcId, date, value, je.id]
+  });
+  return { id: je.id, date };
+}
+async function outstandingSaleRefsForBd(bdId) {
+  const c = getClient();
+  const res = await c.execute({ sql: "SELECT * FROM bill_discountings WHERE id = ?", args: [bdId] });
+  if (!res.rows.length) throw new Error("Discounted bill not found");
+  const bd = toPlain12(res)[0];
+  if (String(bd.purpose || "") !== "trading") throw new Error("Payment IN only applies to a Trading bill");
+  if (!bd.receivable_party_id) throw new Error("Set the party payment will be received from on this bill first");
+  const custRes = await c.execute({ sql: "SELECT name FROM customers WHERE id = ?", args: [Number(bd.receivable_party_id)] });
+  const customerName = String(custRes.rows[0]?.name || "").trim();
+  if (!customerName) throw new Error("The receivable party could not be found");
+  const dealsRes = await c.execute({
+    sql: `SELECT DISTINCT td.id, td.sale_id
+          FROM trading_deals td
+          WHERE EXISTS (
+            SELECT 1 FROM bd_linked_orders bo
+            WHERE bo.bd_id = ?
+              AND bo.order_id IN (
+                SELECT order_id FROM trading_deal_orders WHERE deal_id = td.id
+                UNION SELECT td.order_id
+              )
+          )`,
+    args: [bdId]
+  });
+  const dealRows = toPlain12(dealsRes);
+  if (!dealRows.length) throw new Error("This bill has no linked Trading deal to receive payment against");
+  const dealIds = dealRows.map((d) => n9(d.id));
+  const linksRes = await c.execute({
+    sql: `SELECT deal_id, sale_id FROM trading_deal_sales WHERE deal_id IN (${dealIds.join(",")})`,
+    args: []
+  });
+  const saleIdsByDeal = /* @__PURE__ */ new Map();
+  for (const r of toPlain12(linksRes)) {
+    const k = n9(r.deal_id);
+    saleIdsByDeal.set(k, [...saleIdsByDeal.get(k) ?? [], n9(r.sale_id)]);
+  }
+  const saleIds = Array.from(
+    new Set(dealRows.flatMap((d) => saleIdsByDeal.get(n9(d.id)) ?? (n9(d.sale_id) ? [n9(d.sale_id)] : [])))
+  );
+  if (!saleIds.length) throw new Error("This bill's linked Trading deal has no sale invoice yet");
+  const salesRes = await c.execute({
+    sql: `SELECT COALESCE(sl.invoice_group, sl.invoice_no) AS key, MIN(sl.invoice_no) AS invoice_no,
+                 MIN(sl.sale_date) AS sale_date, MIN(cu.name) AS customer_name,
+                 SUM(sl.amount + sl.gst_amount + sl.round_off - sl.tds_amount) AS due
+          FROM sales sl LEFT JOIN customers cu ON cu.id = sl.customer_id
+          WHERE sl.id IN (${saleIds.join(",")}) GROUP BY key`,
+    args: []
+  });
+  const bills = toPlain12(salesRes).map((x) => ({
+    key: String(x.key || "").trim(),
+    invoice_no: String(x.invoice_no || ""),
+    sale_date: String(x.sale_date || ""),
+    customer_name: String(x.customer_name || "").trim(),
+    due: round25(n9(x.due))
+  })).filter((x) => x.key);
+  if (!bills.length) throw new Error("This bill's linked Trading deal has no sale invoice yet");
+  const keys = bills.map((b) => b.key);
+  const settledRes = await c.execute({
+    sql: `SELECT COALESCE(ba.sale_invoice_group, ba.ref_name) AS key, SUM(ba.amount) AS amt
+          FROM journal_bill_allocs ba
+          JOIN journal_lines jl ON jl.id = ba.line_id
+          JOIN journal_entries je ON je.id = jl.entry_id
+          WHERE ba.method = 'agst_ref' AND je.company_id = ?
+            AND COALESCE(ba.sale_invoice_group, ba.ref_name) IN (${keys.map(() => "?").join(",")})
+          GROUP BY key`,
+    args: [n9(bd.company_id) || getActiveCompanyId(), ...keys]
+  });
+  const settled = /* @__PURE__ */ new Map();
+  for (const r of toPlain12(settledRes)) settled.set(String(r.key), n9(r.amt));
+  const refs = bills.map((b) => ({ ...b, due: round25(b.due - (settled.get(b.key) || 0)) })).filter((b) => b.due > 5e-3);
+  return { bd, customerName, refs };
+}
+async function listBdOpenTradingInvoices(bdId) {
+  try {
+    const { refs } = await outstandingSaleRefsForBd(bdId);
+    return refs;
+  } catch {
+    return [];
+  }
+}
+async function postBdPaymentIn(bdId, amount, dateIn, selectedKeys) {
+  const { bd, customerName, refs } = await outstandingSaleRefsForBd(bdId);
+  const wanted = Array.isArray(selectedKeys) && selectedKeys.length ? new Set(selectedKeys.map(String)) : null;
+  const outstanding = wanted ? refs.filter((r) => wanted.has(r.key)) : refs;
+  if (!outstanding.length) throw new Error("Every sale invoice on this deal is already fully paid");
+  const totalDue = round25(outstanding.reduce((t, o) => t + o.due, 0));
+  const value = round25(n9(amount));
+  if (value < 5e-3) throw new Error("Enter the amount received");
+  if (value > totalDue + 5e-3) {
+    throw new Error(
+      `Only ${totalDue.toFixed(2)} is still receivable on the ${wanted ? "selected invoice(s)" : "bill's deal(s)"}`
+    );
+  }
+  const c = getClient();
+  const date = String(dateIn || todayISO3()).slice(0, 10);
+  assertNotFuture(date, "The date the payment was received");
+  const { takes, byParty } = planReceipt(outstanding, value, customerName);
+  const je = await postJournal({
+    date,
+    vchType: "RECEIPT",
+    vchNo: String(bd.bd_no || ""),
+    narration: `Bill Discounting ${bd.bd_no} \u2014 payment IN of ${value.toFixed(2)} received from ` + (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(", ") : byParty[0]?.party || customerName),
+    companyId: n9(bd.company_id) || void 0,
+    lines: [
+      { account: "BANK A/C", group: "Bank Accounts", dr: value },
+      ...byParty.map((b) => ({ account: b.party, group: "Sundry Debtors", cr: b.amount }))
+    ]
+  });
+  for (const t of takes) await allocAgainst(je.id, t.party, t.key, t.amount);
+  await c.execute({
+    sql: "INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, ?)",
+    args: [bdId, date, value, je.id]
+  });
+  return { id: je.id, date };
+}
+async function listBdPaymentIns(bdId) {
+  const res = await getClient().execute({
+    sql: "SELECT * FROM bd_payment_ins WHERE bd_id = ? ORDER BY id DESC",
+    args: [bdId]
+  });
+  return toPlain12(res);
+}
+async function deleteBdPaymentIn(paymentInId) {
+  const c = getClient();
+  const res = await c.execute({ sql: "SELECT journal_entry_id FROM bd_payment_ins WHERE id = ?", args: [paymentInId] });
+  if (!res.rows.length) throw new Error("That receipt no longer exists");
+  const je = n9(res.rows[0].journal_entry_id);
+  if (je) {
+    await c.execute({
+      sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
+      args: [je]
+    });
+    await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [je] });
+    await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [je] });
+  }
+  await c.execute({ sql: "DELETE FROM bd_payment_ins WHERE id = ?", args: [paymentInId] });
+  return { id: paymentInId };
+}
+async function listAllLcRepayments() {
+  const res = await getClient().execute({
+    sql: `SELECT r.*, l.lc_no, l.bank, s.name AS supplier_name
+          FROM lc_repayments r
+          JOIN letters_of_credit l ON l.id = r.lc_id
+          LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+          WHERE l.company_id = ?
+          ORDER BY l.lc_no, r.repay_date, r.id`,
+    args: [getActiveCompanyId()]
+  });
+  return toPlain12(res);
+}
+async function listLcPaymentIns(lcId) {
+  const res = await getClient().execute({
+    sql: "SELECT * FROM lc_payment_ins WHERE lc_id = ? ORDER BY id DESC",
+    args: [lcId]
+  });
+  return toPlain12(res);
+}
+async function deleteLcPaymentIn(id) {
+  const c = getClient();
+  const res = await c.execute({ sql: "SELECT journal_entry_id FROM lc_payment_ins WHERE id = ?", args: [id] });
+  if (res.rows.length && res.rows[0].journal_entry_id) await dropEntry(n9(res.rows[0].journal_entry_id));
+  await c.execute({ sql: "DELETE FROM lc_payment_ins WHERE id = ?", args: [id] });
+  return { id };
+}
+async function settleLcBill(issuanceId, dateIn) {
+  const c = getClient();
+  const res = await c.execute({ sql: "SELECT status FROM lc_issuances WHERE id = ?", args: [issuanceId] });
+  if (!res.rows.length) throw new Error("LC bill not found");
+  if (String(res.rows[0].status) === "settled") throw new Error("This bill is already settled");
+  const je = await settleLcBillsCombined([issuanceId], dateIn);
+  if (!je) throw new Error("That bill could not be settled");
+  return je;
+}
+async function settleLcBillsCombined(issuanceIds, dateIn, reuseEntryId) {
+  if (!issuanceIds.length) return null;
+  const c = getClient();
+  const res = await c.execute({
+    sql: `SELECT i.*, l.lc_no, l.bank, l.our_bank_id, l.party_type, l.party_id, l.company_id,
+                 l.amount AS lc_amount, l.charges AS lc_charges, l.interest_pct, l.usance_days,
+                 l.interest_upfront, l.interest_excl_charges, l.interest_adj,
+                 l.interest_journal_entry_id,
+                 s.name AS supplier_name, o.invoice_no
+          FROM lc_issuances i
+          JOIN letters_of_credit l ON l.id = i.lc_id
+          LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+          LEFT JOIN orders o ON o.id = i.order_id
+          WHERE i.id IN (${issuanceIds.map(() => "?").join(",")})`,
+    args: issuanceIds
+  });
+  const bills = toPlain12(res).filter((b) => String(b.status) !== "settled");
+  if (!bills.length) return null;
+  const first = bills[0];
+  const party = String(first.supplier_name || "").trim();
+  if (!party) throw new Error("The LC has no supplier party \u2014 set it on the LC first");
+  const date = String(dateIn || todayISO3()).slice(0, 10);
+  const total = round25(bills.reduce((s2, b) => s2 + n9(b.amount), 0));
+  const payable = await lcPayable(first);
+  const feeLines = [];
+  let fees = 0;
+  const seen = /* @__PURE__ */ new Set();
+  for (const b of bills) {
+    const lcId = n9(b.lc_id);
+    if (seen.has(lcId)) continue;
+    seen.add(lcId);
+    if (n9(b.interest_journal_entry_id)) continue;
+    const interest = lcInterest({
+      amount: b.lc_amount,
+      charges: b.lc_charges,
+      interest_pct: b.interest_pct,
+      usance_days: b.usance_days,
+      interest_excl_charges: b.interest_excl_charges,
+      interest_adj: b.interest_adj
+    });
+    const charges = round25(n9(b.lc_charges));
+    if (interest > 5e-3) feeLines.push({ account: "INTEREST A/C", group: "Indirect Expenses", dr: interest });
+    if (charges > 5e-3) feeLines.push({ account: "BANK CHARGES A/C", group: "Indirect Expenses", dr: charges });
+    fees = round25(fees + interest + charges);
+  }
+  const post = reuseEntryId ? (args) => repostJournal(reuseEntryId, args) : postJournal;
+  const je = await post({
+    date,
+    // A JOURNAL, not a PAYMENT. Nothing of yours moves here — the bank honours
+    // the credit out of its own funds. One liability is exchanged for another:
+    // the supplier is discharged, and the bank takes their place.
+    vchType: "JOURNAL",
+    vchNo: String(first.lc_no || ""),
+    // A bill auto-issued against the whole LC is NAMED after it, so repeating
+    // the name tells the reader nothing. It is mentioned only when it carries a
+    // name of its own, such as a reference the bank gave you.
+    narration: (() => {
+      const bill = String(first.bill_no || "").trim();
+      const named = bills.length === 1 && bill && bill !== String(first.lc_no || "").trim() ? ` (bill ${bill})` : "";
+      const many = bills.length > 1 ? ` \u2014 ${bills.length} bills` : "";
+      const kept = fees > 5e-3 ? `, keeping ${fees.toFixed(2)} interest and commission` : "";
+      const basis = fees > 5e-3 && lcInterestBaseIsCustom(first) ? ` (interest on ${lcInterestBasis(first)})` : "";
+      return `LC ${first.lc_no}${named}${many} matured \u2014 ${first.bank} paid ${party} ${total.toFixed(2)}${kept}${basis}`;
+    })(),
+    companyId: n9(first.company_id) || void 0,
+    lines: [
+      { account: party, group: "Sundry Creditors", dr: total },
+      ...feeLines,
+      { account: payable, group: LC_PAYABLE_GROUP, cr: round25(total + fees) }
+    ]
+  });
+  for (const b of bills) {
+    const ref = b.invoice_no ? String(b.invoice_no) : b.bill_no ? String(b.bill_no) : null;
+    await allocAgainst(je.id, party, ref, round25(n9(b.amount)));
+  }
+  await c.execute({
+    sql: `UPDATE lc_issuances SET status = 'settled', settled_date = ?, journal_entry_id = ?
+          WHERE id IN (${bills.map(() => "?").join(",")})`,
+    args: [date, je.id, ...bills.map((b) => Number(b.id))]
+  });
+  return { id: je.id };
+}
+async function resyncLcSettlement(lcId) {
+  const c = getClient();
+  const res = await c.execute({
+    sql: `SELECT id, journal_entry_id, settled_date FROM lc_issuances
+           WHERE lc_id = ? AND journal_entry_id IS NOT NULL ORDER BY journal_entry_id, id`,
+    args: [n9(lcId)]
+  });
+  if (!res.rows.length) return;
+  const groups = /* @__PURE__ */ new Map();
+  for (const r of toPlain12(res)) {
+    const je = n9(r.journal_entry_id);
+    if (!groups.has(je)) groups.set(je, { ids: [], date: String(r.settled_date || "").slice(0, 10) });
+    groups.get(je).ids.push(n9(r.id));
+  }
+  const live = [];
+  for (const [entryId, g] of groups) {
+    await c.execute({
+      sql: `UPDATE lc_issuances SET status = 'outstanding', settled_date = NULL, journal_entry_id = NULL
+             WHERE id IN (${g.ids.map(() => "?").join(",")})`,
+      args: g.ids
+    });
+    const je = await settleLcBillsCombined(g.ids, g.date || void 0, entryId);
+    if (je) live.push(je.id);
+  }
+  const dropped = await dropOrphanLcSettlements(lcId, live);
+  if (dropped) console.log(`[lc] removed ${dropped} orphaned settlement voucher(s) on LC ${lcId}`);
+}
+async function dropOrphanLcSettlements(lcId, keep = []) {
+  const c = getClient();
+  const lc = await c.execute({
+    sql: "SELECT lc_no, company_id FROM letters_of_credit WHERE id = ?",
+    args: [n9(lcId)]
+  });
+  if (!lc.rows.length) return 0;
+  const lcNo = String(lc.rows[0].lc_no || "").trim();
+  if (!lcNo) return 0;
+  const skip = keep.filter((x) => n9(x) > 0);
+  const res = await c.execute({
+    sql: `SELECT je.id FROM journal_entries je
+           WHERE je.company_id = ?
+             AND TRIM(COALESCE(je.vch_no, '')) = ?
+             AND je.vch_type = 'JOURNAL'
+             AND je.narration LIKE '%matured%'
+             AND NOT EXISTS (SELECT 1 FROM lc_issuances i WHERE i.journal_entry_id = je.id)
+             ${skip.length ? `AND je.id NOT IN (${skip.map(() => "?").join(",")})` : ""}`,
+    args: [n9(lc.rows[0].company_id), lcNo, ...skip]
+  });
+  for (const r of res.rows) await dropEntry(n9(r.id));
+  return res.rows.length;
+}
+async function reopenLcBill(issuanceId) {
+  const c = getClient();
+  const res = await c.execute({ sql: "SELECT journal_entry_id FROM lc_issuances WHERE id = ?", args: [issuanceId] });
+  if (!res.rows.length) throw new Error("LC bill not found");
+  const entryId = n9(res.rows[0].journal_entry_id) || null;
+  await dropEntry(entryId);
+  const sql = entryId ? "UPDATE lc_issuances SET status = 'outstanding', settled_date = NULL, journal_entry_id = NULL WHERE journal_entry_id = ?" : "UPDATE lc_issuances SET status = 'outstanding', settled_date = NULL, journal_entry_id = NULL WHERE id = ?";
+  await c.execute({ sql, args: [entryId || issuanceId] });
+  return { id: issuanceId };
+}
+async function listLcRepayments(lcId) {
+  const res = await getClient().execute({
+    sql: `SELECT r.*, cu.name AS party_name FROM lc_repayments r
+          LEFT JOIN customers cu ON cu.id = r.party_id
+          WHERE r.lc_id = ? ORDER BY r.id DESC`,
+    args: [lcId]
+  });
+  return toPlain12(res);
+}
+async function postLcRepaymentEntry(repaymentId) {
+  const c = getClient();
+  const res = await c.execute({
+    sql: `SELECT r.*, l.lc_no, l.company_id, l.bank, l.our_bank_id, l.amount AS lc_open_amount,
+                 l.interest_upfront, l.interest_journal_entry_id AS lc_interest_journal_entry_id,
+                 l.interest_pct AS lc_interest_pct, l.usance_days AS lc_usance_days,
+                 l.charges AS lc_charges, l.interest_excl_charges AS lc_interest_excl_charges,
+                 l.interest_adj AS lc_interest_adj
+          FROM lc_repayments r
+          JOIN letters_of_credit l ON l.id = r.lc_id
+          WHERE r.id = ?`,
+    args: [repaymentId]
+  });
+  if (!res.rows.length) throw new Error("Repayment not found");
+  const rep = toPlain12(res)[0];
+  const bankAcc = await bankAccountFor(rep);
+  const payable = await lcPayable(rep);
+  await dropEntry(n9(rep.journal_entry_id) || null);
+  await dropEntry(n9(rep.fee_journal_entry_id) || null);
+  const ownFeeJe = n9(rep.fee_journal_entry_id) || null;
+  const upfrontStillDue = !!rep.interest_upfront && (!n9(rep.lc_interest_journal_entry_id) || n9(rep.lc_interest_journal_entry_id) === ownFeeJe);
+  const upfrontInterest = upfrontStillDue ? lcInterest({
+    amount: n9(rep.lc_open_amount),
+    interest_pct: n9(rep.lc_interest_pct),
+    usance_days: n9(rep.lc_usance_days),
+    interest_excl_charges: rep.lc_interest_excl_charges,
+    interest_adj: n9(rep.lc_interest_adj)
+  }) : 0;
+  const upfrontCharges = upfrontStillDue ? round25(n9(rep.lc_charges)) : 0;
+  const total = round25(n9(rep.amount));
+  const comm = round25(n9(rep.comm_charges));
+  const extra = round25(n9(rep.bank_charges) + upfrontCharges);
+  const onTheDay = round25(comm + extra + upfrontInterest);
+  const date = String(rep.repay_date || todayISO3()).slice(0, 10);
+  let feeJe = null;
+  if (onTheDay > 4e-3) {
+    const lines = [];
+    if (upfrontInterest > 5e-3) lines.push({ account: "INTEREST A/C", group: "Indirect Expenses", dr: upfrontInterest });
+    if (comm > 5e-3) lines.push({ account: "COMM. CHARGES A/C", group: "Indirect Expenses", dr: comm });
+    if (extra > 5e-3) lines.push({ account: "BANK CHARGES A/C", group: "Indirect Expenses", dr: extra });
+    lines.push({ account: payable, group: LC_PAYABLE_GROUP, cr: onTheDay });
+    const je2 = await postJournal({
+      date,
+      vchType: "JOURNAL",
+      vchNo: rep.lc_no ? String(rep.lc_no) : null,
+      narration: upfrontStillDue ? `LC ${rep.lc_no} \u2014 ${rep.bank || "the bank"} charged ${onTheDay.toFixed(2)} on settlement (interest never reconciled upfront, caught at repayment)` : `LC ${rep.lc_no} \u2014 ${rep.bank || "the bank"} charged ${onTheDay.toFixed(2)} on settlement`,
+      companyId: n9(rep.company_id) || void 0,
+      lines
+    });
+    feeJe = je2.id;
+    if (upfrontStillDue) {
+      await c.execute({
+        sql: "UPDATE letters_of_credit SET interest_journal_entry_id = ? WHERE id = ?",
+        args: [je2.id, n9(rep.lc_id)]
+      });
+    }
+  } else if (n9(rep.lc_interest_journal_entry_id) === ownFeeJe && ownFeeJe) {
+    await c.execute({ sql: "UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?", args: [n9(rep.lc_id)] });
+  }
+  const je = await postJournal({
+    date,
+    vchType: "PAYMENT",
+    vchNo: rep.lc_no ? String(rep.lc_no) : null,
+    narration: `LC ${rep.lc_no} repaid to ${rep.bank || "the bank"}`,
+    companyId: n9(rep.company_id) || void 0,
+    lines: [
+      { account: payable, group: LC_PAYABLE_GROUP, dr: total },
+      { account: bankAcc, group: "Bank Accounts", cr: total }
+    ]
+  });
+  await c.execute({
+    sql: "UPDATE lc_repayments SET journal_entry_id = ?, fee_journal_entry_id = ? WHERE id = ?",
+    args: [je.id, feeJe, repaymentId]
+  });
+}
+async function saveLcRepayment(v) {
+  const c = getClient();
+  const lcId = n9(v.lc_id);
+  if (!lcId) throw new Error("Pick the LC this repayment is against");
+  const amount = n9(v.amount);
+  if (amount <= 0) throw new Error("Enter the repayment amount");
+  const lcRes = await c.execute({ sql: "SELECT amount FROM letters_of_credit WHERE id = ?", args: [lcId] });
+  if (!lcRes.rows.length) throw new Error("LC not found");
+  const openAmount = n9(lcRes.rows[0].amount);
+  if (amount < openAmount - 5e-3) {
+    throw new Error(`The repayment (${amount.toFixed(2)}) cannot be less than the LC's open amount (${openAmount.toFixed(2)})`);
+  }
+  const commCharges = round25(n9(v.comm_charges));
+  const bankCharges = round25(n9(v.bank_charges));
+  const excess = round25(amount - openAmount);
+  if (excess > 5e-3) {
+    if (Math.abs(commCharges + bankCharges - excess) > 5e-3) {
+      throw new Error(
+        `Comm. charges + Bank charges must add up to the ${excess.toFixed(2)} over the open amount (currently ${(commCharges + bankCharges).toFixed(2)})`
+      );
+    }
+  } else if (commCharges > 5e-3 || bankCharges > 5e-3) {
+    throw new Error("Comm. charges and Bank charges only apply when the repayment exceeds the open amount");
+  }
+  const maturityCharges = round25(commCharges + bankCharges);
+  const posted = v.posted ? 1 : 0;
+  assertNotFuture(v.repay_date ? String(v.repay_date).slice(0, 10) : "", "The repayment date");
+  const args = [
+    lcId,
+    v.party_id ? n9(v.party_id) : null,
+    amount,
+    maturityCharges,
+    commCharges,
+    bankCharges,
+    v.repay_date ? String(v.repay_date).slice(0, 10) : todayISO3(),
+    posted,
+    v.document_path ? String(v.document_path) : null,
+    v.note ? String(v.note).trim() : null
+  ];
+  let id;
+  if (v.id) {
+    id = n9(v.id);
+    const prev = await c.execute({
+      sql: "SELECT posted, journal_entry_id, fee_journal_entry_id FROM lc_repayments WHERE id = ?",
+      args: [id]
+    });
+    if (!prev.rows.length) throw new Error("Repayment not found");
+    await c.execute({
+      sql: `UPDATE lc_repayments SET lc_id = ?, party_id = ?, amount = ?, maturity_charges = ?, comm_charges = ?, bank_charges = ?,
+            repay_date = ?, posted = ?, document_path = ?, note = ? WHERE id = ?`,
+      args: [...args, id]
+    });
+    if (n9(prev.rows[0].posted) && !posted) {
+      const oldFeeJe = n9(prev.rows[0].fee_journal_entry_id) || null;
+      await dropEntry(n9(prev.rows[0].journal_entry_id) || null);
+      await dropEntry(oldFeeJe);
+      await c.execute({
+        sql: "UPDATE lc_repayments SET journal_entry_id = NULL, fee_journal_entry_id = NULL WHERE id = ?",
+        args: [id]
+      });
+      if (oldFeeJe) {
+        await c.execute({
+          sql: "UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ? AND interest_journal_entry_id = ?",
+          args: [lcId, oldFeeJe]
+        });
+      }
+    }
+  } else {
+    const ins = await c.execute({
+      sql: `INSERT INTO lc_repayments (lc_id, party_id, amount, maturity_charges, comm_charges, bank_charges, repay_date, posted, document_path, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args
+    });
+    id = Number(ins.lastInsertRowid);
+  }
+  if (posted) {
+    try {
+      await postLcRepaymentEntry(id);
+    } catch (e) {
+      await c.execute({ sql: "UPDATE lc_repayments SET posted = 0 WHERE id = ?", args: [id] });
+      throw e;
+    }
+  }
+  return { id };
+}
+async function deleteLcRepayment(id) {
+  const c = getClient();
+  const res = await c.execute({
+    sql: "SELECT journal_entry_id, fee_journal_entry_id FROM lc_repayments WHERE id = ?",
+    args: [id]
+  });
+  if (res.rows.length) {
+    await dropEntry(n9(res.rows[0].journal_entry_id) || null);
+    await dropEntry(n9(res.rows[0].fee_journal_entry_id) || null);
+  }
+  await c.execute({ sql: "DELETE FROM lc_repayments WHERE id = ?", args: [id] });
+  return { id };
+}
+async function treasuryAlerts() {
+  const c = getClient();
+  const cid = getActiveCompanyId();
+  const today = todayISO3();
+  const lcs = toPlain12(
+    await c.execute({
+      sql: `SELECT l.*, s.name AS supplier_name,
+                   COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS utilized
+            FROM letters_of_credit l
+            LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+            WHERE l.company_id = ? AND l.status != 'closed'`,
+      args: [cid]
+    })
+  );
+  const lcExpiring = lcs.filter((l) => !l.preclosed_date).map((l) => ({ ...l, days_left: l.expiry_date ? daysBetween(today, String(l.expiry_date)) : null })).filter((l) => l.days_left != null && l.days_left <= 15).sort((a, b) => a.days_left - b.days_left);
+  const lcBills = toPlain12(
+    await c.execute({
+      sql: `SELECT i.*, l.lc_no, l.bank, s.name AS supplier_name, o.invoice_no
+            FROM lc_issuances i
+            JOIN letters_of_credit l ON l.id = i.lc_id
+            LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+            LEFT JOIN orders o ON o.id = i.order_id
+            WHERE l.company_id = ? AND COALESCE(i.status, 'outstanding') = 'outstanding' AND i.due_date IS NOT NULL`,
+      args: [cid]
+    })
+  );
+  const lcBillsDue = lcBills.map((b) => ({ ...b, days_left: daysBetween(today, String(b.due_date)) })).filter((b) => b.days_left <= 7).sort((a, b) => a.days_left - b.days_left);
+  const bd = toPlain12(
+    await c.execute({
+      sql: `SELECT bd.*, nb.name AS nbfc_name,
+                   COALESCE(s.name, cu.name) AS party_name
+            FROM bill_discountings bd
+            LEFT JOIN nbfcs nb ON nb.id = bd.nbfc_id
+            LEFT JOIN suppliers s ON bd.party_type = 'supplier' AND s.id = bd.party_id
+            LEFT JOIN customers cu ON bd.party_type = 'customer' AND cu.id = bd.party_id
+            WHERE bd.company_id = ? AND bd.status = 'open' AND bd.maturity_date IS NOT NULL`,
+      args: [cid]
+    })
+  );
+  const billsDue = bd.map((b) => ({ ...b, days_left: daysBetween(today, String(b.maturity_date)) })).filter((b) => b.days_left <= 7).sort((a, b) => a.days_left - b.days_left);
+  return {
+    lcExpiring,
+    lcBillsDue,
+    billsDue,
+    overdue: lcBillsDue.filter((b) => b.days_left < 0).length + billsDue.filter((b) => b.days_left < 0).length + lcExpiring.filter((l) => l.days_left < 0).length
+  };
+}
+async function listPaymentTracker() {
+  const c = getClient();
+  const cid = getActiveCompanyId();
+  const today = todayISO3();
+  const lcBills = toPlain12(
+    await c.execute({
+      sql: `SELECT i.id, i.amount, i.due_date, i.status, i.issue_date,
+                   l.lc_no AS ref, l.bank, s.name AS party, o.invoice_no
+            FROM lc_issuances i
+            JOIN letters_of_credit l ON l.id = i.lc_id
+            LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
+            LEFT JOIN orders o ON o.id = i.order_id
+            WHERE l.company_id = ?`,
+      args: [cid]
+    })
+  ).map((r) => ({
+    kind: "lc_bill",
+    kind_label: "LC bill",
+    ref: String(r.ref || ""),
+    detail: `${r.bank || ""}${r.invoice_no ? ` \xB7 inv ${r.invoice_no}` : ""}`,
+    party: String(r.party || ""),
+    amount: n9(r.amount),
+    due_date: r.due_date ? String(r.due_date) : null,
+    status: String(r.status || "outstanding"),
+    settled: String(r.status || "outstanding") === "settled"
+  }));
+  const bd = toPlain12(
+    await c.execute({
+      sql: `SELECT bd.id, bd.bd_no, bd.amount, bd.maturity_date, bd.status, bd.finance_type,
+                   nb.name AS nbfc_name, COALESCE(s.name, cu.name) AS party_name
+            FROM bill_discountings bd
+            LEFT JOIN nbfcs nb ON nb.id = bd.nbfc_id
+            LEFT JOIN suppliers s ON bd.party_type = 'supplier' AND s.id = bd.party_id
+            LEFT JOIN customers cu ON bd.party_type = 'customer' AND cu.id = bd.party_id
+            WHERE bd.company_id = ?`,
+      args: [cid]
+    })
+  ).map((r) => ({
+    kind: "bill_discount",
+    kind_label: "Bill discounting",
+    ref: String(r.bd_no || ""),
+    detail: `${r.nbfc_name || ""}${r.finance_type ? ` \xB7 ${r.finance_type}` : ""}`,
+    party: String(r.party_name || ""),
+    amount: n9(r.amount),
+    due_date: r.maturity_date ? String(r.maturity_date) : null,
+    status: String(r.status || "open"),
+    settled: String(r.status || "") === "repaid"
+  }));
+  const all = [...lcBills, ...bd].map((r) => {
+    const daysLeft = r.due_date ? daysBetween(today, r.due_date) : null;
+    return {
+      ...r,
+      days_left: daysLeft,
+      due_period: duePeriodOf(daysLeft),
+      overdue: !r.settled && daysLeft != null && daysLeft < 0
+    };
+  });
+  all.sort((a, b) => {
+    if (a.settled !== b.settled) return a.settled ? 1 : -1;
+    const ad = a.days_left ?? Infinity;
+    const bd2 = b.days_left ?? Infinity;
+    return ad - bd2;
+  });
+  return all;
+}
+var round25, LC_PAYABLE_GROUP;
+var init_treasury = __esm({
+  "src/main/treasury.ts"() {
+    init_db();
+    init_company();
+    init_journal();
+    init_lcInterest();
+    round25 = (v) => Math.round(v * 100) / 100;
+    LC_PAYABLE_GROUP = "Current Liabilities";
+  }
+});
+
+// src/server/index.ts
+var import_node_path5 = require("node:path");
+init_db();
+
+// src/main/bootstrap.ts
+init_db();
+init_journal();
 
 // src/main/backup.ts
+init_electron_shim();
 var import_node_fs2 = require("node:fs");
 var import_node_path2 = require("node:path");
 
 // src/main/dbsnapshot.ts
 var import_node_zlib = require("node:zlib");
+init_db();
 function lit(v) {
   if (v === null || v === void 0) return "NULL";
   if (typeof v === "number") return Number.isFinite(v) ? String(v) : "NULL";
@@ -3257,7 +4413,19 @@ async function dailyBackup(dirOverride) {
   return { file, skipped: false };
 }
 
+// src/main/orders.ts
+init_db();
+init_repos();
+
+// src/main/gate.ts
+init_db();
+
+// src/main/access-gate.ts
+init_db();
+init_openings();
+
 // src/main/currentUser.ts
+init_requestContext();
 var current = { id: null, username: "system" };
 function setCurrentUser(id, username) {
   const ctx = currentRequestContext();
@@ -4057,6 +5225,8 @@ async function unrejectGateEntry(id) {
 }
 
 // src/main/bargains.ts
+init_db();
+init_company();
 function toPlain4(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -4344,6 +5514,8 @@ async function deleteBargain(id) {
 }
 
 // src/main/consignment.ts
+init_db();
+init_company();
 function toPlain5(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -4933,7 +6105,12 @@ async function deleteConsignment(id) {
   return { id };
 }
 
+// src/main/orders.ts
+init_journal();
+init_company();
+
 // src/main/invoiceno.ts
+init_db();
 var key2 = (v) => String(v ?? "").trim().toUpperCase();
 function excluded(v, id) {
   const extra = Array.isArray(v?.invoice_dup_exclude_ids) ? v.invoice_dup_exclude_ids.map((x) => Number(x)).filter((x) => x > 0) : [];
@@ -6593,7 +7770,16 @@ async function deleteLedgerEntry(partyType, id) {
   return { id };
 }
 
+// src/main/sales.ts
+init_db();
+init_journal();
+init_company();
+init_repos();
+
 // src/main/stock.ts
+init_db();
+init_company();
+init_repos();
 async function stockLevels(range, companyIds) {
   const c = getClient();
   const cidList = (companyIds || []).map(Number).filter((x) => x > 0);
@@ -6929,7 +8115,7 @@ async function openingFloor(cidList, factoryId = 0) {
 async function stockPartyBreakdown(companyIds, range) {
   const c = getClient();
   const cidList = (companyIds || []).map(Number).filter((x) => x > 0);
-  if (!cidList.length) cidList.push(getActiveCompanyId());
+  if (!cidList.length) cidList.push(...await companiesOfFactory());
   const ph = cidList.map(() => "?").join(", ");
   const multi = cidList.length > 1;
   const asked = String(range?.from || "");
@@ -7287,7 +8473,7 @@ function toPlain7(res) {
 async function stockRegisters(companyIds, range) {
   const c = getClient();
   const cidList = (companyIds || []).map(Number).filter((x) => x > 0);
-  if (!cidList.length) cidList.push(getActiveCompanyId());
+  if (!cidList.length) cidList.push(...await companiesOfFactory());
   const ph = cidList.map(() => "?").join(", ");
   const from = String(range?.from || "");
   const to = String(range?.to || "");
@@ -7448,6 +8634,10 @@ async function stockRegisters(companyIds, range) {
   const dispatches = [...toPlain7(disp), ...await noteLines("credit", "customer", "customers")].sort(bySeq);
   return { receipts, dispatches };
 }
+
+// src/main/production.ts
+init_db();
+init_company();
 
 // src/renderer/src/lib/recipeMath.ts
 var num = (v) => {
@@ -9256,9 +10446,12 @@ async function uncancelInvoiceNo(v) {
 
 // src/main/auth.ts
 var import_crypto = require("crypto");
+init_db();
 
 // src/main/access.ts
 var import_os = __toESM(require("os"));
+init_db();
+init_repos();
 function toPlain10(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -9563,6 +10756,7 @@ async function deleteUser(id) {
 }
 
 // src/main/seed.ts
+init_db();
 var PRODUCTS = [
   {
     category: "raw",
@@ -10168,18 +11362,73 @@ async function runStartupTasks() {
       "CREATE INDEX IF NOT EXISTS idx_outside_tankers_day ON outside_tankers(company_id, log_date)"
     );
   }).catch((e) => console.error("[gate] outside tanker diary failed:", e));
+  await runOnce("lc9_gross_bill_fix_v1", async () => {
+    const c = getClient();
+    const lcRes = await c.execute({
+      sql: `SELECT id, lc_no, amount, interest_pct, usance_days, charges, interest_upfront
+              FROM letters_of_credit
+             WHERE lc_no = 'LC-9' AND ABS(amount - 8849000) < 1`,
+      args: []
+    });
+    if (lcRes.rows.length !== 1) {
+      console.log("[lc9] skipped \u2014 expected one LC-9 at 88,49,000, found", lcRes.rows.length);
+      return;
+    }
+    const lc = lcRes.rows[0];
+    const num2 = (v) => Number(v || 0);
+    if (num2(lc.interest_upfront) === 1) {
+      console.log("[lc9] skipped \u2014 flagged interest-upfront, a gross bill is correct there");
+      return;
+    }
+    const interest = Math.round(num2(lc.amount) * num2(lc.interest_pct) * num2(lc.usance_days) / 36500 * 100) / 100;
+    const charges = Math.round(num2(lc.charges) * 100) / 100;
+    const correct = Math.round((num2(lc.amount) - interest - charges) * 100) / 100;
+    const bills = await c.execute({
+      sql: "SELECT id, amount FROM lc_issuances WHERE lc_id = ?",
+      args: [num2(lc.id)]
+    });
+    if (bills.rows.length !== 1) {
+      console.log("[lc9] skipped \u2014 expected one bill, found", bills.rows.length);
+      return;
+    }
+    const bill = bills.rows[0];
+    if (Math.abs(num2(bill.amount) - correct) < 5e-3) {
+      console.log("[lc9] already correct at", correct);
+      return;
+    }
+    if (Math.abs(num2(bill.amount) - num2(lc.amount)) > 5e-3) {
+      console.log("[lc9] skipped \u2014 bill is neither gross nor the correct net:", num2(bill.amount));
+      return;
+    }
+    console.log("[lc9] BEFORE", JSON.stringify({ lc, bill, correctingTo: correct }));
+    await c.execute({
+      sql: "UPDATE lc_issuances SET amount = ? WHERE id = ?",
+      args: [correct, num2(bill.id)]
+    });
+    const { resyncLcSettlement: resyncLcSettlement2 } = await Promise.resolve().then(() => (init_treasury(), treasury_exports));
+    await resyncLcSettlement2(num2(lc.id));
+    console.log(`[lc9] bill ${num2(bill.amount)} -> ${correct}, settlement voucher re-posted`);
+  }).catch((e) => console.error("[lc9] gross bill fix failed:", e));
   startRevisionWatcher();
 }
 
+// src/main/ipc.ts
+init_electron_shim();
+init_db();
+init_config();
+init_repos();
+
 // src/main/unmapped.ts
-function toPlain12(res) {
+init_db();
+init_company();
+function toPlain13(res) {
   return res.rows.map((r) => {
     const o = {};
     for (const k of res.columns) o[k] = r[k];
     return o;
   });
 }
-var n8 = (v) => Number(v) || 0;
+var n10 = (v) => Number(v) || 0;
 var EPS = 1e-3;
 var COVERED = `
   COALESCE((SELECT SUM(pt.loaded_qty) FROM purchase_tankers pt
@@ -10215,14 +11464,14 @@ async function listUnmappedOrders() {
           ORDER BY o.order_date DESC, o.id DESC`,
     args: [getActiveCompanyId()]
   });
-  return toPlain12(res);
+  return toPlain13(res);
 }
 async function unmappedCount() {
   const res = await getClient().execute({
     sql: `SELECT COUNT(*) AS q FROM orders o WHERE o.company_id = ? AND ${UNMAPPED_WHERE}`,
     args: [getActiveCompanyId()]
   });
-  return n8(res.rows[0]?.q);
+  return n10(res.rows[0]?.q);
 }
 async function bargainBalance(id) {
   const r = await getClient().execute({
@@ -10238,25 +11487,25 @@ async function bargainBalance(id) {
     args: [id]
   });
   if (!r.rows.length) throw new Error("That bargain no longer exists");
-  const qty = n8(r.rows[0].qty);
-  const used = n8(r.rows[0].used);
+  const qty = n10(r.rows[0].qty);
+  const used = n10(r.rows[0].used);
   return { qty, used, balance: qty - used };
 }
 function spread(carriers, lines) {
   const out = [];
   let li = 0;
-  let left = lines.length ? n8(lines[0].qty) : 0;
+  let left = lines.length ? n10(lines[0].qty) : 0;
   for (const car of carriers) {
-    let need = n8(car.qty);
+    let need = n10(car.qty);
     const parts = [];
     while (need > EPS) {
       while (left <= EPS && li < lines.length - 1) {
         li++;
-        left = n8(lines[li].qty);
+        left = n10(lines[li].qty);
       }
       if (left <= EPS) throw new Error("The bargain quantities do not cover every tanker on this invoice");
       const take = Math.min(need, left);
-      parts.push({ bargain_id: n8(lines[li].bargain_id), qty: take });
+      parts.push({ bargain_id: n10(lines[li].bargain_id), qty: take });
       need -= take;
       left -= take;
     }
@@ -10278,11 +11527,11 @@ async function mapOrderToBargains(orderId, rawLines, force = false) {
   const c = getClient();
   const ord = await c.execute({ sql: "SELECT * FROM orders WHERE id = ? LIMIT 1", args: [orderId] });
   if (!ord.rows.length) throw new Error("That purchase invoice no longer exists");
-  const order = toPlain12(ord)[0];
+  const order = toPlain13(ord)[0];
   const merged = /* @__PURE__ */ new Map();
   for (const l of Array.isArray(rawLines) ? rawLines : []) {
-    const bid = n8(l.bargain_id);
-    const qty = n8(l.qty);
+    const bid = n10(l.bargain_id);
+    const qty = n10(l.qty);
     if (!bid || qty <= 0) continue;
     const cur = merged.get(bid) || { bargain_id: bid, qty: 0, top_up: false };
     cur.qty += qty;
@@ -10291,7 +11540,7 @@ async function mapOrderToBargains(orderId, rawLines, force = false) {
   }
   const lines = Array.from(merged.values());
   if (!lines.length) throw new Error("Add at least one bargain with a quantity");
-  const orderedQty = n8(order.ordered_qty);
+  const orderedQty = n10(order.ordered_qty);
   const allocated = lines.reduce((s, l) => s + l.qty, 0);
   if (Math.abs(allocated - orderedQty) > EPS) {
     throw new Error(
@@ -10306,11 +11555,11 @@ async function mapOrderToBargains(orderId, rawLines, force = false) {
       args: [l.bargain_id]
     });
     if (!b.rows.length) throw new Error("One of the chosen bargains no longer exists");
-    const bg = toPlain12(b)[0];
-    if (n8(bg.supplier_id) !== n8(order.supplier_id)) {
+    const bg = toPlain13(b)[0];
+    if (n10(bg.supplier_id) !== n10(order.supplier_id)) {
       throw new Error(`Bargain ${bg.bargain_no} belongs to a different supplier`);
     }
-    if (n8(bg.oil_type_id) !== n8(order.oil_type_id)) {
+    if (n10(bg.oil_type_id) !== n10(order.oil_type_id)) {
       throw new Error(`Bargain ${bg.bargain_no} is for a different product`);
     }
     const { balance } = await bargainBalance(l.bargain_id);
@@ -10329,15 +11578,15 @@ async function mapOrderToBargains(orderId, rawLines, force = false) {
       );
       toppedUp.push({ bargain_no: String(bg.bargain_no), qty: short });
     }
-    bargainValue += n8(bg.rate_per_uom) * l.qty;
+    bargainValue += n10(bg.rate_per_uom) * l.qty;
   }
-  const valueDiff = n8(order.taxable_value) - bargainValue;
+  const valueDiff = n10(order.taxable_value) - bargainValue;
   if (Math.abs(valueDiff) > 1 && !force) {
     throw new Error(
-      `VALUE_MISMATCH:${valueDiff.toFixed(2)}:${bargainValue.toFixed(2)}:${n8(order.taxable_value).toFixed(2)}`
+      `VALUE_MISMATCH:${valueDiff.toFixed(2)}:${bargainValue.toFixed(2)}:${n10(order.taxable_value).toFixed(2)}`
     );
   }
-  const isConsignment = n8(order.is_consignment) === 1;
+  const isConsignment = n10(order.is_consignment) === 1;
   if (isConsignment) {
     const lots = await c.execute({
       sql: "SELECT id, qty, tanker_no FROM consignment_stock WHERE order_id = ? ORDER BY deposit_date, id",
@@ -10345,7 +11594,7 @@ async function mapOrderToBargains(orderId, rawLines, force = false) {
     });
     if (lots.rows.length) {
       const alloc = spread(
-        toPlain12(lots).map((r) => ({ id: n8(r.id), qty: n8(r.qty), label: `Tanker ${r.tanker_no || r.id}` })),
+        toPlain13(lots).map((r) => ({ id: n10(r.id), qty: n10(r.qty), label: `Tanker ${r.tanker_no || r.id}` })),
         lines
       );
       for (const a of alloc) {
@@ -10364,9 +11613,9 @@ async function mapOrderToBargains(orderId, rawLines, force = false) {
       sql: "SELECT id, loaded_qty, tanker_no FROM purchase_tankers WHERE order_id = ? ORDER BY loaded_date, id",
       args: [orderId]
     });
-    const carriers = toPlain12(tk).map((r) => ({
-      id: n8(r.id),
-      qty: n8(r.loaded_qty),
+    const carriers = toPlain13(tk).map((r) => ({
+      id: n10(r.id),
+      qty: n10(r.loaded_qty),
       label: `Tanker ${r.tanker_no || r.id}`
     }));
     const covered = carriers.reduce((s, x) => s + x.qty, 0);
@@ -10389,13 +11638,13 @@ async function mapOrderToBargains(orderId, rawLines, force = false) {
                    loaded_qty, received_qty, uom, payment_mode, status, empty_date)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'we_pay', 'empty', ?)`,
           args: [
-            n8(order.company_id) || getActiveCompanyId(),
+            n10(order.company_id) || getActiveCompanyId(),
             orderId,
             order.tanker_no ? String(order.tanker_no) : `MAP/${order.invoice_no}`,
             order.order_date,
             l.bargain_id,
-            n8(order.supplier_id),
-            n8(order.oil_type_id),
+            n10(order.supplier_id),
+            n10(order.oil_type_id),
             take,
             take,
             order.uom || "MT",
@@ -10423,19 +11672,21 @@ async function mapOrderToBargains(orderId, rawLines, force = false) {
 }
 
 // src/main/trading.ts
-function toPlain13(res) {
+init_db();
+init_company();
+function toPlain14(res) {
   return res.rows.map((r) => {
     const o = {};
     for (const col of res.columns) o[col] = r[col];
     return o;
   });
 }
-function n9(v) {
+function n11(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
-var round24 = (v) => Math.round(v * 100) / 100;
-function todayISO3() {
+var round26 = (v) => Math.round(v * 100) / 100;
+function todayISO4() {
   const d = /* @__PURE__ */ new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
@@ -10449,18 +11700,18 @@ async function dealLineIds(dealIds, deals) {
     c.execute(`SELECT deal_id, order_id FROM trading_deal_orders WHERE deal_id IN (${list2}) ORDER BY line_no, id`),
     c.execute(`SELECT deal_id, sale_id FROM trading_deal_sales WHERE deal_id IN (${list2}) ORDER BY line_no, id`)
   ]);
-  for (const r of toPlain13(oRes)) {
-    const k = n9(r.deal_id);
-    orders.set(k, [...orders.get(k) ?? [], n9(r.order_id)]);
+  for (const r of toPlain14(oRes)) {
+    const k = n11(r.deal_id);
+    orders.set(k, [...orders.get(k) ?? [], n11(r.order_id)]);
   }
-  for (const r of toPlain13(sRes)) {
-    const k = n9(r.deal_id);
-    sales.set(k, [...sales.get(k) ?? [], n9(r.sale_id)]);
+  for (const r of toPlain14(sRes)) {
+    const k = n11(r.deal_id);
+    sales.set(k, [...sales.get(k) ?? [], n11(r.sale_id)]);
   }
   for (const d of deals) {
-    const id = n9(d.id);
-    if (!orders.has(id) && n9(d.order_id)) orders.set(id, [n9(d.order_id)]);
-    if (!sales.has(id) && n9(d.sale_id)) sales.set(id, [n9(d.sale_id)]);
+    const id = n11(d.id);
+    if (!orders.has(id) && n11(d.order_id)) orders.set(id, [n11(d.order_id)]);
+    if (!sales.has(id) && n11(d.sale_id)) sales.set(id, [n11(d.sale_id)]);
   }
   return { orders, sales };
 }
@@ -10474,7 +11725,7 @@ async function fetchOrderLines(ids) {
      FROM orders o LEFT JOIN suppliers s ON s.id = o.supplier_id
      WHERE o.id IN (${ids.join(",")})`
   );
-  for (const r of toPlain13(res)) m.set(n9(r.id), r);
+  for (const r of toPlain14(res)) m.set(n11(r.id), r);
   return m;
 }
 async function fetchSaleLines(ids) {
@@ -10487,7 +11738,7 @@ async function fetchSaleLines(ids) {
      FROM sales sl LEFT JOIN customers cu ON cu.id = sl.customer_id
      WHERE sl.id IN (${ids.join(",")})`
   );
-  for (const r of toPlain13(res)) m.set(n9(r.id), r);
+  for (const r of toPlain14(res)) m.set(n11(r.id), r);
   return m;
 }
 function saleRefKey(l) {
@@ -10504,14 +11755,14 @@ async function saleReceiptsByKey(companyId) {
     args: [companyId]
   });
   const m = /* @__PURE__ */ new Map();
-  for (const r of toPlain13(res)) m.set(String(r.key), n9(r.amount));
+  for (const r of toPlain14(res)) m.set(String(r.key), n11(r.amount));
   return m;
 }
 function groupSaleParties(sLines, receiptsByKey) {
   const order = [];
   const byParty = /* @__PURE__ */ new Map();
   for (const l of sLines) {
-    const cid = n9(l.customer_id);
+    const cid = n11(l.customer_id);
     if (!byParty.has(cid)) {
       byParty.set(cid, []);
       order.push(cid);
@@ -10522,37 +11773,37 @@ function groupSaleParties(sLines, receiptsByKey) {
   return order.map((cid) => {
     const ls = byParty.get(cid);
     const first = ls[0] ?? {};
-    const qty = ls.reduce((a, l) => a + n9(l.qty), 0);
-    const taxable = ls.reduce((a, l) => a + n9(l.amount), 0);
-    const gstAmount = ls.reduce((a, l) => a + n9(l.gst_amount), 0);
-    const roundOff = ls.reduce((a, l) => a + n9(l.round_off), 0);
-    const tdsAmount = ls.reduce((a, l) => a + n9(l.tds_amount), 0);
-    const total = round24(taxable + gstAmount + roundOff);
+    const qty = ls.reduce((a, l) => a + n11(l.qty), 0);
+    const taxable = ls.reduce((a, l) => a + n11(l.amount), 0);
+    const gstAmount = ls.reduce((a, l) => a + n11(l.gst_amount), 0);
+    const roundOff = ls.reduce((a, l) => a + n11(l.round_off), 0);
+    const tdsAmount = ls.reduce((a, l) => a + n11(l.tds_amount), 0);
+    const total = round26(taxable + gstAmount + roundOff);
     const keys = Array.from(new Set(ls.map((l) => saleRefKey(l)).filter(Boolean)));
-    const netReceivable = round24(total - tdsAmount);
-    const paid = round24(keys.reduce((a, k) => a + (receiptsByKey.get(k) || 0), 0));
+    const netReceivable = round26(total - tdsAmount);
+    const paid = round26(keys.reduce((a, k) => a + (receiptsByKey.get(k) || 0), 0));
     return {
       customer_id: cid || null,
       customer_name: first.customer_name ?? null,
       invoice_count: ls.length,
       qty,
-      rate: qty > 0 ? ls.reduce((a, l) => a + n9(l.qty) * n9(l.rate), 0) / qty : 0,
-      taxable: round24(taxable),
-      gst_pct: n9(first.gst_pct),
+      rate: qty > 0 ? ls.reduce((a, l) => a + n11(l.qty) * n11(l.rate), 0) / qty : 0,
+      taxable: round26(taxable),
+      gst_pct: n11(first.gst_pct),
       gst_type: first.gst_type ?? "CGST_SGST",
-      gst_amount: round24(gstAmount),
-      round_off: round24(roundOff),
+      gst_amount: round26(gstAmount),
+      round_off: round26(roundOff),
       total,
-      tds_pct: n9(first.tds_pct),
-      tds_amount: round24(tdsAmount),
+      tds_pct: n11(first.tds_pct),
+      tds_amount: round26(tdsAmount),
       net_receivable: netReceivable,
       paid,
       fully_paid: netReceivable > 5e-3 && paid >= netReceivable - 5e-3,
       lines: ls.map((l) => ({
-        sale_id: n9(l.id),
+        sale_id: n11(l.id),
         invoice_no: l.invoice_no ?? "",
-        qty: n9(l.qty),
-        rate: n9(l.rate)
+        qty: n11(l.qty),
+        rate: n11(l.rate)
       }))
     };
   });
@@ -10571,8 +11822,8 @@ async function listTradingDeals(forModule) {
           ORDER BY td.deal_date DESC, td.id DESC`,
     args: from ? [cid, from] : [cid]
   });
-  const deals = toPlain13(res);
-  const dealIds = deals.map((d) => n9(d.id)).filter(Boolean);
+  const deals = toPlain14(res);
+  const dealIds = deals.map((d) => n11(d.id)).filter(Boolean);
   const { orders, sales } = await dealLineIds(dealIds, deals);
   const [orderRows, saleRows, receiptsByKey] = await Promise.all([
     fetchOrderLines(Array.from(new Set(Array.from(orders.values()).flat()))),
@@ -10580,42 +11831,42 @@ async function listTradingDeals(forModule) {
     saleReceiptsByKey(cid)
   ]);
   return deals.map((d) => {
-    const id = n9(d.id);
+    const id = n11(d.id);
     const pLines = (orders.get(id) ?? []).map((oid) => orderRows.get(oid)).filter(Boolean);
     const sLines = (sales.get(id) ?? []).map((sid) => saleRows.get(sid)).filter(Boolean);
-    const purchaseQty = pLines.reduce((s, l) => s + n9(l.ordered_qty), 0);
-    const saleQty = sLines.reduce((s, l) => s + n9(l.qty), 0);
+    const purchaseQty = pLines.reduce((s, l) => s + n11(l.ordered_qty), 0);
+    const saleQty = sLines.reduce((s, l) => s + n11(l.qty), 0);
     const purchaseTotal = pLines.reduce(
-      (s, l) => s + n9(l.taxable_value) + n9(l.gst_amount) + n9(l.round_off),
+      (s, l) => s + n11(l.taxable_value) + n11(l.gst_amount) + n11(l.round_off),
       0
     );
-    const saleNet = sLines.reduce((s, l) => s + n9(l.amount) + n9(l.gst_amount) + n9(l.round_off), 0);
-    const purchaseTaxable = pLines.reduce((s, l) => s + n9(l.taxable_value), 0);
-    const saleTaxable = sLines.reduce((s, l) => s + n9(l.amount), 0);
-    const marginOnTaxable = round24(saleTaxable - purchaseTaxable);
-    const marginPct = purchaseTaxable > 0 ? round24(marginOnTaxable / purchaseTaxable * 100) : 0;
+    const saleNet = sLines.reduce((s, l) => s + n11(l.amount) + n11(l.gst_amount) + n11(l.round_off), 0);
+    const purchaseTaxable = pLines.reduce((s, l) => s + n11(l.taxable_value), 0);
+    const saleTaxable = sLines.reduce((s, l) => s + n11(l.amount), 0);
+    const marginOnTaxable = round26(saleTaxable - purchaseTaxable);
+    const marginPct = purchaseTaxable > 0 ? round26(marginOnTaxable / purchaseTaxable * 100) : 0;
     const first = pLines[0] ?? {};
     const firstSale = sLines[0] ?? {};
     const avg = (total, qty) => qty > 0 ? total / qty : 0;
-    const saleNetReceivable = round24(saleNet - sLines.reduce((s, l) => s + n9(l.tds_amount), 0));
+    const saleNetReceivable = round26(saleNet - sLines.reduce((s, l) => s + n11(l.tds_amount), 0));
     const saleKeys = Array.from(new Set(sLines.map((l) => saleRefKey(l)).filter(Boolean)));
-    const salePaid = round24(saleKeys.reduce((s, k) => s + (receiptsByKey.get(k) || 0), 0));
+    const salePaid = round26(saleKeys.reduce((s, k) => s + (receiptsByKey.get(k) || 0), 0));
     const saleFullyPaid = saleNetReceivable > 5e-3 && salePaid >= saleNetReceivable - 5e-3;
     const saleParties = groupSaleParties(sLines, receiptsByKey);
     const lcBankRepaid = !!d.lc_preclosed_date;
     return {
       ...d,
       purchase_lines: pLines.map((l) => ({
-        order_id: n9(l.id),
+        order_id: n11(l.id),
         invoice_no: l.invoice_no ?? "",
-        qty: n9(l.ordered_qty),
-        rate: n9(l.invoice_rate)
+        qty: n11(l.ordered_qty),
+        rate: n11(l.invoice_rate)
       })),
       sale_lines: sLines.map((l) => ({
-        sale_id: n9(l.id),
+        sale_id: n11(l.id),
         invoice_no: l.invoice_no ?? "",
-        qty: n9(l.qty),
-        rate: n9(l.rate),
+        qty: n11(l.qty),
+        rate: n11(l.rate),
         // Which buyer this invoice went to, so a flat list of the deal's sale
         // invoices can still say who each one was raised on.
         customer_id: l.customer_id ?? null,
@@ -10634,20 +11885,20 @@ async function listTradingDeals(forModule) {
       purchase_qty: purchaseQty,
       sale_qty: saleQty,
       purchase_uom: first.uom || "MT",
-      purchase_rate: avg(pLines.reduce((s, l) => s + n9(l.ordered_qty) * n9(l.invoice_rate), 0), purchaseQty),
-      sale_rate: avg(sLines.reduce((s, l) => s + n9(l.qty) * n9(l.rate), 0), saleQty),
+      purchase_rate: avg(pLines.reduce((s, l) => s + n11(l.ordered_qty) * n11(l.invoice_rate), 0), purchaseQty),
+      sale_rate: avg(sLines.reduce((s, l) => s + n11(l.qty) * n11(l.rate), 0), saleQty),
       supplier_id: first.supplier_id ?? null,
       supplier_name: first.supplier_name ?? null,
       customer_id: firstSale.customer_id ?? null,
       customer_name: firstSale.customer_name ?? null,
-      purchase_gst_pct: n9(first.gst_pct),
+      purchase_gst_pct: n11(first.gst_pct),
       purchase_gst_type: first.gst_type ?? "CGST_SGST",
-      purchase_tds_pct: n9(first.tds_pct),
-      purchase_round_off: pLines.reduce((s, l) => s + n9(l.round_off), 0),
-      sale_gst_pct: n9(firstSale.gst_pct),
+      purchase_tds_pct: n11(first.tds_pct),
+      purchase_round_off: pLines.reduce((s, l) => s + n11(l.round_off), 0),
+      sale_gst_pct: n11(firstSale.gst_pct),
       sale_gst_type: firstSale.gst_type ?? "CGST_SGST",
-      sale_tds_pct: n9(firstSale.tds_pct),
-      sale_tds_amount: sLines.reduce((s, l) => s + n9(l.tds_amount), 0),
+      sale_tds_pct: n11(firstSale.tds_pct),
+      sale_tds_amount: sLines.reduce((s, l) => s + n11(l.tds_amount), 0),
       sale_net_receivable: saleNetReceivable,
       sale_paid: salePaid,
       sale_fully_paid: saleFullyPaid,
@@ -10655,14 +11906,14 @@ async function listTradingDeals(forModule) {
       // Both sides of the round trip are done: the bank has been repaid on
       // the LC, and the customer's money for the resale has actually come in.
       trading_lc_closed: !!d.lc_id && lcBankRepaid && saleFullyPaid,
-      sale_round_off: sLines.reduce((s, l) => s + n9(l.round_off), 0),
-      purchase_taxable: pLines.reduce((s, l) => s + n9(l.taxable_value), 0),
-      purchase_gst_amount: pLines.reduce((s, l) => s + n9(l.gst_amount), 0),
-      purchase_tds_amount: pLines.reduce((s, l) => s + n9(l.tds_amount), 0),
+      sale_round_off: sLines.reduce((s, l) => s + n11(l.round_off), 0),
+      purchase_taxable: pLines.reduce((s, l) => s + n11(l.taxable_value), 0),
+      purchase_gst_amount: pLines.reduce((s, l) => s + n11(l.gst_amount), 0),
+      purchase_tds_amount: pLines.reduce((s, l) => s + n11(l.tds_amount), 0),
       // What is actually paid to the supplier across every invoice on the deal.
-      purchase_net: pLines.reduce((s, l) => s + n9(l.net_amount), 0),
-      sale_amount: sLines.reduce((s, l) => s + n9(l.amount), 0),
-      sale_gst_amount: sLines.reduce((s, l) => s + n9(l.gst_amount), 0),
+      purchase_net: pLines.reduce((s, l) => s + n11(l.net_amount), 0),
+      sale_amount: sLines.reduce((s, l) => s + n11(l.amount), 0),
+      sale_gst_amount: sLines.reduce((s, l) => s + n11(l.gst_amount), 0),
       purchase_total: purchaseTotal,
       sale_net: saleNet,
       margin: marginOnTaxable,
@@ -10679,8 +11930,8 @@ function toLines(raw, at, emptyMsg) {
     const r = l ?? {};
     return {
       invoiceNo: r.invoice_no ? String(r.invoice_no).trim() : "",
-      qty: n9(r.qty),
-      rate: n9(r.rate)
+      qty: n11(r.qty),
+      rate: n11(r.rate)
     };
   }).filter((l) => l.invoiceNo !== "" || l.qty !== 0 || l.rate !== 0);
   if (!lines.length) throw new Error(emptyMsg);
@@ -10705,23 +11956,23 @@ function toSaleParties(v) {
   const live = groups.filter((g) => {
     const ls = Array.isArray(g?.lines) ? g.lines : [];
     const anyLine = ls.some(
-      (l) => String(l?.invoice_no ?? "").trim() !== "" || n9(l?.qty) !== 0 || n9(l?.rate) !== 0
+      (l) => String(l?.invoice_no ?? "").trim() !== "" || n11(l?.qty) !== 0 || n11(l?.rate) !== 0
     );
-    return n9(g?.customer_id) > 0 || anyLine;
+    return n11(g?.customer_id) > 0 || anyLine;
   });
   if (!live.length) throw new Error("Pick the customer");
   const multi = live.length > 1;
   const parties = live.map((g, gi) => {
     const label = multi ? `Buyer ${gi + 1}` : "Sale";
-    if (!n9(g?.customer_id)) {
+    if (!n11(g?.customer_id)) {
       throw new Error(multi ? `${label}: pick the customer` : "Pick the customer");
     }
     return {
-      customerId: n9(g.customer_id),
-      gstPct: n9(g.gst_pct),
+      customerId: n11(g.customer_id),
+      gstPct: n11(g.gst_pct),
       gstType: g.gst_type === "IGST" ? "IGST" : "CGST_SGST",
-      tdsPct: n9(g.tds_pct),
-      roundOff: n9(g.round_off),
+      tdsPct: n11(g.tds_pct),
+      roundOff: n11(g.round_off),
       lines: toLines(g.lines, (i) => `${label} invoice ${i + 1}`, `${label}: add at least one sale invoice`)
     };
   });
@@ -10735,11 +11986,11 @@ function toSaleParties(v) {
   return parties;
 }
 function dealFields(v) {
-  const productId = n9(v.product_id);
+  const productId = n11(v.product_id);
   if (!productId) throw new Error("Select the raw product");
   if (!v.supplier_id) throw new Error("Pick the supplier");
   const uom = String(v.uom || "MT");
-  const dealDate = v.deal_date ? String(v.deal_date).slice(0, 10) : todayISO3();
+  const dealDate = v.deal_date ? String(v.deal_date).slice(0, 10) : todayISO4();
   const purchaseLines = toLines(
     v.purchase_lines,
     (i) => `Purchase invoice ${i + 1}`,
@@ -10752,15 +12003,15 @@ function dealFields(v) {
     is_trading: true,
     invoice_no: l.invoiceNo,
     order_date: dealDate,
-    supplier_id: n9(v.supplier_id),
+    supplier_id: n11(v.supplier_id),
     oil_type_id: productId,
     ordered_qty: l.qty,
     uom,
     invoice_rate: l.rate,
     bargain_rate: l.rate,
-    gst_pct: n9(v.purchase_gst_pct),
+    gst_pct: n11(v.purchase_gst_pct),
     gst_type: v.purchase_gst_type === "IGST" ? "IGST" : "CGST_SGST",
-    tds_pct: n9(v.purchase_tds_pct),
+    tds_pct: n11(v.purchase_tds_pct),
     // Round-off is entered once for the deal and belongs to it as a whole, so
     // it rides on the first invoice rather than being repeated on each.
     round_off: 0,
@@ -10768,7 +12019,7 @@ function dealFields(v) {
     // if the supplier's master carries a default.
     charge_interest: false
   }));
-  if (orderPayloads.length) orderPayloads[0].round_off = n9(v.purchase_round_off);
+  if (orderPayloads.length) orderPayloads[0].round_off = n11(v.purchase_round_off);
   const salePayloads = saleParties.flatMap(
     (sp) => sp.lines.map((l, i) => ({
       is_trading: true,
@@ -10874,7 +12125,7 @@ async function updateTradingDeal(id, v) {
     args: [id]
   });
   if (!cur.rows.length) throw new Error("Trading deal not found");
-  const deal = toPlain13(cur)[0];
+  const deal = toPlain14(cur)[0];
   const { orders, sales } = await dealLineIds([id], [deal]);
   const existingOrders = orders.get(id) ?? [];
   const existingSales = sales.get(id) ?? [];
@@ -10913,7 +12164,7 @@ async function updateTradingDeal(id, v) {
 }
 async function linkTradingDealsToLc(lcId, dealIds) {
   const c = getClient();
-  const ids = Array.isArray(dealIds) ? dealIds.map((x) => n9(x)).filter((x) => x > 0) : [];
+  const ids = Array.isArray(dealIds) ? dealIds.map((x) => n11(x)).filter((x) => x > 0) : [];
   await c.execute({
     sql: `UPDATE trading_deals SET lc_id = NULL WHERE lc_id = ? AND id NOT IN (${ids.length ? ids.join(",") : "0"})`,
     args: [lcId]
@@ -10929,7 +12180,7 @@ async function deleteTradingDeal(id) {
     args: [id]
   });
   if (!res.rows.length) throw new Error("Trading deal not found");
-  const deal = toPlain13(res)[0];
+  const deal = toPlain14(res)[0];
   const { orders, sales } = await dealLineIds([id], [deal]);
   await c.execute({ sql: "DELETE FROM trading_deal_orders WHERE deal_id = ?", args: [id] });
   await c.execute({ sql: "DELETE FROM trading_deal_sales WHERE deal_id = ?", args: [id] });
@@ -10940,14 +12191,15 @@ async function deleteTradingDeal(id) {
 }
 
 // src/main/skurates.ts
-function toPlain14(res) {
+init_db();
+function toPlain15(res) {
   return res.rows.map((r) => {
     const o = {};
     for (const k of res.columns) o[k] = r[k];
     return o;
   });
 }
-var n10 = (v) => Number(v) || 0;
+var n12 = (v) => Number(v) || 0;
 async function listSkuRates(salesBargainId) {
   const c = getClient();
   const bg = await c.execute({
@@ -10955,8 +12207,8 @@ async function listSkuRates(salesBargainId) {
     args: [salesBargainId]
   });
   if (!bg.rows.length) throw new Error("That sales bargain no longer exists");
-  const productId = n10(bg.rows[0].product_id);
-  const customerId = n10(bg.rows[0].customer_id);
+  const productId = n12(bg.rows[0].product_id);
+  const customerId = n12(bg.rows[0].customer_id);
   const res = await c.execute({
     sql: `SELECT pk.id AS packaging_id, pk.name, pk.unit_size, pk.unit_uom,
                  pk.base_per_pouch, pk.base_uom, pk.pouches_per_box, pk.product_id,
@@ -10968,7 +12220,7 @@ async function listSkuRates(salesBargainId) {
           ORDER BY pk.name`,
     args: [salesBargainId, productId, productId]
   });
-  let rows = toPlain14(res);
+  let rows = toPlain15(res);
   const keepsRate = (r) => r.rate_per_case != null || r.rate_per_mt != null;
   const claimedRes = await c.execute("SELECT packaging_id, customer_id FROM packaging_parties");
   const claimedBy = /* @__PURE__ */ new Map();
@@ -10995,10 +12247,10 @@ async function listSkuRates(salesBargainId) {
   });
   if (customerId) {
     if (linked.size) {
-      const own = rows.filter((r) => n10(r.party_linked) === 1 || keepsRate(r));
+      const own = rows.filter((r) => n12(r.party_linked) === 1 || keepsRate(r));
       if (own.length) rows = own;
     } else {
-      const free = rows.filter((r) => n10(r.free) === 1 || keepsRate(r));
+      const free = rows.filter((r) => n12(r.free) === 1 || keepsRate(r));
       if (free.length) rows = free;
     }
   }
@@ -11048,10 +12300,10 @@ async function saveSkuRates(salesBargainId, rows) {
   let cleared = 0;
   for (const raw of Array.isArray(rows) ? rows : []) {
     const r = raw;
-    const pid = n10(r.packaging_id);
+    const pid = n12(r.packaging_id);
     if (!pid) continue;
-    const perCase = r.rate_per_case === "" || r.rate_per_case == null ? null : n10(r.rate_per_case);
-    const perMt = r.rate_per_mt === "" || r.rate_per_mt == null ? null : n10(r.rate_per_mt);
+    const perCase = r.rate_per_case === "" || r.rate_per_case == null ? null : n12(r.rate_per_case);
+    const perMt = r.rate_per_mt === "" || r.rate_per_mt == null ? null : n12(r.rate_per_mt);
     if ((perCase == null || perCase <= 0) && (perMt == null || perMt <= 0)) {
       const del = await c.execute({
         sql: "DELETE FROM sales_bargain_sku_rates WHERE sales_bargain_id = ? AND packaging_id = ?",
@@ -11074,15 +12326,19 @@ async function saveSkuRates(salesBargainId, rows) {
   return { saved, cleared };
 }
 
+// src/main/ipc.ts
+init_openings();
+
 // src/main/formulations.ts
-function toPlain15(res) {
+init_db();
+function toPlain16(res) {
   return res.rows.map((r) => {
     const o = {};
     for (const col of res.columns) o[col] = r[col];
     return o;
   });
 }
-function n11(v) {
+function n13(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
@@ -11100,19 +12356,19 @@ async function listFormulations() {
     LEFT JOIN formulation_subcategories sc ON sc.id = f.subcategory_id
     ORDER BY f.id DESC
   `);
-  const rows = toPlain15(res);
+  const rows = toPlain16(res);
   if (!rows.length) return rows;
   const itemsRes = await getClient().execute(
     `SELECT formulation_id, qty, kind, auto_calc, ffa_pct, loss_multiplier_pct, moisture_pct, byproduct_product_id
-     FROM formulation_items WHERE formulation_id IN (${rows.map((r) => n11(r.id)).join(",")})`
+     FROM formulation_items WHERE formulation_id IN (${rows.map((r) => n13(r.id)).join(",")})`
   );
   const itemsByFormulation = /* @__PURE__ */ new Map();
-  for (const it of toPlain15(itemsRes)) {
-    const fid = n11(it.formulation_id);
+  for (const it of toPlain16(itemsRes)) {
+    const fid = n13(it.formulation_id);
     if (!itemsByFormulation.has(fid)) itemsByFormulation.set(fid, []);
     itemsByFormulation.get(fid).push(it);
   }
-  return rows.map((r) => ({ ...r, tor: recipeTor(itemsByFormulation.get(n11(r.id)) || []) }));
+  return rows.map((r) => ({ ...r, tor: recipeTor(itemsByFormulation.get(n13(r.id)) || []) }));
 }
 async function getFormulationItems(formulationId) {
   const res = await getClient().execute({
@@ -11123,13 +12379,13 @@ async function getFormulationItems(formulationId) {
           ORDER BY i.id`,
     args: [formulationId]
   });
-  return toPlain15(res);
+  return toPlain16(res);
 }
 async function writeItems(formulationId, items) {
   const c = getClient();
   await c.execute({ sql: "DELETE FROM formulation_items WHERE formulation_id = ?", args: [formulationId] });
   for (const it of items || []) {
-    const pid = n11(it.product_id);
+    const pid = n13(it.product_id);
     if (!pid) continue;
     const kind = it.kind === "output" || it.kind === "loss" ? String(it.kind) : "input";
     const autoCalc = it.auto_calc ? 1 : 0;
@@ -11139,13 +12395,13 @@ async function writeItems(formulationId, items) {
       args: [
         formulationId,
         pid,
-        n11(it.qty),
+        n13(it.qty),
         kind,
         autoCalc,
-        autoCalc && it.ffa_pct != null && it.ffa_pct !== "" ? n11(it.ffa_pct) : null,
-        autoCalc && it.loss_multiplier_pct != null && it.loss_multiplier_pct !== "" ? n11(it.loss_multiplier_pct) : null,
-        autoCalc && it.moisture_pct != null && it.moisture_pct !== "" ? n11(it.moisture_pct) : null,
-        autoCalc && kind === "input" && n11(it.byproduct_product_id) ? n11(it.byproduct_product_id) : null
+        autoCalc && it.ffa_pct != null && it.ffa_pct !== "" ? n13(it.ffa_pct) : null,
+        autoCalc && it.loss_multiplier_pct != null && it.loss_multiplier_pct !== "" ? n13(it.loss_multiplier_pct) : null,
+        autoCalc && it.moisture_pct != null && it.moisture_pct !== "" ? n13(it.moisture_pct) : null,
+        autoCalc && kind === "input" && n13(it.byproduct_product_id) ? n13(it.byproduct_product_id) : null
       ]
     });
   }
@@ -11153,7 +12409,7 @@ async function writeItems(formulationId, items) {
 async function createFormulation(v) {
   const res = await getClient().execute({
     sql: "INSERT INTO formulations (product_id, name, uom, subcategory_id, active) VALUES (?, ?, ?, ?, 1)",
-    args: [n11(v.product_id), v.name || null, v.uom || "MT", n11(v.subcategory_id) || null]
+    args: [n13(v.product_id), v.name || null, v.uom || "MT", n13(v.subcategory_id) || null]
   });
   const id = Number(res.lastInsertRowid);
   await writeItems(id, v.items);
@@ -11162,7 +12418,7 @@ async function createFormulation(v) {
 async function updateFormulation(id, v) {
   await getClient().execute({
     sql: "UPDATE formulations SET product_id = ?, name = ?, uom = ?, subcategory_id = ? WHERE id = ?",
-    args: [n11(v.product_id), v.name || null, v.uom || "MT", n11(v.subcategory_id) || null, id]
+    args: [n13(v.product_id), v.name || null, v.uom || "MT", n13(v.subcategory_id) || null, id]
   });
   await writeItems(id, v.items);
   return { id };
@@ -11180,13 +12436,13 @@ async function listFormulationSubcategories() {
     FROM formulation_subcategories sc
     ORDER BY sc.active DESC, sc.sort_order, UPPER(TRIM(sc.name))
   `);
-  return toPlain15(res);
+  return toPlain16(res);
 }
 async function saveFormulationSubcategory(v) {
   const name = String(v?.name || "").trim();
   if (!name) throw new Error("Give the sub-category a name");
   const c = getClient();
-  const id = n11(v?.id);
+  const id = n13(v?.id);
   const clash = await c.execute({
     sql: `SELECT id, name FROM formulation_subcategories
            WHERE UPPER(TRIM(name)) = UPPER(TRIM(?)) AND id <> ?`,
@@ -11213,31 +12469,34 @@ async function deleteFormulationSubcategory(id) {
   const c = getClient();
   const used = await c.execute({
     sql: "SELECT COUNT(*) AS c FROM formulations WHERE subcategory_id = ?",
-    args: [n11(id)]
+    args: [n13(id)]
   });
-  const count = n11(used.rows[0].c);
+  const count = n13(used.rows[0].c);
   if (count > 0) {
     throw new Error(
       `${count} ${count === 1 ? "recipe uses" : "recipes use"} this sub-category. Retire it instead, or move those recipes first \u2014 deleting it would leave them classified as nothing.`
     );
   }
-  await c.execute({ sql: "DELETE FROM formulation_subcategories WHERE id = ?", args: [n11(id)] });
-  return { id: n11(id) };
+  await c.execute({ sql: "DELETE FROM formulation_subcategories WHERE id = ?", args: [n13(id)] });
+  return { id: n13(id) };
 }
 
 // src/main/stockopenings.ts
-function toPlain16(res) {
+init_db();
+init_company();
+init_openings();
+function toPlain17(res) {
   return res.rows.map((r) => {
     const o = {};
     for (const col of res.columns) o[col] = r[col];
     return o;
   });
 }
-var n12 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+var n14 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
 var r3 = (v) => Math.round(v * 1e3) / 1e3;
 var r2 = (v) => Math.round(v * 100) / 100;
 async function stockOpeningDate(companyId) {
-  const cid = n12(companyId) || getActiveCompanyId();
+  const cid = n14(companyId) || getActiveCompanyId();
   const fid0 = await factoryOfCompanies([cid]);
   if (fid0) {
     const fr = await getClient().execute({
@@ -11256,7 +12515,7 @@ async function stockOpeningDate(companyId) {
   return books ? String(books).slice(0, 10) : "";
 }
 async function listStockOpenings(companyId) {
-  const cid = n12(companyId) || getActiveCompanyId();
+  const cid = n14(companyId) || getActiveCompanyId();
   const c = getClient();
   const asOf = await stockOpeningDate(cid);
   const fid = await factoryOfCompanies([cid]);
@@ -11280,15 +12539,15 @@ async function listStockOpenings(companyId) {
     duplicateProductNames()
   ]);
   const savedBy = /* @__PURE__ */ new Map();
-  for (const r of toPlain16(saved)) savedBy.set(n12(r.product_id), r);
+  for (const r of toPlain17(saved)) savedBy.set(n14(r.product_id), r);
   const rows = levels.map((p) => {
-    const id = n12(p.id);
+    const id = n14(p.id);
     const s = savedBy.get(id);
-    const entered = s ? n12(s.qty) : null;
-    const pp = s ? n12(s.pp_qty) : null;
-    const adj = s ? n12(s.adj_qty) : null;
-    const fromMovement = r3(n12(p.stock) - n12(p.opening));
-    const closing = r3(fromMovement + n12(entered) + n12(pp) + n12(adj));
+    const entered = s ? n14(s.qty) : null;
+    const pp = s ? n14(s.pp_qty) : null;
+    const adj = s ? n14(s.adj_qty) : null;
+    const fromMovement = r3(n14(p.stock) - n14(p.opening));
+    const closing = r3(fromMovement + n14(entered) + n14(pp) + n14(adj));
     return {
       id,
       code: p.code,
@@ -11303,8 +12562,8 @@ async function listStockOpenings(companyId) {
       qty: entered,
       pp_qty: pp,
       adj_qty: adj,
-      total: entered == null && pp == null && adj == null ? null : r3(n12(entered) + n12(pp) + n12(adj)),
-      rate: s && s.rate != null ? n12(s.rate) : null,
+      total: entered == null && pp == null && adj == null ? null : r3(n14(entered) + n14(pp) + n14(adj)),
+      rate: s && s.rate != null ? n14(s.rate) : null,
       note: s?.note ?? null,
       // Movement-only closing: what the register would say with no opening at
       // all. Negative here is precisely the hole an opening has to fill.
@@ -11315,7 +12574,7 @@ async function listStockOpenings(companyId) {
     };
   });
   const totalValue = rows.reduce(
-    (t, r) => t + (n12(r.qty) + n12(r.pp_qty) + n12(r.adj_qty)) * n12(r.rate),
+    (t, r) => t + (n14(r.qty) + n14(r.pp_qty) + n14(r.adj_qty)) * n14(r.rate),
     0
   );
   const facName = fid ? String(
@@ -11329,12 +12588,12 @@ async function listStockOpenings(companyId) {
     books_from: await getBooksFrom(cid) || null,
     rows,
     entered_count: rows.filter((r) => r.qty != null || r.pp_qty != null || r.adj_qty != null).length,
-    total_raw: r3(rows.reduce((t, r) => t + n12(r.qty), 0)),
-    total_pp: r3(rows.reduce((t, r) => t + n12(r.pp_qty), 0)),
-    total_adj: r3(rows.reduce((t, r) => t + n12(r.adj_qty), 0)),
-    total_qty: r3(rows.reduce((t, r) => t + n12(r.qty) + n12(r.pp_qty) + n12(r.adj_qty), 0)),
-    negative_count: rows.filter((r) => n12(r.movement_closing) < -5e-4).length,
-    still_negative: rows.filter((r) => n12(r.closing) < -5e-4).length,
+    total_raw: r3(rows.reduce((t, r) => t + n14(r.qty), 0)),
+    total_pp: r3(rows.reduce((t, r) => t + n14(r.pp_qty), 0)),
+    total_adj: r3(rows.reduce((t, r) => t + n14(r.adj_qty), 0)),
+    total_qty: r3(rows.reduce((t, r) => t + n14(r.qty) + n14(r.pp_qty) + n14(r.adj_qty), 0)),
+    negative_count: rows.filter((r) => n14(r.movement_closing) < -5e-4).length,
+    still_negative: rows.filter((r) => n14(r.closing) < -5e-4).length,
     total_value: r2(totalValue),
     // Two products may legitimately share a name — RPO exists as both a raw
     // oil and a finished one — so this is a warning to label them, never a
@@ -11356,11 +12615,11 @@ async function duplicateProductNames() {
            ORDER BY k`,
     args: []
   });
-  return toPlain16(res).map((r) => {
+  return toPlain17(res).map((r) => {
     const cats = String(r.categories || "").split(" | ");
     return {
       key: r.k,
-      count: n12(r.c),
+      count: n14(r.c),
       ids: String(r.ids || "").split(",").map(Number),
       names: String(r.names || "").split(" | "),
       codes: String(r.codes || "").split(" | "),
@@ -11373,7 +12632,7 @@ async function duplicateProductNames() {
   });
 }
 async function saveStockOpenings(rows, asOf, companyId) {
-  const cid = n12(companyId) || getActiveCompanyId();
+  const cid = n14(companyId) || getActiveCompanyId();
   const date = String(asOf || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the date this opening is struck on");
   const c = getClient();
@@ -11382,7 +12641,7 @@ async function saveStockOpenings(rows, asOf, companyId) {
   let saved = 0;
   let cleared = 0;
   for (const raw of Array.isArray(rows) ? rows : []) {
-    const pid = n12(raw?.product_id ?? raw?.id);
+    const pid = n14(raw?.product_id ?? raw?.id);
     if (!pid) continue;
     const rawBlank = raw?.qty === "" || raw?.qty == null;
     const ppBlank = raw?.pp_qty === "" || raw?.pp_qty == null;
@@ -11397,10 +12656,10 @@ async function saveStockOpenings(rows, asOf, companyId) {
       if (Number(res.rowsAffected) > 0) cleared++;
       continue;
     }
-    const qty = n12(raw.qty);
-    const pp = n12(raw.pp_qty);
-    const adj = n12(raw.adj_qty);
-    const rate = raw?.rate === "" || raw?.rate == null ? null : n12(raw.rate);
+    const qty = n14(raw.qty);
+    const pp = n14(raw.pp_qty);
+    const adj = n14(raw.adj_qty);
+    const rate = raw?.rate === "" || raw?.rate == null ? null : n14(raw.rate);
     const note = raw?.note ? String(raw.note).trim() : null;
     const k = keyed(" AND product_id = ?");
     const upd = await c.execute({
@@ -11426,7 +12685,7 @@ async function saveStockOpenings(rows, asOf, companyId) {
 async function seedOpeningDayCount(companyId, date) {
   const c = getClient();
   const fid = await factoryOfCompanies([companyId]);
-  const rows = toPlain16(
+  const rows = toPlain17(
     await c.execute(
       fid ? {
         sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
@@ -11458,17 +12717,19 @@ async function seedOpeningDayCount(companyId, date) {
       args: [
         companyId,
         date,
-        n12(r.product_id),
-        r3(n12(r.qty) + n12(r.adj_qty)),
-        n12(r.pp_qty),
-        r.rate == null ? null : n12(r.rate)
+        n14(r.product_id),
+        r3(n14(r.qty) + n14(r.adj_qty)),
+        n14(r.pp_qty),
+        r.rate == null ? null : n14(r.rate)
       ]
     }).catch((e) => console.error("[stock] opening-day count seed failed:", e.message));
   }
 }
 
 // src/main/outsidetankers.ts
-var n13 = (v) => Number(v || 0);
+init_db();
+init_company();
+var n15 = (v) => Number(v || 0);
 var OUTSIDE_SLOTS = ["08:00", "16:00", "20:00"];
 async function listOutsideTankers(date) {
   const c = getClient();
@@ -11511,28 +12772,28 @@ async function saveOutsideTanker(v) {
   const kind = String(v.kind || "");
   if (kind !== "purchase" && kind !== "sales")
     throw new Error("Say whether these are purchase or sales tankers");
-  const tankers = Math.round(n13(v.tankers));
+  const tankers = Math.round(n15(v.tankers));
   if (tankers < 0) throw new Error("A tanker count cannot be negative");
   const args = [
     getActiveCompanyId(),
     day,
     slot,
     kind,
-    n13(v.product_id) || null,
-    n13(v.party_id) || null,
+    n15(v.product_id) || null,
+    n15(v.party_id) || null,
     tankers,
     String(v.note || "").trim() || null,
     String(v.created_by || "") || null
   ];
-  if (n13(v.id)) {
+  if (n15(v.id)) {
     await c.execute({
       sql: `UPDATE outside_tankers
                SET log_date = ?, slot = ?, kind = ?, product_id = ?, party_id = ?,
                    tankers = ?, note = ?
              WHERE id = ? AND company_id = ?`,
-      args: [day, slot, kind, args[4], args[5], tankers, args[7], n13(v.id), getActiveCompanyId()]
+      args: [day, slot, kind, args[4], args[5], tankers, args[7], n15(v.id), getActiveCompanyId()]
     });
-    return { id: n13(v.id) };
+    return { id: n15(v.id) };
   }
   const res = await c.execute({
     sql: `INSERT INTO outside_tankers
@@ -11545,13 +12806,15 @@ async function saveOutsideTanker(v) {
 async function removeOutsideTanker(id) {
   await getClient().execute({
     sql: "DELETE FROM outside_tankers WHERE id = ? AND company_id = ?",
-    args: [n13(id), getActiveCompanyId()]
+    args: [n15(id), getActiveCompanyId()]
   });
   return { ok: true };
 }
 
 // src/main/stockcount.ts
-function n14(v) {
+init_db();
+init_company();
+function n16(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
@@ -11654,8 +12917,8 @@ async function saveStockCounts(date, items) {
     const hasActual = it.actual_qty !== "" && it.actual_qty != null;
     const hasPp = it.pp_qty !== "" && it.pp_qty != null;
     if (!hasActual && !hasPp) continue;
-    const pid = n14(it.product_id);
-    const actualQty = n14(it.actual_qty);
+    const pid = n16(it.product_id);
+    const actualQty = n16(it.actual_qty);
     const rate = rates.get(pid) || 0;
     await c.execute({
       sql: `INSERT INTO stock_counts (company_id, count_date, product_id, book_qty, actual_qty, rate, actual_value, pp_qty, note)
@@ -11671,11 +12934,11 @@ async function saveStockCounts(date, items) {
         getActiveCompanyId(),
         date,
         pid,
-        n14(it.book_qty),
+        n16(it.book_qty),
         actualQty,
         rate,
         actualQty * rate,
-        hasPp ? n14(it.pp_qty) : null,
+        hasPp ? n16(it.pp_qty) : null,
         it.note || null
       ]
     });
@@ -11685,14 +12948,16 @@ async function saveStockCounts(date, items) {
 }
 
 // src/main/skustock.ts
-function toPlain17(res) {
+init_db();
+init_company();
+function toPlain18(res) {
   return res.rows.map((r) => {
     const o = {};
     for (const col of res.columns) o[col] = r[col];
     return o;
   });
 }
-function n15(v) {
+function n17(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
@@ -11707,7 +12972,7 @@ function span(when) {
   return { from: from || null, to: to || null, ranged: !!(from || to) };
 }
 async function skuOpeningDate(companyId) {
-  const cid = n15(companyId) || getActiveCompanyId();
+  const cid = n17(companyId) || getActiveCompanyId();
   const fid = await factoryOfCompanies([cid]);
   const res = await getClient().execute(
     fid ? { sql: "SELECT MIN(as_of) AS d FROM sku_openings WHERE factory_id = ?", args: [fid] } : { sql: "SELECT MIN(as_of) AS d FROM sku_openings WHERE company_id = ?", args: [cid] }
@@ -11721,7 +12986,7 @@ async function skuOpeningMap(cid) {
   const res = await getClient().execute(
     fid ? { sql: "SELECT packaging_id, qty FROM sku_openings WHERE factory_id = ?", args: [fid] } : { sql: "SELECT packaging_id, qty FROM sku_openings WHERE company_id = ?", args: [cid] }
   ).catch(() => null);
-  for (const r of res ? toPlain17(res) : []) m.set(n15(r.packaging_id), n15(r.qty));
+  for (const r of res ? toPlain18(res) : []) m.set(n17(r.packaging_id), n17(r.qty));
   return m;
 }
 async function listSkuStock(when) {
@@ -11812,13 +13077,13 @@ async function listSkuStock(when) {
     args
   });
   const runs = await negativeRuns(cids, to);
-  return toPlain17(res).map((r) => {
-    const brought = openings.get(n15(r.id)) || 0;
-    const opening = round(brought + n15(r.added_before) - n15(r.sold_before));
-    const addedOn = round(n15(r.added_on));
-    const soldOn = round(n15(r.sold_on));
-    const onHand = ranged ? round(opening + addedOn - soldOn) : round(brought + n15(r.added) - n15(r.sold));
-    const run = onHand < -1e-6 ? runs.get(n15(r.id)) : void 0;
+  return toPlain18(res).map((r) => {
+    const brought = openings.get(n17(r.id)) || 0;
+    const opening = round(brought + n17(r.added_before) - n17(r.sold_before));
+    const addedOn = round(n17(r.added_on));
+    const soldOn = round(n17(r.sold_on));
+    const onHand = ranged ? round(opening + addedOn - soldOn) : round(brought + n17(r.added) - n17(r.sold));
+    const run = onHand < -1e-6 ? runs.get(n17(r.id)) : void 0;
     return {
       ...r,
       opening,
@@ -11857,8 +13122,8 @@ async function negativeRuns(cids, upto) {
     args: [...cids, upto, upto, ...cids, upto, upto]
   });
   const byS = /* @__PURE__ */ new Map();
-  for (const r of toPlain17(res)) {
-    const k = n15(r.sku);
+  for (const r of toPlain18(res)) {
+    const k = n17(r.sku);
     byS.set(k, [...byS.get(k) || [], r]);
   }
   const out = /* @__PURE__ */ new Map();
@@ -11868,7 +13133,7 @@ async function negativeRuns(cids, upto) {
     let trigger = null;
     for (const day of days) {
       const before = bal;
-      bal = Math.round((bal + n15(day.adj) - n15(day.sale)) * 1e6) / 1e6;
+      bal = Math.round((bal + n17(day.adj) - n17(day.sale)) * 1e6) / 1e6;
       if (bal < -1e-6) {
         if (since === null) {
           since = String(day.d);
@@ -11931,12 +13196,12 @@ async function skuMovementBreakdown(when) {
     bySku.set(id, cur);
     return cur;
   };
-  for (const r of toPlain17(disp)) slot(n15(r.sku)).dispatch.push(r);
-  for (const r of toPlain17(packed)) slot(n15(r.sku)).packed_in.push(r);
+  for (const r of toPlain18(disp)) slot(n17(r.sku)).dispatch.push(r);
+  for (const r of toPlain18(packed)) slot(n17(r.sku)).packed_in.push(r);
   return Array.from(bySku.values());
 }
 async function listSkuOpenings(companyId, asOfIn) {
-  const cid = n15(companyId) || getActiveCompanyId();
+  const cid = n17(companyId) || getActiveCompanyId();
   const c = getClient();
   const asOf = String(asOfIn || "").slice(0, 10) || await skuOpeningDate(cid);
   const saved = await skuOpeningMap(cid);
@@ -11947,8 +13212,8 @@ async function listSkuOpenings(companyId, asOfIn) {
   const savedRows = await c.execute(
     fidL ? { sql: "SELECT packaging_id, note FROM sku_openings WHERE factory_id = ?", args: [fidL] } : { sql: "SELECT packaging_id, note FROM sku_openings WHERE company_id = ?", args: [cid] }
   ).catch(() => null);
-  for (const r of savedRows ? toPlain17(savedRows) : []) {
-    if (r.note) notes.set(n15(r.packaging_id), String(r.note));
+  for (const r of savedRows ? toPlain18(savedRows) : []) {
+    if (r.note) notes.set(n17(r.packaging_id), String(r.note));
   }
   const moved = await c.execute({
     sql: `SELECT pk.id,
@@ -11963,7 +13228,7 @@ async function listSkuOpenings(companyId, asOfIn) {
     args: [...cidsL, asOf, asOf, ...cidsL, asOf, asOf]
   });
   const movedBy = /* @__PURE__ */ new Map();
-  for (const r of toPlain17(moved)) movedBy.set(n15(r.id), r);
+  for (const r of toPlain18(moved)) movedBy.set(n17(r.id), r);
   const skus = await c.execute({
     sql: `SELECT pk.id, pk.name, pk.pouches_per_box, pk.base_per_pouch, pk.base_uom,
                  pk.unit_size, pk.unit_uom, pk.box_label, pk.pouch_label,
@@ -11973,11 +13238,11 @@ async function listSkuOpenings(companyId, asOfIn) {
     args: []
   });
   const round = (x) => Math.round((x + Number.EPSILON) * 1e6) / 1e6;
-  const rows = toPlain17(skus).map((p) => {
-    const id = n15(p.id);
+  const rows = toPlain18(skus).map((p) => {
+    const id = n17(p.id);
     const mv = movedBy.get(id);
-    const fromMovement = round(n15(mv?.packed_in) - n15(mv?.dispatched));
-    const entered = saved.has(id) ? n15(saved.get(id)) : null;
+    const fromMovement = round(n17(mv?.packed_in) - n17(mv?.dispatched));
+    const entered = saved.has(id) ? n17(saved.get(id)) : null;
     return {
       ...p,
       qty: entered,
@@ -11986,7 +13251,7 @@ async function listSkuOpenings(companyId, asOfIn) {
       // the hole an opening figure is there to fill.
       movement_closing: fromMovement,
       shortfall: fromMovement < 0 ? round(-fromMovement) : 0,
-      closing: round(fromMovement + n15(entered))
+      closing: round(fromMovement + n17(entered))
     };
   });
   return {
@@ -11994,13 +13259,13 @@ async function listSkuOpenings(companyId, asOfIn) {
     as_of: asOf,
     rows,
     entered_count: rows.filter((r) => r.qty != null).length,
-    total_qty: round(rows.reduce((t, r) => t + n15(r.qty), 0)),
-    negative_count: rows.filter((r) => n15(r.movement_closing) < -5e-4).length,
-    still_negative: rows.filter((r) => n15(r.closing) < -5e-4).length
+    total_qty: round(rows.reduce((t, r) => t + n17(r.qty), 0)),
+    negative_count: rows.filter((r) => n17(r.movement_closing) < -5e-4).length,
+    still_negative: rows.filter((r) => n17(r.closing) < -5e-4).length
   };
 }
 async function saveSkuOpenings(rows, asOf, companyId) {
-  const cid = n15(companyId) || getActiveCompanyId();
+  const cid = n17(companyId) || getActiveCompanyId();
   const date = String(asOf || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the date this opening is counted on");
   const c = getClient();
@@ -12009,7 +13274,7 @@ async function saveSkuOpenings(rows, asOf, companyId) {
   let saved = 0;
   let cleared = 0;
   for (const raw of Array.isArray(rows) ? rows : []) {
-    const pid = n15(raw?.packaging_id ?? raw?.id);
+    const pid = n17(raw?.packaging_id ?? raw?.id);
     if (!pid) continue;
     const blank = raw?.qty === "" || raw?.qty == null;
     if (blank) {
@@ -12032,14 +13297,14 @@ async function saveSkuOpenings(rows, asOf, companyId) {
               qty = excluded.qty,
               note = excluded.note,
               updated_at = datetime('now')`,
-      args: [cid, cid, pid, date, n15(raw.qty), raw?.note ? String(raw.note).trim() : null]
+      args: [cid, cid, pid, date, n17(raw.qty), raw?.note ? String(raw.note).trim() : null]
     });
     saved++;
   }
   return { saved, cleared };
 }
 async function listSkuAdjustments(packagingId) {
-  const pid = n15(packagingId);
+  const pid = n17(packagingId);
   if (!pid) return [];
   const MT = `
     CASE
@@ -12078,9 +13343,9 @@ async function listSkuAdjustments(packagingId) {
           ORDER BY a.adj_date DESC, a.id DESC`,
     args: [pid, getActiveCompanyId()]
   });
-  return toPlain17(res).map((r) => ({
+  return toPlain18(res).map((r) => ({
     ...r,
-    mt: Math.round(n15(r.mt) * 1e3) / 1e3,
+    mt: Math.round(n17(r.mt) * 1e3) / 1e3,
     // Only a packing entry moves oil between the tank and the shelf; see the
     // packedOut source in stock.ts, which filters on exactly this.
     moves_bulk: String(r.kind) === "packing"
@@ -12088,21 +13353,21 @@ async function listSkuAdjustments(packagingId) {
 }
 async function deleteSkuAdjustment(id) {
   const c = getClient();
-  const rid = n15(id);
+  const rid = n17(id);
   if (!rid) throw new Error("Nothing to remove");
   const res = await c.execute({
     sql: "SELECT id, packaging_id FROM sku_adjustments WHERE id = ? AND company_id = ?",
     args: [rid, getActiveCompanyId()]
   });
   if (!res.rows.length) throw new Error("That entry is not on this company's books");
-  const pkg = n15(res.rows[0].packaging_id);
+  const pkg = n17(res.rows[0].packaging_id);
   await c.execute({ sql: "DELETE FROM sku_adjustments WHERE id = ?", args: [rid] });
   return { id: rid, packaging_id: pkg };
 }
 async function adjustSkuStock(packagingId, delta, note, date, kind) {
   const c = getClient();
-  const pid = n15(packagingId);
-  const d = n15(delta);
+  const pid = n17(packagingId);
+  const d = n17(delta);
   if (!pid) throw new Error("Select an SKU");
   if (d === 0) throw new Error("Enter a quantity to add or remove");
   const pkg = await c.execute({ sql: "SELECT id FROM packagings WHERE id = ?", args: [pid] });
@@ -12130,20 +13395,29 @@ async function adjustSkuStock(packagingId, delta, note, date, kind) {
   return { id: pid, on_hand: cur ? Number(cur.on_hand) : 0 };
 }
 
+// src/main/notes.ts
+init_db();
+init_company();
+init_journal();
+
 // src/main/accounting.ts
-function toPlain18(res) {
+init_db();
+init_company();
+init_openings();
+init_journal();
+function toPlain19(res) {
   return res.rows.map((r) => {
     const o = {};
     for (const col of res.columns) o[col] = r[col];
     return o;
   });
 }
-function n16(v) {
+function n18(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
-var round25 = (v) => Math.round(v * 100) / 100;
-var todayISO4 = () => {
+var round27 = (v) => Math.round(v * 100) / 100;
+var todayISO5 = () => {
   const d = /* @__PURE__ */ new Date();
   const p2 = (x) => String(x).padStart(2, "0");
   return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
@@ -12190,7 +13464,7 @@ async function listGroups(companyId) {
                 WHERE jl.account_id = a.id AND je.company_id = ?), 0) AS balance
     FROM ledger_accounts a ORDER BY a.acc_group, a.name`
   });
-  return toPlain18(res);
+  return toPlain19(res);
 }
 async function accountGroupOf(name) {
   const res = await getClient().execute({
@@ -12203,14 +13477,14 @@ async function validateVoucher(v) {
   const lines = (v.lines || []).map((l) => ({
     account: String(l.account || "").trim(),
     group: l.group,
-    dr: n16(l.dr),
-    cr: n16(l.cr),
+    dr: n18(l.dr),
+    cr: n18(l.cr),
     allocs: (l.allocs || []).map((a) => ({
       method: a.method,
       ref_name: a.ref_name ? String(a.ref_name).trim() : null,
       order_id: a.order_id ? Number(a.order_id) : null,
       sale_invoice_group: a.sale_invoice_group ? String(a.sale_invoice_group).trim() : null,
-      amount: n16(a.amount)
+      amount: n18(a.amount)
     })).filter((a) => a.amount > 4e-3)
   })).filter((l) => l.account && (l.dr > 4e-3 || l.cr > 4e-3));
   if (lines.length < 2) throw new Error("A voucher needs at least one Dr and one Cr line");
@@ -12331,7 +13605,7 @@ async function createVoucher(v) {
     vchType: v.vchType,
     vchNo: v.vchNo || null,
     narration: v.narration || null,
-    companyId: v.companyId ? n16(v.companyId) : void 0,
+    companyId: v.companyId ? n18(v.companyId) : void 0,
     lines
   });
   await writeAllocs(res.id, lines);
@@ -12366,7 +13640,7 @@ async function updateVoucher(id, v) {
     const accountId = await getOrCreateAccount(l.account, l.group);
     await c.execute({
       sql: "INSERT INTO journal_lines (entry_id, account_id, dr, cr) VALUES (?, ?, ?, ?)",
-      args: [id, accountId, n16(l.dr), n16(l.cr)]
+      args: [id, accountId, n18(l.dr), n18(l.cr)]
     });
   }
   await writeAllocs(id, lines);
@@ -12385,19 +13659,19 @@ async function getVoucher(id) {
           WHERE jl.entry_id = ? ORDER BY jl.id`,
     args: [id]
   });
-  const entry = toPlain18(e)[0];
+  const entry = toPlain19(e)[0];
   const noteRef = await c.execute({
     sql: "SELECT id FROM notes WHERE journal_entry_id = ? LIMIT 1",
     args: [id]
   });
   entry.note_id = noteRef.rows.length ? Number(noteRef.rows[0].id) : null;
-  entry.lines = toPlain18(lines);
+  entry.lines = toPlain19(lines);
   for (const l of entry.lines) {
     const al = await c.execute({
       sql: "SELECT method, ref_name, order_id, sale_invoice_group, amount FROM journal_bill_allocs WHERE line_id = ? ORDER BY id",
       args: [Number(l.id)]
     });
-    l.allocs = toPlain18(al);
+    l.allocs = toPlain19(al);
   }
   entry.manual = entry.order_id == null && entry.sale_id == null && entry.payment_id == null && entry.note_id == null;
   return entry;
@@ -12436,7 +13710,7 @@ async function listVouchers(from, to, vchType, companyId) {
           ORDER BY je.entry_date DESC, je.id DESC`,
     args
   });
-  const rows = toPlain18(res);
+  const rows = toPlain19(res);
   for (const r of rows) r.manual = r.order_id == null && r.sale_id == null && r.payment_id == null && r.note_id == null;
   return rows;
 }
@@ -12467,10 +13741,10 @@ async function trialBalance(from, to, companyId) {
       args
     });
     const m = /* @__PURE__ */ new Map();
-    for (const r of res.rows) m.set(Number(r.aid), { dr: n16(r.dr), cr: n16(r.cr) });
+    for (const r of res.rows) m.set(Number(r.aid), { dr: n18(r.dr), cr: n18(r.cr) });
     return m;
   };
-  const accounts = toPlain18(await c.execute("SELECT id, name, acc_group FROM ledger_accounts ORDER BY acc_group, name"));
+  const accounts = toPlain19(await c.execute("SELECT id, name, acc_group FROM ledger_accounts ORDER BY acc_group, name"));
   const [inPeriod, before] = await Promise.all([
     period(from, to),
     from ? period(void 0, dayBefore(from)) : Promise.resolve(/* @__PURE__ */ new Map())
@@ -12527,8 +13801,8 @@ async function listPendingRefs(accountName, companyId, side) {
             WHERE o.company_id = ? AND TRIM(UPPER(s.name)) = ? AND o.invoice_no IS NOT NULL AND o.invoice_no != ''`,
       args: [cid, name]
     });
-    for (const b of toPlain18(r)) {
-      bills.push({ ref: String(b.ref), bill_date: String(b.bill_date || ""), amount: n16(b.amount), order_id: n16(b.order_id), sale_invoice_group: null });
+    for (const b of toPlain19(r)) {
+      bills.push({ ref: String(b.ref), bill_date: String(b.bill_date || ""), amount: n18(b.amount), order_id: n18(b.order_id), sale_invoice_group: null });
     }
   } else if (group === "Sundry Debtors") {
     const r = await c.execute({
@@ -12546,8 +13820,8 @@ async function listPendingRefs(accountName, companyId, side) {
             GROUP BY grp`,
       args: [cid, name]
     });
-    for (const b of toPlain18(r)) {
-      bills.push({ ref: String(b.ref), bill_date: String(b.bill_date || ""), amount: n16(b.amount), order_id: null, sale_invoice_group: String(b.grp) });
+    for (const b of toPlain19(r)) {
+      bills.push({ ref: String(b.ref), bill_date: String(b.bill_date || ""), amount: n18(b.amount), order_id: null, sale_invoice_group: String(b.grp) });
     }
   }
   const realRefs = new Set(bills.map((b) => b.ref));
@@ -12561,12 +13835,12 @@ async function listPendingRefs(accountName, companyId, side) {
     args: [accountId, cid]
   });
   const madeRows = [];
-  for (const m of toPlain18(made)) {
+  for (const m of toPlain19(made)) {
     if (realRefs.has(String(m.ref))) {
-      madeRows.push({ ref: `${m.ref} (duplicate ref \u2014 check this)`, bill_date: String(m.bill_date || ""), amount: n16(m.amount), order_id: null, sale_invoice_group: null });
+      madeRows.push({ ref: `${m.ref} (duplicate ref \u2014 check this)`, bill_date: String(m.bill_date || ""), amount: n18(m.amount), order_id: null, sale_invoice_group: null });
       continue;
     }
-    madeRows.push({ ref: String(m.ref), bill_date: String(m.bill_date || ""), amount: n16(m.amount), order_id: null, sale_invoice_group: null });
+    madeRows.push({ ref: String(m.ref), bill_date: String(m.bill_date || ""), amount: n18(m.amount), order_id: null, sale_invoice_group: null });
   }
   const settled = await c.execute({
     sql: `SELECT ba.ref_name AS ref, ba.order_id AS order_id, ba.sale_invoice_group AS sale_invoice_group,
@@ -12578,12 +13852,12 @@ async function listPendingRefs(accountName, companyId, side) {
           ORDER BY je.entry_date, je.id`,
     args: [accountId, cid]
   });
-  const settledRows = toPlain18(settled);
+  const settledRows = toPlain19(settled);
   const sameRef = (a, b) => String(a || "").trim().toUpperCase() === String(b || "").trim().toUpperCase();
   const matches = (s2, b) => {
     const hasIds = !!s2.order_id || !!s2.sale_invoice_group;
     if (hasIds) {
-      if (b.order_id != null && n16(s2.order_id) === b.order_id) return true;
+      if (b.order_id != null && n18(s2.order_id) === b.order_id) return true;
       if (b.sale_invoice_group != null && String(s2.sale_invoice_group || "") === b.sale_invoice_group) return true;
       return false;
     }
@@ -12598,7 +13872,7 @@ async function listPendingRefs(accountName, companyId, side) {
           vch_type: s.vch_type,
           vch_no: s.vch_no,
           narration: s.narration,
-          amount: round25(n16(s.amount))
+          amount: round27(n18(s.amount))
         });
       }
     }
@@ -12606,16 +13880,16 @@ async function listPendingRefs(accountName, companyId, side) {
   };
   return [...bills, ...madeRows].map((b) => {
     const settlements = settlementsFor(b);
-    const paid = round25(settlements.reduce((t, x) => t + n16(x.amount), 0));
+    const paid = round27(settlements.reduce((t, x) => t + n18(x.amount), 0));
     return {
       ref: b.ref,
       bill_date: b.bill_date,
-      amount: n16(b.amount),
+      amount: n18(b.amount),
       order_id: b.order_id,
       sale_invoice_group: b.sale_invoice_group,
       paid,
       settlements,
-      pending: round25(n16(b.amount) - paid)
+      pending: round27(n18(b.amount) - paid)
     };
   }).filter((b) => b.pending > 5e-3).sort((a, b) => a.bill_date.localeCompare(b.bill_date));
 }
@@ -12623,8 +13897,8 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
   const c = getClient();
   const cid = companyId || getActiveCompanyId();
   const name = String(accountName || "").trim().toUpperCase();
-  if (!name) return { rows: [], on_account: 0, total_opening: 0, total_pending: 0, as_of: opts.asOf || todayISO4() };
-  const asOf = String(opts.asOf || todayISO4()).slice(0, 10);
+  if (!name) return { rows: [], on_account: 0, total_opening: 0, total_pending: 0, as_of: opts.asOf || todayISO5() };
+  const asOf = String(opts.asOf || todayISO5()).slice(0, 10);
   const acc = await c.execute({
     sql: "SELECT id, acc_group FROM ledger_accounts WHERE TRIM(UPPER(name)) = ?",
     args: [name]
@@ -12637,7 +13911,7 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
     sql: `SELECT credit_period_days FROM ${master} WHERE TRIM(UPPER(name)) = ? LIMIT 1`,
     args: [name]
   });
-  const creditDays = cp.rows.length ? n16(cp.rows[0].credit_period_days) : 0;
+  const creditDays = cp.rows.length ? n18(cp.rows[0].credit_period_days) : 0;
   const bills = await listPendingRefs(accountName, cid, opts.side);
   const dayMs = 864e5;
   const asOfMs = Date.parse(`${asOf}T00:00:00Z`);
@@ -12654,9 +13928,9 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
     return {
       bill_date: billDate,
       ref: b.ref,
-      opening: round25(n16(b.amount)),
-      paid: round25(n16(b.paid)),
-      pending: round25(n16(b.pending)),
+      opening: round27(n18(b.amount)),
+      paid: round27(n18(b.paid)),
+      pending: round27(n18(b.pending)),
       settlements: Array.isArray(b.settlements) ? b.settlements : [],
       due_on: dueOn,
       overdue_days: overdue,
@@ -12670,19 +13944,19 @@ async function billsOutstanding(accountName, companyId, opts = {}) {
               WHERE jl.account_id = ? AND je.company_id = ? AND je.entry_date <= ?`,
     args: [accountId, cid, asOf]
   }) : null;
-  const balance = balRes ? n16(balRes.rows[0]?.bal) : 0;
-  const totalPending = round25(rows.reduce((t, r) => t + n16(r.pending), 0));
+  const balance = balRes ? n18(balRes.rows[0]?.bal) : 0;
+  const totalPending = round27(rows.reduce((t, r) => t + n18(r.pending), 0));
   const billsSigned = debtor ? totalPending : -totalPending;
-  const onAccount = round25(balance - billsSigned);
+  const onAccount = round27(balance - billsSigned);
   return {
     as_of: asOf,
     debtor,
     credit_days: creditDays,
     rows,
-    total_opening: round25(rows.reduce((t, r) => t + n16(r.opening), 0)),
-    total_paid: round25(rows.reduce((t, r) => t + n16(r.paid), 0)),
+    total_opening: round27(rows.reduce((t, r) => t + n18(r.opening), 0)),
+    total_paid: round27(rows.reduce((t, r) => t + n18(r.paid), 0)),
     total_pending: totalPending,
-    balance: round25(balance),
+    balance: round27(balance),
     on_account: onAccount
   };
 }
@@ -12708,43 +13982,43 @@ async function tradingAccount(from, to, companyId) {
     args: [cid, f, t]
   });
   const m = /* @__PURE__ */ new Map();
-  for (const r of toPlain18(purchases)) {
+  for (const r of toPlain19(purchases)) {
     m.set(String(r.code), {
       code: r.code,
       name: r.name,
-      purchase_qty: n16(r.qty),
-      purchase_value: n16(r.value),
+      purchase_qty: n18(r.qty),
+      purchase_value: n18(r.value),
       sale_qty: 0,
       sale_value: 0
     });
   }
-  for (const r of toPlain18(sales)) {
+  for (const r of toPlain19(sales)) {
     const key3 = String(r.code);
     const g = m.get(key3) || { code: key3, name: r.name, purchase_qty: 0, purchase_value: 0, sale_qty: 0, sale_value: 0 };
-    g.sale_qty = n16(r.qty);
-    g.sale_value = n16(r.value);
+    g.sale_qty = n18(r.qty);
+    g.sale_value = n18(r.value);
     m.set(key3, g);
   }
   const list2 = Array.from(m.values()).map((g) => ({
     ...g,
-    gross: Math.round((n16(g.sale_value) - n16(g.purchase_value)) * 100) / 100
+    gross: Math.round((n18(g.sale_value) - n18(g.purchase_value)) * 100) / 100
   }));
   return list2.sort((a, b) => String(a.code).localeCompare(String(b.code)));
 }
 
 // src/main/notes.ts
-function toPlain19(res) {
+function toPlain20(res) {
   return res.rows.map((r) => {
     const o = {};
     for (const col of res.columns) o[col] = r[col];
     return o;
   });
 }
-function n17(v) {
+function n19(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
-function round26(x) {
+function round28(x) {
   return Math.round((x + Number.EPSILON) * 100) / 100;
 }
 async function nextNoteNo(type, companyId) {
@@ -12763,7 +14037,7 @@ async function nextNoteNo(type, companyId) {
 }
 async function listNotes(companyId) {
   const res = await getClient().execute({
-    args: [companyId ? n17(companyId) : getActiveCompanyId()],
+    args: [companyId ? n19(companyId) : getActiveCompanyId()],
     sql: `SELECT nt.*,
             CASE nt.party_type WHEN 'supplier' THEN s.name WHEN 'customer' THEN c.name WHEN 'transporter' THEN tr.name END AS party_name,
             (SELECT COUNT(*) FROM note_items ni WHERE ni.note_id = nt.id) AS item_count,
@@ -12776,7 +14050,7 @@ async function listNotes(companyId) {
           WHERE nt.company_id = ?
           ORDER BY nt.id DESC`
   });
-  return toPlain19(res);
+  return toPlain20(res);
 }
 async function listNoteItems(noteId) {
   const res = await getClient().execute({
@@ -12785,7 +14059,7 @@ async function listNoteItems(noteId) {
           WHERE ni.note_id = ? ORDER BY ni.id`,
     args: [noteId]
   });
-  return toPlain19(res);
+  return toPlain20(res);
 }
 var PARTY_KINDS = {
   supplier: { master: "suppliers", ledger: "supplier_ledger", idCol: "supplier_id", refCol: "order_id", group: "Sundry Creditors", gst: "GST INPUT A/C" },
@@ -12794,31 +14068,31 @@ var PARTY_KINDS = {
 };
 async function createNote(v, existingId) {
   const c = getClient();
-  const cid = v.company_id ? n17(v.company_id) : getActiveCompanyId();
+  const cid = v.company_id ? n19(v.company_id) : getActiveCompanyId();
   const type = v.note_type === "credit" ? "credit" : "debit";
   const requested = String(v.party_type || "").trim().toLowerCase();
   const partyType = requested in PARTY_KINDS ? requested : type === "debit" ? "supplier" : "customer";
   const kind = PARTY_KINDS[partyType];
-  const partyId = n17(v.party_id);
+  const partyId = n19(v.party_id);
   if (!partyId) throw new Error(`Select the ${partyType}`);
   const rawItems = Array.isArray(v.items) ? v.items : [];
   const items = rawItems.map((it) => ({
-    product_id: it.product_id ? n17(it.product_id) : null,
+    product_id: it.product_id ? n19(it.product_id) : null,
     description: it.description ? String(it.description).trim() : null,
-    qty: n17(it.qty),
-    rate: n17(it.rate),
-    amount: round26(n17(it.qty) * n17(it.rate))
+    qty: n19(it.qty),
+    rate: n19(it.rate),
+    amount: round28(n19(it.qty) * n19(it.rate))
   })).filter((it) => it.amount > 0 || it.qty > 0);
-  const base = items.length ? round26(items.reduce((s, it) => s + it.amount, 0)) : round26(n17(v.base_amount));
-  const gstPct = n17(v.gst_pct);
+  const base = items.length ? round28(items.reduce((s, it) => s + it.amount, 0)) : round28(n19(v.base_amount));
+  const gstPct = n19(v.gst_pct);
   if (base <= 0) throw new Error("Enter a base amount (or item lines) greater than zero");
-  const gst = round26(base * (gstPct / 100));
-  const rawTotal = round26(base + gst);
+  const gst = round28(base * (gstPct / 100));
+  const rawTotal = round28(base + gst);
   const total = Math.round(rawTotal);
-  const roundOff = round26(total - rawTotal);
+  const roundOff = round28(total - rawTotal);
   const againstRef = v.against_invoice ? String(v.against_invoice).trim() : null;
   const wantsBargain = type === "credit" && partyType === "customer";
-  const bargainId = wantsBargain && v.bargain_id ? n17(v.bargain_id) : 0;
+  const bargainId = wantsBargain && v.bargain_id ? n19(v.bargain_id) : 0;
   const partyRes = await c.execute({
     sql: `SELECT name FROM ${kind.master} WHERE id = ?`,
     args: [partyId]
@@ -12836,16 +14110,16 @@ async function createNote(v, existingId) {
     if (prior.journal_entry_id != null) {
       await c.execute({
         sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
-        args: [n17(prior.journal_entry_id)]
+        args: [n19(prior.journal_entry_id)]
       });
-      await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [n17(prior.journal_entry_id)] });
-      await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [n17(prior.journal_entry_id)] });
+      await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [n19(prior.journal_entry_id)] });
+      await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [n19(prior.journal_entry_id)] });
     }
     const priorLedger = String(prior.ledger_table || "");
     if (["customer_ledger", "transporter_ledger", "supplier_ledger"].includes(priorLedger) && prior.ledger_id != null) {
-      await c.execute({ sql: `DELETE FROM ${priorLedger} WHERE id = ?`, args: [n17(prior.ledger_id)] });
+      await c.execute({ sql: `DELETE FROM ${priorLedger} WHERE id = ?`, args: [n19(prior.ledger_id)] });
     }
-    await c.execute({ sql: "DELETE FROM note_items WHERE note_id = ?", args: [n17(existingId)] });
+    await c.execute({ sql: "DELETE FROM note_items WHERE note_id = ?", args: [n19(existingId)] });
   }
   const date = String(v.note_date || todayISO()).slice(0, 10);
   const narration = v.narration ? String(v.narration).trim() : null;
@@ -12964,13 +14238,13 @@ async function createNote(v, existingId) {
   return { id: noteId, note_no: noteNo };
 }
 async function updateNote(id, v) {
-  return createNote(v, n17(id));
+  return createNote(v, n19(id));
 }
 async function deleteNote(id, companyId) {
   const c = getClient();
   const res = await c.execute({
     sql: "SELECT * FROM notes WHERE id = ? AND company_id = ?",
-    args: [id, companyId ? n17(companyId) : getActiveCompanyId()]
+    args: [id, companyId ? n19(companyId) : getActiveCompanyId()]
   });
   if (!res.rows.length) return { id };
   const note = res.rows[0];
@@ -12993,7 +14267,9 @@ async function deleteNote(id, companyId) {
 }
 
 // src/main/daybook.ts
-function toPlain20(res) {
+init_db();
+init_company();
+function toPlain21(res) {
   return res.rows.map((r) => {
     const o = {};
     for (const col of res.columns) o[col] = r[col];
@@ -13031,22 +14307,24 @@ async function daybook(from, to) {
       ORDER BY g.entry_date ASC, g.id ASC`,
     args: [from, to]
   });
-  return { vouchers: toPlain20(vres), material: toPlain20(mres) };
+  return { vouchers: toPlain21(vres), material: toPlain21(mres) };
 }
 
 // src/main/dashboard.ts
-function toPlain21(res) {
+init_db();
+init_company();
+function toPlain22(res) {
   return res.rows.map((r) => {
     const o = {};
     for (const col of res.columns) o[col] = r[col];
     return o;
   });
 }
-var n18 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+var n20 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
 async function dashboardStats() {
   const c = getClient();
   const cid = getActiveCompanyId();
-  const q = async (sql, args = []) => toPlain21(await c.execute({ sql, args: [cid, ...args] }));
+  const q = async (sql, args = []) => toPlain22(await c.execute({ sql, args: [cid, ...args] }));
   const [
     purchaseMonths,
     saleMonths,
@@ -13116,11 +14394,11 @@ async function dashboardStats() {
   for (const r of levels) {
     const cat = String(r.category || "other");
     if (!stockCats[cat]) stockCats[cat] = { qty: 0, products: 0 };
-    if (Math.abs(n18(r.stock)) > 1e-9) {
-      stockCats[cat].qty += n18(r.stock);
+    if (Math.abs(n20(r.stock)) > 1e-9) {
+      stockCats[cat].qty += n20(r.stock);
       stockCats[cat].products++;
     }
-    if (n18(r.stock) < -1e-9) negatives.push({ name: r.name, category: r.category, stock: n18(r.stock) });
+    if (n20(r.stock) < -1e-9) negatives.push({ name: r.name, category: r.category, stock: n20(r.stock) });
   }
   return {
     purchaseMonths: purchaseMonths.reverse(),
@@ -13135,1054 +14413,19 @@ async function dashboardStats() {
     purBargains: purBargains[0] || { cnt: 0, qty: 0 },
     saleBargains: saleBargains[0] || { cnt: 0, qty: 0 },
     tankers,
-    consignmentBalance: n18(consignment[0]?.bal),
+    consignmentBalance: n20(consignment[0]?.bal),
     stockCats,
     negatives: negatives.sort((a, b) => a.stock - b.stock)
   };
 }
 
-// src/main/lcInterest.ts
-var n19 = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
-var round27 = (v) => Math.round(v * 100) / 100;
-function lcInterestBase(lc) {
-  const amount = n19(lc?.amount);
-  const adj = n19(lc?.interest_adj);
-  if (!lc?.interest_excl_charges && !adj) return amount;
-  const gross = lc?.interest_excl_charges ? round27(amount - n19(lc?.charges)) : amount;
-  const adjusted = round27(gross + adj);
-  return Math.max(0, adjusted);
-}
-function lcInterest(lc) {
-  return round27(lcInterestBase(lc) * n19(lc?.interest_pct) * n19(lc?.usance_days) / (100 * 365));
-}
-function lcInterestBasis(lc) {
-  const base = lc?.interest_excl_charges ? "open amount less bank charges" : "open amount";
-  const adj = round27(n19(lc?.interest_adj));
-  if (Math.abs(adj) < 5e-3) return base;
-  return `${base} ${adj < 0 ? "less" : "plus"} an adjustment of ${Math.abs(adj).toFixed(2)}`;
-}
-function lcInterestBaseIsCustom(lc) {
-  return !!lc?.interest_excl_charges || Math.abs(n19(lc?.interest_adj)) >= 5e-3;
-}
-
-// src/main/treasury.ts
-function toPlain22(res) {
-  return res.rows.map((r) => {
-    const o = {};
-    for (const col of res.columns) o[col] = r[col];
-    return o;
-  });
-}
-function n20(v) {
-  const x = Number(v);
-  return Number.isFinite(x) ? x : 0;
-}
-var round28 = (v) => Math.round(v * 100) / 100;
-function todayISO5() {
-  const d = /* @__PURE__ */ new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-function daysBetween(a, b) {
-  return Math.round(((/* @__PURE__ */ new Date(`${b}T00:00:00`)).getTime() - (/* @__PURE__ */ new Date(`${a}T00:00:00`)).getTime()) / 864e5);
-}
-function duePeriodOf(daysLeft) {
-  if (daysLeft == null) return "none";
-  if (daysLeft < 0) return "overdue";
-  if (daysLeft <= 1) return "t1";
-  if (daysLeft <= 7) return "week";
-  if (daysLeft <= 14) return "fortnight";
-  if (daysLeft <= 30) return "month";
-  if (daysLeft <= 90) return "quarter";
-  return "later";
-}
-async function dropEntry(entryId) {
-  if (!entryId) return;
-  const c = getClient();
-  await c.execute({
-    sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
-    args: [entryId]
-  });
-  await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [entryId] });
-  await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [entryId] });
-}
-async function allocAgainst(entryId, partyName2, ref, amount) {
-  const c = getClient();
-  const line = await c.execute({
-    sql: `SELECT jl.id, jl.account_id FROM journal_lines jl
-          JOIN ledger_accounts a ON a.id = jl.account_id
-          WHERE jl.entry_id = ? AND a.name = ? LIMIT 1`,
-    args: [entryId, partyName2.toUpperCase()]
-  });
-  if (!line.rows.length) return;
-  await c.execute({
-    sql: "INSERT INTO journal_bill_allocs (line_id, account_id, method, ref_name, amount) VALUES (?, ?, ?, ?, ?)",
-    args: [Number(line.rows[0].id), Number(line.rows[0].account_id), ref ? "agst_ref" : "on_account", ref, amount]
-  });
-}
-function planReceipt(outstanding, value, fallbackParty) {
-  const takes = [];
-  let remaining = value;
-  for (const o of [...outstanding].sort((a, b) => b.due - a.due)) {
-    if (remaining <= 5e-3) break;
-    const amount = round28(Math.min(remaining, o.due));
-    takes.push({ party: (o.customer_name || fallbackParty).trim() || fallbackParty, key: o.key, amount });
-    remaining -= amount;
-  }
-  const totals = /* @__PURE__ */ new Map();
-  for (const t of takes) totals.set(t.party, round28((totals.get(t.party) || 0) + t.amount));
-  const byParty = Array.from(totals, ([party, amount]) => ({ party, amount }));
-  const drift = round28(value - byParty.reduce((a, b) => a + b.amount, 0));
-  if (Math.abs(drift) > 5e-4 && byParty.length) {
-    const biggest = byParty.reduce((a, b) => b.amount > a.amount ? b : a);
-    biggest.amount = round28(biggest.amount + drift);
-  }
-  return { takes, byParty };
-}
-function assertNotFuture(date, what) {
-  const d = String(date || "").slice(0, 10);
-  if (d && d > todayISO5()) throw new Error(`${what} cannot be a future date`);
-}
-async function bankAccountFor(lc) {
-  const id = n20(lc.our_bank_id);
-  if (!id) return "BANK A/C";
-  const r = await getClient().execute({ sql: "SELECT name FROM banks WHERE id = ?", args: [id] });
-  const name = String(r.rows[0]?.name || "").trim();
-  return name ? `${name.toUpperCase()} A/C` : "BANK A/C";
-}
-var LC_PAYABLE_GROUP = "Current Liabilities";
-async function lcPayable(lc) {
-  const id = n20(lc.our_bank_id);
-  if (id) {
-    const r = await getClient().execute({ sql: "SELECT name FROM banks WHERE id = ?", args: [id] });
-    const own = String(r.rows[0]?.name || "").trim().toUpperCase();
-    if (own) return `LC PAYABLE - ${own}`;
-  }
-  const bank = String(lc.bank || "").trim().toUpperCase();
-  return bank ? `LC PAYABLE - ${bank}` : "LC PAYABLE";
-}
-async function postLcOpening(lcId) {
-  const c = getClient();
-  const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [lcId] });
-  if (!res.rows.length) return;
-  const lc = toPlain22(res)[0];
-  await dropEntry(n20(lc.journal_entry_id) || null);
-  const margin = round28(n20(lc.amount) * n20(lc.margin_pct) / 100);
-  if (margin < 5e-3) {
-    await c.execute({ sql: "UPDATE letters_of_credit SET journal_entry_id = NULL WHERE id = ?", args: [lcId] });
-    return;
-  }
-  const je = await postJournal({
-    date: String(lc.open_date || todayISO5()),
-    vchType: "CONTRA",
-    vchNo: String(lc.lc_no || ""),
-    narration: `LC ${lc.lc_no} \u2014 margin ${margin.toFixed(2)} lodged with ${lc.bank}`,
-    companyId: n20(lc.company_id) || void 0,
-    lines: [
-      { account: "LC MARGIN A/C", group: "Deposits (Asset)", dr: margin },
-      { account: await bankAccountFor(lc), group: "Bank Accounts", cr: margin }
-    ]
-  });
-  await c.execute({ sql: "UPDATE letters_of_credit SET journal_entry_id = ? WHERE id = ?", args: [je.id, lcId] });
-}
-async function postLcFees(lcId) {
-  const c = getClient();
-  const res = await c.execute({
-    sql: "SELECT charges_journal_entry_id FROM letters_of_credit WHERE id = ?",
-    args: [lcId]
-  });
-  if (!res.rows.length) return;
-  await dropEntry(n20(res.rows[0].charges_journal_entry_id) || null);
-  await c.execute({ sql: "UPDATE letters_of_credit SET charges_journal_entry_id = NULL WHERE id = ?", args: [lcId] });
-}
-async function postLcUpfrontInterest(lcId, dateIn) {
-  const c = getClient();
-  const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [lcId] });
-  if (!res.rows.length) throw new Error("LC not found");
-  const lc = toPlain22(res)[0];
-  const bankAcc = await bankAccountFor(lc);
-  await dropEntry(n20(lc.interest_journal_entry_id) || null);
-  const interest = lcInterest(lc);
-  const charges = round28(n20(lc.charges));
-  const total = round28(interest + charges);
-  if (total < 5e-3) {
-    await c.execute({ sql: "UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?", args: [lcId] });
-    return null;
-  }
-  const je = await postJournal({
-    date: String(dateIn || todayISO5()).slice(0, 10),
-    vchType: "JOURNAL",
-    vchNo: String(lc.lc_no || ""),
-    narration: `LC ${lc.lc_no} \u2014 interest ${interest.toFixed(2)} and charges ${charges.toFixed(2)} paid upfront from the bank, per its statement` + (lcInterestBaseIsCustom(lc) ? ` (interest on ${lcInterestBasis(lc)})` : ""),
-    companyId: n20(lc.company_id) || void 0,
-    lines: [
-      { account: "INTEREST A/C", group: "Indirect Expenses", dr: interest },
-      { account: "BANK CHARGES A/C", group: "Indirect Expenses", dr: charges },
-      { account: bankAcc, group: "Bank Accounts", cr: total }
-    ]
-  });
-  await c.execute({ sql: "UPDATE letters_of_credit SET interest_journal_entry_id = ? WHERE id = ?", args: [je.id, lcId] });
-  await resyncLcSettlement(lcId);
-  return { id: je.id };
-}
-function lcFeeDelta() {
-  return 0;
-}
-async function syncLcFeeAdjustment(lcId) {
-  const c = getClient();
-  const res = await c.execute({
-    sql: `SELECT l.*, s.name AS supplier_name
-          FROM letters_of_credit l
-          LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
-          WHERE l.id = ?`,
-    args: [lcId]
-  });
-  if (!res.rows.length) return 0;
-  const lc = toPlain22(res)[0];
-  const bankAcc = await bankAccountFor(lc);
-  const iss = await c.execute({
-    sql: `SELECT COALESCE(SUM(CASE WHEN status = 'settled' THEN amount ELSE 0 END), 0) AS settled,
-                 COUNT(CASE WHEN order_id IS NOT NULL THEN 1 END) AS linked
-          FROM lc_issuances WHERE lc_id = ?`,
-    args: [lcId]
-  });
-  const delta = lcFeeDelta();
-  await dropEntry(n20(lc.fee_adjust_journal_entry_id) || null);
-  const party = String(lc.supplier_name || "").trim();
-  if (delta === 0 || !party) {
-    await c.execute({
-      sql: "UPDATE letters_of_credit SET fee_adjust_journal_entry_id = NULL WHERE id = ?",
-      args: [lcId]
-    });
-    return 0;
-  }
-  const size = round28(Math.abs(delta));
-  const retained = delta < 0;
-  const je = await postJournal({
-    date: String(lc.payment_received_date || lc.open_date || todayISO5()).slice(0, 10),
-    vchType: "JOURNAL",
-    vchNo: String(lc.lc_no || ""),
-    narration: retained ? `LC ${lc.lc_no} \u2014 ${size.toFixed(2)} of the bill was retained by ${lc.bank} as interest and charges, so it never reached ${party}; their account is credited back by that much` : `LC ${lc.lc_no} \u2014 ${lc.bank} released ${size.toFixed(2)} to ${party} beyond the bill as drawn, so their account is debited by that much`,
-    companyId: n20(lc.company_id) || void 0,
-    lines: retained ? [
-      { account: bankAcc, group: "Bank Accounts", dr: size },
-      { account: party, group: "Sundry Creditors", cr: size }
-    ] : [
-      { account: party, group: "Sundry Creditors", dr: size },
-      { account: bankAcc, group: "Bank Accounts", cr: size }
-    ]
-  });
-  await allocAgainst(je.id, party, null, size);
-  await c.execute({
-    sql: "UPDATE letters_of_credit SET fee_adjust_journal_entry_id = ? WHERE id = ?",
-    args: [je.id, lcId]
-  });
-  return delta;
-}
-async function refreshLcUpfrontInterest(lcId) {
-  const c = getClient();
-  const res = await c.execute({
-    sql: "SELECT interest_journal_entry_id FROM letters_of_credit WHERE id = ?",
-    args: [lcId]
-  });
-  const jeId = n20(res.rows[0]?.interest_journal_entry_id);
-  if (!jeId) return;
-  const je = await c.execute({ sql: "SELECT entry_date FROM journal_entries WHERE id = ?", args: [jeId] });
-  const date = String(je.rows[0]?.entry_date || "").slice(0, 10);
-  await postLcUpfrontInterest(lcId, date || void 0);
-}
-async function dropLcUpfrontInterest(lcId) {
-  const c = getClient();
-  const res = await c.execute({ sql: "SELECT interest_journal_entry_id FROM letters_of_credit WHERE id = ?", args: [lcId] });
-  if (res.rows.length && res.rows[0].interest_journal_entry_id) {
-    await dropEntry(n20(res.rows[0].interest_journal_entry_id));
-    await c.execute({ sql: "UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?", args: [lcId] });
-    await resyncLcSettlement(lcId);
-  }
-}
-async function postLcMarginRelease(lcId, amount, dateIn) {
-  const c = getClient();
-  const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [lcId] });
-  if (!res.rows.length) throw new Error("LC not found");
-  const lc = toPlain22(res)[0];
-  const bankAcc = await bankAccountFor(lc);
-  const value = round28(amount);
-  if (value < 5e-3) return null;
-  const je = await postJournal({
-    date: String(dateIn || todayISO5()).slice(0, 10),
-    vchType: "RECEIPT",
-    vchNo: String(lc.lc_no || ""),
-    narration: `LC ${lc.lc_no} preclosed \u2014 margin of ${value.toFixed(2)} refunded by ${lc.bank}`,
-    companyId: n20(lc.company_id) || void 0,
-    lines: [
-      { account: bankAcc, group: "Bank Accounts", dr: value },
-      { account: "LC MARGIN A/C", group: "Deposits (Asset)", cr: value }
-    ]
-  });
-  return { id: je.id };
-}
-async function postLcPrematureInterestRebate(lcId, direction, amount, dateIn) {
-  const c = getClient();
-  const res = await c.execute({
-    sql: `SELECT l.*, s.name AS supplier_name FROM letters_of_credit l
-          LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
-          WHERE l.id = ?`,
-    args: [lcId]
-  });
-  if (!res.rows.length) throw new Error("LC not found");
-  const lc = toPlain22(res)[0];
-  const bankAcc = await bankAccountFor(lc);
-  const payable = await lcPayable(lc);
-  const value = round28(amount);
-  if (value < 5e-3) return null;
-  const date = String(dateIn || todayISO5()).slice(0, 10);
-  const je = await postJournal({
-    date,
-    vchType: "JOURNAL",
-    vchNo: String(lc.lc_no || ""),
-    narration: `LC ${lc.lc_no} preclosed \u2014 interest of ${value.toFixed(2)} reversed for the days that will not happen${direction === "pay_to_party" ? ", and passed on to the supplier" : ""}`,
-    companyId: n20(lc.company_id) || void 0,
-    lines: [
-      { account: payable, group: LC_PAYABLE_GROUP, dr: value },
-      { account: "INTEREST A/C", group: "Indirect Expenses", cr: value }
-    ]
-  });
-  let payoutId;
-  if (direction === "pay_to_party") {
-    const party = String(lc.supplier_name || "").trim();
-    if (!party) throw new Error("The LC has no supplier party \u2014 set it on the LC first");
-    const pay = await postJournal({
-      date,
-      vchType: "PAYMENT",
-      vchNo: String(lc.lc_no || ""),
-      narration: `LC ${lc.lc_no} \u2014 preclosure interest rebate of ${value.toFixed(2)} paid on to ${party}`,
-      companyId: n20(lc.company_id) || void 0,
-      lines: [
-        { account: party, group: "Sundry Creditors", dr: value },
-        { account: bankAcc, group: "Bank Accounts", cr: value }
-      ]
-    });
-    payoutId = pay.id;
-  }
-  return { id: je.id, payoutId };
-}
-async function outstandingSaleRefsForLc(lcId) {
-  const c = getClient();
-  const res = await c.execute({ sql: "SELECT * FROM letters_of_credit WHERE id = ?", args: [lcId] });
-  if (!res.rows.length) throw new Error("LC not found");
-  const lc = toPlain22(res)[0];
-  if (String(lc.purpose || "") !== "trading") throw new Error("Payment IN only applies to a Trading LC");
-  if (!lc.receivable_party_id) throw new Error("Set the party payment will be received from on this LC first");
-  const custRes = await c.execute({ sql: "SELECT name FROM customers WHERE id = ?", args: [Number(lc.receivable_party_id)] });
-  const customerName = String(custRes.rows[0]?.name || "").trim();
-  if (!customerName) throw new Error("The receivable party could not be found");
-  const dealsRes = await c.execute({
-    sql: `SELECT DISTINCT td.id, td.sale_id
-          FROM trading_deals td
-          WHERE EXISTS (
-            SELECT 1 FROM lc_linked_orders lo
-            WHERE lo.lc_id = ?
-              AND lo.order_id IN (
-                SELECT order_id FROM trading_deal_orders WHERE deal_id = td.id
-                UNION SELECT td.order_id
-              )
-          )`,
-    args: [lcId]
-  });
-  const dealRows = toPlain22(dealsRes);
-  if (!dealRows.length) throw new Error("This LC has no linked Trading deal to receive payment against");
-  const dealIds = dealRows.map((d) => n20(d.id));
-  const linksRes = await c.execute({
-    sql: `SELECT deal_id, sale_id FROM trading_deal_sales WHERE deal_id IN (${dealIds.join(",")})`,
-    args: []
-  });
-  const saleIdsByDeal = /* @__PURE__ */ new Map();
-  for (const r of toPlain22(linksRes)) {
-    const k = n20(r.deal_id);
-    saleIdsByDeal.set(k, [...saleIdsByDeal.get(k) ?? [], n20(r.sale_id)]);
-  }
-  const saleIds = Array.from(
-    new Set(dealRows.flatMap((d) => saleIdsByDeal.get(n20(d.id)) ?? (n20(d.sale_id) ? [n20(d.sale_id)] : [])))
-  );
-  if (!saleIds.length) throw new Error("This LC's linked Trading deal has no sale invoice yet");
-  const salesRes = await c.execute({
-    sql: `SELECT COALESCE(sl.invoice_group, sl.invoice_no) AS key, MIN(sl.invoice_no) AS invoice_no,
-                 MIN(sl.sale_date) AS sale_date, MIN(cu.name) AS customer_name,
-                 SUM(sl.amount + sl.gst_amount + sl.round_off - sl.tds_amount) AS due
-          FROM sales sl LEFT JOIN customers cu ON cu.id = sl.customer_id
-          WHERE sl.id IN (${saleIds.join(",")}) GROUP BY key`,
-    args: []
-  });
-  const bills = toPlain22(salesRes).map((s) => ({
-    key: String(s.key || "").trim(),
-    invoice_no: String(s.invoice_no || ""),
-    sale_date: String(s.sale_date || ""),
-    customer_name: String(s.customer_name || "").trim(),
-    due: round28(n20(s.due))
-  })).filter((s) => s.key);
-  if (!bills.length) throw new Error("This LC's linked Trading deal has no sale invoice yet");
-  const keys = bills.map((b) => b.key);
-  const settledRes = await c.execute({
-    sql: `SELECT COALESCE(ba.sale_invoice_group, ba.ref_name) AS key, SUM(ba.amount) AS amt
-          FROM journal_bill_allocs ba
-          JOIN journal_lines jl ON jl.id = ba.line_id
-          JOIN journal_entries je ON je.id = jl.entry_id
-          WHERE ba.method = 'agst_ref' AND je.company_id = ? AND COALESCE(ba.sale_invoice_group, ba.ref_name) IN (${keys.map(() => "?").join(",")})
-          GROUP BY key`,
-    args: [n20(lc.company_id) || getActiveCompanyId(), ...keys]
-  });
-  const settledMap = /* @__PURE__ */ new Map();
-  for (const r of toPlain22(settledRes)) settledMap.set(String(r.key), n20(r.amt));
-  const refs = bills.map((b) => ({ ...b, due: round28(b.due - (settledMap.get(b.key) || 0)) })).filter((b) => b.due > 5e-3);
-  return { lc, customerName, refs };
-}
-async function listLcOpenTradingInvoices(lcId) {
-  const { refs } = await outstandingSaleRefsForLc(lcId).catch(() => ({ refs: [] }));
-  return refs;
-}
-async function postLcPaymentIn(lcId, amount, dateIn, selectedKeys) {
-  const { lc, customerName, refs } = await outstandingSaleRefsForLc(lcId);
-  const bankAcc = await bankAccountFor(lc);
-  const wanted = Array.isArray(selectedKeys) && selectedKeys.length ? new Set(selectedKeys.map(String)) : null;
-  const outstanding = wanted ? refs.filter((r) => wanted.has(r.key)) : refs;
-  if (!outstanding.length) throw new Error("Every sale invoice on this deal is already fully paid");
-  const totalDue = round28(outstanding.reduce((s, o) => s + o.due, 0));
-  const value = round28(n20(amount));
-  if (value < 5e-3) throw new Error("Enter the amount received");
-  if (value > totalDue + 5e-3) {
-    throw new Error(`Only ${totalDue.toFixed(2)} is still receivable on the ${wanted ? "selected invoice(s)" : "LC's deal(s)"}`);
-  }
-  const c = getClient();
-  const date = String(dateIn || todayISO5()).slice(0, 10);
-  assertNotFuture(date, "The date the payment was received");
-  const { takes, byParty } = planReceipt(outstanding, value, customerName);
-  const je = await postJournal({
-    date,
-    vchType: "RECEIPT",
-    vchNo: String(lc.lc_no || ""),
-    narration: `LC ${lc.lc_no} \u2014 payment IN of ${value.toFixed(2)} received from ` + (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(", ") : byParty[0]?.party || customerName),
-    companyId: n20(lc.company_id) || void 0,
-    lines: [
-      { account: bankAcc, group: "Bank Accounts", dr: value },
-      ...byParty.map((b) => ({ account: b.party, group: "Sundry Debtors", cr: b.amount }))
-    ]
-  });
-  for (const t of takes) await allocAgainst(je.id, t.party, t.key, t.amount);
-  await c.execute({
-    sql: "INSERT INTO lc_payment_ins (lc_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, ?)",
-    args: [lcId, date, value, je.id]
-  });
-  return { id: je.id, date };
-}
-async function outstandingSaleRefsForBd(bdId) {
-  const c = getClient();
-  const res = await c.execute({ sql: "SELECT * FROM bill_discountings WHERE id = ?", args: [bdId] });
-  if (!res.rows.length) throw new Error("Discounted bill not found");
-  const bd = toPlain22(res)[0];
-  if (String(bd.purpose || "") !== "trading") throw new Error("Payment IN only applies to a Trading bill");
-  if (!bd.receivable_party_id) throw new Error("Set the party payment will be received from on this bill first");
-  const custRes = await c.execute({ sql: "SELECT name FROM customers WHERE id = ?", args: [Number(bd.receivable_party_id)] });
-  const customerName = String(custRes.rows[0]?.name || "").trim();
-  if (!customerName) throw new Error("The receivable party could not be found");
-  const dealsRes = await c.execute({
-    sql: `SELECT DISTINCT td.id, td.sale_id
-          FROM trading_deals td
-          WHERE EXISTS (
-            SELECT 1 FROM bd_linked_orders bo
-            WHERE bo.bd_id = ?
-              AND bo.order_id IN (
-                SELECT order_id FROM trading_deal_orders WHERE deal_id = td.id
-                UNION SELECT td.order_id
-              )
-          )`,
-    args: [bdId]
-  });
-  const dealRows = toPlain22(dealsRes);
-  if (!dealRows.length) throw new Error("This bill has no linked Trading deal to receive payment against");
-  const dealIds = dealRows.map((d) => n20(d.id));
-  const linksRes = await c.execute({
-    sql: `SELECT deal_id, sale_id FROM trading_deal_sales WHERE deal_id IN (${dealIds.join(",")})`,
-    args: []
-  });
-  const saleIdsByDeal = /* @__PURE__ */ new Map();
-  for (const r of toPlain22(linksRes)) {
-    const k = n20(r.deal_id);
-    saleIdsByDeal.set(k, [...saleIdsByDeal.get(k) ?? [], n20(r.sale_id)]);
-  }
-  const saleIds = Array.from(
-    new Set(dealRows.flatMap((d) => saleIdsByDeal.get(n20(d.id)) ?? (n20(d.sale_id) ? [n20(d.sale_id)] : [])))
-  );
-  if (!saleIds.length) throw new Error("This bill's linked Trading deal has no sale invoice yet");
-  const salesRes = await c.execute({
-    sql: `SELECT COALESCE(sl.invoice_group, sl.invoice_no) AS key, MIN(sl.invoice_no) AS invoice_no,
-                 MIN(sl.sale_date) AS sale_date, MIN(cu.name) AS customer_name,
-                 SUM(sl.amount + sl.gst_amount + sl.round_off - sl.tds_amount) AS due
-          FROM sales sl LEFT JOIN customers cu ON cu.id = sl.customer_id
-          WHERE sl.id IN (${saleIds.join(",")}) GROUP BY key`,
-    args: []
-  });
-  const bills = toPlain22(salesRes).map((x) => ({
-    key: String(x.key || "").trim(),
-    invoice_no: String(x.invoice_no || ""),
-    sale_date: String(x.sale_date || ""),
-    customer_name: String(x.customer_name || "").trim(),
-    due: round28(n20(x.due))
-  })).filter((x) => x.key);
-  if (!bills.length) throw new Error("This bill's linked Trading deal has no sale invoice yet");
-  const keys = bills.map((b) => b.key);
-  const settledRes = await c.execute({
-    sql: `SELECT COALESCE(ba.sale_invoice_group, ba.ref_name) AS key, SUM(ba.amount) AS amt
-          FROM journal_bill_allocs ba
-          JOIN journal_lines jl ON jl.id = ba.line_id
-          JOIN journal_entries je ON je.id = jl.entry_id
-          WHERE ba.method = 'agst_ref' AND je.company_id = ?
-            AND COALESCE(ba.sale_invoice_group, ba.ref_name) IN (${keys.map(() => "?").join(",")})
-          GROUP BY key`,
-    args: [n20(bd.company_id) || getActiveCompanyId(), ...keys]
-  });
-  const settled = /* @__PURE__ */ new Map();
-  for (const r of toPlain22(settledRes)) settled.set(String(r.key), n20(r.amt));
-  const refs = bills.map((b) => ({ ...b, due: round28(b.due - (settled.get(b.key) || 0)) })).filter((b) => b.due > 5e-3);
-  return { bd, customerName, refs };
-}
-async function listBdOpenTradingInvoices(bdId) {
-  try {
-    const { refs } = await outstandingSaleRefsForBd(bdId);
-    return refs;
-  } catch {
-    return [];
-  }
-}
-async function postBdPaymentIn(bdId, amount, dateIn, selectedKeys) {
-  const { bd, customerName, refs } = await outstandingSaleRefsForBd(bdId);
-  const wanted = Array.isArray(selectedKeys) && selectedKeys.length ? new Set(selectedKeys.map(String)) : null;
-  const outstanding = wanted ? refs.filter((r) => wanted.has(r.key)) : refs;
-  if (!outstanding.length) throw new Error("Every sale invoice on this deal is already fully paid");
-  const totalDue = round28(outstanding.reduce((t, o) => t + o.due, 0));
-  const value = round28(n20(amount));
-  if (value < 5e-3) throw new Error("Enter the amount received");
-  if (value > totalDue + 5e-3) {
-    throw new Error(
-      `Only ${totalDue.toFixed(2)} is still receivable on the ${wanted ? "selected invoice(s)" : "bill's deal(s)"}`
-    );
-  }
-  const c = getClient();
-  const date = String(dateIn || todayISO5()).slice(0, 10);
-  assertNotFuture(date, "The date the payment was received");
-  const { takes, byParty } = planReceipt(outstanding, value, customerName);
-  const je = await postJournal({
-    date,
-    vchType: "RECEIPT",
-    vchNo: String(bd.bd_no || ""),
-    narration: `Bill Discounting ${bd.bd_no} \u2014 payment IN of ${value.toFixed(2)} received from ` + (byParty.length > 1 ? byParty.map((b) => `${b.party} ${b.amount.toFixed(2)}`).join(", ") : byParty[0]?.party || customerName),
-    companyId: n20(bd.company_id) || void 0,
-    lines: [
-      { account: "BANK A/C", group: "Bank Accounts", dr: value },
-      ...byParty.map((b) => ({ account: b.party, group: "Sundry Debtors", cr: b.amount }))
-    ]
-  });
-  for (const t of takes) await allocAgainst(je.id, t.party, t.key, t.amount);
-  await c.execute({
-    sql: "INSERT INTO bd_payment_ins (bd_id, pay_date, amount, journal_entry_id) VALUES (?, ?, ?, ?)",
-    args: [bdId, date, value, je.id]
-  });
-  return { id: je.id, date };
-}
-async function listBdPaymentIns(bdId) {
-  const res = await getClient().execute({
-    sql: "SELECT * FROM bd_payment_ins WHERE bd_id = ? ORDER BY id DESC",
-    args: [bdId]
-  });
-  return toPlain22(res);
-}
-async function deleteBdPaymentIn(paymentInId) {
-  const c = getClient();
-  const res = await c.execute({ sql: "SELECT journal_entry_id FROM bd_payment_ins WHERE id = ?", args: [paymentInId] });
-  if (!res.rows.length) throw new Error("That receipt no longer exists");
-  const je = n20(res.rows[0].journal_entry_id);
-  if (je) {
-    await c.execute({
-      sql: "DELETE FROM journal_bill_allocs WHERE line_id IN (SELECT id FROM journal_lines WHERE entry_id = ?)",
-      args: [je]
-    });
-    await c.execute({ sql: "DELETE FROM journal_lines WHERE entry_id = ?", args: [je] });
-    await c.execute({ sql: "DELETE FROM journal_entries WHERE id = ?", args: [je] });
-  }
-  await c.execute({ sql: "DELETE FROM bd_payment_ins WHERE id = ?", args: [paymentInId] });
-  return { id: paymentInId };
-}
-async function listAllLcRepayments() {
-  const res = await getClient().execute({
-    sql: `SELECT r.*, l.lc_no, l.bank, s.name AS supplier_name
-          FROM lc_repayments r
-          JOIN letters_of_credit l ON l.id = r.lc_id
-          LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
-          WHERE l.company_id = ?
-          ORDER BY l.lc_no, r.repay_date, r.id`,
-    args: [getActiveCompanyId()]
-  });
-  return toPlain22(res);
-}
-async function listLcPaymentIns(lcId) {
-  const res = await getClient().execute({
-    sql: "SELECT * FROM lc_payment_ins WHERE lc_id = ? ORDER BY id DESC",
-    args: [lcId]
-  });
-  return toPlain22(res);
-}
-async function deleteLcPaymentIn(id) {
-  const c = getClient();
-  const res = await c.execute({ sql: "SELECT journal_entry_id FROM lc_payment_ins WHERE id = ?", args: [id] });
-  if (res.rows.length && res.rows[0].journal_entry_id) await dropEntry(n20(res.rows[0].journal_entry_id));
-  await c.execute({ sql: "DELETE FROM lc_payment_ins WHERE id = ?", args: [id] });
-  return { id };
-}
-async function settleLcBill(issuanceId, dateIn) {
-  const c = getClient();
-  const res = await c.execute({ sql: "SELECT status FROM lc_issuances WHERE id = ?", args: [issuanceId] });
-  if (!res.rows.length) throw new Error("LC bill not found");
-  if (String(res.rows[0].status) === "settled") throw new Error("This bill is already settled");
-  const je = await settleLcBillsCombined([issuanceId], dateIn);
-  if (!je) throw new Error("That bill could not be settled");
-  return je;
-}
-async function settleLcBillsCombined(issuanceIds, dateIn, reuseEntryId) {
-  if (!issuanceIds.length) return null;
-  const c = getClient();
-  const res = await c.execute({
-    sql: `SELECT i.*, l.lc_no, l.bank, l.our_bank_id, l.party_type, l.party_id, l.company_id,
-                 l.amount AS lc_amount, l.charges AS lc_charges, l.interest_pct, l.usance_days,
-                 l.interest_upfront, l.interest_excl_charges, l.interest_adj,
-                 l.interest_journal_entry_id,
-                 s.name AS supplier_name, o.invoice_no
-          FROM lc_issuances i
-          JOIN letters_of_credit l ON l.id = i.lc_id
-          LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
-          LEFT JOIN orders o ON o.id = i.order_id
-          WHERE i.id IN (${issuanceIds.map(() => "?").join(",")})`,
-    args: issuanceIds
-  });
-  const bills = toPlain22(res).filter((b) => String(b.status) !== "settled");
-  if (!bills.length) return null;
-  const first = bills[0];
-  const party = String(first.supplier_name || "").trim();
-  if (!party) throw new Error("The LC has no supplier party \u2014 set it on the LC first");
-  const date = String(dateIn || todayISO5()).slice(0, 10);
-  const total = round28(bills.reduce((s2, b) => s2 + n20(b.amount), 0));
-  const payable = await lcPayable(first);
-  const feeLines = [];
-  let fees = 0;
-  const seen = /* @__PURE__ */ new Set();
-  for (const b of bills) {
-    const lcId = n20(b.lc_id);
-    if (seen.has(lcId)) continue;
-    seen.add(lcId);
-    if (n20(b.interest_journal_entry_id)) continue;
-    const interest = lcInterest({
-      amount: b.lc_amount,
-      charges: b.lc_charges,
-      interest_pct: b.interest_pct,
-      usance_days: b.usance_days,
-      interest_excl_charges: b.interest_excl_charges,
-      interest_adj: b.interest_adj
-    });
-    const charges = round28(n20(b.lc_charges));
-    if (interest > 5e-3) feeLines.push({ account: "INTEREST A/C", group: "Indirect Expenses", dr: interest });
-    if (charges > 5e-3) feeLines.push({ account: "BANK CHARGES A/C", group: "Indirect Expenses", dr: charges });
-    fees = round28(fees + interest + charges);
-  }
-  const post = reuseEntryId ? (args) => repostJournal(reuseEntryId, args) : postJournal;
-  const je = await post({
-    date,
-    // A JOURNAL, not a PAYMENT. Nothing of yours moves here — the bank honours
-    // the credit out of its own funds. One liability is exchanged for another:
-    // the supplier is discharged, and the bank takes their place.
-    vchType: "JOURNAL",
-    vchNo: String(first.lc_no || ""),
-    // A bill auto-issued against the whole LC is NAMED after it, so repeating
-    // the name tells the reader nothing. It is mentioned only when it carries a
-    // name of its own, such as a reference the bank gave you.
-    narration: (() => {
-      const bill = String(first.bill_no || "").trim();
-      const named = bills.length === 1 && bill && bill !== String(first.lc_no || "").trim() ? ` (bill ${bill})` : "";
-      const many = bills.length > 1 ? ` \u2014 ${bills.length} bills` : "";
-      const kept = fees > 5e-3 ? `, keeping ${fees.toFixed(2)} interest and commission` : "";
-      const basis = fees > 5e-3 && lcInterestBaseIsCustom(first) ? ` (interest on ${lcInterestBasis(first)})` : "";
-      return `LC ${first.lc_no}${named}${many} matured \u2014 ${first.bank} paid ${party} ${total.toFixed(2)}${kept}${basis}`;
-    })(),
-    companyId: n20(first.company_id) || void 0,
-    lines: [
-      { account: party, group: "Sundry Creditors", dr: total },
-      ...feeLines,
-      { account: payable, group: LC_PAYABLE_GROUP, cr: round28(total + fees) }
-    ]
-  });
-  for (const b of bills) {
-    const ref = b.invoice_no ? String(b.invoice_no) : b.bill_no ? String(b.bill_no) : null;
-    await allocAgainst(je.id, party, ref, round28(n20(b.amount)));
-  }
-  await c.execute({
-    sql: `UPDATE lc_issuances SET status = 'settled', settled_date = ?, journal_entry_id = ?
-          WHERE id IN (${bills.map(() => "?").join(",")})`,
-    args: [date, je.id, ...bills.map((b) => Number(b.id))]
-  });
-  return { id: je.id };
-}
-async function resyncLcSettlement(lcId) {
-  const c = getClient();
-  const res = await c.execute({
-    sql: `SELECT id, journal_entry_id, settled_date FROM lc_issuances
-           WHERE lc_id = ? AND journal_entry_id IS NOT NULL ORDER BY journal_entry_id, id`,
-    args: [n20(lcId)]
-  });
-  if (!res.rows.length) return;
-  const groups = /* @__PURE__ */ new Map();
-  for (const r of toPlain22(res)) {
-    const je = n20(r.journal_entry_id);
-    if (!groups.has(je)) groups.set(je, { ids: [], date: String(r.settled_date || "").slice(0, 10) });
-    groups.get(je).ids.push(n20(r.id));
-  }
-  const live = [];
-  for (const [entryId, g] of groups) {
-    await c.execute({
-      sql: `UPDATE lc_issuances SET status = 'outstanding', settled_date = NULL, journal_entry_id = NULL
-             WHERE id IN (${g.ids.map(() => "?").join(",")})`,
-      args: g.ids
-    });
-    const je = await settleLcBillsCombined(g.ids, g.date || void 0, entryId);
-    if (je) live.push(je.id);
-  }
-  const dropped = await dropOrphanLcSettlements(lcId, live);
-  if (dropped) console.log(`[lc] removed ${dropped} orphaned settlement voucher(s) on LC ${lcId}`);
-}
-async function dropOrphanLcSettlements(lcId, keep = []) {
-  const c = getClient();
-  const lc = await c.execute({
-    sql: "SELECT lc_no, company_id FROM letters_of_credit WHERE id = ?",
-    args: [n20(lcId)]
-  });
-  if (!lc.rows.length) return 0;
-  const lcNo = String(lc.rows[0].lc_no || "").trim();
-  if (!lcNo) return 0;
-  const skip = keep.filter((x) => n20(x) > 0);
-  const res = await c.execute({
-    sql: `SELECT je.id FROM journal_entries je
-           WHERE je.company_id = ?
-             AND TRIM(COALESCE(je.vch_no, '')) = ?
-             AND je.vch_type = 'JOURNAL'
-             AND je.narration LIKE '%matured%'
-             AND NOT EXISTS (SELECT 1 FROM lc_issuances i WHERE i.journal_entry_id = je.id)
-             ${skip.length ? `AND je.id NOT IN (${skip.map(() => "?").join(",")})` : ""}`,
-    args: [n20(lc.rows[0].company_id), lcNo, ...skip]
-  });
-  for (const r of res.rows) await dropEntry(n20(r.id));
-  return res.rows.length;
-}
-async function reopenLcBill(issuanceId) {
-  const c = getClient();
-  const res = await c.execute({ sql: "SELECT journal_entry_id FROM lc_issuances WHERE id = ?", args: [issuanceId] });
-  if (!res.rows.length) throw new Error("LC bill not found");
-  const entryId = n20(res.rows[0].journal_entry_id) || null;
-  await dropEntry(entryId);
-  const sql = entryId ? "UPDATE lc_issuances SET status = 'outstanding', settled_date = NULL, journal_entry_id = NULL WHERE journal_entry_id = ?" : "UPDATE lc_issuances SET status = 'outstanding', settled_date = NULL, journal_entry_id = NULL WHERE id = ?";
-  await c.execute({ sql, args: [entryId || issuanceId] });
-  return { id: issuanceId };
-}
-async function listLcRepayments(lcId) {
-  const res = await getClient().execute({
-    sql: `SELECT r.*, cu.name AS party_name FROM lc_repayments r
-          LEFT JOIN customers cu ON cu.id = r.party_id
-          WHERE r.lc_id = ? ORDER BY r.id DESC`,
-    args: [lcId]
-  });
-  return toPlain22(res);
-}
-async function postLcRepaymentEntry(repaymentId) {
-  const c = getClient();
-  const res = await c.execute({
-    sql: `SELECT r.*, l.lc_no, l.company_id, l.bank, l.our_bank_id, l.amount AS lc_open_amount,
-                 l.interest_upfront, l.interest_journal_entry_id AS lc_interest_journal_entry_id,
-                 l.interest_pct AS lc_interest_pct, l.usance_days AS lc_usance_days,
-                 l.charges AS lc_charges, l.interest_excl_charges AS lc_interest_excl_charges,
-                 l.interest_adj AS lc_interest_adj
-          FROM lc_repayments r
-          JOIN letters_of_credit l ON l.id = r.lc_id
-          WHERE r.id = ?`,
-    args: [repaymentId]
-  });
-  if (!res.rows.length) throw new Error("Repayment not found");
-  const rep = toPlain22(res)[0];
-  const bankAcc = await bankAccountFor(rep);
-  const payable = await lcPayable(rep);
-  await dropEntry(n20(rep.journal_entry_id) || null);
-  await dropEntry(n20(rep.fee_journal_entry_id) || null);
-  const ownFeeJe = n20(rep.fee_journal_entry_id) || null;
-  const upfrontStillDue = !!rep.interest_upfront && (!n20(rep.lc_interest_journal_entry_id) || n20(rep.lc_interest_journal_entry_id) === ownFeeJe);
-  const upfrontInterest = upfrontStillDue ? lcInterest({
-    amount: n20(rep.lc_open_amount),
-    interest_pct: n20(rep.lc_interest_pct),
-    usance_days: n20(rep.lc_usance_days),
-    interest_excl_charges: rep.lc_interest_excl_charges,
-    interest_adj: n20(rep.lc_interest_adj)
-  }) : 0;
-  const upfrontCharges = upfrontStillDue ? round28(n20(rep.lc_charges)) : 0;
-  const total = round28(n20(rep.amount));
-  const comm = round28(n20(rep.comm_charges));
-  const extra = round28(n20(rep.bank_charges) + upfrontCharges);
-  const onTheDay = round28(comm + extra + upfrontInterest);
-  const date = String(rep.repay_date || todayISO5()).slice(0, 10);
-  let feeJe = null;
-  if (onTheDay > 4e-3) {
-    const lines = [];
-    if (upfrontInterest > 5e-3) lines.push({ account: "INTEREST A/C", group: "Indirect Expenses", dr: upfrontInterest });
-    if (comm > 5e-3) lines.push({ account: "COMM. CHARGES A/C", group: "Indirect Expenses", dr: comm });
-    if (extra > 5e-3) lines.push({ account: "BANK CHARGES A/C", group: "Indirect Expenses", dr: extra });
-    lines.push({ account: payable, group: LC_PAYABLE_GROUP, cr: onTheDay });
-    const je2 = await postJournal({
-      date,
-      vchType: "JOURNAL",
-      vchNo: rep.lc_no ? String(rep.lc_no) : null,
-      narration: upfrontStillDue ? `LC ${rep.lc_no} \u2014 ${rep.bank || "the bank"} charged ${onTheDay.toFixed(2)} on settlement (interest never reconciled upfront, caught at repayment)` : `LC ${rep.lc_no} \u2014 ${rep.bank || "the bank"} charged ${onTheDay.toFixed(2)} on settlement`,
-      companyId: n20(rep.company_id) || void 0,
-      lines
-    });
-    feeJe = je2.id;
-    if (upfrontStillDue) {
-      await c.execute({
-        sql: "UPDATE letters_of_credit SET interest_journal_entry_id = ? WHERE id = ?",
-        args: [je2.id, n20(rep.lc_id)]
-      });
-    }
-  } else if (n20(rep.lc_interest_journal_entry_id) === ownFeeJe && ownFeeJe) {
-    await c.execute({ sql: "UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ?", args: [n20(rep.lc_id)] });
-  }
-  const je = await postJournal({
-    date,
-    vchType: "PAYMENT",
-    vchNo: rep.lc_no ? String(rep.lc_no) : null,
-    narration: `LC ${rep.lc_no} repaid to ${rep.bank || "the bank"}`,
-    companyId: n20(rep.company_id) || void 0,
-    lines: [
-      { account: payable, group: LC_PAYABLE_GROUP, dr: total },
-      { account: bankAcc, group: "Bank Accounts", cr: total }
-    ]
-  });
-  await c.execute({
-    sql: "UPDATE lc_repayments SET journal_entry_id = ?, fee_journal_entry_id = ? WHERE id = ?",
-    args: [je.id, feeJe, repaymentId]
-  });
-}
-async function saveLcRepayment(v) {
-  const c = getClient();
-  const lcId = n20(v.lc_id);
-  if (!lcId) throw new Error("Pick the LC this repayment is against");
-  const amount = n20(v.amount);
-  if (amount <= 0) throw new Error("Enter the repayment amount");
-  const lcRes = await c.execute({ sql: "SELECT amount FROM letters_of_credit WHERE id = ?", args: [lcId] });
-  if (!lcRes.rows.length) throw new Error("LC not found");
-  const openAmount = n20(lcRes.rows[0].amount);
-  if (amount < openAmount - 5e-3) {
-    throw new Error(`The repayment (${amount.toFixed(2)}) cannot be less than the LC's open amount (${openAmount.toFixed(2)})`);
-  }
-  const commCharges = round28(n20(v.comm_charges));
-  const bankCharges = round28(n20(v.bank_charges));
-  const excess = round28(amount - openAmount);
-  if (excess > 5e-3) {
-    if (Math.abs(commCharges + bankCharges - excess) > 5e-3) {
-      throw new Error(
-        `Comm. charges + Bank charges must add up to the ${excess.toFixed(2)} over the open amount (currently ${(commCharges + bankCharges).toFixed(2)})`
-      );
-    }
-  } else if (commCharges > 5e-3 || bankCharges > 5e-3) {
-    throw new Error("Comm. charges and Bank charges only apply when the repayment exceeds the open amount");
-  }
-  const maturityCharges = round28(commCharges + bankCharges);
-  const posted = v.posted ? 1 : 0;
-  assertNotFuture(v.repay_date ? String(v.repay_date).slice(0, 10) : "", "The repayment date");
-  const args = [
-    lcId,
-    v.party_id ? n20(v.party_id) : null,
-    amount,
-    maturityCharges,
-    commCharges,
-    bankCharges,
-    v.repay_date ? String(v.repay_date).slice(0, 10) : todayISO5(),
-    posted,
-    v.document_path ? String(v.document_path) : null,
-    v.note ? String(v.note).trim() : null
-  ];
-  let id;
-  if (v.id) {
-    id = n20(v.id);
-    const prev = await c.execute({
-      sql: "SELECT posted, journal_entry_id, fee_journal_entry_id FROM lc_repayments WHERE id = ?",
-      args: [id]
-    });
-    if (!prev.rows.length) throw new Error("Repayment not found");
-    await c.execute({
-      sql: `UPDATE lc_repayments SET lc_id = ?, party_id = ?, amount = ?, maturity_charges = ?, comm_charges = ?, bank_charges = ?,
-            repay_date = ?, posted = ?, document_path = ?, note = ? WHERE id = ?`,
-      args: [...args, id]
-    });
-    if (n20(prev.rows[0].posted) && !posted) {
-      const oldFeeJe = n20(prev.rows[0].fee_journal_entry_id) || null;
-      await dropEntry(n20(prev.rows[0].journal_entry_id) || null);
-      await dropEntry(oldFeeJe);
-      await c.execute({
-        sql: "UPDATE lc_repayments SET journal_entry_id = NULL, fee_journal_entry_id = NULL WHERE id = ?",
-        args: [id]
-      });
-      if (oldFeeJe) {
-        await c.execute({
-          sql: "UPDATE letters_of_credit SET interest_journal_entry_id = NULL WHERE id = ? AND interest_journal_entry_id = ?",
-          args: [lcId, oldFeeJe]
-        });
-      }
-    }
-  } else {
-    const ins = await c.execute({
-      sql: `INSERT INTO lc_repayments (lc_id, party_id, amount, maturity_charges, comm_charges, bank_charges, repay_date, posted, document_path, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args
-    });
-    id = Number(ins.lastInsertRowid);
-  }
-  if (posted) {
-    try {
-      await postLcRepaymentEntry(id);
-    } catch (e) {
-      await c.execute({ sql: "UPDATE lc_repayments SET posted = 0 WHERE id = ?", args: [id] });
-      throw e;
-    }
-  }
-  return { id };
-}
-async function deleteLcRepayment(id) {
-  const c = getClient();
-  const res = await c.execute({
-    sql: "SELECT journal_entry_id, fee_journal_entry_id FROM lc_repayments WHERE id = ?",
-    args: [id]
-  });
-  if (res.rows.length) {
-    await dropEntry(n20(res.rows[0].journal_entry_id) || null);
-    await dropEntry(n20(res.rows[0].fee_journal_entry_id) || null);
-  }
-  await c.execute({ sql: "DELETE FROM lc_repayments WHERE id = ?", args: [id] });
-  return { id };
-}
-async function treasuryAlerts() {
-  const c = getClient();
-  const cid = getActiveCompanyId();
-  const today = todayISO5();
-  const lcs = toPlain22(
-    await c.execute({
-      sql: `SELECT l.*, s.name AS supplier_name,
-                   COALESCE((SELECT SUM(amount) FROM lc_issuances WHERE lc_id = l.id), 0) AS utilized
-            FROM letters_of_credit l
-            LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
-            WHERE l.company_id = ? AND l.status != 'closed'`,
-      args: [cid]
-    })
-  );
-  const lcExpiring = lcs.filter((l) => !l.preclosed_date).map((l) => ({ ...l, days_left: l.expiry_date ? daysBetween(today, String(l.expiry_date)) : null })).filter((l) => l.days_left != null && l.days_left <= 15).sort((a, b) => a.days_left - b.days_left);
-  const lcBills = toPlain22(
-    await c.execute({
-      sql: `SELECT i.*, l.lc_no, l.bank, s.name AS supplier_name, o.invoice_no
-            FROM lc_issuances i
-            JOIN letters_of_credit l ON l.id = i.lc_id
-            LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
-            LEFT JOIN orders o ON o.id = i.order_id
-            WHERE l.company_id = ? AND COALESCE(i.status, 'outstanding') = 'outstanding' AND i.due_date IS NOT NULL`,
-      args: [cid]
-    })
-  );
-  const lcBillsDue = lcBills.map((b) => ({ ...b, days_left: daysBetween(today, String(b.due_date)) })).filter((b) => b.days_left <= 7).sort((a, b) => a.days_left - b.days_left);
-  const bd = toPlain22(
-    await c.execute({
-      sql: `SELECT bd.*, nb.name AS nbfc_name,
-                   COALESCE(s.name, cu.name) AS party_name
-            FROM bill_discountings bd
-            LEFT JOIN nbfcs nb ON nb.id = bd.nbfc_id
-            LEFT JOIN suppliers s ON bd.party_type = 'supplier' AND s.id = bd.party_id
-            LEFT JOIN customers cu ON bd.party_type = 'customer' AND cu.id = bd.party_id
-            WHERE bd.company_id = ? AND bd.status = 'open' AND bd.maturity_date IS NOT NULL`,
-      args: [cid]
-    })
-  );
-  const billsDue = bd.map((b) => ({ ...b, days_left: daysBetween(today, String(b.maturity_date)) })).filter((b) => b.days_left <= 7).sort((a, b) => a.days_left - b.days_left);
-  return {
-    lcExpiring,
-    lcBillsDue,
-    billsDue,
-    overdue: lcBillsDue.filter((b) => b.days_left < 0).length + billsDue.filter((b) => b.days_left < 0).length + lcExpiring.filter((l) => l.days_left < 0).length
-  };
-}
-async function listPaymentTracker() {
-  const c = getClient();
-  const cid = getActiveCompanyId();
-  const today = todayISO5();
-  const lcBills = toPlain22(
-    await c.execute({
-      sql: `SELECT i.id, i.amount, i.due_date, i.status, i.issue_date,
-                   l.lc_no AS ref, l.bank, s.name AS party, o.invoice_no
-            FROM lc_issuances i
-            JOIN letters_of_credit l ON l.id = i.lc_id
-            LEFT JOIN suppliers s ON l.party_type = 'supplier' AND s.id = l.party_id
-            LEFT JOIN orders o ON o.id = i.order_id
-            WHERE l.company_id = ?`,
-      args: [cid]
-    })
-  ).map((r) => ({
-    kind: "lc_bill",
-    kind_label: "LC bill",
-    ref: String(r.ref || ""),
-    detail: `${r.bank || ""}${r.invoice_no ? ` \xB7 inv ${r.invoice_no}` : ""}`,
-    party: String(r.party || ""),
-    amount: n20(r.amount),
-    due_date: r.due_date ? String(r.due_date) : null,
-    status: String(r.status || "outstanding"),
-    settled: String(r.status || "outstanding") === "settled"
-  }));
-  const bd = toPlain22(
-    await c.execute({
-      sql: `SELECT bd.id, bd.bd_no, bd.amount, bd.maturity_date, bd.status, bd.finance_type,
-                   nb.name AS nbfc_name, COALESCE(s.name, cu.name) AS party_name
-            FROM bill_discountings bd
-            LEFT JOIN nbfcs nb ON nb.id = bd.nbfc_id
-            LEFT JOIN suppliers s ON bd.party_type = 'supplier' AND s.id = bd.party_id
-            LEFT JOIN customers cu ON bd.party_type = 'customer' AND cu.id = bd.party_id
-            WHERE bd.company_id = ?`,
-      args: [cid]
-    })
-  ).map((r) => ({
-    kind: "bill_discount",
-    kind_label: "Bill discounting",
-    ref: String(r.bd_no || ""),
-    detail: `${r.nbfc_name || ""}${r.finance_type ? ` \xB7 ${r.finance_type}` : ""}`,
-    party: String(r.party_name || ""),
-    amount: n20(r.amount),
-    due_date: r.maturity_date ? String(r.maturity_date) : null,
-    status: String(r.status || "open"),
-    settled: String(r.status || "") === "repaid"
-  }));
-  const all = [...lcBills, ...bd].map((r) => {
-    const daysLeft = r.due_date ? daysBetween(today, r.due_date) : null;
-    return {
-      ...r,
-      days_left: daysLeft,
-      due_period: duePeriodOf(daysLeft),
-      overdue: !r.settled && daysLeft != null && daysLeft < 0
-    };
-  });
-  all.sort((a, b) => {
-    if (a.settled !== b.settled) return a.settled ? 1 : -1;
-    const ad = a.days_left ?? Infinity;
-    const bd2 = b.days_left ?? Infinity;
-    return ad - bd2;
-  });
-  return all;
-}
+// src/main/ipc.ts
+init_treasury();
+init_company();
 
 // src/main/approvals.ts
+init_db();
+init_repos();
 function toPlain23(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -14277,7 +14520,17 @@ async function rejectRequest(id, reason) {
   return { id };
 }
 
+// src/main/ipc.ts
+init_journal();
+
+// src/main/lc.ts
+init_db();
+init_company();
+init_treasury();
+
 // src/main/facilities.ts
+init_db();
+init_company();
 function toPlain24(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -14428,6 +14681,8 @@ async function facilityHeadroom(facilityId, excludeLcId = 0) {
 }
 
 // src/main/lc.ts
+init_repos();
+init_lcInterest();
 function toPlain25(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -15162,6 +15417,10 @@ async function deleteLCIssuance(id) {
 // src/main/bankRecon.ts
 var import_exceljs = __toESM(require("exceljs"));
 var import_fs2 = require("fs");
+init_db();
+init_company();
+init_treasury();
+init_lcInterest();
 function toPlain26(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -15483,6 +15742,10 @@ async function setBankLineSubEntry(lineId, v) {
 }
 
 // src/main/billDiscounting.ts
+init_db();
+init_company();
+init_repos();
+init_journal();
 function toPlain27(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -16218,6 +16481,9 @@ async function bdKpis() {
 }
 
 // src/main/transporterBilling.ts
+init_db();
+init_company();
+init_journal();
 function toPlain28(res) {
   return res.rows.map((r) => {
     const o = {};
@@ -17327,12 +17593,16 @@ var import_node_http = require("node:http");
 var import_node_fs4 = require("node:fs");
 var import_node_path4 = require("node:path");
 var import_node_crypto = require("node:crypto");
+init_electron_shim();
+init_requestContext();
+init_db();
 
 // src/server/dbrestore.ts
 var import_client = require("@libsql/client");
 var import_node_zlib2 = require("node:zlib");
 var import_node_fs3 = require("node:fs");
 var import_node_path3 = require("node:path");
+init_db();
 var REQUIRED_TABLES = ["users", "products", "orders", "sales", "app_settings"];
 var KEEP_BACKUPS = 3;
 function configuredUrl() {
