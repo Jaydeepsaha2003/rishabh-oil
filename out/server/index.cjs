@@ -2305,6 +2305,7 @@ var TABLES = {
   uoms: ["name", "active"],
   brokers: ["name", "contact_person", "phone", "brokerage_pct", "address", "note", "active"],
   companies: ["name", "company_type", "colour", "active", "factory_id"],
+  factories: ["name", "location", "active"],
   packagings: ["name", "box_label", "pouch_label", "pouches_per_box", "unit_size", "unit_uom", "base_per_pouch", "base_uom", "product_id", "product_label", "active"]
 };
 var COMPANY_SCOPED_TABLES = /* @__PURE__ */ new Set(["banks", "nbfcs"]);
@@ -11144,6 +11145,15 @@ var r3 = (v) => Math.round(v * 1e3) / 1e3;
 var r2 = (v) => Math.round(v * 100) / 100;
 async function stockOpeningDate(companyId) {
   const cid = n12(companyId) || getActiveCompanyId();
+  const fid0 = await factoryOfCompanies([cid]);
+  if (fid0) {
+    const fr = await getClient().execute({
+      sql: "SELECT as_of FROM stock_openings WHERE factory_id = ? ORDER BY as_of LIMIT 1",
+      args: [fid0]
+    });
+    const d0 = fr.rows[0] ? fr.rows[0].as_of : null;
+    if (d0) return String(d0).slice(0, 10);
+  }
   const existing = await getClient().execute({
     sql: "SELECT as_of FROM stock_openings WHERE company_id = ? ORDER BY as_of LIMIT 1",
     args: [cid]
@@ -11156,14 +11166,23 @@ async function listStockOpenings(companyId) {
   const cid = n12(companyId) || getActiveCompanyId();
   const c = getClient();
   const asOf = await stockOpeningDate(cid);
+  const fid = await factoryOfCompanies([cid]);
+  const scope = fid ? await companiesOfFactory(fid) : [cid];
   const [saved, levels, rates, dupes] = await Promise.all([
-    c.execute({
-      sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
-                   COALESCE(adj_qty, 0) AS adj_qty, rate, as_of, note
-            FROM stock_openings WHERE company_id = ?`,
-      args: [cid]
-    }),
-    stockLevels(asOf ? { from: asOf } : void 0, [cid]),
+    c.execute(
+      fid ? {
+        sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
+                         COALESCE(adj_qty, 0) AS adj_qty, rate, as_of, note
+                  FROM stock_openings WHERE factory_id = ?`,
+        args: [fid]
+      } : {
+        sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
+                         COALESCE(adj_qty, 0) AS adj_qty, rate, as_of, note
+                  FROM stock_openings WHERE company_id = ?`,
+        args: [cid]
+      }
+    ),
+    stockLevels(asOf ? { from: asOf } : void 0, scope),
     productValuationRates().catch(() => /* @__PURE__ */ new Map()),
     duplicateProductNames()
   ]);
@@ -11260,6 +11279,8 @@ async function saveStockOpenings(rows, asOf, companyId) {
   const date = String(asOf || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Pick the date this opening is struck on");
   const c = getClient();
+  const fid = await factoryOfCompanies([cid]);
+  const keyed = (extra) => fid ? { sql: `factory_id = ?${extra}`, args: [fid] } : { sql: `company_id = ?${extra}`, args: [cid] };
   let saved = 0;
   let cleared = 0;
   for (const raw of Array.isArray(rows) ? rows : []) {
@@ -11270,9 +11291,10 @@ async function saveStockOpenings(rows, asOf, companyId) {
     const adjBlank = raw?.adj_qty === "" || raw?.adj_qty == null;
     const blank = rawBlank && ppBlank && adjBlank;
     if (blank) {
+      const k2 = keyed(" AND product_id = ?");
       const res = await c.execute({
-        sql: "DELETE FROM stock_openings WHERE company_id = ? AND product_id = ?",
-        args: [cid, pid]
+        sql: `DELETE FROM stock_openings WHERE ${k2.sql}`,
+        args: [...k2.args, pid]
       });
       if (Number(res.rowsAffected) > 0) cleared++;
       continue;
@@ -11281,25 +11303,23 @@ async function saveStockOpenings(rows, asOf, companyId) {
     const pp = n12(raw.pp_qty);
     const adj = n12(raw.adj_qty);
     const rate = raw?.rate === "" || raw?.rate == null ? null : n12(raw.rate);
-    await c.execute({
-      // The row still belongs to the company that struck it — that is what
-      // keeps the valuation per company — but it is also stamped with the
-      // factory, because the register reads openings by site. Written on the
-      // update branch too: a row entered before factories existed has a NULL
-      // there, and re-saving it is the moment to fill it in.
-      sql: `INSERT INTO stock_openings (company_id, factory_id, product_id, as_of, qty, pp_qty, adj_qty, rate, note, updated_at)
-            VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            ON CONFLICT(company_id, product_id) DO UPDATE SET
-              factory_id = excluded.factory_id,
-              as_of = excluded.as_of,
-              qty = excluded.qty,
-              pp_qty = excluded.pp_qty,
-              adj_qty = excluded.adj_qty,
-              rate = excluded.rate,
-              note = excluded.note,
-              updated_at = datetime('now')`,
-      args: [cid, cid, pid, date, qty, pp, adj, rate, raw?.note ? String(raw.note).trim() : null]
+    const note = raw?.note ? String(raw.note).trim() : null;
+    const k = keyed(" AND product_id = ?");
+    const upd = await c.execute({
+      sql: `UPDATE stock_openings
+               SET factory_id = COALESCE(factory_id, (SELECT factory_id FROM companies WHERE id = ?)),
+                   as_of = ?, qty = ?, pp_qty = ?, adj_qty = ?, rate = ?, note = ?,
+                   updated_at = datetime('now')
+             WHERE ${k.sql}`,
+      args: [cid, date, qty, pp, adj, rate, note, ...k.args, pid]
     });
+    if (!Number(upd.rowsAffected)) {
+      await c.execute({
+        sql: `INSERT INTO stock_openings (company_id, factory_id, product_id, as_of, qty, pp_qty, adj_qty, rate, note, updated_at)
+              VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        args: [cid, cid, pid, date, qty, pp, adj, rate, note]
+      });
+    }
     saved++;
   }
   await seedOpeningDayCount(cid, date);
@@ -11307,13 +11327,21 @@ async function saveStockOpenings(rows, asOf, companyId) {
 }
 async function seedOpeningDayCount(companyId, date) {
   const c = getClient();
+  const fid = await factoryOfCompanies([companyId]);
   const rows = toPlain16(
-    await c.execute({
-      sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
-                   COALESCE(adj_qty, 0) AS adj_qty, rate
-            FROM stock_openings WHERE company_id = ? AND as_of = ?`,
-      args: [companyId, date]
-    })
+    await c.execute(
+      fid ? {
+        sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
+                         COALESCE(adj_qty, 0) AS adj_qty, rate
+                  FROM stock_openings WHERE factory_id = ? AND as_of = ?`,
+        args: [fid, date]
+      } : {
+        sql: `SELECT product_id, qty, COALESCE(pp_qty, 0) AS pp_qty,
+                         COALESCE(adj_qty, 0) AS adj_qty, rate
+                  FROM stock_openings WHERE company_id = ? AND as_of = ?`,
+        args: [companyId, date]
+      }
+    )
   );
   for (const r of rows) {
     await c.execute({
