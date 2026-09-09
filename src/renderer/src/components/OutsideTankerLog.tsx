@@ -25,6 +25,10 @@ const SLOTS = [
   { v: '20:00', label: '8 PM' }
 ] as const
 
+// Not an id, so it can never collide with a party's. Picking it widens the
+// list instead of selecting anything.
+const SHOW_ALL = '__all__'
+
 const KINDS = [
   { v: 'purchase', label: 'Purchase — coming to us' },
   { v: 'sales', label: 'Sales — going out' }
@@ -230,7 +234,10 @@ export function OutsideTankerLog({
                 // The material list is per side, so a material chosen
                 // under Purchase cannot survive a switch to Sales — and the
                 // party was picked to match it.
-                onValueChange={(v) => setForm((p) => ({ ...p, kind: v, category: '', party_id: '' }))}
+                onValueChange={(v) => {
+                  setShowAll(false)
+                  setForm((p) => ({ ...p, kind: v, category: '', party_id: '' }))
+                }}
               >
                 <SelectTrigger className="w-[210px]"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -244,7 +251,10 @@ export function OutsideTankerLog({
                 value={String(form.category)}
                 // Changing the material re-scopes the party list, so a party
                 // that no longer belongs is dropped rather than left stale.
-                onValueChange={(v) => setForm((p) => ({ ...p, category: v, party_id: '' }))}
+                onValueChange={(v) => {
+                  setShowAll(false)
+                  setForm((p) => ({ ...p, category: v, party_id: '' }))
+                }}
               >
                 <SelectTrigger className="w-[180px]"><SelectValue placeholder="Any material" /></SelectTrigger>
                 <SelectContent className="max-h-72">
@@ -256,30 +266,28 @@ export function OutsideTankerLog({
             </div>
             <div className="flex flex-col gap-1.5">
               <Label className="text-[10px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">Party</Label>
-              <Select value={String(form.party_id)} onValueChange={(v) => setForm((p) => ({ ...p, party_id: v }))}>
+              <Select
+                value={String(form.party_id)}
+                // The escape from the material filter lives in the list itself
+                // rather than as a line of text under the field. A note there
+                // pushed this control out of line with the other five and put
+                // Add on a row of its own, for something read once.
+                onValueChange={(v) =>
+                  v === SHOW_ALL ? setShowAll(true) : setForm((p) => ({ ...p, party_id: v }))
+                }
+              >
                 <SelectTrigger className="w-[220px]"><SelectValue placeholder="Any party" /></SelectTrigger>
                 <SelectContent className="max-h-72">
                   {parties.map((pa) => (
                     <SelectItem key={String(pa.id)} value={String(pa.id)}>{String(pa.name)}</SelectItem>
                   ))}
+                  {narrowed && (
+                    <SelectItem value={SHOW_ALL}>
+                      {parties.length === 0 ? `No party is tagged ${cat} — show every party` : 'Show every party…'}
+                    </SelectItem>
+                  )}
                 </SelectContent>
               </Select>
-              {!!cat && (narrowed || parties.length === 0) && (
-                <span className="flex flex-wrap items-center gap-1 text-[10.5px] font-semibold text-[#5A6B62]">
-                  {parties.length === 0 ? (
-                    <span className="text-[#8A5300]">No party is tagged {cat}</span>
-                  ) : (
-                    <>parties who deal in {cat}</>
-                  )}
-                  <button
-                    type="button"
-                    className="cursor-pointer font-extrabold text-[#0B6B45] underline-offset-2 hover:underline"
-                    onClick={() => setShowAll((v) => !v)}
-                  >
-                    {showAll ? 'filter by material' : 'show all'}
-                  </button>
-                </span>
-              )}
             </div>
             <div className="flex flex-col gap-1.5">
               <Label className="text-[10px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">Tankers</Label>

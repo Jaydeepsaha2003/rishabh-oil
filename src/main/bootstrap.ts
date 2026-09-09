@@ -12,6 +12,7 @@ import {
 import { seedDefaultAdmin } from './auth'
 import { seedProducts, seedFormulations, seedPackagings } from './seed'
 import { cleanupLogs } from './access'
+import { applyGateTimeFix } from './gateTimeFix'
 
 // Everything a database needs before the app can serve a single request: the
 // schema (initDb), every additive migration recorded by runOnce, and the
@@ -910,6 +911,34 @@ export async function runStartupTasks(): Promise<void> {
         if (!/duplicate column/i.test(String(e))) throw e
       })
   }).catch((e) => console.error('[gate] outside tanker category failed:', e))
+
+  // The gate times the website wrote while the server ran in UTC — 09:53 IST
+  // stored as 04:23, and anything entered before 05:30 IST filed under the
+  // day before. src/server/tz.ts stops it recurring; this repairs what is
+  // already in the table.
+  //
+  // It runs here rather than by hand because the affected rows are on the
+  // server, which is the one machine none of this can be run against
+  // directly. The rule for picking them, and why only these, is in
+  // gateTimeFix.ts — it turns on created_at, the only clock in the table that
+  // was never wrong. Nothing typed by a person is touched.
+  //
+  // Every original value is written to gate_time_utc_fix_log first, so this is
+  // undoable from the database alone if the count looks wrong.
+  await runOnce('gate_time_utc_fix_v1', async () => {
+    const rep = await applyGateTimeFix()
+    console.log(
+      `[gate] UTC time fix: ${rep.utcStamped.length} of ${rep.scanned} timed entries shifted +5:30` +
+        (rep.outLeftAlone.length ? `, ${rep.outLeftAlone.length} out-times left alone` : '')
+    )
+    for (const ch of rep.utcStamped) {
+      console.log(
+        `[gate]   ${ch.gate_entry_no}  in ${ch.old_entry} -> ${ch.new_entry}` +
+          (ch.new_out ? `  out ${ch.old_out} -> ${ch.new_out}` : '') +
+          (ch.warn ? `  (${ch.warn})` : '')
+      )
+    }
+  }).catch((e) => console.error('[gate] UTC time fix failed:', e))
 
   // LC-9's bill was raised for the gross open amount.
   //
