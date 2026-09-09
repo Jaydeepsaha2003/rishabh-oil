@@ -4754,6 +4754,13 @@ async function assertOnOrAfterBooksStart(rule, op, args) {
     `These books begin on ${from}. An entry dated ${d} falls before that, where the opening balances already account for it \u2014 it would be counted twice.`
   );
 }
+function assertScopedReadings(op) {
+  if (op !== "saveQuality") {
+    throw new Error(
+      "Your access to Purchases covers recording technical parameters only \u2014 nothing else on this page can be changed."
+    );
+  }
+}
 function assertScopedSales(op, args) {
   const stage = String(args?.stage || "");
   const isUnload = (op === "setInvoiceStage" || op === "setStage") && stage === "unloaded";
@@ -4775,6 +4782,10 @@ async function assertAllowed(channel, args) {
   if (user.role === "admin") return;
   if (moduleScope(user, rule.module) === "unload" && rule.module === "sales") {
     assertScopedSales(op, args);
+    return;
+  }
+  if (moduleScope(user, rule.module) === "readings" && rule.module === "orders") {
+    assertScopedReadings(op);
     return;
   }
   let action = actionFor(op);
@@ -4997,6 +5008,19 @@ async function unwaiveGateOut(group) {
     args: [String(group || "").trim()]
   });
   return { group: String(group || "").trim() };
+}
+async function waiveGateOuts(groups, reason) {
+  const done = [];
+  const failed = [];
+  for (const g of groups) {
+    try {
+      await waiveGateOut(g, reason);
+      done.push(g);
+    } catch (e) {
+      failed.push({ group: g, error: e.message });
+    }
+  }
+  return { done, failed };
 }
 async function listWaivedGateOuts() {
   const res = await getClient().execute(`
@@ -6449,6 +6473,8 @@ async function listOrders(forModule) {
              WHERE pt.order_id = o.id AND pt.status = 'empty'
                AND EXISTS (SELECT 1 FROM tanker_quality tq
                             WHERE tq.tanker_id = pt.id AND TRIM(COALESCE(tq.value, '')) <> '')) AS quality_tankers,
+           (SELECT COUNT(*) FROM order_quality oq
+             WHERE oq.order_id = o.id AND TRIM(COALESCE(oq.value, '')) <> '') AS quality_on_order,
            -- Shortage rolled up from the tankers. The order's own
            -- actual_shortage_qty columns are only written on the tanker-less
            -- receipt path, so a tanker purchase showed nothing at all.
@@ -7436,6 +7462,28 @@ async function saveTankerQuality(tankerId, rows) {
     });
   }
 }
+async function saveOrderQuality(orderId, rows) {
+  const c = getClient();
+  await c.execute({ sql: "DELETE FROM order_quality WHERE order_id = ?", args: [n5(orderId)] });
+  let i = 0;
+  for (const r of rows) {
+    const name = String(r.name || "").trim();
+    const value = String(r.value ?? "").trim();
+    if (!name || !value) continue;
+    await c.execute({
+      sql: "INSERT INTO order_quality (order_id, name, value, sort_order) VALUES (?, ?, ?, ?)",
+      args: [n5(orderId), name, value, i++]
+    });
+  }
+}
+async function listOrderQuality(orderId) {
+  return toPlain6(
+    await getClient().execute({
+      sql: "SELECT id, name, value, sort_order FROM order_quality WHERE order_id = ? ORDER BY sort_order, id",
+      args: [n5(orderId)]
+    })
+  );
+}
 async function listTankerQuality(tankerId) {
   const res = await getClient().execute({
     sql: "SELECT id, name, value, sort_order FROM tanker_quality WHERE tanker_id = ? ORDER BY sort_order, id",
@@ -7565,16 +7613,17 @@ async function advancePurchaseTanker(id, toStatus, data) {
     const isEx = tankerIsEx(data.condition !== void 0 ? data.condition : tanker.condition, bt);
     const rate = n5(data.transport_rate_per_ton);
     const transporterId = data.transporter_id ? n5(data.transporter_id) : tanker.transporter_id ?? null;
-    if (isEx && rate <= 0) {
+    const freightRemark = String(data.freight_remark || "").trim();
+    if (isEx && rate <= 0 && !freightRemark) {
       throw new Error(
-        `Tanker ${tanker.tanker_no} is on EX terms, so the transporter rate per ${String(tanker.uom || "MT")} is required before it moves to In transit.`
+        `Tanker ${tanker.tanker_no} is on EX terms. Enter the transporter rate per ${String(tanker.uom || "MT")}, or put 0 and say why there is no freight.`
       );
     }
     const sets = ["status = 'transit'", "transit_date = ?", "source_id = ?", "expected_delivery_date = ?"];
     const args = [transitDate || null, sourceId, expected];
     if (isEx) {
-      sets.push("transport_rate_per_ton = ?", "transporter_id = ?");
-      args.push(rate, transporterId);
+      sets.push("transport_rate_per_ton = ?", "transporter_id = ?", "freight_remark = ?");
+      args.push(rate, transporterId, rate > 0 ? null : freightRemark || null);
     }
     args.push(id);
     await c.execute({
@@ -7629,7 +7678,8 @@ async function advancePurchaseTanker(id, toStatus, data) {
     }
     const shortage = Math.max(0, n5(tanker.loaded_qty) - receivedQty);
     const excess = Math.max(0, shortage - n5(tanker.loaded_qty) * pct / 100);
-    const penalty = isEx ? excess * n5(b.rate_per_uom) : 0;
+    const agreedRate = n5(data.transport_rate_per_ton ?? tanker.transport_rate_per_ton);
+    const penalty = isEx && agreedRate > 0 ? excess * n5(b.rate_per_uom) : 0;
     const transporterId = isEx ? n5(data.transporter_id) : null;
     await c.execute({
       sql: `UPDATE purchase_tankers SET status = 'empty', empty_date = ?, received_qty = ?,
@@ -7765,7 +7815,7 @@ async function advanceOrder(id, toStatus, data) {
     const allowedQty = orderedQty * pct / 100;
     const actualShortage = Math.max(0, orderedQty - receivedQty);
     const excessShortage = Math.max(0, actualShortage - allowedQty);
-    const shortageCharge = isEx ? excessShortage * bargainRate : 0;
+    const shortageCharge = isEx && transportRate > 0 ? excessShortage * bargainRate : 0;
     const transporterId = isEx ? n5(data.transporter_id) : null;
     sets.push(
       "received_date = ?",
@@ -12379,6 +12429,23 @@ async function runStartupTasks() {
       });
     }
   }).catch((e) => console.error("[notify] message templates failed:", e));
+  await runOnce("order_quality_v1", async () => {
+    const c = getClient();
+    await c.execute(`CREATE TABLE IF NOT EXISTS order_quality (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      value TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )`);
+    await c.execute("CREATE INDEX IF NOT EXISTS idx_order_quality_order ON order_quality(order_id)");
+  }).catch((e) => console.error("[orders] order quality table failed:", e));
+  await runOnce("tanker_freight_remark_v1", async () => {
+    await getClient().execute("ALTER TABLE purchase_tankers ADD COLUMN freight_remark TEXT").catch((e) => {
+      if (!/duplicate column/i.test(String(e))) throw e;
+    });
+  }).catch((e) => console.error("[tankers] freight remark column failed:", e));
   await runOnce("gate_time_utc_fix_v1", async () => {
     const rep = await applyGateTimeFix();
     console.log(
@@ -13835,6 +13902,29 @@ async function listOutsideTankers(date) {
     return { ...r, sl_no: sl };
   });
 }
+async function recordNilRound(date, slot) {
+  const c = getClient();
+  const day = String(date || "").slice(0, 10);
+  if (!day) throw new Error("Pick the date this count was taken");
+  if (!OUTSIDE_SLOTS.includes(slot))
+    throw new Error("Pick which round this is \u2014 8 AM, 4 PM or 8 PM");
+  const cid = getActiveCompanyId();
+  const has = await c.execute({
+    sql: "SELECT COUNT(*) AS n FROM outside_tankers WHERE company_id = ? AND log_date = ? AND slot = ?",
+    args: [cid, day, slot]
+  });
+  if (n16(has.rows[0].n))
+    throw new Error("This round already has entries \u2014 remove them first if nothing was outside after all");
+  const res = await c.execute({
+    sql: `INSERT INTO outside_tankers (company_id, log_date, slot, kind, tankers, created_by)
+          VALUES (?, ?, ?, 'nil', 0, ?)`,
+    // created_by is left null: a NIL is recorded from the round's own button,
+    // which carries no form and so no username. The row's timestamp and the
+    // audit log already say who pressed it.
+    args: [cid, day, slot, null]
+  });
+  return { id: Number(res.lastInsertRowid || 0) };
+}
 async function saveOutsideTanker(v) {
   const c = getClient();
   const day = String(v.log_date || "").slice(0, 10);
@@ -13869,6 +13959,10 @@ async function saveOutsideTanker(v) {
     });
     return { id: n16(v.id) };
   }
+  await c.execute({
+    sql: "DELETE FROM outside_tankers WHERE company_id = ? AND log_date = ? AND slot = ? AND kind = 'nil'",
+    args: [getActiveCompanyId(), day, slot]
+  });
   const res = await c.execute({
     sql: `INSERT INTO outside_tankers
             (company_id, log_date, slot, kind, category, product_id, party_id, tankers, note, created_by)
@@ -18090,7 +18184,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -18220,6 +18314,11 @@ function registerIpc() {
   handle("tankers:quality", (_e, { id }) => listTankerQuality(Number(id)));
   handle("tankers:saveQuality", async (_e, { id, rows }) => {
     await saveTankerQuality(Number(id), Array.isArray(rows) ? rows : []);
+    return { id: Number(id) };
+  });
+  handle("orders:quality", (_e, { id }) => listOrderQuality(Number(id)));
+  handle("orders:saveQuality", async (_e, { id, rows }) => {
+    await saveOrderQuality(Number(id), Array.isArray(rows) ? rows : []);
     return { id: Number(id) };
   });
   handle("orders:create", (_e, { values }) => createOrder(values));
@@ -18398,6 +18497,7 @@ function registerIpc() {
   handle("outsideTanker:list", (_e, { date } = {}) => listOutsideTankers(date));
   handle("outsideTanker:save", (_e, v) => saveOutsideTanker(v));
   handle("outsideTanker:remove", (_e, { id }) => removeOutsideTanker(id));
+  handle("outsideTanker:nil", (_e, { date, slot }) => recordNilRound(date, slot));
   handle(
     "stockOpening:list",
     (_e, { companyId } = {}) => listStockOpenings(companyId)
@@ -18540,6 +18640,7 @@ function registerIpc() {
   handle("notify:clear", (_e, a) => clearNotifications(Number(a.userId) || 0, !!a.isAdmin));
   handle("gate:waiveOut", (_e, a) => waiveGateOut(String(a.group), String(a.reason || "")));
   handle("gate:unwaiveOut", (_e, a) => unwaiveGateOut(String(a.group)));
+  handle("gate:waiveOuts", (_e, a) => waiveGateOuts(a.groups || [], String(a.reason || "")));
   handle("gate:partyCategories", () => partyCategories());
   handle(
     "gate:forRecord",
