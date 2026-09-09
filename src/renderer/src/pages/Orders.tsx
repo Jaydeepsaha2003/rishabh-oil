@@ -2836,11 +2836,21 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                             : 'The bargain is picked up automatically from the tankers you select.'}
                     </span>
                   </div>
-                  {/* Trading is not a footnote — it decides whether the
-                      invoice touches stock at all. On the website it is a
-                      panel that changes colour when it is on, with the
-                      consequence spelled out under the name, rather than one
-                      small tick on a line of grey text. */}
+                  {/* Off the website's purchase form.
+                      
+                      Trading has a page of its own now — the back-to-back buy
+                      and sell belong together on one screen, which is what
+                      Trading does and what this tick never could. Left here it
+                      was a switch on the wrong form: it hid the tanker picker,
+                      changed what the summary meant, and took the invoice out
+                      of stock, all from a checkbox above the invoice number.
+                      
+                      Only the CONTROL goes. is_trading and everything it
+                      drives stay exactly as they are, so a trading invoice
+                      already on the books still opens, still reads as trading
+                      and still saves — it was disabled on an edit anyway. The
+                      desktop app keeps the tick. */}
+                  {!__WEB__ && (
                   <div className="flex flex-col gap-1.5 md:col-span-3">
                     <label
                       className={cn(
@@ -2887,6 +2897,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       )}
                     </label>
                   </div>
+                  )}
                   <div className="flex flex-col gap-1.5">
                     <Label>Invoice number *</Label>
                     {(() => {
