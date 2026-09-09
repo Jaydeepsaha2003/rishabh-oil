@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   Undo2, ArrowLeft, ArrowRight, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, CheckCircle2, ChevronDown, ClipboardList, Clock, DoorOpen, Eye, MinusCircle, Package,
-  FileText, History, IndianRupee, Pencil, Plus, ScrollText, Search, Trash2, Truck, type LucideIcon } from 'lucide-react'
+  FileText, History, IndianRupee, Pencil, Plus, ScrollText, Search, Trash2, Truck, type LucideIcon,
+  Check
+} from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { FyPicker } from '@/components/FyPicker'
 import { ExcelButton } from '@/components/ExcelButton'
@@ -24,7 +26,7 @@ import { GateEntriesDialog } from '@/components/GateEntriesDialog'
 import { HistoryDialog, useHistoryDialog } from '@/components/HistoryDialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
+import { formatDate, formatDateShort, formatINR, formatNum, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { computeMoney, computeShortage } from '@/lib/orderCalc'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
@@ -44,6 +46,23 @@ const TANKER_LABEL: Record<string, string> = {
   inside_factory: 'Inside factory',
   empty: 'Empty'
 }
+
+// The journey, for the drawer's rail. Each stage knows the column that stamps
+// it, so the rail can show what has already happened rather than only where
+// you are — a tanker at Empty should still show the day it was loaded.
+const TANKER_STAGE_RAIL: {
+  key: string
+  label: string
+  dateKey: string
+  icon: React.ComponentType<{ className?: string }>
+}[] = [
+  { key: 'supplier_factory', label: 'To be loaded', dateKey: 'created_at', icon: Truck },
+  { key: 'loaded', label: 'Loaded', dateKey: 'loaded_date', icon: Package },
+  { key: 'transit', label: 'In transit', dateKey: 'transit_date', icon: Truck },
+  { key: 'outside_factory', label: 'Outside', dateKey: 'outside_factory_date', icon: DoorOpen },
+  { key: 'inside_factory', label: 'Inside', dateKey: 'inside_factory_date', icon: Building2 },
+  { key: 'empty', label: 'Empty', dateKey: 'empty_date', icon: Check }
+]
 
 // Read an image file and return a downscaled JPEG data URL so weighment-slip
 // photos stay small enough to live in the cloud DB (works for all users).
@@ -165,6 +184,63 @@ function monthStartISO(): string {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
 }
+
+// What an incoming load is tested on when the sample is drawn. Seeded on every
+// empty-stage form so the four are asked for by name rather than remembered;
+// the row is dropped on save if it is left blank, so a load that was not
+// tested for one of them stores nothing rather than a blank reading.
+// The stage forms, as a right-hand drawer.
+//
+// They were centred modals, which is the wrong shape for this work: moving a
+// tanker on is done against the register — you check the row you came from,
+// the gate figure, the bargain balance — and a box in the middle of the screen
+// covers exactly that. A panel down the right edge leaves the register beside
+// it, which is how the handoff draws every one of these.
+//
+// Built by overriding the Dialog rather than introducing a Sheet: the content,
+// the focus trap, the escape key and the six call sites all stay as they are,
+// and only where the panel sits changes.
+const TK_DRAWER = __WEB__
+  ? cn(
+      '!left-auto !right-0 !top-0 !bottom-0 !translate-x-0 !translate-y-0',
+      '!h-screen !max-h-screen !w-[min(100vw,700px)] !max-w-none',
+      '!grid-rows-[auto_1fr_auto] !gap-0 !rounded-none !border-0 !bg-[#F1F5EF] !p-0',
+      '!shadow-[-16px_0_40px_rgba(10,31,23,.22)]',
+      'data-[state=open]:!slide-in-from-right-1/2 data-[state=closed]:!slide-out-to-right-1/2'
+    )
+  : ''
+
+// The forest head: what stage this is, which tanker, and the load in one line.
+const TK_HEAD = __WEB__ ? '!m-0 !space-y-0 !bg-[#0B3D2E] !px-[22px] !pb-4 !pt-[18px] !text-left' : ''
+const TK_KICKER = __WEB__ ? 'text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]' : ''
+const TK_TITLE = __WEB__ ? '!mt-1.5 !text-[21px] !font-extrabold !tracking-[-0.02em] !text-white' : ''
+const TK_SUB = __WEB__ ? 'mt-1 text-[12.5px] font-semibold text-[#8FBFA8]' : ''
+
+// The scrolling middle, and the section cards inside it.
+const TK_BODY = __WEB__
+  ? '!m-0 !min-h-0 !gap-3 !overflow-y-auto !bg-[#F1F5EF] !px-[22px] !py-4'
+  : ''
+const TK_CARD = __WEB__ ? 'rounded-[4px] border border-[#D6E2D6] bg-white' : ''
+const TK_CARD_HEAD = __WEB__
+  ? 'border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-4 py-3 text-[11px] font-extrabold uppercase tracking-[.13em] text-[#0A1F17]'
+  : ''
+// One rule for every control in the drawer, so a Select, a date and a text box
+// are the same object at the same height — 46px, as the handoff draws them.
+const TK_FIELDS = __WEB__
+  ? cn(
+      '[&_label]:!text-[11px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.11em] [&_label]:!text-[#5A6B62]',
+      '[&_input]:!h-[46px] [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[13.5px] [&_input]:!font-bold [&_input]:!text-[#0A1F17]',
+      '[&_[data-slot=select-trigger]]:!h-[46px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=select-trigger]]:!font-bold',
+      '[&_[data-slot=date-picker]]:!h-[46px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[13px] [&_[data-slot=date-picker]]:!font-bold'
+    )
+  : ''
+// Save and Cancel pinned to the bottom edge, not floating after the last
+// field — these forms are long enough to scroll past them.
+const TK_FOOT = __WEB__
+  ? '!m-0 !border-t !border-t-[#D6E2D6] !bg-white !px-[22px] !py-3.5 [&_button]:!h-[42px] [&_button]:!rounded-[4px] [&_button]:!px-5 [&_button]:!text-[13px] [&_button]:!font-extrabold'
+  : ''
+
+const TANKER_QUALITY_DEFAULTS = ['FFA', 'Colour', 'Moisture', 'Melting point'] as const
 
 function stageAsOf(t: Row, asOf: string): string {
   const on = (d: unknown): boolean => {
@@ -1325,6 +1401,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     if (target === 'inside_factory') next.inside_factory_date = todayISO()
     if (target === 'empty') Object.assign(next, {
       empty_date: todayISO(),
+      quality: TANKER_QUALITY_DEFAULTS.map((name) => ({ name, value: '' })),
       // prefill with the gate-received qty so the gate cross-check passes
       received_qty: gateQtyFor(row.id) ?? row.loaded_qty,
       transporter_id: row.transporter_id || '',
@@ -1516,6 +1593,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         source_id: actionForm.source_id ? Number(actionForm.source_id) : null,
         transporter_id: actionForm.transporter_id ? Number(actionForm.transporter_id) : null,
         received_qty: Number(actionForm.received_qty) || 0,
+        quality: Array.isArray(actionForm.quality) ? actionForm.quality : [],
         transport_rate_per_ton: Number(actionForm.transport_rate_per_ton) || 0,
         krfl_weighment_doc_no: actionForm.krfl_weighment_doc_no || null,
         krfl_weighment_photo: actionForm.krfl_weighment_photo || null,
@@ -4368,10 +4446,87 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         <DialogContent
           className={cn(
             'max-h-[92vh] w-[calc(100vw-2rem)] overflow-y-auto',
-            target === 'empty' ? 'sm:max-w-3xl' : 'sm:max-w-2xl'
+            target === 'empty' ? 'sm:max-w-3xl' : 'sm:max-w-2xl',
+            TK_DRAWER
           )}
         >
-          <DialogHeader><DialogTitle>{target ? `Move ${String(actionRow?.tanker_no || '').trim() || 'tanker'} to ${TANKER_LABEL[target]}` : 'Update tanker'}</DialogTitle></DialogHeader>
+          <DialogHeader className={cn(TK_HEAD)}>
+            {__WEB__ && <div className={TK_KICKER}>{target ? TANKER_LABEL[target] : 'Tanker'}</div>}
+            <DialogTitle className={cn(TK_TITLE, __WEB__ && 'doc-ref')}>
+              {__WEB__
+                ? String(actionRow?.tanker_no || '').trim() || 'Tanker'
+                : target
+                  ? `Move ${String(actionRow?.tanker_no || '').trim() || 'tanker'} to ${TANKER_LABEL[target]}`
+                  : 'Update tanker'}
+            </DialogTitle>
+            {__WEB__ && !!actionRow && (
+              <div className={TK_SUB}>
+                {[
+                  String(actionRow.supplier_name || ''),
+                  String(actionRow.oil_type_name || actionRow.product_name || ''),
+                  Number(actionRow.loaded_qty) ? `${formatNum(actionRow.loaded_qty)} ${String(actionRow.uom || 'MT')}` : ''
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </div>
+            )}
+            {/* The whole journey, with this stage lit. A tanker moves through
+                six of these and the form never said which one you were in, or
+                what had already been stamped. */}
+            {__WEB__ && !!actionRow && (
+              <div className="no-scrollbar mt-4 flex items-stretch overflow-x-auto">
+                {TANKER_STAGE_RAIL.map((st) => {
+                  const done = !!String(actionRow[st.dateKey] || '').trim()
+                  const here = target === st.key
+                  return (
+                    <div
+                      key={st.key}
+                      className={cn(
+                        'flex min-w-[96px] flex-1 flex-col gap-2 border-b-[3px] px-1 pb-3',
+                        here ? 'border-b-[#C7F03F]' : 'border-b-white/15'
+                      )}
+                    >
+                      <span className="flex min-w-0 items-center gap-[7px]">
+                        <span
+                          className={cn(
+                            'flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-[1.5px]',
+                            here
+                              ? 'border-[#C7F03F] bg-[#C7F03F] text-[#0B3D2E]'
+                              : done
+                                ? 'border-[#8FBFA8] bg-[#8FBFA8]/20 text-[#C7F03F]'
+                                : 'border-white/25 text-white/40'
+                          )}
+                        >
+                          {done && !here ? <Check className="h-3 w-3" /> : <st.icon className="h-3 w-3" />}
+                        </span>
+                        <span
+                          className={cn(
+                            'truncate text-[11px] font-extrabold',
+                            here ? 'text-white' : done ? 'text-[#8FBFA8]' : 'text-white/40'
+                          )}
+                        >
+                          {st.label}
+                        </span>
+                      </span>
+                      <span
+                        className={cn(
+                          'doc-ref whitespace-nowrap pl-[27px] text-[10.5px] font-semibold',
+                          done ? 'text-[#8FBFA8]' : 'text-white/25'
+                        )}
+                      >
+                        {done ? formatDateShort(actionRow[st.dateKey]) : '—'}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </DialogHeader>
+          {/* The scrolling middle. Every stage's fields go through one
+              wrapper so a Select, a date and a text box are the same 46px
+              object wherever they appear — the drawer must not look like six
+              different forms. */}
+          <div className={cn(__WEB__ && cn(TK_BODY, TK_FIELDS, 'grid content-start'))}>
           {target === 'loaded' && actionRow && <div className="grid gap-4">
             <div className="flex flex-col gap-1.5">
               <Label>Tanker number *{String(actionRow.tanker_no || '').trim() ? '' : ' (set it now)'}</Label>
@@ -4639,6 +4794,86 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               <div className="flex flex-col gap-1.5"><Label>Empty date</Label><DatePicker value={actionForm.empty_date || ''} min={actionRow?.inside_factory_date || actionRow?.outside_factory_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm((p) => ({ ...p, empty_date: v }))} /></div>
               <div className="flex flex-col gap-1.5"><Label>Received quantity</Label><Input type="number" value={actionForm.received_qty || ''} onChange={(e) => setActionForm((p) => ({ ...p, received_qty: e.target.value }))} /></div>
             </div>
+            {/* What the sample said. The four the mill always runs are listed
+                by name so nobody has to remember them; the name stays editable
+                and Add reading appends a blank pair, because a load is
+                occasionally tested on something else and that should not need
+                a release. Anything left blank is not saved — "not tested" and
+                "tested at nothing" are different answers. */}
+            {(() => {
+              const quality: Row[] = Array.isArray(actionForm.quality) ? actionForm.quality : []
+              const setQ = (i: number, patch: Row): void =>
+                setActionForm((p) => ({
+                  ...p,
+                  quality: (Array.isArray(p.quality) ? p.quality : []).map((q: Row, j: number) =>
+                    j === i ? { ...q, ...patch } : q
+                  )
+                }))
+              return (
+                <div className="rounded-md border p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <Label className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+                      Technical parameters
+                    </Label>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 gap-1 px-2 text-[11px]"
+                      onClick={() =>
+                        setActionForm((p) => ({
+                          ...p,
+                          quality: [...(Array.isArray(p.quality) ? p.quality : []), { name: '', value: '' }]
+                        }))
+                      }
+                    >
+                      <Plus className="h-3.5 w-3.5" /> Add reading
+                    </Button>
+                  </div>
+                  <div className="grid gap-2">
+                    {quality.map((q: Row, i: number) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <Input
+                          value={String(q.name ?? '')}
+                          placeholder="Parameter"
+                          onChange={(e) => setQ(i, { name: e.target.value })}
+                          className="h-9 flex-1 text-[13px]"
+                        />
+                        <div className="relative w-32 shrink-0">
+                          <Input
+                            value={String(q.value ?? '')}
+                            placeholder="—"
+                            inputMode="decimal"
+                            onChange={(e) => setQ(i, { value: e.target.value })}
+                            className="h-9 pr-7 text-right text-[13px]"
+                          />
+                          <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[12px] text-muted-foreground">
+                            %
+                          </span>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0 text-destructive"
+                          title="Remove this reading"
+                          onClick={() =>
+                            setActionForm((p) => ({
+                              ...p,
+                              quality: (Array.isArray(p.quality) ? p.quality : []).filter(
+                                (_: Row, j: number) => j !== i
+                              )
+                            }))
+                          }
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
             {(() => {
               // Both of these are settled when the tanker is sent In transit, so
               // here they are a read-back rather than a question. A tanker that
@@ -4704,7 +4939,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             </div>
             <div className="rounded-lg border bg-muted/30 p-3"><MoneyRow label="Loaded" value={`${formatNum(actionRow.loaded_qty)} ${actionRow.uom}`} /><MoneyRow label="Shortage" value={`${formatNum(shortage.actualShortage)} ${actionRow.uom}`} /><MoneyRow label="Freight" value={formatINR(shortage.transportAmount)} /></div>
           </div>}
-          <DialogFooter><Button variant="outline" onClick={() => { setActionRow(null); setExcess(null) }}>Cancel</Button><Button
+          </div>
+          <DialogFooter className={cn(TK_FOOT)}><Button variant="outline" onClick={() => { setActionRow(null); setExcess(null) }}>Cancel</Button><Button
             onClick={advanceTanker}
             disabled={target === 'transit' && !!actionRow && condIsEx(actionRow) && !(Number(actionForm.transport_rate_per_ton) > 0)}
             title={

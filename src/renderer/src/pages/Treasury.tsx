@@ -43,6 +43,7 @@ import { PeriodPicker } from '@/components/PeriodPicker'
 import { RowActions } from '@/components/ui/row-actions'
 import { formatDate, formatDateShort, formatINR, todayISO } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { readView, writeView } from '@/lib/viewstate'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { exportLcRegister } from '@/lib/lcExcel'
 import { HistoryDialog, useHistoryDialog } from '@/components/HistoryDialog'
@@ -928,6 +929,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   // the figures on these tabs are the whole content, so a disabled tab would
   // still be displaying them.
   const sessionUser = useMemo(() => loadUser(), [])
+  const TREASURY_VIEW_KEY = 'treasury.view'
   const TREASURY_TABS = useMemo(
     () =>
       [
@@ -937,7 +939,18 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
       ].filter((t) => !sessionUser || canAccess(sessionUser, t.module)),
     [sessionUser]
   )
-  const [tab, setTab] = useState(() => TREASURY_TABS[0]?.key || 'lc')
+  // Restored across a refresh. F5 on Bill discounting used to come back on
+  // Letters of Credit, because the URL carries the PAGE and the tab was
+  // ordinary state. Line 946 below still guards it: a restored tab the user has
+  // no access to falls back to the first one they do.
+  // Explicitly a string: Tabs' onValueChange hands back a plain string, and
+  // letting the restore narrow this to a union makes setTab unassignable to it.
+  const [tab, setTab] = useState<string>(() =>
+    readView(TREASURY_VIEW_KEY, 'tab', ['lc', 'bd', 'tracker'] as const, 'lc')
+  )
+  useEffect(() => {
+    writeView(TREASURY_VIEW_KEY, { tab })
+  }, [tab])
 
   // If the tab in hand is one they may not see — a permission changed under
   // them, or it was restored from a previous session — fall to the first they
@@ -2330,7 +2343,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
           {/* Alerts and the LC filters share ONE row. The alerts stay outside
               the tab panels so they show on every tab; the filters only render
               on the LC tab, where they mean something. */}
-          {tabAlerts.length > 0 && !(__WEB__ && tab === 'lc') && (
+          {tabAlerts.length > 0 && !(__WEB__ && (tab === 'lc' || tab === 'bd')) && (
             <div className="flex flex-wrap items-center gap-2">
               {tabAlerts.map((a) => (
                 <button
@@ -3517,6 +3530,8 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               onCompanyChange={onCompanyChange}
               nbfcFilter={activeNbfc}
               onNbfcsLoaded={setNbfcs}
+              alerts={__WEB__ ? tabAlerts.map((a) => ({ key: a.key, label: a.label, tone: a.tone, icon: a.icon, count: a.rows.length })) : []}
+              onOpenAlert={setExpandedAlert}
             />
           </TabsContent>
         </Tabs>

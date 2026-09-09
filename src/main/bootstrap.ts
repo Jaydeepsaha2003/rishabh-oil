@@ -1013,5 +1013,30 @@ export async function runStartupTasks(): Promise<void> {
     console.log('[lc5] interest_upfront cleared — expectation now matches the recorded bill')
   }).catch((e) => console.error('[lc5] upfront flag fix failed:', e))
 
+  // Lab readings taken when a tanker is emptied.
+  //
+  // FFA, colour, moisture and melting point are what the mill actually tests
+  // an incoming load on, and until now they were nowhere — the tanker recorded
+  // how MUCH arrived and nothing about what it was. They belong to the empty
+  // stage because that is when the sample is drawn.
+  //
+  // A row per reading rather than four columns, so a load that needs a fifth
+  // test does not need a schema change. `sort_order` keeps the four standard
+  // ones in their usual order with anything added falling in after them.
+  await runOnce('tanker_quality_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS tanker_quality (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tanker_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      value TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )`)
+    await c.execute(
+      'CREATE INDEX IF NOT EXISTS idx_tanker_quality_tanker ON tanker_quality(tanker_id)'
+    )
+  }).catch((e) => console.error('[tankers] quality table failed:', e))
+
   startRevisionWatcher()
 }

@@ -1586,6 +1586,37 @@ export async function revertPurchaseTanker(id: number): Promise<{ id: number; st
   return { id, status: prev }
 }
 
+// The lab readings for one tanker: FFA, colour, moisture, melting point, and
+// anything else the sample was tested on. Replaced wholesale on each save —
+// they are four or five short readings taken together, not a ledger, so
+// diffing them row by row would be machinery for nothing.
+//
+// A reading with no value is dropped rather than stored blank: "not tested"
+// and "tested and found to be nothing" are different answers, and only one of
+// them is worth a row.
+export async function saveTankerQuality(tankerId: number, rows: Row[]): Promise<void> {
+  const c = getClient()
+  await c.execute({ sql: 'DELETE FROM tanker_quality WHERE tanker_id = ?', args: [n(tankerId)] })
+  let order = 0
+  for (const r of rows) {
+    const name = String(r?.name || '').trim()
+    const value = String(r?.value ?? '').trim()
+    if (!name || !value) continue
+    await c.execute({
+      sql: 'INSERT INTO tanker_quality (tanker_id, name, value, sort_order) VALUES (?, ?, ?, ?)',
+      args: [n(tankerId), name, value, order++]
+    })
+  }
+}
+
+export async function listTankerQuality(tankerId: number): Promise<Row[]> {
+  const res = await getClient().execute({
+    sql: 'SELECT id, name, value, sort_order FROM tanker_quality WHERE tanker_id = ? ORDER BY sort_order, id',
+    args: [n(tankerId)]
+  })
+  return toPlain(res)
+}
+
 export async function advancePurchaseTanker(id: number, toStatus: string, data: Row): Promise<{ id: number }> {
   const c = getClient()
   const res = await c.execute({ sql: 'SELECT * FROM purchase_tankers WHERE id = ?', args: [id] })
@@ -1777,6 +1808,7 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
       args: [data.inside_factory_date || null, id]
     })
   } else if (toStatus === 'empty') {
+    await saveTankerQuality(id, Array.isArray(data.quality) ? (data.quality as Row[]) : [])
     const receivedQty = n(data.received_qty)
     if (receivedQty <= 0 || receivedQty > n(tanker.loaded_qty) + 1e-6) throw new Error('Enter a valid empty quantity')
     // Cross-check against the gate-recorded received quantity for this tanker,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   Banknote,
@@ -15,7 +15,10 @@ import {
   History,
   Settings2,
   Trash2,
-  Users
+  Users,
+  Sigma,
+  Search,
+  X
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -229,18 +232,47 @@ function Op({ children }: { children: React.ReactNode }): React.JSX.Element {
 // The four breakdown cells under the headline. Left-aligned for the same
 // reason the LC facility cells are: centred, a row of figures starts at a
 // different x in every cell and cannot be read down the row.
-const BD_CELL = __WEB__ ? '!bg-white !px-3.5 !py-3 !text-left' : ''
-const BD_K = __WEB__ ? '!text-[9px] !font-extrabold !tracking-[.12em] !text-[#5A6B62]' : ''
-const BD_V = __WEB__ ? '!mt-1 !whitespace-nowrap !text-[14.5px] !font-bold !text-[#0A1F17]' : ''
-const BD_SUB = __WEB__ ? '!mt-0.5 !text-[10.5px] !font-semibold !text-[#5A6B62]' : ''
+const BD_CELL = __WEB__ ? '!bg-white !px-4 !py-[13px] !text-left' : ''
+// The label was 9px — smaller than anything else on the page and set in caps,
+// which is the combination that reads as fine print rather than as a heading.
+const BD_K = __WEB__ ? '!text-[10px] !font-extrabold !tracking-[.13em] !text-[#5A6B62]' : ''
+// The figure is what the cell is for, so it gets the room: 18px, tabular, and
+// tightened, the same treatment the Stock KPI cards give theirs. At 14.5px it
+// was competing with its own caption.
+const BD_V = __WEB__
+  ? 'doc-ref !mt-[5px] !whitespace-nowrap !text-[18px] !font-bold !tracking-[-0.02em] !text-[#0A1F17]'
+  : ''
+const BD_SUB = __WEB__ ? '!mt-[3px] !text-[11.5px] !font-semibold !leading-[1.45] !text-[#5A6B62]' : ''
 
 // The register's chrome. A sticky header composites each of its own cells, so
 // the forest has to be set on every one of them, not on the row alone.
 const BD_HEAD = __WEB__
-  ? '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&>th]:!h-auto [&>th]:!bg-[#0B3D2E] [&>th]:!py-2.5 [&>th]:!text-[9.5px] [&>th]:!font-extrabold [&>th]:!tracking-[.13em] [&>th]:!text-white [&>th]:!border-r-[#C7F03F]/15'
+  ? '!border-b-0 !bg-[#0B3D2E] hover:!bg-[#0B3D2E] [&>th]:!h-auto [&>th]:!bg-[#0B3D2E] [&>th]:!py-2.5 [&>th]:!py-3 [&>th]:!text-[12.5px] [&>th]:!font-bold [&>th]:!tracking-[.02em] [&>th]:!normal-case [&>th]:!text-white [&>th]:!border-r-[#C7F03F]/15'
   : ''
+// The body's column washes, from the handoff. The dated middle of the row —
+// validity, days left, the interest arithmetic — sits on a near-white so it
+// reads as working, and Receipt takes the pale green because it is the one
+// figure the register exists to report: what actually reached the account.
+// The filter tray, from the handoff. A pale sage tray with the live chip
+// lifted out of it in forest — the same object the Stock page uses, so a
+// reader moving between registers is not learning a second control. It
+// replaces round navy pills that matched nothing else on the site.
+const BD_TRAY = __WEB__
+  ? '!gap-[3px] !rounded-[4px] !border !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px]'
+  : ''
+const BD_CHIP = __WEB__ ? '!h-[34px] !rounded-[2px] !border-0 !px-3 !py-0 !text-[12px] !leading-none' : ''
+const BD_CHIP_ON = __WEB__ ? '!bg-[#0B3D2E] !font-extrabold !text-white' : ''
+const BD_CHIP_OFF = __WEB__
+  ? '!bg-transparent !font-bold !text-[#5A6B62] hover:!bg-white/70 hover:!text-[#0A1F17]'
+  : ''
+
+const BD_W = __WEB__ ? '!bg-[#FCFDFB]' : ''
+const BD_WR = __WEB__ ? '!bg-[#F7FBF4]' : ''
+const BD_RULE = __WEB__ ? '!border-l !border-l-[#EAF0E9]' : ''
+const BD_NUM = __WEB__ ? 'doc-ref !text-[12.5px] !font-bold' : ''
+
 const BD_TOTAL = __WEB__
-  ? '!border-b-2 !border-b-[#C7F03F] !bg-[#EFF5EC] hover:!bg-[#EFF5EC] [&>td]:!py-3 [&>td]:!text-[#0A1F17]'
+  ? '!border-b-2 !border-b-[#C7F03F] !bg-[#EFF5EC] hover:!bg-[#EFF5EC] [&>td]:!py-3 [&>td]:!text-[13px] [&>td]:!font-bold [&>td]:!text-[#0A1F17]'
   : ''
 
 export function BillDiscounting({
@@ -250,13 +282,21 @@ export function BillDiscounting({
   // The lender in view, chosen in the page header. A discounted bill is against
   // an NBFC, not a bank, which is what that picker names on this tab.
   nbfcFilter = '',
-  onNbfcsLoaded
+  onNbfcsLoaded,
+  // The maturity warnings for this tab. They used to float above the register
+  // in a strip of their own, which put a line between the page header and the
+  // thing it heads — and left the register's own header row half empty. They
+  // belong on that row, beside the actions they would send you to.
+  alerts = [],
+  onOpenAlert
 }: {
   companies?: Row[]
   activeCompany?: number
   onCompanyChange?: (id: string) => void
   nbfcFilter?: string
   onNbfcsLoaded?: (rows: Row[]) => void
+  alerts?: { key: string; label: string; tone: string; icon: React.ComponentType<{ className?: string }>; count: number }[]
+  onOpenAlert?: (key: string) => void
 } = {}): React.JSX.Element {
   const [rows, setRows] = useState<Row[]>([])
   const [nbfcs, setNbfcs] = useState<Row[]>([])
@@ -271,6 +311,12 @@ export function BillDiscounting({
   const [form, setForm] = useState<Row | null>(null)
   const [saving, setSaving] = useState(false)
   const [nbfcOpen, setNbfcOpen] = useState(false)
+  // Which bill is opened out. One at a time: the panel is tall, and two open
+  // at once turns a register into a list of essays.
+  const [openBd, setOpenBd] = useState(0)
+  // Type-to-find over the register. Website only — the desktop has its own
+  // filtering habits and no room on that row for a field.
+  const [bdQuery, setBdQuery] = useState('')
   const [repayRow, setRepayRow] = useState<Row | null>(null)
   const [repayForm, setRepayForm] = useState<Row>({})
   const [repaySaving, setRepaySaving] = useState(false)
@@ -369,8 +415,19 @@ export function BillDiscounting({
         })
       }
     }
+    // The three things anyone remembers about a bill: its number, who financed
+    // it, and whose invoice it was raised against. Matched together so one box
+    // answers all three rather than making the reader pick a field first.
+    const q = bdQuery.trim().toLowerCase()
+    if (q) {
+      list = list.filter((r) =>
+        [r.bd_no, r.nbfc_name, r.party_name, r.party_names, r.finance_type]
+          .map((v) => String(v ?? '').toLowerCase())
+          .some((v) => v.includes(q))
+      )
+    }
     return list
-  }, [rows, nbfcFilter, statusFilter, typeFilter, duePeriod])
+  }, [rows, nbfcFilter, statusFilter, typeFilter, duePeriod, bdQuery])
 
   // The same figures bdKpis returned, off the rows already loaded -- exposure
   // counts only funded bills, since nothing is disbursed on one still awaiting
@@ -1064,12 +1121,28 @@ export function BillDiscounting({
               {n(kpisAll.awaiting_count)} awaiting {formatINR(kpisAll.awaiting_total)}
             </button>
           )}
+          {__WEB__ &&
+            alerts.map((a) => (
+              <button
+                key={a.key}
+                type="button"
+                title={`Click to see all ${a.count}`}
+                onClick={() => onOpenAlert?.(a.key)}
+                className={cn(
+                  'ml-auto flex h-[34px] items-center gap-1.5 rounded-[3px] border px-3 text-[12px] font-extrabold uppercase tracking-[.05em] transition-colors hover:brightness-95',
+                  a.tone
+                )}
+              >
+                <a.icon className="h-3.5 w-3.5" /> {a.label}
+                <ChevronRight className="h-3.5 w-3.5 opacity-60" />
+              </button>
+            ))}
           <Button
             size="sm"
             variant="outline"
             className={cn(
               'ml-auto h-7 gap-1.5 border-white/30 bg-white/10 px-2 text-xs text-white hover:bg-white/20 hover:text-white',
-              __WEB__ && '!h-[34px] !rounded-[3px] !border-[#C3D2C6] !bg-white !px-3 !text-[12px] !font-bold !text-[#0A1F17] hover:!bg-[#F7FAF6] hover:!text-[#0A1F17]'
+              __WEB__ && '!ml-0 !h-[34px] !rounded-[3px] !border-[#C3D2C6] !bg-white !px-3 !text-[12px] !font-bold !text-[#0A1F17] hover:!bg-[#F7FAF6] hover:!text-[#0A1F17]'
             )}
             disabled={exporting || filtered.length === 0}
             title={filtered.length === 0 ? 'Nothing in this filter to download' : 'Download this register as Excel'}
@@ -1101,84 +1174,29 @@ export function BillDiscounting({
             <Plus className="h-4 w-4" /> Discount a bill
           </Button>
         </div>
-        {/* What is out with the NBFCs, said once and large, with the four
-            deductions that stand between the bill's face and the money that
-            actually landed spelled out as a sentence underneath. As six equal
-            cells the reader had to work out for themselves which of them add
-            up to which — and Outstanding, the figure the whole section is
-            about, was one tile among five others. Those two move up here; the
-            remaining four stay below as the breakdown. */}
-        {__WEB__ && (
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-4 px-4 py-4">
-            <div className="min-w-[320px] flex-1">
-              <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-                <span className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">Outstanding</span>
-                <span className="whitespace-nowrap text-[23px] font-bold leading-none tracking-[-0.035em] tabular-nums">
-                  {formatINR(kpis.outstanding_total)}
-                </span>
-                <span className="text-[12px] font-bold text-[#5A6B62]">
-                  on {n(kpis.count)} bill{n(kpis.count) === 1 ? '' : 's'}
-                  {narrowed ? ` of ${formatINR(kpisAll.outstanding_total)}` : ''}
-                </span>
-              </div>
-              {n(kpis.receipt_total) > 0 && (
-                <div className="mt-2 text-[12px] font-semibold leading-relaxed text-[#33473E]">
-                  <span className="font-bold tabular-nums text-[#0B6B45]">{formatINR(kpis.receipt_total)}</span> reached you
-                  after <span className="font-bold tabular-nums">{formatINR(kpis.margin_total)}</span> margin held,{' '}
-                  <span className="font-bold tabular-nums">{formatINR(kpis.interest_total)}</span> interest and{' '}
-                  <span className="font-bold tabular-nums">{formatINR(kpis.tds_total)}</span> TDS.
-                </div>
-              )}
-            </div>
-            <div
-              className={cn(
-                'min-w-[210px] rounded-[4px] border border-l-4 px-4 py-3',
-                availableLimit == null
-                  ? 'border-[#DCE7DB] border-l-[#8FA79B] bg-[#F7FAF6]'
-                  : availableLimit < 0
-                    ? 'border-[#F0D6D4] border-l-[#B3261E] bg-[#FDF3F2]'
-                    : 'border-[#BFE3CB] border-l-[#12855A] bg-[#F4FBF6]'
-              )}
-            >
-              <div
-                className={cn(
-                  'text-[9.5px] font-extrabold uppercase tracking-[.13em]',
-                  availableLimit == null ? 'text-[#5A6B62]' : availableLimit < 0 ? 'text-[#8C2F26]' : 'text-[#0B6B45]'
-                )}
-              >
-                {nbfcFilter ? 'Available · this NBFC' : 'Available limit'}
-              </div>
-              {availableLimit == null ? (
-                <button
-                  type="button"
-                  className="mt-1 text-[13px] font-bold text-[#5A6B62] underline decoration-dotted underline-offset-4 hover:text-[#0A1F17]"
-                  title="Set a limit on each NBFC, or a combined ceiling, under Manage NBFCs → Facility limits"
-                  onClick={() => setNbfcOpen(true)}
-                >
-                  Not set — set one
-                </button>
-              ) : (
-                <div
-                  className={cn(
-                    'mt-1 whitespace-nowrap text-[21px] font-bold leading-none tracking-[-0.035em] tabular-nums',
-                    availableLimit < 0 ? 'text-[#B3261E]' : 'text-[#0B6B45]'
-                  )}
-                >
-                  {formatINR(availableLimit)}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+        {/* One row of cells, not a headline strip above a row of cells.
+            The strip restated Outstanding and the available limit in a larger
+            type over the top of the same numbers, which cost a band of height
+            to say twice what the cells below already said once. Outstanding
+            leads the row now — it is what the section is about — and the
+            available limit closes it, after what was received. */}
         <div
           className={cn(
             'grid grid-cols-2 gap-px bg-[#e5dfc8] p-px sm:grid-cols-3 lg:grid-cols-6',
-            __WEB__ && '!gap-px !border-t !border-t-[#E4ECE3] !bg-[#E4ECE3] !p-0 lg:!grid-cols-4'
+            __WEB__ && '!grid-cols-[repeat(auto-fit,minmax(min(100%,180px),1fr))] !gap-px !border-t !border-t-[#E4ECE3] !bg-[#E4ECE3] !p-0'
           )}
         >
-          <div className={cn('bg-[#1a2c56] px-3 py-2.5 text-center', __WEB__ && '!hidden')}>
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-white/70">Outstanding</div>
-            <div className="text-[15px] font-bold tabular-nums text-white">{formatINR(kpis.outstanding_total)}</div>
+          <div className={cn('bg-[#1a2c56] px-3 py-2.5 text-center', __WEB__ && cn(BD_CELL, '!bg-[#F7FAF6]'))}>
+            <div className={cn('text-[10px] font-semibold uppercase tracking-wide text-white/70', BD_K)}>Outstanding</div>
+            <div className={cn('text-[15px] font-bold tabular-nums text-white', __WEB__ && cn(BD_V, 'doc-ref'))}>
+              {formatINR(kpis.outstanding_total)}
+            </div>
+            {__WEB__ && (
+              <div className={BD_SUB}>
+                on {n(kpis.count)} bill{n(kpis.count) === 1 ? '' : 's'}
+                {narrowed ? ` of ${formatINR(kpisAll.outstanding_total)}` : ''}
+              </div>
+            )}
             {narrowed && (
               <div className="text-[10px] tabular-nums text-white/50">of {formatINR(kpisAll.outstanding_total)}</div>
             )}
@@ -1217,11 +1235,13 @@ export function BillDiscounting({
               half is fetched, and only when a limit is edited.
               Nothing sanctioned means there is no headroom to state: it says so
               and points at where to set it, rather than showing a figure. */}
-          <div className={cn('px-3 py-2.5 text-center', availableLimit == null ? 'bg-[#fffdf4]' : availableLimit < 0 ? 'bg-red-50' : 'bg-sky-50', __WEB__ && '!hidden')}>
+          <div className={cn('px-3 py-2.5 text-center', availableLimit == null ? 'bg-[#fffdf4]' : availableLimit < 0 ? 'bg-red-50' : 'bg-sky-50', __WEB__ && cn(BD_CELL, availableLimit == null ? '!bg-[#FFFBF2]' : availableLimit < 0 ? '!bg-[#FDF3F2]' : '!bg-[#F4FBF6]'))}>
             <div
               className={cn(
                 'text-[10px] font-semibold uppercase tracking-wide',
-                availableLimit == null ? 'text-muted-foreground' : availableLimit < 0 ? 'text-red-800' : 'text-sky-800'
+                availableLimit == null ? 'text-muted-foreground' : availableLimit < 0 ? 'text-red-800' : 'text-sky-800',
+                BD_K,
+                __WEB__ && (availableLimit == null ? '!text-[#8A5300]' : availableLimit < 0 ? '!text-[#B3261E]' : '!text-[#0B6B45]')
               )}
             >
               {nbfcFilter ? 'Available · this NBFC' : 'Available limit'}
@@ -1229,7 +1249,7 @@ export function BillDiscounting({
             {availableLimit == null ? (
               <button
                 type="button"
-                className="text-[12px] font-medium text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground"
+                className={cn('text-[12px] font-medium text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground', __WEB__ && '!mt-1 !text-[13px] !font-extrabold !text-[#8A5300]')}
                 title="Set a limit on each NBFC, or a combined ceiling, under Manage NBFCs → Facility limits"
                 onClick={() => setNbfcOpen(true)}
               >
@@ -1237,10 +1257,10 @@ export function BillDiscounting({
               </button>
             ) : (
               <>
-                <div className={cn('text-[15px] font-bold tabular-nums', availableLimit < 0 ? 'text-red-700' : 'text-sky-900')}>
+                <div className={cn('text-[15px] font-bold tabular-nums', availableLimit < 0 ? 'text-red-700' : 'text-sky-900', BD_V, __WEB__ && cn('doc-ref', availableLimit < 0 ? '!text-[#B3261E]' : '!text-[#0B6B45]'))}>
                   {formatINR(availableLimit)}
                 </div>
-                <div className={cn('truncate text-[10px]', availableLimit < 0 ? 'text-red-700' : 'text-sky-800')}
+                <div className={cn('truncate text-[10px]', availableLimit < 0 ? 'text-red-700' : 'text-sky-800', BD_SUB, __WEB__ && (availableLimit < 0 ? '!text-[#8C2F26]' : '!text-[#5A6B62]'))}
                   title={
                     nbfcFilter
                       ? `${limitBasis?.label} — sanctioned ${formatINR(limitBasis?.ceiling)}, less what is drawn on it`
@@ -1258,7 +1278,8 @@ export function BillDiscounting({
       </div>
 
       {/* Filter chips — mirroring the LC register's own row. */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className={cn('flex flex-wrap items-center gap-2', __WEB__ && '!gap-2.5')}>
+        <span className={cn(__WEB__ && cn('inline-flex flex-wrap', BD_TRAY))}>
         {DUE_PERIODS.map((p) => (
           <button
             key={p.key}
@@ -1266,13 +1287,16 @@ export function BillDiscounting({
             onClick={() => setDuePeriod(p.key)}
             className={cn(
               'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
-              duePeriod === p.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
+              duePeriod === p.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50',
+              __WEB__ && cn(BD_CHIP, duePeriod === p.key ? BD_CHIP_ON : BD_CHIP_OFF)
             )}
           >
             {p.label}
           </button>
         ))}
-        <div className="h-4 w-px bg-[#e5dfc8]" />
+        </span>
+        {!__WEB__ && <div className="h-4 w-px bg-[#e5dfc8]" />}
+        <span className={cn(__WEB__ && cn('inline-flex', BD_TRAY))}>
         {(['PID', 'SID'] as const).map((t) => (
           <button
             key={t}
@@ -1281,13 +1305,16 @@ export function BillDiscounting({
             title={t === 'PID' ? 'Purchase Invoice Discounting' : 'Sales Invoice Discounting'}
             className={cn(
               'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
-              typeFilter === t ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
+              typeFilter === t ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50',
+              __WEB__ && cn(BD_CHIP, typeFilter === t ? BD_CHIP_ON : BD_CHIP_OFF)
             )}
           >
             {t}
           </button>
         ))}
-        <div className="h-4 w-px bg-[#e5dfc8]" />
+        </span>
+        {!__WEB__ && <div className="h-4 w-px bg-[#e5dfc8]" />}
+        <span className={cn(__WEB__ && cn('inline-flex flex-wrap', BD_TRAY))}>
         {(
           [
             { key: 'all', label: 'All bills' },
@@ -1302,13 +1329,39 @@ export function BillDiscounting({
             onClick={() => setStatusFilter(s.key)}
             className={cn(
               'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
-              statusFilter === s.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50'
+              statusFilter === s.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50',
+              __WEB__ && cn(BD_CHIP, statusFilter === s.key ? BD_CHIP_ON : BD_CHIP_OFF)
             )}
           >
             {s.label}
           </button>
         ))}
-        <div className="ml-auto flex gap-1 rounded-md border border-[#d9d2b8] bg-white p-0.5">
+        </span>
+        {/* Type-to-find across the register, the way the handoff draws it —
+            flex-1 so the row fills its width instead of leaving a hole, and
+            searching the three things anyone actually remembers about a bill. */}
+        {__WEB__ && (
+          <span className="flex h-[42px] min-w-[180px] flex-1 items-center gap-2.5 rounded-[4px] border border-[#C3D2C6] bg-white px-3">
+            <Search className="h-[18px] w-[18px] shrink-0 text-[#5A6B62]" />
+            <input
+              value={bdQuery}
+              onChange={(e) => setBdQuery(e.target.value)}
+              placeholder="Search bill no, NBFC, party…"
+              className="min-w-0 flex-1 border-0 bg-transparent text-[13px] font-medium text-[#0A1F17] outline-none placeholder:text-[#8FA79B]"
+            />
+            {!!bdQuery && (
+              <button
+                type="button"
+                onClick={() => setBdQuery('')}
+                className="shrink-0 text-[#8FA79B] hover:text-[#0A1F17]"
+                title="Clear the search"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </span>
+        )}
+        <div className={cn('ml-auto flex gap-1 rounded-md border border-[#d9d2b8] bg-white p-0.5', __WEB__ && '!ml-0 !rounded-[4px] !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px]')}>
           <Button size="icon" variant={view === 'cards' ? 'default' : 'ghost'} className="h-7 w-7" title="Card view" onClick={() => setView('cards')}>
             <LayoutGrid className="h-3.5 w-3.5" />
           </Button>
@@ -1493,6 +1546,25 @@ export function BillDiscounting({
                 before Sanctioned still marks the money section. */}
             <Table className={cn('text-[13px] [&_td]:border-r [&_td]:border-[#1a2c56]/[0.08] [&_td:last-child]:border-r-0 [&_th]:border-r [&_th]:border-[#1a2c56]/[0.12] [&_th:last-child]:border-r-0', __WEB__ && '!min-w-[1380px] [&_td]:!border-r-[#EAF0E9]')}>
               <TableHeader className="sticky top-0 z-10">
+                {/* What the row is actually made of: who and when, what the
+                    bill was worth, what the NBFC kept, and what landed. Named
+                    once above the columns so nine figures read as four ideas. */}
+                {__WEB__ && (
+                  <TableRow className="!border-b-0 !bg-[#072B20] hover:!bg-[#072B20] [&>th]:!h-[28px] [&>th]:!bg-[#072B20] [&>th]:!p-0 [&>th]:!text-[9.5px] [&>th]:!font-extrabold [&>th]:!uppercase [&>th]:!tracking-[.18em] [&>th]:!text-[#8FBFA8]">
+                    <TableHead colSpan={2} />
+                    <TableHead colSpan={3} className="!border-l !border-l-[#C7F03F]/20 !bg-white/[0.04] !text-center">
+                      The term
+                    </TableHead>
+                    <TableHead className="!border-l !border-l-[#C7F03F]/20 !text-center">Bill</TableHead>
+                    <TableHead colSpan={3} className="!border-l !border-l-[#C7F03F]/20 !bg-[#B3261E]/[.12] !text-center !text-[#F0AFAA]">
+                      What the NBFC kept
+                    </TableHead>
+                    <TableHead className="!border-l !border-l-[#C7F03F]/20 !bg-[#C7F03F]/[.14] !text-center !text-[#C7F03F]">
+                      Reached you
+                    </TableHead>
+                    <TableHead />
+                  </TableRow>
+                )}
                 <TableRow className={cn('border-b-2 border-[#1a2c56]/20 bg-[#dce6f5] hover:bg-[#dce6f5]', BD_HEAD)}>
                   <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">BD no · NBFC</TableHead>
                   <TableHead className="h-9 whitespace-nowrap text-[10px] font-bold uppercase tracking-widest text-[#1a2c56]">Party</TableHead>
@@ -1564,16 +1636,17 @@ export function BillDiscounting({
                     const awaiting = String(r.stage) === 'awaiting'
                     const tone = STATUS_TONE[String(r.stage)] || STATUS_TONE.open
                     return (
+                      <Fragment key={String(r.id)}>
                       <TableRow
-                        key={String(r.id)}
-                        className={cn('border-b border-dotted border-[#e5dfc8] bg-white transition-colors', tone.row, tone.hover, __WEB__ && '!border-b-[#EAF0E9] !border-solid !border-l-[3px] !bg-white hover:!bg-[#F7FAF6] [&>td]:!py-2.5')}
+                        onClick={__WEB__ ? () => setOpenBd((o) => (o === Number(r.id) ? 0 : Number(r.id))) : undefined}
+                        className={cn('border-b border-dotted border-[#e5dfc8] bg-white transition-colors', tone.row, tone.hover, __WEB__ && cn('!border-b-[#EAF0E9] !border-solid !border-l-[3px] !bg-white hover:!bg-[#F7FAF6] [&>td]:!py-2.5 cursor-pointer', openBd === Number(r.id) && '!bg-[#F7FAF6]'))}
                       >
                         <TableCell className="whitespace-nowrap">
                           <div className="flex items-center gap-1.5">
-                            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform', __WEB__ && openBd === Number(r.id) && 'rotate-90 !text-[#0B6B45]')} />
                             <div>
                               <div className="flex items-center gap-1.5">
-                                <span className={cn('font-semibold', !r.bd_no && 'italic text-muted-foreground')}>{r.bd_no || 'No BD no'}</span>
+                                <span className={cn('font-semibold', !r.bd_no && 'italic text-muted-foreground', __WEB__ && 'doc-ref !text-[12.5px] !font-bold !text-[#0A1F17]')}>{r.bd_no || 'No BD no'}</span>
                                 <Badge variant="muted">{r.finance_type}</Badge>
                                 {repaid && <Badge variant="success">Repaid</Badge>}
                               </div>
@@ -1619,7 +1692,7 @@ export function BillDiscounting({
                             )}
                           </div>
                         </TableCell>
-                        <TableCell className="whitespace-nowrap tabular-nums">
+                        <TableCell className={cn('whitespace-nowrap tabular-nums', __WEB__ && cn(BD_RULE, BD_W))}>
                           <div>
                             <span className="mr-1 text-[10px] font-semibold uppercase text-muted-foreground" title="Payment received">
                               Rec
@@ -1633,7 +1706,7 @@ export function BillDiscounting({
                             {formatDateShort(r.maturity_date)}
                           </div>
                         </TableCell>
-                        <TableCell className="whitespace-nowrap">
+                        <TableCell className={cn('whitespace-nowrap', __WEB__ && cn(BD_RULE, BD_W))}>
                           {repaid ? (
                             <span className="text-muted-foreground">—</span>
                           ) : awaiting ? (
@@ -1647,8 +1720,8 @@ export function BillDiscounting({
                             </div>
                           )}
                         </TableCell>
-                        <TableCell className="whitespace-nowrap text-right tabular-nums text-muted-foreground">{n(r.intDays)}</TableCell>
-                        <TableCell className="whitespace-nowrap border-l border-[#1a2c56]/10 text-right font-medium tabular-nums">
+                        <TableCell className={cn('whitespace-nowrap text-right tabular-nums text-muted-foreground', __WEB__ && cn(BD_RULE, BD_W, BD_NUM, '!font-semibold !text-[#5A6B62]'))}>{n(r.intDays)}</TableCell>
+                        <TableCell className={cn('whitespace-nowrap border-l border-[#1a2c56]/10 text-right font-medium tabular-nums', __WEB__ && cn(BD_RULE, BD_NUM, '!text-[13px] !text-[#0A1F17]'))}>
                           {formatINR(r.amount)}
                           {n(r.repaid_total) > 0 && !repaid && (
                             <div className="text-[10px] font-normal text-muted-foreground">
@@ -1662,10 +1735,13 @@ export function BillDiscounting({
                             </div>
                           )}
                         </TableCell>
-                        <TableCell className="whitespace-nowrap text-right tabular-nums">{formatINR(r.marginAmount)}</TableCell>
-                        <TableCell className="whitespace-nowrap text-right tabular-nums text-rose-700">{formatINR(r.interestAmount)}</TableCell>
-                        <TableCell className="whitespace-nowrap text-right tabular-nums">{formatINR(r.tdsAmount)}</TableCell>
-                        <TableCell className="whitespace-nowrap text-right font-semibold tabular-nums text-emerald-700">
+                        {/* The three the NBFC kept, washed together so they
+                            read as one deduction rather than three unrelated
+                            figures between the bill and the receipt. */}
+                        <TableCell className={cn('whitespace-nowrap text-right tabular-nums', __WEB__ && cn(BD_RULE, BD_NUM, '!bg-[#FDF8F7] !font-semibold !text-[#33473E]'))}>{formatINR(r.marginAmount)}</TableCell>
+                        <TableCell className={cn('whitespace-nowrap text-right tabular-nums text-rose-700', __WEB__ && cn(BD_NUM, '!bg-[#FDF8F7] !text-[#8C2F26]'))}>{formatINR(r.interestAmount)}</TableCell>
+                        <TableCell className={cn('whitespace-nowrap text-right tabular-nums', __WEB__ && cn(BD_NUM, '!bg-[#FDF8F7] !font-semibold !text-[#8C2F26]'))}>{formatINR(r.tdsAmount)}</TableCell>
+                        <TableCell className={cn('whitespace-nowrap text-right font-semibold tabular-nums text-emerald-700', __WEB__ && cn(BD_RULE, BD_WR, 'doc-ref !text-[13.5px] !font-bold !text-[#0B6B45]'))}>
                           {formatINR(r.receiptAmount)}
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-right">
@@ -1732,6 +1808,81 @@ export function BillDiscounting({
                           </div>
                         </TableCell>
                       </TableRow>
+                      {__WEB__ && openBd === Number(r.id) && (
+                        /* Opened out. Everything the row had to leave off: the
+                           arithmetic that turned the bill into a receipt, and
+                           the dates that decide when it has to be repaid. It
+                           is a panel rather than a drawer because the answer
+                           belongs beside the row that raised the question —
+                           a drawer would cover the register you are comparing
+                           it against. */
+                        <TableRow className="!border-b-[#DCE7DB] !bg-[#F7FAF6] hover:!bg-[#F7FAF6]">
+                          <TableCell colSpan={11} className="!p-0">
+                            <div className="grid gap-2.5 p-3.5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,215px),1fr))]">
+                              {(() => {
+                                const amt = n(r.amount)
+                                const marginAmt = n(r.margin_amount ?? (amt * n(r.margin_pct)) / 100)
+                                const interest = n(r.interest_amount)
+                                const tds = n(r.tds_amount)
+                                const receipt = n(r.receipt_amount ?? amt - marginAmt - interest - tds)
+                                const cards: { k: string; v: string; sub?: string; fg?: string; accent: string }[] = [
+                                  {
+                                    k: 'Bill discounted',
+                                    v: formatINR(amt),
+                                    sub: `${String(r.finance_type || '—')} · ${String(r.nbfc_name || 'no NBFC')}`,
+                                    accent: '#0B3D2E'
+                                  },
+                                  {
+                                    k: 'Margin held',
+                                    v: formatINR(marginAmt),
+                                    sub: n(r.margin_pct) ? `${r.margin_pct}% of the bill, released on repayment` : 'no margin on this bill',
+                                    accent: '#1B4E82',
+                                    fg: '#1B4E82'
+                                  },
+                                  {
+                                    k: 'Interest + TDS',
+                                    v: formatINR(interest + tds),
+                                    sub: `${formatINR(interest)} interest · ${formatINR(tds)} TDS`,
+                                    accent: '#B3261E',
+                                    fg: '#8C2F26'
+                                  },
+                                  {
+                                    k: 'Reached your account',
+                                    v: formatINR(receipt),
+                                    sub: amt > 0 ? `${((receipt / amt) * 100).toFixed(1)}% of the bill` : '',
+                                    accent: '#C7F03F',
+                                    fg: '#0B6B45'
+                                  }
+                                ]
+                                return cards.map((c) => (
+                                  <div
+                                    key={c.k}
+                                    className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3"
+                                    style={{ borderTop: `3px solid ${c.accent}` }}
+                                  >
+                                    <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">{c.k}</div>
+                                    <div className="doc-ref mt-1.5 text-[17px] font-bold tracking-[-0.03em]" style={{ color: c.fg || '#0A1F17' }}>
+                                      {c.v}
+                                    </div>
+                                    {!!c.sub && (
+                                      <div className="mt-1 text-[11.5px] font-semibold leading-[1.45] text-[#5A6B62]">{c.sub}</div>
+                                    )}
+                                  </div>
+                                ))
+                              })()}
+                            </div>
+                            {/* The sum, spelled out, so the four cards above
+                                can be checked rather than trusted. */}
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-t-[#E4ECE3] px-4 py-2.5 text-[11.5px] font-semibold text-[#5A6B62]">
+                              <Sigma className="h-[15px] w-[15px] shrink-0 text-[#A8B8AE]" />
+                              Reached you = bill − margin − interest − TDS. The margin comes back when the bill is
+                              repaid; the interest and TDS do not. You repay the full bill at maturity, not the
+                              figure that reached you.
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      </Fragment>
                     )
                   })
                 )}

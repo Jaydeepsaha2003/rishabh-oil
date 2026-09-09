@@ -28,7 +28,11 @@ export function FyPicker({
         <SelectValue placeholder="FY" />
       </SelectTrigger>
       <SelectContent>
-        {!current && <SelectItem value="CUSTOM">Custom range</SelectItem>}
+        {/* The face of this control when the dates are not a named financial
+            year. "Custom range" described the state; "Choose FY" says what the
+            control is for, which is what someone looking at it wants to know —
+            and it fits, where the longer label was truncating to "CUSTOM RAN…". */}
+        {!current && <SelectItem value="CUSTOM">Choose FY</SelectItem>}
         {options.map((o) => (
           <SelectItem key={o.label} value={o.label}>{o.label}</SelectItem>
         ))}

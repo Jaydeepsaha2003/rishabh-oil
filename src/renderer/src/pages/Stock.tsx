@@ -1513,6 +1513,10 @@ function OpeningStock({
   // Products that still need an opening carry a Short badge on the row, which
   // is where the reader is already looking.
   const [search, setSearch] = useState('')
+  // The four figures, folded away by default like every other view's. This
+  // sheet is worked down over twenty minutes and the cards were holding the
+  // top of the screen the whole time.
+  const [openKpis, setOpenKpis] = useState(false)
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -1810,6 +1814,51 @@ function OpeningStock({
             nowhere else in the app, because "where the register starts" is not
             a warning, not a result and not money. It is a beginning, and it
             wanted a hue that says so. */}
+        {__WEB__ && (() => {
+          const moved = rows.reduce((t, r) => t + (Number(r.movement_closing) || 0), 0)
+          const blanks = rows.length - stats.entered
+          const line: { k: string; v: string; fg?: string }[] = [
+            { k: 'Opens at', v: `${formatNum(stats.total)} MT`, fg: '#3D3179' },
+            { k: 'Movements', v: `${formatNum(moved)} MT`, fg: moved < -0.0005 ? '#8C2F26' : '#0A1F17' },
+            {
+              k: 'Still negative',
+              v: stats.stillShort ? String(stats.stillShort) : 'none',
+              fg: stats.stillShort ? '#B3261E' : '#0B6B45'
+            },
+            { k: 'Not counted', v: blanks ? String(blanks) : 'none', fg: blanks ? '#8A5300' : '#0B6B45' }
+          ]
+          return (
+            <button
+              type="button"
+              onClick={() => setOpenKpis((o) => !o)}
+              aria-expanded={openKpis}
+              className={cn(
+                'flex h-[40px] w-full items-center gap-3 bg-white px-4 text-left transition-colors hover:bg-[#F8F6FE]',
+                openKpis && 'border-b border-b-[#EDE9FB]'
+              )}
+            >
+              <ChevronRight
+                className={cn('h-4 w-4 shrink-0 text-[#5B4BA8] transition-transform', openKpis && 'rotate-90')}
+              />
+              <span className="shrink-0 text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5B4BA8]">
+                Summary
+              </span>
+              {!openKpis && (
+                <span className="no-scrollbar flex min-w-0 items-baseline gap-x-5 overflow-x-auto">
+                  {line.map((f) => (
+                    <span key={f.k} className="flex items-baseline gap-1.5 whitespace-nowrap">
+                      <span className="text-[10.5px] font-bold uppercase tracking-[.08em] text-[#8FA79B]">{f.k}</span>
+                      <span className="doc-ref text-[12.5px] font-bold" style={{ color: f.fg || '#0A1F17' }}>
+                        {f.v}
+                      </span>
+                    </span>
+                  ))}
+                </span>
+              )}
+            </button>
+          )
+        })()}
+        {(!__WEB__ || openKpis) && (
         <div
           className={cn(
             'grid grid-cols-2 gap-px border-t border-[#d9d2b8] bg-[#e6dfc4] lg:grid-cols-4',
@@ -1989,13 +2038,14 @@ function OpeningStock({
             </div>
           ))}
         </div>
+        )}
       </div>
 
       {/* --------------------------------------------------- name clashes --
           One line per clash. The paragraph explaining what a clash means, and
           why merging would be wrong, is behind the (i) — it is the same
           sentence every time and does not need re-reading on every visit. */}
-      {clashes.length > 0 && (
+      {!__WEB__ && clashes.length > 0 && (
         <div className={cn('flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-2', __WEB__ && '!rounded-[4px] !border-[#F0DCB4] !border-l-4 !border-l-[#C2700A] !bg-[#FFFBF2]')}>
           <span className={cn('flex items-center gap-1.5 text-[12px] font-bold text-amber-900', __WEB__ && '!text-[12.5px] !font-extrabold !text-[#8A5300]')}>
             <AlertTriangle className="h-3.5 w-3.5" />
