@@ -4250,6 +4250,17 @@ var init_treasury = __esm({
   }
 });
 
+// src/server/tz.ts
+process.env.TZ = process.env.APP_TZ || "Asia/Kolkata";
+function serverClock() {
+  const d = /* @__PURE__ */ new Date();
+  const off = -d.getTimezoneOffset();
+  const sign = off < 0 ? "-" : "+";
+  const hh = String(Math.floor(Math.abs(off) / 60)).padStart(2, "0");
+  const mm = String(Math.abs(off) % 60).padStart(2, "0");
+  return `${process.env.TZ} (UTC${sign}${hh}:${mm}) \u2014 ${d.toString().slice(16, 21)}`;
+}
+
 // src/server/index.ts
 var import_node_path5 = require("node:path");
 init_db();
@@ -11377,6 +11388,11 @@ async function runStartupTasks() {
       "CREATE INDEX IF NOT EXISTS idx_outside_tankers_day ON outside_tankers(company_id, log_date)"
     );
   }).catch((e) => console.error("[gate] outside tanker diary failed:", e));
+  await runOnce("outside_tankers_category_v1", async () => {
+    await getClient().execute("ALTER TABLE outside_tankers ADD COLUMN category TEXT").catch((e) => {
+      if (!/duplicate column/i.test(String(e))) throw e;
+    });
+  }).catch((e) => console.error("[gate] outside tanker category failed:", e));
   await runOnce("lc9_gross_bill_fix_v1", async () => {
     const c = getClient();
     const lcRes = await c.execute({
@@ -12803,6 +12819,7 @@ async function listOutsideTankers(date) {
     sql: `SELECT t.*,
                  p.name AS product_name,
                  p.code AS product_code,
+                 COALESCE(NULLIF(TRIM(t.category), ''), p.name) AS category_label,
                  COALESCE(s.name, cu.name) AS party_name
             FROM outside_tankers t
             LEFT JOIN products p ON p.id = t.product_id
@@ -12838,6 +12855,7 @@ async function saveOutsideTanker(v) {
     day,
     slot,
     kind,
+    String(v.category || "").trim().toUpperCase() || null,
     n15(v.product_id) || null,
     n15(v.party_id) || null,
     tankers,
@@ -12847,17 +12865,17 @@ async function saveOutsideTanker(v) {
   if (n15(v.id)) {
     await c.execute({
       sql: `UPDATE outside_tankers
-               SET log_date = ?, slot = ?, kind = ?, product_id = ?, party_id = ?,
+               SET log_date = ?, slot = ?, kind = ?, category = ?, product_id = ?, party_id = ?,
                    tankers = ?, note = ?
              WHERE id = ? AND company_id = ?`,
-      args: [day, slot, kind, args[4], args[5], tankers, args[7], n15(v.id), getActiveCompanyId()]
+      args: [day, slot, kind, args[4], args[5], args[6], tankers, args[8], n15(v.id), getActiveCompanyId()]
     });
     return { id: n15(v.id) };
   }
   const res = await c.execute({
     sql: `INSERT INTO outside_tankers
-            (company_id, log_date, slot, kind, product_id, party_id, tankers, note, created_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (company_id, log_date, slot, kind, category, product_id, party_id, tankers, note, created_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args
   });
   return { id: Number(res.lastInsertRowid || 0) };
@@ -18168,6 +18186,7 @@ function startHttpServer({ port, webRoot }) {
 async function main() {
   const port = Number(process.env.PORT) || 3e3;
   const webRoot = process.env.WEB_ROOT || (0, import_node_path5.join)(process.cwd(), "out", "web");
+  console.log(`[web] clock ${serverClock()}`);
   console.log("[web] connecting to the database\u2026");
   await runStartupTasks();
   console.log("[web] schema ready");
