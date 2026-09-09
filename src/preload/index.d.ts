@@ -105,6 +105,8 @@ export interface Api {
     advance: (id: number, toStatus: string, data: Row) => Promise<{ id: number }>
     revert: (id: number) => Promise<{ id: number; status: string }>
     replace: (id: number, values: Row) => Promise<{ id: number }>
+    quality: (id: number) => Promise<Row[]>
+    saveQuality: (id: number, rows: Row[]) => Promise<{ id: number }>
   }
   dashboard: {
     stats: () => Promise<Row>

@@ -358,6 +358,16 @@ export async function listOrders(forModule?: string): Promise<Row[]> {
            t.name AS transporter_name,
            (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_count,
            (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_nos,
+           -- The lab readings, as two counts: how many of this invoice's tankers
+           -- have been emptied, and how many of those carry a reading. The
+           -- register draws one glyph from the pair — green when they match,
+           -- amber when they do not — without loading a single value.
+           (SELECT COUNT(*) FROM purchase_tankers pt
+             WHERE pt.order_id = o.id AND pt.status = 'empty') AS empty_tankers,
+           (SELECT COUNT(*) FROM purchase_tankers pt
+             WHERE pt.order_id = o.id AND pt.status = 'empty'
+               AND EXISTS (SELECT 1 FROM tanker_quality tq
+                            WHERE tq.tanker_id = pt.id AND TRIM(COALESCE(tq.value, '')) <> '')) AS quality_tankers,
            -- Shortage rolled up from the tankers. The order's own
            -- actual_shortage_qty columns are only written on the tanker-less
            -- receipt path, so a tanker purchase showed nothing at all.
@@ -1134,6 +1144,11 @@ export async function listPurchaseTankers(allCompanies = false, forModule?: stri
            -- GE/0196 means nothing to them.
            ge.ref_no AS gate_ref_no,
            ge.received_qty AS gate_qty,
+           -- How many technical readings this tanker actually carries, so the
+           -- register can say at a glance whether they were taken. A count and
+           -- not the rows: the list is long and nothing on it needs the values.
+           (SELECT COUNT(*) FROM tanker_quality tq
+             WHERE tq.tanker_id = pt.id AND TRIM(COALESCE(tq.value, '')) <> '') AS quality_count,
            (SELECT old_tanker_no || ' -> ' || new_tanker_no || ' (' || loss_qty || ' lost)'
               FROM tanker_replacements WHERE tanker_id = pt.id ORDER BY id DESC LIMIT 1) AS last_replacement
     FROM purchase_tankers pt
@@ -1808,7 +1823,11 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
       args: [data.inside_factory_date || null, id]
     })
   } else if (toStatus === 'empty') {
-    await saveTankerQuality(id, Array.isArray(data.quality) ? (data.quality as Row[]) : [])
+    // Only when the caller actually sent readings. The Empty form no longer
+    // collects them — they are entered from the register whenever the lab
+    // result comes back — so an unconditional save here would DELETE what was
+    // recorded the moment somebody reverted and re-advanced the tanker.
+    if (Array.isArray(data.quality)) await saveTankerQuality(id, data.quality as Row[])
     const receivedQty = n(data.received_qty)
     if (receivedQty <= 0 || receivedQty > n(tanker.loaded_qty) + 1e-6) throw new Error('Enter a valid empty quantity')
     // Cross-check against the gate-recorded received quantity for this tanker,

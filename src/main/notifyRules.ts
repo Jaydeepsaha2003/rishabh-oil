@@ -46,11 +46,28 @@ export type Candidate = {
    * other's submissions.
    */
   recipients?: number[]
+  /**
+   * The facts behind the sentence, for a message somebody has rewritten.
+   *
+   * An evaluator produces a default title and body AND the pieces they were
+   * built from. A desk that wants "LC {lc_no} at {bank} — {days} days" instead
+   * gets it rendered from these, so a custom message is never a second, drifting
+   * copy of the query.
+   */
+  vars?: Record<string, string | number>
 }
 
 export type ThresholdSpec = {
   /** Shown before the box, e.g. LEAD. */
   label: string
+  /**
+   * The same thing as a sentence a person would say.
+   *
+   * "LEAD · days before" is how a developer labels a field. Somebody deciding
+   * when they want to be warned reads "Tell me this many days early" and knows
+   * at once what the box does, which "LEAD" never told them.
+   */
+  question: string
   /** Shown after it, e.g. "days before". */
   unit: string
   def: number
@@ -70,6 +87,12 @@ export type RuleDef = {
   threshold?: ThresholdSpec
   /** Where clicking one of these should take you. */
   page?: string
+  /**
+   * The placeholders this rule's message can use, for the editor to offer.
+   * Nothing here is required: a message with none of them is a fixed sentence,
+   * which is a perfectly good thing to want.
+   */
+  vars?: { key: string; label: string }[]
   /**
    * Reads the books and returns what is true right now. Pure: it must not
    * write, and it must return the same set for the same data so the dedupe
@@ -129,6 +152,22 @@ export const daysBetween = (fromISO: string, toISO: string): number => {
   const b = Date.parse(`${toISO.slice(0, 10)}T00:00:00Z`)
   if (!Number.isFinite(a) || !Number.isFinite(b)) return 0
   return Math.round((b - a) / 86400000)
+}
+
+/**
+ * Fills {placeholders} from a fact's own values.
+ *
+ * Deliberately not a template ENGINE: no expressions, no conditionals, no
+ * function calls — a message people edit in a text box must not be a place
+ * where code can be written. An unknown placeholder is left standing rather
+ * than blanked, so a typo reads as "{bnak}" and is obvious, instead of
+ * quietly producing half a sentence.
+ */
+export function renderTemplate(tpl: string, vars: Record<string, string | number> = {}): string {
+  return String(tpl).replace(/\{([a-z0-9_]+)\}/gi, (whole, key: string) => {
+    const v = vars[key]
+    return v == null || v === '' ? whole : String(v)
+  })
 }
 
 /** Rows out of a libSQL result, without dragging the client's types in here. */

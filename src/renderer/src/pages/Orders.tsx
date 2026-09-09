@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   Undo2, ArrowLeft, ArrowRight, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, CheckCircle2, ChevronDown, ClipboardList, Clock, DoorOpen, Eye, MinusCircle, Package,
-  FileText, History, IndianRupee, Landmark, Lock, Pencil, Plus, ScrollText, Search, Trash2, Truck, type LucideIcon,
+  FileText, FlaskConical, History, IndianRupee, Landmark, Lock, Pencil, Plus, ScrollText, Search, Trash2, Truck, type LucideIcon,
   Check
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
@@ -1715,7 +1715,6 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     if (target === 'inside_factory') next.inside_factory_date = todayISO()
     if (target === 'empty') Object.assign(next, {
       empty_date: todayISO(),
-      quality: TANKER_QUALITY_DEFAULTS.map((name) => ({ name, value: '' })),
       // prefill with the gate-received qty so the gate cross-check passes
       received_qty: gateQtyFor(row.id) ?? row.loaded_qty,
       transporter_id: row.transporter_id || '',
@@ -1841,6 +1840,60 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
 
   const [photoBusy, setPhotoBusy] = useState('')
 
+  // The technical readings, on their own panel.
+  //
+  // They used to live at the bottom of the Empty form, which is the wrong
+  // moment for them: the tanker is being received, the gate figure is being
+  // checked and the shortage settled, and a lab result that may not be back
+  // yet was sitting in the middle of it — so it was skipped, and there was
+  // nothing anywhere afterwards to say it had been. On the register it can be
+  // seen missing and filled in whenever the sample comes back.
+  const [qualityFor, setQualityFor] = useState<Row | null>(null)
+  // One block of readings per tanker on the invoice that has reached Empty.
+  const [qualitySets, setQualitySets] = useState<{ tanker: Row; rows: Row[] }[]>([])
+  const [qualityBusy, setQualityBusy] = useState(false)
+
+  async function openQuality(order: Row): Promise<void> {
+    setQualityFor(order)
+    setQualitySets([])
+    const emptied = tankersForBooking.filter(
+      (t) => Number(t.order_id) === Number(order.id) && String(t.status) === 'empty'
+    )
+    const sets = await Promise.all(
+      emptied.map(async (t) => {
+        const saved = await window.api.tankers.quality(Number(t.id)).catch(() => [] as Row[])
+        return {
+          tanker: t,
+          rows: saved.length
+            ? saved.map((q: Row) => ({ name: String(q.name || ''), value: String(q.value ?? '') }))
+            : TANKER_QUALITY_DEFAULTS.map((name) => ({ name, value: '' }))
+        }
+      })
+    )
+    setQualitySets(sets)
+  }
+
+  function setQualityRow(si: number, ri: number, patch: Row): void {
+    setQualitySets((p) =>
+      p.map((set, i) => (i === si ? { ...set, rows: set.rows.map((r, j) => (j === ri ? { ...r, ...patch } : r)) } : set))
+    )
+  }
+
+  async function saveQuality(): Promise<void> {
+    if (!qualityFor) return
+    setQualityBusy(true)
+    try {
+      for (const set of qualitySets) await window.api.tankers.saveQuality(Number(set.tanker.id), set.rows)
+      setQualityFor(null)
+      await load()
+      toast.success(qualitySets.length === 1 ? 'Readings saved' : `Readings saved for ${qualitySets.length} tankers`)
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setQualityBusy(false)
+    }
+  }
+
   async function onWeighmentPhoto(field: string, file: File | undefined): Promise<void> {
     if (!file) return
     // The control checks too, so this can only be reached by a caller that
@@ -1927,7 +1980,6 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         source_id: actionForm.source_id ? Number(actionForm.source_id) : null,
         transporter_id: actionForm.transporter_id ? Number(actionForm.transporter_id) : null,
         received_qty: Number(actionForm.received_qty) || 0,
-        quality: Array.isArray(actionForm.quality) ? actionForm.quality : [],
         transport_rate_per_ton: Number(actionForm.transport_rate_per_ton) || 0,
         krfl_weighment_doc_no: actionForm.krfl_weighment_doc_no || null,
         krfl_weighment_photo: actionForm.krfl_weighment_photo || null,
@@ -4583,6 +4635,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         />
                       </TableHead>
                     ))}
+                    <TableHead className={cn('w-[34px] !px-0', __WEB__ && '!h-10')} />
                     <TableHead className={cn('text-right', __WEB__ && '!h-10 !text-[12.5px] !font-extrabold !tracking-[-0.01em]')}>Actions</TableHead>
                   </TableRow></TableHeader>
                   <TableBody>
@@ -4802,6 +4855,43 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                 {row.status === 'received' ? 'Completed' : 'In process'}
                               </Badge>
                             )}
+                          </TableCell>
+                          {/* The lab readings, as one glyph. No heading: the
+                              column is a 22px square and any word would be
+                              wider than it. Hover says what it means; the
+                              panel it opens says the rest. */}
+                          <TableCell className="w-[34px] !px-0 text-center" onClick={(e) => e.stopPropagation()}>
+                            {(() => {
+                              const emptied = Number(row.empty_tankers) || 0
+                              const done = Number(row.quality_tankers) || 0
+                              if (!emptied) {
+                                return (
+                                  <span className="text-[#D6E2D6]" title="No tanker on this invoice has been emptied yet">
+                                    ·
+                                  </span>
+                                )
+                              }
+                              const complete = done >= emptied
+                              return (
+                                <button
+                                  type="button"
+                                  title={
+                                    complete
+                                      ? `Technical parameters recorded for ${emptied === 1 ? 'the tanker' : `all ${emptied} tankers`}. Click to view or change.`
+                                      : `Technical parameters missing on ${emptied - done} of ${emptied} tanker${emptied === 1 ? '' : 's'}. Click to enter them.`
+                                  }
+                                  onClick={() => void openQuality(row)}
+                                  className={cn(
+                                    'inline-flex h-[22px] w-[22px] items-center justify-center rounded-[3px] border transition-colors',
+                                    complete
+                                      ? 'border-[#BFE3CB] bg-[#EAF6EC] text-[#0B6B45] hover:bg-[#DCEFE1]'
+                                      : 'border-[#F0E4CB] bg-[#FFF4E0] text-[#C2700A] hover:bg-[#FFE9C7]'
+                                  )}
+                                >
+                                  <FlaskConical className="h-[13px] w-[13px]" />
+                                </button>
+                              )
+                            })()}
                           </TableCell>
                           <TableCell onClick={(e) => e.stopPropagation()}><div className="flex justify-end">
                             <RowActions
@@ -5581,86 +5671,6 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               </div>
               <div className="flex flex-col gap-1.5"><Label>Received quantity</Label><Input type="number" value={actionForm.received_qty || ''} onChange={(e) => setActionForm((p) => ({ ...p, received_qty: e.target.value }))} /></div>
             </div>
-            {/* What the sample said. The four the mill always runs are listed
-                by name so nobody has to remember them; the name stays editable
-                and Add reading appends a blank pair, because a load is
-                occasionally tested on something else and that should not need
-                a release. Anything left blank is not saved — "not tested" and
-                "tested at nothing" are different answers. */}
-            {(() => {
-              const quality: Row[] = Array.isArray(actionForm.quality) ? actionForm.quality : []
-              const setQ = (i: number, patch: Row): void =>
-                setActionForm((p) => ({
-                  ...p,
-                  quality: (Array.isArray(p.quality) ? p.quality : []).map((q: Row, j: number) =>
-                    j === i ? { ...q, ...patch } : q
-                  )
-                }))
-              return (
-                <div className="rounded-md border p-3">
-                  <div className="mb-2 flex items-center justify-between">
-                    <Label className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
-                      Technical parameters
-                    </Label>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="h-7 gap-1 px-2 text-[11px]"
-                      onClick={() =>
-                        setActionForm((p) => ({
-                          ...p,
-                          quality: [...(Array.isArray(p.quality) ? p.quality : []), { name: '', value: '' }]
-                        }))
-                      }
-                    >
-                      <Plus className="h-3.5 w-3.5" /> Add reading
-                    </Button>
-                  </div>
-                  <div className="grid gap-2">
-                    {quality.map((q: Row, i: number) => (
-                      <div key={i} className="flex items-center gap-2">
-                        <Input
-                          value={String(q.name ?? '')}
-                          placeholder="Parameter"
-                          onChange={(e) => setQ(i, { name: e.target.value })}
-                          className="h-9 flex-1 text-[13px]"
-                        />
-                        <div className="relative w-32 shrink-0">
-                          <Input
-                            value={String(q.value ?? '')}
-                            placeholder="—"
-                            inputMode="decimal"
-                            onChange={(e) => setQ(i, { value: e.target.value })}
-                            className="h-9 pr-7 text-right text-[13px]"
-                          />
-                          <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[12px] text-muted-foreground">
-                            %
-                          </span>
-                        </div>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 shrink-0 text-destructive"
-                          title="Remove this reading"
-                          onClick={() =>
-                            setActionForm((p) => ({
-                              ...p,
-                              quality: (Array.isArray(p.quality) ? p.quality : []).filter(
-                                (_: Row, j: number) => j !== i
-                              )
-                            }))
-                          }
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )
-            })()}
             {(() => {
               // Both of these are settled when the tanker is sent In transit, so
               // here they are a read-back rather than a question. A tanker that
@@ -5754,6 +5764,124 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             }
           >{excess ? (excess.mode === 'existing' ? 'Allocate & confirm' : 'Add bargain & confirm') : 'Confirm'}</Button>
           )}</DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Technical parameters for an invoice, one block per emptied tanker.
+          Same drawer shape as the stage forms — something is being recorded
+          against a row that stays visible behind. */}
+      <Dialog open={!!qualityFor} onOpenChange={(o) => { if (!o && !qualityBusy) setQualityFor(null) }}>
+        <DialogContent className={cn('max-h-[92vh] w-[calc(100vw-2rem)] overflow-y-auto sm:max-w-lg', TK_DRAWER, TK_NARROW)}>
+          <DialogHeader className={cn(TK_HEAD)}>
+            <div className={cn(__WEB__ && 'pr-12')}>
+              {__WEB__ && <div className={TK_KICKER}>Technical parameters</div>}
+              <DialogTitle className={cn(TK_TITLE, __WEB__ && 'doc-ref')}>
+                {String(qualityFor?.invoice_no || 'Invoice')}
+              </DialogTitle>
+              {__WEB__ && !!qualityFor && (
+                <div className={TK_SUB}>
+                  {[
+                    String(qualityFor.supplier_name || ''),
+                    String(qualityFor.oil_code || qualityFor.oil_name || ''),
+                    qualitySets.length ? `${qualitySets.length} tanker${qualitySets.length === 1 ? '' : 's'} emptied` : ''
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </div>
+              )}
+            </div>
+          </DialogHeader>
+
+          <div className={cn(__WEB__ && cn(TK_BODY, TK_FIELDS, 'grid content-start'))}>
+            {qualitySets.length === 0 && (
+              <div className={cn('rounded-lg border p-4 text-center text-sm text-muted-foreground', __WEB__ && cn(TK_SECT, '!text-[12.5px] !font-semibold !text-[#8FA79B]'))}>
+                {qualityFor && Number(qualityFor.empty_tankers) > 0
+                  ? 'Loading…'
+                  : 'No tanker on this invoice has been emptied yet — readings are taken from the load once it is in.'}
+              </div>
+            )}
+            {qualitySets.map((set, si) => (
+              <div key={String(set.tanker.id)} className={cn('grid gap-3 rounded-lg border p-3', __WEB__ && cn(TK_SECT, '!gap-3'))}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className={cn('text-[11px] font-bold uppercase tracking-widest text-muted-foreground', __WEB__ && 'doc-ref !text-[13.5px] !font-bold !normal-case !tracking-normal !text-[#0A1F17]')}>
+                      {String(set.tanker.tanker_no || 'Tanker')}
+                    </div>
+                    {__WEB__ && (
+                      <div className="mt-0.5 text-[11.5px] font-semibold text-[#5A6B62]">
+                        {Number(set.tanker.received_qty)
+                          ? `${formatNum(set.tanker.received_qty)} ${String(set.tanker.uom || 'MT')} received`
+                          : `${formatNum(set.tanker.loaded_qty)} ${String(set.tanker.uom || 'MT')} loaded`}
+                        {set.tanker.empty_date ? ` · emptied ${formatDate(set.tanker.empty_date)}` : ''}
+                      </div>
+                    )}
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className={cn('h-7 gap-1 px-2 text-[11px]', __WEB__ && '!h-8 !rounded-[3px] !text-[11.5px] !font-bold')}
+                    onClick={() =>
+                      setQualitySets((p) => p.map((x, i) => (i === si ? { ...x, rows: [...x.rows, { name: '', value: '' }] } : x)))
+                    }
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Add reading
+                  </Button>
+                </div>
+                {/* Anything left blank is not saved — "not tested" and "tested
+                    at nothing" are different answers. */}
+                <div className="grid gap-2">
+                  {set.rows.map((q: Row, ri: number) => (
+                    <div key={ri} className="flex items-center gap-2">
+                      <Input
+                        value={String(q.name ?? '')}
+                        placeholder="Parameter"
+                        onChange={(e) => setQualityRow(si, ri, { name: e.target.value })}
+                        className={cn('h-9 flex-1 text-[13px]', __WEB__ && '!h-[42px]')}
+                      />
+                      <div className="relative w-32 shrink-0">
+                        <Input
+                          value={String(q.value ?? '')}
+                          placeholder="—"
+                          inputMode="decimal"
+                          onChange={(e) => setQualityRow(si, ri, { value: e.target.value })}
+                          className={cn('h-9 pr-7 text-right text-[13px]', __WEB__ && '!h-[42px]')}
+                        />
+                        <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[12px] text-muted-foreground">
+                          %
+                        </span>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 shrink-0 text-destructive"
+                        title="Remove this reading"
+                        onClick={() =>
+                          setQualitySets((p) => p.map((x, i) => (i === si ? { ...x, rows: x.rows.filter((_, j) => j !== ri) } : x)))
+                        }
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            {__WEB__ && qualitySets.length > 0 && (
+              <p className="text-[11.5px] font-semibold leading-[1.5] text-[#5A6B62]">
+                The percentage sign is the usual case; melting point is in degrees, so read that one as the figure
+                the lab gave.
+              </p>
+            )}
+          </div>
+
+          <DialogFooter className={cn(TK_FOOT)}>
+            <Button variant="outline" onClick={() => setQualityFor(null)} disabled={qualityBusy}>Cancel</Button>
+            <Button onClick={() => void saveQuality()} disabled={qualityBusy || qualitySets.length === 0}>
+              {qualityBusy ? 'Saving…' : 'Save readings'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

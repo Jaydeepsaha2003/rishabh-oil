@@ -147,7 +147,10 @@ const api = {
     advance: (id: number, toStatus: string, data: Row): Promise<{ id: number }> =>
       ipcRenderer.invoke('tankers:advance', { id, toStatus, data }),
     revert: (id: number): Promise<{ id: number; status: string }> => ipcRenderer.invoke('tankers:revert', { id }),
-    replace: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('tankers:replace', { id, values })
+    replace: (id: number, values: Row): Promise<{ id: number }> => ipcRenderer.invoke('tankers:replace', { id, values }),
+    quality: (id: number): Promise<Row[]> => ipcRenderer.invoke('tankers:quality', { id }),
+    saveQuality: (id: number, rows: Row[]): Promise<{ id: number }> =>
+      ipcRenderer.invoke('tankers:saveQuality', { id, rows })
   },
   dashboard: {
     stats: (): Promise<Row> => ipcRenderer.invoke('dashboard:stats')

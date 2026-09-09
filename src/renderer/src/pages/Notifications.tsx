@@ -8,8 +8,10 @@ import {
   ChevronRight,
   Info,
   Play,
+  MessageSquareText,
   RotateCcw,
-  Users
+  Users,
+  Wand2
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/ui/button'
@@ -43,10 +45,44 @@ const MODULES: { key: string; label: string; hint: string }[] = [
   { key: 'stock', label: 'Stock', hint: 'What the registers close at' }
 ]
 
+// One column template for the section header and every row under it.
+//
+// The controls used to be a flex row that wrapped and right-aligned, so a rule
+// WITHOUT a threshold pulled its two pickers left and nothing lined up with
+// the row above — three ragged columns down the page. A grid fixes the tracks
+// once; an empty cell just stays empty.
+const GRID = 'grid grid-cols-[minmax(0,1fr)_118px_152px_150px_104px] items-center gap-x-3'
+
+// Plain English for the settings, said once in the left column. The controls
+// on the right change it; this is what it currently DOES, which is the thing
+// somebody scanning the page actually wants.
+const SEV_WORD: Record<string, string> = {
+  critical: 'Urgent',
+  warning: 'Worth a look',
+  normal: 'Just so you know'
+}
+const AUD_WORD: Record<string, string> = {
+  admins: 'only admins',
+  access: 'anyone who can open the page',
+  everyone: 'everybody'
+}
+
 const SEV: Record<string, { label: string; chip: string; mark: string }> = {
   critical: { label: 'Critical', chip: 'border-[#8C2F26] bg-[#B3261E] text-white', mark: '#B3261E' },
   warning: { label: 'Warning', chip: 'border-[#8A5300] bg-[#C2700A] text-white', mark: '#C2700A' },
   normal: { label: 'Normal', chip: 'border-[#095538] bg-[#0B6B45] text-white', mark: '#12855A' }
+}
+
+// The same substitution the server does, so the preview and the real thing
+// cannot say different words. Kept tiny and dumb on purpose: no expressions,
+// no conditionals — a message people type must not be a place code can run.
+function fill(tpl: string, sample: Row): string {
+  if (!tpl.trim()) return ''
+  const vars = (sample.vars || {}) as Record<string, unknown>
+  return tpl.replace(/\{([a-z0-9_]+)\}/gi, (whole, key: string) => {
+    const v = vars[key]
+    return v == null || v === '' ? whole : String(v)
+  })
 }
 
 export function Notifications(): React.JSX.Element {
@@ -57,6 +93,10 @@ export function Notifications(): React.JSX.Element {
   const [open, setOpen] = useState<Record<string, boolean>>({ approvals: true, treasury: true })
   const [busy, setBusy] = useState('')
   const [running, setRunning] = useState(false)
+  // Which rule's message is being rewritten, and the draft being typed.
+  const [editing, setEditing] = useState<string>('')
+  const [draft, setDraft] = useState<{ title: string; body: string }>({ title: '', body: '' })
+  const [sample, setSample] = useState<Row | null>(null)
 
   const load = useCallback(async () => {
     const [r, f] = await Promise.all([
@@ -87,6 +127,44 @@ export function Notifications(): React.JSX.Element {
     } catch (e) {
       toast.error((e as Error).message)
       await load()
+    } finally {
+      setBusy('')
+    }
+  }
+
+  // Opening the editor fetches a REAL example, so the preview underneath is
+  // this rule against today's books rather than invented words.
+  async function openMessage(rule: Row): Promise<void> {
+    setEditing(String(rule.key))
+    setDraft({ title: String(rule.title_tpl || ''), body: String(rule.body_tpl || '') })
+    setSample(null)
+    try {
+      const rows = await window.api.notify.preview(String(rule.key))
+      setSample(rows[0] || null)
+    } catch {
+      setSample(null)
+    }
+  }
+
+  async function saveMessage(rule: Row): Promise<void> {
+    setBusy(String(rule.key))
+    try {
+      await window.api.notify.saveRule({
+        key: rule.key,
+        enabled: rule.enabled,
+        severity: rule.severity,
+        audience: rule.audience,
+        threshold: rule.threshold,
+        window_from: rule.window_from,
+        window_to: rule.window_to,
+        title_tpl: draft.title,
+        body_tpl: draft.body
+      })
+      setEditing('')
+      await load()
+      toast.success(draft.title || draft.body ? 'Your wording saved' : 'Back to the standard wording')
+    } catch (e) {
+      toast.error((e as Error).message)
     } finally {
       setBusy('')
     }
@@ -203,6 +281,19 @@ export function Notifications(): React.JSX.Element {
                 </span>
               </button>
 
+              {/* Column headings once per section, not repeated over every
+                  row. Nine copies of "HOW IMPORTANT" down a page is noise, and
+                  it was what made each row look like its own little form. */}
+              {isOpen && (
+                <div className={cn(GRID, 'border-b border-b-[#EAF0E9] bg-white px-[18px] py-1.5 pl-[52px]')}>
+                  <span />
+                  <span className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#8FA79B]">When</span>
+                  <span className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#8FA79B]">How important</span>
+                  <span className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#8FA79B]">Who gets told</span>
+                  <span className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#8FA79B]">Message</span>
+                </div>
+              )}
+
               {isOpen && (
                 <div>
                   {list.map((r) => {
@@ -223,14 +314,14 @@ export function Notifications(): React.JSX.Element {
                         )}
                         style={__WEB__ ? { borderLeft: `3px solid ${r.enabled ? sev.mark : 'transparent'}` } : undefined}
                       >
-                        <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
+                        <div className={cn(GRID, 'relative pl-[34px]')}>
                           <Switch
                             checked={!!r.enabled}
                             disabled={busy === r.key || !isAdmin}
                             onCheckedChange={(v) => void patch(r, { enabled: v })}
-                            className="mt-0.5 shrink-0"
+                            className="absolute left-0 top-[3px] shrink-0"
                           />
-                          <div className="min-w-0 flex-1">
+                          <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="text-[13px] font-extrabold text-[#0A1F17]">{r.label}</span>
                               <span
@@ -247,34 +338,41 @@ export function Notifications(): React.JSX.Element {
                                 </span>
                               )}
                             </div>
-                            <p className="mt-1.5 max-w-[60ch] text-[12px] font-semibold leading-[1.55] text-[#5A6B62]">
+                            <p className="mt-1 max-w-[62ch] text-[12px] font-semibold leading-[1.5] text-[#5A6B62]">
                               {r.desc}
-                              {r.audience === 'access' && (
-                                <span className="text-[#0B6B45]">
-                                  {' '}
-                                  Reaches anyone who can open{' '}
-                                  {MODULES.find((x) => x.key === r.module)?.label || 'that page'}.
-                                </span>
+                            </p>
+                            {/* What it does right now, as a sentence. The
+                                headings above say what each control is; this
+                                says what the settings add up to, which is the
+                                thing you actually read a list like this for. */}
+                            <p className="mt-1 text-[11.5px] font-bold leading-[1.5] text-[#0B6B45]">
+                              {r.enabled ? (
+                                <>
+                                  {spec
+                                    ? `${String(spec.question).replace(/^Tell me /, 'Tells you ').replace(/^Only /, 'Only ')} ${r.threshold} ${spec.unit}`
+                                    : 'Tells you as soon as it happens'}
+                                  {' · '}
+                                  {SEV_WORD[String(r.severity)] || r.severity}
+                                  {' · '}
+                                  {r.audience === 'access'
+                                    ? `anyone who can open ${MODULES.find((x) => x.key === r.module)?.label || 'that page'}`
+                                    : AUD_WORD[String(r.audience)] || r.audience}
+                                  {(r.title_tpl || r.body_tpl) && ' · your own wording'}
+                                </>
+                              ) : (
+                                <span className="text-[#8FA79B]">Off — nobody is told.</span>
                               )}
                             </p>
                           </div>
 
-                          {/* The three knobs, only where they mean something. */}
-                          <div className="flex flex-wrap items-end gap-2">
-                            {spec && (
-                              <div className="flex flex-col gap-1">
-                                {/* Label and unit share one line above the box.
-                                    The unit used to sit BESIDE it, which made
-                                    the field twice as wide as the number it
-                                    holds and pushed the two pickers off the row
-                                    on a narrow screen. */}
-                                <Label className="whitespace-nowrap text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
-                                  {spec.label}{' '}
-                                  <span className="font-bold normal-case tracking-normal text-[#8FA79B]">
-                                    · {spec.unit}
-                                  </span>
-                                </Label>
-                                <Input
+                          {/* One cell per column, so every row lines up with
+                              the headings and with each other. A rule with no
+                              threshold leaves an empty cell rather than
+                              dragging the rest of the row leftwards, which is
+                              what made the columns ragged. */}
+                          {spec ? (
+                            <div className="flex items-center gap-1.5" title={spec.question}>
+                                  <Input
                                   type="number"
                                   step={spec.step || 1}
                                   min={spec.min}
@@ -287,65 +385,183 @@ export function Notifications(): React.JSX.Element {
                                     if (v !== String(r.threshold ?? '')) void patch(r, { threshold: v })
                                   }}
                                   className={cn('w-[62px] text-right', __WEB__ && '!h-8 !rounded-[3px] !px-2 !text-[12.5px]')}
-                                />
+                                  />
+                                  <span className="whitespace-nowrap text-[11px] font-semibold text-[#8FA79B]">
+                                    {spec.unit}
+                                  </span>
                               </div>
-                            )}
-                            <div className="flex flex-col gap-1">
-                              <Label className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
-                                Severity
-                              </Label>
-                              <Select
+                          ) : (
+                            <span />
+                          )}
+                            <Select
                                 value={String(r.severity)}
                                 disabled={!r.enabled || busy === r.key || !isAdmin}
                                 onValueChange={(v) => void patch(r, { severity: v })}
                               >
-                                <SelectTrigger className={cn('w-[104px]', __WEB__ && '!h-8 !rounded-[3px] !px-2 !text-[12.5px]')}>
+                                <SelectTrigger className={cn('w-full', __WEB__ && '!h-8 !rounded-[3px] !px-2 !text-[12.5px]')}>
                                   <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
-                                  <SelectItem value="critical">Critical</SelectItem>
-                                  <SelectItem value="warning">Warning</SelectItem>
-                                  <SelectItem value="normal">Normal</SelectItem>
+                                  <SelectItem value="critical">Urgent</SelectItem>
+                                  <SelectItem value="warning">Worth a look</SelectItem>
+                                  <SelectItem value="normal">Just so you know</SelectItem>
                                 </SelectContent>
                               </Select>
-                            </div>
-                            <div className="flex flex-col gap-1">
-                              <Label className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
-                                Who hears it
-                              </Label>
-                              <Select
+                            <Select
                                 value={String(r.audience)}
                                 disabled={!r.enabled || busy === r.key || !isAdmin}
                                 onValueChange={(v) => void patch(r, { audience: v })}
                               >
-                                <SelectTrigger className={cn('w-[126px]', __WEB__ && '!h-8 !rounded-[3px] !px-2 !text-[12.5px]')}>
+                                <SelectTrigger className={cn('w-full', __WEB__ && '!h-8 !rounded-[3px] !px-2 !text-[12.5px]')}>
                                   <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
-                                  <SelectItem value="admins">Admins</SelectItem>
+                                  <SelectItem value="admins">Only admins</SelectItem>
                                   {/* Usually the one that fits: a Treasury
                                       alert wants the people who work in
                                       Treasury, who are neither all the admins
                                       nor the whole desk. */}
                                   <SelectItem value="access">Who has access</SelectItem>
-                                  <SelectItem value="everyone">Everyone</SelectItem>
+                                  <SelectItem value="everyone">Everybody</SelectItem>
                                 </SelectContent>
                               </Select>
+                            <div className="flex items-center justify-end gap-1">
+                              {isAdmin && (
+                                <Button
+                                  variant={r.title_tpl || r.body_tpl ? 'default' : 'outline'}
+                                  size="sm"
+                                  disabled={!r.enabled}
+                                  title={
+                                    r.title_tpl || r.body_tpl
+                                      ? 'You have written your own wording for this — click to change it'
+                                      : 'Write your own wording for this notification'
+                                  }
+                                  className={cn('h-8 w-8 !p-0', __WEB__ && '!rounded-[3px]')}
+                                  onClick={() => (editing === r.key ? setEditing('') : void openMessage(r))}
+                                >
+                                  <MessageSquareText className="h-3.5 w-3.5" />
+                                </Button>
+                              )}
+                              {!isDefault && isAdmin && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  title="Put this notification back to how it ships"
+                                  className="h-8 w-8 !p-0 text-[#5A6B62]"
+                                  disabled={busy === r.key}
+                                  onClick={() => void reset(r)}
+                                >
+                                  <RotateCcw className="h-3.5 w-3.5" />
+                                </Button>
+                              )}
                             </div>
-                            {!isDefault && isAdmin && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                title="Put this notification back to how it ships"
-                                className="h-8 px-2 text-[11px] font-bold text-[#5A6B62]"
-                                disabled={busy === r.key}
-                                onClick={() => void reset(r)}
-                              >
-                                <RotateCcw className="h-3.5 w-3.5" /> Reset
-                              </Button>
-                            )}
-                          </div>
                         </div>
+
+                        {editing === r.key && (
+                          <div className="mt-3.5 rounded-[4px] border border-[#C3D2C6] bg-[#F7FAF6] p-3.5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Wand2 className="h-4 w-4 text-[#0B6B45]" />
+                              <span className="text-[11px] font-extrabold uppercase tracking-[.12em] text-[#0A1F17]">
+                                Say it your way
+                              </span>
+                              <span className="text-[12px] font-semibold text-[#5A6B62]">
+                                Leave both empty to use the standard wording.
+                              </span>
+                            </div>
+
+                            {/* The placeholders, as buttons. Typing {lc_no}
+                                from memory is how a message ends up with a
+                                name this notification cannot fill. */}
+                            {(r.vars as Row[])?.length > 0 && (
+                              <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                                <span className="text-[11px] font-bold text-[#5A6B62]">Drop in:</span>
+                                {(r.vars as Row[]).map((v) => (
+                                  <button
+                                    key={String(v.key)}
+                                    type="button"
+                                    title={`${v.label} — click to add`}
+                                    onClick={() => setDraft((d) => ({ ...d, body: `${d.body}{${v.key}}` }))}
+                                    className="rounded-[2px] border border-[#C3D2C6] bg-white px-1.5 py-[2px] font-mono text-[11px] font-bold text-[#0B6B45] hover:bg-[#EFF5EC]"
+                                  >
+                                    {`{${v.key}}`}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+
+                            <div className="mt-3 grid gap-2.5">
+                              <div className="flex flex-col gap-1">
+                                <Label className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+                                  Heading
+                                </Label>
+                                <Input
+                                  value={draft.title}
+                                  placeholder={String(sample?.default_title || 'The standard heading')}
+                                  onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
+                                  className={cn(__WEB__ && '!h-9 !rounded-[3px] !text-[12.5px]')}
+                                />
+                              </div>
+                              <div className="flex flex-col gap-1">
+                                <Label className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+                                  The line under it
+                                </Label>
+                                <Input
+                                  value={draft.body}
+                                  placeholder={String(sample?.default_body || 'The standard message')}
+                                  onChange={(e) => setDraft((d) => ({ ...d, body: e.target.value }))}
+                                  className={cn(__WEB__ && '!h-9 !rounded-[3px] !text-[12.5px]')}
+                                />
+                              </div>
+                            </div>
+
+                            {/* Against a real one from today's books, not made
+                                up — so what you see here is what will arrive. */}
+                            <div className="mt-3 rounded-[3px] border border-[#D6E2D6] bg-white px-3 py-2.5">
+                              <div className="text-[9.5px] font-extrabold uppercase tracking-[.12em] text-[#8FA79B]">
+                                {sample ? 'How it will read' : 'Nothing to preview — this one has nothing to report right now'}
+                              </div>
+                              {sample && (
+                                <>
+                                  <div className="mt-1 text-[12.5px] font-extrabold text-[#0A1F17]">
+                                    {fill(draft.title, sample) || String(sample.default_title || '')}
+                                  </div>
+                                  <div className="mt-0.5 text-[12px] font-semibold text-[#5A6B62]">
+                                    {fill(draft.body, sample) || String(sample.default_body || '')}
+                                  </div>
+                                </>
+                              )}
+                            </div>
+
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                              <Button
+                                size="sm"
+                                disabled={busy === r.key}
+                                className={cn('h-8 text-[12px] font-bold', __WEB__ && '!rounded-[3px]')}
+                                onClick={() => void saveMessage(r)}
+                              >
+                                Save wording
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className={cn('h-8 text-[12px] font-bold', __WEB__ && '!rounded-[3px]')}
+                                onClick={() => setEditing('')}
+                              >
+                                Cancel
+                              </Button>
+                              {(r.title_tpl || r.body_tpl) && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-8 text-[11.5px] font-bold text-[#5A6B62]"
+                                  onClick={() => setDraft({ title: '', body: '' })}
+                                >
+                                  <RotateCcw className="h-3.5 w-3.5" /> Standard wording
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )
                   })}

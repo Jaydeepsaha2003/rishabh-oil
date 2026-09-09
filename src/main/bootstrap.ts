@@ -1049,6 +1049,17 @@ export async function runStartupTasks(): Promise<void> {
     )`)
   }).catch((e) => console.error('[notify] v2 failed:', e))
 
+  // A desk that wants its own wording. Blank means the rule writes its own
+  // sentence, which is what everyone starts with.
+  await runOnce('notifications_v3_templates', async () => {
+    const c = getClient()
+    for (const col of ['title_tpl TEXT', 'body_tpl TEXT']) {
+      await c.execute(`ALTER TABLE notification_rules ADD COLUMN ${col}`).catch((e) => {
+        if (!/duplicate column/i.test(String(e))) throw e
+      })
+    }
+  }).catch((e) => console.error('[notify] message templates failed:', e))
+
   // The gate times the website wrote while the server ran in UTC — 09:53 IST
   // stored as 04:23, and anything entered before 05:30 IST filed under the
   // day before. src/server/tz.ts stops it recurring; this repairs what is

@@ -9,6 +9,7 @@ import {
   type Severity,
   MODULE_PERM,
   daysBetween,
+  renderTemplate,
   ddmmyyyy,
   inr,
   n,
@@ -39,6 +40,7 @@ type Row = Record<string, any>
 export const RULES: RuleDef[] = [
   {
     key: 'approvals.pending',
+    vars: [{ key: 'kind', label: 'What kind of master' }, { key: 'name', label: 'Its name' }, { key: 'by', label: 'Who raised it' }],
     module: 'approvals',
     label: 'Master waiting for approval',
     desc: 'Somebody has added a supplier, customer, product or other master and it is waiting for an admin to accept it.',
@@ -65,12 +67,18 @@ export const RULES: RuleDef[] = [
       return plain(res).map((r) => ({
         dedupe: `approval:${r.id}`,
         title: `New ${LABEL[String(r.table_name)] || String(r.table_name)} to approve`,
-        body: `${r.label || '—'} · raised by ${r.requested_by_name || 'a user'}`
+        body: `${r.label || '—'} · raised by ${r.requested_by_name || 'a user'}`,
+        vars: {
+          kind: LABEL[String(r.table_name)] || String(r.table_name),
+          name: String(r.label || '—'),
+          by: String(r.requested_by_name || 'a user')
+        }
       }))
     }
   },
   {
     key: 'approvals.decided',
+    vars: [{ key: 'kind', label: 'What kind of master' }, { key: 'name', label: 'Its name' }, { key: 'decision', label: 'approved or rejected' }, { key: 'reason', label: 'Why, if turned down' }],
     module: 'approvals',
     label: 'Your submission was decided',
     desc: 'Something you added has been accepted or turned down by an admin. Only the person who raised it is told.',
@@ -101,12 +109,19 @@ export const RULES: RuleDef[] = [
         body:
           String(r.status) === 'rejected'
             ? `${r.label || '—'} — ${r.reason || 'no reason given'}`
-            : String(r.label || '—')
+            : String(r.label || '—'),
+        vars: {
+          kind: LABEL[String(r.table_name)] || String(r.table_name),
+          name: String(r.label || '—'),
+          decision: String(r.status),
+          reason: String(r.reason || 'no reason given')
+        }
       }))
     }
   },
   {
     key: 'treasury.lc_expiring',
+    vars: [{ key: 'lc_no', label: 'LC number' }, { key: 'bank', label: 'Bank' }, { key: 'party', label: 'Supplier' }, { key: 'amount', label: 'Amount open' }, { key: 'days', label: 'Days away' }, { key: 'expires_on', label: 'Expiry date' }],
     module: 'treasury',
     label: 'Letter of credit expiring',
     desc: 'An open letter of credit is coming up to its expiry with documents still unpresented.',
@@ -114,7 +129,7 @@ export const RULES: RuleDef[] = [
     enabled: true,
     audience: 'admins',
     page: 'treasury',
-    threshold: { label: 'Lead', unit: 'days before', def: 7, min: 1, max: 90 },
+    threshold: { label: 'Lead', question: 'Tell me this many days early', unit: 'days', def: 7, min: 1, max: 90 },
     evaluate: async ({ threshold, companyId, today }) => {
       const res = await getClient().execute({
         sql: `SELECT l.id, l.lc_no, l.bank, l.expiry_date, l.amount, s.name AS supplier_name
@@ -136,12 +151,21 @@ export const RULES: RuleDef[] = [
               : l.left === 0
                 ? `LC ${l.lc_no || l.id} expires today`
                 : `LC ${l.lc_no || l.id} expires in ${l.left} day${l.left === 1 ? '' : 's'}`,
-          body: `${l.bank || 'bank'} · ${l.supplier_name || 'party'} · ${inr(l.amount)} still open.`
+          body: `${l.bank || 'bank'} · ${l.supplier_name || 'party'} · ${inr(l.amount)} still open.`,
+          vars: {
+            lc_no: String(l.lc_no || l.id),
+            bank: String(l.bank || 'bank'),
+            party: String(l.supplier_name || 'party'),
+            amount: inr(l.amount),
+            days: Math.abs(l.left),
+            expires_on: ddmmyyyy(l.expiry_date)
+          }
         }))
     }
   },
   {
     key: 'treasury.bd_maturing',
+    vars: [{ key: 'bd_no', label: 'BD number' }, { key: 'party', label: 'Party' }, { key: 'nbfc', label: 'NBFC' }, { key: 'amount', label: 'Amount' }, { key: 'days', label: 'Days away' }, { key: 'matures_on', label: 'Maturity date' }],
     module: 'treasury',
     label: 'Discounted bill maturing',
     desc: 'A discounted bill is reaching maturity with nothing received from the party against it.',
@@ -149,7 +173,7 @@ export const RULES: RuleDef[] = [
     enabled: true,
     audience: 'admins',
     page: 'treasury',
-    threshold: { label: 'Lead', unit: 'days before', def: 3, min: 1, max: 60 },
+    threshold: { label: 'Lead', question: 'Tell me this many days early', unit: 'days', def: 3, min: 1, max: 60 },
     evaluate: async ({ threshold, companyId, today }) => {
       const res = await getClient().execute({
         sql: `SELECT bd.id, bd.bd_no, bd.maturity_date, bd.amount,
@@ -174,12 +198,21 @@ export const RULES: RuleDef[] = [
               : b.left === 0
                 ? `BD ${b.bd_no || b.id} matures today`
                 : `BD ${b.bd_no || b.id} matures in ${b.left} day${b.left === 1 ? '' : 's'}`,
-          body: `${b.party_name || 'party'} · ${b.nbfc_name || 'NBFC'} · ${inr(b.amount)}.`
+          body: `${b.party_name || 'party'} · ${b.nbfc_name || 'NBFC'} · ${inr(b.amount)}.`,
+          vars: {
+            bd_no: String(b.bd_no || b.id),
+            party: String(b.party_name || 'party'),
+            nbfc: String(b.nbfc_name || 'NBFC'),
+            amount: inr(b.amount),
+            days: Math.abs(b.left),
+            matures_on: ddmmyyyy(b.maturity_date)
+          }
         }))
     }
   },
   {
     key: 'purchase.unmapped',
+    vars: [{ key: 'count', label: 'How many' }, { key: 'invoices', label: 'The first few numbers' }, { key: 'days', label: 'The limit you set' }],
     module: 'purchase',
     label: 'Purchase invoice left unmapped',
     desc: 'A purchase invoice has sat with no tanker or bargain against it for longer than you allow.',
@@ -187,7 +220,7 @@ export const RULES: RuleDef[] = [
     enabled: true,
     audience: 'everyone',
     page: 'orders',
-    threshold: { label: 'After', unit: 'days', def: 2, min: 0, max: 90 },
+    threshold: { label: 'After', question: 'Only once it has sat this long', unit: 'days', def: 2, min: 0, max: 90 },
     evaluate: async ({ threshold, companyId, today }) => {
       const res = await getClient().execute({
         sql: `SELECT o.id, o.invoice_no, o.order_date, s.name AS supplier_name
@@ -211,13 +244,19 @@ export const RULES: RuleDef[] = [
           body:
             old.slice(0, 3).map((o) => String(o.invoice_no || o.id)).join(', ') +
             (old.length > 3 ? ` and ${old.length - 3} more` : '') +
-            ' — no bargain against them.'
+            ' — no bargain against them.',
+          vars: {
+            count: old.length,
+            invoices: old.slice(0, 3).map((o) => String(o.invoice_no || o.id)).join(', '),
+            days: threshold
+          }
         }
       ]
     }
   },
   {
     key: 'purchase.shortage',
+    vars: [{ key: 'tanker', label: 'Tanker number' }, { key: 'supplier', label: 'Supplier' }, { key: 'short', label: 'How much short' }, { key: 'allowed', label: 'What was allowed' }, { key: 'uom', label: 'Unit' }],
     module: 'purchase',
     label: 'Shortage beyond the allowance',
     desc: 'A received tanker came in short by more than its allowed tolerance, so a deduction is due from the transporter.',
@@ -225,7 +264,7 @@ export const RULES: RuleDef[] = [
     enabled: true,
     audience: 'admins',
     page: 'orders',
-    threshold: { label: 'Over', unit: '% allowed', def: 0, min: 0, max: 100, step: 0.01 },
+    threshold: { label: 'Over', question: 'Only when it is over the allowance by', unit: '%', def: 0, min: 0, max: 100, step: 0.01 },
     evaluate: async ({ threshold, companyId }) => {
       const res = await getClient().execute({
         sql: `SELECT pt.id, pt.tanker_no, pt.loaded_qty, pt.received_qty, pt.uom,
@@ -252,12 +291,20 @@ export const RULES: RuleDef[] = [
         .map((t) => ({
           dedupe: `shortage:${t.id}`,
           title: `${t.tanker_no || 'Tanker'} short beyond tolerance`,
-          body: `${num3(t.short)} ${t.uom || 'MT'} short against ${num3(t.allowed)} allowed · ${t.supplier_name || 'supplier'}.`
+          body: `${num3(t.short)} ${t.uom || 'MT'} short against ${num3(t.allowed)} allowed · ${t.supplier_name || 'supplier'}.`,
+          vars: {
+            tanker: String(t.tanker_no || 'Tanker'),
+            supplier: String(t.supplier_name || 'supplier'),
+            short: num3(t.short),
+            allowed: num3(t.allowed),
+            uom: String(t.uom || 'MT')
+          }
         }))
     }
   },
   {
     key: 'stock.negative',
+    vars: [{ key: 'product', label: 'Product' }, { key: 'closing', label: 'Closing figure' }],
     module: 'stock',
     label: 'Stock closes negative',
     desc: 'A product closes below nil, so more has gone out than was ever booked in.',
@@ -277,12 +324,17 @@ export const RULES: RuleDef[] = [
         .map((p) => ({
           dedupe: `negstock:${p.product_id ?? p.id}:${today}`,
           title: `${p.product_code || p.product_name || 'A product'} closed at ${num3(p.closing)}`,
-          body: 'More has gone out than was ever booked in. Check the opening figure and the movements behind it.'
+          body: 'More has gone out than was ever booked in. Check the opening figure and the movements behind it.',
+          vars: {
+            product: String(p.product_code || p.product_name || 'A product'),
+            closing: num3(p.closing)
+          }
         }))
     }
   },
   {
     key: 'treasury.lc_bill_due',
+    vars: [{ key: 'invoice', label: 'Invoice number' }, { key: 'lc_no', label: 'LC number' }, { key: 'bank', label: 'Bank' }, { key: 'party', label: 'Supplier' }, { key: 'amount', label: 'Amount' }, { key: 'days', label: 'Days away' }, { key: 'due_on', label: 'Due date' }],
     module: 'treasury',
     label: 'LC bill reaching its due date',
     desc: 'A bill drawn under a letter of credit is coming up to its due date with nothing settled against it.',
@@ -290,7 +342,7 @@ export const RULES: RuleDef[] = [
     enabled: true,
     audience: 'admins',
     page: 'treasury',
-    threshold: { label: 'Lead', unit: 'days before', def: 7, min: 1, max: 90 },
+    threshold: { label: 'Lead', question: 'Tell me this many days early', unit: 'days', def: 7, min: 1, max: 90 },
     evaluate: async ({ threshold, companyId, today }) => {
       const res = await getClient().execute({
         sql: `SELECT i.id, i.due_date, i.amount, l.lc_no, l.bank,
@@ -314,7 +366,16 @@ export const RULES: RuleDef[] = [
             b.left < 0
               ? `LC bill ${b.invoice_no || b.id} overdue by ${Math.abs(b.left)} day${Math.abs(b.left) === 1 ? '' : 's'}`
               : `LC bill ${b.invoice_no || b.id} due in ${b.left} day${b.left === 1 ? '' : 's'}`,
-          body: `${b.lc_no || 'LC'} · ${b.bank || 'bank'} · ${b.supplier_name || 'party'} · ${inr(b.amount)}.`
+          body: `${b.lc_no || 'LC'} · ${b.bank || 'bank'} · ${b.supplier_name || 'party'} · ${inr(b.amount)}.`,
+          vars: {
+            invoice: String(b.invoice_no || b.id),
+            lc_no: String(b.lc_no || 'LC'),
+            bank: String(b.bank || 'bank'),
+            party: String(b.supplier_name || 'party'),
+            amount: inr(b.amount),
+            days: Math.abs(b.left),
+            due_on: ddmmyyyy(b.due_date)
+          }
         }))
     }
   }
@@ -368,6 +429,10 @@ export async function listNotificationRules(): Promise<Row[]> {
       recipients: parseIds(s?.recipients),
       window_from: (s?.window_from as string) || null,
       window_to: (s?.window_to as string) || null,
+      // Blank means "whatever the rule writes itself".
+      title_tpl: (s?.title_tpl as string) || '',
+      body_tpl: (s?.body_tpl as string) || '',
+      vars: d.vars ?? [],
       default_enabled: d.enabled,
       default_severity: d.severity,
       default_audience: d.audience,
@@ -400,17 +465,44 @@ export async function saveNotificationRule(v: Row): Promise<{ key: string }> {
   if (to && !HHMM.test(to)) throw new Error('Delivery window end must be a time like 20:00')
   if (!!from !== !!to) throw new Error('Give both ends of the delivery window, or neither')
 
+  // A rewritten message. Length-capped because it has to fit a bell row, and
+  // checked for placeholders this rule cannot fill — a message that renders as
+  // "{tanker} is short" on every notification is worse than the default, and
+  // the moment to say so is now, not once it is on somebody's screen.
+  const titleTpl = String(v.title_tpl || '').trim()
+  const bodyTpl = String(v.body_tpl || '').trim()
+  if (titleTpl.length > 160) throw new Error('Keep the heading under 160 characters — it has a bell row to fit in')
+  if (bodyTpl.length > 400) throw new Error('Keep the message under 400 characters')
+  const known = new Set((def.vars || []).map((x) => x.key))
+  for (const tpl of [titleTpl, bodyTpl]) {
+    for (const hit of tpl.matchAll(/\{([a-z0-9_]+)\}/gi)) {
+      if (!known.has(hit[1])) {
+        throw new Error(
+          `This notification has nothing called {${hit[1]}}. It can use: ${
+            [...known].map((k) => `{${k}}`).join(', ') || 'no placeholders at all'
+          }`
+        )
+      }
+    }
+  }
+
   await getClient().execute({
     sql: `INSERT INTO notification_rules
-            (rule_key, enabled, severity, audience, threshold, recipients, window_from, window_to, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            (rule_key, enabled, severity, audience, threshold, recipients, window_from, window_to,
+             title_tpl, body_tpl, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
           ON CONFLICT(rule_key) DO UPDATE SET
             enabled = excluded.enabled, severity = excluded.severity,
             audience = excluded.audience, threshold = excluded.threshold,
             recipients = excluded.recipients,
             window_from = excluded.window_from, window_to = excluded.window_to,
+            title_tpl = excluded.title_tpl, body_tpl = excluded.body_tpl,
             updated_at = excluded.updated_at`,
-    args: [key, v.enabled ? 1 : 0, sev, aud, th, ids && ids.length ? JSON.stringify(ids) : null, from || null, to || null]
+    args: [
+      key, v.enabled ? 1 : 0, sev, aud, th,
+      ids && ids.length ? JSON.stringify(ids) : null,
+      from || null, to || null, titleTpl || null, bodyTpl || null
+    ]
   })
   return { key }
 }
@@ -546,6 +638,11 @@ export async function runNotificationRules(): Promise<{ raised: number; resolved
 
     const ruleRecipients = Array.isArray(r.recipients) && r.recipients.length ? r.recipients : null
     for (const cand of found) {
+      // The desk's own wording where there is one, the rule's otherwise. The
+      // facts are the same either way — a custom message is a different
+      // sentence about the same query, never a different query.
+      const title = r.title_tpl ? renderTemplate(String(r.title_tpl), cand.vars) : cand.title
+      const body = r.body_tpl ? renderTemplate(String(r.body_tpl), cand.vars) : cand.body
       // The fact's own people win over the rule's, which win over the audience.
       const who = cand.recipients?.length ? cand.recipients : ruleRecipients
       const recipients = who ? JSON.stringify(who) : null
@@ -560,8 +657,8 @@ export async function runNotificationRules(): Promise<{ raised: number; resolved
           cand.severity || r.severity,
           r.audience,
           recipients,
-          cand.title,
-          cand.body,
+          title,
+          body,
           cand.page || def.page || null,
           `${companyId}:${cand.dedupe}`
         ]
@@ -583,7 +680,15 @@ export async function previewNotificationRule(key: string): Promise<Row[]> {
     companyId: getActiveCompanyId(),
     today: todayISO()
   })
-  return found.map((f) => ({ title: f.title, body: f.body, severity: f.severity || r?.severity || def.severity }))
+  return found.map((f) => ({
+    title: r?.title_tpl ? renderTemplate(String(r.title_tpl), f.vars) : f.title,
+    body: r?.body_tpl ? renderTemplate(String(r.body_tpl), f.vars) : f.body,
+    severity: f.severity || r?.severity || def.severity,
+    // The default, so the editor can show what it is replacing.
+    default_title: f.title,
+    default_body: f.body,
+    vars: f.vars || {}
+  }))
 }
 
 let watcher: ReturnType<typeof setInterval> | null = null
