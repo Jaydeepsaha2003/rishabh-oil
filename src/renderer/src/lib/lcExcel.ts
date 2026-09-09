@@ -67,6 +67,16 @@ export async function exportLcRegister(lcs: Row[], filename: string, repayments:
       interest_upfront: l.interest_upfront ? 'Yes' : 'No',
       interest_amount: interestAmount,
       charges: n(l.charges),
+      // What the bank is HOLDING against the facility, which is not always
+      // what it opened: where the bill came in under the request the two part
+      // company, and the limit and the exposure outstanding are measured on
+      // this one. Interest and margin are not — they run on the open amount
+      // beside it, which is exactly why both belong in the sheet.
+      //
+      // Falls back to the open amount the same way lc.ts does, so an LC where
+      // the bank blocked precisely what it opened reads the same in both
+      // columns rather than blank in one.
+      blocked_amount: n(l.blocked_effective) || n(l.blocked_amount) || n(l.amount),
       open_amount: n(l.amount),
       // What the beneficiary was ACTUALLY paid — the bill the bank honoured —
       // falling back to the expectation only while no bill exists. This used
@@ -128,6 +138,7 @@ export async function exportLcRegister(lcs: Row[], filename: string, repayments:
       { header: 'Margin amount (₹)', key: 'margin_amount', align: 'right', numFmt: '#,##0.00', width: 16 },
       { header: 'Interest % (ROI)', key: 'interest_pct', align: 'right', width: 14 },
       { header: 'Interest upfront?', key: 'interest_upfront', width: 14, headerFill: 'FFF2DCDB', headerTextColor: 'FF1F2937' },
+      { header: 'Blocked Amount (₹)', key: 'blocked_amount', align: 'right', numFmt: '#,##0.00', width: 18, headerFill: 'FFF2DCDB', headerTextColor: 'FF1F2937' },
       { header: 'LC Open Amount (₹)', key: 'open_amount', align: 'right', numFmt: '#,##0.00', width: 18, headerFill: 'FFF2DCDB', headerTextColor: 'FF1F2937' },
       { header: 'Interest amount (₹)', key: 'interest_amount', align: 'right', numFmt: '#,##0.00', width: 16, headerFill: 'FFF2DCDB', headerTextColor: 'FF1F2937' },
       { header: 'LC charges (₹)', key: 'charges', align: 'right', numFmt: '#,##0.00', width: 14, headerFill: 'FFF2DCDB', headerTextColor: 'FF1F2937' },
