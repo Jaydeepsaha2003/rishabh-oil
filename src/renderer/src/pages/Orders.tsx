@@ -148,10 +148,23 @@ function tankerDelay(row: Row): TankerDelay | null {
 // website, including the plain ETA — it used to be the only state rendered as
 // grey text, which put the one line a dispatcher actually reads (when is it
 // getting here) below the four exception states in weight.
+//
+// The three verdicts are FILLED; the two neutral states stay light.
+//
+// Every one of them used to be a pale tint, which put "Arrived 1d early" in
+// almost exactly the wash the stage chip above it already wears — two green
+// pills stacked in one cell, the second reading as a second copy of the first
+// rather than as a different fact about the load. Solid colour separates the
+// verdict from the stage at a glance, and gives the column a proper hierarchy:
+// a filled red row is the loudest thing on the page, which is right, and a
+// filled green one is unmistakably the opposite rather than more of the same.
+//
+// The plain ETA keeps its light chip. It is on most rows, it is not a verdict,
+// and it already carries the forest day-count pill to give it weight.
 const ETA_TONE: Record<TankerDelay['kind'], string> = {
-  late: 'border-[#F0AFAA] bg-[#FDF3F2] text-[#B3261E]',
-  today: 'border-[#F0E4CB] bg-[#FFF4E0] text-[#8A5300]',
-  good: 'border-[#BFE3CB] bg-[#EAF6EC] text-[#0B6B45]',
+  late: 'border-[#8C2F26] bg-[#B3261E] text-white',
+  today: 'border-[#8A5300] bg-[#C2700A] text-white',
+  good: 'border-[#095538] bg-[#0B6B45] text-white',
   eta: 'border-[#C3D2C6] bg-[#F1F7EF] text-[#0A1F17]',
   unset: 'border-[#E4ECE3] bg-[#F7FAF6] text-[#8FA79B]'
 }
@@ -281,6 +294,66 @@ const TK_FIELDS = __WEB__
 const TK_FOOT = __WEB__
   ? '!m-0 !border-t !border-t-[#D6E2D6] !bg-white !px-[22px] !py-3.5 [&_button]:!h-[42px] [&_button]:!rounded-[4px] [&_button]:!px-5 [&_button]:!text-[13px] [&_button]:!font-extrabold'
   : ''
+
+// What was recorded at a stage, for reading back.
+//
+// A tanker's history was only ever visible as a date under a step on the rail.
+// Someone moving a load on wants the rest of it — which bargain it was booked
+// against, what it weighed, who is carrying it, what the gate said — and the
+// only way to see any of that was to leave the drawer for the register, losing
+// the form. These are the facts each stage captured, read straight off the row.
+//
+// Read-only by construction: it returns strings. There is no path from here to
+// a write, which is the point — an earlier stage is history, and correcting it
+// is Edit's job, not something to be done in passing while moving a tanker on.
+function stageFacts(row: Row, key: string): { k: string; v: string }[] {
+  const q = (v: unknown, u?: unknown): string =>
+    Number(v) ? `${formatNum(Number(v))} ${String(u || row.uom || 'MT')}` : ''
+  const txt = (v: unknown): string => String(v ?? '').trim()
+  const out: { k: string; v: string }[] = []
+  const add = (k: string, v: string): void => {
+    if (v) out.push({ k, v })
+  }
+
+  if (key === 'supplier_factory') {
+    add('Sent on', row.created_at ? formatDate(String(row.created_at).slice(0, 10)) : '')
+    add('Tanker', txt(row.tanker_no))
+    add('Supplier', txt(row.supplier_name))
+    add('Product', txt(row.oil_code || row.oil_name))
+    add('Bargain', txt(row.bargain_no))
+  } else if (key === 'loaded') {
+    add('Loaded on', row.loaded_date ? formatDate(row.loaded_date) : '')
+    add('Tanker', txt(row.tanker_no))
+    add('Bargain', txt(row.bargain_no))
+    add('Loaded qty', q(row.loaded_qty))
+    add('Payment', row.payment_mode === 'supplier_finance' ? 'Supplier financed' : row.payment_mode === 'pending' ? 'Not decided' : 'Paid by us')
+    add('Extra bargain', txt(row.extra_bargain_no))
+  } else if (key === 'transit') {
+    add('In transit on', row.transit_date ? formatDate(row.transit_date) : '')
+    add('Source / port', txt(row.source_name))
+    add('Transporter', txt(row.transporter_name))
+    if (Number(row.transport_rate_per_ton) > 0) {
+      add('Freight rate', `${formatINR(row.transport_rate_per_ton)}/${String(row.uom || 'MT')}`)
+      const basis = row.received_qty != null ? Number(row.received_qty) : Number(row.loaded_qty) || 0
+      add('Freight', basis ? `≈ ${formatINR(Number(row.transport_rate_per_ton) * basis)}` : '')
+    }
+  } else if (key === 'outside_factory') {
+    add('Outside on', row.outside_factory_date ? formatDate(row.outside_factory_date) : '')
+    add('Gate entry', txt(row.gate_entry_no))
+    add('Gate register no', txt(row.gate_ref_no))
+  } else if (key === 'inside_factory') {
+    add('Inside on', row.inside_factory_date ? formatDate(row.inside_factory_date) : '')
+    add('Gate entry', txt(row.gate_entry_no))
+  } else if (key === 'empty') {
+    add('Empty on', row.empty_date ? formatDate(row.empty_date) : '')
+    add('Received qty', q(row.received_qty))
+    add('Gate weighed', q(row.gate_qty))
+    const short = (Number(row.loaded_qty) || 0) - (Number(row.received_qty) || 0)
+    if (Number(row.received_qty) > 0 && short > 1e-6) add('Shortage', q(short))
+    add('Replacement', txt(row.last_replacement))
+  }
+  return out
+}
 
 // The floor under a stage's date: the latest date already stamped at any
 // EARLIER stage. A tanker loaded on 27-08 can be marked in transit today, or
@@ -717,6 +790,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const [actionForm, setActionForm] = useState<Row>({})
   // Loading more than the bargain balance: the excess is either booked as a new
   // bargain (optional rate) or allocated to an existing next bargain.
+  // Which earlier step of the rail is being read back, if any.
+  const [railPeek, setRailPeek] = useState<string | null>(null)
   const [excess, setExcess] = useState<
     { qty: number; balance: number; mode: 'new' | 'existing' | 'expand'; diffRate: boolean; rate: string; targetBargainId: string } | null
   >(null)
@@ -2353,7 +2428,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         return d !== 0 ? d : (Number(a.id) || 0) - (Number(b.id) || 0)
       })
   }, [bargains, form.supplier_id, form.bargain_id, form.oil_type_id, form.ordered_qty, lotProductId, bgLines])
-  const chosenTankers = useMemo(() => tankers.filter((x) => selected.includes(Number(x.id))), [tankers, selected])
+  // Resolved against the SAME list the picker offers from.
+  //
+  // This read `tankers`, which is scoped to the active company, while the
+  // checkboxes above are built from tankersForBooking — every company's
+  // tankers, because a bargain is general and any company's tanker can be
+  // billed on it. Tick one that is not in the active company and it resolved
+  // to nothing: the summary showed "Tankers 1" off selected.length while
+  // Total loaded quantity stayed 0 MT, the bargain never followed the first
+  // tanker, so the rate never auto-filled, and every figure below it — taxable
+  // value, GST, net — was struck on a quantity of zero.
+  const chosenTankers = useMemo(
+    () => tankersForBooking.filter((x) => selected.includes(Number(x.id))),
+    [tankersForBooking, selected]
+  )
   // The invoice's bargain follows the first selected tanker automatically.
   useEffect(() => {
     if (!formPage) return
@@ -4915,7 +5003,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!actionRow} onOpenChange={(open) => { if (!open) { setActionRow(null); setExcess(null) } }}>
+      <Dialog open={!!actionRow} onOpenChange={(open) => { if (!open) { setActionRow(null); setExcess(null); setRailPeek(null) } }}>
         <DialogContent
           className={cn(
             'max-h-[92vh] w-[calc(100vw-2rem)] overflow-y-auto',
@@ -4980,8 +5068,34 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         )}
                       />
                     )
+                    // A stage already stamped can be read back. The one
+                    // being filled in cannot — that is the form below — and a
+                    // stage that has not happened has nothing to show.
+                    const readable = done && !here
                     return (
-                      <div key={st.key} className="flex min-w-[92px] flex-1 flex-col items-center">
+                      <div
+                        key={st.key}
+                        role={readable ? 'button' : undefined}
+                        tabIndex={readable ? 0 : undefined}
+                        aria-expanded={readable ? railPeek === st.key : undefined}
+                        title={readable ? `See what was recorded at ${st.label}` : undefined}
+                        onClick={readable ? () => setRailPeek((v) => (v === st.key ? null : st.key)) : undefined}
+                        onKeyDown={
+                          readable
+                            ? (e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault()
+                                  setRailPeek((v) => (v === st.key ? null : st.key))
+                                }
+                              }
+                            : undefined
+                        }
+                        className={cn(
+                          'flex min-w-[92px] flex-1 flex-col items-center rounded-[3px] pt-0.5 transition-colors',
+                          readable && 'cursor-pointer hover:bg-white/[.07]',
+                          railPeek === st.key && 'bg-white/[.10]'
+                        )}
+                      >
                         <span className="flex w-full items-center">
                           {seg(prevDone, i > 0)}
                           <span
@@ -5025,7 +5139,64 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               wrapper so a Select, a date and a text box are the same 46px
               object wherever they appear — the drawer must not look like six
               different forms. */}
-          <div className={cn(__WEB__ && cn(TK_BODY, TK_FIELDS, 'grid content-start'))}>
+          <div
+            className={cn(
+              __WEB__ && cn(TK_BODY, TK_FIELDS, 'grid content-start'),
+              // Reading an earlier stage HIDES the live form rather than
+              // sitting above it. Shown together, the editable fields below
+              // read as part of the history panel — you appear to be editing
+              // the stage you asked to look at. The panel is the first child,
+              // so everything after it goes; nothing is unmounted, so the
+              // half-typed form comes back untouched on the way out.
+              __WEB__ && !!railPeek && '[&>*:not(:first-child)]:!hidden'
+            )}
+          >
+          {/* Reading back an earlier stage. Deliberately unlike the form under
+              it — no controls, a plain grid of what was written — so there is
+              never a question of whether typing here would change anything. */}
+          {__WEB__ && !!actionRow && !!railPeek && (() => {
+            const st = TANKER_STAGE_RAIL.find((x) => x.key === railPeek)
+            const facts = stageFacts(actionRow, railPeek)
+            return (
+              <div className="rounded-[4px] border border-[#C3D2C6] bg-[#EFF5EC]">
+                <div className="flex items-center gap-2 border-b border-b-[#D6E2D6] px-4 py-2.5">
+                  {st && <st.icon className="h-4 w-4 shrink-0 text-[#0B6B45]" />}
+                  <span className="text-[11px] font-extrabold uppercase tracking-[.13em] text-[#0A1F17]">
+                    {st?.label}
+                  </span>
+                  <span className="rounded-[2px] border border-[#C3D2C6] bg-white px-[7px] py-[2px] text-[10px] font-extrabold uppercase tracking-[.08em] text-[#5A6B62]">
+                    Read only
+                  </span>
+                  <button
+                    type="button"
+                    className="ml-auto cursor-pointer text-[11.5px] font-extrabold text-[#0B6B45] hover:underline"
+                    onClick={() => setRailPeek(null)}
+                  >
+                    Back to {target ? TANKER_LABEL[target] : 'the form'}
+                  </button>
+                </div>
+                {facts.length === 0 ? (
+                  <div className="px-4 py-3 text-[12.5px] font-semibold text-[#5A6B62]">
+                    Nothing was recorded at this stage beyond its date.
+                  </div>
+                ) : (
+                  <div className="grid gap-x-5 gap-y-2.5 px-4 py-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,170px),1fr))]">
+                    {facts.map((f) => (
+                      <div key={f.k} className="min-w-0">
+                        <div className="text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">{f.k}</div>
+                        <div className="doc-ref mt-[3px] truncate text-[13px] font-bold text-[#0A1F17]" title={f.v}>
+                          {f.v}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="border-t border-t-[#D6E2D6] px-4 py-2 text-[11.5px] font-semibold text-[#5A6B62]">
+                  History. To change any of it, close this and use Edit on the tanker&apos;s row.
+                </div>
+              </div>
+            )
+          })()}
           {target === 'loaded' && actionRow && <div className="grid gap-4">
             <div className="flex flex-col gap-1.5">
               <Label>Tanker number *{String(actionRow.tanker_no || '').trim() ? '' : ' (set it now)'}</Label>
@@ -5535,7 +5706,16 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             <div className="rounded-lg border bg-muted/30 p-3"><MoneyRow label="Loaded" value={`${formatNum(actionRow.loaded_qty)} ${actionRow.uom}`} /><MoneyRow label="Shortage" value={`${formatNum(shortage.actualShortage)} ${actionRow.uom}`} /><MoneyRow label="Freight" value={formatINR(shortage.transportAmount)} /></div>
           </div>}
           </div>
-          <DialogFooter className={cn(TK_FOOT)}><Button variant="outline" onClick={() => { setActionRow(null); setExcess(null) }}>Cancel</Button><Button
+          <DialogFooter className={cn(TK_FOOT)}><Button variant="outline" onClick={() => { setActionRow(null); setExcess(null); setRailPeek(null) }}>Cancel</Button>
+          {__WEB__ && !!railPeek ? (
+            // Confirm would advance the tanker, which is not what somebody
+            // reading its history is asking for. The primary action while
+            // peeking is the way back to the form.
+            <Button onClick={() => setRailPeek(null)}>
+              <ArrowLeft className="h-4 w-4" /> Back to {target ? TANKER_LABEL[target] : 'the form'}
+            </Button>
+          ) : (
+          <Button
             onClick={advanceTanker}
             disabled={target === 'transit' && !!actionRow && condIsEx(actionRow) && !(Number(actionForm.transport_rate_per_ton) > 0)}
             title={
@@ -5543,7 +5723,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 ? 'Enter the transporter rate — it is required on an EX tanker'
                 : undefined
             }
-          >{excess ? (excess.mode === 'existing' ? 'Allocate & confirm' : 'Add bargain & confirm') : 'Confirm'}</Button></DialogFooter>
+          >{excess ? (excess.mode === 'existing' ? 'Allocate & confirm' : 'Add bargain & confirm') : 'Confirm'}</Button>
+          )}</DialogFooter>
         </DialogContent>
       </Dialog>
 

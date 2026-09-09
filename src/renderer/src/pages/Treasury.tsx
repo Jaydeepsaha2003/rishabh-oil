@@ -871,8 +871,17 @@ function DuplicateNoBadge({ lcs, l }: { lcs: Row[]; l: Row }): React.JSX.Element
   const other = lcNoClash(lcs, l.lc_no, l.id)
   if (!other) return null
   return (
+    // Red, not amber. Two LCs sharing a number means both settlement
+    // vouchers carry it and the ledger cannot tell them apart — that is a
+    // fault in the books, not a caution, and it sat in the same amber as
+    // "Awaiting Payment IN", which is a perfectly normal state to be in.
+    // "Duplicate" says what it is; "Number used twice" described it.
     <Badge
-      variant="warning"
+      variant="destructive"
+      className={cn(
+        'ml-1.5',
+        __WEB__ && '!rounded-[2px] !border-0 !bg-[#B3261E] !px-2 !py-[2px] !text-[10px] !font-bold !uppercase !tracking-wide !text-white'
+      )}
       title={
         `This number is on two LCs in this company — also ${String(other.bank || 'unknown bank')}` +
         `${other.open_date ? `, opened ${formatDate(other.open_date)}` : ''}` +
@@ -880,7 +889,7 @@ function DuplicateNoBadge({ lcs, l }: { lcs: Row[]; l: Row }): React.JSX.Element
         'Both settlement vouchers carry it, so the ledger cannot tell them apart. Renumber one.'
       }
     >
-      Number used twice
+      Duplicate
     </Badge>
   )
 }
@@ -1769,8 +1778,13 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
   // reached Payment received (see canMarkPaymentIn), so showing the stage badge
   // alongside them only repeated it and crowded the row.
   function currentStageBadge(l: Row): React.JSX.Element {
-    if (canMarkPaymentIn(l)) return <Badge variant="warning">Awaiting Payment IN</Badge>
-    if (isLcPaymentInDone(l)) return <Badge variant="success">Payment IN</Badge>
+    // Squared off to match the stage tags beside it — a lozenge among 2px
+    // boxes reads as a control rather than a label.
+    const sq = __WEB__ ? '!rounded-[2px] !px-2 !py-[2px] !text-[10px] !font-bold !uppercase !tracking-wide' : ''
+    if (canMarkPaymentIn(l))
+      return <Badge variant="warning" className={cn(sq, __WEB__ && '!border-0 !bg-[#FFEDD0] !text-[#8A5300]')}>Awaiting Payment IN</Badge>
+    if (isLcPaymentInDone(l))
+      return <Badge variant="success" className={cn(sq, __WEB__ && '!border-0 !bg-[#EAF6EC] !text-[#0B6B45]')}>Payment IN</Badge>
     return <StageBadge stage={String(l.stage || 'application')} />
   }
   const [paymentInForm, setPaymentInForm] = useState<Row | null>(null)
@@ -2456,7 +2470,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                           // overdue in red, settled in green, the rest neutral.
                           // Scanning a Status column at the far right of the
                           // row was the only way to find the late ones.
-                          __WEB__ && '!border-b-[#EAF0E9] !border-solid !border-l-[3px] hover:!bg-[#F7FAF6] [&>td]:!py-2.5',
+                          __WEB__ && '!border-b-[#C3D2C6] !border-solid !border-l-[3px] hover:!bg-[#F7FAF6] [&>td]:!py-2.5',
                           __WEB__ && (r.settled ? '!border-l-[#12855A]' : r.overdue ? '!border-l-[#B3261E] !bg-[#FDF3F2]' : '!border-l-[#C2700A]')
                         )}
                       >
@@ -3281,7 +3295,13 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                               // border alone carries the coding, so text stays
                               // at full contrast instead of sitting on a tint.
                               'bg-white',
-                              __WEB__ && '!border-b-[#EAF0E9] !border-solid !border-l-[3px] !bg-white hover:!bg-[#F7FAF6] [&>td]:!py-2.5',
+                              // #C3D2C6, not #EAF0E9. The row rule was two
+                              // shades lighter than the column separators
+                              // crossing it, so the register read as columns
+                              // with nothing holding the rows together — and
+                              // on a row three lines tall that is exactly when
+                              // you need to see where it ends.
+                              __WEB__ && '!border-b-[#C3D2C6] !border-solid !border-l-[3px] !bg-white hover:!bg-[#F7FAF6] [&>td]:!py-2 [&>td]:!align-top',
                               __WEB__ && (STAGE_MARK_WEB[String(l.stage || 'application')] || STAGE_MARK_WEB.application)
                             )}
                             onClick={() => void openLcDetail(Number(l.id))}
@@ -3300,7 +3320,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                     anyway and left the state ragged from row to
                                     row — stacked, all three read straight down
                                     their own column. */}
-                                <div className={cn(__WEB__ && 'flex flex-col items-start gap-[3px]')}>
+                                <div className={cn(__WEB__ && 'flex min-w-0 flex-col items-start gap-0')}>
                                   <div className="flex items-center gap-1.5">
                                     <span
                                       className={cn(
@@ -3315,7 +3335,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                     {!__WEB__ && currentStageBadge(l)}
                                     {!__WEB__ && <ClosureBadge l={l} />}
                                   </div>
-                                  <div className={cn('mt-0.5 text-[11px] text-muted-foreground', __WEB__ && '!mt-0 !truncate !text-[11.5px] !font-semibold !text-[#5A6B62]')}>
+                                  <div className={cn('mt-0.5 text-[11px] text-muted-foreground', __WEB__ && '!mt-[1px] !truncate !text-[11.5px] !font-semibold !leading-[1.3] !text-[#5A6B62]')}>
                                     {l.bank}
                                     {/* The margin lives in the expanded panel and
                                         in the Preclose preview. On the website it
@@ -3330,7 +3350,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                                       box, and a lozenge among them read as a control
                                       rather than a label. */}
                                   {__WEB__ && (
-                                    <div className="flex flex-wrap items-center gap-1.5 [&>span]:!rounded-[2px]">
+                                    <div className="mt-[3px] flex flex-wrap items-center gap-1.5 [&>span]:!rounded-[2px]">
                                       {currentStageBadge(l)}
                                       <ClosureBadge l={l} />
                                     </div>
@@ -3341,10 +3361,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                             <TableCell
                               className={cn(
                                 'whitespace-nowrap',
-                                // No truncation: max-width is ignored on cells
-                                // in an auto-layout table, and this one is
-                                // 1340px wide with its own scroller.
-                                __WEB__ && '!truncate !text-[12.5px] !font-bold !text-[#0A1F17]'
+                                // Wraps rather than truncating. "LEGACY
+                                // COMMODITIES PVT LTD" was cut to "LEGACY
+                                // COMMODITIES ..." on every one of its rows,
+                                // and two suppliers whose names share a prefix
+                                // are then the same string on screen. A width
+                                // cap plus normal wrapping gives the second
+                                // line instead — the row is already two lines
+                                // tall for the LC number beside it, so this
+                                // costs no height at all.
+                                __WEB__ && '!w-[190px] !whitespace-normal !break-words !text-[12.5px] !font-bold !leading-[1.35] !text-[#0A1F17]'
                               )}
                               title={String(l.supplier_name || '')}
                             >

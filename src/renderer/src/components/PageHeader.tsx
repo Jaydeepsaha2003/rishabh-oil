@@ -52,15 +52,20 @@ export function PageHeader({ title, subtitle, hint, actions, leading }: Props): 
     <div
       className={cn(
         'sticky top-0 z-10 flex items-start justify-between gap-4 border-b bg-background/80 px-4 py-4 backdrop-blur',
-        // Opaque, and above the registers.
+        // Opaque, and between the registers and the sidebar.
         //
         // The header was 80% background with a blur behind it, which is fine
         // over body text and not fine over a forest-green table head — on
         // Treasury the LC register's own sticky <thead> is `top-0 z-10` too,
         // the same layer as this, and being later in the DOM it won the tie
-        // and painted straight over the page title. z-30 settles the order and
-        // a solid ground stops anything showing through underneath.
-        __WEB__ && '!z-30 !bg-background !backdrop-blur-none',
+        // and painted straight over the page title.
+        //
+        // z-20, not z-30: the sidebar is z-30, and matching it put this header
+        // on the sidebar's own layer — where, being later in the DOM again,
+        // this one won and clipped the expanded sidebar's top. The order that
+        // works is thead (10) < header (20) < sidebar (30), and nothing else
+        // in the app sits on 20.
+        __WEB__ && '!z-20 !bg-background !backdrop-blur-none',
         // The sidebar's tap-to-open button is fixed in the top-left corner on
         // the website at phone width, and every page's title was sitting
         // underneath it. Clear it, and let the row wrap so the actions drop

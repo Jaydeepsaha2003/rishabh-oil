@@ -1430,7 +1430,10 @@ const SK_VRULE = '!border-l !border-l-[#D6CEF5]'
 // in IBM Plex Mono; the app is set in Inter and stays that way, and doc-ref
 // already gets what the mono was wanted for — tabular figures on a fixed
 // pitch, a slashed zero, a little tracking — out of the font we have.
-const SK_NUM = 'doc-ref !text-[12.5px] !font-semibold'
+// 14px, not 12.5. This register's whole job is the four counts across a row,
+// and they were set smaller than the SKU name beside them — the label read
+// louder than the figure it labels.
+const SK_NUM = 'doc-ref !text-[14px] !font-bold'
 
 const SK_RULE = '!border-l !border-l-[#C7F03F]/[.18]'
 const SK_OPEN = '!bg-white/[0.03]'
@@ -4451,10 +4454,16 @@ function SkuStock(): React.JSX.Element {
                   // so every count states what it weighs underneath it.
                   const mtOf = (pieces: number): number =>
                     (pieces * Number(r.base_per_pouch || 0)) / 1000
+                  // The tonnage as a chip, not a slash.
+                  //
+                  // "1,548 / 23.22 MT" is one string doing two jobs: the count
+                  // in the SKU's own Type, which is what was entered, and what
+                  // that weighs, which is what compares across SKUs. Run
+                  // together they read as a fraction. Boxed, the count stays
+                  // the figure and the weight sits beside it as a second fact.
                   const mtLine = (pieces: number): React.JSX.Element | null =>
                     Math.abs(pieces) > 1e-9 && Number(r.base_per_pouch || 0) > 0 ? (
-                      <span className="whitespace-nowrap text-[11px] font-semibold text-[#33473E]">
-                        <span className="text-[#A8B8AE]">{' / '}</span>
+                      <span className="ml-1.5 inline-block whitespace-nowrap rounded-[2px] border border-[#D6E2D6] bg-[#F1F5EF] px-[6px] py-[1px] align-middle text-[11.5px] font-bold text-[#33473E]">
                         {formatNum(mtOf(pieces))} MT
                       </span>
                     ) : null
