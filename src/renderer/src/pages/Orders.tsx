@@ -282,6 +282,58 @@ const TK_FOOT = __WEB__
   ? '!m-0 !border-t !border-t-[#D6E2D6] !bg-white !px-[22px] !py-3.5 [&_button]:!h-[42px] [&_button]:!rounded-[4px] [&_button]:!px-5 [&_button]:!text-[13px] [&_button]:!font-extrabold'
   : ''
 
+// The floor under a stage's date: the latest date already stamped at any
+// EARLIER stage. A tanker loaded on 27-08 can be marked in transit today, or
+// backdated to any day from 27-08 on — but never to the 26th, because it was
+// not on the road before it was filled.
+//
+// Derived by walking the order rather than written out per field. The drawer
+// kept four hand-maintained fallback chains and they had drifted apart: Empty's
+// omitted transit_date, so a tanker that went straight from transit to empty
+// was floored at its LOADED date and would happily take a day before it set
+// off; and Loaded carried no floor at all. src/main/orders.ts walks this same
+// order in assertStageDateOrder, so a date the picker allows is now exactly a
+// date the server accepts — the two cannot drift again.
+//
+// Takes the MAXIMUM of the earlier dates, not the nearest one. On a tanker
+// whose stages were stamped out of order historically, the nearest could be
+// earlier than one before it, and the floor has to clear them all.
+const STAGE_DATE_ORDER: Array<[string, string]> = [
+  ['loaded_date', 'loaded'],
+  ['transit_date', 'in transit'],
+  ['outside_factory_date', 'outside factory'],
+  ['inside_factory_date', 'inside factory'],
+  ['empty_date', 'empty']
+]
+
+function stageFloor(row: Row | null | undefined, dateKey: string): { iso: string; label: string } | null {
+  if (!row) return null
+  const i = STAGE_DATE_ORDER.findIndex(([k]) => k === dateKey)
+  if (i <= 0) return null
+  let best: { iso: string; label: string } | null = null
+  for (let k = 0; k < i; k++) {
+    const [key, label] = STAGE_DATE_ORDER[k]
+    const v = String(row[key] || '').slice(0, 10)
+    if (!v) continue
+    if (!best || v > best.iso) best = { iso: v, label }
+  }
+  return best
+}
+
+// The line under a stage date saying what bounds it, so a greyed-out day in the
+// calendar reads as a rule rather than as the control being broken.
+function StageDateNote({ row, dateKey }: { row: Row | null | undefined; dateKey: string }): React.JSX.Element | null {
+  if (!__WEB__) return null
+  const floor = stageFloor(row, dateKey)
+  return (
+    <span className="text-[11.5px] font-semibold leading-[1.5] text-[#5A6B62]">
+      {floor
+        ? `Any day from ${formatDate(floor.iso)} (${floor.label}) up to today.`
+        : 'Backdating is allowed, up to today.'}
+    </span>
+  )
+}
+
 const TANKER_QUALITY_DEFAULTS = ['FFA', 'Colour', 'Moisture', 'Melting point'] as const
 
 function stageAsOf(t: Row, asOf: string): string {
@@ -5008,7 +5060,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               <span className="text-[11px] text-muted-foreground">{actionRow.supplier_name}</span>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1.5"><Label>Loaded date</Label><DatePicker value={actionForm.loaded_date || ''} onChange={(v) => setActionForm((p) => ({ ...p, loaded_date: v }))} /></div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Loaded date</Label>
+                <DatePicker
+                  value={actionForm.loaded_date || ''}
+                  max={todayISO()}
+                  onChange={(v) => setActionForm((p) => ({ ...p, loaded_date: v }))}
+                />
+                <StageDateNote row={actionRow} dateKey="loaded_date" />
+              </div>
               <div className="flex flex-col gap-1.5"><Label>Actual loaded quantity *</Label><Input type="number" value={actionForm.loaded_qty || ''} onChange={(e) => { setExcess(null); setActionForm((p) => ({ ...p, loaded_qty: e.target.value })) }} /></div>
             </div>
             {excess && (() => {
@@ -5150,7 +5210,16 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             return (
               <div className="grid gap-3">
                 <div className={cn('grid grid-cols-2 gap-3', __WEB__ && cn(TK_SECT, '!gap-4'))}>
-                  <div className="flex flex-col gap-1.5"><Label>Transit date</Label><DatePicker value={actionForm.transit_date || ''} min={actionRow?.loaded_date || undefined} onChange={(v) => setActionForm((p) => ({ ...p, transit_date: v }))} /></div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Transit date</Label>
+                    <DatePicker
+                      value={actionForm.transit_date || ''}
+                      min={stageFloor(actionRow, 'transit_date')?.iso}
+                      max={todayISO()}
+                      onChange={(v) => setActionForm((p) => ({ ...p, transit_date: v }))}
+                    />
+                    <StageDateNote row={actionRow} dateKey="transit_date" />
+                  </div>
                   <div className="flex min-w-0 flex-col gap-1.5">
                     <Label>Source / port</Label>
                     <Select value={String(actionForm.source_id || '')} onValueChange={(v) => setActionForm((p) => ({ ...p, source_id: v }))}>
@@ -5252,7 +5321,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             <div className={cn(__WEB__ && TK_SECT)}>
               <div className={cn('flex flex-col gap-1.5', __WEB__ && 'max-w-[300px]')}>
                 <Label>Outside factory date</Label>
-                <DatePicker value={actionForm.outside_factory_date || ''} min={actionRow?.transit_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm({ outside_factory_date: v })} />
+                <DatePicker
+                  value={actionForm.outside_factory_date || ''}
+                  min={stageFloor(actionRow, 'outside_factory_date')?.iso}
+                  max={todayISO()}
+                  onChange={(v) => setActionForm({ outside_factory_date: v })}
+                />
+                <StageDateNote row={actionRow} dateKey="outside_factory_date" />
               </div>
               {__WEB__ && (
                 <p className="mt-3 text-[12px] font-semibold leading-[1.5] text-[#5A6B62]">
@@ -5266,7 +5341,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             <div className={cn(__WEB__ && TK_SECT)}>
               <div className={cn('flex flex-col gap-1.5', __WEB__ && 'max-w-[300px]')}>
                 <Label>Inside factory date</Label>
-                <DatePicker value={actionForm.inside_factory_date || ''} min={actionRow?.outside_factory_date || actionRow?.transit_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm({ inside_factory_date: v })} />
+                <DatePicker
+                  value={actionForm.inside_factory_date || ''}
+                  min={stageFloor(actionRow, 'inside_factory_date')?.iso}
+                  max={todayISO()}
+                  onChange={(v) => setActionForm({ inside_factory_date: v })}
+                />
+                <StageDateNote row={actionRow} dateKey="inside_factory_date" />
               </div>
               {__WEB__ && (
                 <p className="mt-3 text-[12px] font-semibold leading-[1.5] text-[#5A6B62]">
@@ -5296,7 +5377,16 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               )
             })()}
             <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1.5"><Label>Empty date</Label><DatePicker value={actionForm.empty_date || ''} min={actionRow?.inside_factory_date || actionRow?.outside_factory_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm((p) => ({ ...p, empty_date: v }))} /></div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Empty date</Label>
+                <DatePicker
+                  value={actionForm.empty_date || ''}
+                  min={stageFloor(actionRow, 'empty_date')?.iso}
+                  max={todayISO()}
+                  onChange={(v) => setActionForm((p) => ({ ...p, empty_date: v }))}
+                />
+                <StageDateNote row={actionRow} dateKey="empty_date" />
+              </div>
               <div className="flex flex-col gap-1.5"><Label>Received quantity</Label><Input type="number" value={actionForm.received_qty || ''} onChange={(e) => setActionForm((p) => ({ ...p, received_qty: e.target.value }))} /></div>
             </div>
             {/* What the sample said. The four the mill always runs are listed

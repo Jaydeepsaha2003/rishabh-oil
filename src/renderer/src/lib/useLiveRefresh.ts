@@ -17,9 +17,25 @@ import { useEffect, useRef } from 'react'
 // saving, so this delay is never what the user is waiting on.
 const COALESCE_MS = 1500
 
+// A reload still "in flight" after this long is presumed dead.
+//
+// `busy` exists so a slow connection cannot stack reloads. But it is only ever
+// cleared by the reload finishing, and a fetch that never settles — a dropped
+// connection, a sleeping laptop, a proxy holding the socket — never finishes.
+// The flag then stays true for the rest of the session and every later tick
+// returns at the guard, so the page silently stops refreshing FOREVER while
+// looking perfectly healthy. That is the shape of "sometimes it goes stale and
+// only a reload fixes it": not a filter that failed, a page still rendering
+// the data it loaded an hour ago.
+//
+// Well past any real reload, so this only ever fires on one that is not coming
+// back.
+const STALE_MS = 45000
+
 export function useLiveRefresh(reload: () => void | Promise<void>, intervalMs = 3000): void {
   const last = useRef<number | null>(null)
   const busy = useRef(false)
+  const busySince = useRef(0)
 
   // The callback's IDENTITY must not control the timer.
   //
@@ -48,6 +64,7 @@ export function useLiveRefresh(reload: () => void | Promise<void>, intervalMs = 
       pending = null
       if (stopped || busy.current) return
       busy.current = true
+      busySince.current = Date.now()
       try {
         await cb.current()
         last.current = target
@@ -59,6 +76,8 @@ export function useLiveRefresh(reload: () => void | Promise<void>, intervalMs = 
     }
 
     const tick = async (): Promise<void> => {
+      // Release a reload that is never coming back — see STALE_MS.
+      if (busy.current && Date.now() - busySince.current > STALE_MS) busy.current = false
       // Mid-reload, this tick has nothing to add: `last` still trails the
       // revision, so the next one picks the change up.
       if (document.hidden || busy.current) return
@@ -81,10 +100,35 @@ export function useLiveRefresh(reload: () => void | Promise<void>, intervalMs = 
     }
 
     const id = setInterval(tick, intervalMs)
+
+    // Coming back to the tab checks AT ONCE.
+    //
+    // The tick above returns early while the tab is hidden, which is right —
+    // there is no one to show a refresh to. The trouble is what happens on the
+    // way back: browsers throttle timers in a background tab to a minute or
+    // more, and Chrome freezes them outright after five, so the interval that
+    // is meant to notice within three seconds can be a minute or more away at
+    // the moment somebody looks at the screen again. They read stale figures
+    // in the meantime and have no way to know it.
+    //
+    // This is the everyday case behind the complaint: the register is left
+    // open, adjustments are posted from somewhere else, and the numbers on the
+    // returned-to tab are from before them.
+    const wake = (): void => {
+      if (!document.hidden) void tick()
+    }
+    document.addEventListener('visibilitychange', wake)
+    window.addEventListener('focus', wake)
+    // Back from a dropped connection, likewise.
+    window.addEventListener('online', wake)
+
     return () => {
       stopped = true
       if (pending) clearTimeout(pending)
       clearInterval(id)
+      document.removeEventListener('visibilitychange', wake)
+      window.removeEventListener('focus', wake)
+      window.removeEventListener('online', wake)
     }
   }, [intervalMs])
 }
