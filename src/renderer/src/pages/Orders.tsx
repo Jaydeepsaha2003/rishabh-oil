@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   Undo2, ArrowLeft, ArrowRight, AlertTriangle, BarChart3, Boxes, Building2, CalendarDays, CheckCircle2, ChevronDown, ClipboardList, Clock, DoorOpen, Eye, MinusCircle, Package,
-  FileText, History, IndianRupee, Pencil, Plus, ScrollText, Search, Trash2, Truck, type LucideIcon,
+  FileText, History, IndianRupee, Landmark, Lock, Pencil, Plus, ScrollText, Search, Trash2, Truck, type LucideIcon,
   Check
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
@@ -203,24 +203,41 @@ function monthStartISO(): string {
 const TK_DRAWER = __WEB__
   ? cn(
       '!left-auto !right-0 !top-0 !bottom-0 !translate-x-0 !translate-y-0',
-      '!h-screen !max-h-screen !w-[min(100vw,700px)] !max-w-none',
+      '!h-screen !max-h-screen !max-w-none',
       '!grid-rows-[auto_1fr_auto] !gap-0 !rounded-none !border-0 !bg-[#F1F5EF] !p-0',
       '!shadow-[-16px_0_40px_rgba(10,31,23,.22)]',
-      'data-[state=open]:!slide-in-from-right-1/2 data-[state=closed]:!slide-out-to-right-1/2'
+      'data-[state=open]:!slide-in-from-right-1/2 data-[state=closed]:!slide-out-to-right-1/2',
+      // The close button is a direct child of DialogContent, so it lands on
+      // the forest head wearing the default near-black — invisible until you
+      // hover it. It is the only direct-child button here.
+      '[&>button]:!right-[18px] [&>button]:!top-[18px] [&>button]:!text-white/60 [&>button]:!opacity-100 hover:[&>button]:!text-white'
     )
   : ''
 
+// Width is per stage, not one figure for all six. 700px was chosen for the
+// shortest form, which left Empty — gate figure, received quantity, shortage
+// and the technical-parameter grid — folding itself into a column too narrow
+// to read, and left the two-field stages looking like a slot. Both stay capped
+// at the viewport so the register is still visible beside the panel.
+const TK_WIDE = __WEB__ ? '!w-[min(100vw,880px)]' : ''
+const TK_NARROW = __WEB__ ? '!w-[min(100vw,790px)]' : ''
+
 // The forest head: what stage this is, which tanker, and the load in one line.
-const TK_HEAD = __WEB__ ? '!m-0 !space-y-0 !bg-[#0B3D2E] !px-[22px] !pb-4 !pt-[18px] !text-left' : ''
+const TK_HEAD = __WEB__ ? '!m-0 !space-y-0 !bg-[#0B3D2E] !px-[26px] !pb-[18px] !pt-5 !text-left' : ''
 const TK_KICKER = __WEB__ ? 'text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]' : ''
-const TK_TITLE = __WEB__ ? '!mt-1.5 !text-[21px] !font-extrabold !tracking-[-0.02em] !text-white' : ''
-const TK_SUB = __WEB__ ? 'mt-1 text-[12.5px] font-semibold text-[#8FBFA8]' : ''
+const TK_TITLE = __WEB__ ? '!mt-[5px] !text-[22px] !font-extrabold !leading-none !tracking-[-0.02em] !text-white' : ''
+const TK_SUB = __WEB__ ? 'mt-[7px] text-[12.5px] font-semibold text-[#8FBFA8]' : ''
 
 // The scrolling middle, and the section cards inside it.
 const TK_BODY = __WEB__
   ? '!m-0 !min-h-0 !gap-3 !overflow-y-auto !bg-[#F1F5EF] !px-[22px] !py-4'
   : ''
 const TK_CARD = __WEB__ ? 'rounded-[4px] border border-[#D6E2D6] bg-white' : ''
+// A stage's fields sit ON something. Two bare inputs floating on the panel's
+// wash read as a form that has not finished loading, which is exactly how the
+// short stages looked — most of the panel was empty ground with a pair of
+// boxes near the top and nothing to say where the form ended.
+const TK_SECT = __WEB__ ? '!rounded-[4px] !border !border-[#D6E2D6] !bg-white !p-[18px]' : ''
 const TK_CARD_HEAD = __WEB__
   ? 'border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-4 py-3 text-[11px] font-extrabold uppercase tracking-[.13em] text-[#0A1F17]'
   : ''
@@ -262,9 +279,33 @@ function stageAsOf(t: Row, asOf: string): string {
 
 function MoneyRow({ label, value, strong, title }: { label: string; value: string; strong?: boolean; title?: string }): React.JSX.Element {
   return (
-    <div className="flex items-center justify-between py-1.5 text-sm" title={title}>
-      <span className={cn(strong ? 'font-semibold text-foreground' : 'text-muted-foreground', title && 'cursor-help underline decoration-dotted decoration-muted-foreground/50 underline-offset-4')}>{label}</span>
-      <span className={strong ? 'font-semibold tabular-nums' : 'tabular-nums'}>{value}</span>
+    <div className={cn('flex items-center justify-between py-1.5 text-sm', __WEB__ && '!gap-3 !py-[5px]')} title={title}>
+      <span
+        className={cn(
+          strong ? 'font-semibold text-foreground' : 'text-muted-foreground',
+          title && 'cursor-help underline decoration-dotted decoration-muted-foreground/50 underline-offset-4',
+          __WEB__ &&
+            cn(
+              '!min-w-0 !text-[12.5px] !leading-[1.45]',
+              strong ? '!font-extrabold !text-[#0A1F17]' : '!font-semibold !text-[#33473E]',
+              title && '!decoration-[#C3B78F]'
+            )
+        )}
+      >
+        {label}
+      </span>
+      <span
+        className={cn(
+          strong ? 'font-semibold tabular-nums' : 'tabular-nums',
+          __WEB__ &&
+            cn(
+              'doc-ref !shrink-0 !whitespace-nowrap',
+              strong ? '!text-[13.5px] !font-bold !text-[#0A1F17]' : '!text-[13px] !font-bold !text-[#33473E]'
+            )
+        )}
+      >
+        {value}
+      </span>
     </div>
   )
 }
@@ -377,6 +418,65 @@ function Fact({ label, value }: { label: string; value: string }): React.JSX.Ele
 // than repeated inline because it has to stay identical across DATE,
 // CATEGORY and the receipt-date toggle — a label a shade off its neighbours
 // is the thing that makes a filter bar look assembled rather than designed.
+// ---------------------------------------------------------------------------
+// New purchase / Alter purchase invoice, on the website.
+//
+// The page was the app's oldest surface and still wore it: a cornflower title
+// bar, a cream parchment shell, dotted-underline section rules and a navy save
+// button — the Tally skin the rest of the site has already left behind. The
+// arithmetic, the field order and every control are the ones that were here;
+// only the surface changes, and only on the website.
+const NP_BAR = __WEB__
+  ? '!flex !h-[62px] !flex-nowrap !items-center !gap-4 !rounded-none !bg-[#0B3D2E] !px-[22px] !py-0 !text-white'
+  : ''
+const NP_BACK = __WEB__
+  ? '!h-[38px] !gap-2 !rounded-[3px] !bg-white/10 !pl-2 !pr-3 !text-[12.5px] !font-extrabold !text-white hover:!bg-white/[.18] hover:!no-underline'
+  : ''
+const NP_TITLE = __WEB__ ? '!text-[16.5px] !font-extrabold !normal-case !tracking-[-0.02em] !text-white' : ''
+const NP_REF = __WEB__ ? 'doc-ref !text-[12.5px] !font-semibold !text-[#8FBFA8]' : ''
+
+// The shell. No card around the whole page any more — the two columns are the
+// page, on the site's own ground.
+const NP_SHELL = __WEB__ ? '!rounded-none !border-0 !bg-transparent !shadow-none' : ''
+const NP_GRID = __WEB__ ? '!gap-3.5 !px-[22px] !py-3.5 xl:!grid-cols-[minmax(0,1fr)_360px]' : ''
+
+// A section: white, hairline, with a headed strip rather than a dotted rule.
+const NP_CARD = __WEB__ ? '!rounded-[4px] !border-[#D6E2D6] !bg-white !p-0' : ''
+const NP_CARD_HEAD = __WEB__
+  ? '!m-0 !flex !items-center !gap-[9px] !rounded-t-[3px] !border-0 !border-b !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[18px] !py-[13px] !text-[11.5px] !font-extrabold !uppercase !tracking-[.14em] !text-[#0A1F17]'
+  : ''
+const NP_CARD_BODY = __WEB__ ? '!gap-[18px] !p-[18px]' : ''
+
+// One rule for every control on the page, so a Select, a date, a number and a
+// text box are the same 46px object. The label rule has to be !important:
+// the section already carries a [&_label] rule of its own.
+const NP_FIELDS = __WEB__
+  ? cn(
+      '[&_label]:!text-[10.5px] [&_label]:!font-extrabold [&_label]:!uppercase [&_label]:!tracking-[.12em] [&_label]:!text-[#5A6B62]',
+      '[&_input]:!h-[46px] [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[13.5px] [&_input]:!font-bold [&_input]:!text-[#0A1F17]',
+      '[&_[data-slot=select-trigger]]:!h-[46px] [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13.5px] [&_[data-slot=select-trigger]]:!font-bold',
+      '[&_[data-slot=date-picker]]:!h-[46px] [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[13.5px] [&_[data-slot=date-picker]]:!font-bold',
+      '[&_textarea]:!rounded-[4px] [&_textarea]:!border-[#C3D2C6] [&_textarea]:!bg-white [&_textarea]:!px-[13px] [&_textarea]:!py-3 [&_textarea]:!text-[13px] [&_textarea]:!font-semibold'
+    )
+  : ''
+// The line of help under a field.
+const NP_NOTE = __WEB__ ? '!text-[11.5px] !font-semibold !leading-[1.5] !text-[#5A6B62]' : ''
+
+// The summary rail: cream, so the figures read as the answer rather than as
+// one more panel of inputs.
+const NP_RAIL = __WEB__
+  ? '!rounded-[4px] !border-[#E8E1CB] !bg-[#FDFBF3] !p-0 xl:!top-[14px]'
+  : ''
+const NP_RAIL_HEAD = __WEB__
+  ? '!m-0 !flex !items-center !gap-[9px] !border-0 !border-b !border-b-[#E8E1CB] !px-[18px] !py-[14px] !text-[11.5px] !font-extrabold !uppercase !tracking-[.14em] !text-[#0A1F17]'
+  : ''
+const NP_RAIL_SECT = __WEB__ ? 'border-b border-b-[#EFE8D6] px-[18px] py-3' : ''
+// Small inputs living inside the rail (rate adjustment, round off) wear its
+// own border rather than the form's, so they read as part of the tally.
+const NP_RAIL_INPUT = __WEB__
+  ? '!h-[34px] !rounded-[3px] !border-[#C3B78F] !bg-white !text-right !text-[12.5px] !font-bold !text-[#0A1F17]'
+  : ''
+
 const PO_LABEL = '!text-[10.5px] !font-extrabold !tracking-[.13em] !text-[#5A6B62]'
 
 // The tanker group bands ("Loaded & received within…" / "Loaded outside…")
@@ -2554,30 +2654,55 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
       )}
 
       {formPage ? (
-        <div className="px-4 py-4">
-          <div className="rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]">
-            <button className="inline-flex cursor-pointer items-center gap-1.5 text-[12px] font-medium hover:underline" onClick={() => { if (onBack) { onBack() } else { setFormPage(false) } }}>
-              <ArrowLeft className="h-3.5 w-3.5" /> {onBack ? `Back to ${backLabel || 'previous page'}` : 'Back'}
+        <div className={cn('px-4 py-4', __WEB__ && '!p-0')}>
+          <div className={cn('rounded-md border border-[#d9d2b8] bg-[#fffdf4] shadow-lg', NP_SHELL)}>
+          <div className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 rounded-t-md bg-[#dce6f5] px-4 py-2 text-[#1a2c56]', NP_BAR)}>
+            <button
+              className={cn('inline-flex cursor-pointer items-center gap-1.5 text-[12px] font-medium hover:underline', NP_BACK)}
+              onClick={() => { if (onBack) { onBack() } else { setFormPage(false) } }}
+            >
+              <ArrowLeft className={cn('h-3.5 w-3.5', __WEB__ && '!h-[18px] !w-[18px]')} />{' '}
+              {__WEB__ ? 'BACK' : onBack ? `Back to ${backLabel || 'previous page'}` : 'Back'}
             </button>
-            <div className="h-4 border-l border-[#1a2c56]/30" />
-            <h2 className="text-[13px] font-bold uppercase tracking-widest">
-              {editing ? 'Alter purchase invoice' : 'Purchase invoice'}
-            </h2>
-            <span className="ml-auto text-[11px] font-medium">
+            <div className={cn('h-4 border-l border-[#1a2c56]/30', __WEB__ && '!h-[26px] !border-l-[#C7F03F]/20')} />
+            {/* On the website the name of the thing sits above what it is —
+                the title, then the kicker underneath, the way every other
+                header on the site is built. */}
+            <div className={cn(__WEB__ && 'min-w-0')}>
+              <h2 className={cn('text-[13px] font-bold uppercase tracking-widest', NP_TITLE)}>
+                {editing ? 'Alter purchase invoice' : 'Purchase invoice'}
+              </h2>
+              {__WEB__ && (
+                <div className="mt-[2px] whitespace-nowrap text-[10.5px] font-extrabold uppercase tracking-[.13em] text-[#8FBFA8]">
+                  {editing ? 'Purchases · amend' : 'Purchases · create'}
+                </div>
+              )}
+            </div>
+            <span className={cn('ml-auto text-[11px] font-medium', __WEB__ && cn(NP_REF, '!ml-auto !shrink-0'))}>
               {form.invoice_no ? `No ${form.invoice_no}` : 'No: not yet given'}
               {form.order_date ? ` · ${formatDate(form.order_date)}` : ''}
               {isTrading ? ' · trading, no bargain/stock' : directMode ? ' · direct, no tanker movement' : ''}
             </span>
           </div>
 
-          <div className="grid gap-4 p-4 xl:grid-cols-[1fr_360px]">
-            <div className="space-y-4">
-              <section className="rounded border border-[#e5dfc8] bg-white p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground">
-                <h3 className="mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+          <div className={cn('grid gap-4 p-4 xl:grid-cols-[1fr_360px]', NP_GRID)}>
+            <div className={cn('space-y-4', __WEB__ && '!space-y-3')}>
+              <section
+                className={cn(
+                  'rounded border border-[#e5dfc8] bg-white p-4 [&_label]:text-[10px] [&_label]:uppercase [&_label]:tracking-wide [&_label]:text-muted-foreground',
+                  __WEB__ && cn(NP_CARD, NP_FIELDS)
+                )}
+              >
+                <h3
+                  className={cn(
+                    'mb-3 border-b border-dotted border-[#e5dfc8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]',
+                    NP_CARD_HEAD
+                  )}
+                >
+                  {__WEB__ && <ScrollText className="h-[19px] w-[19px] text-[#33473E]" />}
                   Invoice details
                 </h3>
-                <div className="grid gap-4 md:grid-cols-3">
+                <div className={cn('grid gap-4 md:grid-cols-3', NP_CARD_BODY)}>
                   <div className="flex flex-col gap-1.5">
                     <Label>Book into company *</Label>
                     <Select
@@ -2615,7 +2740,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         ))}
                       </SelectContent>
                     </Select>
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className={cn('text-[11px] text-muted-foreground', NP_NOTE)}>
                       {isTrading
                         ? 'Trading purchase — no bargain, no tanker; not counted in stock.'
                         : directMode
@@ -2625,16 +2750,55 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                             : 'The bargain is picked up automatically from the tankers you select.'}
                     </span>
                   </div>
+                  {/* Trading is not a footnote — it decides whether the
+                      invoice touches stock at all. On the website it is a
+                      panel that changes colour when it is on, with the
+                      consequence spelled out under the name, rather than one
+                      small tick on a line of grey text. */}
                   <div className="flex flex-col gap-1.5 md:col-span-3">
-                    <label className={cn('flex items-center gap-2 text-[13px]', !!editing && 'opacity-50')}>
+                    <label
+                      className={cn(
+                        'flex items-center gap-2 text-[13px]',
+                        !!editing && 'opacity-50',
+                        __WEB__ &&
+                          cn(
+                            '!items-start !gap-[11px] !rounded-[4px] !border !px-[14px] !py-3',
+                            isTrading ? '!border-[#BFE3CB] !bg-[#F7FBF4]' : '!border-[#E4ECE3] !bg-[#FBFDFA]'
+                          )
+                      )}
+                    >
                       <input
                         type="checkbox"
-                        className="h-4 w-4"
+                        className={cn(
+                          'h-4 w-4',
+                          __WEB__ && '!mt-[3px] !h-[18px] !w-[18px] !shrink-0 !accent-[#0B3D2E]'
+                        )}
                         checked={isTrading}
                         disabled={!!editing}
                         onChange={(e) => setForm((p) => ({ ...p, is_trading: e.target.checked }))}
                       />
-                      Trading purchase — bought to resell straight through, no bargain, does not affect stock
+                      {__WEB__ ? (
+                        <span className="min-w-0">
+                          <span
+                            className={cn(
+                              'block text-[12.5px] font-extrabold',
+                              isTrading ? 'text-[#0A1F17]' : 'text-[#5A6B62]'
+                            )}
+                          >
+                            Trading purchase
+                          </span>
+                          <span
+                            className={cn(
+                              'mt-[3px] block text-[11.5px] font-semibold leading-[1.5]',
+                              isTrading ? 'text-[#0B6B45]' : 'text-[#8CA396]'
+                            )}
+                          >
+                            Bought to resell straight through — no bargain is drawn down and stock is not affected.
+                          </span>
+                        </span>
+                      ) : (
+                        'Trading purchase — bought to resell straight through, no bargain, does not affect stock'
+                      )}
                     </label>
                   </div>
                   <div className="flex flex-col gap-1.5">
@@ -2687,7 +2851,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Transporter</Label>
-                    <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm">
+                    {/* Read-only on purpose — it comes off the tankers. The
+                        padlock says so without a sentence. */}
+                    <div
+                      className={cn(
+                        'flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm',
+                        __WEB__ && '!h-[46px] !gap-[9px] !rounded-[4px] !border-[#E4ECE3] !bg-[#F7FAF6] !px-[13px] !text-[13.5px] !font-bold !text-[#0A1F17]'
+                      )}
+                    >
+                      {__WEB__ && <Lock className="h-[18px] w-[18px] shrink-0 text-[#8CA396]" />}
                       {tankerTransporterName || (
                         <span className="text-muted-foreground">
                           {directMode || isTrading
@@ -2698,7 +2870,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         </span>
                       )}
                     </div>
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className={cn('text-[11px] text-muted-foreground', NP_NOTE)}>
                       {directMode || isTrading ? 'No tanker movement, so no transporter.' : 'Taken from the selected tankers.'}
                     </span>
                   </div>
@@ -2709,7 +2881,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   {!directMode && !isTrading && chosenTankers.length > 0 && (
                     <div className="flex flex-col gap-1.5 sm:col-span-2 lg:col-span-3">
                       <Label>Transporter rate per {form.uom || 'MT'} (EX tankers)</Label>
-                      <div className="overflow-hidden rounded-md border">
+                      <div className={cn('overflow-hidden rounded-md border', __WEB__ && '!overflow-visible !rounded-none !border-0 !space-y-2')}>
                         {chosenTankers.map((t, i) => {
                           const ex = condIsEx(t)
                           const rate = Number(t.transport_rate_per_ton) || 0
@@ -2719,10 +2891,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                               key={String(t.id)}
                               className={cn(
                                 'flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 text-[12px]',
-                                i % 2 === 1 && 'bg-muted/30'
+                                i % 2 === 1 && 'bg-muted/30',
+                                // Each tanker is its own card on the website;
+                                // a zebra-striped list of three rows read as a
+                                // table that had lost its header.
+                                __WEB__ &&
+                                  '!gap-x-[11px] !rounded-[4px] !border !border-[#D6E2D6] !bg-white !px-[13px] !py-[11px] !text-[12.5px] !font-semibold'
                               )}
                             >
-                              <span className="min-w-0 shrink-0 font-medium">{t.tanker_no || '—'}</span>
+                              <span className={cn('min-w-0 shrink-0 font-medium', __WEB__ && 'doc-ref !text-[13.5px] !font-bold !text-[#0A1F17]')}>{t.tanker_no || '—'}</span>
                               <span
                                 className={cn(
                                   'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase',
@@ -2760,7 +2937,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           )
                         })}
                       </div>
-                      <span className="text-[11px] text-muted-foreground">
+                      <span className={cn('text-[11px] text-muted-foreground', NP_NOTE)}>
                         Agreed when the tanker goes In transit. Freight is priced on the received quantity.
                       </span>
                     </div>
@@ -2774,10 +2951,22 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       placeholder={tankerTransporterId ? `default ${settings.allowed_shortage_pct ?? '0.2'}` : 'No transporter — N/A'}
                       onChange={(e) => setForm((p) => ({ ...p, allowed_shortage_pct: e.target.value }))}
                     />
-                    <span className="text-[11px] text-muted-foreground">Shortage tolerance before the transporter is charged.</span>
+                    <span className={cn('text-[11px] text-muted-foreground', NP_NOTE)}>Shortage tolerance before the transporter is charged.</span>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-4 rounded-lg border px-3 py-2 md:col-span-3">
+                  {/* Interest changes the rate the invoice is struck at, so
+                      the panel takes the tone of whether it is on — the same
+                      green the site uses for a live figure. */}
+                  <div
+                    className={cn(
+                      'flex flex-wrap items-center gap-4 rounded-lg border px-3 py-2 md:col-span-3',
+                      __WEB__ &&
+                        cn(
+                          '!gap-x-4 !gap-y-3 !rounded-[4px] !border !px-[14px] !py-[13px]',
+                          form.charge_interest ? '!border-[#BFE3CB] !bg-[#F7FBF4]' : '!border-[#E4ECE3] !bg-[#FBFDFA]'
+                        )
+                    )}
+                  >
                     <div className="flex items-center gap-2.5">
                       <Switch
                         checked={!!form.charge_interest}
@@ -2786,7 +2975,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         }
                       />
                       <div className="flex items-center gap-1.5">
-                        <span className="text-sm font-medium">Supplier interest</span>
+                        <span className={cn('text-sm font-medium', __WEB__ && '!whitespace-nowrap !text-[13px] !font-extrabold !text-[#0A1F17]')}>Supplier interest</span>
                         <InfoTip text="Interest = BG rate incl. GST × Int% × days ÷ 365; the adjusted invoice rate is BG rate + interest. Defaults ON when the supplier charges interest and the tankers are supplier-financed." />
                       </div>
                     </div>
@@ -2913,7 +3102,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     />
                   </div>
                 </div>
-                <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                <div
+                  className={cn(
+                    'mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800',
+                    __WEB__ &&
+                      '!m-[18px] !mt-0 !flex !items-start !gap-2.5 !rounded-[4px] !border-[#BFE3CB] !border-l-4 !border-l-[#12855A] !bg-[#E9F5EE] !px-[14px] !py-3 !text-[12.5px] !font-bold !leading-[1.5] !text-[#0B6B45]'
+                  )}
+                >
+                  {__WEB__ && <Landmark className="mt-[1px] h-[18px] w-[18px] shrink-0" />}
                   Saving the purchase automatically posts its payable amount to the supplier ledger.
                 </div>
               </section>
@@ -3201,13 +3397,40 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   )}
                 </section>
               ) : (
-              <section className="rounded border border-[#e5dfc8] bg-white p-4">
-                <div className="mb-3 flex items-center justify-between border-b border-dotted border-[#e5dfc8] pb-1.5">
-                  <div>
-                    <h3 className="text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">Tankers on this invoice</h3>
-                    <p className="text-xs text-muted-foreground">All the supplier&apos;s unbilled loaded tankers — tick the ones covered by this invoice.</p>
+              <section className={cn('rounded border border-[#e5dfc8] bg-white p-4', __WEB__ && cn(NP_CARD, '!p-[18px]'))}>
+                <div
+                  className={cn(
+                    'mb-3 flex items-center justify-between border-b border-dotted border-[#e5dfc8] pb-1.5',
+                    __WEB__ &&
+                      '!-mx-[18px] !-mt-[18px] !mb-[14px] !items-start !gap-3 !rounded-t-[3px] !border-b !border-solid !border-b-[#E4ECE3] !bg-[#F7FAF6] !px-[18px] !py-[13px]'
+                  )}
+                >
+                  <div className={cn(__WEB__ && 'min-w-0')}>
+                    <h3
+                      className={cn(
+                        'text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]',
+                        __WEB__ && '!flex !items-center !gap-[9px] !text-[11.5px] !font-extrabold !tracking-[.14em] !text-[#0A1F17]'
+                      )}
+                    >
+                      {__WEB__ && <Truck className="h-[19px] w-[19px] text-[#33473E]" />}
+                      Tankers on this invoice
+                    </h3>
+                    <p className={cn('text-xs text-muted-foreground', __WEB__ && cn(NP_NOTE, '!mt-[5px]'))}>All the supplier&apos;s unbilled loaded tankers — tick the ones covered by this invoice.</p>
                   </div>
-                  <Badge variant="secondary">{selected.length} selected</Badge>
+                  <Badge
+                    variant="secondary"
+                    className={cn(
+                      __WEB__ &&
+                        cn(
+                          '!shrink-0 !rounded-[2px] !border !px-2.5 !py-[5px] !text-[11px] !font-extrabold !tracking-[.05em]',
+                          selected.length
+                            ? '!border-[#BFE3CB] !bg-[#E9F5EE] !text-[#0B6B45]'
+                            : '!border-[#DCE7DB] !bg-[#EAF0E9] !text-[#5A6B62]'
+                        )
+                    )}
+                  >
+                    {selected.length} selected
+                  </Badge>
                 </div>
                 {!form.supplier_id ? (
                   <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">Select the supplier to see all its loaded tankers.</div>
@@ -3223,20 +3446,36 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     {selectableTankers.map((tanker) => {
                       const checked = selected.includes(Number(tanker.id))
                       return (
-                        <label key={tanker.id} className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition ${checked ? 'border-amber-400 bg-amber-50' : 'hover:bg-muted/40'}`}>
+                        <label
+                          key={tanker.id}
+                          className={cn(
+                            'flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition',
+                            checked ? 'border-amber-400 bg-amber-50' : 'hover:bg-muted/40',
+                            // A picked tanker is marked down its left edge as
+                            // well as tinted — running an eye down the rail is
+                            // faster than reading six tick boxes.
+                            __WEB__ &&
+                              cn(
+                                '!gap-[13px] !rounded-[4px] !border !border-l-[3px] !px-[14px] !py-[13px]',
+                                checked
+                                  ? '!border-[#E8DFC0] !border-l-[#C7F03F] !bg-[#FDFBF3]'
+                                  : '!border-[#E4ECE3] !border-l-transparent !bg-white hover:!bg-[#FBFDFA]'
+                              )
+                          )}
+                        >
                           <input
                             type="checkbox"
-                            className="h-4 w-4 accent-amber-500"
+                            className={cn('h-4 w-4 accent-amber-500', __WEB__ && '!h-[18px] !w-[18px] !shrink-0 !accent-[#0B3D2E]')}
                             checked={checked}
                             onChange={(e) => setSelected((p) => e.target.checked ? [...p, Number(tanker.id)] : p.filter((id) => id !== Number(tanker.id)))}
                           />
                           <div className="min-w-0 flex-1">
-                            <div className="font-medium">{tanker.tanker_no}</div>
-                            <div className="text-xs text-muted-foreground">
+                            <div className={cn('font-medium', __WEB__ && 'doc-ref !text-[14.5px] !font-bold !tracking-[-0.01em] !text-[#0A1F17]')}>{tanker.tanker_no}</div>
+                            <div className={cn('text-xs text-muted-foreground', __WEB__ && '!mt-1 !truncate !text-[11.5px] !font-semibold !text-[#5A6B62]')}>
                               {tanker.bargain_no} · {tanker.oil_code || tanker.oil_name} · Loaded {formatDate(tanker.loaded_date)} · {tanker.payment_mode === 'supplier_finance' ? 'Supplier financed' : 'Paid by us'}
                             </div>
                           </div>
-                          <div className="font-medium tabular-nums">{formatNum(tanker.loaded_qty)} {tanker.uom}</div>
+                          <div className={cn('font-medium tabular-nums', __WEB__ && 'doc-ref !shrink-0 !text-[14.5px] !font-bold !tracking-[-0.02em] !text-[#0A1F17]')}>{formatNum(tanker.loaded_qty)} {tanker.uom}</div>
                         </label>
                       )
                     })}
@@ -3246,10 +3485,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               )}
             </div>
 
-            <aside className="h-fit rounded border border-[#d9d2b8] bg-[#f7f2e2] p-4 xl:sticky xl:top-6">
-              <h3 className="mb-2 border-b border-[#d9d2b8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]">
+            <aside className={cn('h-fit rounded border border-[#d9d2b8] bg-[#f7f2e2] p-4 xl:sticky xl:top-6', NP_RAIL)}>
+              <h3
+                className={cn(
+                  'mb-2 border-b border-[#d9d2b8] pb-1.5 text-[11px] font-bold uppercase tracking-widest text-[#1a2c56]',
+                  NP_RAIL_HEAD
+                )}
+              >
+                {__WEB__ && <IndianRupee className="h-[18px] w-[18px] text-[#8A5300]" />}
                 Purchase summary
               </h3>
+              {/* Every band below is one question: how much is on the invoice,
+                  what rate it is struck at, what tax does to it, and what is
+                  left to pay. The rules between them are the bands. */}
+              <div className={cn(__WEB__ && NP_RAIL_SECT)}>
               {isTrading ? (
                 <>
                   <MoneyRow label="Purchase type" value="Trading — no bargain, no stock" />
@@ -3275,7 +3524,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   <MoneyRow label="Supplier financed" value={String(financedCount)} />
                 </>
               )}
-              <div className="my-3 border-t" />
+              </div>
+              <div className={cn('my-3 border-t', __WEB__ && '!hidden')} />
+              <div className={cn(__WEB__ && NP_RAIL_SECT)}>
               {rateAlloc.length > 1 ? (
                 rateAlloc.map((a, i) => (
                   <MoneyRow
@@ -3391,9 +3642,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 const applied = r2((Number(calc.adjustedRate) || 0) - exact)
                 const legacy = rateRoundOff == null
                 return (
-                  <div className="flex items-center justify-between gap-2 py-1.5 text-sm">
+                  <div className={cn('flex items-center justify-between gap-2 py-1.5 text-sm', __WEB__ && '!items-start !gap-2.5 !py-[5px]')}>
                     <span
-                      className="min-w-0 text-muted-foreground"
+                      className={cn('min-w-0 text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !leading-[1.45] !text-[#33473E]')}
                       title={`Exact ${formatINR(exact)} per ${form.uom || 'MT'}. Nil bills that rate as it stands. Type an amount, or use ↑ to round up to the whole rupee the way the supplier does.`}
                     >
                       Rate adjustment{' '}
@@ -3408,7 +3659,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                         <Button
                           type="button"
                           variant="outline"
-                          className="h-7 bg-white px-1.5 text-[11px]"
+                          className={cn('h-7 bg-white px-1.5 text-[11px]', __WEB__ && '!h-[34px] !gap-1 !rounded-[3px] !border-[#C3B78F] !px-[9px] !text-[11.5px] !font-bold !text-[#8A5300]')}
                           title={`Round up to ${formatINR(Math.ceil(exact))} — the whole rupee`}
                           onClick={() => setForm((p) => ({ ...p, rate_round_off: String(toWhole) }))}
                         >
@@ -3417,7 +3668,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       )}
                       <Input
                         type="number"
-                        className="h-7 w-24 text-right"
+                        className={cn('h-7 w-24 text-right', __WEB__ && cn(NP_RAIL_INPUT, '!w-[88px]'))}
                         placeholder="0.00"
                         value={form.rate_round_off ?? ''}
                         onChange={(e) => setForm((p) => ({ ...p, rate_round_off: e.target.value }))}
@@ -3436,7 +3687,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 value={formatINR(calc.adjustedRate)}
                 strong
               />
-              <div className="my-2 border-t" />
+              </div>
+              <div className={cn('my-2 border-t', __WEB__ && '!hidden')} />
+              <div className={cn(__WEB__ && NP_RAIL_SECT)}>
               <MoneyRow label="Taxable value" value={formatINR(calc.taxableValue)} />
               {form.gst_type === 'IGST' ? (
                 <MoneyRow label={`IGST${form.gst_pct ? ` @ ${form.gst_pct}%` : ''}`} value={formatINR(calc.gstAmount)} />
@@ -3448,13 +3701,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               )}
               <div className="border-t" />
               <MoneyRow label="Total value (excl. TDS)" value={formatINR(calc.taxableValue + calc.gstAmount)} strong />
-              <div className="flex items-center justify-between py-1.5 text-sm">
-                <span className="text-muted-foreground" title="Applied to the total excluding TDS. TDS is then deducted on the rounded figure. Auto-rounds to the nearest rupee; type to override, clear to go back to auto.">
+              <div className={cn('flex items-center justify-between py-1.5 text-sm', __WEB__ && '!gap-2.5 !py-[5px]')}>
+                <span className={cn('text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !text-[#33473E]')} title="Applied to the total excluding TDS. TDS is then deducted on the rounded figure. Auto-rounds to the nearest rupee; type to override, clear to go back to auto.">
                   Round off {form.round_off_manual ? '(manual)' : '(auto)'}
                 </span>
                 <Input
                   type="number"
-                  className="h-7 w-28 text-right"
+                  className={cn('h-7 w-28 text-right', __WEB__ && cn(NP_RAIL_INPUT, '!w-[96px]'))}
                   placeholder="0.00"
                   value={form.round_off ?? ''}
                   onChange={(e) =>
@@ -3468,19 +3721,71 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               </div>
               <MoneyRow label="Total after round off" value={formatINR(calc.roundedTotal)} strong />
               <MoneyRow label="TDS (on the rounded total)" value={`− ${formatINR(calc.tdsAmount)}`} />
-              <div className="my-2 border-t-2 border-[#1a2c56]" />
-              <div className="flex items-center justify-between text-[15px] font-bold text-[#1a2c56]">
-                <span>Net purchase amount</span>
-                <span className="tabular-nums">{formatINR(calc.netAmount)}</span>
               </div>
-              {error && <p className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                <Button variant="outline" className="bg-white" onClick={() => setFormPage(false)} disabled={saving}>Cancel</Button>
-                <Button className="bg-[#1a2c56] hover:bg-[#24407e]" onClick={savePurchase} disabled={saving}>
+              <div className={cn('my-2 border-t-2 border-[#1a2c56]', __WEB__ && '!hidden')} />
+              {/* The answer, on the forest band — the one figure somebody
+                  scrolls this rail to find. */}
+              <div
+                className={cn(
+                  'flex items-center justify-between text-[15px] font-bold text-[#1a2c56]',
+                  __WEB__ && '!gap-3 !bg-[#0B3D2E] !px-[18px] !py-[15px] !text-[12.5px] !font-extrabold !text-white'
+                )}
+              >
+                <span>Net purchase amount</span>
+                <span className={cn('tabular-nums', __WEB__ && 'doc-ref !whitespace-nowrap !text-[17px] !font-bold !tracking-[-0.03em] !text-[#C7F03F]')}>{formatINR(calc.netAmount)}</span>
+              </div>
+              <div className={cn(__WEB__ && 'px-[18px] py-[14px]')}>
+              {error && <p className={cn('mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700', __WEB__ && '!mt-0 !mb-2.5 !rounded-[4px] !border-[#F0AFAA] !bg-[#FDF3F2] !text-[12.5px] !font-bold !text-[#8C2F26]')}>{error}</p>}
+              {/* What is still missing, or what saving will do. The page used
+                  to answer that only by refusing to save. */}
+              {__WEB__ && (() => {
+                const need: string[] = []
+                if (!String(form.invoice_no || '').trim()) need.push('invoice number')
+                if (!(Number(form.invoice_rate) > 0)) need.push('bargain rate')
+                if (!isTrading && !directMode && !selected.length) need.push('at least one tanker')
+                if (!form.supplier_id) need.push('supplier')
+                const ok = need.length === 0
+                return (
+                  <div className="mb-2.5 flex items-start gap-2">
+                    {ok ? (
+                      <CheckCircle2 className="mt-[1px] h-[17px] w-[17px] shrink-0 text-[#0B6B45]" />
+                    ) : (
+                      <AlertTriangle className="mt-[1px] h-[17px] w-[17px] shrink-0 text-[#8A5300]" />
+                    )}
+                    <span
+                      className={cn(
+                        'text-[11.5px] font-bold leading-[1.5]',
+                        ok ? 'text-[#0B6B45]' : 'text-[#8A5300]'
+                      )}
+                    >
+                      {ok
+                        ? editing
+                          ? `Saving amends invoice ${form.invoice_no} and reposts it to the ledger.`
+                          : `Saving posts ${formatINR(calc.netAmount)} to the supplier ledger.`
+                        : `${need.length} required: ${need.join(', ')}`}
+                    </span>
+                  </div>
+                )
+              })()}
+              <div className={cn('mt-4 grid grid-cols-2 gap-2', __WEB__ && '!mt-0 !grid-cols-[1fr_1.4fr] !gap-[9px]')}>
+                <Button
+                  variant="outline"
+                  className={cn('bg-white', __WEB__ && '!h-[46px] !rounded-[4px] !border-[1.5px] !border-[#C3B78F] !text-[12.5px] !font-extrabold !uppercase !tracking-[.04em] !text-[#33473E] hover:!bg-[#F7F2E2]')}
+                  onClick={() => setFormPage(false)}
+                  disabled={saving}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  className={cn('bg-[#1a2c56] hover:bg-[#24407e]', __WEB__ && '!h-[46px] !gap-[7px] !rounded-[4px] !bg-[#0B3D2E] !text-[12.5px] !font-extrabold !uppercase !tracking-[.04em] !text-[#C7F03F] hover:!bg-[#0F5138]')}
+                  onClick={savePurchase}
+                  disabled={saving}
+                >
                   {saving ? 'Saving…' : editing ? 'Save changes' : 'Accept purchase'}
                 </Button>
               </div>
-              <p className="mt-2 text-center text-[10px] text-muted-foreground">Ctrl+A accepts, like Tally.</p>
+              <p className={cn('mt-2 text-center text-[10px] text-muted-foreground', __WEB__ && '!text-[11px] !font-semibold !text-[#8A7A4E]')}>Ctrl+A accepts, like Tally.</p>
+              </div>
             </aside>
           </div>
           </div>
@@ -3569,19 +3874,28 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     <span className={cn('shrink-0 text-[10px] text-muted-foreground', __WEB__ && '!text-[12.5px] !font-semibold !text-[#5A6B62]')}>to</span>
                     <DatePicker value={poTo} onChange={(v) => setPoTo(v || '')} min={poFrom || undefined} className="h-7 w-[9.5rem] shrink-0 text-[11px]" />
                   </div>
-                  <div className="h-5 border-l" />
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <span className={cn('shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70', __WEB__ && PO_LABEL)}>
-                      Category
-                    </span>
-                    <MultiSelectFilter
-                      options={poCategories.map((cat) => ({ value: cat, label: cat.toUpperCase() }))}
-                      value={poCategory}
-                      onApply={setPoCategory}
-                      allLabel="All categories"
-                      className="h-7 w-[11.5rem] shrink-0 text-[11px]"
-                    />
-                  </div>
+                  {/* Category is off the website's filter bar — the search box
+                      beside it already matches on product, and dropping it
+                      pulls the whole strip back onto one line. The desktop app
+                      keeps it; the filtering below is untouched either way,
+                      and simply never has a category to apply here. */}
+                  {!__WEB__ && (
+                    <>
+                      <div className="h-5 border-l" />
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+                          Category
+                        </span>
+                        <MultiSelectFilter
+                          options={poCategories.map((cat) => ({ value: cat, label: cat.toUpperCase() }))}
+                          value={poCategory}
+                          onApply={setPoCategory}
+                          allLabel="All categories"
+                          className="h-7 w-[11.5rem] shrink-0 text-[11px]"
+                        />
+                      </div>
+                    </>
+                  )}
                   <div className="h-5 shrink-0 border-l" />
                   <div className="flex shrink-0 items-center gap-1.5" title="When on, a purchase also shows if a tanker on it was received in this window — even if the invoice itself was raised outside it.">
                     <Switch checked={poIncludeReceipt} onCheckedChange={setPoIncludeReceipt} className="shrink-0" />
@@ -4447,78 +4761,104 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           className={cn(
             'max-h-[92vh] w-[calc(100vw-2rem)] overflow-y-auto',
             target === 'empty' ? 'sm:max-w-3xl' : 'sm:max-w-2xl',
-            TK_DRAWER
+            TK_DRAWER,
+            target === 'empty' ? TK_WIDE : TK_NARROW
           )}
         >
           <DialogHeader className={cn(TK_HEAD)}>
-            {__WEB__ && <div className={TK_KICKER}>{target ? TANKER_LABEL[target] : 'Tanker'}</div>}
-            <DialogTitle className={cn(TK_TITLE, __WEB__ && 'doc-ref')}>
-              {__WEB__
-                ? String(actionRow?.tanker_no || '').trim() || 'Tanker'
-                : target
-                  ? `Move ${String(actionRow?.tanker_no || '').trim() || 'tanker'} to ${TANKER_LABEL[target]}`
-                  : 'Update tanker'}
-            </DialogTitle>
-            {__WEB__ && !!actionRow && (
-              <div className={TK_SUB}>
-                {[
-                  String(actionRow.supplier_name || ''),
-                  String(actionRow.oil_type_name || actionRow.product_name || ''),
-                  Number(actionRow.loaded_qty) ? `${formatNum(actionRow.loaded_qty)} ${String(actionRow.uom || 'MT')}` : ''
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </div>
-            )}
+            {/* pr-12 keeps the name clear of the close button in the corner. */}
+            <div className={cn(__WEB__ && 'pr-12')}>
+              {__WEB__ && <div className={TK_KICKER}>{target ? TANKER_LABEL[target] : 'Tanker'}</div>}
+              <DialogTitle className={cn(TK_TITLE, __WEB__ && 'doc-ref')}>
+                {__WEB__
+                  ? String(actionRow?.tanker_no || '').trim() || 'Tanker'
+                  : target
+                    ? `Move ${String(actionRow?.tanker_no || '').trim() || 'tanker'} to ${TANKER_LABEL[target]}`
+                    : 'Update tanker'}
+              </DialogTitle>
+              {__WEB__ && !!actionRow && (
+                <div className={TK_SUB}>
+                  {[
+                    String(actionRow.supplier_name || ''),
+                    String(actionRow.oil_type_name || actionRow.product_name || ''),
+                    Number(actionRow.loaded_qty) ? `${formatNum(actionRow.loaded_qty)} ${String(actionRow.uom || 'MT')}` : ''
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </div>
+              )}
+            </div>
             {/* The whole journey, with this stage lit. A tanker moves through
                 six of these and the form never said which one you were in, or
-                what had already been stamped. */}
+                what had already been stamped.
+
+                Centred on a continuous track, not left-aligned under a
+                per-step underline. The underline version broke into six
+                separate dashes with gaps between them, and the dates were
+                pushed right by a hardcoded icon offset while the labels above
+                them were not — so no date sat under the step it belonged to.
+                Here the dot IS the centre: label and date hang beneath it, and
+                the label box has a floor so a name that wraps to two lines
+                ("To be loaded") does not shove its own date out of line with
+                the other five. */}
             {__WEB__ && !!actionRow && (
-              <div className="no-scrollbar mt-4 flex items-stretch overflow-x-auto">
-                {TANKER_STAGE_RAIL.map((st) => {
-                  const done = !!String(actionRow[st.dateKey] || '').trim()
-                  const here = target === st.key
-                  return (
-                    <div
-                      key={st.key}
-                      className={cn(
-                        'flex min-w-[96px] flex-1 flex-col gap-2 border-b-[3px] px-1 pb-3',
-                        here ? 'border-b-[#C7F03F]' : 'border-b-white/15'
-                      )}
-                    >
-                      <span className="flex min-w-0 items-center gap-[7px]">
-                        <span
-                          className={cn(
-                            'flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-[1.5px]',
-                            here
-                              ? 'border-[#C7F03F] bg-[#C7F03F] text-[#0B3D2E]'
-                              : done
-                                ? 'border-[#8FBFA8] bg-[#8FBFA8]/20 text-[#C7F03F]'
-                                : 'border-white/25 text-white/40'
-                          )}
-                        >
-                          {done && !here ? <Check className="h-3 w-3" /> : <st.icon className="h-3 w-3" />}
+              <div className="mt-[18px] border-t border-t-white/[.13] pt-4">
+                <div className="no-scrollbar flex items-start overflow-x-auto">
+                  {TANKER_STAGE_RAIL.map((st, i) => {
+                    const done = !!String(actionRow[st.dateKey] || '').trim()
+                    const here = target === st.key
+                    // Each half-track is owned by the step it touches: the one
+                    // on the left reports the step BEFORE it, the one on the
+                    // right reports this step. Every joint therefore gets its
+                    // colour from the stage that has to be stamped to cross it.
+                    const prevDone =
+                      i > 0 && !!String(actionRow[TANKER_STAGE_RAIL[i - 1].dateKey] || '').trim()
+                    const seg = (on: boolean, show: boolean): React.JSX.Element => (
+                      <span
+                        className={cn(
+                          'h-[2px] flex-1',
+                          !show ? 'bg-transparent' : on ? 'bg-[#8FBFA8]/45' : 'bg-white/[.13]'
+                        )}
+                      />
+                    )
+                    return (
+                      <div key={st.key} className="flex min-w-[92px] flex-1 flex-col items-center">
+                        <span className="flex w-full items-center">
+                          {seg(prevDone, i > 0)}
+                          <span
+                            className={cn(
+                              'flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border-[1.5px] transition-colors',
+                              here
+                                ? 'border-[#C7F03F] bg-[#C7F03F] text-[#0B3D2E] shadow-[0_0_0_4px_rgba(199,240,63,.16)]'
+                                : done
+                                  ? 'border-[#8FBFA8]/70 bg-[#8FBFA8]/15 text-[#8FBFA8]'
+                                  : 'border-white/20 bg-transparent text-white/30'
+                            )}
+                          >
+                            {done && !here ? <Check className="h-3.5 w-3.5" /> : <st.icon className="h-3.5 w-3.5" />}
+                          </span>
+                          {seg(done, i < TANKER_STAGE_RAIL.length - 1)}
                         </span>
                         <span
                           className={cn(
-                            'truncate text-[11px] font-extrabold',
-                            here ? 'text-white' : done ? 'text-[#8FBFA8]' : 'text-white/40'
+                            'mt-2 flex min-h-[26px] items-start justify-center px-1.5 text-center text-[10.5px] font-extrabold leading-[1.25]',
+                            here ? 'text-white' : done ? 'text-[#8FBFA8]' : 'text-white/35'
                           )}
                         >
                           {st.label}
                         </span>
-                      </span>
-                      <span
-                        className={cn(
-                          'doc-ref whitespace-nowrap pl-[27px] text-[10.5px] font-semibold',
-                          done ? 'text-[#8FBFA8]' : 'text-white/25'
-                        )}
-                      >
-                        {done ? formatDateShort(actionRow[st.dateKey]) : '—'}
-                      </span>
-                    </div>
-                  )
-                })}
+                        <span
+                          className={cn(
+                            'doc-ref whitespace-nowrap text-[10px] font-semibold',
+                            done ? 'text-[#8FBFA8]/85' : 'text-white/25'
+                          )}
+                        >
+                          {done ? formatDateShort(actionRow[st.dateKey]) : '—'}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
             )}
           </DialogHeader>
@@ -4702,7 +5042,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
             const ex = condIsEx(actionRow)
             return (
               <div className="grid gap-3">
-                <div className="grid grid-cols-2 gap-3">
+                <div className={cn('grid grid-cols-2 gap-3', __WEB__ && cn(TK_SECT, '!gap-4'))}>
                   <div className="flex flex-col gap-1.5"><Label>Transit date</Label><DatePicker value={actionForm.transit_date || ''} min={actionRow?.loaded_date || undefined} onChange={(v) => setActionForm((p) => ({ ...p, transit_date: v }))} /></div>
                   <div className="flex min-w-0 flex-col gap-1.5">
                     <Label>Source / port</Label>
@@ -4718,12 +5058,40 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     </Select>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-3 rounded-lg border p-3">
-                  <div className="col-span-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
-                    <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase', ex ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-700')}>
+                <div className={cn('grid grid-cols-2 gap-3 rounded-lg border p-3', __WEB__ && cn(TK_SECT, '!gap-4'))}>
+                  {/* Who pays. On the website it is a banded strip across the
+                      top of the card rather than a line of small print inside
+                      it — EX and DLD change what this card is FOR, and the
+                      rate below is required in one case and not the other. */}
+                  <div
+                    className={cn(
+                      'col-span-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]',
+                      __WEB__ &&
+                        cn(
+                          // Bleeds to the card's edges, so it is a band across
+                          // the top rather than a tinted box floating inside a
+                          // white one.
+                          '!-mx-[18px] !-mt-[18px] !gap-x-2.5 !rounded-t-[3px] !border-b !px-[18px] !py-3 !text-[12.5px] !font-semibold',
+                          ex ? '!border-b-[#F0E4CB] !bg-[#FFFBF2]' : '!border-b-[#E4ECE3] !bg-[#F7FAF6]'
+                        )
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase',
+                        ex ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-700',
+                        __WEB__ &&
+                          cn(
+                            '!rounded-[2px] !px-[7px] !py-[3px] !text-[10px] !font-extrabold !tracking-[.06em]',
+                            ex
+                              ? '!border !border-[#F0E4CB] !bg-[#FFF4E0] !text-[#8A5300]'
+                              : '!border !border-[#DCE7DB] !bg-[#EAF0E9] !text-[#33473E]'
+                          )
+                      )}
+                    >
                       {ex ? 'EX' : 'DLD'}
                     </span>
-                    <span className="text-muted-foreground">
+                    <span className={cn('text-muted-foreground', __WEB__ && (ex ? '!text-[#8A5300]' : '!text-[#5A6B62]'))}>
                       {ex
                         ? 'We pay the freight on this tanker, so the rate is required.'
                         : 'The supplier carries the freight — the rate is only for the record.'}
@@ -4769,8 +5137,38 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               </div>
             )
           })()}
-          {target === 'outside_factory' && <div className="flex flex-col gap-1.5"><Label>Outside factory date</Label><DatePicker value={actionForm.outside_factory_date || ''} min={actionRow?.transit_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm({ outside_factory_date: v })} /></div>}
-          {target === 'inside_factory' && <div className="flex flex-col gap-1.5"><Label>Inside factory date</Label><DatePicker value={actionForm.inside_factory_date || ''} min={actionRow?.outside_factory_date || actionRow?.transit_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm({ inside_factory_date: v })} /></div>}
+          {/* One date each. On the website they sit on a card like every other
+              stage, and the field is held to a sensible width — a lone input
+              stretched across 790px of panel is not a form, it is a search
+              box. The note says what stamping the date actually does. */}
+          {target === 'outside_factory' && (
+            <div className={cn(__WEB__ && TK_SECT)}>
+              <div className={cn('flex flex-col gap-1.5', __WEB__ && 'max-w-[300px]')}>
+                <Label>Outside factory date</Label>
+                <DatePicker value={actionForm.outside_factory_date || ''} min={actionRow?.transit_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm({ outside_factory_date: v })} />
+              </div>
+              {__WEB__ && (
+                <p className="mt-3 text-[12px] font-semibold leading-[1.5] text-[#5A6B62]">
+                  The day the tanker reached the factory gate and joined the queue outside. Nothing is weighed
+                  or received yet.
+                </p>
+              )}
+            </div>
+          )}
+          {target === 'inside_factory' && (
+            <div className={cn(__WEB__ && TK_SECT)}>
+              <div className={cn('flex flex-col gap-1.5', __WEB__ && 'max-w-[300px]')}>
+                <Label>Inside factory date</Label>
+                <DatePicker value={actionForm.inside_factory_date || ''} min={actionRow?.outside_factory_date || actionRow?.transit_date || actionRow?.loaded_date || undefined} onChange={(v) => setActionForm({ inside_factory_date: v })} />
+              </div>
+              {__WEB__ && (
+                <p className="mt-3 text-[12px] font-semibold leading-[1.5] text-[#5A6B62]">
+                  The day it was called in off the queue. The received quantity is settled at Empty, against
+                  the gate weighment.
+                </p>
+              )}
+            </div>
+          )}
           {target === 'empty' && actionRow && shortage && <div className="grid gap-4">
             {(() => {
               const gq = gateQtyFor(actionRow.id)
