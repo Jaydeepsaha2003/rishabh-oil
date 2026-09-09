@@ -6439,6 +6439,16 @@ async function listOrders(forModule) {
            t.name AS transporter_name,
            (SELECT COUNT(*) FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_count,
            (SELECT GROUP_CONCAT(pt.tanker_no, ', ') FROM purchase_tankers pt WHERE pt.order_id = o.id) AS tanker_nos,
+           -- The lab readings, as two counts: how many of this invoice's tankers
+           -- have been emptied, and how many of those carry a reading. The
+           -- register draws one glyph from the pair \u2014 green when they match,
+           -- amber when they do not \u2014 without loading a single value.
+           (SELECT COUNT(*) FROM purchase_tankers pt
+             WHERE pt.order_id = o.id AND pt.status = 'empty') AS empty_tankers,
+           (SELECT COUNT(*) FROM purchase_tankers pt
+             WHERE pt.order_id = o.id AND pt.status = 'empty'
+               AND EXISTS (SELECT 1 FROM tanker_quality tq
+                            WHERE tq.tanker_id = pt.id AND TRIM(COALESCE(tq.value, '')) <> '')) AS quality_tankers,
            -- Shortage rolled up from the tankers. The order's own
            -- actual_shortage_qty columns are only written on the tanker-less
            -- receipt path, so a tanker purchase showed nothing at all.
@@ -7053,6 +7063,11 @@ async function listPurchaseTankers(allCompanies = false, forModule) {
            -- GE/0196 means nothing to them.
            ge.ref_no AS gate_ref_no,
            ge.received_qty AS gate_qty,
+           -- How many technical readings this tanker actually carries, so the
+           -- register can say at a glance whether they were taken. A count and
+           -- not the rows: the list is long and nothing on it needs the values.
+           (SELECT COUNT(*) FROM tanker_quality tq
+             WHERE tq.tanker_id = pt.id AND TRIM(COALESCE(tq.value, '')) <> '') AS quality_count,
            (SELECT old_tanker_no || ' -> ' || new_tanker_no || ' (' || loss_qty || ' lost)'
               FROM tanker_replacements WHERE tanker_id = pt.id ORDER BY id DESC LIMIT 1) AS last_replacement
     FROM purchase_tankers pt
@@ -7421,6 +7436,13 @@ async function saveTankerQuality(tankerId, rows) {
     });
   }
 }
+async function listTankerQuality(tankerId) {
+  const res = await getClient().execute({
+    sql: "SELECT id, name, value, sort_order FROM tanker_quality WHERE tanker_id = ? ORDER BY sort_order, id",
+    args: [n5(tankerId)]
+  });
+  return toPlain6(res);
+}
 async function advancePurchaseTanker(id, toStatus, data) {
   const c = getClient();
   const res = await c.execute({ sql: "SELECT * FROM purchase_tankers WHERE id = ?", args: [id] });
@@ -7575,7 +7597,7 @@ async function advancePurchaseTanker(id, toStatus, data) {
       args: [data.inside_factory_date || null, id]
     });
   } else if (toStatus === "empty") {
-    await saveTankerQuality(id, Array.isArray(data.quality) ? data.quality : []);
+    if (Array.isArray(data.quality)) await saveTankerQuality(id, data.quality);
     const receivedQty = n5(data.received_qty);
     if (receivedQty <= 0 || receivedQty > n5(tanker.loaded_qty) + 1e-6) throw new Error("Enter a valid empty quantity");
     const gateQty = await tankerGateReceived(id);
@@ -11095,12 +11117,19 @@ var n8 = (v) => {
 };
 var inr = (v) => `\u20B9${(Math.round(n8(v) * 100) / 100).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 var num3 = (v) => (Math.round(n8(v) * 1e3) / 1e3).toLocaleString("en-IN", { maximumFractionDigits: 3 });
+var ddmmyyyy2 = (iso) => String(iso || "").slice(0, 10).split("-").reverse().join("-");
 var daysBetween = (fromISO, toISO) => {
   const a = Date.parse(`${fromISO.slice(0, 10)}T00:00:00Z`);
   const b = Date.parse(`${toISO.slice(0, 10)}T00:00:00Z`);
   if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
   return Math.round((b - a) / 864e5);
 };
+function renderTemplate(tpl, vars = {}) {
+  return String(tpl).replace(/\{([a-z0-9_]+)\}/gi, (whole, key3) => {
+    const v = vars[key3];
+    return v == null || v === "" ? whole : String(v);
+  });
+}
 var plain = (res) => res.rows.map((r) => {
   const o = {};
   for (const col of res.columns) o[col] = r[col];
@@ -11111,6 +11140,7 @@ var plain = (res) => res.rows.map((r) => {
 var RULES = [
   {
     key: "approvals.pending",
+    vars: [{ key: "kind", label: "What kind of master" }, { key: "name", label: "Its name" }, { key: "by", label: "Who raised it" }],
     module: "approvals",
     label: "Master waiting for approval",
     desc: "Somebody has added a supplier, customer, product or other master and it is waiting for an admin to accept it.",
@@ -11143,12 +11173,18 @@ var RULES = [
       return plain(res).map((r) => ({
         dedupe: `approval:${r.id}`,
         title: `New ${LABEL[String(r.table_name)] || String(r.table_name)} to approve`,
-        body: `${r.label || "\u2014"} \xB7 raised by ${r.requested_by_name || "a user"}`
+        body: `${r.label || "\u2014"} \xB7 raised by ${r.requested_by_name || "a user"}`,
+        vars: {
+          kind: LABEL[String(r.table_name)] || String(r.table_name),
+          name: String(r.label || "\u2014"),
+          by: String(r.requested_by_name || "a user")
+        }
       }));
     }
   },
   {
     key: "approvals.decided",
+    vars: [{ key: "kind", label: "What kind of master" }, { key: "name", label: "Its name" }, { key: "decision", label: "approved or rejected" }, { key: "reason", label: "Why, if turned down" }],
     module: "approvals",
     label: "Your submission was decided",
     desc: "Something you added has been accepted or turned down by an admin. Only the person who raised it is told.",
@@ -11182,12 +11218,19 @@ var RULES = [
         recipients: [n8(r.requested_by)],
         severity: String(r.status) === "rejected" ? "warning" : "normal",
         title: `${LABEL[String(r.table_name)] || String(r.table_name)} ${r.status}`,
-        body: String(r.status) === "rejected" ? `${r.label || "\u2014"} \u2014 ${r.reason || "no reason given"}` : String(r.label || "\u2014")
+        body: String(r.status) === "rejected" ? `${r.label || "\u2014"} \u2014 ${r.reason || "no reason given"}` : String(r.label || "\u2014"),
+        vars: {
+          kind: LABEL[String(r.table_name)] || String(r.table_name),
+          name: String(r.label || "\u2014"),
+          decision: String(r.status),
+          reason: String(r.reason || "no reason given")
+        }
       }));
     }
   },
   {
     key: "treasury.lc_expiring",
+    vars: [{ key: "lc_no", label: "LC number" }, { key: "bank", label: "Bank" }, { key: "party", label: "Supplier" }, { key: "amount", label: "Amount open" }, { key: "days", label: "Days away" }, { key: "expires_on", label: "Expiry date" }],
     module: "treasury",
     label: "Letter of credit expiring",
     desc: "An open letter of credit is coming up to its expiry with documents still unpresented.",
@@ -11195,7 +11238,7 @@ var RULES = [
     enabled: true,
     audience: "admins",
     page: "treasury",
-    threshold: { label: "Lead", unit: "days before", def: 7, min: 1, max: 90 },
+    threshold: { label: "Lead", question: "Tell me this many days early", unit: "days", def: 7, min: 1, max: 90 },
     evaluate: async ({ threshold, companyId, today }) => {
       const res = await getClient().execute({
         sql: `SELECT l.id, l.lc_no, l.bank, l.expiry_date, l.amount, s.name AS supplier_name
@@ -11209,12 +11252,21 @@ var RULES = [
         dedupe: `lc:${l.id}:expiring`,
         severity: l.left < 0 ? "critical" : "warning",
         title: l.left < 0 ? `LC ${l.lc_no || l.id} expired ${Math.abs(l.left)} day${Math.abs(l.left) === 1 ? "" : "s"} ago` : l.left === 0 ? `LC ${l.lc_no || l.id} expires today` : `LC ${l.lc_no || l.id} expires in ${l.left} day${l.left === 1 ? "" : "s"}`,
-        body: `${l.bank || "bank"} \xB7 ${l.supplier_name || "party"} \xB7 ${inr(l.amount)} still open.`
+        body: `${l.bank || "bank"} \xB7 ${l.supplier_name || "party"} \xB7 ${inr(l.amount)} still open.`,
+        vars: {
+          lc_no: String(l.lc_no || l.id),
+          bank: String(l.bank || "bank"),
+          party: String(l.supplier_name || "party"),
+          amount: inr(l.amount),
+          days: Math.abs(l.left),
+          expires_on: ddmmyyyy2(l.expiry_date)
+        }
       }));
     }
   },
   {
     key: "treasury.bd_maturing",
+    vars: [{ key: "bd_no", label: "BD number" }, { key: "party", label: "Party" }, { key: "nbfc", label: "NBFC" }, { key: "amount", label: "Amount" }, { key: "days", label: "Days away" }, { key: "matures_on", label: "Maturity date" }],
     module: "treasury",
     label: "Discounted bill maturing",
     desc: "A discounted bill is reaching maturity with nothing received from the party against it.",
@@ -11222,7 +11274,7 @@ var RULES = [
     enabled: true,
     audience: "admins",
     page: "treasury",
-    threshold: { label: "Lead", unit: "days before", def: 3, min: 1, max: 60 },
+    threshold: { label: "Lead", question: "Tell me this many days early", unit: "days", def: 3, min: 1, max: 60 },
     evaluate: async ({ threshold, companyId, today }) => {
       const res = await getClient().execute({
         sql: `SELECT bd.id, bd.bd_no, bd.maturity_date, bd.amount,
@@ -11239,12 +11291,21 @@ var RULES = [
         dedupe: `bd:${b.id}:maturing`,
         severity: b.left < 0 ? "critical" : "warning",
         title: b.left < 0 ? `BD ${b.bd_no || b.id} overdue by ${Math.abs(b.left)} day${Math.abs(b.left) === 1 ? "" : "s"}` : b.left === 0 ? `BD ${b.bd_no || b.id} matures today` : `BD ${b.bd_no || b.id} matures in ${b.left} day${b.left === 1 ? "" : "s"}`,
-        body: `${b.party_name || "party"} \xB7 ${b.nbfc_name || "NBFC"} \xB7 ${inr(b.amount)}.`
+        body: `${b.party_name || "party"} \xB7 ${b.nbfc_name || "NBFC"} \xB7 ${inr(b.amount)}.`,
+        vars: {
+          bd_no: String(b.bd_no || b.id),
+          party: String(b.party_name || "party"),
+          nbfc: String(b.nbfc_name || "NBFC"),
+          amount: inr(b.amount),
+          days: Math.abs(b.left),
+          matures_on: ddmmyyyy2(b.maturity_date)
+        }
       }));
     }
   },
   {
     key: "purchase.unmapped",
+    vars: [{ key: "count", label: "How many" }, { key: "invoices", label: "The first few numbers" }, { key: "days", label: "The limit you set" }],
     module: "purchase",
     label: "Purchase invoice left unmapped",
     desc: "A purchase invoice has sat with no tanker or bargain against it for longer than you allow.",
@@ -11252,7 +11313,7 @@ var RULES = [
     enabled: true,
     audience: "everyone",
     page: "orders",
-    threshold: { label: "After", unit: "days", def: 2, min: 0, max: 90 },
+    threshold: { label: "After", question: "Only once it has sat this long", unit: "days", def: 2, min: 0, max: 90 },
     evaluate: async ({ threshold, companyId, today }) => {
       const res = await getClient().execute({
         sql: `SELECT o.id, o.invoice_no, o.order_date, s.name AS supplier_name
@@ -11270,13 +11331,19 @@ var RULES = [
         {
           dedupe: `unmapped:${today}`,
           title: `${old.length} purchase invoice${old.length === 1 ? "" : "s"} still unmapped`,
-          body: old.slice(0, 3).map((o) => String(o.invoice_no || o.id)).join(", ") + (old.length > 3 ? ` and ${old.length - 3} more` : "") + " \u2014 no bargain against them."
+          body: old.slice(0, 3).map((o) => String(o.invoice_no || o.id)).join(", ") + (old.length > 3 ? ` and ${old.length - 3} more` : "") + " \u2014 no bargain against them.",
+          vars: {
+            count: old.length,
+            invoices: old.slice(0, 3).map((o) => String(o.invoice_no || o.id)).join(", "),
+            days: threshold
+          }
         }
       ];
     }
   },
   {
     key: "purchase.shortage",
+    vars: [{ key: "tanker", label: "Tanker number" }, { key: "supplier", label: "Supplier" }, { key: "short", label: "How much short" }, { key: "allowed", label: "What was allowed" }, { key: "uom", label: "Unit" }],
     module: "purchase",
     label: "Shortage beyond the allowance",
     desc: "A received tanker came in short by more than its allowed tolerance, so a deduction is due from the transporter.",
@@ -11284,7 +11351,7 @@ var RULES = [
     enabled: true,
     audience: "admins",
     page: "orders",
-    threshold: { label: "Over", unit: "% allowed", def: 0, min: 0, max: 100, step: 0.01 },
+    threshold: { label: "Over", question: "Only when it is over the allowance by", unit: "%", def: 0, min: 0, max: 100, step: 0.01 },
     evaluate: async ({ threshold, companyId }) => {
       const res = await getClient().execute({
         sql: `SELECT pt.id, pt.tanker_no, pt.loaded_qty, pt.received_qty, pt.uom,
@@ -11308,12 +11375,20 @@ var RULES = [
       }).filter((t) => t.short > 0 && t.over > 1e-6 && (t.allowed <= 0 || t.over / Math.max(t.allowed, 1e-9) * 100 >= threshold)).map((t) => ({
         dedupe: `shortage:${t.id}`,
         title: `${t.tanker_no || "Tanker"} short beyond tolerance`,
-        body: `${num3(t.short)} ${t.uom || "MT"} short against ${num3(t.allowed)} allowed \xB7 ${t.supplier_name || "supplier"}.`
+        body: `${num3(t.short)} ${t.uom || "MT"} short against ${num3(t.allowed)} allowed \xB7 ${t.supplier_name || "supplier"}.`,
+        vars: {
+          tanker: String(t.tanker_no || "Tanker"),
+          supplier: String(t.supplier_name || "supplier"),
+          short: num3(t.short),
+          allowed: num3(t.allowed),
+          uom: String(t.uom || "MT")
+        }
       }));
     }
   },
   {
     key: "stock.negative",
+    vars: [{ key: "product", label: "Product" }, { key: "closing", label: "Closing figure" }],
     module: "stock",
     label: "Stock closes negative",
     desc: "A product closes below nil, so more has gone out than was ever booked in.",
@@ -11331,12 +11406,17 @@ var RULES = [
       return rows.filter((p) => n8(p.closing) < -1e-6).map((p) => ({
         dedupe: `negstock:${p.product_id ?? p.id}:${today}`,
         title: `${p.product_code || p.product_name || "A product"} closed at ${num3(p.closing)}`,
-        body: "More has gone out than was ever booked in. Check the opening figure and the movements behind it."
+        body: "More has gone out than was ever booked in. Check the opening figure and the movements behind it.",
+        vars: {
+          product: String(p.product_code || p.product_name || "A product"),
+          closing: num3(p.closing)
+        }
       }));
     }
   },
   {
     key: "treasury.lc_bill_due",
+    vars: [{ key: "invoice", label: "Invoice number" }, { key: "lc_no", label: "LC number" }, { key: "bank", label: "Bank" }, { key: "party", label: "Supplier" }, { key: "amount", label: "Amount" }, { key: "days", label: "Days away" }, { key: "due_on", label: "Due date" }],
     module: "treasury",
     label: "LC bill reaching its due date",
     desc: "A bill drawn under a letter of credit is coming up to its due date with nothing settled against it.",
@@ -11344,7 +11424,7 @@ var RULES = [
     enabled: true,
     audience: "admins",
     page: "treasury",
-    threshold: { label: "Lead", unit: "days before", def: 7, min: 1, max: 90 },
+    threshold: { label: "Lead", question: "Tell me this many days early", unit: "days", def: 7, min: 1, max: 90 },
     evaluate: async ({ threshold, companyId, today }) => {
       const res = await getClient().execute({
         sql: `SELECT i.id, i.due_date, i.amount, l.lc_no, l.bank,
@@ -11362,7 +11442,16 @@ var RULES = [
         dedupe: `lcbill:${b.id}:due`,
         severity: b.left < 0 ? "critical" : "warning",
         title: b.left < 0 ? `LC bill ${b.invoice_no || b.id} overdue by ${Math.abs(b.left)} day${Math.abs(b.left) === 1 ? "" : "s"}` : `LC bill ${b.invoice_no || b.id} due in ${b.left} day${b.left === 1 ? "" : "s"}`,
-        body: `${b.lc_no || "LC"} \xB7 ${b.bank || "bank"} \xB7 ${b.supplier_name || "party"} \xB7 ${inr(b.amount)}.`
+        body: `${b.lc_no || "LC"} \xB7 ${b.bank || "bank"} \xB7 ${b.supplier_name || "party"} \xB7 ${inr(b.amount)}.`,
+        vars: {
+          invoice: String(b.invoice_no || b.id),
+          lc_no: String(b.lc_no || "LC"),
+          bank: String(b.bank || "bank"),
+          party: String(b.supplier_name || "party"),
+          amount: inr(b.amount),
+          days: Math.abs(b.left),
+          due_on: ddmmyyyy2(b.due_date)
+        }
       }));
     }
   }
@@ -11398,6 +11487,10 @@ async function listNotificationRules() {
       recipients: parseIds(s?.recipients),
       window_from: s?.window_from || null,
       window_to: s?.window_to || null,
+      // Blank means "whatever the rule writes itself".
+      title_tpl: s?.title_tpl || "",
+      body_tpl: s?.body_tpl || "",
+      vars: d.vars ?? [],
       default_enabled: d.enabled,
       default_severity: d.severity,
       default_audience: d.audience,
@@ -11426,17 +11519,44 @@ async function saveNotificationRule(v) {
   if (from && !HHMM.test(from)) throw new Error("Delivery window start must be a time like 08:00");
   if (to && !HHMM.test(to)) throw new Error("Delivery window end must be a time like 20:00");
   if (!!from !== !!to) throw new Error("Give both ends of the delivery window, or neither");
+  const titleTpl = String(v.title_tpl || "").trim();
+  const bodyTpl = String(v.body_tpl || "").trim();
+  if (titleTpl.length > 160) throw new Error("Keep the heading under 160 characters \u2014 it has a bell row to fit in");
+  if (bodyTpl.length > 400) throw new Error("Keep the message under 400 characters");
+  const known = new Set((def.vars || []).map((x) => x.key));
+  for (const tpl of [titleTpl, bodyTpl]) {
+    for (const hit of tpl.matchAll(/\{([a-z0-9_]+)\}/gi)) {
+      if (!known.has(hit[1])) {
+        throw new Error(
+          `This notification has nothing called {${hit[1]}}. It can use: ${[...known].map((k) => `{${k}}`).join(", ") || "no placeholders at all"}`
+        );
+      }
+    }
+  }
   await getClient().execute({
     sql: `INSERT INTO notification_rules
-            (rule_key, enabled, severity, audience, threshold, recipients, window_from, window_to, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            (rule_key, enabled, severity, audience, threshold, recipients, window_from, window_to,
+             title_tpl, body_tpl, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
           ON CONFLICT(rule_key) DO UPDATE SET
             enabled = excluded.enabled, severity = excluded.severity,
             audience = excluded.audience, threshold = excluded.threshold,
             recipients = excluded.recipients,
             window_from = excluded.window_from, window_to = excluded.window_to,
+            title_tpl = excluded.title_tpl, body_tpl = excluded.body_tpl,
             updated_at = excluded.updated_at`,
-    args: [key3, v.enabled ? 1 : 0, sev, aud, th, ids && ids.length ? JSON.stringify(ids) : null, from || null, to || null]
+    args: [
+      key3,
+      v.enabled ? 1 : 0,
+      sev,
+      aud,
+      th,
+      ids && ids.length ? JSON.stringify(ids) : null,
+      from || null,
+      to || null,
+      titleTpl || null,
+      bodyTpl || null
+    ]
   });
   return { key: key3 };
 }
@@ -11532,6 +11652,8 @@ async function runNotificationRules() {
     }
     const ruleRecipients = Array.isArray(r.recipients) && r.recipients.length ? r.recipients : null;
     for (const cand of found) {
+      const title = r.title_tpl ? renderTemplate(String(r.title_tpl), cand.vars) : cand.title;
+      const body2 = r.body_tpl ? renderTemplate(String(r.body_tpl), cand.vars) : cand.body;
       const who = cand.recipients?.length ? cand.recipients : ruleRecipients;
       const recipients = who ? JSON.stringify(who) : null;
       const res = await c.execute({
@@ -11545,8 +11667,8 @@ async function runNotificationRules() {
           cand.severity || r.severity,
           r.audience,
           recipients,
-          cand.title,
-          cand.body,
+          title,
+          body2,
           cand.page || def.page || null,
           `${companyId}:${cand.dedupe}`
         ]
@@ -11566,7 +11688,15 @@ async function previewNotificationRule(key3) {
     companyId: getActiveCompanyId(),
     today: todayISO()
   });
-  return found.map((f) => ({ title: f.title, body: f.body, severity: f.severity || r?.severity || def.severity }));
+  return found.map((f) => ({
+    title: r?.title_tpl ? renderTemplate(String(r.title_tpl), f.vars) : f.title,
+    body: r?.body_tpl ? renderTemplate(String(r.body_tpl), f.vars) : f.body,
+    severity: f.severity || r?.severity || def.severity,
+    // The default, so the editor can show what it is replacing.
+    default_title: f.title,
+    default_body: f.body,
+    vars: f.vars || {}
+  }));
 }
 var watcher = null;
 function startNotificationWatcher(intervalMs = 15 * 60 * 1e3) {
@@ -12241,6 +12371,14 @@ async function runStartupTasks() {
       PRIMARY KEY (user_id, rule_key)
     )`);
   }).catch((e) => console.error("[notify] v2 failed:", e));
+  await runOnce("notifications_v3_templates", async () => {
+    const c = getClient();
+    for (const col of ["title_tpl TEXT", "body_tpl TEXT"]) {
+      await c.execute(`ALTER TABLE notification_rules ADD COLUMN ${col}`).catch((e) => {
+        if (!/duplicate column/i.test(String(e))) throw e;
+      });
+    }
+  }).catch((e) => console.error("[notify] message templates failed:", e));
   await runOnce("gate_time_utc_fix_v1", async () => {
     const rep = await applyGateTimeFix();
     console.log(
@@ -17952,7 +18090,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -18079,6 +18217,11 @@ function registerIpc() {
   );
   handle("tankers:revert", (_e, { id }) => revertPurchaseTanker(id));
   handle("tankers:replace", (_e, { id, values }) => replaceTanker(id, values));
+  handle("tankers:quality", (_e, { id }) => listTankerQuality(Number(id)));
+  handle("tankers:saveQuality", async (_e, { id, rows }) => {
+    await saveTankerQuality(Number(id), Array.isArray(rows) ? rows : []);
+    return { id: Number(id) };
+  });
   handle("orders:create", (_e, { values }) => createOrder(values));
   handle(
     "orders:update",
