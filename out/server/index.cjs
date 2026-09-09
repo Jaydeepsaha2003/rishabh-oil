@@ -10906,6 +10906,122 @@ async function seedFormulations() {
   console.log("[seed] formulations seeded");
 }
 
+// src/main/gateTimeFix.ts
+init_db();
+var SHIFT_MIN = 330;
+var TOL_MIN = 3;
+var pad = (v) => String(v).padStart(2, "0");
+function stampMs(date, time) {
+  const d = String(date || "").slice(0, 10);
+  const t = String(time || "").slice(0, 5);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !/^\d{2}:\d{2}$/.test(t)) return null;
+  const ms = Date.parse(`${d}T${t}:00Z`);
+  return Number.isFinite(ms) ? ms : null;
+}
+function createdMs(v) {
+  const raw = String(v || "").trim().replace(" ", "T").replace(/Z$/, "");
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(raw)) return null;
+  const ms = Date.parse(`${raw.slice(0, 16)}:00Z`);
+  return Number.isFinite(ms) ? ms : null;
+}
+function split(ms) {
+  const d = new Date(ms);
+  return {
+    date: `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`,
+    time: `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
+  };
+}
+async function planGateTimeFix() {
+  const res = await getClient().execute(
+    `SELECT id, gate_entry_no, entry_date, entry_time, out_date, out_time, created_at
+       FROM gate_entries
+      WHERE entry_time IS NOT NULL AND TRIM(entry_time) <> ''
+      ORDER BY id`
+  );
+  const rows = res.rows;
+  const out = { scanned: rows.length, utcStamped: [], outLeftAlone: [] };
+  for (const r of rows) {
+    const created = createdMs(r.created_at);
+    const stamp3 = stampMs(r.entry_date, r.entry_time);
+    if (created == null || stamp3 == null) continue;
+    const diff = Math.round((stamp3 - created) / 6e4);
+    const outMs = stampMs(r.out_date, r.out_time);
+    if (Math.abs(diff) > TOL_MIN) {
+      if (outMs != null) {
+        out.outLeftAlone.push({
+          id: Number(r.id),
+          gate_entry_no: String(r.gate_entry_no || ""),
+          out: `${r.out_date} ${String(r.out_time).slice(0, 5)}`,
+          diffMin: diff
+        });
+      }
+      continue;
+    }
+    const ne = split(stamp3 + SHIFT_MIN * 6e4);
+    const no = outMs == null ? null : split(outMs + SHIFT_MIN * 6e4);
+    const change = {
+      id: Number(r.id),
+      gate_entry_no: String(r.gate_entry_no || ""),
+      created_at: String(r.created_at || ""),
+      old_entry: `${r.entry_date} ${String(r.entry_time).slice(0, 5)}`,
+      new_entry: `${ne.date} ${ne.time}`,
+      old_out: outMs == null ? "" : `${r.out_date} ${String(r.out_time).slice(0, 5)}`,
+      new_out: no == null ? "" : `${no.date} ${no.time}`
+    };
+    if (no != null && `${no.date} ${no.time}` < `${ne.date} ${ne.time}`) {
+      change.warn = "out is before in even after the shift \u2014 entry time looks hand-edited";
+    }
+    out.utcStamped.push(change);
+  }
+  return out;
+}
+async function applyGateTimeFix() {
+  const c = getClient();
+  const plan = await planGateTimeFix();
+  if (!plan.utcStamped.length) return plan;
+  await c.execute(`CREATE TABLE IF NOT EXISTS gate_time_utc_fix_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    gate_id INTEGER NOT NULL,
+    gate_entry_no TEXT,
+    created_at_utc TEXT,
+    old_entry TEXT, new_entry TEXT,
+    old_out TEXT, new_out TEXT,
+    note TEXT,
+    fixed_at TEXT DEFAULT (datetime('now'))
+  )`);
+  for (const ch of plan.utcStamped) {
+    await c.execute({
+      sql: `INSERT INTO gate_time_utc_fix_log
+              (gate_id, gate_entry_no, created_at_utc, old_entry, new_entry, old_out, new_out, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        ch.id,
+        ch.gate_entry_no,
+        ch.created_at,
+        ch.old_entry,
+        ch.new_entry,
+        ch.old_out || null,
+        ch.new_out || null,
+        ch.warn || null
+      ]
+    });
+    const [nd, nt] = ch.new_entry.split(" ");
+    if (ch.new_out) {
+      const [od, ot] = ch.new_out.split(" ");
+      await c.execute({
+        sql: "UPDATE gate_entries SET entry_date = ?, entry_time = ?, out_date = ?, out_time = ? WHERE id = ?",
+        args: [nd, nt, od, ot, ch.id]
+      });
+    } else {
+      await c.execute({
+        sql: "UPDATE gate_entries SET entry_date = ?, entry_time = ? WHERE id = ?",
+        args: [nd, nt, ch.id]
+      });
+    }
+  }
+  return plan;
+}
+
 // src/main/bootstrap.ts
 async function runStartupTasks() {
   await initDb();
@@ -11393,6 +11509,17 @@ async function runStartupTasks() {
       if (!/duplicate column/i.test(String(e))) throw e;
     });
   }).catch((e) => console.error("[gate] outside tanker category failed:", e));
+  await runOnce("gate_time_utc_fix_v1", async () => {
+    const rep = await applyGateTimeFix();
+    console.log(
+      `[gate] UTC time fix: ${rep.utcStamped.length} of ${rep.scanned} timed entries shifted +5:30` + (rep.outLeftAlone.length ? `, ${rep.outLeftAlone.length} out-times left alone` : "")
+    );
+    for (const ch of rep.utcStamped) {
+      console.log(
+        `[gate]   ${ch.gate_entry_no}  in ${ch.old_entry} -> ${ch.new_entry}` + (ch.new_out ? `  out ${ch.old_out} -> ${ch.new_out}` : "") + (ch.warn ? `  (${ch.warn})` : "")
+      );
+    }
+  }).catch((e) => console.error("[gate] UTC time fix failed:", e));
   await runOnce("lc9_gross_bill_fix_v1", async () => {
     const c = getClient();
     const lcRes = await c.execute({
@@ -16039,14 +16166,14 @@ function withPrimaryParty(v) {
   const ids = v.party_ids.map((x) => n24(x)).filter((x) => x > 0);
   return ids.length ? { ...v, party_id: ids[0] } : v;
 }
-async function syncBdParties(bdId, partyType, partyIds, split) {
+async function syncBdParties(bdId, partyType, partyIds, split2) {
   const c = getClient();
   const ids = Array.isArray(partyIds) ? Array.from(new Set(partyIds.map((x) => n24(x)).filter((x) => x > 0))) : [];
   await c.execute({ sql: "DELETE FROM bd_parties WHERE bd_id = ?", args: [bdId] });
   for (const pid of ids) {
     await c.execute({
       sql: "INSERT OR IGNORE INTO bd_parties (bd_id, party_type, party_id, amount) VALUES (?, ?, ?, ?)",
-      args: [bdId, partyType, pid, split ? n24(split[String(pid)]) : 0]
+      args: [bdId, partyType, pid, split2 ? n24(split2[String(pid)]) : 0]
     });
   }
   return ids.length ? ids[0] : null;
@@ -16122,8 +16249,8 @@ async function validateBd(v) {
   const inactive = found.rows.find((r) => !n24(r.active));
   if (inactive) throw new Error(`${String(inactive.name)} is marked inactive`);
   if (partyIds.length > 1) {
-    const split = v.party_amounts || {};
-    const given = partyIds.map((pid) => round211(n24(split[String(pid)])));
+    const split2 = v.party_amounts || {};
+    const given = partyIds.map((pid) => round211(n24(split2[String(pid)])));
     if (given.some((x) => x <= 0)) {
       throw new Error("Give each party its sanctioned amount");
     }
