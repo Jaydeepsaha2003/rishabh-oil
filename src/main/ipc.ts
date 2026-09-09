@@ -1,5 +1,10 @@
 import { ipcMain, dialog, shell } from 'electron'
 import { ping, bumpRevision, getRevision, initDb, resetClient, getConfiguredUrl, notifyDataChanged, getClient } from './db'
+import {
+  listNotificationRules, saveNotificationRule, resetNotificationRule, runNotificationRules,
+  listNotifications, markNotificationsRead, markNotificationUnread, clearNotifications,
+  previewNotificationRule, notificationRecipients, listNotificationMutes, muteNotificationRule
+} from './notify'
 import { snapshotGz } from './dbsnapshot'
 import { saveStoredConfig } from './config'
 import { seedDefaultAdmin } from './auth'
@@ -128,6 +133,7 @@ import {
   updateGateEntry,
   completeGateEntry,
   deleteGateEntry, saveGateWeights, skipGateWeighment, partyCategories,
+  waiveGateOut, unwaiveGateOut, listWaivedGateOuts,
   rejectGateEntry, unrejectGateEntry, gateEntriesFor } from './gate'
 import {
   listCompanies,
@@ -371,7 +377,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^gate:forRecord$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -825,6 +831,24 @@ export function registerIpc(): void {
   handle('gate:list', () => listGateEntries())
   handle('gate:nextNo', (_e, args?: { direction?: 'in' | 'out' }) => nextGateEntryNo(args?.direction))
   handle('gate:dispatchableSales', () => listDispatchableSales())
+  handle('gate:waivedOuts', () => listWaivedGateOuts())
+  handle('notify:rules', () => listNotificationRules())
+  handle('notify:saveRule', (_e, a) => saveNotificationRule(a))
+  handle('notify:resetRule', (_e, a) => resetNotificationRule(String(a.key)))
+  handle('notify:run', () => runNotificationRules())
+  handle('notify:preview', (_e, a) => previewNotificationRule(String(a.key)))
+  handle('notify:people', () => notificationRecipients())
+  handle('notify:mutes', (_e, a) => listNotificationMutes(Number(a?.userId) || 0))
+  handle('notify:mute', (_e, a) => muteNotificationRule(Number(a.userId) || 0, String(a.key), !!a.muted))
+  handle('notify:list', (_e, a) =>
+    listNotifications(Number(a?.userId) || 0, !!a?.isAdmin, Number(a?.limit) || 50))
+  handle('notify:markRead', (_e, a) =>
+    markNotificationsRead(Number(a.userId) || 0, (a.ids as number[]) || []))
+  handle('notify:markUnread', (_e, a) =>
+    markNotificationUnread(Number(a.userId) || 0, Number(a.id) || 0))
+  handle('notify:clear', (_e, a) => clearNotifications(Number(a.userId) || 0, !!a.isAdmin))
+  handle('gate:waiveOut', (_e, a) => waiveGateOut(String(a.group), String(a.reason || '')))
+  handle('gate:unwaiveOut', (_e, a) => unwaiveGateOut(String(a.group)))
   handle('gate:partyCategories', () => partyCategories())
   handle(
     'gate:forRecord',

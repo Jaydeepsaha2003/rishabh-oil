@@ -51,6 +51,26 @@ const api = {
       ipcRenderer.invoke('settings:set', { key, value }),
     all: (): Promise<Record<string, string>> => ipcRenderer.invoke('settings:all')
   },
+  notify: {
+    rules: (): Promise<Row[]> => ipcRenderer.invoke('notify:rules'),
+    saveRule: (v: Row): Promise<{ key: string }> => ipcRenderer.invoke('notify:saveRule', v),
+    resetRule: (key: string): Promise<{ key: string }> => ipcRenderer.invoke('notify:resetRule', { key }),
+    preview: (key: string): Promise<Row[]> => ipcRenderer.invoke('notify:preview', { key }),
+    people: (): Promise<Row[]> => ipcRenderer.invoke('notify:people'),
+    mutes: (userId: number): Promise<string[]> => ipcRenderer.invoke('notify:mutes', { userId }),
+    mute: (userId: number, key: string, muted: boolean): Promise<{ key: string }> =>
+      ipcRenderer.invoke('notify:mute', { userId, key, muted }),
+    run: (): Promise<{ raised: number; resolved: number; held: number; failed: string[] }> =>
+      ipcRenderer.invoke('notify:run'),
+    list: (userId: number, isAdmin: boolean, limit?: number): Promise<Row[]> =>
+      ipcRenderer.invoke('notify:list', { userId, isAdmin, limit }),
+    markRead: (userId: number, ids: number[]): Promise<{ read: number }> =>
+      ipcRenderer.invoke('notify:markRead', { userId, ids }),
+    markUnread: (userId: number, id: number): Promise<{ id: number }> =>
+      ipcRenderer.invoke('notify:markUnread', { userId, id }),
+    clear: (userId: number, isAdmin: boolean): Promise<{ read: number }> =>
+      ipcRenderer.invoke('notify:clear', { userId, isAdmin })
+  },
   bargains: {
     list: (from?: string, to?: string, companyIds?: number[], forModule?: string): Promise<Row[]> =>
       ipcRenderer.invoke('bargains:list', { from, to, companyIds, forModule }),
@@ -411,6 +431,11 @@ const api = {
     list: (): Promise<Row[]> => ipcRenderer.invoke('gate:list'),
     nextNo: (direction?: 'in' | 'out'): Promise<string> => ipcRenderer.invoke('gate:nextNo', { direction }),
     dispatchableSales: (): Promise<Row[]> => ipcRenderer.invoke('gate:dispatchableSales'),
+    waivedOuts: (): Promise<Row[]> => ipcRenderer.invoke('gate:waivedOuts'),
+    waiveOut: (group: string, reason: string): Promise<{ group: string }> =>
+      ipcRenderer.invoke('gate:waiveOut', { group, reason }),
+    unwaiveOut: (group: string): Promise<{ group: string }> =>
+      ipcRenderer.invoke('gate:unwaiveOut', { group }),
     partyCategories: (): Promise<Row[]> => ipcRenderer.invoke('gate:partyCategories'),
     // Every gate entry behind one purchase or one sales invoice.
     forRecord: (q: { orderId?: number; saleIds?: number[]; invoiceGroup?: string }): Promise<{ rows: Row[]; hidden: number; window_from: string }> =>

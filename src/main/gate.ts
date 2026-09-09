@@ -202,9 +202,86 @@ export async function listDispatchableSales(): Promise<Row[]> {
     -- yard, so no vehicle is ever weighed out against it.
     WHERE s.status = 'done' AND s.invoice_group IS NOT NULL
       AND COALESCE(s.is_trading, 0) = 0 AND s.rejected_at IS NULL
+      AND s.gate_out_waived_at IS NULL
     GROUP BY s.invoice_group
     ORDER BY MAX(s.sale_date) DESC, MAX(s.id) DESC
     LIMIT 300
+  `)
+  return toPlain(res)
+}
+
+// An invoice that will never have a gate-out, said so deliberately.
+//
+// The waiting list is built from every dispatched invoice with no gate-out
+// against it, which is right for today's work and wrong for history: invoices
+// billed before the gate register existed, a delivery taken by the customer's
+// own vehicle, a paper slip lost years ago. None of them will ever be weighed
+// out, and they sat in the queue forever making it useless as a to-do list.
+//
+// A SEPARATE flag, not sales.rejected_at. That column means the customer
+// refused the invoice — the Sales register renders it as "Cancelled" — and a
+// perfectly good delivered invoice must not be restated as cancelled just to
+// clear it off a gate queue. Nothing else about the sale changes: no stock, no
+// journal, no revenue. The only thing being said is "no vehicle will be
+// weighed out against this".
+export async function waiveGateOut(group: string, reason: string): Promise<{ group: string }> {
+  const g = String(group || '').trim()
+  if (!g) throw new Error('No invoice given')
+  const trimmed = String(reason || '').trim()
+  if (!trimmed) throw new Error('Say why no gate-out is needed — it is kept on the record')
+  const c = getClient()
+  const has = await c.execute({
+    sql: 'SELECT COUNT(*) AS n FROM sales WHERE invoice_group = ?',
+    args: [g]
+  })
+  if (!n((has.rows[0] as unknown as Row).n)) throw new Error('That invoice no longer exists')
+  // Refuse where a gate-out already exists: the vehicle WAS weighed, so the
+  // requirement was met rather than waived, and hiding it would lose the link.
+  const done = await c.execute({
+    sql: `SELECT COUNT(*) AS n FROM gate_entries g
+           WHERE g.direction = 'out'
+             AND (g.invoice_group = ?
+                  OR EXISTS (SELECT 1 FROM gate_entry_sales gs
+                              WHERE gs.gate_entry_id = g.id AND gs.invoice_group = ?))`,
+    args: [g, g]
+  })
+  if (n((done.rows[0] as unknown as Row).n))
+    throw new Error('This invoice already has a gate-out recorded against it')
+  await c.execute({
+    sql: `UPDATE sales
+             SET gate_out_waived_at = datetime('now'), gate_out_waived_reason = ?
+           WHERE invoice_group = ?`,
+    args: [trimmed, g]
+  })
+  return { group: g }
+}
+
+export async function unwaiveGateOut(group: string): Promise<{ group: string }> {
+  await getClient().execute({
+    sql: 'UPDATE sales SET gate_out_waived_at = NULL, gate_out_waived_reason = NULL WHERE invoice_group = ?',
+    args: [String(group || '').trim()]
+  })
+  return { group: String(group || '').trim() }
+}
+
+// The waived invoices, for the Rejected tab — they belong beside the rejected
+// gate entries because both answer the same question: what is off the queue,
+// and why.
+export async function listWaivedGateOuts(): Promise<Row[]> {
+  const res = await getClient().execute(`
+    SELECT s.invoice_group,
+           MAX(s.sale_date) AS sale_date,
+           MAX(s.invoice_no) AS invoice_no,
+           MAX(s.customer) AS customer,
+           SUM(s.qty) AS qty,
+           MAX(s.uom) AS uom,
+           MAX(s.gate_out_waived_at) AS waived_at,
+           MAX(s.gate_out_waived_reason) AS waived_reason
+      FROM sales s
+     WHERE s.invoice_group IS NOT NULL AND s.gate_out_waived_at IS NOT NULL
+     GROUP BY s.invoice_group
+     ORDER BY MAX(s.gate_out_waived_at) DESC
+     LIMIT 300
   `)
   return toPlain(res)
 }

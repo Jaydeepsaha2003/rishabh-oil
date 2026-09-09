@@ -38,6 +38,20 @@ export interface Api {
     set: (key: string, value: string) => Promise<void>
     all: () => Promise<Record<string, string>>
   }
+  notify: {
+    rules: () => Promise<Row[]>
+    saveRule: (v: Row) => Promise<{ key: string }>
+    resetRule: (key: string) => Promise<{ key: string }>
+    preview: (key: string) => Promise<Row[]>
+    people: () => Promise<Row[]>
+    mutes: (userId: number) => Promise<string[]>
+    mute: (userId: number, key: string, muted: boolean) => Promise<{ key: string }>
+    run: () => Promise<{ raised: number; resolved: number; held: number; failed: string[] }>
+    list: (userId: number, isAdmin: boolean, limit?: number) => Promise<Row[]>
+    markRead: (userId: number, ids: number[]) => Promise<{ read: number }>
+    markUnread: (userId: number, id: number) => Promise<{ id: number }>
+    clear: (userId: number, isAdmin: boolean) => Promise<{ read: number }>
+  }
   bargains: {
     list: (from?: string, to?: string, companyIds?: number[], forModule?: string) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number; bargain_no: string }>
@@ -289,6 +303,9 @@ export interface Api {
     list: () => Promise<Row[]>
     nextNo: (direction?: 'in' | 'out') => Promise<string>
     dispatchableSales: () => Promise<Row[]>
+    waivedOuts: () => Promise<Row[]>
+    waiveOut: (group: string, reason: string) => Promise<{ group: string }>
+    unwaiveOut: (group: string) => Promise<{ group: string }>
     partyCategories: () => Promise<Row[]>
     forRecord: (q: { orderId?: number; saleIds?: number[]; invoiceGroup?: string }) => Promise<{ rows: Row[]; hidden: number; window_from: string }>
     create: (values: Row) => Promise<{ id: number }>

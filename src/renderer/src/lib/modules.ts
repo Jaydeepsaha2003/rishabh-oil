@@ -55,6 +55,7 @@ export const MODULES: ModuleDef[] = [
   { key: 'companies', label: 'Companies' },
   { key: 'factories', label: 'Factories' },
   { key: 'approvals', label: 'Approvals' },
+  { key: 'notifications', label: 'Notifications' },
   { key: 'settings', label: 'Settings' }
 ]
 
@@ -97,6 +98,12 @@ function directLevel(user: PermUser, key: string): 'none' | 'read' | 'write' {
   // Everyone can see Approvals: admins act on the queue, others track their
   // own submitted masters (and see rejection reasons).
   if (key === 'approvals') return 'write'
+  // Everyone can OPEN Notifications — it is where you see what is on your own
+  // bell and silence a rule for yourself. Only an admin can change what the
+  // desk as a whole is told, and the page enforces that itself rather than
+  // being hidden: a notification you receive but cannot find the setting for
+  // is worse than a read-only page.
+  if (key === 'notifications') return user.role === 'admin' ? 'write' : 'read'
   if (user.role === 'admin') return 'write'
   const p = user.permissions
   if (Array.isArray(p)) return p.includes(key) ? 'write' : 'none'

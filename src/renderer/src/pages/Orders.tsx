@@ -6,6 +6,7 @@ import {
   Check
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { PhotoUpload, checkPhoto, prettyBytes } from '@/components/PhotoUpload'
 import { FyPicker } from '@/components/FyPicker'
 import { ExcelButton } from '@/components/ExcelButton'
 import { Pagination, usePaged } from '@/components/Pagination'
@@ -1838,13 +1839,33 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     }
   }
 
+  const [photoBusy, setPhotoBusy] = useState('')
+
   async function onWeighmentPhoto(field: string, file: File | undefined): Promise<void> {
     if (!file) return
+    // The control checks too, so this can only be reached by a caller that
+    // skipped it — but a size limit that lives in one place only is a size
+    // limit waiting to be bypassed.
+    const problem = checkPhoto(file)
+    if (problem) {
+      toast.error(problem)
+      return
+    }
+    setPhotoBusy(field)
     try {
       const url = await fileToCompressedDataUrl(file)
       setActionForm((p) => ({ ...p, [field]: url }))
+      // What it came in at and what is actually kept. A 1.8 MB photo becoming
+      // 240 KB is worth saying: it explains why the picture on screen is not
+      // the full-resolution one, before somebody reports that as a fault.
+      const kept = Math.round((url.length * 3) / 4)
+      toast.success(
+        `Slip attached — ${prettyBytes(file.size)} photo shrunk to about ${prettyBytes(kept)}.`
+      )
     } catch (e) {
       toast.error((e as Error).message)
+    } finally {
+      setPhotoBusy('')
     }
   }
 
@@ -5681,27 +5702,35 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 </div>
               )
             })()}
-            <div className="grid gap-3 rounded-lg border p-3">
-              <div className="text-sm font-medium">KRFL weighment slip</div>
+            <div className={cn('grid gap-3 rounded-lg border p-3', __WEB__ && cn(TK_SECT, '!gap-4'))}>
+              <div className={cn('text-sm font-medium', __WEB__ && '!text-[11px] !font-extrabold !uppercase !tracking-[.13em] !text-[#0A1F17]')}>
+                KRFL weighment slip
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1.5"><Label>Doc number</Label><Input value={actionForm.krfl_weighment_doc_no || ''} onChange={(e) => setActionForm((p) => ({ ...p, krfl_weighment_doc_no: e.target.value }))} /></div>
-                <div className="flex flex-col gap-1.5">
-                  <Label>Photo upload</Label>
-                  <input type="file" accept="image/*" className="text-xs file:mr-2 file:rounded-md file:border-0 file:bg-muted file:px-2 file:py-1.5 file:text-xs file:font-medium" onChange={(e) => onWeighmentPhoto('krfl_weighment_photo', e.target.files?.[0])} />
-                </div>
+                <PhotoUpload
+                  label="Photo of the slip"
+                  value={actionForm.krfl_weighment_photo || ''}
+                  busy={photoBusy === 'krfl_weighment_photo'}
+                  onPick={(f) => void onWeighmentPhoto('krfl_weighment_photo', f)}
+                  onClear={() => setActionForm((p) => ({ ...p, krfl_weighment_photo: '' }))}
+                />
               </div>
-              {actionForm.krfl_weighment_photo && <img src={actionForm.krfl_weighment_photo} alt="KRFL weighment slip" className="max-h-32 w-fit rounded-md border" />}
             </div>
-            <div className="grid gap-3 rounded-lg border p-3">
-              <div className="text-sm font-medium">Outside factory weighment slip</div>
+            <div className={cn('grid gap-3 rounded-lg border p-3', __WEB__ && cn(TK_SECT, '!gap-4'))}>
+              <div className={cn('text-sm font-medium', __WEB__ && '!text-[11px] !font-extrabold !uppercase !tracking-[.13em] !text-[#0A1F17]')}>
+                Outside factory weighment slip
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1.5"><Label>Doc number</Label><Input value={actionForm.outside_weighment_doc_no || ''} onChange={(e) => setActionForm((p) => ({ ...p, outside_weighment_doc_no: e.target.value }))} /></div>
-                <div className="flex flex-col gap-1.5">
-                  <Label>Photo upload</Label>
-                  <input type="file" accept="image/*" className="text-xs file:mr-2 file:rounded-md file:border-0 file:bg-muted file:px-2 file:py-1.5 file:text-xs file:font-medium" onChange={(e) => onWeighmentPhoto('outside_weighment_photo', e.target.files?.[0])} />
-                </div>
+                <PhotoUpload
+                  label="Photo of the slip"
+                  value={actionForm.outside_weighment_photo || ''}
+                  busy={photoBusy === 'outside_weighment_photo'}
+                  onPick={(f) => void onWeighmentPhoto('outside_weighment_photo', f)}
+                  onClear={() => setActionForm((p) => ({ ...p, outside_weighment_photo: '' }))}
+                />
               </div>
-              {actionForm.outside_weighment_photo && <img src={actionForm.outside_weighment_photo} alt="Outside factory weighment slip" className="max-h-32 w-fit rounded-md border" />}
             </div>
             <div className="rounded-lg border bg-muted/30 p-3"><MoneyRow label="Loaded" value={`${formatNum(actionRow.loaded_qty)} ${actionRow.uom}`} /><MoneyRow label="Shortage" value={`${formatNum(shortage.actualShortage)} ${actionRow.uom}`} /><MoneyRow label="Freight" value={formatINR(shortage.transportAmount)} /></div>
           </div>}

@@ -13,6 +13,7 @@ import { seedDefaultAdmin } from './auth'
 import { seedProducts, seedFormulations, seedPackagings } from './seed'
 import { cleanupLogs } from './access'
 import { applyGateTimeFix } from './gateTimeFix'
+import { startNotificationWatcher, pruneNotifications } from './notify'
 
 // Everything a database needs before the app can serve a single request: the
 // schema (initDb), every additive migration recorded by runOnce, and the
@@ -68,6 +69,14 @@ export async function runStartupTasks(): Promise<void> {
   await seedFormulations().catch((e) => console.error('[seed] formulations failed:', e))
   await seedPackagings().catch((e) => console.error('[seed] packagings failed:', e))
   await runDaily('cleanup_logs', () => cleanupLogs()).catch(() => {})
+  // Notifications, checked on the way up and every quarter of an hour after.
+  //
+  // Safe to have several machines doing it at once: raising is an insert that
+  // ignores a live duplicate, and resolving is idempotent, so two desktops and
+  // the server all running this converge on the same answer rather than
+  // fighting. Started after the migrations above so the tables exist.
+  startNotificationWatcher()
+  await runDaily('notify_retention', async () => { await pruneNotifications() }).catch(() => {})
   // Stock brought forward on the day the books begin.
   //
   // Created here rather than appended to MIGRATIONS because this database is
@@ -911,6 +920,134 @@ export async function runStartupTasks(): Promise<void> {
         if (!/duplicate column/i.test(String(e))) throw e
       })
   }).catch((e) => console.error('[gate] outside tanker category failed:', e))
+
+  // "No gate-out will ever be recorded against this invoice."
+  //
+  // The Gate Out queue is every dispatched invoice with no weighed exit, which
+  // is right for today and wrong for history — invoices billed before the gate
+  // register existed, or collected on the customer's own vehicle, sit in it
+  // forever and make the list useless as a to-do.
+  //
+  // Its own pair of columns, deliberately not sales.rejected_at: that one means
+  // the customer refused the invoice and the Sales register prints it as
+  // "Cancelled". Clearing a gate queue must not restate a delivered sale.
+  await runOnce('sales_gate_out_waiver_v1', async () => {
+    const c = getClient()
+    for (const col of ['gate_out_waived_at TEXT', 'gate_out_waived_reason TEXT']) {
+      await c.execute(`ALTER TABLE sales ADD COLUMN ${col}`).catch((e) => {
+        if (!/duplicate column/i.test(String(e))) throw e
+      })
+    }
+  }).catch((e) => console.error('[gate] gate-out waiver columns failed:', e))
+
+  // The notification store.
+  //
+  // Three tables and a reason for each. `notifications` is one row per FACT the
+  // app wants to state, keyed by dedupe_key so a rule can be re-evaluated as
+  // often as we like without the bell filling with the same sentence.
+  // `notification_reads` is per user, because read is a property of a person
+  // and not of the message — which is also what finally makes "mark unread"
+  // possible, something the old localStorage key list could never do.
+  // `notification_rules` holds only what has been CHANGED from the catalogue in
+  // notify.ts, so a default that is later improved reaches everyone who never
+  // touched it.
+  await runOnce('notifications_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER,
+      rule_key TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'normal',
+      audience TEXT NOT NULL DEFAULT 'everyone',
+      title TEXT NOT NULL,
+      body TEXT,
+      page TEXT,
+      dedupe_key TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`)
+    await c.execute(
+      'CREATE INDEX IF NOT EXISTS idx_notifications_feed ON notifications(company_id, created_at DESC)'
+    )
+    await c.execute(`CREATE TABLE IF NOT EXISTS notification_reads (
+      user_id INTEGER NOT NULL,
+      notification_id INTEGER NOT NULL,
+      read_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, notification_id)
+    )`)
+    await c.execute(`CREATE TABLE IF NOT EXISTS notification_rules (
+      rule_key TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      severity TEXT NOT NULL DEFAULT 'normal',
+      audience TEXT NOT NULL DEFAULT 'everyone',
+      threshold REAL,
+      updated_at TEXT
+    )`)
+  }).catch((e) => console.error('[notify] tables failed:', e))
+
+  // Notifications, second cut. Three things v1 got wrong.
+  //
+  // 1. dedupe_key was UNIQUE for all time, so a notification could never come
+  //    BACK. A credit that expires, is extended, then expires again would be
+  //    mentioned once and never again — and, worse, one that stopped being
+  //    true stayed on the bell forever because nothing ever took it off. The
+  //    key is now unique only among LIVE rows: resolving one frees the key, so
+  //    the same fact becoming true again raises a fresh notification.
+  //
+  // 2. "Who hears it" was admins-or-everyone. A rule can now name the exact
+  //    people, and the chosen list is snapshotted onto each notification as it
+  //    is raised, so editing the rule later cannot rewrite who was told.
+  //
+  // 3. There was no "when". A rule can carry a delivery window, so a critical
+  //    LC alert is not delivered at three in the morning.
+  //
+  // The table is rebuilt rather than altered because the UNIQUE lives in its
+  // column definition and SQLite cannot drop that in place. Rows are carried
+  // across, so nothing already raised is lost.
+  await runOnce('notifications_v2', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS notifications_v2 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER,
+      rule_key TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'normal',
+      audience TEXT NOT NULL DEFAULT 'everyone',
+      recipients TEXT,
+      title TEXT NOT NULL,
+      body TEXT,
+      page TEXT,
+      dedupe_key TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      resolved_at TEXT
+    )`)
+    await c.execute(
+      `INSERT INTO notifications_v2
+         (id, company_id, rule_key, severity, audience, title, body, page, dedupe_key, created_at)
+       SELECT id, company_id, rule_key, severity, audience, title, body, page, dedupe_key, created_at
+         FROM notifications`
+    ).catch(() => {})
+    await c.execute('DROP TABLE IF EXISTS notifications')
+    await c.execute('ALTER TABLE notifications_v2 RENAME TO notifications')
+    // Unique among LIVE rows only — this is the whole point of the rebuild.
+    await c.execute(
+      'CREATE UNIQUE INDEX IF NOT EXISTS ux_notifications_live ON notifications(dedupe_key) WHERE resolved_at IS NULL'
+    )
+    await c.execute(
+      'CREATE INDEX IF NOT EXISTS idx_notifications_feed ON notifications(company_id, resolved_at, created_at DESC)'
+    )
+    for (const col of ['recipients TEXT', 'window_from TEXT', 'window_to TEXT']) {
+      await c.execute(`ALTER TABLE notification_rules ADD COLUMN ${col}`).catch((e) => {
+        if (!/duplicate column/i.test(String(e))) throw e
+      })
+    }
+    // A person silencing one notification for themselves, without changing it
+    // for the desk. The rule stays on; they simply stop being told.
+    await c.execute(`CREATE TABLE IF NOT EXISTS notification_mutes (
+      user_id INTEGER NOT NULL,
+      rule_key TEXT NOT NULL,
+      muted_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, rule_key)
+    )`)
+  }).catch((e) => console.error('[notify] v2 failed:', e))
 
   // The gate times the website wrote while the server ran in UTC — 09:53 IST
   // stored as 04:23, and anything entered before 05:30 IST filed under the

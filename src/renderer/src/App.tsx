@@ -29,6 +29,7 @@ import { Banks } from './pages/Banks'
 import { Brokers } from './pages/Brokers'
 import { Packaging } from './pages/Packaging'
 import { Approvals } from './pages/Approvals'
+import { Notifications } from './pages/Notifications'
 import { Companies } from './pages/Companies'
 import { Factories } from './pages/Factories'
 import { NotificationBell } from './components/NotificationBell'
@@ -520,6 +521,7 @@ function App(): React.JSX.Element {
         {view === 'companies' && <Companies />}
         {view === 'factories' && <Factories />}
         {view === 'approvals' && <Approvals />}
+        {view === 'notifications' && <Notifications />}
         {view === 'settings' && <Settings user={user} />}
       </main>
       </div>

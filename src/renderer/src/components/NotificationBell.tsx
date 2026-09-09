@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Bell, Check, ClipboardCheck, Volume2, VolumeX, X } from 'lucide-react'
+import { AlertTriangle, Bell, Check, ClipboardCheck, RotateCcw, Volume2, VolumeX } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { AppUser } from '@/lib/session'
 import { formatDate } from '@/lib/format'
@@ -9,34 +9,29 @@ import { useLiveRefresh } from '@/lib/useLiveRefresh'
 type Row = Record<string, any>
 
 interface NoteItem {
+  /** The notification's row id — read state lives on the server against it. */
+  id: number
   key: string
-  kind: 'pending' | 'approved' | 'rejected'
+  severity: 'critical' | 'warning' | 'normal'
   title: string
   detail: string
   when: string
+  page: string
+  read: boolean
 }
 
-const SEEN_KEY = 'rishabhoil.notifSeen'
+// The read state used to live here, in a localStorage list of keys capped at
+// 400. It was per BROWSER rather than per person, so the same user signing in
+// on another machine saw everything again; it could only ever grow; and there
+// was no way back — once a key was in the list the notification was read
+// forever. It is a row per user per notification on the server now, which
+// fixes all three and is what makes "mark unread" possible.
 const MUTE_KEY = 'rishabhoil.notifMuted'
 const TABLE_LABEL: Record<string, string> = {
   oil_types: 'Oil type', products: 'Product', suppliers: 'Supplier', transporters: 'Transporter',
   customers: 'Customer', sources: 'Port', uoms: 'UOM', brokers: 'Broker', packagings: 'Packed SKU'
 }
 const labelFor = (t: string): string => TABLE_LABEL[t] || t
-
-function loadSeen(): Set<string> {
-  try {
-    const raw = localStorage.getItem(SEEN_KEY)
-    return new Set(raw ? (JSON.parse(raw) as string[]) : [])
-  } catch {
-    return new Set()
-  }
-}
-function saveSeen(s: Set<string>): void {
-  // keep it bounded so it can't grow forever
-  const arr = Array.from(s).slice(-400)
-  localStorage.setItem(SEEN_KEY, JSON.stringify(arr))
-}
 
 // A short two-tone chime via the Web Audio API — no asset, CSP-safe.
 function playChime(): void {
@@ -72,7 +67,6 @@ interface Props {
 export function NotificationBell({ user, onNavigate }: Props): React.JSX.Element {
   const isAdmin = user.role === 'admin'
   const [items, setItems] = useState<NoteItem[]>([])
-  const [seen, setSeen] = useState<Set<string>>(loadSeen)
   const [open, setOpen] = useState(false)
   const [muted, setMuted] = useState(() => localStorage.getItem(MUTE_KEY) === '1')
   const prevKeys = useRef<Set<string>>(new Set())
@@ -81,41 +75,23 @@ export function NotificationBell({ user, onNavigate }: Props): React.JSX.Element
 
   const load = useCallback(async () => {
     try {
-      if (isAdmin) {
-        const reqs = await window.api.approvals.list()
-        // Admins are notified of things still waiting on them.
-        setItems(
-          reqs
-            .filter((r: Row) => r.status === 'pending')
-            .map((r: Row) => ({
-              key: `p:${r.id}`,
-              kind: 'pending' as const,
-              title: `New ${labelFor(r.table_name)} to approve`,
-              detail: `${r.label || '—'} · by ${r.requested_by_name || 'user'}`,
-              when: r.requested_at
-            }))
-        )
-      } else {
-        const reqs = await window.api.approvals.mine()
-        // Users are notified when their submissions get decided.
-        setItems(
-          reqs
-            .filter((r: Row) => r.status !== 'pending')
-            .map((r: Row) => ({
-              key: `d:${r.id}:${r.status}`,
-              kind: r.status as 'approved' | 'rejected',
-              title: r.status === 'approved'
-                ? `${labelFor(r.table_name)} approved`
-                : `${labelFor(r.table_name)} rejected`,
-              detail: r.status === 'rejected' ? `${r.label || '—'} — ${r.reason || 'no reason'}` : (r.label || '—'),
-              when: r.decided_at || r.requested_at
-            }))
-        )
-      }
+      const rows = await window.api.notify.list(Number(user.id) || 0, isAdmin, 30)
+      setItems(
+        rows.map((r: Row) => ({
+          id: Number(r.id),
+          key: String(r.dedupe_key || r.id),
+          severity: (String(r.severity) as NoteItem['severity']) || 'normal',
+          title: String(r.title || ''),
+          detail: String(r.body || ''),
+          when: String(r.created_at || ''),
+          page: String(r.page || 'approvals'),
+          read: !!r.is_read
+        }))
+      )
     } catch {
       // ignore transient errors
     }
-  }, [isAdmin])
+  }, [user.id, isAdmin])
 
   useEffect(() => { load() }, [load])
   useLiveRefresh(load)
@@ -124,12 +100,12 @@ export function NotificationBell({ user, onNavigate }: Props): React.JSX.Element
   useEffect(() => {
     const keys = items.map((i) => i.key)
     if (!first.current) {
-      const isNew = keys.some((k) => !prevKeys.current.has(k) && !seen.has(k))
+      const isNew = items.some((i) => !prevKeys.current.has(i.key) && !i.read)
       if (isNew && !muted) playChime()
     }
     prevKeys.current = new Set(keys)
     first.current = false
-  }, [items, seen, muted])
+  }, [items, muted])
 
   // Close the panel on outside click.
   useEffect(() => {
@@ -141,17 +117,24 @@ export function NotificationBell({ user, onNavigate }: Props): React.JSX.Element
     return () => document.removeEventListener('mousedown', onDown)
   }, [open])
 
-  const unseen = items.filter((i) => !seen.has(i.key))
+  const unseen = items.filter((i) => !i.read)
 
+  // Read is now a fact on the server, against this user, so it follows them to
+  // whichever machine they sign in on — and it can be undone, which the old
+  // localStorage key list could not do at all.
   function openPanel(): void {
+    const wasOpen = open
     setOpen((o) => !o)
-    if (!open) {
-      // opening marks everything currently shown as seen
-      const next = new Set(seen)
-      items.forEach((i) => next.add(i.key))
-      setSeen(next)
-      saveSeen(next)
+    if (!wasOpen && unseen.length) {
+      const ids = unseen.map((i) => i.id)
+      setItems((p) => p.map((i) => (ids.includes(i.id) ? { ...i, read: true } : i)))
+      window.api.notify.markRead(Number(user.id) || 0, ids).catch(() => load())
     }
+  }
+
+  async function putBack(id: number): Promise<void> {
+    setItems((p) => p.map((i) => (i.id === id ? { ...i, read: false } : i)))
+    await window.api.notify.markUnread(Number(user.id) || 0, id).catch(() => load())
   }
 
   function toggleMute(): void {
@@ -177,10 +160,10 @@ export function NotificationBell({ user, onNavigate }: Props): React.JSX.Element
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-80 overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg">
+        <div className="absolute right-0 mt-2 w-[22rem] overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg">
           <div className="flex items-center justify-between border-b bg-muted/40 px-3 py-2">
             <span className="text-sm font-semibold">Notifications</span>
-            <button onClick={toggleMute} title={muted ? 'Unmute sound' : 'Mute sound'} className="text-muted-foreground hover:text-foreground">
+            <button onClick={toggleMute} title={muted ? 'Unmute sound' : 'Mute sound'} className="!h-auto text-muted-foreground hover:text-foreground">
               {muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
             </button>
           </div>
@@ -189,31 +172,76 @@ export function NotificationBell({ user, onNavigate }: Props): React.JSX.Element
               <div className="px-3 py-8 text-center text-sm text-muted-foreground">You&apos;re all caught up.</div>
             ) : (
               items.slice(0, 30).map((it) => (
-                <button
+                <div
                   key={it.key}
-                  onClick={() => { onNavigate('approvals'); setOpen(false) }}
-                  className="flex w-full items-start gap-2.5 border-b px-3 py-2.5 text-left last:border-0 hover:bg-accent/50"
+                  className={cn(
+                    'group flex w-full items-start gap-2.5 border-b px-3 py-2.5 text-left last:border-0 hover:bg-accent/50',
+                    // The severity is the left edge, so a critical row is
+                    // findable in a list of thirty without reading any of it.
+                    __WEB__ && 'border-l-[3px]',
+                    __WEB__ && (it.severity === 'critical' ? 'border-l-[#B3261E]'
+                      : it.severity === 'warning' ? 'border-l-[#C2700A]' : 'border-l-[#12855A]')
+                  )}
                 >
-                  <span className={cn('mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full',
-                    it.kind === 'approved' ? 'bg-emerald-100 text-emerald-700'
-                    : it.kind === 'rejected' ? 'bg-red-100 text-red-600'
-                    : 'bg-amber-100 text-amber-700')}>
-                    {it.kind === 'approved' ? <Check className="h-3.5 w-3.5" /> : it.kind === 'rejected' ? <X className="h-3.5 w-3.5" /> : <ClipboardCheck className="h-3.5 w-3.5" />}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-medium">{it.title}</span>
-                    <span className="block truncate text-xs text-muted-foreground">{it.detail}</span>
-                    <span className="block text-[11px] text-muted-foreground/70">{formatDate(it.when)}</span>
-                  </span>
-                </button>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => { onNavigate(it.page); setOpen(false) }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        onNavigate(it.page)
+                        setOpen(false)
+                      }
+                    }}
+                    className="flex min-w-0 flex-1 cursor-pointer items-start gap-2.5 text-left"
+                  >
+                    <span className={cn('mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full',
+                      it.severity === 'critical' ? 'bg-red-100 text-red-600'
+                      : it.severity === 'warning' ? 'bg-amber-100 text-amber-700'
+                      : 'bg-emerald-100 text-emerald-700')}>
+                      {it.severity === 'critical' ? <AlertTriangle className="h-3.5 w-3.5" />
+                        : it.severity === 'warning' ? <ClipboardCheck className="h-3.5 w-3.5" />
+                        : <Check className="h-3.5 w-3.5" />}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className={cn('block text-[13px] leading-[1.35]', it.read ? 'font-normal text-muted-foreground' : 'font-semibold')}>
+                        {it.title}
+                      </span>
+                      <span className="mt-0.5 block truncate text-[11.5px] leading-[1.35] text-muted-foreground">
+                        {it.detail}
+                      </span>
+                      <span className="mt-0.5 block text-[10.5px] leading-none text-muted-foreground/70">
+                        {formatDate(it.when)}
+                      </span>
+                    </span>
+                  </div>
+                  {it.read && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      title="Mark unread"
+                      onClick={(e) => { e.stopPropagation(); void putBack(it.id) }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          void putBack(it.id)
+                        }
+                      }}
+                      className="mt-0.5 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                    </div>
+                  )}
+                </div>
               ))
             )}
           </div>
           <button
-            onClick={() => { onNavigate('approvals'); setOpen(false) }}
+            onClick={() => { onNavigate('notifications'); setOpen(false) }}
             className="w-full border-t bg-muted/30 px-3 py-2 text-center text-xs font-medium text-primary hover:bg-muted"
           >
-            Open Approvals
+            Notification settings
           </button>
         </div>
       )}

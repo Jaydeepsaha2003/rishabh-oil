@@ -8,6 +8,7 @@ import {
   Briefcase,
   Building2,
   BookOpenText,
+  BellRing,
   ClipboardCheck,
   Contact,
   DoorOpen,
@@ -67,6 +68,7 @@ export type Page =
   | 'companies'
   | 'factories'
   | 'approvals'
+  | 'notifications'
 
 const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   dashboard: { label: 'Dashboard', icon: LayoutDashboard },
@@ -95,6 +97,7 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   companies: { label: 'Companies', icon: Building2 },
   factories: { label: 'Factories', icon: Factory },
   approvals: { label: 'Approvals', icon: ClipboardCheck },
+  notifications: { label: 'Notifications', icon: BellRing },
   settings: { label: 'Settings', icon: SettingsIcon }
 }
 
@@ -106,7 +109,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Trading', ids: ['trading'] },
   { label: 'Accounts', ids: ['accounts', 'treasury', 'bankRecon'] },
   { label: 'Masters', ids: ['categories', 'suppliers', 'transporters', 'customers', 'ports', 'banks', 'brokers', 'packaging'] },
-  { label: 'System', ids: ['companies', 'factories', 'approvals', 'settings'] }
+  { label: 'System', ids: ['companies', 'factories', 'approvals', 'notifications', 'settings'] }
 ]
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

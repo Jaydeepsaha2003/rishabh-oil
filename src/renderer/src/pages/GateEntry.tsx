@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   AlertTriangle, Ban, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Hash, Info, Lock,
-  RotateCcw, LogIn, LogOut, Pencil, Scale, Trash2, Truck, X } from 'lucide-react'
+  RotateCcw, LogIn, LogOut, Pencil, Scale, Trash2, Truck, X , Undo2
+} from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -218,6 +219,12 @@ export function GateEntry(): React.JSX.Element {
   const [customers, setCustomers] = useState<Row[]>([])
   // (category -> party ids) derived from what each party actually trades.
   const [partyCats, setPartyCats] = useState<Row[]>([])
+  // Invoices somebody has said will never have a gate-out, and the one being
+  // marked right now.
+  const [waived, setWaived] = useState<Row[]>([])
+  const [waiveFor, setWaiveFor] = useState<Row | null>(null)
+  const [waiveReason, setWaiveReason] = useState('')
+  const [waiving, setWaiving] = useState(false)
   // Lets the gateman reach a party the category filter would hide.
   const [showAllParties, setShowAllParties] = useState(false)
   const [products, setProducts] = useState<Row[]>([])
@@ -323,11 +330,12 @@ export function GateEntry(): React.JSX.Element {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [g, pt, sl, nextNo, nextOutNo, sup, prd, cus, pcats] = await Promise.all([
+    const [g, pt, sl, wv, nextNo, nextOutNo, sup, prd, cus, pcats] = await Promise.all([
       window.api.gate.list(),
       // the gate serves every company — list tankers across all of them
       window.api.tankers.list(true),
       window.api.gate.dispatchableSales().catch(() => [] as Row[]),
+      window.api.gate.waivedOuts().catch(() => [] as Row[]),
       window.api.gate.nextNo('in').catch(() => ''),
       window.api.gate.nextNo('out').catch(() => ''),
       window.api.data.list('suppliers'),
@@ -342,6 +350,7 @@ export function GateEntry(): React.JSX.Element {
     setAllSuppliers(sup.filter((x) => x.active))
     setCustomers(cus.filter((x) => x.active))
     setPartyCats(pcats)
+    setWaived(wv)
     setProducts(prd.filter((x) => x.active))
     setSales(sl)
     setArrival((p) => (p.gate_entry_no ? p : { ...p, gate_entry_no: nextNo }))
@@ -355,6 +364,34 @@ export function GateEntry(): React.JSX.Element {
   // A rejected entry (the tanker it was cut for will never be completed —
   // refused, redirected elsewhere) drops out of every active queue; it only
   // shows up under the Rejected tab from here on.
+  // Saying an invoice needs no gate-out. The reason is required: a queue
+  // cleared without one is indistinguishable from a queue that lost rows.
+  async function saveWaiver(): Promise<void> {
+    if (!waiveFor) return
+    setWaiving(true)
+    try {
+      await window.api.gate.waiveOut(String(waiveFor.invoice_group), waiveReason)
+      setWaiveFor(null)
+      setWaiveReason('')
+      await load()
+      toast.success('Marked — no gate-out needed')
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setWaiving(false)
+    }
+  }
+
+  async function undoWaiver(group: string): Promise<void> {
+    try {
+      await window.api.gate.unwaiveOut(group)
+      await load()
+      toast.success('Back in the gate-out queue')
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
   const rejectedRows = rows.filter((r) => !!r.rejected_at)
   const pending = rows.filter((r) => r.status === 'pending' && !r.rejected_at)
   // Gate In vehicles weighed Tare-only and flagged to have their Gross taken
@@ -1466,17 +1503,38 @@ export function GateEntry(): React.JSX.Element {
                           {String(s.invoice_no || '')} · {formatNum(s.qty)} {String(s.uom || '')}
                         </div>
                       </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 shrink-0 text-[11px]"
-                        onClick={() => {
-                          chooseSale(String(s.invoice_group))
-                          setOutFormOpen(true)
-                        }}
-                      >
-                        Record
-                      </Button>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 shrink-0 text-[11px]"
+                          onClick={() => {
+                            chooseSale(String(s.invoice_group))
+                            setOutFormOpen(true)
+                          }}
+                        >
+                          Record
+                        </Button>
+                        {/* The other honest answer. Not every invoice in this
+                            list is waiting for a vehicle — the old ones never
+                            had a gate register to be weighed on, and some
+                            deliveries leave on the customer's own lorry. */}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          title="No vehicle will ever be weighed out against this invoice"
+                          className={cn(
+                            'h-7 shrink-0 text-[11px] text-muted-foreground',
+                            __WEB__ && '!px-2 !font-bold !text-[#8A5300] hover:!bg-[#FFF4E0]'
+                          )}
+                          onClick={() => {
+                            setWaiveReason('')
+                            setWaiveFor(s)
+                          }}
+                        >
+                          Not required
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -2987,6 +3045,68 @@ export function GateEntry(): React.JSX.Element {
         </section>
           </TabsContent>
           <TabsContent value="rejected">
+            {/* Waived invoices sit above the rejected entries. Both answer the
+                same question — what came off the queue and why — but they are
+                different objects: one is a gate entry that was cut and
+                abandoned, the other an invoice that never needed one. Two
+                sections rather than two row shapes forced into one table. */}
+            {waived.length > 0 && (
+              <section className={cn('mb-3 rounded-xl border bg-card', __WEB__ && '!rounded-[4px] !border-[#D6E2D6]')}>
+                <div className={cn('border-b bg-amber-50 px-4 py-3', __WEB__ && '!border-b-[#F0E4CB] !bg-[#FFFBF2] !px-[18px]')}>
+                  <h3 className={cn('text-[13px] font-semibold text-amber-900', __WEB__ && '!text-[11.5px] !font-extrabold !uppercase !tracking-[.14em] !text-[#8A5300]')}>
+                    No gate-out required · {waived.length}
+                  </h3>
+                  <p className={cn('text-[11px] text-amber-800/80', __WEB__ && '!mt-1 !text-[12px] !font-semibold !text-[#8A5300]')}>
+                    Dispatched invoices that will never have a vehicle weighed out against them — taken off the
+                    Gate Out queue on purpose. Putting one back returns it to the queue.
+                  </p>
+                </div>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Invoice</TableHead>
+                      <TableHead>Customer</TableHead>
+                      <TableHead className="text-right">Qty</TableHead>
+                      <TableHead>Reason</TableHead>
+                      <TableHead>Marked on</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {waived.map((w) => (
+                      <TableRow key={String(w.invoice_group)}>
+                        <TableCell className="whitespace-nowrap font-medium">
+                          {String(w.invoice_no || w.invoice_group)}
+                          <div className="text-[11px] font-normal text-muted-foreground">{formatDate(w.sale_date)}</div>
+                        </TableCell>
+                        <TableCell className="max-w-[16rem] truncate" title={String(w.customer || '')}>
+                          {String(w.customer || '—')}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-right tabular-nums">
+                          {formatNum(w.qty)} {String(w.uom || '')}
+                        </TableCell>
+                        <TableCell className="max-w-[22rem] text-[12px]" title={String(w.waived_reason || '')}>
+                          {String(w.waived_reason || '—')}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-[12px] text-muted-foreground">
+                          {formatDate(String(w.waived_at || '').slice(0, 10))}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-[11px]"
+                            onClick={() => void undoWaiver(String(w.invoice_group))}
+                          >
+                            <Undo2 className="h-3.5 w-3.5" /> Put back
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </section>
+            )}
             <section className="rounded-xl border bg-card">
               <div className="border-b bg-rose-50 px-4 py-3">
                 <h3 className="text-[13px] font-semibold text-rose-900">Rejected gate entries</h3>
@@ -3117,6 +3237,37 @@ export function GateEntry(): React.JSX.Element {
             <Button variant="outline" onClick={() => setRejectRow(null)} disabled={rejecting}>Cancel</Button>
             <Button className="bg-rose-600 hover:bg-rose-700" onClick={() => void saveReject()} disabled={rejecting}>
               {rejecting ? 'Saving…' : 'Reject entry'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* "This invoice will never have a gate-out." */}
+      <Dialog open={!!waiveFor} onOpenChange={(o) => !o && !waiving && setWaiveFor(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>No gate-out required</DialogTitle>
+          </DialogHeader>
+          <p className="text-[12px] text-muted-foreground">
+            Takes <b>{String(waiveFor?.invoice_no || waiveFor?.invoice_group || '')}</b>
+            {waiveFor?.customer ? <> ({String(waiveFor.customer)})</> : null} off the Gate Out queue for good. The
+            invoice itself is untouched — it stays booked, stock and the ledger do not move, and it is <b>not</b>{' '}
+            cancelled. It moves to Rejected with your reason, and can be put back from there.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            <Label>Reason <span className="text-red-600">*</span></Label>
+            <textarea
+              className="min-h-[5rem] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              placeholder="e.g. Billed before the gate register existed — no weighment on record"
+              value={waiveReason}
+              onChange={(e) => setWaiveReason(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setWaiveFor(null)} disabled={waiving}>Cancel</Button>
+            <Button onClick={() => void saveWaiver()} disabled={waiving || !waiveReason.trim()}>
+              {waiving ? 'Saving…' : 'Mark not required'}
             </Button>
           </DialogFooter>
         </DialogContent>
