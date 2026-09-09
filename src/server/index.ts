@@ -1,3 +1,5 @@
+// First, before anything under src/main is required — see tz.ts.
+import { serverClock } from './tz'
 import { join } from 'node:path'
 import { getClient } from '../main/db'
 import { runStartupTasks } from '../main/bootstrap'
@@ -24,6 +26,9 @@ async function main(): Promise<void> {
   // end sits beside the compiled server.
   const webRoot = process.env.WEB_ROOT || join(process.cwd(), 'out', 'web')
 
+  // In the log on purpose: a gate time that looks wrong is the first sign the
+  // host has been moved, and this line answers it without a code read.
+  console.log(`[web] clock ${serverClock()}`)
   console.log('[web] connecting to the database…')
   await runStartupTasks()
   console.log('[web] schema ready')

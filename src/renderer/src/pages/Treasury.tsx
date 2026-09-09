@@ -118,9 +118,12 @@ function DueBadge({ date, l }: { date: unknown; l?: Row }): React.JSX.Element | 
         ? Math.round((Date.parse(end) - Date.parse(start)) / 86400000)
         : 0
     const gone = term > 0 ? ((term - d) / term) * 100 : null
-    // Overdue is always hot. Otherwise past 85% of the term, or — with no term
-    // to measure against — inside the last week.
-    const hot = d < 0 || (gone != null ? gone > 85 : d <= 7)
+    // A week or less to run — overdue included — is red; everything else is
+    // amber. This was a proportion of the LC's own term, and on the register
+    // it read as arbitrary: LC-13 with 13 days left stayed amber while LC-16
+    // with 16 went red, because one was a shorter credit. Nobody reading a
+    // maturity column is thinking in percentages of a tenor. A week is a week.
+    const hot = d <= 7
     return (
       <span
         className={cn(
@@ -356,6 +359,9 @@ const LC_HOVER_V = 'doc-ref !text-[14px] !font-bold !text-[#0A1F17]'
 function PayableBreakdown({ l, children }: { l: Row; children: React.ReactNode }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const amount = n(l.amount)
+  // Falls back to the open amount, the same way the server does — an LC where
+  // the bank blocked exactly what it opened carries no separate figure.
+  const blocked = n(l.blocked_effective) || n(l.blocked_amount) || amount
   const upfront = !!l.interest_upfront
   const rate = n(l.interest_pct)
   const days = n(l.usance_days)
@@ -413,6 +419,19 @@ function PayableBreakdown({ l, children }: { l: Row; children: React.ReactNode }
           Payment rec
         </div>
         <div className={cn('space-y-1.5 px-3 py-2.5', __WEB__ && '!space-y-0 !px-4 !py-0')}>
+          {/* What the bank is holding against the facility, above what it
+              actually opened. The two are usually the same figure; where the
+              bill came in under the request they part company, and the limit
+              is measured on this one, not on the open amount below it. */}
+          <div className={cn('flex items-baseline justify-between gap-3', __WEB__ && cn(LC_HOVER_ROW, LC_HOVER_RULE))}>
+            <span
+              className={cn('text-muted-foreground', __WEB__ && LC_HOVER_K)}
+              title="What the bank blocks against the facility. The limit and the exposure outstanding are measured on this; interest and margin are not — they run on the open amount."
+            >
+              Blocked amt
+            </span>
+            <span className={cn('font-medium tabular-nums', __WEB__ && LC_HOVER_V)}>{formatINR(blocked)}</span>
+          </div>
           <div className={cn('flex items-baseline justify-between gap-3', __WEB__ && cn(LC_HOVER_ROW, LC_HOVER_RULE))}>
             <span className={cn('text-muted-foreground', __WEB__ && LC_HOVER_K)}>Open amount</span>
             <span className={cn('font-medium tabular-nums', __WEB__ && LC_HOVER_V)}>{formatINR(amount)}</span>

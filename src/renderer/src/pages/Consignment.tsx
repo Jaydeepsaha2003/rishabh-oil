@@ -68,6 +68,9 @@ export function Consignment(): React.JSX.Element {
   const [companies, setCompanies] = useState<Row[]>([])
   const [activeCompany, setActiveCompany] = useState<number>(0)
   const [loading, setLoading] = useState(true)
+  // Always folded on arrival, never remembered — the register is what the page
+  // is for, and a summary that stayed open from last week would push it down.
+  const [kpiOpen, setKpiOpen] = useState(false)
 
   // Period for the register: opening balance before it, deposits/invoices
   // within it — same convention as Stock's own MNC/Consignment tab.
@@ -505,9 +508,8 @@ export function Consignment(): React.JSX.Element {
         {/* What the page is holding, read off the same arrays everything below
             is drawn from — so a tile can never state something the register
             under it contradicts. */}
-        {__WEB__ && !loading && (
-          <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
-            {[
+        {__WEB__ && !loading && (() => {
+          const tiles = [
               {
                 k: ranged ? 'Closing stock' : 'In stock',
                 v: formatNum(totalBalance),
@@ -536,22 +538,61 @@ export function Consignment(): React.JSX.Element {
                 sub: 'invoiced into your books',
                 accent: '#0B3D2E'
               }
-            ].map((k) => (
-              <div
-                key={k.k}
-                className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3"
-                style={{ borderTop: `3px solid ${k.accent}` }}
+          ]
+          // Folded away by default, like Stock and Opening stock. The tiles are
+          // a summary of the register directly underneath them, and four of
+          // them cost a whole band of height before you reach the thing you
+          // came for. Collapsed, the same four figures still read on one line.
+          return (
+            <div>
+              <button
+                type="button"
+                onClick={() => setKpiOpen((o) => !o)}
+                aria-expanded={kpiOpen}
+                className={cn(
+                  'flex w-full items-center gap-3 rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 text-left transition-colors hover:bg-[#F7FAF6]',
+                  kpiOpen ? 'h-[38px] rounded-b-none border-b-0' : 'h-[42px]'
+                )}
               >
-                <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">{k.k}</div>
-                <div className="mt-1 flex items-baseline gap-1.5">
-                  <span className="text-[22px] font-bold leading-none tracking-[-0.035em] tabular-nums">{k.v}</span>
-                  {k.unit && <span className="text-[10.5px] font-extrabold text-[#5A6B62]">{k.unit}</span>}
+                <ChevronRight className={cn('h-4 w-4 shrink-0 text-[#5A6B62] transition-transform', kpiOpen && 'rotate-90')} />
+                <span className="shrink-0 text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">
+                  Summary
+                </span>
+                {!kpiOpen && (
+                  <span className="no-scrollbar flex min-w-0 items-baseline gap-x-5 overflow-x-auto">
+                    {tiles.map((k) => (
+                      <span key={k.k} title={k.sub} className="flex items-baseline gap-1.5 whitespace-nowrap">
+                        <span className="text-[10.5px] font-bold uppercase tracking-[.08em] text-[#8FA79B]">{k.k}</span>
+                        <span className="doc-ref text-[12.5px] font-bold" style={{ color: k.accent }}>
+                          {k.v}
+                          {k.unit ? ` ${k.unit}` : ''}
+                        </span>
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </button>
+              {kpiOpen && (
+                <div className="grid gap-2.5 rounded-[4px] rounded-t-none border border-t-0 border-[#D6E2D6] bg-[#F7FAF6] p-2.5 sm:grid-cols-2 xl:grid-cols-4">
+                  {tiles.map((k) => (
+                    <div
+                      key={k.k}
+                      className="rounded-[4px] border border-[#D6E2D6] bg-white px-3.5 py-3"
+                      style={{ borderTop: `3px solid ${k.accent}` }}
+                    >
+                      <div className="text-[9.5px] font-extrabold uppercase tracking-[.13em] text-[#5A6B62]">{k.k}</div>
+                      <div className="mt-1 flex items-baseline gap-1.5">
+                        <span className="text-[22px] font-bold leading-none tracking-[-0.035em] tabular-nums">{k.v}</span>
+                        {k.unit && <span className="text-[10.5px] font-extrabold text-[#5A6B62]">{k.unit}</span>}
+                      </div>
+                      <div className="mt-1 truncate text-[11px] font-semibold text-[#5A6B62]" title={k.sub}>{k.sub}</div>
+                    </div>
+                  ))}
                 </div>
-                <div className="mt-1 truncate text-[11px] font-semibold text-[#5A6B62]" title={k.sub}>{k.sub}</div>
-              </div>
-            ))}
-          </div>
-        )}
+              )}
+            </div>
+          )
+        })()}
         {/* Step 1 of the flow: tankers passed at the gate, waiting for the
             accountant to say whose stock they are. */}
         {pending.length > 0 && (
@@ -842,6 +883,10 @@ export function Consignment(): React.JSX.Element {
                         >
                           <TableHeader>
                             <TableRow className={cn('bg-muted/60', __WEB__ && '!border-b-[#DCE7DB] !bg-[#EAF0E9] hover:!bg-[#EAF0E9] [&>th]:!bg-[#EAF0E9] [&>th]:!text-[10.5px] [&>th]:!font-extrabold [&>th]:!tracking-[.11em] [&>th]:!text-[#0A1F17]')}>
+                              {/* Position in the lot, not a stored number —
+                                  deleting a line would otherwise leave a hole
+                                  or renumber rows somebody has written down. */}
+                              <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[48px] !whitespace-nowrap !text-[10.5px]')}>SN</TableHead>
                               <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[104px] !whitespace-nowrap !text-[10.5px]')}>Date</TableHead>
                               <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[190px] !whitespace-nowrap !text-[10.5px]')}>Tanker</TableHead>
                               <TableHead className={cn('text-[10px] font-semibold uppercase tracking-wide', __WEB__ && '!w-[104px] !whitespace-nowrap !text-[10.5px]')}>Gate no</TableHead>
@@ -854,7 +899,7 @@ export function Consignment(): React.JSX.Element {
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {(p.lots as Row[]).map((d) => {
+                            {(p.lots as Row[]).map((d, lotIndex) => {
                               const booked = d.order_id != null
                               return (
                                 <TableRow
@@ -869,6 +914,7 @@ export function Consignment(): React.JSX.Element {
                                   )}
                                   style={__WEB__ ? { borderLeft: `3px solid ${booked ? '#C3D2C6' : '#0B6B45'}` } : undefined}
                                 >
+                                  <TableCell className={cn('whitespace-nowrap tabular-nums', __WEB__ && '!text-[12.5px] !font-semibold !text-[#8FA79B]')}>{lotIndex + 1}</TableCell>
                                   <TableCell className={cn('whitespace-nowrap', __WEB__ && '!text-[13px] !font-semibold !tabular-nums !text-[#33473E]')}>{formatDate(d.deposit_date)}</TableCell>
                                   <TableCell
                                     className={cn('font-medium', __WEB__ && '!max-w-0 !truncate !text-[13px] !font-bold !tabular-nums !text-[#0A1F17]')}
@@ -952,7 +998,7 @@ export function Consignment(): React.JSX.Element {
                                 up to find its total. */}
                             {__WEB__ && (
                               <TableRow className="!border-b-[#C3D2C6] !border-t-2 !border-t-[#C7F03F] !bg-[#EFF5EC] hover:!bg-[#EFF5EC]">
-                                <TableCell colSpan={3} className="!text-[10.5px] !font-extrabold !uppercase !tracking-[.11em] !text-[#0B3D2E]">
+                                <TableCell colSpan={4} className="!text-[10.5px] !font-extrabold !uppercase !tracking-[.11em] !text-[#0B3D2E]">
                                   {(p.lots as Row[]).length} tanker{(p.lots as Row[]).length === 1 ? '' : 's'}
                                 </TableCell>
                                 <TableCell className="!text-right !text-[12.5px] !font-bold !tabular-nums !text-[#33473E]">

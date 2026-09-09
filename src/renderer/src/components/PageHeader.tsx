@@ -52,6 +52,15 @@ export function PageHeader({ title, subtitle, hint, actions, leading }: Props): 
     <div
       className={cn(
         'sticky top-0 z-10 flex items-start justify-between gap-4 border-b bg-background/80 px-4 py-4 backdrop-blur',
+        // Opaque, and above the registers.
+        //
+        // The header was 80% background with a blur behind it, which is fine
+        // over body text and not fine over a forest-green table head — on
+        // Treasury the LC register's own sticky <thead> is `top-0 z-10` too,
+        // the same layer as this, and being later in the DOM it won the tie
+        // and painted straight over the page title. z-30 settles the order and
+        // a solid ground stops anything showing through underneath.
+        __WEB__ && '!z-30 !bg-background !backdrop-blur-none',
         // The sidebar's tap-to-open button is fixed in the top-left corner on
         // the website at phone width, and every page's title was sitting
         // underneath it. Clear it, and let the row wrap so the actions drop

@@ -112,7 +112,17 @@ function dayDiff(fromISO: string, toISO: string): number {
 // so a tanker sitting Inside factory doesn't keep racking up "delayed" days
 // for time that was never spent in transit. Only a tanker still en route
 // (no outside factory date yet) falls back to comparing against today.
-function tankerDelay(row: Row): { label: string; tone: string } | null {
+// `kind` is for the website, which draws these as chips and needs to know
+// which of the five states it is looking at without parsing the sentence.
+// `label` and `tone` are what the desktop app has always rendered.
+type TankerDelay = {
+  label: string
+  tone: string
+  kind: 'late' | 'today' | 'good' | 'eta' | 'unset'
+  eta?: string
+  inDays?: number
+}
+function tankerDelay(row: Row): TankerDelay | null {
   if (!['transit', 'outside_factory', 'inside_factory'].includes(String(row.status))) return null
   const exp = String(row.expected_delivery_date || '').slice(0, 10)
   if (!exp) {
@@ -120,15 +130,30 @@ function tankerDelay(row: Row): { label: string; tone: string } | null {
     // just showing nothing under the stage badge.
     return row.source_id
       ? null
-      : { label: 'No ETA — set a source (Edit)', tone: 'text-muted-foreground italic' }
+      : { label: 'No ETA — set a source (Edit)', tone: 'text-muted-foreground italic', kind: 'unset' }
   }
   const outsideDate = String(row.outside_factory_date || '').slice(0, 10)
   const days = dayDiff(exp, outsideDate || todayISO())
-  if (days > 0) return { label: `Delayed ${days} day${days === 1 ? '' : 's'}`, tone: 'text-red-600' }
-  if (days === 0) return outsideDate ? { label: 'On time', tone: 'text-emerald-600' } : { label: 'Due today', tone: 'text-amber-600' }
+  if (days > 0) return { label: `Delayed ${days} day${days === 1 ? '' : 's'}`, tone: 'text-red-600', kind: 'late' }
+  if (days === 0)
+    return outsideDate
+      ? { label: 'On time', tone: 'text-emerald-600', kind: 'good' }
+      : { label: 'Due today', tone: 'text-amber-600', kind: 'today' }
   return outsideDate
-    ? { label: `Arrived ${-days}d early`, tone: 'text-emerald-600' }
-    : { label: `ETA ${formatDate(exp)} · ${-days}d`, tone: 'text-muted-foreground' }
+    ? { label: `Arrived ${-days}d early`, tone: 'text-emerald-600', kind: 'good' }
+    : { label: `ETA ${formatDate(exp)} · ${-days}d`, tone: 'text-muted-foreground', kind: 'eta', eta: exp, inDays: -days }
+}
+
+// The tone of each state as a chip. Every one of them is a chip on the
+// website, including the plain ETA — it used to be the only state rendered as
+// grey text, which put the one line a dispatcher actually reads (when is it
+// getting here) below the four exception states in weight.
+const ETA_TONE: Record<TankerDelay['kind'], string> = {
+  late: 'border-[#F0AFAA] bg-[#FDF3F2] text-[#B3261E]',
+  today: 'border-[#F0E4CB] bg-[#FFF4E0] text-[#8A5300]',
+  good: 'border-[#BFE3CB] bg-[#EAF6EC] text-[#0B6B45]',
+  eta: 'border-[#C3D2C6] bg-[#F1F7EF] text-[#0A1F17]',
+  unset: 'border-[#E4ECE3] bg-[#F7FAF6] text-[#8FA79B]'
 }
 
 function StatusBadge({ status }: { status: string }): React.JSX.Element {
@@ -932,6 +957,35 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   const tankerPaged = usePaged(inLoadedRangeTankers)
   const outOfRangePaged = usePaged(outOfRangeTankers)
 
+  // What to call the second band.
+  //
+  // "Loaded outside 01-09-2026 – 09-09-2026" told you which window these
+  // tankers were NOT loaded in, which is the one thing you already knew from
+  // the band above. What is worth saying is which month they WERE loaded in —
+  // these are the loads that crossed a month boundary, and naming the month
+  // makes that a fact rather than an exclusion.
+  //
+  // One month gets its name; several get "Other months", with the actual list
+  // on hover so nothing is lost. The year is added only when it differs from
+  // the window's own, since "August" inside a September 2026 window needs no
+  // year and "August 2025" very much does.
+  const outOfRangeMonth = useMemo(() => {
+    const keys = new Set<string>()
+    for (const t of outOfRangeTankers) {
+      const d = String(t.loaded_date || '').slice(0, 10)
+      if (/^\d{4}-\d{2}/.test(d)) keys.add(d.slice(0, 7))
+    }
+    const list = Array.from(keys).sort()
+    const named = (k: string): string => {
+      const [y, mo] = k.split('-')
+      const name = new Date(Number(y), Number(mo) - 1, 1).toLocaleString('en-GB', { month: 'long' })
+      return y === String(pivotEnd || '').slice(0, 4) ? name : `${name} ${y}`
+    }
+    if (list.length === 0) return { label: '', full: '' }
+    if (list.length === 1) return { label: named(list[0]), full: named(list[0]) }
+    return { label: 'Other months', full: list.map(named).join(', ') }
+  }, [outOfRangeTankers, pivotEnd])
+
   // Shared row markup for the tanker list — used for both the in-range table
   // and the out-of-range one below it, so the two stay visually identical.
   function renderTankerRow(row: Row): React.JSX.Element {
@@ -983,7 +1037,39 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         <StatusBadge status={row.status} />
         {(() => {
           const d = tankerDelay(row)
-          return d ? <div className={cn('mt-1 text-[11px] font-medium', d.tone, __WEB__ && '!mt-1 !whitespace-nowrap !text-[10.5px]')}>{d.label}</div> : null
+          if (!d) return null
+          if (!__WEB__) return <div className={cn('mt-1 text-[11px] font-medium', d.tone)}>{d.label}</div>
+          return (
+            <div className="mt-1.5">
+              <span
+                className={cn(
+                  'inline-flex items-center gap-1.5 whitespace-nowrap rounded-[2px] border px-[7px] py-[3px] text-[10.5px] font-extrabold',
+                  ETA_TONE[d.kind]
+                )}
+              >
+                {d.kind === 'late' ? (
+                  <AlertTriangle className="h-3 w-3 shrink-0" />
+                ) : d.kind === 'good' ? (
+                  <CheckCircle2 className="h-3 w-3 shrink-0" />
+                ) : (
+                  <Clock className="h-3 w-3 shrink-0" />
+                )}
+                {d.kind === 'eta' ? (
+                  <>
+                    <span className="text-[#5A6B62]">ETA</span>
+                    <span className="doc-ref">{formatDate(d.eta || '')}</span>
+                    {/* How many days that is, on the accent — the date alone
+                        makes you count, and counting is the whole question. */}
+                    <span className="rounded-[2px] bg-[#0B3D2E] px-[5px] py-[1px] text-[9.5px] text-[#C7F03F]">
+                      {d.inDays}d
+                    </span>
+                  </>
+                ) : (
+                  d.label
+                )}
+              </span>
+            </div>
+          )
         })()}
       </TableCell>
       {/* Moving the tanker on is the only action worth a real button — undo,
@@ -4266,8 +4352,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     )}
                   >
                     <CalendarDays className={cn('h-3.5 w-3.5 text-amber-600', __WEB__ && '!h-4 !w-4 !text-[#E9A23B]')} />
-                    <span className={cn('text-xs font-semibold text-amber-800', __WEB__ && '!text-[13.5px] !font-extrabold !tracking-[-0.01em] !text-white')}>
-                      Loaded outside {formatDate(pivotStart)} – {formatDate(pivotEnd)}
+                    <span
+                      className={cn('text-xs font-semibold text-amber-800', __WEB__ && '!text-[13.5px] !font-extrabold !tracking-[-0.01em] !text-white')}
+                      title={
+                        __WEB__ && outOfRangeMonth.label !== outOfRangeMonth.full
+                          ? `Loaded in ${outOfRangeMonth.full}`
+                          : undefined
+                      }
+                    >
+                      {__WEB__ && outOfRangeMonth.label
+                        ? `${outOfRangeMonth.label} transit from `
+                        : 'Loaded outside '}
+                      {formatDate(pivotStart)} – {formatDate(pivotEnd)}
                     </span>
                     <Badge
                       variant="warning"

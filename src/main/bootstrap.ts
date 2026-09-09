@@ -896,6 +896,21 @@ export async function runStartupTasks(): Promise<void> {
     )
   }).catch((e) => console.error('[gate] outside tanker diary failed:', e))
 
+  // The diary asked which PRODUCT was standing outside. Nobody counting lorries
+  // from the gate knows whether the load is RPS or CPO — they know it is oil,
+  // or husk, or packaging. It asks for the category now, which is the same
+  // master Gate Entry's Rec type reads.
+  //
+  // product_id is left in place rather than dropped: a line already logged
+  // against a product must stay readable, and the list falls back to its name.
+  await runOnce('outside_tankers_category_v1', async () => {
+    await getClient()
+      .execute('ALTER TABLE outside_tankers ADD COLUMN category TEXT')
+      .catch((e) => {
+        if (!/duplicate column/i.test(String(e))) throw e
+      })
+  }).catch((e) => console.error('[gate] outside tanker category failed:', e))
+
   // LC-9's bill was raised for the gross open amount.
   //
   // Every other bill in the book is the open amount LESS the interest and

@@ -24,11 +24,15 @@ export const OUTSIDE_SLOTS = ['08:00', '16:00', '20:00'] as const
 
 // One count per slot per line, so the same reading is not logged twice when
 // two people check the gate at four o'clock. Reads left to right the way the
-// supervisor walks it: what kind of movement, which product, whose lorries.
+// supervisor walks it: what kind of movement, which category, whose lorries.
+//
+// product_name is still selected for lines written before the diary asked for
+// a category instead of a product — they stay readable, and the register falls
+// back to the product's name where the category is blank.
 export async function listOutsideTankers(date?: string): Promise<Row[]> {
   const c = getClient()
   const day = String(date || '').slice(0, 10)
-  const args: unknown[] = [getActiveCompanyId()]
+  const args: (string | number)[] = [getActiveCompanyId()]
   let where = 'WHERE t.company_id = ?'
   if (day) {
     where += ' AND t.log_date = ?'
@@ -38,6 +42,7 @@ export async function listOutsideTankers(date?: string): Promise<Row[]> {
     sql: `SELECT t.*,
                  p.name AS product_name,
                  p.code AS product_code,
+                 COALESCE(NULLIF(TRIM(t.category), ''), p.name) AS category_label,
                  COALESCE(s.name, cu.name) AS party_name
             FROM outside_tankers t
             LEFT JOIN products p ON p.id = t.product_id
@@ -80,6 +85,7 @@ export async function saveOutsideTanker(v: Row): Promise<{ id: number }> {
     day,
     slot,
     kind,
+    String(v.category || '').trim().toUpperCase() || null,
     n(v.product_id) || null,
     n(v.party_id) || null,
     tankers,
@@ -89,17 +95,17 @@ export async function saveOutsideTanker(v: Row): Promise<{ id: number }> {
   if (n(v.id)) {
     await c.execute({
       sql: `UPDATE outside_tankers
-               SET log_date = ?, slot = ?, kind = ?, product_id = ?, party_id = ?,
+               SET log_date = ?, slot = ?, kind = ?, category = ?, product_id = ?, party_id = ?,
                    tankers = ?, note = ?
              WHERE id = ? AND company_id = ?`,
-      args: [day, slot, kind, args[4], args[5], tankers, args[7], n(v.id), getActiveCompanyId()]
+      args: [day, slot, kind, args[4], args[5], args[6], tankers, args[8], n(v.id), getActiveCompanyId()]
     })
     return { id: n(v.id) }
   }
   const res = await c.execute({
     sql: `INSERT INTO outside_tankers
-            (company_id, log_date, slot, kind, product_id, party_id, tankers, note, created_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (company_id, log_date, slot, kind, category, product_id, party_id, tankers, note, created_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args
   })
   return { id: Number(res.lastInsertRowid || 0) }
