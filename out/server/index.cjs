@@ -7341,6 +7341,20 @@ async function revertPurchaseTanker(id) {
   });
   return { id, status: prev };
 }
+async function saveTankerQuality(tankerId, rows) {
+  const c = getClient();
+  await c.execute({ sql: "DELETE FROM tanker_quality WHERE tanker_id = ?", args: [n5(tankerId)] });
+  let order = 0;
+  for (const r of rows) {
+    const name = String(r?.name || "").trim();
+    const value = String(r?.value ?? "").trim();
+    if (!name || !value) continue;
+    await c.execute({
+      sql: "INSERT INTO tanker_quality (tanker_id, name, value, sort_order) VALUES (?, ?, ?, ?)",
+      args: [n5(tankerId), name, value, order++]
+    });
+  }
+}
 async function advancePurchaseTanker(id, toStatus, data) {
   const c = getClient();
   const res = await c.execute({ sql: "SELECT * FROM purchase_tankers WHERE id = ?", args: [id] });
@@ -7495,6 +7509,7 @@ async function advancePurchaseTanker(id, toStatus, data) {
       args: [data.inside_factory_date || null, id]
     });
   } else if (toStatus === "empty") {
+    await saveTankerQuality(id, Array.isArray(data.quality) ? data.quality : []);
     const receivedQty = n5(data.received_qty);
     if (receivedQty <= 0 || receivedQty > n5(tanker.loaded_qty) + 1e-6) throw new Error("Enter a valid empty quantity");
     const gateQty = await tankerGateReceived(id);
@@ -11439,6 +11454,20 @@ async function runStartupTasks() {
     });
     console.log("[lc5] interest_upfront cleared \u2014 expectation now matches the recorded bill");
   }).catch((e) => console.error("[lc5] upfront flag fix failed:", e));
+  await runOnce("tanker_quality_v1", async () => {
+    const c = getClient();
+    await c.execute(`CREATE TABLE IF NOT EXISTS tanker_quality (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tanker_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      value TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )`);
+    await c.execute(
+      "CREATE INDEX IF NOT EXISTS idx_tanker_quality_tanker ON tanker_quality(tanker_id)"
+    );
+  }).catch((e) => console.error("[tankers] quality table failed:", e));
   startRevisionWatcher();
 }
 
