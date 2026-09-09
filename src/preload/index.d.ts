@@ -97,6 +97,10 @@ export interface Api {
     saveOpening: (values: Row) => Promise<{ id: number }>
     openingLog: (supplierId: number, productId: number) => Promise<Row[]>
   }
+  orderQuality: {
+    list: (id: number) => Promise<Row[]>
+    save: (id: number, rows: Row[]) => Promise<{ id: number }>
+  }
   tankers: {
     list: (all?: boolean, forModule?: string) => Promise<Row[]>
     create: (values: Row) => Promise<{ id: number }>
@@ -206,6 +210,7 @@ export interface Api {
   outsideTanker: {
     list: (date?: string) => Promise<Row[]>
     save: (v: Row) => Promise<{ id: number }>
+    nil: (date: string, slot: string) => Promise<{ id: number }>
     remove: (id: number) => Promise<{ ok: true }>
   }
   stockOpening: {
@@ -308,6 +313,7 @@ export interface Api {
     waivedOuts: () => Promise<Row[]>
     waiveOut: (group: string, reason: string) => Promise<{ group: string }>
     unwaiveOut: (group: string) => Promise<{ group: string }>
+    waiveOuts: (groups: string[], reason: string) => Promise<{ done: string[]; failed: { group: string; error: string }[] }>
     partyCategories: () => Promise<Row[]>
     forRecord: (q: { orderId?: number; saleIds?: number[]; invoiceGroup?: string }) => Promise<{ rows: Row[]; hidden: number; window_from: string }>
     create: (values: Row) => Promise<{ id: number }>

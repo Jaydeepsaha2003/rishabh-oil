@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { AlertTriangle, ArrowDownLeft, ArrowLeft, Beaker, Boxes, CalendarDays, CheckCircle2, ChevronRight, Factory, Pencil, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -94,6 +94,32 @@ export function Production(): React.JSX.Element {
   const subOptions = [...new Map(rows.filter((r) => r.subcategory_id).map((r) => [String(r.subcategory_id), String(r.subcategory_name || '')])).entries()]
     .sort((a, b) => a[1].localeCompare(b[1]))
   const anyFilter = !!(prodFilter || recipeFilter)
+  // What the register currently adds up to.
+  //
+  // Off `visible`, which is the filtered set — NOT paged.pageRows. A total
+  // that only counted the page on screen would change when you turned to page
+  // two, which is the one thing a total must never do.
+  //
+  // Grouped by unit rather than summed flat. This page can only produce MT
+  // today (outputs excludes PCS, and every non-PCS product is MT), so in
+  // practice it renders as one figure — but the rows carry their own uom, and
+  // adding tonnes to tins because a historical row disagreed is not a mistake
+  // worth leaving open.
+  const totals = useMemo(() => {
+    const byUom = new Map<string, number>()
+    const days = new Set<string>()
+    for (const r of visible) {
+      const u = String(r.uom || 'MT')
+      byUom.set(u, (byUom.get(u) || 0) + (Number(r.qty) || 0))
+      days.add(String(r.prod_date).slice(0, 10))
+    }
+    return {
+      byUom: [...byUom.entries()].sort((a, b) => b[1] - a[1]) as [string, number][],
+      days: days.size,
+      batches: visible.length
+    }
+  }, [visible])
+
   const paged = usePaged(visible)
   // Days the reader has OPENED, by their own date — every day starts folded.
   //
@@ -1258,6 +1284,31 @@ export function Production(): React.JSX.Element {
               </TableRow>
             </TableHeader>
             <TableBody>
+              {/* First row in the body, so it sits directly under the header
+                  and stays there whichever page you are on. */}
+              {__WEB__ && !loading && visible.length > 0 && (
+                <TableRow className="!border-b-[#C3D2C6] !border-t-2 !border-t-[#C7F03F] !bg-[#EFF5EC] hover:!bg-[#EFF5EC] [&>td]:!py-2.5">
+                  <TableCell colSpan={3} className="!text-[11px] !font-extrabold !uppercase !tracking-[.11em] !text-[#0B3D2E]">
+                    Total produced
+                    <span className="ml-2 font-bold normal-case tracking-normal text-[#5A6B62]">
+                      {totals.batches} batch{totals.batches === 1 ? '' : 'es'}
+                      {totals.days > 1 ? ` across ${totals.days} days` : ''}
+                      {/* Said out loud, because a total that silently answers a
+                          narrower question than the reader thinks is worse than
+                          no total at all. */}
+                      {anyFilter ? ' · filtered' : ''}
+                    </span>
+                  </TableCell>
+                  <TableCell className="!text-right !text-[13.5px] !font-bold !tabular-nums !tracking-[-0.02em] !text-[#0A1F17]">
+                    {totals.byUom.map(([u, q]) => (
+                      <span key={u} className="ml-2 whitespace-nowrap">
+                        {formatNum(q)} <span className="text-[10.5px] font-semibold text-[#5A6B62]">{u}</span>
+                      </span>
+                    ))}
+                  </TableCell>
+                  <TableCell />
+                </TableRow>
+              )}
               {loading ? (
                 <TableRow>
                   <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">

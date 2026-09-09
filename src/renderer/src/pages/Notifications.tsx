@@ -51,7 +51,10 @@ const MODULES: { key: string; label: string; hint: string }[] = [
 // WITHOUT a threshold pulled its two pickers left and nothing lined up with
 // the row above — three ragged columns down the page. A grid fixes the tracks
 // once; an empty cell just stays empty.
-const GRID = 'grid grid-cols-[minmax(0,1fr)_118px_152px_150px_104px] items-center gap-x-3'
+// The two pickers are sized for their LONGEST option in the app's uppercase
+// select face — "JUST SO YOU KNOW" and "WHO HAS ACCESS" — not for the word
+// "Severity". They were 152 and 150 and truncated both.
+const GRID = 'grid grid-cols-[minmax(0,1fr)_118px_180px_174px_104px] items-center gap-x-3'
 
 // Plain English for the settings, said once in the left column. The controls
 // on the right change it; this is what it currently DOES, which is the thing
@@ -65,6 +68,18 @@ const AUD_WORD: Record<string, string> = {
   admins: 'only admins',
   access: 'anyone who can open the page',
   everyone: 'everybody'
+}
+
+// The threshold as a spoken sentence. Built per KIND of threshold rather than
+// by editing the question's words — that produced "Tells you this many days
+// early 7 days", which is what happens when a sentence is assembled from two
+// halves that were each written to stand alone.
+function saysWhen(kind: string, n: number): string {
+  const d = `${n} day${n === 1 ? '' : 's'}`
+  if (kind === 'Lead') return `Warns you ${d} early`
+  if (kind === 'After') return `Only once it has sat ${d}`
+  if (kind === 'Over') return n > 0 ? `Only when over the allowance by ${n}%` : 'Whenever it is over the allowance'
+  return `${kind} ${n}`
 }
 
 const SEV: Record<string, { label: string; chip: string; mark: string }> = {
@@ -285,7 +300,7 @@ export function Notifications(): React.JSX.Element {
                   row. Nine copies of "HOW IMPORTANT" down a page is noise, and
                   it was what made each row look like its own little form. */}
               {isOpen && (
-                <div className={cn(GRID, 'border-b border-b-[#EAF0E9] bg-white px-[18px] py-1.5 pl-[52px]')}>
+                <div className={cn(GRID, 'border-b border-b-[#EAF0E9] bg-white px-[18px] py-1.5 pl-[74px]')}>
                   <span />
                   <span className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#8FA79B]">When</span>
                   <span className="text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#8FA79B]">How important</span>
@@ -314,7 +329,10 @@ export function Notifications(): React.JSX.Element {
                         )}
                         style={__WEB__ ? { borderLeft: `3px solid ${r.enabled ? sev.mark : 'transparent'}` } : undefined}
                       >
-                        <div className={cn(GRID, 'relative pl-[34px]')}>
+                        {/* 56px clears the switch, which is 44 wide. It
+                            was 34, and the switch sat on the first letter of
+                            every rule's name. */}
+                        <div className={cn(GRID, 'relative pl-[56px]')}>
                           <Switch
                             checked={!!r.enabled}
                             disabled={busy === r.key || !isAdmin}
@@ -324,14 +342,11 @@ export function Notifications(): React.JSX.Element {
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="text-[13px] font-extrabold text-[#0A1F17]">{r.label}</span>
-                              <span
-                                className={cn(
-                                  'rounded-[2px] border px-[7px] py-[2px] text-[10px] font-extrabold uppercase tracking-[.08em]',
-                                  sev.chip
-                                )}
-                              >
-                                {sev.label}
-                              </span>
+                              {/* No severity chip. It read NORMAL while the
+                                  picker beside it read JUST SO YOU KNOW — two
+                                  words for one fact on one row. The coloured
+                                  edge and the picker say it; the chip was a
+                                  third voice. */}
                               {!isDefault && (
                                 <span className="rounded-[2px] border border-[#C3B78F] bg-[#FDFBF3] px-[7px] py-[2px] text-[10px] font-extrabold uppercase tracking-[.08em] text-[#8A5300]">
                                   Changed
@@ -348,9 +363,7 @@ export function Notifications(): React.JSX.Element {
                             <p className="mt-1 text-[11.5px] font-bold leading-[1.5] text-[#0B6B45]">
                               {r.enabled ? (
                                 <>
-                                  {spec
-                                    ? `${String(spec.question).replace(/^Tell me /, 'Tells you ').replace(/^Only /, 'Only ')} ${r.threshold} ${spec.unit}`
-                                    : 'Tells you as soon as it happens'}
+                                  {spec ? saysWhen(String(spec.label), Number(r.threshold)) : 'Tells you as soon as it happens'}
                                   {' · '}
                                   {SEV_WORD[String(r.severity)] || r.severity}
                                   {' · '}

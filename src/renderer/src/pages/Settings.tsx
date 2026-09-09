@@ -310,6 +310,29 @@ function UsersManager(): React.JSX.Element {
     })
   }
 
+  // Special access: the readings desk. The lab's person opens Purchase entries,
+  // sees the invoices, and records technical parameters against them — and that
+  // is the whole of it. No New purchase, no row menu, no stage moves, and the
+  // other two tabs are not there. A job, not a combination of tick boxes, for
+  // the same reason as the unloading desk above.
+  const readingsDesk = rightsOf('orders').scope === 'readings'
+  function setReadingsDesk(on: boolean): void {
+    setForm((p) => {
+      const perms = { ...(p.permissions || {}) }
+      if (!on) {
+        const cur = perms.orders
+        if (cur && typeof cur === 'object') {
+          const o = { ...(cur as Record<string, unknown>) }
+          delete o.scope
+          perms.orders = o
+        }
+      } else {
+        perms.orders = { view: true, create: false, edit: true, delete: false, scope: 'readings' }
+      }
+      return { ...p, permissions: perms }
+    })
+  }
+
   // Fill one window down the whole grid. Typing 7 into Visible and 2 into Entry
   // is the common setup — a week of history to read, two days to key — and
   // doing it a row at a time across two dozen modules invites a missed box.
@@ -430,6 +453,39 @@ function UsersManager(): React.JSX.Element {
                       {unloadDesk && (
                         <p className="mt-1.5 rounded bg-amber-200/70 px-2 py-1 text-[11px] font-medium text-amber-900">
                           The Sales row in the grid below is overridden while this is on.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  className={cn(
+                    'mt-3 rounded-lg border-2 p-3 transition-colors',
+                    readingsDesk ? 'border-sky-500 bg-sky-100/70' : 'border-dashed border-sky-400/70 bg-sky-50/50'
+                  )}
+                >
+                  <div className="flex items-start gap-3">
+                    <Switch checked={readingsDesk} onCheckedChange={setReadingsDesk} className="mt-0.5 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <ShieldCheck className={cn('h-4 w-4 shrink-0', readingsDesk ? 'text-sky-700' : 'text-sky-600/70')} />
+                        <span className="text-[13px] font-bold text-sky-900">Special access — technical parameters only</span>
+                        {readingsDesk ? (
+                          <Badge className="bg-sky-600 text-[10px] uppercase tracking-wide hover:bg-sky-600">On</Badge>
+                        ) : (
+                          <span className="text-[10px] font-semibold uppercase tracking-widest text-sky-700/60">Off</span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-[11px] leading-relaxed text-sky-900/85">
+                        Turns the Purchases page into <b>Purchase entries</b> alone: the invoices, and against each one the{' '}
+                        <b>technical parameters</b> flask. That flask is the only control on the page — no New purchase, no
+                        Report, no row menu, no tanker movement, no unmapped invoices. The server refuses any other change
+                        from this user, whatever the screen shows.
+                      </p>
+                      {readingsDesk && (
+                        <p className="mt-1.5 rounded bg-sky-200/70 px-2 py-1 text-[11px] font-medium text-sky-900">
+                          The Purchases row in the grid below is overridden while this is on.
                         </p>
                       )}
                     </div>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { ClipboardList, Plus, Trash2 } from 'lucide-react'
+import { CheckCircle2, ClipboardList, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -164,11 +164,28 @@ export function OutsideTankerLog({
     }
   }
 
-  const bySlot = SLOTS.map((s) => ({
-    ...s,
-    rows: rows.filter((r) => String(r.slot) === s.v),
-    total: rows.filter((r) => String(r.slot) === s.v).reduce((t, r) => t + (Number(r.tankers) || 0), 0)
-  }))
+  // A round is one of three things, not two: uncounted, counted and empty, or
+  // counted with lorries in it. The NIL row is what separates the first two.
+  const bySlot = SLOTS.map((s) => {
+    const all = rows.filter((r) => String(r.slot) === s.v)
+    const real = all.filter((r) => String(r.kind) !== 'nil')
+    return {
+      ...s,
+      rows: real,
+      nil: all.find((r) => String(r.kind) === 'nil') || null,
+      total: real.reduce((t, r) => t + (Number(r.tankers) || 0), 0)
+    }
+  })
+
+  async function recordNil(slot: string): Promise<void> {
+    try {
+      await window.api.outsideTanker.nil(date, slot)
+      await load()
+      toast.success('Recorded — nothing outside for that round')
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
 
   return (
     <>
@@ -320,9 +337,36 @@ export function OutsideTankerLog({
                 </span>
               </div>
               {s.rows.length === 0 ? (
-                <div className="px-3.5 py-4 text-center text-[12px] font-semibold text-[#8FA79B]">
-                  Not counted yet.
-                </div>
+                s.nil ? (
+                  // Counted, and clear. Says so plainly, and can be taken back
+                  // if a lorry turns up that was missed.
+                  <div className="flex flex-wrap items-center justify-center gap-2 bg-[#F7FBF4] px-3.5 py-3.5 text-center">
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-[#0B6B45]" />
+                    <span className="text-[12.5px] font-bold text-[#0B6B45]">Counted — nothing was outside.</span>
+                    <button
+                      type="button"
+                      className="text-[11.5px] font-bold text-[#5A6B62] underline-offset-2 hover:underline"
+                      onClick={() => void remove(Number(s.nil?.id))}
+                    >
+                      Undo
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center justify-center gap-2.5 px-3.5 py-3.5 text-center">
+                    <span className="text-[12px] font-semibold text-[#8FA79B]">Not counted yet.</span>
+                    {/* The walk happening and finding nothing is a real answer,
+                        and until it could be given, an empty round and a
+                        forgotten one looked exactly the same. */}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="!h-8 !gap-1.5 !rounded-[3px] !border-[#C3D2C6] !text-[12px] !font-bold !text-[#0B6B45] hover:!bg-[#EFF5EC]"
+                      onClick={() => void recordNil(s.v)}
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5" /> Nothing outside — record NIL
+                    </Button>
+                  </div>
+                )
               ) : (
                 <Table className="text-[12px] [&_td]:px-3 [&_td]:py-1.5 [&_th]:h-9 [&_th]:px-3">
                   <TableHeader>

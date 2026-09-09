@@ -1060,6 +1060,36 @@ export async function runStartupTasks(): Promise<void> {
     }
   }).catch((e) => console.error('[notify] message templates failed:', e))
 
+  // Readings for an invoice with no tanker to hang them on.
+  //
+  // A consignment purchase is drawn from stock already in the yard: there is
+  // no tanker, so there was nowhere for its lab result to go and the register
+  // showed every one of those invoices as having nothing to record. Its own
+  // table rather than a nullable order_id on tanker_quality — tanker_id there
+  // is NOT NULL, and relaxing it means rebuilding the table for a second key
+  // that is never set on the same row.
+  await runOnce('order_quality_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS order_quality (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      value TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )`)
+    await c.execute('CREATE INDEX IF NOT EXISTS idx_order_quality_order ON order_quality(order_id)')
+  }).catch((e) => console.error('[orders] order quality table failed:', e))
+
+  // Why an EX tanker moved with no freight. A zero with a reason is a
+  // decision; a zero on its own is a field somebody skipped, and the two used
+  // to be indistinguishable — so the field was simply required.
+  await runOnce('tanker_freight_remark_v1', async () => {
+    await getClient().execute('ALTER TABLE purchase_tankers ADD COLUMN freight_remark TEXT').catch((e) => {
+      if (!/duplicate column/i.test(String(e))) throw e
+    })
+  }).catch((e) => console.error('[tankers] freight remark column failed:', e))
+
   // The gate times the website wrote while the server ran in UTC — 09:53 IST
   // stored as 04:23, and anything entered before 05:30 IST filed under the
   // day before. src/server/tz.ts stops it recurring; this repairs what is

@@ -368,6 +368,8 @@ export async function listOrders(forModule?: string): Promise<Row[]> {
              WHERE pt.order_id = o.id AND pt.status = 'empty'
                AND EXISTS (SELECT 1 FROM tanker_quality tq
                             WHERE tq.tanker_id = pt.id AND TRIM(COALESCE(tq.value, '')) <> '')) AS quality_tankers,
+           (SELECT COUNT(*) FROM order_quality oq
+             WHERE oq.order_id = o.id AND TRIM(COALESCE(oq.value, '')) <> '') AS quality_on_order,
            -- Shortage rolled up from the tankers. The order's own
            -- actual_shortage_qty columns are only written on the tanker-less
            -- receipt path, so a tanker purchase showed nothing at all.
@@ -1624,6 +1626,32 @@ export async function saveTankerQuality(tankerId: number, rows: Row[]): Promise<
   }
 }
 
+// The same two acts for an invoice with no tanker — see order_quality_v1.
+export async function saveOrderQuality(orderId: number, rows: Row[]): Promise<void> {
+  const c = getClient()
+  await c.execute({ sql: 'DELETE FROM order_quality WHERE order_id = ?', args: [n(orderId)] })
+  let i = 0
+  for (const r of rows) {
+    const name = String(r.name || '').trim()
+    const value = String(r.value ?? '').trim()
+    // Blank is not saved — "not tested" and "tested at nothing" differ.
+    if (!name || !value) continue
+    await c.execute({
+      sql: 'INSERT INTO order_quality (order_id, name, value, sort_order) VALUES (?, ?, ?, ?)',
+      args: [n(orderId), name, value, i++]
+    })
+  }
+}
+
+export async function listOrderQuality(orderId: number): Promise<Row[]> {
+  return toPlain(
+    await getClient().execute({
+      sql: 'SELECT id, name, value, sort_order FROM order_quality WHERE order_id = ? ORDER BY sort_order, id',
+      args: [n(orderId)]
+    })
+  )
+}
+
 export async function listTankerQuality(tankerId: number): Promise<Row[]> {
   const res = await getClient().execute({
     sql: 'SELECT id, name, value, sort_order FROM tanker_quality WHERE tanker_id = ? ORDER BY sort_order, id',
@@ -1789,16 +1817,20 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
     const isEx = tankerIsEx(data.condition !== undefined ? data.condition : tanker.condition, bt)
     const rate = n(data.transport_rate_per_ton)
     const transporterId = data.transporter_id ? n(data.transporter_id) : (tanker.transporter_id ?? null)
-    if (isEx && rate <= 0) {
+    // No freight on an EX load is allowed, but only SAID. "Supplier's own
+    // lorry", "freight is in the invoice rate" — a zero with a reason is a
+    // decision the register can carry. A bare zero is a skipped field.
+    const freightRemark = String(data.freight_remark || '').trim()
+    if (isEx && rate <= 0 && !freightRemark) {
       throw new Error(
-        `Tanker ${tanker.tanker_no} is on EX terms, so the transporter rate per ${String(tanker.uom || 'MT')} is required before it moves to In transit.`
+        `Tanker ${tanker.tanker_no} is on EX terms. Enter the transporter rate per ${String(tanker.uom || 'MT')}, or put 0 and say why there is no freight.`
       )
     }
     const sets = ["status = 'transit'", 'transit_date = ?', 'source_id = ?', 'expected_delivery_date = ?']
     const args: (string | number | null)[] = [transitDate || null, sourceId, expected]
     if (isEx) {
-      sets.push('transport_rate_per_ton = ?', 'transporter_id = ?')
-      args.push(rate, transporterId)
+      sets.push('transport_rate_per_ton = ?', 'transporter_id = ?', 'freight_remark = ?')
+      args.push(rate, transporterId, rate > 0 ? null : freightRemark || null)
     }
     args.push(id)
     await c.execute({
@@ -1867,7 +1899,13 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
     }
     const shortage = Math.max(0, n(tanker.loaded_qty) - receivedQty)
     const excess = Math.max(0, shortage - (n(tanker.loaded_qty) * pct) / 100)
-    const penalty = isEx ? excess * n(b.rate_per_uom) : 0
+    // Docked from the freight, so with no freight there is nothing to dock it
+    // from. An EX tanker that moved with no rate agreed — and said why, at the
+    // transit step — is not charged a shortage against a transporter who is
+    // not being paid. Read off the row as a fallback: the rate was agreed at
+    // transit and need not be re-sent here.
+    const agreedRate = n(data.transport_rate_per_ton ?? tanker.transport_rate_per_ton)
+    const penalty = isEx && agreedRate > 0 ? excess * n(b.rate_per_uom) : 0
     const transporterId = isEx ? n(data.transporter_id) : null
     await c.execute({
       sql: `UPDATE purchase_tankers SET status = 'empty', empty_date = ?, received_qty = ?,
@@ -2021,7 +2059,11 @@ export async function advanceOrder(
     const allowedQty = (orderedQty * pct) / 100
     const actualShortage = Math.max(0, orderedQty - receivedQty)
     const excessShortage = Math.max(0, actualShortage - allowedQty)
-    const shortageCharge = isEx ? excessShortage * bargainRate : 0
+    // A shortage is DOCKED FROM THE FREIGHT, so with no freight there is
+    // nothing to dock it from. A tanker that came with no rate agreed used to
+    // be charged the shortage anyway — against a transporter who was never
+    // going to be paid a rupee.
+    const shortageCharge = isEx && transportRate > 0 ? excessShortage * bargainRate : 0
     const transporterId = isEx ? n(data.transporter_id) : null
 
     sets.push(

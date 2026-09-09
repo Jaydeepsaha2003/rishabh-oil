@@ -136,6 +136,10 @@ const api = {
     openingLog: (supplierId: number, productId: number): Promise<Row[]> =>
       ipcRenderer.invoke('consignment:openingLog', { supplierId, productId })
   },
+  orderQuality: {
+    list: (id: number): Promise<Row[]> => ipcRenderer.invoke('orders:quality', { id }),
+    save: (id: number, rows: Row[]): Promise<{ id: number }> => ipcRenderer.invoke('orders:saveQuality', { id, rows })
+  },
   tankers: {
     list: (all?: boolean, forModule?: string): Promise<Row[]> =>
       ipcRenderer.invoke('tankers:list', { all, forModule }),
@@ -283,6 +287,8 @@ const api = {
   outsideTanker: {
     list: (date?: string): Promise<Row[]> => ipcRenderer.invoke('outsideTanker:list', { date }),
     save: (v: Row): Promise<{ id: number }> => ipcRenderer.invoke('outsideTanker:save', v),
+    nil: (date: string, slot: string): Promise<{ id: number }> =>
+      ipcRenderer.invoke('outsideTanker:nil', { date, slot }),
     remove: (id: number): Promise<{ ok: true }> => ipcRenderer.invoke('outsideTanker:remove', { id })
   },
   stockOpening: {
@@ -439,6 +445,8 @@ const api = {
       ipcRenderer.invoke('gate:waiveOut', { group, reason }),
     unwaiveOut: (group: string): Promise<{ group: string }> =>
       ipcRenderer.invoke('gate:unwaiveOut', { group }),
+    waiveOuts: (groups: string[], reason: string): Promise<{ done: string[]; failed: { group: string; error: string }[] }> =>
+      ipcRenderer.invoke('gate:waiveOuts', { groups, reason }),
     partyCategories: (): Promise<Row[]> => ipcRenderer.invoke('gate:partyCategories'),
     // Every gate entry behind one purchase or one sales invoice.
     forRecord: (q: { orderId?: number; saleIds?: number[]; invoiceGroup?: string }): Promise<{ rows: Row[]; hidden: number; window_from: string }> =>

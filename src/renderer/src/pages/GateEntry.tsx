@@ -225,6 +225,9 @@ export function GateEntry(): React.JSX.Element {
   const [waiveFor, setWaiveFor] = useState<Row | null>(null)
   const [waiveReason, setWaiveReason] = useState('')
   const [waiving, setWaiving] = useState(false)
+  // Ticked for a bulk "not required". Twelve old invoices should not be twelve
+  // dialogs and twelve identical reasons.
+  const [waiveSel, setWaiveSel] = useState<Set<string>>(new Set())
   // Lets the gateman reach a party the category filter would hide.
   const [showAllParties, setShowAllParties] = useState(false)
   const [products, setProducts] = useState<Row[]>([])
@@ -370,6 +373,19 @@ export function GateEntry(): React.JSX.Element {
     if (!waiveFor) return
     setWaiving(true)
     try {
+      if (waiveFor.bulk) {
+        const res = await window.api.gate.waiveOuts([...waiveSel], waiveReason)
+        setWaiveFor(null)
+        setWaiveReason('')
+        setWaiveSel(new Set())
+        await load()
+        if (res.failed.length) {
+          toast.error(`${res.done.length} marked; ${res.failed.length} could not be — ${res.failed[0].error}`)
+        } else {
+          toast.success(`${res.done.length} invoice${res.done.length === 1 ? '' : 's'} marked — no gate-out needed`)
+        }
+        return
+      }
       await window.api.gate.waiveOut(String(waiveFor.invoice_group), waiveReason)
       setWaiveFor(null)
       setWaiveReason('')
@@ -1491,13 +1507,68 @@ export function GateEntry(): React.JSX.Element {
                 <div className="rounded-xl border border-dashed border-amber-300 bg-amber-50/60 px-4 py-3 text-[13px] text-amber-900">
                   No tanker at the gate yet, but {noTanker.length} dispatched invoice{noTanker.length === 1 ? '' : 's'} still {noTanker.length === 1 ? 'needs' : 'need'} one recorded.
                 </div>
+                {/* The selection bar. Appears only once something is ticked, so
+                    the common case — one invoice, one Record — is not made to
+                    walk past a toolbar it has no use for. */}
+                <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-[12px]">
+                  <button
+                    type="button"
+                    className={cn('font-bold text-[#0B6B45] hover:underline', __WEB__ && '!text-[12px]')}
+                    onClick={() =>
+                      setWaiveSel(waiveSel.size === noTanker.length ? new Set() : new Set(noTanker.map((s) => String(s.invoice_group))))
+                    }
+                  >
+                    {waiveSel.size === noTanker.length ? 'Clear selection' : 'Select all'}
+                  </button>
+                  {waiveSel.size > 0 && (
+                    <>
+                      <span className="rounded-[2px] bg-[#EAF0E9] px-2 py-[3px] font-extrabold tabular-nums text-[#33473E]">
+                        {waiveSel.size} selected
+                      </span>
+                      <Button
+                        size="sm"
+                        className={cn('h-8 text-[12px] font-bold', __WEB__ && '!rounded-[3px] !bg-[#C2700A] hover:!bg-[#8A5300]')}
+                        onClick={() => {
+                          setWaiveReason('')
+                          setWaiveFor({ bulk: true, count: waiveSel.size })
+                        }}
+                      >
+                        Mark {waiveSel.size} not required…
+                      </Button>
+                    </>
+                  )}
+                </div>
                 <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                  {noTanker.map((s) => (
+                  {noTanker.map((s) => {
+                    const g = String(s.invoice_group)
+                    const ticked = waiveSel.has(g)
+                    return (
                     <div
-                      key={String(s.invoice_group)}
-                      className="flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-card px-3 py-2"
+                      key={g}
+                      className={cn(
+                        'flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-card px-3 py-2',
+                        // Ticked reads as ticked from across the room: the
+                        // amber edge becomes a solid forest one, the ground
+                        // warms. Untouched cards stay quiet.
+                        __WEB__ && '!rounded-[4px] !border-[#E4ECE3] !py-2.5 !pl-2.5 transition-colors hover:!border-[#C3D2C6]',
+                        __WEB__ && ticked && '!border-[#0B6B45] !bg-[#F1FAF4]'
+                      )}
                     >
-                      <div className="min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={ticked}
+                        title="Tick to include in a bulk 'not required'"
+                        onChange={(e) =>
+                          setWaiveSel((p) => {
+                            const n = new Set(p)
+                            if (e.target.checked) n.add(g)
+                            else n.delete(g)
+                            return n
+                          })
+                        }
+                        className={cn('h-4 w-4 shrink-0', __WEB__ && '!h-[17px] !w-[17px] !accent-[#0B6B45]')}
+                      />
+                      <div className="min-w-0 flex-1">
                         <div className="truncate text-[12.5px] font-medium">{String(s.customer || '—')}</div>
                         <div className="truncate text-[11px] text-muted-foreground">
                           {String(s.invoice_no || '')} · {formatNum(s.qty)} {String(s.uom || '')}
@@ -1536,7 +1607,8 @@ export function GateEntry(): React.JSX.Element {
                         </Button>
                       </div>
                     </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
             ) : (
@@ -3249,10 +3321,17 @@ export function GateEntry(): React.JSX.Element {
             <DialogTitle>No gate-out required</DialogTitle>
           </DialogHeader>
           <p className="text-[12px] text-muted-foreground">
-            Takes <b>{String(waiveFor?.invoice_no || waiveFor?.invoice_group || '')}</b>
-            {waiveFor?.customer ? <> ({String(waiveFor.customer)})</> : null} off the Gate Out queue for good. The
-            invoice itself is untouched — it stays booked, stock and the ledger do not move, and it is <b>not</b>{' '}
-            cancelled. It moves to Rejected with your reason, and can be put back from there.
+            {waiveFor?.bulk ? (
+              <>Takes <b>{Number(waiveFor.count)} invoices</b></>
+            ) : (
+              <>
+                Takes <b>{String(waiveFor?.invoice_no || waiveFor?.invoice_group || '')}</b>
+                {waiveFor?.customer ? <> ({String(waiveFor.customer)})</> : null}
+              </>
+            )}{' '}
+            off the Gate Out queue for good. The
+            {waiveFor?.bulk ? ' invoices themselves are' : ' invoice itself is'} untouched — {waiveFor?.bulk ? 'they stay' : 'it stays'} booked, stock and the ledger do not move, and {waiveFor?.bulk ? 'none is' : 'it is'} <b>not</b>{' '}
+            cancelled. {waiveFor?.bulk ? 'They move' : 'It moves'} to Rejected with your reason, and can be put back from there.
           </p>
           <div className="flex flex-col gap-1.5">
             <Label>Reason <span className="text-red-600">*</span></Label>
@@ -3267,7 +3346,7 @@ export function GateEntry(): React.JSX.Element {
           <DialogFooter>
             <Button variant="outline" onClick={() => setWaiveFor(null)} disabled={waiving}>Cancel</Button>
             <Button onClick={() => void saveWaiver()} disabled={waiving || !waiveReason.trim()}>
-              {waiving ? 'Saving…' : 'Mark not required'}
+              {waiving ? 'Saving…' : waiveFor?.bulk ? `Mark ${Number(waiveFor.count)} not required` : 'Mark not required'}
             </Button>
           </DialogFooter>
         </DialogContent>

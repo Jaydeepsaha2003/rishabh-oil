@@ -35,6 +35,8 @@ import {
   replaceTanker,
   listTankerQuality,
   saveTankerQuality,
+  listOrderQuality,
+  saveOrderQuality,
   supplierFyTaxable,
   listOrderBargains,
   listOrderBargainInterest,
@@ -77,7 +79,7 @@ import {
   deleteStockTransfer
 } from './stock'
 import { listStockOpenings, saveStockOpenings, stockOpeningDate } from './stockopenings'
-import { listOutsideTankers, saveOutsideTanker, removeOutsideTanker } from './outsidetankers'
+import { listOutsideTankers, saveOutsideTanker, recordNilRound, removeOutsideTanker } from './outsidetankers'
 import {
   listFormulationSubcategories,
   saveFormulationSubcategory,
@@ -135,7 +137,7 @@ import {
   updateGateEntry,
   completeGateEntry,
   deleteGateEntry, saveGateWeights, skipGateWeighment, partyCategories,
-  waiveGateOut, unwaiveGateOut, listWaivedGateOuts,
+  waiveGateOut, unwaiveGateOut, waiveGateOuts, listWaivedGateOuts,
   rejectGateEntry, unrejectGateEntry, gateEntriesFor } from './gate'
 import {
   listCompanies,
@@ -379,7 +381,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^consignment:invoices$|^tankers:quality$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^stockOpening:list$|^stockOpening:date$|^formulationSubcategory:list$|^bd:allRepayments$|^bd:linkedOrders$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:unattributedReturns$|^tbill:orphans$/
   // Writes that shouldn't clutter the audit trail (infra / no business meaning).
   const AUDIT_SKIP = new Set(['config:get', 'config:save', 'session:setUser'])
 
@@ -532,6 +534,11 @@ export function registerIpc(): void {
   handle('tankers:quality', (_e, { id }: { id: number }) => listTankerQuality(Number(id)))
   handle('tankers:saveQuality', async (_e, { id, rows }: { id: number; rows: Row[] }) => {
     await saveTankerQuality(Number(id), Array.isArray(rows) ? rows : [])
+    return { id: Number(id) }
+  })
+  handle('orders:quality', (_e, { id }: { id: number }) => listOrderQuality(Number(id)))
+  handle('orders:saveQuality', async (_e, { id, rows }: { id: number; rows: Row[] }) => {
+    await saveOrderQuality(Number(id), Array.isArray(rows) ? rows : [])
     return { id: Number(id) }
   })
   handle('orders:create', (_e, { values }: { values: Row }) => createOrder(values))
@@ -703,6 +710,7 @@ export function registerIpc(): void {
   handle('outsideTanker:list', (_e, { date }: { date?: string } = {}) => listOutsideTankers(date))
   handle('outsideTanker:save', (_e, v: Record<string, unknown>) => saveOutsideTanker(v))
   handle('outsideTanker:remove', (_e, { id }: { id: number }) => removeOutsideTanker(id))
+  handle('outsideTanker:nil', (_e, { date, slot }: { date: string; slot: string }) => recordNilRound(date, slot))
   handle('stockOpening:list', (_e, { companyId }: { companyId?: number } = {}) =>
     listStockOpenings(companyId)
   )
@@ -856,6 +864,7 @@ export function registerIpc(): void {
   handle('notify:clear', (_e, a) => clearNotifications(Number(a.userId) || 0, !!a.isAdmin))
   handle('gate:waiveOut', (_e, a) => waiveGateOut(String(a.group), String(a.reason || '')))
   handle('gate:unwaiveOut', (_e, a) => unwaiveGateOut(String(a.group)))
+  handle('gate:waiveOuts', (_e, a) => waiveGateOuts((a.groups as string[]) || [], String(a.reason || '')))
   handle('gate:partyCategories', () => partyCategories())
   handle(
     'gate:forRecord',

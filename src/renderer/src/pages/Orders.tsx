@@ -34,6 +34,8 @@ import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 import { isManufacturingParty } from '@/lib/constants'
 import { useEntryWindow } from '@/lib/useEntryWindow'
+import { loadUser } from '@/lib/session'
+import { moduleScope } from '@/lib/modules'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>
@@ -160,13 +162,15 @@ function tankerDelay(row: Row): TankerDelay | null {
 // a filled red row is the loudest thing on the page, which is right, and a
 // filled green one is unmistakably the opposite rather than more of the same.
 //
-// The plain ETA keeps its light chip. It is on most rows, it is not a verdict,
-// and it already carries the forest day-count pill to give it weight.
+// The plain ETA is the one non-verdict, and it is violet — its own colour,
+// distinct from the green/amber/red of the three verdicts AND from the green
+// stage chip stacked above it, so it is findable without shouting. No pill
+// inside it: a box inside a box read as a second control sitting in the chip.
 const ETA_TONE: Record<TankerDelay['kind'], string> = {
   late: 'border-[#8C2F26] bg-[#B3261E] text-white',
   today: 'border-[#8A5300] bg-[#C2700A] text-white',
   good: 'border-[#095538] bg-[#0B6B45] text-white',
-  eta: 'border-[#C3D2C6] bg-[#F1F7EF] text-[#0A1F17]',
+  eta: 'border-[#C7BCF0] bg-[#EDE9FB] text-[#3D3179]',
   unset: 'border-[#E4ECE3] bg-[#F7FAF6] text-[#8FA79B]'
 }
 
@@ -338,6 +342,7 @@ function stageFacts(row: Row, key: string): { k: string; v: string }[] {
       const basis = row.received_qty != null ? Number(row.received_qty) : Number(row.loaded_qty) || 0
       add('Freight', basis ? `≈ ${formatINR(Number(row.transport_rate_per_ton) * basis)}` : '')
     }
+    add('No freight because', txt(row.freight_remark))
   } else if (key === 'outside_factory') {
     add('Outside on', row.outside_factory_date ? formatDate(row.outside_factory_date) : '')
     add('Gate entry', txt(row.gate_entry_no))
@@ -672,6 +677,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('orders')
+  // The readings desk: may record technical parameters against a purchase and
+  // nothing else. For them the page is Purchase entries alone, with the flask
+  // as its only control — every other button, tab and row menu is not
+  // rendered. Not disabled: not there. The server refuses the writes anyway
+  // (access-gate.ts, scope 'readings'); this keeps the screen honest about it.
+  const readingsOnly = moduleScope(loadUser(), 'orders') === 'readings'
   // Which tab, kept in the URL. A refresh used to land back on Tanker
   // movement whatever you were looking at, which on a page reached by reload
   // rather than by clicking is most of the time. In the address it also means
@@ -1097,6 +1108,29 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
   // on hover so nothing is lost. The year is added only when it differs from
   // the window's own, since "August" inside a September 2026 window needs no
   // year and "August 2025" very much does.
+  // What to call the first band.
+  //
+  // "Loaded & received within 01-09-2026 – 09-09-2026" spelled out a window
+  // that the filter strip directly above it already states, twice, in the two
+  // date boxes it was read from. When the window sits inside one month the
+  // month IS the answer — this is the month's own invoicing — and the sibling
+  // band below already reads "August transit", so the two now name themselves
+  // the same way.
+  //
+  // A window spanning several months keeps the range: there is no one month to
+  // name, and "invoicing" alone would not say which.
+  const inRangeLabel = useMemo(() => {
+    const a = String(pivotStart || '').slice(0, 7)
+    const b = String(pivotEnd || '').slice(0, 7)
+    if (!/^\d{4}-\d{2}$/.test(a) || a !== b) return ''
+    const [y, mo] = a.split('-')
+    const name = new Date(Number(y), Number(mo) - 1, 1).toLocaleString('en-GB', { month: 'long' })
+    // The year only when it is not the current one — "September invoicing" for
+    // this year's, "September 2025 invoicing" for an old window somebody has
+    // scrolled back to.
+    return y === String(new Date().getFullYear()) ? `${name} invoicing` : `${name} ${y} invoicing`
+  }, [pivotStart, pivotEnd])
+
   const outOfRangeMonth = useMemo(() => {
     const keys = new Set<string>()
     for (const t of outOfRangeTankers) {
@@ -1184,13 +1218,12 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 )}
                 {d.kind === 'eta' ? (
                   <>
-                    <span className="text-[#5A6B62]">ETA</span>
+                    <span className="text-[#5B4BA8]">ETA</span>
                     <span className="doc-ref">{formatDate(d.eta || '')}</span>
-                    {/* How many days that is, on the accent — the date alone
-                        makes you count, and counting is the whole question. */}
-                    <span className="rounded-[2px] bg-[#0B3D2E] px-[5px] py-[1px] text-[9.5px] text-[#C7F03F]">
-                      {d.inDays}d
-                    </span>
+                    {/* How many days that is — the date alone makes you count,
+                        and counting is the whole question. Just the bold word:
+                        the chip's colour is the highlight now. */}
+                    <span className="font-extrabold">· {d.inDays}d</span>
                   </>
                 ) : (
                   d.label
@@ -1859,6 +1892,20 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     const emptied = tankersForBooking.filter(
       (t) => Number(t.order_id) === Number(order.id) && String(t.status) === 'empty'
     )
+    // No tanker at all — a consignment invoice — so the readings belong to the
+    // invoice itself. One block, labelled as such.
+    if (!emptied.length && !Number(order.tanker_count) && String(order.status) === 'received') {
+      const saved = await window.api.orderQuality.list(Number(order.id)).catch(() => [] as Row[])
+      setQualitySets([
+        {
+          tanker: { id: 0, order_level: true, tanker_no: 'This invoice', received_qty: order.ordered_qty, uom: order.uom },
+          rows: saved.length
+            ? saved.map((q: Row) => ({ name: String(q.name || ''), value: String(q.value ?? '') }))
+            : TANKER_QUALITY_DEFAULTS.map((name) => ({ name, value: '' }))
+        }
+      ])
+      return
+    }
     const sets = await Promise.all(
       emptied.map(async (t) => {
         const saved = await window.api.tankers.quality(Number(t.id)).catch(() => [] as Row[])
@@ -1883,7 +1930,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
     if (!qualityFor) return
     setQualityBusy(true)
     try {
-      for (const set of qualitySets) await window.api.tankers.saveQuality(Number(set.tanker.id), set.rows)
+      for (const set of qualitySets) {
+        if (set.tanker.order_level) await window.api.orderQuality.save(Number(qualityFor.id), set.rows)
+        else await window.api.tankers.saveQuality(Number(set.tanker.id), set.rows)
+      }
       setQualityFor(null)
       await load()
       toast.success(qualitySets.length === 1 ? 'Readings saved' : `Readings saved for ${qualitySets.length} tankers`)
@@ -2929,6 +2979,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 ]}
                 rows={visibleTankers}
               />
+              {!readingsOnly && (<>
               <Button variant="outline" size="sm" onClick={() => setReportOpen(true)}>
                 <BarChart3 className="h-4 w-4" /> Report
               </Button>
@@ -2947,6 +2998,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
               >
                 <Plus className="h-4 w-4" /> New purchase
               </Button>
+              </>)}
             </div>
           }
         />
@@ -4102,7 +4154,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
         </div>
       ) : (
         <div className="px-4 pb-6 pt-3">
-          <Tabs value={tab} onValueChange={setTab}>
+          <Tabs value={readingsOnly ? 'purchases' : tab} onValueChange={setTab}>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
               {/* Website: the handoff's underline tabs — a bar under the live
                   one rather than a pill, with the count as a chip beside the
@@ -4113,7 +4165,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     '!h-auto !gap-6 !rounded-none !border-b !border-[#D6E2D6] !bg-transparent !p-0 [&>button]:!h-[52px] [&>button]:!rounded-none [&>button]:!border-b-[3px] [&>button]:!border-transparent [&>button]:!bg-transparent [&>button]:!px-0 [&>button]:!text-[14.5px] [&>button]:!font-semibold [&>button]:!text-[#5A6B62] [&>button]:!shadow-none [&>button[data-state=active]]:!border-[#0B3D2E] [&>button[data-state=active]]:!font-extrabold [&>button[data-state=active]]:!text-[#0A1F17]'
                 )}
               >
-              <TabsTrigger value="tankers">
+              <TabsTrigger value="tankers" className={cn(readingsOnly && '!hidden')}>
                 Tanker movement
                 {/* The count the page is actually showing — the two group
                     cards below always add up to exactly this. It used to be
@@ -4136,7 +4188,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                 )}
               </TabsTrigger>
               <TabsTrigger value="purchases">Purchase entries</TabsTrigger>
-              <TabsTrigger value="unmapped">
+              <TabsTrigger value="unmapped" className={cn(readingsOnly && '!hidden')}>
                 Unmapped invoices
                 {unmapped.length > 0 && (
                   <span
@@ -4535,7 +4587,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   >
                     <CalendarDays className={cn('h-3.5 w-3.5 text-emerald-600', __WEB__ && '!h-4 !w-4 !text-[#C7F03F]')} />
                     <span className={cn('text-xs font-semibold text-emerald-800', __WEB__ && '!text-[13.5px] !font-extrabold !tracking-[-0.01em] !text-white')}>
-                      Loaded & received within {formatDate(pivotStart)} – {formatDate(pivotEnd)}
+                      {__WEB__ && inRangeLabel ? (
+                        inRangeLabel
+                      ) : (
+                        <>Loaded &amp; received within {formatDate(pivotStart)} – {formatDate(pivotEnd)}</>
+                      )}
                     </span>
                     <Badge
                       variant="success"
@@ -4584,10 +4640,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                           : undefined
                       }
                     >
-                      {__WEB__ && outOfRangeMonth.label
-                        ? `${outOfRangeMonth.label} transit from `
-                        : 'Loaded outside '}
-                      {formatDate(pivotStart)} – {formatDate(pivotEnd)}
+                      {/* The window is already stated by the band above and by
+                          the filter strip; repeating it here just to say these
+                          loads were NOT in it added a date range to a heading
+                          whose whole job is the month. */}
+                      {__WEB__ && outOfRangeMonth.label ? (
+                        `${outOfRangeMonth.label} transit`
+                      ) : (
+                        <>Loaded outside {formatDate(pivotStart)} – {formatDate(pivotEnd)}</>
+                      )}
                     </span>
                     <Badge
                       variant="warning"
@@ -4862,8 +4923,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                               panel it opens says the rest. */}
                           <TableCell className="w-[34px] !px-0 text-center" onClick={(e) => e.stopPropagation()}>
                             {(() => {
-                              const emptied = Number(row.empty_tankers) || 0
-                              const done = Number(row.quality_tankers) || 0
+                              // A consignment invoice has no tanker; the unit
+                              // is the invoice itself, once it is received.
+                              const noTankers = !Number(row.tanker_count)
+                              const emptied = noTankers
+                                ? (String(row.status) === 'received' ? 1 : 0)
+                                : Number(row.empty_tankers) || 0
+                              const done = noTankers
+                                ? (Number(row.quality_on_order) > 0 ? 1 : 0)
+                                : Number(row.quality_tankers) || 0
                               if (!emptied) {
                                 return (
                                   <span className="text-[#D6E2D6]" title="No tanker on this invoice has been emptied yet">
@@ -4894,6 +4962,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                             })()}
                           </TableCell>
                           <TableCell onClick={(e) => e.stopPropagation()}><div className="flex justify-end">
+                            {!readingsOnly && (
                             <RowActions
                               actions={[
                                 { label: 'View details', icon: Eye, onClick: () => setDetailRow(row) },
@@ -4903,6 +4972,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                                 { label: 'Delete purchase', icon: Trash2, danger: true, onClick: () => deletePurchase(row) }
                               ]}
                             />
+                            )}
                           </div></TableCell>
                         </TableRow>)}
                   </TableBody>
@@ -5551,7 +5621,7 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     </span>
                     <span className={cn('text-muted-foreground', __WEB__ && (ex ? '!text-[#8A5300]' : '!text-[#5A6B62]'))}>
                       {ex
-                        ? 'We pay the freight on this tanker, so the rate is required.'
+                        ? 'We pay the freight on this tanker — enter the rate, or 0 with a reason.'
                         : 'The supplier carries the freight — the rate is only for the record.'}
                     </span>
                   </div>
@@ -5579,8 +5649,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                     </Label>
                     <Input
                       type="number"
-                      className={cn(ex && !(Number(actionForm.transport_rate_per_ton) > 0) && 'border-rose-400')}
-                      placeholder={ex ? 'Required' : 'Optional'}
+                      className={cn(ex && !(Number(actionForm.transport_rate_per_ton) > 0) && !String(actionForm.freight_remark || '').trim() && 'border-rose-400')}
+                      placeholder={ex ? 'Rate, or 0' : 'Optional'}
                       value={actionForm.transport_rate_per_ton ?? ''}
                       onChange={(e) => setActionForm((p) => ({ ...p, transport_rate_per_ton: e.target.value }))}
                     />
@@ -5591,6 +5661,24 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                       </span>
                     )}
                   </div>
+                  {/* Zero freight has to be explained. And it has a consequence
+                      worth stating here, where the decision is made: with no
+                      freight there is nothing to dock a shortage from. */}
+                  {ex && !(Number(actionForm.transport_rate_per_ton) > 0) && (
+                    <div className="col-span-2 flex flex-col gap-1.5">
+                      <Label>
+                        Why is there no freight?<span className="ml-1 text-rose-600">*</span>
+                      </Label>
+                      <Input
+                        value={actionForm.freight_remark ?? ''}
+                        placeholder="e.g. supplier's own lorry — freight is in the invoice rate"
+                        onChange={(e) => setActionForm((p) => ({ ...p, freight_remark: e.target.value }))}
+                      />
+                      <span className={cn('text-[11px] text-muted-foreground', __WEB__ && '!text-[11.5px] !font-semibold !leading-[1.5] !text-[#8A5300]')}>
+                        No shortage charge will be raised on this tanker — there is no freight to dock it from.
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             )
@@ -5756,10 +5844,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           ) : (
           <Button
             onClick={advanceTanker}
-            disabled={target === 'transit' && !!actionRow && condIsEx(actionRow) && !(Number(actionForm.transport_rate_per_ton) > 0)}
+            disabled={target === 'transit' && !!actionRow && condIsEx(actionRow) && !(Number(actionForm.transport_rate_per_ton) > 0) && !String(actionForm.freight_remark || '').trim()}
             title={
-              target === 'transit' && !!actionRow && condIsEx(actionRow) && !(Number(actionForm.transport_rate_per_ton) > 0)
-                ? 'Enter the transporter rate — it is required on an EX tanker'
+              target === 'transit' && !!actionRow && condIsEx(actionRow) && !(Number(actionForm.transport_rate_per_ton) > 0) && !String(actionForm.freight_remark || '').trim()
+                ? 'Enter the transporter rate, or put 0 and say why there is no freight'
                 : undefined
             }
           >{excess ? (excess.mode === 'existing' ? 'Allocate & confirm' : 'Add bargain & confirm') : 'Confirm'}</Button>
@@ -5783,7 +5871,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
                   {[
                     String(qualityFor.supplier_name || ''),
                     String(qualityFor.oil_code || qualityFor.oil_name || ''),
-                    qualitySets.length ? `${qualitySets.length} tanker${qualitySets.length === 1 ? '' : 's'} emptied` : ''
+                    qualitySets.length
+                      ? qualitySets[0]?.tanker.order_level
+                        ? 'consignment — readings on the invoice'
+                        : `${qualitySets.length} tanker${qualitySets.length === 1 ? '' : 's'} emptied`
+                      : ''
                   ]
                     .filter(Boolean)
                     .join(' · ')}
@@ -5795,7 +5887,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel }: OrdersPro
           <div className={cn(__WEB__ && cn(TK_BODY, TK_FIELDS, 'grid content-start'))}>
             {qualitySets.length === 0 && (
               <div className={cn('rounded-lg border p-4 text-center text-sm text-muted-foreground', __WEB__ && cn(TK_SECT, '!text-[12.5px] !font-semibold !text-[#8FA79B]'))}>
-                {qualityFor && Number(qualityFor.empty_tankers) > 0
+                {qualityFor &&
+                (Number(qualityFor.empty_tankers) > 0 ||
+                  (!Number(qualityFor.tanker_count) && String(qualityFor.status) === 'received'))
                   ? 'Loading…'
                   : 'No tanker on this invoice has been emptied yet — readings are taken from the load once it is in.'}
               </div>

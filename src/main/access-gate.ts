@@ -259,6 +259,20 @@ async function assertOnOrAfterBooksStart(rule: Rule, op: string, args: unknown):
 // The unload desk may record exactly one thing: that a delivery arrived, and
 // what was weighed in. Everything else on the sales channel is refused here, so
 // the restriction is a control and not a hidden button.
+// The readings desk: the one write it may make.
+//
+// Both channels arrive here — tankers:saveQuality and orders:saveQuality — and
+// either is the same act, a lab result recorded against a purchase. Everything
+// else on the page is refused with a sentence, not a silent no-op, so the
+// person sees why the button they were not meant to have did nothing.
+function assertScopedReadings(op: string): void {
+  if (op !== 'saveQuality') {
+    throw new Error(
+      'Your access to Purchases covers recording technical parameters only — nothing else on this page can be changed.'
+    )
+  }
+}
+
 function assertScopedSales(op: string, args: unknown): void {
   const stage = String((args as Row)?.stage || '')
   const isUnload = (op === 'setInvoiceStage' || op === 'setStage') && stage === 'unloaded'
@@ -295,6 +309,11 @@ export async function assertAllowed(channel: string, args: unknown): Promise<voi
   // per-action rights below would let an 'edit' grant through everything.
   if (moduleScope(user, rule.module) === 'unload' && rule.module === 'sales') {
     assertScopedSales(op, args)
+    return
+  }
+  // The same idea for Purchases: a job, not a set of ticks.
+  if (moduleScope(user, rule.module) === 'readings' && rule.module === 'orders') {
+    assertScopedReadings(op)
     return
   }
 

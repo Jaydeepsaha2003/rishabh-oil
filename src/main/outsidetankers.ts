@@ -65,6 +65,40 @@ export async function listOutsideTankers(date?: string): Promise<Row[]> {
   })
 }
 
+// "Nobody is outside at eight o'clock."
+//
+// An empty round and an uncounted round looked identical — both showed
+// nothing — so the diary could never be read as complete. A supervisor who
+// walked the gate and found it clear had no way to say so, and the next
+// person could not tell whether the eight o'clock walk had happened at all.
+// This is that answer: a row that carries no party, no material and no count,
+// whose only job is to say the round was done.
+export async function recordNilRound(date: string, slot: string): Promise<{ id: number }> {
+  const c = getClient()
+  const day = String(date || '').slice(0, 10)
+  if (!day) throw new Error('Pick the date this count was taken')
+  if (!OUTSIDE_SLOTS.includes(slot as (typeof OUTSIDE_SLOTS)[number]))
+    throw new Error('Pick which round this is — 8 AM, 4 PM or 8 PM')
+  const cid = getActiveCompanyId()
+  // A round with lorries in it cannot also be empty. Refused rather than
+  // silently ignored: somebody is looking at a stale screen.
+  const has = await c.execute({
+    sql: 'SELECT COUNT(*) AS n FROM outside_tankers WHERE company_id = ? AND log_date = ? AND slot = ?',
+    args: [cid, day, slot]
+  })
+  if (n((has.rows[0] as unknown as Row).n))
+    throw new Error('This round already has entries — remove them first if nothing was outside after all')
+  const res = await c.execute({
+    sql: `INSERT INTO outside_tankers (company_id, log_date, slot, kind, tankers, created_by)
+          VALUES (?, ?, ?, 'nil', 0, ?)`,
+    // created_by is left null: a NIL is recorded from the round's own button,
+    // which carries no form and so no username. The row's timestamp and the
+    // audit log already say who pressed it.
+    args: [cid, day, slot, null]
+  })
+  return { id: Number(res.lastInsertRowid || 0) }
+}
+
 export async function saveOutsideTanker(v: Row): Promise<{ id: number }> {
   const c = getClient()
   const day = String(v.log_date || '').slice(0, 10)
@@ -102,6 +136,12 @@ export async function saveOutsideTanker(v: Row): Promise<{ id: number }> {
     })
     return { id: n(v.id) }
   }
+  // A real entry retires the round's NIL. Both standing would have the diary
+  // saying nothing was outside and listing four lorries in the same breath.
+  await c.execute({
+    sql: "DELETE FROM outside_tankers WHERE company_id = ? AND log_date = ? AND slot = ? AND kind = 'nil'",
+    args: [getActiveCompanyId(), day, slot]
+  })
   const res = await c.execute({
     sql: `INSERT INTO outside_tankers
             (company_id, log_date, slot, kind, category, product_id, party_id, tankers, note, created_by)

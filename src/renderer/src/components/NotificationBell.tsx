@@ -119,22 +119,34 @@ export function NotificationBell({ user, onNavigate }: Props): React.JSX.Element
 
   const unseen = items.filter((i) => !i.read)
 
-  // Read is now a fact on the server, against this user, so it follows them to
-  // whichever machine they sign in on — and it can be undone, which the old
-  // localStorage key list could not do at all.
+  // Opening the panel no longer marks anything read.
+  //
+  // It used to mark everything shown the moment the bell was clicked, which is
+  // how the old localStorage list worked and is also why a "mark as read"
+  // button was impossible — by the time you could see one, there was nothing
+  // left to mark. Read is an action now: open a notification and it is read,
+  // tick one, or clear the lot. The badge means "not yet dealt with", which is
+  // what a badge is for.
   function openPanel(): void {
-    const wasOpen = open
     setOpen((o) => !o)
-    if (!wasOpen && unseen.length) {
-      const ids = unseen.map((i) => i.id)
-      setItems((p) => p.map((i) => (ids.includes(i.id) ? { ...i, read: true } : i)))
-      window.api.notify.markRead(Number(user.id) || 0, ids).catch(() => load())
-    }
+  }
+
+  async function markRead(ids: number[]): Promise<void> {
+    if (!ids.length) return
+    setItems((p) => p.map((i) => (ids.includes(i.id) ? { ...i, read: true } : i)))
+    await window.api.notify.markRead(Number(user.id) || 0, ids).catch(() => load())
   }
 
   async function putBack(id: number): Promise<void> {
     setItems((p) => p.map((i) => (i.id === id ? { ...i, read: false } : i)))
     await window.api.notify.markUnread(Number(user.id) || 0, id).catch(() => load())
+  }
+
+  function openItem(it: NoteItem): void {
+    // Going to look at it IS reading it.
+    if (!it.read) void markRead([it.id])
+    onNavigate(it.page)
+    setOpen(false)
   }
 
   function toggleMute(): void {
@@ -161,11 +173,27 @@ export function NotificationBell({ user, onNavigate }: Props): React.JSX.Element
 
       {open && (
         <div className="absolute right-0 mt-2 w-[22rem] overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg">
-          <div className="flex items-center justify-between border-b bg-muted/40 px-3 py-2">
-            <span className="text-sm font-semibold">Notifications</span>
-            <button onClick={toggleMute} title={muted ? 'Unmute sound' : 'Mute sound'} className="!h-auto text-muted-foreground hover:text-foreground">
+          <div className="flex items-center justify-between gap-2 border-b bg-muted/40 px-3 py-2">
+            <span className="text-sm font-semibold">
+              Notifications
+              {unseen.length > 0 && (
+                <span className="ml-1.5 text-xs font-normal text-muted-foreground">{unseen.length} unread</span>
+              )}
+            </span>
+            <span className="flex items-center gap-2">
+              {unseen.length > 0 && (
+                <button
+                  onClick={() => void markRead(unseen.map((i) => i.id))}
+                  title="Mark every notification shown here as read"
+                  className="!h-auto rounded px-1.5 py-0.5 text-[11px] font-medium text-primary hover:bg-muted"
+                >
+                  Mark all read
+                </button>
+              )}
+              <button onClick={toggleMute} title={muted ? 'Unmute sound' : 'Mute sound'} className="!h-auto text-muted-foreground hover:text-foreground">
               {muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-            </button>
+              </button>
+            </span>
           </div>
           <div className="max-h-[60vh] overflow-y-auto">
             {items.length === 0 ? (
@@ -186,12 +214,11 @@ export function NotificationBell({ user, onNavigate }: Props): React.JSX.Element
                   <div
                     role="button"
                     tabIndex={0}
-                    onClick={() => { onNavigate(it.page); setOpen(false) }}
+                    onClick={() => openItem(it)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault()
-                        onNavigate(it.page)
-                        setOpen(false)
+                        openItem(it)
                       }
                     }}
                     className="flex min-w-0 flex-1 cursor-pointer items-start gap-2.5 text-left"
@@ -216,23 +243,30 @@ export function NotificationBell({ user, onNavigate }: Props): React.JSX.Element
                       </span>
                     </span>
                   </div>
-                  {it.read && (
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      title="Mark unread"
-                      onClick={(e) => { e.stopPropagation(); void putBack(it.id) }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault()
-                          void putBack(it.id)
-                        }
-                      }}
-                      className="mt-0.5 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
-                    >
-                      <RotateCcw className="h-3.5 w-3.5" />
-                    </div>
-                  )}
+                  {/* One control, two directions. Unread shows a tick that
+                      marks it read WITHOUT opening it — for the ones you have
+                      taken in from the list and do not need to visit. Read
+                      shows the way back. */}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    title={it.read ? 'Mark as unread' : 'Mark as read'}
+                    onClick={(e) => { e.stopPropagation(); void (it.read ? putBack(it.id) : markRead([it.id])) }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        void (it.read ? putBack(it.id) : markRead([it.id]))
+                      }
+                    }}
+                    className={cn(
+                      'mt-0.5 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded transition-colors hover:bg-accent',
+                      it.read
+                        ? 'text-muted-foreground opacity-0 group-hover:opacity-100'
+                        : 'text-emerald-700 hover:text-emerald-800'
+                    )}
+                  >
+                    {it.read ? <RotateCcw className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
+                  </div>
                 </div>
               ))
             )}

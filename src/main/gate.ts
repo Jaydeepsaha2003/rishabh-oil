@@ -264,6 +264,26 @@ export async function unwaiveGateOut(group: string): Promise<{ group: string }> 
   return { group: String(group || '').trim() }
 }
 
+// Several at once, one reason. Each is tried on its own so one invoice that
+// already has a gate-out does not stop the other eleven — the caller gets both
+// lists back and says which was which.
+export async function waiveGateOuts(
+  groups: string[],
+  reason: string
+): Promise<{ done: string[]; failed: { group: string; error: string }[] }> {
+  const done: string[] = []
+  const failed: { group: string; error: string }[] = []
+  for (const g of groups) {
+    try {
+      await waiveGateOut(g, reason)
+      done.push(g)
+    } catch (e) {
+      failed.push({ group: g, error: (e as Error).message })
+    }
+  }
+  return { done, failed }
+}
+
 // The waived invoices, for the Rejected tab — they belong beside the rejected
 // gate entries because both answer the same question: what is off the queue,
 // and why.
