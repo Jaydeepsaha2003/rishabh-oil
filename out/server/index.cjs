@@ -7396,6 +7396,94 @@ async function backfillPurchaseRoundOff() {
   );
   if (applied > 0) console.log(`[orders] round-off repair corrected ${applied} purchases`);
 }
+async function repairPurchaseTdsOnTaxable() {
+  const c = getClient();
+  const round213 = (v) => Math.round(v * 100) / 100;
+  const roots = /* @__PURE__ */ new Map();
+  for (const r of toPlain6(await c.execute("SELECT id, linked_party_id FROM suppliers")))
+    roots.set(n5(r.id), n5(r.linked_party_id) || n5(r.id));
+  const rootOf = (id) => roots.get(id) || id;
+  const res = await c.execute(`
+    SELECT o.id, o.company_id, o.invoice_no, o.order_date, o.supplier_id,
+           o.taxable_value, o.gst_amount, o.round_off, o.tds_pct, o.tds_amount, o.net_amount,
+           o.final_taxable_value, o.final_gst_amount, o.final_tds_amount, o.final_net_amount,
+           o.interest_pct, o.interest_days, o.bargain_rate, o.gst_pct, o.ordered_qty,
+           p.code AS oil_code, p.name AS oil_name,
+           s.name AS supplier_name, s.tds_threshold, s.tds_above_only,
+           s.opening_purchase_amount, s.opening_purchase_date
+      FROM orders o
+      LEFT JOIN products p ON p.id = o.oil_type_id
+      LEFT JOIN suppliers s ON s.id = o.supplier_id
+     WHERE COALESCE(o.tds_pct, 0) > 0
+     -- By DATE across the whole book, not supplier by supplier: the slab is
+     -- walked in the order the invoices were actually raised, which is what
+     -- supplierFyTaxable answers with (everything in the group up to this
+     -- invoice's date). Grouping by supplier first would have let a party's
+     -- own later invoice see a prior that had not happened yet.
+     ORDER BY o.company_id, o.order_date, o.id`);
+  const ytd = /* @__PURE__ */ new Map();
+  let fixed = 0;
+  let tdsDelta = 0;
+  let netDelta = 0;
+  for (const raw of toPlain6(res)) {
+    const T = n5(raw.taxable_value);
+    const G = n5(raw.gst_amount);
+    const RO = n5(raw.round_off);
+    const pctAbove = n5(raw.tds_pct);
+    const pctBelow = raw.tds_above_only ? 0 : pctAbove;
+    const threshold = n5(raw.tds_threshold);
+    const { start } = fyRange(String(raw.order_date));
+    const key3 = `${n5(raw.company_id)}|${rootOf(n5(raw.supplier_id))}|${start}`;
+    if (!ytd.has(key3)) {
+      const od = String(raw.opening_purchase_date || "");
+      ytd.set(key3, od && od >= start ? n5(raw.opening_purchase_amount) : 0);
+    }
+    const prior = ytd.get(key3);
+    ytd.set(key3, prior + T);
+    const tds = round213(tierTds(T, prior, threshold, pctBelow, pctAbove));
+    const net = round213(T + G + RO - tds);
+    const fT = n5(raw.final_taxable_value);
+    const fTds = round213(tierTds(fT, prior, threshold, pctBelow, pctAbove));
+    const fNet = round213(fT + n5(raw.final_gst_amount) + RO - fTds);
+    if (Math.abs(tds - n5(raw.tds_amount)) < 5e-3 && Math.abs(net - n5(raw.net_amount)) < 5e-3) continue;
+    console.log(
+      `[orders] TDS basis repair #${raw.id} ${raw.invoice_no} ${String(raw.order_date).slice(0, 10)}: taxable ${T.toFixed(2)} | tds ${n5(raw.tds_amount).toFixed(2)} -> ${tds.toFixed(2)} | net ${n5(raw.net_amount).toFixed(2)} -> ${net.toFixed(2)}`
+    );
+    await c.execute({
+      sql: `UPDATE orders SET tds_amount = ?, net_amount = ?, final_tds_amount = ?, final_net_amount = ?
+             WHERE id = ?`,
+      args: [tds, net, fTds, fNet, n5(raw.id)]
+    });
+    const interest = n5(raw.bargain_rate) * (1 + n5(raw.gst_pct) / 100) * (n5(raw.interest_pct) / 100) * (n5(raw.interest_days) / 365) * n5(raw.ordered_qty);
+    await postPurchaseJournal({
+      orderId: n5(raw.id),
+      date: String(raw.order_date),
+      invoiceNo: String(raw.invoice_no || ""),
+      oilCode: String(raw.oil_code || raw.oil_name || "OIL").toUpperCase(),
+      supplierName: String(raw.supplier_name || "SUPPLIER"),
+      taxable: T,
+      gst: G,
+      tds,
+      net,
+      roundOff: RO,
+      interest,
+      companyId: n5(raw.company_id) || 1
+    }).catch((e) => console.error(`[orders] TDS repair journal #${raw.id}:`, e.message));
+    if (n5(raw.supplier_id)) {
+      await setSupplierPayable(n5(raw.id), n5(raw.supplier_id), net, String(raw.order_date)).catch(
+        (e) => console.error(`[orders] TDS repair payable #${raw.id}:`, e.message)
+      );
+    }
+    fixed++;
+    tdsDelta += tds - n5(raw.tds_amount);
+    netDelta += net - n5(raw.net_amount);
+  }
+  if (fixed > 0) {
+    console.log(
+      `[orders] TDS basis repair: ${fixed} purchases restated onto the taxable value \u2014 TDS ${tdsDelta.toFixed(2)}, payable to suppliers ${netDelta.toFixed(2)}`
+    );
+  }
+}
 async function backfillOrderStatuses() {
   const c = getClient();
   const res = await c.execute(
@@ -10334,6 +10422,24 @@ async function recomputeSaleFreight(id) {
     n7(row.tds_amount)
   );
 }
+async function repairSaleUnitsFromProduct() {
+  const c = getClient();
+  const res = await c.execute(`
+    SELECT s.id, s.invoice_no, s.qty, s.rate, s.uom AS line_uom, p.name, p.uom AS master_uom
+      FROM sales s JOIN products p ON p.id = s.product_id
+     WHERE UPPER(COALESCE(p.uom, 'MT')) = 'PCS'
+       AND UPPER(COALESCE(s.uom, '')) <> 'PCS'
+     ORDER BY s.id`);
+  let fixed = 0;
+  for (const r of toPlain9(res)) {
+    console.log(
+      `[sales] unit repair #${r.id} ${r.invoice_no}: ${r.name} \u2014 ${r.qty} ${r.line_uom} -> PCS (rate ${r.rate}, unchanged)`
+    );
+    await c.execute({ sql: "UPDATE sales SET uom = ? WHERE id = ?", args: [String(r.master_uom), n7(r.id)] });
+    fixed++;
+  }
+  if (fixed > 0) console.log(`[sales] unit repair: ${fixed} lines relabelled to the product's own unit`);
+}
 async function setSaleStage(id, stageIn, force = false, dateIn, receivedQty) {
   const stage = stageOf({ dispatch_stage: stageIn });
   const status = statusForStage(stage);
@@ -12042,6 +12148,12 @@ async function runStartupTasks() {
     (e) => console.error("[orders] status backfill failed:", e)
   );
   await backfillPurchaseRoundOff().catch((e) => console.error("[orders] round-off repair failed:", e));
+  await runOnce("purchase_tds_taxable_basis_v1", () => repairPurchaseTdsOnTaxable()).catch(
+    (e) => console.error("[orders] TDS basis repair failed:", e)
+  );
+  await runOnce("sale_units_from_product_v1", () => repairSaleUnitsFromProduct()).catch(
+    (e) => console.error("[sales] unit repair failed:", e)
+  );
   await seedDefaultAdmin().catch((e) => console.error("[auth] seed failed:", e));
   await seedProducts().catch((e) => console.error("[seed] products failed:", e));
   await seedFormulations().catch((e) => console.error("[seed] formulations failed:", e));
