@@ -8,6 +8,8 @@ import { DbSetupScreen } from './components/DbSetupScreen'
 import { Dashboard } from './pages/Dashboard'
 import { Settings } from './pages/Settings'
 import { UserAccess } from './pages/UserAccess'
+import { UserActivity } from './pages/UserActivity'
+import { MobileMenuProvider } from './lib/mobileMenu'
 import { Bargains } from './pages/Bargains'
 import { Orders } from './pages/Orders'
 import { Consignment } from './pages/Consignment'
@@ -321,7 +323,7 @@ function App(): React.JSX.Element {
   const allowed = user
     ? [
         ...MODULES.filter((m) => canAccess(user, m.key)).map((m) => m.key),
-        ...(__WEB__ && user.role === 'admin' ? ['userAccess'] : [])
+        ...(__WEB__ && user.role === 'admin' ? ['userAccess', 'userActivity'] : [])
       ]
     : []
 
@@ -476,6 +478,9 @@ function App(): React.JSX.Element {
     <CompanyProvider value={{ companies, companyId, onCompanyChange: switchCompany }}>
     <HeaderExtrasProvider value={{ bell: <NotificationBell user={user} onNavigate={(p) => navigate(p as Page)} /> }}>
     <GlobalDateRangeProvider>
+    {/* The phone's menu: opened from each mobile page's own top bar rather
+        than from a button the sidebar floats over the page. */}
+    <MobileMenuProvider>
     <div className="flex h-screen flex-col overflow-hidden bg-muted/30 text-foreground">
       <UpdateTopBar />
       <div className="flex flex-1 overflow-hidden">
@@ -543,12 +548,14 @@ function App(): React.JSX.Element {
         {view === 'approvals' && <Approvals />}
         {view === 'notifications' && <Notifications />}
         {view === 'userAccess' && <UserAccess />}
+        {view === 'userActivity' && <UserActivity />}
         {view === 'settings' && <Settings user={user} />}
       </main>
       </div>
       <GlobalDateRangeDialog open={periodOpen} onOpenChange={setPeriodOpen} currentPage={page} />
       <Toaster richColors position="bottom-right" />
     </div>
+    </MobileMenuProvider>
     </GlobalDateRangeProvider>
     </HeaderExtrasProvider>
     </CompanyProvider>

@@ -29,6 +29,7 @@ import {
 } from '@/components/ui/table'
 import { HelpTip, InfoTip, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { PageHeader } from '@/components/PageHeader'
+import { PpBreakdown } from '@/components/PpBreakdown'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { StockMobile } from './StockMobile'
 import { errText, formatDate, formatDateShort, formatINR, formatNum, todayISO } from '@/lib/format'
@@ -1575,6 +1576,9 @@ function OpeningStock({
   // sheet is worked down over twenty minutes and the cards were holding the
   // top of the screen the whole time.
   const [openKpis, setOpenKpis] = useState(false)
+  // Which product's PP breakdown is open. PP is one number on this sheet and
+  // seven vessels on the plant's own — see components/PpBreakdown.
+  const [ppRow, setPpRow] = useState<Row | null>(null)
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -1603,6 +1607,37 @@ function OpeningStock({
   useLiveRefresh(load)
 
   const rows: Row[] = useMemo(() => ((data?.rows as Row[]) || []), [data])
+
+  // A saved breakdown patches its own row and nothing else.
+  //
+  // Reloading the sheet here would be the obvious move and the wrong one: this
+  // screen holds an unsaved draft of every product on it, worked down over
+  // twenty minutes, and load() clears the lot. So the one row that changed is
+  // updated in place.
+  const applyPp = useCallback((productId: number, total: number, lines: Row[]): void => {
+    setData((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        rows: ((prev.rows as Row[]) || []).map((r) =>
+          Number(r.id) === productId ? { ...r, pp_lines: lines, pp_qty: lines.length ? total : r.pp_qty } : r
+        )
+      }
+    })
+    setDraft((p) => ({
+      ...p,
+      [productId]: {
+        qty: p[productId]?.qty ?? '',
+        adj: p[productId]?.adj ?? '',
+        rate: p[productId]?.rate ?? '',
+        note: p[productId]?.note ?? '',
+        // Cleared rather than zeroed when the last stage goes: PP is back to
+        // being a figure nobody has stated, which is not the same as nil.
+        pp: lines.length ? String(total) : ''
+      }
+    }))
+    setPpRow((cur) => (cur && Number(cur.id) === productId ? { ...cur, pp_lines: lines } : cur))
+  }, [])
 
   // What the register will close at for a row, given what is typed right now.
   // The opening a row contributes: Raw + PP + Adj together.
@@ -2242,7 +2277,7 @@ function OpeningStock({
                     <th className="w-[110px] px-3 py-2 text-right">
                       <span className="inline-flex items-center gap-1">
                         PP (WIP)
-                        <InfoTip text="Work already in process that morning — in the refinery, in a tanker on site, packed but not yet counted as finished. Counted separately from the tank, and the register opens at Raw + PP + Adj." />
+                        <InfoTip text="Work already in process that morning — in the refinery, in a tanker on site, packed but not yet counted as finished. Counted separately from the tank, and the register opens at Raw + PP + Adj. The button beside the box breaks it down by vessel — bleacher, deo scrubber, filter press — with a With FFA / W/O FFA mark on each. Once a breakdown exists it is the only way in, so the register can never disagree with the count it came from." />
                       </span>
                     </th>
                     <th className="w-[110px] px-3 py-2 text-right">
@@ -2285,6 +2320,7 @@ function OpeningStock({
                     const short = Number(r.shortfall)
                     const answered = answeredOf(id)
                     const rowTotal = openingOf(id)
+                    const ppCount = Array.isArray(r.pp_lines) ? (r.pp_lines as Row[]).length : 0
                     return (
                       <tr
                         key={id}
@@ -2388,14 +2424,46 @@ function OpeningStock({
                           </div>
                         </td>
                         <td className="px-3 py-1.5">
-                          <div className="flex items-center justify-end">
+                          <div className="flex items-center justify-end gap-1">
+                            {/* Locked once a breakdown exists. Two places to
+                                type the same figure is how a register ends up
+                                disagreeing with the count it was made from, so
+                                while the stages are there they are the only
+                                way in. */}
                             <input
                               inputMode="decimal"
                               placeholder="0"
-                              className="doc-ref h-8 w-[84px] rounded-md border bg-white px-2 text-right text-[13px] tabular-nums outline-none placeholder:text-muted-foreground/50 focus:border-[#1a2c56] focus:ring-1 focus:ring-[#1a2c56]/20"
+                              readOnly={ppCount > 0}
+                              title={
+                                ppCount > 0
+                                  ? `${ppCount} stage${ppCount === 1 ? '' : 's'} add up to this - open the breakdown to change it`
+                                  : undefined
+                              }
+                              className={cn(
+                                'doc-ref h-8 w-[74px] rounded-md border px-2 text-right text-[13px] tabular-nums outline-none placeholder:text-muted-foreground/50 focus:border-[#1a2c56] focus:ring-1 focus:ring-[#1a2c56]/20',
+                                ppCount > 0 ? 'cursor-default bg-muted/60 font-semibold' : 'bg-white'
+                              )}
                               value={d.pp}
                               onChange={(e) => setField(id, 'pp', e.target.value.replace(/[^0-9.]/g, ''))}
                             />
+                            <button
+                              type="button"
+                              title={
+                                ppCount > 0
+                                  ? `PP is made of ${ppCount} stage${ppCount === 1 ? '' : 's'} - open the breakdown`
+                                  : 'Break PP down by stage - bleacher, deo scrubber, filter press...'
+                              }
+                              onClick={() => setPpRow(r)}
+                              className={cn(
+                                'flex h-8 shrink-0 items-center gap-0.5 rounded-md border px-1.5 text-[10.5px] font-bold transition-colors',
+                                ppCount > 0
+                                  ? 'border-[#5B4BA8]/40 bg-[#EDE9FB] text-[#3D3179] hover:bg-[#E1DAF8]'
+                                  : 'border-input bg-white text-muted-foreground hover:bg-muted'
+                              )}
+                            >
+                              <Layers className="h-3.5 w-3.5" />
+                              {ppCount > 0 ? ppCount : null}
+                            </button>
                           </div>
                         </td>
                         <td className="px-3 py-1.5">
@@ -2495,6 +2563,13 @@ function OpeningStock({
         Blank means <b>not yet counted</b>; <span className="doc-ref">0</span> means it genuinely
         opened at nothing. Hover any heading for what it holds.
       </p>
+
+      <PpBreakdown
+        product={ppRow}
+        open={!!ppRow}
+        onOpenChange={(o) => !o && setPpRow(null)}
+        onSaved={applyPp}
+      />
     </div>
   )
 }

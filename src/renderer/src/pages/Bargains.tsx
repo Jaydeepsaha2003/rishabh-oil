@@ -18,7 +18,8 @@ import {
   Plus,
   Search,
   SlidersHorizontal,
-  Trash2
+  Trash2,
+  Truck
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { RowActions } from '@/components/ui/row-actions'
@@ -48,6 +49,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import { MobileBar } from '@/components/MobileBar'
 import { PageHeader } from '@/components/PageHeader'
 import { FyPicker } from '@/components/FyPicker'
 import { UomSelect } from '@/components/UomSelect'
@@ -55,6 +57,7 @@ import { DatePicker } from '@/components/ui/date-picker'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
 import { exportRowsToExcel } from '@/lib/excel'
 import { cn, inkOn } from '@/lib/utils'
+import { useIsMobile } from '@/lib/useIsMobile'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 import { useCategories } from '@/lib/useCategories'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
@@ -138,6 +141,21 @@ function inRegister(r: Row, from: string, to: string, showZero = false): boolean
   const bdate = String(r.bargain_date || '').slice(0, 10)
   if (bdate > to) return false
   const reg = bargainRegister(r, from, to)
+  // Nothing left on it, and no later period for it to still be open in.
+  //
+  // The period arithmetic below decides membership from opening + addition −
+  // dispatch, and `dispatch` only counts draws whose date lands inside the
+  // window or before it. A draw with no date, or one dated past the window's
+  // end, is counted in neither — so the closing stays at full quantity and a
+  // bargain with nothing left on it is presented as open. The switch then
+  // cannot do what it says, because the row was never classed as settled.
+  //
+  // Guarded on the window reaching today, because for a window that ended in
+  // the past the period closing is the right notion: a bargain that stood open
+  // on 31 May belongs in a May register even though it was drawn in June.
+  // NaN when the field is absent, and NaN fails this test — so a payload
+  // without balance_qty behaves exactly as it did before.
+  if (Number(r.balance_qty) <= 1e-6 && to >= todayISO()) return showZero
   if (reg.closing > 1e-6) return true
   // Settled. Shown whenever the switch is on, whatever the period.
   //
@@ -203,10 +221,85 @@ function pbBar(opening: number, addition: number, adjusted: number, dispatch: nu
   return { pct, color: pct >= 95 ? '#C2700A' : pct > 0 ? '#12855A' : '#DCE7DB' }
 }
 
+// What a bargain's tankers drew on it, and what the supplier owes back.
+// -----------------------------------------------------------------------------
+// Lifted out of the desktop row so the phone can compute the same figures. The
+// arithmetic has four parts that are each easy to get subtly wrong:
+//
+//   disOf     a tanker can be split across TWO bargains. The excess is booked
+//             to extra_bargain_id, so this bargain's share is the loaded qty
+//             minus that excess when it is the primary, and the excess alone
+//             when it is not.
+//   shareOf   receipts and shortage belong to the WHOLE tanker, so they are
+//             pro-rated by this bargain's share of the load.
+//   pctOf     the tolerance falls back order -> bargain -> the company default.
+//   isEx      only an EX bargain puts the shortage beyond that tolerance on the
+//             supplier. On DLD the transporter or we absorb it through freight,
+//             so there is no deductible to show.
+//
+// The desktop still carries its own inline copy of this; the two are checked
+// against each other on real data rather than assumed equal. Converging the
+// desktop onto this function is worth doing and is deliberately NOT done here,
+// because the ask was that the desktop stay exactly as it is.
+export type TankerLine = {
+  t: Row
+  dis: number
+  rec: number | null
+  shortage: number | null
+  allowed: number
+  deductible: number | null
+}
+export function bargainTankerLines(
+  row: Row,
+  list: Row[],
+  defaultPct: string | number
+): {
+  isEx: boolean
+  lines: TankerLine[]
+  tot: { dis: number; rec: number; shortage: number; allowed: number; deductible: number }
+} {
+  const disOf = (t: Row): number => {
+    const loaded = Number(t.loaded_qty) || 0
+    const extra = t.extra_bargain_id ? Number(t.extra_qty) || 0 : 0
+    return Number(t.bargain_id) === Number(row.id) ? loaded - extra : extra
+  }
+  const shareOf = (t: Row): number => {
+    const loaded = Number(t.loaded_qty) || 0
+    return loaded > 0 ? disOf(t) / loaded : 1
+  }
+  const pctOf = (t: Row): number =>
+    Number(t.order_allowed_shortage_pct ?? row.allowed_shortage_pct ?? defaultPct) || 0
+  const isEx = row.bargain_type === 'EX'
+
+  const lines: TankerLine[] = list.map((t) => {
+    const loaded = Number(t.loaded_qty) || 0
+    const rec = t.received_qty != null ? Number(t.received_qty) : null
+    const share = shareOf(t)
+    const dis = disOf(t)
+    const shortage = rec != null ? Math.max(0, loaded - rec) * share : null
+    const allowed = (dis * pctOf(t)) / 100
+    const deductible = isEx && shortage != null && shortage > allowed ? shortage - allowed : null
+    return { t, dis, rec: rec != null ? rec * share : null, shortage, allowed, deductible }
+  })
+
+  const tot = lines.reduce(
+    (a, l) => ({
+      dis: a.dis + l.dis,
+      rec: a.rec + (l.rec ?? 0),
+      shortage: a.shortage + (l.shortage ?? 0),
+      allowed: a.allowed + l.allowed,
+      deductible: a.deductible + (l.deductible ?? 0)
+    }),
+    { dis: 0, rec: 0, shortage: 0, allowed: 0, deductible: 0 }
+  )
+  return { isEx, lines, tot }
+}
+
 export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => void } = {}): React.JSX.Element {
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('bargains')
+  const isMobile = useIsMobile()
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [suppliers, setSuppliers] = useState<Row[]>([])
@@ -919,6 +1012,460 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
     })
   }
 
+
+  // Phone. After every hook, so the order cannot change between renders — and
+  // BEFORE the desktop return, which is left exactly as it was: this branch
+  // adds a screen rather than changing one.
+  //
+  // The register is nine numeric columns wide. On a phone it becomes two levels
+  // of card: an oil-type band that opens into its bargains, and a bargain that
+  // opens into its tankers. Same figures, same grouping, same collapse-by-
+  // default as the desktop — a phone reading of the page, not a second page.
+  if (__WEB__ && isMobile) {
+    const contracted = grandVisible.opening + grandVisible.addition + grandVisible.adjusted
+    const mKpis = [
+      { k: 'Bargains', v: String(grandVisible.count), fg: '#fff' },
+      { k: 'Contracted', v: `${formatNum(contracted)}`, fg: '#fff' },
+      { k: 'Received', v: formatNum(grandVisible.dispatch), fg: '#fff' },
+      { k: 'Balance open', v: formatNum(grandVisible.closing), fg: '#C7F03F' }
+    ]
+    const oils = [...groupStats.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+    const toggleRow = (id: number): void =>
+      setExpanded((prev) => {
+        const next = new Set(prev)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return next
+      })
+    const bar = (drawn: number, total: number): { pct: string; label: string; colour: string } => {
+      const p = total > 0 ? Math.min(100, Math.max(0, (drawn / total) * 100)) : 0
+      return {
+        pct: `${p}%`,
+        label: `${Math.round(p)}%`,
+        // Amber while it is still being drawn, green once it is finished — the
+        // bar answers "is this contract done" at a glance.
+        colour: p >= 99.5 ? '#12855A' : p > 0 ? '#C2700A' : '#C3D2C6'
+      }
+    }
+
+    return (
+      <div className="flex min-h-screen flex-col bg-[#F1F5EF]">
+        <div className="flex-none bg-[#0B3D2E] px-4 pb-3.5 pt-2.5 text-white">
+          <MobileBar onRefresh={() => load()} />
+          <div className="flex items-center justify-between gap-2.5">
+            <div className="min-w-0">
+              <div className="text-[19px] font-extrabold tracking-[-0.02em]">Pur Bargain</div>
+              <div className="mt-[3px] text-[11.5px] font-bold text-[#8FBFA8]">
+                {grandVisible.count} {grandVisible.count === 1 ? 'bargain' : 'bargains'} · {oils.length}{' '}
+                {oils.length === 1 ? 'oil' : 'oils'} · {formatDate(F)} to {formatDate(T)}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReportOpen(true)}
+              className="flex h-11 w-11 flex-none items-center justify-center rounded-[4px] bg-white/[.12]"
+              title="Summary by oil type"
+            >
+              <BarChart3 className="h-[22px] w-[22px]" />
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setKpiOpen((v) => !v)}
+            className="mt-2.5 flex min-h-11 w-full items-center gap-2 rounded-[4px] bg-white/10 px-[11px]"
+          >
+            <ChevronDown
+              className="h-[19px] w-[19px] flex-none text-[#C7F03F] transition-transform"
+              style={{ transform: kpiOpen ? 'none' : 'rotate(-90deg)' }}
+            />
+            <span className="min-w-0 flex-1 text-left text-[10.5px] font-extrabold uppercase tracking-[.11em] text-[#8FBFA8]">
+              Summary
+            </span>
+            <span className="doc-ref whitespace-nowrap text-[11.5px] font-extrabold text-[#C7F03F]">
+              {formatNum(grandVisible.closing)} MT open
+            </span>
+          </button>
+          {kpiOpen && (
+            <div className="mt-[9px] grid grid-cols-2 gap-2">
+              {mKpis.map((k) => (
+                <div key={k.k} className="min-w-0 rounded-[4px] bg-white/10 px-[11px] py-[9px]">
+                  <div className="text-[9px] font-extrabold uppercase tracking-[.1em] text-[#8FBFA8]">{k.k}</div>
+                  <div
+                    className="doc-ref mt-[5px] text-[14px] font-bold tracking-[-0.02em]"
+                    style={{ color: k.fg }}
+                  >
+                    {k.v}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-none flex-col gap-[9px] border-b border-b-[#D6E2D6] bg-white px-4 py-2.5">
+          <div className="flex h-11 items-center gap-[9px] rounded-[4px] border border-[#C3D2C6] px-3">
+            <Search className="h-[19px] w-[19px] flex-none text-[#5A6B62]" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Bargain, supplier or oil"
+              className="min-w-0 flex-1 border-0 bg-transparent text-[13px] font-medium outline-none"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowZero((v) => !v)}
+            className="flex min-h-11 items-center gap-[9px] text-left"
+          >
+            <span
+              className="flex h-[26px] w-11 flex-none rounded-[3px] p-[3px]"
+              style={{ background: showZero ? '#0B3D2E' : '#C3D2C6', justifyContent: showZero ? 'flex-end' : 'flex-start' }}
+            >
+              <span className="h-5 w-5 rounded-[2px] bg-white" />
+            </span>
+            <span className="inline-flex flex-wrap items-center gap-[7px] text-[12px] font-bold text-[#33473E]">
+              Show settled <span className="text-[#5A6B62]">(0 balance)</span>
+              <span
+                className="doc-ref rounded-[9px] px-2 py-[2px] text-[11px] font-extrabold"
+                style={
+                  showZero
+                    ? { background: '#0B3D2E', color: '#C7F03F' }
+                    : { background: '#EAF0E9', color: '#33473E' }
+                }
+              >
+                {settledCount}
+              </span>
+            </span>
+          </button>
+        </div>
+
+        <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-4 pb-[96px] pt-3">
+          {oils.map(([oil, g]) => {
+            const open = openGroups.has(oil)
+            const gContracted = g.opening + g.addition + g.adjusted
+            const gb = bar(g.dispatch, gContracted)
+            const gRows = sortedRows.filter((r) => oilOf(r) === oil)
+            return (
+              <div key={oil} className="flex flex-none flex-col gap-[9px]">
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(oil)}
+                  className="flex-none rounded-[4px] border border-[#D6E2D6] bg-white px-[13px] py-3 text-left"
+                  style={{ borderLeft: `3px solid ${g.closing > 0.0005 ? '#12855A' : '#C3D2C6'}` }}
+                >
+                  <div className="flex items-center gap-[9px]">
+                    <ChevronRight
+                      className="h-[19px] w-[19px] flex-none text-[#5A6B62] transition-transform"
+                      style={{ transform: open ? 'rotate(90deg)' : 'none' }}
+                    />
+                    <span className="min-w-0 flex-1 truncate text-[14px] font-extrabold tracking-[-0.01em]">{oil}</span>
+                    <span className="whitespace-nowrap text-[11px] font-bold text-[#5A6B62]">
+                      {g.count} {g.count === 1 ? 'bargain' : 'bargains'}
+                    </span>
+                  </div>
+                  <div className="mt-[11px] grid grid-cols-3 gap-[9px]">
+                    {([
+                      ['Contracted', formatNum(gContracted), '#0A1F17'],
+                      ['Received', g.dispatch ? formatNum(g.dispatch) : '—', g.dispatch ? '#8C2F26' : '#C3D2C6'],
+                      ['Balance', formatNum(g.closing), '#0A1F17']
+                    ] as const).map(([k, v, fg]) => (
+                      <div key={k}>
+                        <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">{k}</div>
+                        <div className="doc-ref mt-1 text-[12.5px] font-bold" style={{ color: fg }}>
+                          {v}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-2.5 h-1.5 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                    <div className="h-full" style={{ width: gb.pct, background: gb.colour }} />
+                  </div>
+                </button>
+
+                {open &&
+                  (gRows.length === 0 ? (
+                    <div className="flex flex-none items-center gap-[9px] rounded-[4px] border border-[#E4ECE3] bg-[#F7FAF6] px-[13px] py-3.5">
+                      <AlertTriangle className="h-[18px] w-[18px] flex-none text-[#A8B8AE]" />
+                      <span className="text-[11.5px] font-semibold leading-[1.45] text-[#5A6B62]">
+                        No bargain of this oil is in the period.
+                      </span>
+                    </div>
+                  ) : (
+                    gRows.map((row) => {
+                      const rowOpen = expanded.has(Number(row.id))
+                      const rContracted = Number(row._opening) + Number(row._addition) + Number(row._adjusted)
+                      const rb = bar(Number(row._dispatch), rContracted)
+                      const list = tankers.filter(
+                        (t) =>
+                          (Number(t.bargain_id) === Number(row.id) ||
+                            (Number(t.extra_qty) > 0 && Number(t.extra_bargain_id) === Number(row.id))) &&
+                          (coIds.length === 0 || coIds.includes(Number(t.company_id)))
+                      )
+                      const { isEx, lines, tot } = bargainTankerLines(row, list, defaultShortagePct)
+                      const dedValue = tot.deductible * (Number(row.rate_per_uom) || 0)
+                      return (
+                        <div
+                          key={String(row.id)}
+                          className="flex-none overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white"
+                          style={{ borderLeft: `3px solid ${Number(row._closing) > 0.0005 ? '#12855A' : '#C3D2C6'}` }}
+                        >
+                          <div className="flex flex-col gap-[9px] px-[13px] py-3">
+                            <div className="flex items-start gap-[9px]">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-[7px]">
+                                  <span className="doc-ref text-[12.5px] font-bold tracking-[-0.01em]">
+                                    {String(row.bargain_no)}
+                                  </span>
+                                  {tot.deductible > 0.0005 && (
+                                    <span className="rounded-[2px] border border-[#F0D6D4] bg-[#FDF3F2] px-1.5 py-[3px] text-[9.5px] font-extrabold tracking-[.05em] text-[#B3261E]">
+                                      DED
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="mt-[5px] text-[12px] font-bold leading-[1.4] text-[#33473E]">
+                                  {String(row.supplier_name || '—')}
+                                </div>
+                              </div>
+                              <div className="flex-none text-right">
+                                <div className="doc-ref whitespace-nowrap text-[11.5px] font-semibold text-[#5A6B62]">
+                                  {formatDate(row.bargain_date)}
+                                </div>
+                                <span className="mt-[5px] inline-block rounded-[2px] bg-[#EAF0E9] px-[7px] py-[3px] text-[10px] font-extrabold tracking-[.05em] text-[#33473E]">
+                                  {String(row.bargain_type || '—')}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-3 gap-[9px] rounded-[4px] border border-[#EAF0E9] bg-[#F7FAF6] px-[11px] py-2.5">
+                              {([
+                                ['Contracted', formatNum(rContracted), '#0A1F17'],
+                                [
+                                  'Received',
+                                  Number(row._dispatch) ? formatNum(row._dispatch) : '—',
+                                  Number(row._dispatch) ? '#8C2F26' : '#C3D2C6'
+                                ],
+                                [
+                                  'Balance',
+                                  formatNum(row._closing),
+                                  Number(row._closing) > 0.0005 ? '#0B6B45' : '#5A6B62'
+                                ]
+                              ] as const).map(([k, v, fg]) => (
+                                <div key={k}>
+                                  <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">{k}</div>
+                                  <div className="doc-ref mt-1 text-[13px] font-bold" style={{ color: fg }}>
+                                    {v}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+
+                            <div>
+                              <div className="h-1.5 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                                <div className="h-full" style={{ width: rb.pct, background: rb.colour }} />
+                              </div>
+                              <div className="mt-[7px] flex items-center justify-between gap-2.5">
+                                <span className="text-[11px] font-bold text-[#5A6B62]">{rb.label} drawn</span>
+                                <span className="doc-ref whitespace-nowrap text-[11.5px] font-bold text-[#33473E]">
+                                  {formatINR(row.rate_per_uom)}/{String(row.uom || 'MT')}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => toggleRow(Number(row.id))}
+                            className="flex min-h-12 w-full items-center gap-[9px] border-t border-t-[#EAF0E9] bg-[#F7FAF6] px-[13px] py-2.5 text-left"
+                          >
+                            <Truck className="h-[18px] w-[18px] flex-none text-[#33473E]" />
+                            <span className="min-w-0 flex-1 text-[11.5px] font-extrabold text-[#33473E]">
+                              {list.length
+                                ? `${list.length} ${list.length === 1 ? 'tanker' : 'tankers'} · ${formatNum(tot.rec)} received`
+                                : 'No tanker yet'}
+                            </span>
+                            <ChevronRight
+                              className="h-[19px] w-[19px] flex-none text-[#5A6B62] transition-transform"
+                              style={{ transform: rowOpen ? 'rotate(90deg)' : 'none' }}
+                            />
+                          </button>
+
+                          {rowOpen &&
+                            (lines.length === 0 ? (
+                              <div className="flex flex-col items-center gap-2 border-t border-t-[#EAF0E9] px-[13px] py-5">
+                                <Truck className="h-[26px] w-[26px] text-[#C3D2C6]" />
+                                <span className="text-center text-[11.5px] font-semibold leading-[1.45] text-[#5A6B62]">
+                                  No tanker received yet — the full {formatNum(row._closing)} {String(row.uom || 'MT')} is
+                                  still open.
+                                </span>
+                              </div>
+                            ) : (
+                              <>
+                                {lines.map((l) => {
+                                  const ded = l.deductible != null && l.deductible > 0.0005
+                                  const over = l.shortage != null && l.shortage > l.allowed
+                                  return (
+                                    <div
+                                      key={String(l.t.id)}
+                                      className="border-t border-t-[#EAF0E9] px-[13px] py-2.5"
+                                      style={{
+                                        background: ded ? '#FDF3F2' : '#fff',
+                                        borderLeft: `3px solid ${ded ? '#B3261E' : '#12855A'}`
+                                      }}
+                                    >
+                                      <div className="flex items-center gap-[9px]">
+                                        <span className="doc-ref min-w-0 flex-1 truncate text-[12.5px] font-bold">
+                                          {String(l.t.tanker_no || '—')}
+                                        </span>
+                                        <span
+                                          className="inline-flex flex-none items-center gap-[5px] whitespace-nowrap rounded-[2px] border px-[7px] py-[3px] text-[9.5px] font-extrabold"
+                                          style={
+                                            ded
+                                              ? { background: '#FDF3F2', color: '#B3261E', borderColor: '#F0D6D4' }
+                                              : l.rec == null
+                                                ? { background: '#EAF0E9', color: '#5A6B62', borderColor: '#DCE7DB' }
+                                                : { background: '#E9F5EE', color: '#0B6B45', borderColor: '#BFE3CB' }
+                                          }
+                                        >
+                                          {ded ? (
+                                            <MinusCircle className="h-3 w-3" />
+                                          ) : l.rec == null ? (
+                                            <Truck className="h-3 w-3" />
+                                          ) : (
+                                            <CheckCircle2 className="h-3 w-3" />
+                                          )}
+                                          {ded ? 'DEDUCTIBLE' : l.rec == null ? 'IN TRANSIT' : 'RECEIVED'}
+                                        </span>
+                                      </div>
+                                      <div className="mt-[9px] grid grid-cols-2 gap-[9px]">
+                                        <div>
+                                          <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">
+                                            Dispatched → received
+                                          </div>
+                                          <div className="doc-ref mt-1 text-[12px] font-bold">
+                                            {formatNum(l.dis)} → {l.rec == null ? '—' : formatNum(l.rec)}
+                                          </div>
+                                        </div>
+                                        <div className="text-right">
+                                          <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">
+                                            Short / allowed
+                                          </div>
+                                          <div
+                                            className="doc-ref mt-1 text-[12px] font-bold"
+                                            style={{ color: over ? '#B3261E' : '#33473E' }}
+                                          >
+                                            {l.shortage == null ? '—' : formatNum(l.shortage)} / {formatNum(l.allowed)}
+                                          </div>
+                                        </div>
+                                      </div>
+                                      {ded && (
+                                        <div className="mt-[9px] flex items-center gap-2 rounded-[3px] border border-[#F0D6D4] bg-[#FDF3F2] px-2.5 py-2">
+                                          <MinusCircle className="h-4 w-4 flex-none text-[#B3261E]" />
+                                          <span className="min-w-0 flex-1 text-[11px] font-extrabold text-[#8C2F26]">
+                                            Deductible
+                                          </span>
+                                          <span className="doc-ref whitespace-nowrap text-[12px] font-bold text-[#B3261E]">
+                                            {formatNum(l.deductible)} {String(row.uom || 'MT')}
+                                          </span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )
+                                })}
+
+                                <div className="flex flex-col gap-2 bg-[#C7F03F] px-[13px] py-3">
+                                  <div className="flex items-center gap-[9px]">
+                                    <span className="min-w-0 flex-1 text-[10px] font-extrabold uppercase tracking-[.09em] text-[#2E4A0B]">
+                                      Total · {lines.length} {lines.length === 1 ? 'tanker' : 'tankers'}
+                                    </span>
+                                    <span className="doc-ref whitespace-nowrap text-[13px] font-bold text-[#12280B]">
+                                      {formatNum(tot.rec)} received
+                                    </span>
+                                  </div>
+                                  {isEx && tot.deductible > 0.0005 && (
+                                    <div className="flex items-center gap-[9px]">
+                                      <span className="min-w-0 flex-1 text-[10px] font-extrabold uppercase tracking-[.09em] text-[#8C2F26]">
+                                        Deductible
+                                      </span>
+                                      <span className="doc-ref whitespace-nowrap text-[13px] font-bold text-[#8C2F26]">
+                                        {formatNum(tot.deductible)} {String(row.uom || 'MT')} · {formatINR(dedValue)}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Why there is a deduction, or why there is not
+                                    one. A DLD bargain never shows a figure, and
+                                    saying so is better than an empty row. */}
+                                <div className="border-t border-t-[#F0D6D4] bg-[#FDF3F2] px-[13px] py-2.5">
+                                  <div className="text-[11.5px] font-semibold leading-[1.5] text-[#8C2F26]">
+                                    {!isEx
+                                      ? 'Delivered (DLD) — any shortage is absorbed through freight, so nothing is deductible from the supplier.'
+                                      : tot.deductible > 0.0005
+                                        ? `EX — ${formatNum(tot.shortage)} short against ${formatNum(tot.allowed)} allowed, so ${formatNum(tot.deductible)} ${String(row.uom || 'MT')} is deductible from the supplier.`
+                                        : `EX — ${formatNum(tot.shortage)} short, within the ${formatNum(tot.allowed)} allowance. Nothing deductible.`}
+                                  </div>
+                                </div>
+                              </>
+                            ))}
+                        </div>
+                      )
+                    })
+                  ))}
+              </div>
+            )
+          })}
+
+          {oils.length === 0 && (
+            <div className="flex flex-none flex-col items-center gap-2 rounded-[4px] border border-[#D6E2D6] bg-white px-4 py-10">
+              <AlertTriangle className="h-7 w-7 text-[#C3D2C6]" />
+              <span className="text-center text-[12.5px] font-bold text-[#5A6B62]">
+                {loading ? 'Loading…' : 'No bargain in this period.'}
+              </span>
+            </div>
+          )}
+
+          {oils.length > 0 && (
+            <div className="flex-none rounded-[4px] border border-[#DCE7DB] bg-[#EFF5EC] px-[13px] py-3">
+              <div className="text-[10px] font-extrabold uppercase tracking-[.11em] text-[#33473E]">
+                Grand total · {grandVisible.count} {grandVisible.count === 1 ? 'bargain' : 'bargains'}
+              </div>
+              <div className="mt-2.5 grid grid-cols-2 gap-2.5">
+                <div>
+                  <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Contracted</div>
+                  <div className="doc-ref mt-1 text-[14px] font-bold">{formatNum(contracted)} MT</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Balance open</div>
+                  <div className="doc-ref mt-1 text-[14px] font-bold">{formatNum(grandVisible.closing)} MT</div>
+                </div>
+                <div className="col-span-2 flex items-baseline justify-between gap-2.5 border-t border-t-[#DCE7DB] pt-[9px]">
+                  <span className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">
+                    Balance value still to draw
+                  </span>
+                  <span className="doc-ref whitespace-nowrap text-[14px] font-bold">
+                    {formatINR(grandVisible.balValue)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="sticky bottom-0 flex flex-none gap-2.5 border-t border-t-[#D6E2D6] bg-white px-4 pb-6 pt-[11px]">
+          <button
+            type="button"
+            onClick={openAdd}
+            className="flex h-[50px] flex-1 items-center justify-center gap-2 rounded-[4px] bg-[#0B3D2E] text-[13.5px] font-extrabold text-[#C7F03F]"
+          >
+            <Plus className="h-5 w-5" />
+            New bargain
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <>
       <PageHeader
@@ -1041,7 +1588,7 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                 // One white card, one height for everything on it — the
                 // pickers arrive at 32px, 36px and 40px otherwise.
                 __WEB__ &&
-                  '!mb-3 !gap-x-2.5 !rounded-[4px] !border !border-[#D6E2D6] !bg-white !px-4 !py-3 [&_input]:!h-10 [&_input]:!rounded-[4px] [&_input]:!text-[13px] [&_[data-slot=select-trigger]]:!h-10 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-10 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!text-[12.5px] [&>label>button]:!h-auto'
+                  '!mb-3 !gap-x-2.5 !rounded-[5px] !border !border-[#DCE7DB] !bg-[#FBFCFA] !px-4 !py-3 !shadow-[0_1px_2px_rgba(10,31,23,.04)] [&_input]:!h-10 [&_input]:!rounded-[4px] [&_input]:!border-[#C3D2C6] [&_input]:!bg-white [&_input]:!text-[13px] [&_[data-slot=select-trigger]]:!h-10 [&_[data-slot=select-trigger]]:!rounded-[4px] [&_[data-slot=select-trigger]]:!border-[#C3D2C6] [&_[data-slot=select-trigger]]:!bg-white [&_[data-slot=select-trigger]]:!text-[13px] [&_[data-slot=date-picker]]:!h-10 [&_[data-slot=date-picker]]:!rounded-[4px] [&_[data-slot=date-picker]]:!border-[#C3D2C6] [&_[data-slot=date-picker]]:!bg-white [&_[data-slot=date-picker]]:!text-[12.5px] [&>label>button]:!h-auto'
               )}
             >
               {/* One dropdown rather than a chip per category — the list grows
@@ -1080,7 +1627,18 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   </SelectContent>
                 </Select>
               )}
-              <div className="relative min-w-[180px] flex-1 basis-56">
+              {/* Capped rather than fixed. It was flex-1 with no ceiling, so it
+                  took every pixel the row had spare — on a wide screen a search
+                  box half the width of the page, which also pushed the settled
+                  switch onto a line of its own. It still shrinks when the row
+                  is cramped; it just stops growing once it can hold its own
+                  placeholder. */}
+              <div
+                className={cn(
+                  'relative min-w-[180px] flex-1 basis-56',
+                  __WEB__ && '!max-w-[20rem] !basis-[20rem]'
+                )}
+              >
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   type="search"
@@ -1090,7 +1648,18 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
                   onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
-              <div className="flex shrink-0 flex-wrap items-center gap-1.5 text-[13px]">
+              {__WEB__ && (
+                <span aria-hidden className="h-7 w-px shrink-0 self-center bg-[#C3D2C6]" />
+              )}
+              <div
+                className={cn(
+                  'flex shrink-0 flex-wrap items-center gap-1.5 text-[13px]',
+                  // The date window as one group with its own edge, so "from"
+                  // and "to" are visibly two ends of one control rather than
+                  // two more boxes in a row of boxes.
+                  __WEB__ && '!gap-2 !rounded-[4px] !border !border-[#DCE7DB] !bg-white !px-2.5 !py-[5px]'
+                )}
+              >
                 <span className={cn('text-muted-foreground', __WEB__ && '!text-[10.5px] !font-extrabold !uppercase !tracking-[.13em] !text-[#5A6B62]')}>Date</span>
                 <FyPicker from={dateFrom} to={dateTo} onRange={(f, t) => { setDateFrom(f); setDateTo(t) }} className="h-9 w-28 text-xs" />
                 <DatePicker value={dateFrom} onChange={(v) => setDateFrom(v || '')} max={dateTo || undefined} className="w-[8.5rem]" />

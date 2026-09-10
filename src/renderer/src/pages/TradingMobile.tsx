@@ -31,6 +31,7 @@ import {
   X
 } from 'lucide-react'
 import { formatDate, formatNum } from '@/lib/format'
+import { MobileBar } from '@/components/MobileBar'
 import { cn } from '@/lib/utils'
 import { useGlobalDateRange, globalRangeAppliesTo } from '@/lib/globalDateRange'
 
@@ -69,6 +70,8 @@ export function TradingMobile(): React.JSX.Element {
   const [openId, setOpenId] = useState<number | null>(null)
   const [entryNote, setEntryNote] = useState(false)
   const globalRange = useGlobalDateRange()
+  // Bumped by the refresh button; the fetch below watches it.
+  const [nonce, setNonce] = useState(0)
 
   useEffect(() => {
     let live = true
@@ -87,7 +90,7 @@ export function TradingMobile(): React.JSX.Element {
     return () => {
       live = false
     }
-  }, [])
+  }, [nonce])
 
   // Matching, filtering and the chip counts are the desktop page's own rules,
   // repeated rather than shared only because that page keeps them inside its
@@ -152,7 +155,8 @@ export function TradingMobile(): React.JSX.Element {
       {/* Header. The three figures live in it rather than in cards below,
           because on a phone the list is the page and anything above it is
           scrolled past once and never seen again. */}
-      <div className="shrink-0 bg-[#0B3D2E] px-4 pb-3.5 pt-3 text-white">
+      <div className="shrink-0 bg-[#0B3D2E] px-4 pb-3.5 pt-2.5 text-white">
+        <MobileBar onRefresh={() => setNonce((n) => n + 1)} />
         <div className="flex items-start justify-between gap-2.5">
           <div className="min-w-0">
             <div className="text-[19px] font-extrabold tracking-[-0.02em]">Trading</div>

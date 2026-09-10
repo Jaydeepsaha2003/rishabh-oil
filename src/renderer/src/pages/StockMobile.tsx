@@ -22,6 +22,7 @@ import {
   ClipboardCheck,
   Copy,
   Inbox,
+  Layers,
   Loader2,
   Monitor,
   Package,
@@ -31,6 +32,8 @@ import {
   Zap
 } from 'lucide-react'
 import { formatDate, formatINR, formatNum, todayISO } from '@/lib/format'
+import { MobileBar } from '@/components/MobileBar'
+import { PpBreakdown } from '@/components/PpBreakdown'
 import { cn } from '@/lib/utils'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -46,12 +49,15 @@ type Menu = 'book' | 'actual' | 'opening'
 export function StockMobile(): React.JSX.Element {
   const [menu, setMenu] = useState<Menu>('book')
   const violet = menu === 'opening'
+  // See the note on the key below.
+  const [nonce, setNonce] = useState(0)
 
   return (
     <div className="flex min-h-[100dvh] flex-col bg-[#F1F5EF]">
       {/* The header is the screen's identity: forest for the two registers
           that report, violet for the sheet that sets the starting line. */}
-      <div className={cn('shrink-0 px-4 pb-3 pt-3 text-white', violet ? 'bg-[#3D3179]' : 'bg-[#0B3D2E]')}>
+      <div className={cn('shrink-0 px-4 pb-3 pt-2.5 text-white', violet ? 'bg-[#3D3179]' : 'bg-[#0B3D2E]')}>
+        <MobileBar tone={violet ? 'violet' : 'forest'} onRefresh={() => setNonce((n) => n + 1)} />
         <div className="text-[19px] font-extrabold tracking-[-0.02em]">Stock</div>
         <div className={cn('mt-0.5 text-[11px] font-extrabold uppercase tracking-[.12em]', violet ? 'text-[#C9BEF5]' : 'text-[#8FBFA8]')}>
           {menu === 'book' ? 'What the books say' : menu === 'actual' ? 'What was counted' : 'Where it all starts'}
@@ -89,7 +95,17 @@ export function StockMobile(): React.JSX.Element {
         })}
       </div>
 
-      {menu === 'book' ? <BookScreen /> : menu === 'actual' ? <DayCloseScreen /> : <OpeningScreen />}
+      {/* `nonce` as a key, so the refresh button remounts the active screen
+          and its own load effect runs again. Each of the three fetches in its
+          own effect with no shared loader to call, and threading a refresh
+          into all three is more moving parts than a remount is worth. */}
+      {menu === 'book' ? (
+        <BookScreen key={nonce} />
+      ) : menu === 'actual' ? (
+        <DayCloseScreen key={nonce} />
+      ) : (
+        <OpeningScreen key={nonce} />
+      )}
     </div>
   )
 }
@@ -552,6 +568,10 @@ function OpeningScreen(): React.JSX.Element {
 function OpeningProducts(): React.JSX.Element {
   const [data, setData] = useState<Row | null>(null)
   const [draft, setDraft] = useState<Record<string, { qty?: string; pp?: string; adj?: string }>>({})
+  // Which product's PP breakdown is open — the same editor the desktop sheet
+  // uses, because the stage list it writes to is the site's and there must not
+  // be two versions of what it means.
+  const [ppRow, setPpRow] = useState<Row | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [query, setQuery] = useState('')
@@ -572,6 +592,25 @@ function OpeningProducts(): React.JSX.Element {
   useEffect(() => {
     void load()
   }, [])
+
+  // One row patched in place. load() clears the draft, and somebody halfway
+  // down a forty-product count would lose all of it.
+  const applyPp = (productId: number, total: number, lines: Row[]): void => {
+    setData((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        rows: (Array.isArray(prev.rows) ? (prev.rows as Row[]) : []).map((r) =>
+          n(r.id) === productId ? { ...r, pp_lines: lines, pp_qty: lines.length ? total : r.pp_qty } : r
+        )
+      }
+    })
+    setDraft((p) => ({
+      ...p,
+      [String(productId)]: { ...(p[String(productId)] || {}), pp: lines.length ? String(total) : '' }
+    }))
+    setPpRow((cur) => (cur && n(cur.id) === productId ? { ...cur, pp_lines: lines } : cur))
+  }
 
   const rows: Row[] = Array.isArray(data?.rows) ? (data?.rows as Row[]) : []
   const asOf = s(data?.as_of)
@@ -673,6 +712,7 @@ function OpeningProducts(): React.JSX.Element {
             const any = ['qty', 'pp', 'adj'].some((k) => valOf(r, k as 'qty') !== '')
             const after = r3(n(r.movement_closing) + total)
             const short = n(r.shortfall) > 0.0005 && valOf(r, 'qty') === ''
+            const ppCount = Array.isArray(r.pp_lines) ? (r.pp_lines as Row[]).length : 0
             return (
               <div
                 key={String(r.id)}
@@ -722,10 +762,50 @@ function OpeningProducts(): React.JSX.Element {
                   ) : null}
                 </div>
 
-                <div className="grid grid-cols-3 gap-2.5 px-3.5 pb-3">
+                <div className="grid grid-cols-3 gap-2.5 px-3.5 pb-2">
                   <Num label="Raw qty" value={valOf(r, 'qty')} onChange={(v) => set(r, 'qty', v)} />
-                  <Num label="PP" value={valOf(r, 'pp')} onChange={(v) => set(r, 'pp', v)} />
+                  {/* Locked while a breakdown stands behind it: the stages are
+                      the count, and a second place to type the same figure is
+                      how the two come to disagree. */}
+                  <Num
+                    label="PP"
+                    value={valOf(r, 'pp')}
+                    onChange={(v) => set(r, 'pp', v)}
+                    readOnly={ppCount > 0}
+                  />
                   <Num label="Adj." value={valOf(r, 'adj')} onChange={(v) => set(r, 'adj', v)} />
+                </div>
+
+                <div className="px-3.5 pb-3">
+                  <button
+                    type="button"
+                    onClick={() => setPpRow(r)}
+                    className={cn(
+                      'flex h-11 w-full items-center gap-2.5 rounded-[4px] border px-3',
+                      ppCount > 0
+                        ? 'border-[#D6CEF5] bg-[#F6F3FD]'
+                        : 'border-[#E1E8E0] bg-white'
+                    )}
+                  >
+                    <Layers
+                      className={cn('h-[17px] w-[17px] shrink-0', ppCount > 0 ? 'text-[#5B4BA8]' : 'text-[#7C9188]')}
+                    />
+                    <span
+                      className={cn(
+                        'min-w-0 flex-1 truncate text-left text-[11.5px] font-extrabold',
+                        ppCount > 0 ? 'text-[#3D3179]' : 'text-[#5A6B62]'
+                      )}
+                    >
+                      {ppCount > 0
+                        ? `PP by stage · ${ppCount} vessel${ppCount === 1 ? '' : 's'}`
+                        : 'Break PP down by stage'}
+                    </span>
+                    {ppCount > 0 ? (
+                      <span className="shrink-0 text-[12.5px] font-bold tabular-nums text-[#3D3179]">
+                        {formatNum(r3(n(r.pp_qty)))}
+                      </span>
+                    ) : null}
+                  </button>
                 </div>
 
                 <div
@@ -759,6 +839,13 @@ function OpeningProducts(): React.JSX.Element {
           })
         )}
       </div>
+
+      <PpBreakdown
+        product={ppRow}
+        open={!!ppRow}
+        onOpenChange={(o) => !o && setPpRow(null)}
+        onSaved={applyPp}
+      />
 
       <SaveBar
         tone="violet"
@@ -1013,12 +1100,14 @@ function Num({
   label,
   value,
   onChange,
-  placeholder
+  placeholder,
+  readOnly
 }: {
   label: string
   value: string
   onChange: (v: string) => void
   placeholder?: string
+  readOnly?: boolean
 }): React.JSX.Element {
   return (
     <div className="min-w-0">
@@ -1026,9 +1115,13 @@ function Num({
       <input
         value={value}
         inputMode="decimal"
+        readOnly={readOnly}
         placeholder={placeholder ?? '—'}
         onChange={(e) => onChange(e.target.value)}
-        className="h-11 w-full rounded-[4px] border border-[#C3D2C6] bg-white px-2.5 text-right text-[13px] font-bold tabular-nums text-[#0A1F17] outline-none placeholder:font-medium placeholder:text-[#C3D2C6]"
+        className={cn(
+          'h-11 w-full rounded-[4px] border border-[#C3D2C6] px-2.5 text-right text-[13px] font-bold tabular-nums text-[#0A1F17] outline-none placeholder:font-medium placeholder:text-[#C3D2C6]',
+          readOnly ? 'bg-[#F1F5EF]' : 'bg-white'
+        )}
       />
     </div>
   )

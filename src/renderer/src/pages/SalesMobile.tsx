@@ -14,6 +14,7 @@
 // no bargain picker yet) — the common case, not every case the desktop form
 // handles. See the comments on NewSaleScreen for exactly what that excludes.
 import { useEffect, useMemo, useState } from 'react'
+import { MobileBar } from '@/components/MobileBar'
 import type { LucideIcon } from 'lucide-react'
 import {
   Search,
@@ -306,6 +307,7 @@ export function SalesMobile(): React.JSX.Element {
         setScreen('detail')
       }}
       onNew={() => setScreen('new')}
+      onRefresh={load}
     />
   )
 }
@@ -330,6 +332,7 @@ function ListScreen(props: {
   totalCount: number
   onOpen: (key: string) => void
   onNew: () => void
+  onRefresh: () => void | Promise<void>
 }): React.JSX.Element {
   const { rows, totals } = props
   const quickRanges = ['Today', 'This week', 'This month', props.fyLabel]
@@ -337,10 +340,11 @@ function ListScreen(props: {
   return (
     <div style={{ ...sans, height: '100%', display: 'flex', flexDirection: 'column', background: T.surface, color: T.ink, overflow: 'hidden' }}>
       <div style={{ background: T.forest, color: '#fff', padding: '10px 16px 0', flex: 'none' }}>
-        {/* Only this row is inset — the sidebar's tap-to-open button sits in
-            the top-left corner and the title has to clear it. The search and
-            the range chips below run the full width. */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingLeft: 44 }}>
+        <MobileBar onRefresh={props.onRefresh} />
+        {/* The 44px left inset that used to be here is gone with the sidebar's
+            floating button — the menu is in the bar above now, so the title has
+            nothing to clear and gets the full width. */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.03em', lineHeight: 1.1 }}>Sales</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {/* New sale lives here now rather than in a bar along the bottom —

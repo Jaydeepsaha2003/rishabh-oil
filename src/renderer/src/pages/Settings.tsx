@@ -1637,7 +1637,10 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
                 older way into the same register. The desktop app keeps it —
                 there is no sidebar entry there. */}
             {isAdmin && !__WEB__ && <TabsTrigger value="users">Users</TabsTrigger>}
-            {isAdmin && <TabsTrigger value="access">Access</TabsTrigger>}
+            {/* Website: this moved out to its own page on the sidebar (User
+                Activity). The desktop app keeps it — there is no sidebar entry
+                there. */}
+            {isAdmin && !__WEB__ && <TabsTrigger value="access">Access</TabsTrigger>}
             {isAdmin && <TabsTrigger value="database">Database</TabsTrigger>}
           </TabsList>
 

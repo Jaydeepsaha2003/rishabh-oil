@@ -23,6 +23,7 @@ import {
   Briefcase,
   Building2,
   Check,
+  ChevronDown,
   CircleSlash,
   ClipboardCheck,
   Contact,
@@ -56,6 +57,7 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { MobileBar } from '@/components/MobileBar'
 import { PageHeader } from '@/components/PageHeader'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -233,6 +235,10 @@ export function UserAccess(): React.JSX.Element {
   const [saving, setSaving] = useState(false)
   const [allView, setAllView] = useState('')
   const [allEdit, setAllEdit] = useState('')
+  // Which page's flags are open on the phone. One at a time: thirty rows of
+  // four toggles each does not fit on 390px, and a page whose grant nobody is
+  // changing does not need to be on screen.
+  const [openRow, setOpenRow] = useState('')
   const [form, setForm] = useState<Row>({
     full_name: '',
     username: '',
@@ -422,11 +428,349 @@ export function UserAccess(): React.JSX.Element {
     }
   }
 
+
+  // The phone's editor. Everything the desktop form grants, laid out for one
+  // column: the login, the role, the special-access desks, and the page grid as
+  // an accordion — a page at a time rather than thirty rows of four columns.
+  const mobileForm = (
+    <div className="flex min-h-screen flex-col bg-[#F1F5EF]">
+      <div className="sticky top-0 z-10 flex h-14 flex-none items-center gap-2.5 border-b border-b-[#D6E2D6] bg-white px-3">
+        <button
+          type="button"
+          onClick={() => setView('list')}
+          className="flex h-10 w-10 flex-none items-center justify-center rounded-[4px] border border-[#C3D2C6]"
+        >
+          <ArrowLeft className="h-5 w-5 text-[#33473E]" />
+        </button>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[15px] font-extrabold tracking-[-0.01em]">
+            {editing ? String(form.full_name || form.username || 'Edit access') : 'New user'}
+          </div>
+          <div className="text-[11px] font-semibold text-[#5A6B62]">
+            {admin ? 'Admin — everything' : `${granted.length} ${granted.length === 1 ? 'page' : 'pages'} granted`}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-4 pb-5 pt-3">
+        <div className="flex-none overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+          <div className="border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-3.5 py-2.5 text-[10px] font-extrabold uppercase tracking-[.13em]">
+            The login
+          </div>
+          <div className="flex flex-col gap-3 px-3.5 py-3.5">
+            <Field label="Name">
+              <input
+                value={String(form.full_name || '')}
+                onChange={(e) => setForm((p) => ({ ...p, full_name: e.target.value }))}
+                placeholder="Full name"
+                className="h-11 w-full rounded-[4px] border border-[#C3D2C6] bg-white px-[11px] text-[13px] font-bold outline-none"
+              />
+            </Field>
+            <Field label="Username" required>
+              <input
+                value={String(form.username || '')}
+                onChange={(e) => setForm((p) => ({ ...p, username: e.target.value }))}
+                placeholder="lowercase, no spaces"
+                autoCapitalize="none"
+                className="doc-ref h-11 w-full rounded-[4px] border bg-white px-[11px] text-[13px] font-bold outline-none"
+                style={{ borderColor: String(form.username || '').trim() ? '#C3D2C6' : '#E3C58C' }}
+              />
+            </Field>
+            <Field label={`Password${editing ? '' : ' *'}`}>
+              <input
+                value={String(form.password || '')}
+                onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))}
+                placeholder={editing ? 'leave blank to keep' : 'set a password'}
+                className="h-11 w-full rounded-[4px] border bg-white px-[11px] text-[13px] font-bold outline-none"
+                style={{ borderColor: !editing && !String(form.password || '').trim() ? '#E3C58C' : '#C3D2C6' }}
+              />
+            </Field>
+            <button
+              type="button"
+              onClick={() => setForm((p) => ({ ...p, active: !p.active }))}
+              className="flex h-12 w-full items-center gap-2.5 rounded-[4px] border border-[#C3D2C6] bg-white px-[11px]"
+            >
+              <span
+                className="flex h-6 w-[42px] flex-none rounded-[3px] p-[3px]"
+                style={{ background: form.active ? '#0B3D2E' : '#C3D2C6', justifyContent: form.active ? 'flex-end' : 'flex-start' }}
+              >
+                <span className="h-[18px] w-[18px] rounded-[2px] bg-white" />
+              </span>
+              <span className="text-[12.5px] font-extrabold" style={{ color: form.active ? '#0B6B45' : '#5A6B62' }}>
+                {form.active ? 'Can sign in' : 'Cannot sign in'}
+              </span>
+            </button>
+          </div>
+          <div className="px-3.5 pb-3.5">
+            <div className="mb-2 text-[10px] font-extrabold uppercase tracking-[.12em] text-[#5A6B62]">Role</div>
+            <div className="grid grid-cols-2 gap-2">
+              {ROLES.map((r) => {
+                const on = String(form.role) === r.key
+                const t = roleTone(r.key)
+                const Ico = r.icon
+                return (
+                  <button
+                    key={r.key}
+                    type="button"
+                    onClick={() => setForm((p) => ({ ...p, role: r.key }))}
+                    className="flex items-center gap-2 rounded-[4px] border-[1.5px] px-2.5 py-3 text-left"
+                    style={{ borderColor: on ? t.fg : '#DCE7DB', background: on ? t.bg : '#fff' }}
+                  >
+                    <Ico className="h-[18px] w-[18px] flex-none" style={{ color: on ? t.fg : '#8CA396' }} />
+                    <span className="text-[12.5px] font-extrabold capitalize" style={{ color: on ? t.fg : '#0A1F17' }}>
+                      {r.key}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+
+        {admin ? (
+          <div className="flex flex-none items-start gap-2.5 rounded-[4px] border border-[#D6CEF5] bg-[#EDE9FB] px-3.5 py-4" style={{ borderLeft: '4px solid #5B4BA8' }}>
+            <ShieldCheck className="h-5 w-5 flex-none text-[#5B4BA8]" />
+            <div className="min-w-0">
+              <div className="text-[12.5px] font-extrabold text-[#3D3179]">Admins open every page.</div>
+              <div className="mt-1 text-[11.5px] font-semibold leading-[1.5] text-[#4A3D8C]">
+                Nothing to grant page by page, and no day window applies.
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+            {DESKS.map((d) => {
+              const on = d.key === 'unload' ? unloadOn : readingsOn
+              return (
+                <button
+                  key={d.key}
+                  type="button"
+                  onClick={() => setPerms(setDesk(perms, d.module, d.key, !on))}
+                  className="flex flex-none items-start gap-2.5 rounded-[4px] border-[1.5px] px-3.5 py-3 text-left"
+                  style={{ borderColor: on ? d.bd : `${d.bd}80`, borderStyle: on ? 'solid' : 'dashed', background: on ? d.bg : '#fff' }}
+                >
+                  <span
+                    className="flex h-[26px] w-11 flex-none rounded-[3px] p-[3px]"
+                    style={{ background: on ? d.bd : '#C3D2C6', justifyContent: on ? 'flex-end' : 'flex-start' }}
+                  >
+                    <span className="h-5 w-5 rounded-[2px] bg-white" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[12.5px] font-extrabold" style={{ color: d.ink }}>
+                      {d.key === 'unload' ? 'Unloading desk only' : 'Technical parameters only'}
+                    </div>
+                    <div className="mt-1 text-[11.5px] font-semibold leading-[1.5]" style={{ color: d.ink }}>
+                      {on ? d.override : 'Off — the page grant below applies as ticked.'}
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
+
+            <div className="flex-none overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white">
+              <div className="border-b border-b-[#E4ECE3] bg-[#F7FAF6] px-3.5 py-2.5 text-[10px] font-extrabold uppercase tracking-[.13em]">
+                Module access
+              </div>
+              <div className="flex flex-wrap gap-2 border-b border-b-[#EAF0E9] px-3.5 py-3">
+                {([
+                  { label: 'ALL READ', level: 'read' as const, fg: '#33473E', bd: '#C3D2C6', bg: '#fff' },
+                  { label: 'ALL WRITE', level: 'write' as const, fg: '#33473E', bd: '#C3D2C6', bg: '#fff' },
+                  { label: 'CLEAR', level: 'none' as const, fg: '#B3261E', bd: '#F0D6D4', bg: '#FDF3F2' }
+                ] as const).map((b) => (
+                  <button
+                    key={b.label}
+                    type="button"
+                    onClick={() => setPerms(setAllPerms(GRID_KEYS, b.level))}
+                    className="h-9 flex-1 whitespace-nowrap rounded-[3px] border-[1.5px] px-2 text-[11.5px] font-extrabold"
+                    style={{ borderColor: b.bd, background: b.bg, color: b.fg }}
+                  >
+                    {b.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2 border-b border-b-[#EAF0E9] bg-[#FBFDFA] px-3.5 py-3">
+                {([
+                  ['Visible for', allView, setAllView, 'viewDays' as const],
+                  ['Entry window', allEdit, setAllEdit, 'editDays' as const]
+                ] as const).map(([label, val, setVal, field]) => (
+                  <div key={label} className="min-w-0 flex-1">
+                    <div className="mb-1 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">{label}</div>
+                    <input
+                      value={val}
+                      onChange={(e) => {
+                        setVal(e.target.value)
+                        setPerms(setAllDays(perms, GRID_KEYS, field, e.target.value))
+                      }}
+                      placeholder="days"
+                      inputMode="numeric"
+                      className="doc-ref h-10 w-full rounded-[3px] border border-[#C3D2C6] bg-white px-2 text-right text-[12.5px] font-bold outline-none"
+                    />
+                  </div>
+                ))}
+              </div>
+
+              {GROUPS.flatMap((g) => GRID_MODULES.filter((m) => (GROUP_OF[m.key] || 'Other') === g)).map((m, i, arr) => {
+                const r = rights(m.key)
+                const on = r.view || r.create || r.edit || r.delete
+                const scoped = r.scope === 'unload' || r.scope === 'readings'
+                const writes = r.create || r.edit || r.delete
+                const fixed = FIXED[m.key]
+                const locked = scoped || !!fixed
+                const group = GROUP_OF[m.key] || 'Other'
+                const newGroup = i === 0 || (GROUP_OF[arr[i - 1].key] || 'Other') !== group
+                const isOpen = openRow === m.key
+                const Ico = ICON_OF[m.key] || Droplets
+                const acts = [r.create && 'add', r.edit && 'change', r.delete && 'delete'].filter(Boolean) as string[]
+                return (
+                  <div key={m.key}>
+                    {newGroup && (
+                      <div className="border-y border-y-[#DCE7DB] bg-[#EFF5EC] px-3.5 py-[6px] text-[9px] font-extrabold uppercase tracking-[.15em] text-[#33473E]">
+                        {group}
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setOpenRow(isOpen ? '' : m.key)}
+                      className="flex w-full items-center gap-2.5 border-b border-b-[#EFF3EE] px-3.5 py-3 text-left"
+                      style={{ borderLeft: `3px solid ${on ? '#12855A' : 'transparent'}`, opacity: on ? 1 : 0.7 }}
+                    >
+                      <Ico className="h-[17px] w-[17px] flex-none" style={{ color: on ? '#33473E' : '#A8B8AE' }} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[12.5px] font-bold">{m.label}</span>
+                        <span className="mt-[3px] block truncate text-[10.5px] font-semibold text-[#5A6B62]">
+                          {locked
+                            ? scoped
+                              ? 'fixed by the special access above'
+                              : 'fixed by the app'
+                            : !on
+                              ? 'no access'
+                              : `view${acts.length ? ` · ${acts.join(' · ')}` : ' only'}` +
+                                (r.viewDays !== '' ? ` · sees ${r.viewDays}d` : '') +
+                                (r.editDays !== '' && writes ? ` · keys ${r.editDays}d` : '')}
+                        </span>
+                      </span>
+                      {locked ? (
+                        <Lock className="h-4 w-4 flex-none text-[#A8B8AE]" />
+                      ) : (
+                        <ChevronDown
+                          className="h-[18px] w-[18px] flex-none text-[#5A6B62] transition-transform"
+                          style={{ transform: isOpen ? 'rotate(180deg)' : 'none' }}
+                        />
+                      )}
+                    </button>
+                    {isOpen && !locked && (
+                      <div className="border-b border-b-[#EFF3EE] bg-[#FBFDFA] px-3.5 py-3">
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {FLAGS.map((fl) => {
+                            const ticked = r[fl]
+                            return (
+                              <button
+                                key={fl}
+                                type="button"
+                                onClick={() => setPerms(toggleFlag(perms, m.key, fl))}
+                                className="flex h-11 flex-col items-center justify-center gap-1 rounded-[3px] border-[1.5px]"
+                                style={{
+                                  borderColor: ticked ? (fl === 'delete' ? '#B3261E' : '#0B3D2E') : '#C3D2C6',
+                                  background: ticked ? (fl === 'delete' ? '#FDF3F2' : '#EFF5EC') : '#fff'
+                                }}
+                              >
+                                <span
+                                  className="text-[10px] font-extrabold uppercase tracking-[.04em]"
+                                  style={{ color: ticked ? (fl === 'delete' ? '#B3261E' : '#0B3D2E') : '#5A6B62' }}
+                                >
+                                  {fl}
+                                </span>
+                                {ticked && <Check className="h-3 w-3" style={{ color: fl === 'delete' ? '#B3261E' : '#0B3D2E' }} />}
+                              </button>
+                            )
+                          })}
+                        </div>
+                        <div className="mt-2.5 flex gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="mb-1 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Visible for</div>
+                            <input
+                              value={r.viewDays}
+                              onChange={(e) => setPerms(writeRights(perms, m.key, { ...r, viewDays: e.target.value }))}
+                              placeholder={r.view ? 'all' : '—'}
+                              disabled={!r.view}
+                              inputMode="numeric"
+                              className="doc-ref h-10 w-full rounded-[3px] border px-2 text-right text-[12px] font-bold outline-none"
+                              style={{ borderColor: r.view ? '#C3D2C6' : '#EAF0E9', background: r.view ? '#fff' : '#F7FAF6' }}
+                            />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="mb-1 text-[9.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Entry window</div>
+                            <input
+                              value={r.editDays}
+                              onChange={(e) => setPerms(writeRights(perms, m.key, { ...r, editDays: e.target.value }))}
+                              placeholder={writes ? 'no limit' : '—'}
+                              disabled={!writes}
+                              inputMode="numeric"
+                              className="doc-ref h-10 w-full rounded-[3px] border px-2 text-right text-[12px] font-bold outline-none"
+                              style={{ borderColor: writes ? '#C3D2C6' : '#EAF0E9', background: writes ? '#fff' : '#F7FAF6' }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* The requirement line and SAVE, fixed — the form is long enough that a
+          button at the bottom of it would never be seen. */}
+      <div className="sticky bottom-0 flex-none border-t border-t-[#D6E2D6] bg-white px-4 pb-6 pt-2.5">
+        <div
+          className="mb-2 flex items-start gap-2 text-[11.5px] font-bold leading-[1.4]"
+          style={{ color: missing.length ? '#8A5300' : '#0B6B45' }}
+        >
+          {missing.length ? <Info className="h-4 w-4 flex-none" /> : <Check className="h-4 w-4 flex-none" />}
+          <span>
+            {missing.length
+              ? `Still needed: ${missing.join(', ')}.`
+              : editing
+                ? 'Saving replaces this login’s access.'
+                : 'Saving creates the login.'}
+          </span>
+        </div>
+        <div className="flex gap-2.5">
+          <button
+            type="button"
+            onClick={() => setView('list')}
+            className="h-[50px] flex-none rounded-[4px] border-[1.5px] border-[#C3D2C6] px-5 text-[12.5px] font-extrabold text-[#33473E]"
+          >
+            CANCEL
+          </button>
+          <button
+            type="button"
+            disabled={saving || missing.length > 0}
+            onClick={() => void save()}
+            className="flex h-[50px] flex-1 items-center justify-center gap-2 rounded-[4px] text-[13.5px] font-extrabold disabled:cursor-not-allowed"
+            style={missing.length ? { background: '#C3D2C6', color: '#F1F5EF' } : { background: '#0B3D2E', color: '#C7F03F' }}
+          >
+            <Check className="h-5 w-5" />
+            {saving ? 'SAVING…' : 'SAVE USER'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+
   // Phone. After every hook, so the order cannot change between renders.
   if (__WEB__ && isMobile) {
+    // THE BUG THIS FIXES: this branch used to return the list unconditionally.
+    // EDIT ACCESS called openEdit, which set view to 'form' — and the phone
+    // re-rendered the same list, so the button did nothing at all and the only
+    // form was the desktop one below, unreachable from here.
+    if (view === 'form') return mobileForm
     return (
       <div className="flex min-h-screen flex-col bg-[#F1F5EF]">
-        <div className="flex-none bg-[#0B3D2E] px-4 pb-3.5 pt-1 text-white">
+        <div className="flex-none bg-[#0B3D2E] px-4 pb-3.5 pt-2.5 text-white">
+          <MobileBar onRefresh={() => load()} />
           <div className="text-[19px] font-extrabold tracking-[-0.02em]">User access</div>
           <div className="mt-[3px] text-[11.5px] font-bold text-[#8FBFA8]">
             {rows.length} logins · {rows.filter((u) => u.active).length} active
@@ -521,10 +865,22 @@ export function UserAccess(): React.JSX.Element {
           <div className="flex flex-none items-start gap-[9px] rounded-[4px] border border-[#E4ECE3] bg-[#F7FAF6] px-[13px] py-[11px]">
             <Info className="h-[17px] w-[17px] flex-none text-[#A8B8AE]" />
             <span className="text-[11.5px] font-semibold leading-[1.5] text-[#5A6B62]">
-              Granting access page by page is a workstation job — the phone lists who has what and lets you switch a
-              login off.
+              Every page grant is editable here — tap a login, then a page, to change its ticks and its two day
+              windows. The full grid side by side is still easier on a workstation.
             </span>
           </div>
+        </div>
+        {/* Fixed, because the list scrolls and adding a login is the one thing
+            somebody opens this page on a phone to do. */}
+        <div className="sticky bottom-0 flex flex-none gap-2.5 border-t border-t-[#D6E2D6] bg-white px-4 pb-6 pt-[11px]">
+          <button
+            type="button"
+            onClick={openAdd}
+            className="flex h-[50px] flex-1 items-center justify-center gap-2 rounded-[4px] bg-[#0B3D2E] text-[13.5px] font-extrabold text-[#C7F03F]"
+          >
+            <UserPlus className="h-5 w-5" />
+            New user
+          </button>
         </div>
       </div>
     )

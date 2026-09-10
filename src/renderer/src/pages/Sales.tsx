@@ -1,10 +1,11 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, ArrowLeft, Ban, Building2, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, DoorOpen, Download, History, LogIn, LogOut, Maximize2, Pencil, Plus, RotateCcw, Search, SlidersHorizontal, Tags, Trash2, Truck, Upload, X, ListChecks, Info, type LucideIcon} from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Ban, Building2, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, DoorOpen, Download, History, LogIn, LogOut, Maximize2, Pencil, Plus, Receipt, RotateCcw, Search, SlidersHorizontal, Tag, Tags, Trash2, Truck, Undo2, Upload, X, ListChecks, Info, type LucideIcon} from 'lucide-react'
 import { HelpTip, InfoTip } from '@/components/ui/tooltip'
 import { moduleScope } from '@/lib/modules'
 import { useCategories } from '@/lib/useCategories'
 import { loadUser } from '@/lib/session'
+import { MobileBar } from '@/components/MobileBar'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { SalesMobile } from './SalesMobile'
 
@@ -4012,7 +4013,124 @@ function SalesTab({
 
 // ---------------- Sales bargains tab ----------------
 
+// What has been drawn against one sales bargain, as one dated list.
+// -----------------------------------------------------------------------------
+// Lifted out of the desktop expand row so the phone can build the same thing.
+// Four parts, each of which is easy to get subtly wrong:
+//
+//   ONE ROW PER INVOICE, not per line. A split invoice draws the bargain down
+//   over several sale rows; showing each was showing the same invoice three
+//   times. Qty and amount sum across the invoice's lines and the rate is the
+//   QTY-WEIGHTED average (taxable / qty), never the first line's rate.
+//
+//   RETURNS ARE NEGATIVE LINES in the same list. A credit note is the same
+//   story told backwards, so it belongs in date order beside the dispatch it
+//   reverses rather than in a table of its own.
+//
+//   AMOUNTS INCLUDE GST on both sides, because the desktop column already
+//   states them that way and two columns of the same name meaning different
+//   things is worse than either choice.
+//
+//   THE TOTAL IS NET — what the bargain actually kept, not the gross it
+//   shipped.
+//
+// The desktop still carries its own inline copy; the two are checked against
+// each other on real data rather than assumed equal. Converging the desktop
+// onto this is worth doing and is deliberately not done here, because the ask
+// was that the desktop stay as it is.
+export type BargainDrawLine = {
+  key: string
+  id: number
+  kind: 'out' | 'ret'
+  label: string
+  sub: string
+  date: string
+  qty: number
+  rate: number
+  amount: number
+  uom: string
+  company: string
+  companyColour: string
+}
+
+export function salesBargainDraws(
+  row: Row,
+  disp: Row[],
+  retLines: Row[],
+  coNameOf: (id: unknown) => string,
+  coColourOf: (id: unknown) => string
+): { lines: BargainDrawLine[]; net: { qty: number; amount: number; out: number; ret: number } } {
+  const byInvoice = new Map<
+    string,
+    { id: number; invoice_no: string; sale_date: string; sample: Row; qty: number; taxable: number; total: number }
+  >()
+  for (const d of disp) {
+    const key = String(d.invoice_group || d.invoice_no || d.id)
+    if (!byInvoice.has(key)) {
+      byInvoice.set(key, {
+        id: Number(d.id),
+        invoice_no: d.invoice_no,
+        sale_date: d.sale_date,
+        sample: d,
+        qty: 0,
+        taxable: 0,
+        total: 0
+      })
+    }
+    const g = byInvoice.get(key)!
+    g.qty += Number(d.qty) || 0
+    g.taxable += Number(d.amount) || 0
+    g.total += (Number(d.amount) || 0) + (Number(d.gst_amount) || 0)
+  }
+
+  const lines: BargainDrawLine[] = [
+    ...Array.from(byInvoice.values()).map((g): BargainDrawLine => ({
+      key: `d${g.id}`,
+      id: g.id,
+      kind: 'out',
+      label: String(g.invoice_no || '—'),
+      sub: stageInfo(g.sample).label,
+      date: String(g.sale_date || ''),
+      qty: g.qty,
+      rate: g.qty > 0 ? g.taxable / g.qty : 0,
+      amount: g.total,
+      uom: String(g.sample.uom || row.uom || 'MT'),
+      company: coNameOf(g.sample.company_id),
+      companyColour: coColourOf(g.sample.company_id)
+    })),
+    ...retLines.map((rl, ri): BargainDrawLine => ({
+      key: `r${rl.note_id}-${ri}`,
+      id: 0,
+      kind: 'ret',
+      label: String(rl.note_no || 'CN'),
+      sub: rl.explicit_bargain_id
+        ? 'Return · named on the note'
+        : `Return vs ${String(rl.against_ref || '—')}`,
+      date: String(rl.note_date || ''),
+      qty: -(Number(rl.qty) || 0),
+      rate: Number(rl.rate) || 0,
+      amount: -(Number(rl.amount_incl ?? rl.amount) || 0),
+      uom: String(row.uom || 'MT'),
+      company: coNameOf(rl.company_id),
+      companyColour: coColourOf(rl.company_id)
+    }))
+  ].sort((x, y) => x.date.localeCompare(y.date) || x.key.localeCompare(y.key))
+
+  const net = lines.reduce(
+    (acc, l) => {
+      acc.qty += l.qty
+      acc.amount += l.amount
+      if (l.kind === 'ret') acc.ret += -l.qty
+      else acc.out += l.qty
+      return acc
+    },
+    { qty: 0, amount: 0, out: 0, ret: 0 }
+  )
+  return { lines, net }
+}
+
 function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } = {}): React.JSX.Element {
+  const isMobile = useIsMobile()
   // How far back this user may date a new entry. The save is refused either
   // way; greying the days out just stops the form offering one it will reject.
   const minDate = useEntryWindow('salesBargains')
@@ -4994,9 +5112,473 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
     </Dialog>
   )
 
+
+  // ------------------------------------------------------------ the phone --
+  // The register is eight numeric columns grouped by customer. On a phone it
+  // becomes two levels of card: a customer band that opens into its bargains,
+  // and a bargain that opens into the invoices drawn against it. Same figures,
+  // same grouping, collapsed by default — a phone reading of the page.
+  //
+  // Built as a value rather than an early return so the dialogs below stay
+  // mounted for both: New bargain, Adjust and the SKU rate card all work here.
+  const mobileBody = ((): React.JSX.Element => {
+    const contracted = grand.opening + grand.addition + grand.adjusted
+    const kpis = [
+      { k: 'Bargains', v: String(grand.count), unit: '' },
+      { k: 'Contracted', v: formatNum(contracted), unit: 'MT' },
+      { k: 'Net drawn', v: formatNum(grand.dispatch - grand.ret), unit: 'MT' },
+      { k: 'Balance', v: formatNum(grand.closing), unit: 'MT' }
+    ]
+    const parties = [...groupStats.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+    const bar = (drawn: number, total: number): { pct: string; label: string; colour: string } => {
+      const pc = total > 0 ? Math.min(100, Math.max(0, (drawn / total) * 100)) : 0
+      return {
+        pct: `${pc}%`,
+        label: `${Math.round(pc)}%`,
+        colour: pc >= 99.5 ? '#12855A' : pc > 0 ? '#C2700A' : '#C3D2C6'
+      }
+    }
+
+    return (
+      <div className="-mx-4 -my-4 flex min-h-[100dvh] flex-col bg-[#F1F5EF]">
+        <div className="flex-none bg-[#0B3D2E] px-4 pb-3.5 pt-2.5 text-white">
+          <MobileBar onRefresh={() => load()} />
+          <div className="min-w-0">
+            <div className="text-[19px] font-extrabold tracking-[-0.02em]">Sales Bargain</div>
+            <div className="mt-[3px] text-[11.5px] font-bold text-[#8FBFA8]">
+              {grand.count} {grand.count === 1 ? 'bargain' : 'bargains'} · {parties.length}{' '}
+              {parties.length === 1 ? 'customer' : 'customers'} · {formatDate(F)} to {formatDate(T)}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setKpiOpen((v) => !v)}
+            className="mt-2.5 flex min-h-11 w-full items-center gap-2 rounded-[4px] bg-white/10 px-[11px]"
+          >
+            <ChevronDown
+              className="h-[19px] w-[19px] flex-none text-[#C7F03F] transition-transform"
+              style={{ transform: kpiOpen ? 'none' : 'rotate(-90deg)' }}
+            />
+            <span className="min-w-0 flex-1 text-left text-[10.5px] font-extrabold uppercase tracking-[.11em] text-[#8FBFA8]">
+              Summary
+            </span>
+            <span className="doc-ref whitespace-nowrap text-[11.5px] font-extrabold text-[#C7F03F]">
+              {formatNum(grand.closing)} MT open
+            </span>
+          </button>
+          {kpiOpen && (
+            <div className="mt-[9px] grid grid-cols-2 gap-2">
+              {kpis.map((k) => (
+                <div key={k.k} className="min-w-0 rounded-[4px] bg-white/10 px-[11px] py-[9px]">
+                  <div className="text-[9px] font-extrabold uppercase tracking-[.1em] text-[#8FBFA8]">{k.k}</div>
+                  <div className="doc-ref mt-[5px] text-[14px] font-bold tracking-[-0.02em] text-white">
+                    {k.v}
+                    {k.unit && <span className="text-[10px] text-[#8FBFA8]"> {k.unit}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-none flex-col gap-[9px] border-b border-b-[#D6E2D6] bg-white px-4 py-2.5">
+          <div className="flex h-11 items-center gap-[9px] rounded-[4px] border border-[#C3D2C6] px-3">
+            <Search className="h-[19px] w-[19px] flex-none text-[#5A6B62]" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Bargain, customer or product"
+              className="min-w-0 flex-1 border-0 bg-transparent text-[13px] font-medium outline-none"
+            />
+          </div>
+          {/* Loose and Packed are not a filter, they are two different
+              registers — a packed bargain is priced per SKU. So they stay a
+              hard switch here as on the desktop, with the category chips
+              beside them. */}
+          <div className="flex gap-[7px] overflow-x-auto pb-0.5">
+            {(['LOOSE', 'PACKED'] as const).map((t) => {
+              const on = sectionType === t
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setSectionType(t)}
+                  className="flex h-11 flex-none items-center whitespace-nowrap rounded-[4px] border border-[#DCE7DB] px-[15px] text-[12.5px] font-extrabold"
+                  style={on ? { background: '#0B3D2E', color: '#fff' } : { background: '#fff', color: '#33473E' }}
+                >
+                  {t === 'LOOSE' ? 'Loose' : 'Packed'}
+                </button>
+              )
+            })}
+            {[{ v: 'ALL', label: 'All' }, ...saleCats].map((t) => {
+              const on = sectionCategory === t.v
+              return (
+                <button
+                  key={t.v}
+                  type="button"
+                  onClick={() => setSectionCategory(t.v)}
+                  className="flex h-11 flex-none items-center whitespace-nowrap rounded-[4px] border border-[#DCE7DB] px-[15px] text-[12.5px] font-extrabold"
+                  style={on ? { background: '#EFF5EC', color: '#0B3D2E', borderColor: '#0B3D2E' } : { background: '#fff', color: '#5A6B62' }}
+                >
+                  {t.label}
+                </button>
+              )
+            })}
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowZero((v) => !v)}
+            className="flex min-h-11 items-center gap-[9px] text-left"
+          >
+            <span
+              className="flex h-[26px] w-11 flex-none rounded-[3px] p-[3px]"
+              style={{ background: showZero ? '#0B3D2E' : '#C3D2C6', justifyContent: showZero ? 'flex-end' : 'flex-start' }}
+            >
+              <span className="h-5 w-5 rounded-[2px] bg-white" />
+            </span>
+            <span className="inline-flex flex-wrap items-center gap-[7px] text-[12px] font-bold text-[#33473E]">
+              Show settled <span className="text-[#5A6B62]">(0 balance)</span>
+              <span
+                className="doc-ref rounded-[9px] px-2 py-[2px] text-[11px] font-extrabold"
+                style={showZero ? { background: '#0B3D2E', color: '#C7F03F' } : { background: '#EAF0E9', color: '#33473E' }}
+              >
+                {settledCount}
+              </span>
+            </span>
+          </button>
+        </div>
+
+        <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-4 pb-[96px] pt-3">
+          {parties.map(([party, g]) => {
+            const open2 = openGroups.has(party)
+            const gContracted = g.opening + g.addition + g.adjusted
+            const gNet = g.dispatch - g.ret
+            const gb = bar(gNet, gContracted)
+            const gRows = sortedRows.filter((r) => String(r.customer || '—') === party)
+            return (
+              <div key={party} className="flex flex-none flex-col gap-[9px]">
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(party)}
+                  className="flex-none rounded-[4px] border border-[#D6E2D6] bg-white px-[13px] py-3 text-left"
+                  style={{ borderLeft: `3px solid ${g.closing > 0.0005 ? '#12855A' : '#C3D2C6'}` }}
+                >
+                  <div className="flex items-start gap-[9px]">
+                    <ChevronRight
+                      className="mt-0.5 h-[19px] w-[19px] flex-none text-[#5A6B62] transition-transform"
+                      style={{ transform: open2 ? 'rotate(90deg)' : 'none' }}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] font-extrabold leading-[1.35] tracking-[-0.01em]">{party}</div>
+                      <div className="mt-1 text-[11px] font-bold text-[#5A6B62]">
+                        {g.count} {g.count === 1 ? 'bargain' : 'bargains'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-[11px] grid grid-cols-3 gap-[9px]">
+                    <div>
+                      <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Contracted</div>
+                      <div className="doc-ref mt-1 text-[12.5px] font-bold">{formatNum(gContracted)}</div>
+                      {Math.abs(g.adjusted) > 0.0005 && (
+                        <div className="doc-ref mt-[3px] whitespace-nowrap text-[10px] font-bold text-[#8A5300]">
+                          {g.adjusted > 0 ? '+' : ''}
+                          {formatNum(g.adjusted)} adj
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Net drawn</div>
+                      <div className="doc-ref mt-1 text-[12.5px] font-bold">{gNet ? formatNum(gNet) : '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Balance</div>
+                      <div className="doc-ref mt-1 text-[12.5px] font-bold">{formatNum(g.closing)}</div>
+                    </div>
+                  </div>
+                  <div className="mt-2.5 h-1.5 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                    <div className="h-full" style={{ width: gb.pct, background: gb.colour }} />
+                  </div>
+                </button>
+
+                {open2 &&
+                  gRows.map((row) => {
+                    const reg = bargainRegister(row, F, T)
+                    const rowOpen = expandedBg.has(Number(row.id))
+                    const rContracted = reg.opening + reg.addition + reg.adjusted
+                    const rNet = reg.dispatch - reg.ret
+                    const rb = bar(rNet, rContracted)
+                    const disp = dispatchesByBargain.get(Number(row.id)) || []
+                    const retLines = returnsByBargain.get(Number(row.id)) || []
+                    const { lines, net } = salesBargainDraws(row, disp, retLines, coNameOf, coColourOf)
+                    const rate = Number(row.rate_per_uom) || 0
+                    const packed = String(row.sale_type || 'LOOSE') === 'PACKED'
+                    return (
+                      <div
+                        key={String(row.id)}
+                        className="flex-none overflow-hidden rounded-[4px] border border-[#D6E2D6] bg-white"
+                        style={{ borderLeft: `3px solid ${reg.closing > 0.0005 ? '#12855A' : '#C3D2C6'}` }}
+                      >
+                        <div className="flex flex-col gap-[9px] px-[13px] py-3">
+                          <div className="flex items-start gap-[9px]">
+                            <div className="min-w-0 flex-1">
+                              <div className="doc-ref text-[12px] font-bold leading-[1.35] tracking-[-0.01em] [overflow-wrap:anywhere]">
+                                {String(row.bargain_no || '—')}
+                              </div>
+                              <div className="mt-[5px] text-[12px] font-bold leading-[1.4] text-[#33473E]">
+                                {String(row.product_name || '—')}
+                              </div>
+                            </div>
+                            <div className="flex-none text-right">
+                              <div className="doc-ref whitespace-nowrap text-[11.5px] font-semibold text-[#5A6B62]">
+                                {formatDate(row.bargain_date)}
+                              </div>
+                              <div className="doc-ref mt-[5px] whitespace-nowrap text-[12.5px] font-bold">
+                                {/* A packed bargain is priced per SKU, so there
+                                    is no single rate to print here. */}
+                                {packed ? 'per SKU' : `${formatINR(rate)}/${String(row.uom || 'MT')}`}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-[9px] rounded-[4px] border border-[#EAF0E9] bg-[#F7FAF6] px-[11px] py-2.5">
+                            <div>
+                              <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Contracted</div>
+                              <div className="doc-ref mt-1 text-[13px] font-bold">{formatNum(rContracted)}</div>
+                              {Math.abs(reg.adjusted) > 0.0005 && (
+                                <div className="doc-ref mt-[3px] whitespace-nowrap text-[10px] font-bold text-[#8A5300]">
+                                  {reg.adjusted > 0 ? '+' : ''}
+                                  {formatNum(reg.adjusted)} adj
+                                </div>
+                              )}
+                            </div>
+                            <div>
+                              <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Net drawn</div>
+                              <div className="doc-ref mt-1 text-[13px] font-bold">{rNet ? formatNum(rNet) : '—'}</div>
+                            </div>
+                            <div>
+                              <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">Balance</div>
+                              <div
+                                className="doc-ref mt-1 text-[13px] font-bold"
+                                style={{ color: reg.closing > 0.0005 ? '#0B6B45' : '#5A6B62' }}
+                              >
+                                {formatNum(reg.closing)}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* A top-up dated AFTER the period. It is contracted
+                              quantity that this period's balance cannot show,
+                              and leaving it silent made the balance look wrong
+                              against the bargain's own total. */}
+                          {Math.abs(reg.futureAdjusted) > 0.0005 && (
+                            <div className="flex items-start gap-[9px] rounded-[4px] border border-[#F0E4CB] bg-[#FFF4E0] px-[11px] py-2.5">
+                              <Clock className="h-[17px] w-[17px] flex-none text-[#C2700A]" />
+                              <div className="min-w-0">
+                                <div className="doc-ref text-[12px] font-extrabold text-[#8A5300]">
+                                  {reg.futureAdjusted > 0 ? '+' : ''}
+                                  {formatNum(reg.futureAdjusted)} {String(row.uom || 'MT')} later
+                                </div>
+                                <div className="mt-[3px] text-[11px] font-semibold leading-[1.45] text-[#8A5300]">
+                                  Adjusted after {formatDate(T)}, so it is not in this period&rsquo;s balance.
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          {reg.ret > 0.0005 && (
+                            <div className="flex items-center gap-[9px] rounded-[4px] border border-[#BFE3CB] bg-[#F4FBF6] px-[11px] py-2.5">
+                              <Undo2 className="h-[17px] w-[17px] flex-none text-[#0B6B45]" />
+                              <span className="min-w-0 flex-1 text-[11.5px] font-bold text-[#0B6B45]">
+                                Dispatched {formatNum(reg.dispatch)} · returned {formatNum(reg.ret)}
+                              </span>
+                            </div>
+                          )}
+
+                          <div>
+                            <div className="h-1.5 overflow-hidden rounded-[2px] bg-[#EAF0E9]">
+                              <div className="h-full" style={{ width: rb.pct, background: rb.colour }} />
+                            </div>
+                            <div className="mt-[7px] flex items-center justify-between gap-2.5">
+                              <span className="text-[11px] font-bold text-[#5A6B62]">{rb.label} drawn</span>
+                              <span className="doc-ref whitespace-nowrap text-[11.5px] font-bold text-[#33473E]">
+                                {formatINR(net.amount)}
+                              </span>
+                            </div>
+                          </div>
+
+                          {!!row.note && (
+                            <div className="text-[11.5px] font-semibold leading-[1.5] text-[#5A6B62]">
+                              {String(row.note)}
+                            </div>
+                          )}
+
+                          {/* On the desktop the rate card is a row action. It
+                              only exists for a packed bargain, so it lives on
+                              the card here rather than in the header — a header
+                              button would have had no bargain to open. */}
+                          {packed && (
+                            <button
+                              type="button"
+                              onClick={() => void openRates(row)}
+                              className="flex h-11 items-center justify-center gap-2 rounded-[4px] border border-[#C3D2C6] text-[12px] font-extrabold text-[#33473E]"
+                            >
+                              <Tag className="h-4 w-4" />
+                              SKU rate card
+                            </button>
+                          )}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => toggleBg(Number(row.id))}
+                          className="flex min-h-12 w-full items-center gap-[9px] border-t border-t-[#EAF0E9] bg-[#F7FAF6] px-[13px] py-2.5 text-left"
+                        >
+                          <Receipt className="h-[18px] w-[18px] flex-none text-[#33473E]" />
+                          <span className="min-w-0 flex-1 text-[11.5px] font-extrabold text-[#33473E]">
+                            {lines.length
+                              ? `${lines.length} ${lines.length === 1 ? 'draw' : 'draws'} · ${formatNum(net.qty)} net`
+                              : 'Nothing drawn yet'}
+                          </span>
+                          <ChevronRight
+                            className="h-[19px] w-[19px] flex-none text-[#5A6B62] transition-transform"
+                            style={{ transform: rowOpen ? 'rotate(90deg)' : 'none' }}
+                          />
+                        </button>
+
+                        {rowOpen &&
+                          (lines.length === 0 ? (
+                            <div className="flex flex-col items-center gap-2 border-t border-t-[#EAF0E9] px-[13px] py-5">
+                              <Receipt className="h-[26px] w-[26px] text-[#C3D2C6]" />
+                              <span className="text-center text-[11.5px] font-semibold leading-[1.45] text-[#5A6B62]">
+                                Nothing drawn yet — the full {formatNum(reg.closing)} {String(row.uom || 'MT')} is still
+                                open.
+                              </span>
+                            </div>
+                          ) : (
+                            <>
+                              {lines.map((l) => {
+                                const ret = l.kind === 'ret'
+                                return (
+                                  <button
+                                    key={l.key}
+                                    type="button"
+                                    disabled={ret || !onOpenSale}
+                                    onClick={() => onOpenSale?.(l.id)}
+                                    className="w-full border-t border-t-[#EAF0E9] px-[13px] py-2.5 text-left"
+                                    style={{
+                                      background: ret ? '#F4FBF6' : '#fff',
+                                      borderLeft: `3px solid ${ret ? '#0B6B45' : '#C3D2C6'}`
+                                    }}
+                                  >
+                                    <div className="flex items-center gap-[9px]">
+                                      <span className="doc-ref min-w-0 flex-1 truncate text-[12px] font-bold">
+                                        {l.label}
+                                      </span>
+                                      <span
+                                        className="inline-flex flex-none items-center gap-[5px] whitespace-nowrap rounded-[2px] px-[7px] py-[3px] text-[9.5px] font-extrabold"
+                                        style={
+                                          ret
+                                            ? { background: '#E9F5EE', color: '#0B6B45' }
+                                            : { background: '#EAF0E9', color: '#33473E' }
+                                        }
+                                      >
+                                        {ret ? <Undo2 className="h-3 w-3" /> : <Receipt className="h-3 w-3" />}
+                                        {l.sub}
+                                      </span>
+                                    </div>
+                                    <div className="mt-[9px] flex items-center gap-2.5">
+                                      <div className="min-w-0 flex-1">
+                                        <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">
+                                          Qty @ rate
+                                        </div>
+                                        <div
+                                          className="doc-ref mt-1 text-[12.5px] font-bold"
+                                          style={{ color: ret ? '#0B6B45' : '#0A1F17' }}
+                                        >
+                                          {formatNum(l.qty)} @ {formatINR(l.rate)}
+                                        </div>
+                                      </div>
+                                      <div className="flex-none text-right">
+                                        <div className="text-[9px] font-extrabold uppercase tracking-[.09em] text-[#5A6B62]">
+                                          Value
+                                        </div>
+                                        <div
+                                          className="doc-ref mt-1 whitespace-nowrap text-[12.5px] font-bold"
+                                          style={{ color: ret ? '#0B6B45' : '#0A1F17' }}
+                                        >
+                                          {formatINR(l.amount)}
+                                        </div>
+                                      </div>
+                                    </div>
+                                    <div className="doc-ref mt-[7px] text-[10.5px] font-semibold text-[#5A6B62]">
+                                      {formatDate(l.date)}
+                                      {l.company ? ` · ${l.company}` : ''}
+                                    </div>
+                                  </button>
+                                )
+                              })}
+                              <div className="flex flex-col gap-2 bg-[#C7F03F] px-[13px] py-3">
+                                <div className="flex items-center gap-[9px]">
+                                  <span className="min-w-0 flex-1 text-[10px] font-extrabold uppercase tracking-[.09em] text-[#2E4A0B]">
+                                    Net drawn
+                                  </span>
+                                  <span className="doc-ref whitespace-nowrap text-[13px] font-bold text-[#12280B]">
+                                    {formatNum(net.qty)} {String(row.uom || 'MT')}
+                                  </span>
+                                </div>
+                                {net.ret > 0.0005 && (
+                                  <div className="text-[11px] font-bold leading-[1.45] text-[#2E4A0B]">
+                                    {formatNum(net.out)} dispatched less {formatNum(net.ret)} returned — the net is what
+                                    the bargain kept.
+                                  </div>
+                                )}
+                              </div>
+                            </>
+                          ))}
+                      </div>
+                    )
+                  })}
+              </div>
+            )
+          })}
+
+          {parties.length === 0 && (
+            <div className="flex flex-none flex-col items-center gap-2 rounded-[4px] border border-[#D6E2D6] bg-white px-4 py-10">
+              <Receipt className="h-7 w-7 text-[#C3D2C6]" />
+              <span className="text-center text-[12.5px] font-bold text-[#5A6B62]">
+                No {sectionType === 'PACKED' ? 'packed' : 'loose'} bargain in this period.
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="sticky bottom-0 flex flex-none gap-2.5 border-t border-t-[#D6E2D6] bg-white px-4 pb-6 pt-[11px]">
+          <button
+            type="button"
+            onClick={openAdd}
+            className="flex h-[50px] flex-1 items-center justify-center gap-2 rounded-[4px] bg-[#0B3D2E] text-[13.5px] font-extrabold text-[#C7F03F]"
+          >
+            <Plus className="h-5 w-5" />
+            New bargain
+          </button>
+        </div>
+      </div>
+    )
+  })()
+
   return (
     <div>
       {rateCard}
+      {/* THE DESKTOP BODY IS UNTOUCHED — not one line of it is edited. It is
+          only given a mounting condition, so the phone can put its own body
+          in its place while every dialog below stays shared: the bargain
+          drawer, the adjust dialog and the SKU rate card are mounted once
+          for both. Forking the whole return would have meant a second copy
+          of four hundred lines of dialog, or a New bargain button that set
+          state nothing was listening to. */}
+      {!(__WEB__ && isMobile) && (
+        <>
       <div className={cn('mb-2 flex flex-wrap items-center gap-x-2 gap-y-2', __WEB__ && '!mb-3 !gap-x-3')}>
       <div className={cn('inline-flex flex-wrap gap-1 rounded-lg border bg-muted/40 p-1', __WEB__ && '!gap-0.5 !rounded-[4px] !border-[#DCE7DB] !bg-[#F1F5EF] !p-[3px]')}>
         {[{ v: 'ALL', label: 'All' }, ...saleCats].map((t) => (
@@ -5755,6 +6337,9 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
           </div>
         )}
       </div>
+        </>
+      )}
+      {__WEB__ && isMobile && mobileBody}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent

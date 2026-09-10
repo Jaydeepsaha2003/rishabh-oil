@@ -80,7 +80,8 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
   // one company's movements.
   const fid = await factoryOfCompanies([cid])
   const scope = fid ? await companiesOfFactory(fid) : [cid]
-  const [saved, levels, rates, dupes] = await Promise.all([
+  const ppKey = fid ? `f${fid}` : `c${cid}`
+  const [saved, levels, rates, dupes, ppStages, ppLines] = await Promise.all([
     c.execute(
       fid
         ? {
@@ -98,7 +99,12 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
     ),
     stockLevels(asOf ? { from: asOf } : undefined, scope),
     productValuationRates().catch(() => new Map<number, number>()),
-    duplicateProductNames()
+    duplicateProductNames(),
+    // The site's stage list and every stored breakdown line. Both tolerate a
+    // database that has not run the migration yet — an empty list simply means
+    // the sheet shows PP as the single figure it has always been.
+    listPpStages(cid).catch(() => [] as Row[]),
+    ppLinesByProduct(ppKey).catch(() => new Map<number, Row[]>())
   ])
 
   const savedBy = new Map<number, Row>()
@@ -108,7 +114,13 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
     const id = n(p.id)
     const s = savedBy.get(id)
     const entered = s ? n(s.qty) : null
-    const pp = s ? n(s.pp_qty) : null
+    // PP comes from the stage breakdown wherever there is one, and from the
+    // typed figure otherwise. This is what lets a breakdown entered against a
+    // product whose opening has never been struck show its total, its Closes
+    // at, and get written by the next Save.
+    const lines = ppLines.get(id) || []
+    const ppSum = lines.length ? r3(lines.reduce((t, l) => t + n(l.qty), 0)) : null
+    const pp = ppSum != null ? ppSum : s ? n(s.pp_qty) : null
     // Signed: a correction that takes stock OFF the count is the ordinary case.
     const adj = s ? n(s.adj_qty) : null
     // Movements SINCE the opening date, and nothing else.
@@ -136,6 +148,10 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
       qty: entered,
       pp_qty: pp,
       adj_qty: adj,
+      // What that PP is made of, where somebody has said. An empty list means
+      // PP is a single figure typed straight in, which is what every opening
+      // struck before this feature existed is.
+      pp_lines: lines,
       total:
         entered == null && pp == null && adj == null ? null : r3(n(entered) + n(pp) + n(adj)),
       rate: s && s.rate != null ? n(s.rate) : null,
@@ -184,7 +200,10 @@ export async function listStockOpenings(companyId?: number): Promise<Row> {
     // oil and a finished one — so this is a warning to label them, never a
     // prompt to merge them. Merging would collapse the two into one line and
     // lose the distinction between what is bought and what is made.
-    name_clashes: dupes
+    name_clashes: dupes,
+    // The vessels this site breaks its in-process oil down into — one list for
+    // the whole sheet, because one refinery has one set of them.
+    pp_stages: ppStages
   }
 }
 
@@ -248,6 +267,13 @@ export async function saveStockOpenings(
       ? { sql: `factory_id = ?${extra}`, args: [fid] }
       : { sql: `company_id = ?${extra}`, args: [cid] }
 
+  // Where a product's PP has been broken down by stage, the breakdown is the
+  // figure — not whatever this payload happens to carry. Without this a save
+  // from the phone, whose draft never saw the stage detail, would flatten a
+  // seven-vessel count back to the total it was last shown, and a stale tab
+  // would flatten it to an older one.
+  const ppFromLines = await ppTotalsByProduct(cid).catch(() => new Map<number, number>())
+
   let saved = 0
   let cleared = 0
   for (const raw of Array.isArray(rows) ? rows : []) {
@@ -257,7 +283,11 @@ export async function saveStockOpenings(
     // process, or an adjustment on its own, is still a real answer — so one
     // figure alone keeps the row.
     const rawBlank = raw?.qty === '' || raw?.qty == null
-    const ppBlank = raw?.pp_qty === '' || raw?.pp_qty == null
+    const broken = ppFromLines.get(pid)
+    // A breakdown IS an answer about PP, so a row carrying one is never blank
+    // — otherwise clearing the tank figure would delete the opening and take
+    // the stage detail's total with it.
+    const ppBlank = broken == null && (raw?.pp_qty === '' || raw?.pp_qty == null)
     const adjBlank = raw?.adj_qty === '' || raw?.adj_qty == null
     const blank = rawBlank && ppBlank && adjBlank
     if (blank) {
@@ -270,7 +300,7 @@ export async function saveStockOpenings(
       continue
     }
     const qty = n(raw.qty)
-    const pp = n(raw.pp_qty)
+    const pp = broken == null ? n(raw.pp_qty) : broken
     const adj = n(raw.adj_qty)
     const rate = raw?.rate === '' || raw?.rate == null ? null : n(raw.rate)
     const note = raw?.note ? String(raw.note).trim() : null
@@ -359,4 +389,241 @@ async function seedOpeningDayCount(companyId: number, date: string): Promise<voi
       // otherwise fail the whole save; the opening itself is already stored.
       .catch((e) => console.error('[stock] opening-day count seed failed:', (e as Error).message))
   }
+}
+
+// ---------------------------------------------------------------------------
+// What the PP figure is made of.
+// ---------------------------------------------------------------------------
+// PP on the opening sheet is one number, and on the plant's own count sheet it
+// never is: it is six or seven vessels added up — 6 in the bleacher, 2.5 in the
+// deo feed tanks, 32 in the deo scrubber, and so on to a total of 53. Storing
+// only the total threw away the only part of the count anybody could check
+// later, which is why the breakdown lives here.
+//
+// THE STAGE LIST BELONGS TO THE SITE, NOT THE ROW. A refinery has one set of
+// vessels, so a stage typed while counting one oil is offered against every
+// other oil on the sheet. That is the whole point of keeping the stages in a
+// table of their own rather than as free text per row.
+
+// Which list this company reads. By site where the site is known, because the
+// opening sheet itself is read that way — one set of tanks, however many
+// companies trade through it — and by company only where it is not.
+export async function ppScope(companyId?: number): Promise<string> {
+  const cid = n(companyId) || getActiveCompanyId()
+  const fid = await factoryOfCompanies([cid])
+  return fid ? `f${fid}` : `c${cid}`
+}
+
+// The stages this site offers. Retired ones (crossed off while some row still
+// had a quantity against them) are deliberately included, flagged, because a
+// row that carries one has to be able to show its name.
+export async function listPpStages(companyId?: number): Promise<Row[]> {
+  const scope = await ppScope(companyId)
+  const res = await getClient().execute({
+    sql: `SELECT id, name, sort_order, active FROM stock_pp_stages
+           WHERE scope = ? ORDER BY sort_order, id`,
+    args: [scope]
+  })
+  return toPlain(res).map((r) => ({
+    id: n(r.id),
+    name: String(r.name),
+    sort_order: n(r.sort_order),
+    active: n(r.active) === 1
+  }))
+}
+
+// Every stored line for the site, keyed by product. Read in one go rather than
+// per row: the sheet is forty products long and forty round trips to fill in a
+// column most of them leave blank is not a trade worth making.
+async function ppLinesByProduct(scope: string): Promise<Map<number, Row[]>> {
+  const res = await getClient().execute({
+    sql: `SELECT l.product_id, l.stage_id, l.qty, l.ffa, s.name, s.sort_order, s.active
+            FROM stock_opening_pp l
+            JOIN stock_pp_stages s ON s.id = l.stage_id
+           WHERE l.scope = ?
+           ORDER BY s.sort_order, s.id`,
+    args: [scope]
+  })
+  const by = new Map<number, Row[]>()
+  for (const r of toPlain(res)) {
+    const pid = n(r.product_id)
+    if (!by.has(pid)) by.set(pid, [])
+    by.get(pid)!.push({
+      stage_id: n(r.stage_id),
+      name: String(r.name),
+      qty: r3(n(r.qty)),
+      // Never coerced to a side. A line counted but not yet classified is a
+      // third answer and the screen says so.
+      ffa: r.ffa === 'with' || r.ffa === 'without' ? String(r.ffa) : null,
+      active: n(r.active) === 1
+    })
+  }
+  return by
+}
+
+// Add a stage to the site's list, or bring one back that was crossed off.
+//
+// Matched case-insensitively on the name: "Post Bleacher" typed again as "POST
+// BLEACHER" is the same vessel, and two spellings of it in the list would be
+// two columns of the same thing on every future count.
+export async function addPpStage(name: string, companyId?: number): Promise<Row> {
+  const label = String(name || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+  if (!label) throw new Error('Name the stage')
+  if (label.length > 60) throw new Error('Keep the stage name under 60 characters')
+  const scope = await ppScope(companyId)
+  const c = getClient()
+  const found = await c.execute({
+    sql: 'SELECT id, name, active FROM stock_pp_stages WHERE scope = ? AND UPPER(name) = UPPER(?)',
+    args: [scope, label]
+  })
+  if (found.rows.length) {
+    const row = toPlain(found)[0]
+    // Reviving a retired stage rather than refusing: the rows that kept a
+    // quantity against it already show it, and asking for it again plainly
+    // means wanting it offered to the rest.
+    if (n(row.active) !== 1) {
+      await c.execute({ sql: 'UPDATE stock_pp_stages SET active = 1 WHERE id = ?', args: [n(row.id)] })
+    }
+    return { id: n(row.id), name: String(row.name), active: true, revived: n(row.active) !== 1 }
+  }
+  const next = await c.execute({
+    sql: 'SELECT COALESCE(MAX(sort_order), 0) + 10 AS o FROM stock_pp_stages WHERE scope = ?',
+    args: [scope]
+  })
+  const order = n((next.rows[0] as unknown as Row)?.o) || 10
+  const ins = await c.execute({
+    sql: 'INSERT INTO stock_pp_stages (scope, name, sort_order) VALUES (?, ?, ?)',
+    args: [scope, label, order]
+  })
+  return { id: Number(ins.lastInsertRowid), name: label, active: true, revived: false }
+}
+
+// Cross a stage off — without losing a count.
+//
+// The rule asked for, and the only safe one: a stage is deleted outright ONLY
+// where nothing has a quantity against it. Where something does, those lines
+// are kept and the stage is retired instead — it stops being offered to the
+// rows that left it blank, and stays on the rows that used it. So pressing the
+// cross can never silently take 32 MT off an opening.
+export async function removePpStage(
+  stageId: number,
+  companyId?: number
+): Promise<{ removed: number; kept: number; retired: boolean; name: string }> {
+  const id = n(stageId)
+  if (!id) throw new Error('Which stage?')
+  const scope = await ppScope(companyId)
+  const c = getClient()
+  const st = await c.execute({
+    sql: 'SELECT name FROM stock_pp_stages WHERE id = ? AND scope = ?',
+    args: [id, scope]
+  })
+  if (!st.rows.length) throw new Error('That stage is not on this site’s list')
+  const name = String((st.rows[0] as unknown as Row).name || '')
+
+  // Blank lines first. A stored line of nil is not a count, it is a leftover,
+  // and clearing them is what lets a stage used nowhere go away completely.
+  const del = await c.execute({
+    sql: 'DELETE FROM stock_opening_pp WHERE scope = ? AND stage_id = ? AND ABS(COALESCE(qty, 0)) < 0.0005',
+    args: [scope, id]
+  })
+  const kept = await c.execute({
+    sql: 'SELECT COUNT(*) AS k FROM stock_opening_pp WHERE scope = ? AND stage_id = ?',
+    args: [scope, id]
+  })
+  const keptCount = n((kept.rows[0] as unknown as Row)?.k)
+  if (keptCount > 0) {
+    await c.execute({ sql: 'UPDATE stock_pp_stages SET active = 0 WHERE id = ?', args: [id] })
+    return { removed: Number(del.rowsAffected) || 0, kept: keptCount, retired: true, name }
+  }
+  await c.execute({ sql: 'DELETE FROM stock_pp_stages WHERE id = ? AND scope = ?', args: [id, scope] })
+  return { removed: Number(del.rowsAffected) || 0, kept: 0, retired: false, name }
+}
+
+// One product's breakdown, replaced whole.
+//
+// Saved on its own rather than riding on the sheet's Save, for two reasons: the
+// stage list it edits is shared and changes immediately, and the cross's rule
+// has to be able to ask what actually has a quantity — a draft nobody has
+// saved cannot answer that.
+//
+// stock_openings.pp_qty is rewritten from the lines here, so the register can
+// never read a PP the breakdown does not add up to.
+export async function savePpLines(
+  productId: number,
+  lines: Row[],
+  companyId?: number
+): Promise<{ total: number; lines: number }> {
+  const pid = n(productId)
+  if (!pid) throw new Error('Which product?')
+  const cid = n(companyId) || getActiveCompanyId()
+  const scope = await ppScope(cid)
+  const c = getClient()
+
+  // A line with no quantity is not stored. Blank and nil are the same
+  // statement about a vessel — nothing in it — and storing the blank ones
+  // would leave the cross with rows to keep that say nothing.
+  const keep = (Array.isArray(lines) ? lines : [])
+    .map((l) => ({
+      stage_id: n(l?.stage_id),
+      qty: l?.qty === '' || l?.qty == null ? 0 : n(l.qty),
+      ffa: l?.ffa === 'with' || l?.ffa === 'without' ? String(l.ffa) : null
+    }))
+    .filter((l) => l.stage_id > 0 && Math.abs(l.qty) > 0.0005)
+
+  await c.execute({
+    sql: 'DELETE FROM stock_opening_pp WHERE scope = ? AND product_id = ?',
+    args: [scope, pid]
+  })
+  for (const l of keep) {
+    await c.execute({
+      sql: `INSERT INTO stock_opening_pp (scope, product_id, stage_id, qty, ffa, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+      args: [scope, pid, l.stage_id, r3(l.qty), l.ffa]
+    })
+  }
+  const total = r3(keep.reduce((t, l) => t + l.qty, 0))
+  await writePpTotal(cid, scope, pid, keep.length ? total : null)
+  return { total, lines: keep.length }
+}
+
+// Push a breakdown's total onto the opening row, if there is one.
+//
+// Deliberately does NOT create an opening row that does not exist yet: a
+// breakdown typed against a product whose opening has never been struck is
+// picked up by the sheet's own Save, which knows the date and the rate. All
+// this has to do is keep an existing row honest.
+async function writePpTotal(
+  companyId: number,
+  scope: string,
+  productId: number,
+  total: number | null
+): Promise<void> {
+  const c = getClient()
+  const fid = scope.startsWith('f') ? Number(scope.slice(1)) : 0
+  const where = fid ? 'factory_id = ?' : 'company_id = ?'
+  const arg = fid || companyId
+  await c
+    .execute({
+      sql: `UPDATE stock_openings SET pp_qty = ?, updated_at = datetime('now')
+             WHERE ${where} AND product_id = ?`,
+      args: [total == null ? 0 : total, arg, productId]
+    })
+    .catch((e) => console.error('[stock] PP total write failed:', (e as Error).message))
+}
+
+// The PP totals the breakdowns add up to, by product. Used by the sheet's save
+// so a submitted PP can never overwrite a breakdown — including a save that
+// came from the phone, whose own draft never saw the stage detail.
+export async function ppTotalsByProduct(companyId?: number): Promise<Map<number, number>> {
+  const scope = await ppScope(companyId)
+  const res = await getClient().execute({
+    sql: `SELECT product_id, SUM(qty) AS t FROM stock_opening_pp
+           WHERE scope = ? GROUP BY product_id`,
+    args: [scope]
+  })
+  const m = new Map<number, number>()
+  for (const r of toPlain(res)) m.set(n(r.product_id), r3(n(r.t)))
+  return m
 }

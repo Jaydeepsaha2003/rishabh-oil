@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { PageHeader } from '@/components/PageHeader'
 import type { Page } from '@/components/Sidebar'
+import { DashboardWeb } from './DashboardWeb'
 import { cn } from '@/lib/utils'
 import { formatINR, formatNum } from '@/lib/format'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
@@ -204,6 +205,33 @@ export function Dashboard({ onNavigate }: Props): React.JSX.Element {
   const duty = (name: string): number => n(((stats?.duties as Row[]) || []).find((x) => x.name === name)?.bal)
   const negatives = (stats?.negatives as Row[]) || []
   const cats = (stats?.stockCats as Record<string, { qty: number; products: number }>) || {}
+
+  // The website gets its own board — dark by default, animated, and with a
+  // phone layout. Everything above is the single data path both share, so the
+  // figures cannot drift between the two; only the drawing differs. The desktop
+  // app keeps the render below untouched, and this whole branch is compiled out
+  // of it.
+  if (__WEB__) {
+    return (
+      <DashboardWeb
+        stats={stats}
+        treasury={treasury}
+        months={months}
+        payables={payables}
+        receivables={receivables}
+        duty={duty}
+        negatives={negatives}
+        cats={cats}
+        buyM={buyM}
+        sellM={sellM}
+        checking={checking}
+        // Wrapped for the same reason the button below is: passed bare, the
+        // click event lands in `background` and the spinner never shows.
+        onRefresh={() => refresh()}
+        onNavigate={onNavigate}
+      />
+    )
+  }
 
   return (
     <>

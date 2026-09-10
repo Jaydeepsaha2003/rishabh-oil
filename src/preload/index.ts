@@ -303,7 +303,23 @@ const api = {
     save: (rows: Row[], asOf: string, companyId?: number): Promise<{ saved: number; cleared: number }> =>
       ipcRenderer.invoke('stockOpening:save', { rows, asOf, companyId }),
     date: (companyId?: number): Promise<string> =>
-      ipcRenderer.invoke('stockOpening:date', { companyId })
+      ipcRenderer.invoke('stockOpening:date', { companyId }),
+    // The site's list of in-process stages, and one product's breakdown.
+    ppStages: (companyId?: number): Promise<Row[]> =>
+      ipcRenderer.invoke('stockOpening:ppStages', { companyId }),
+    addPpStage: (name: string, companyId?: number): Promise<Row> =>
+      ipcRenderer.invoke('stockOpening:addPpStage', { name, companyId }),
+    removePpStage: (
+      stageId: number,
+      companyId?: number
+    ): Promise<{ removed: number; kept: number; retired: boolean; name: string }> =>
+      ipcRenderer.invoke('stockOpening:removePpStage', { stageId, companyId }),
+    savePp: (
+      productId: number,
+      lines: Row[],
+      companyId?: number
+    ): Promise<{ total: number; lines: number }> =>
+      ipcRenderer.invoke('stockOpening:savePp', { productId, lines, companyId })
   },
   // The packed shelf's opening count — what was in packs the morning the
   // books began. Mirrors stockOpening, which does the same for the tanks.

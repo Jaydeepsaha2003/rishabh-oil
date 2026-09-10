@@ -35,6 +35,7 @@ import {
   X
 } from 'lucide-react'
 import { formatNum } from '@/lib/format'
+import { MobileBar } from '@/components/MobileBar'
 import { cn } from '@/lib/utils'
 import { inputFattyAcidPct, inputTorMultiplier, recipeTor, uniformRecipeTor } from '@/lib/recipeMath'
 
@@ -168,7 +169,8 @@ export function FormulationMobile(): React.JSX.Element {
 
   return (
     <div className="flex min-h-[100dvh] flex-col bg-[#F1F5EF]">
-      <div className="shrink-0 bg-[#0B3D2E] px-4 pb-3.5 pt-3 text-white">
+      <div className="shrink-0 bg-[#0B3D2E] px-4 pb-3.5 pt-2.5 text-white">
+        <MobileBar onRefresh={load} />
         <div className="flex items-start justify-between gap-2.5">
           <div className="min-w-0">
             <div className="text-[19px] font-extrabold tracking-[-0.02em]">Formulation</div>

@@ -535,12 +535,30 @@ function canPreclose(l: Row): boolean {
 // The tally beside a filter chip. Mono, because it is read as a number and
 // lines up down the bar; inverted when the chip is on, so the count stays
 // legible against the forest fill instead of going near-black on near-black.
-function ChipCount({ n: count, on }: { n: number; on: boolean }): React.JSX.Element {
+function ChipCount({
+  n: count,
+  on,
+  tone = 'forest'
+}: {
+  n: number
+  on: boolean
+  // The purpose chips wear violet, the state chips forest — so the badge on a
+  // selected chip has to know which fill it is sitting on.
+  tone?: 'forest' | 'violet'
+}): React.JSX.Element {
   return (
     <span
       className={cn(
         'ml-1.5 inline-block rounded-[2px] px-[5px] py-[2px] align-middle font-mono text-[10.5px] font-bold tabular-nums',
-        on ? 'bg-white/20 text-white' : 'bg-[#EAF0E9] text-[#33473E]'
+        on
+          ? tone === 'violet'
+            ? 'bg-[#C7BCF0] text-[#241C4D]'
+            : 'bg-[#C7F03F] text-[#0B3D2E]'
+          : // A nil count is not the same news as a count: greyed, so an empty
+            // filter does not look like one worth pressing.
+            count > 0
+            ? 'bg-[#EAF0E9] text-[#33473E]'
+            : 'bg-[#F2F5F1] text-[#9FB0A5]'
       )}
     >
       {count}
@@ -2768,7 +2786,16 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
               </div>
             )}
 
-            <div className={cn('flex flex-wrap items-center gap-2', __WEB__ && '!gap-2.5')}>
+            {/* The filter row is a surface, not four loose widgets. Framed, so
+                the eye can see where the controls end and the register begins —
+                on bare white the chips read as page furniture. */}
+            <div
+              className={cn(
+                'flex flex-wrap items-center gap-2',
+                __WEB__ &&
+                  '!gap-2.5 !rounded-[5px] !border !border-[#DCE7DB] !bg-[#FBFCFA] !px-3 !py-2.5 !shadow-[0_1px_2px_rgba(10,31,23,.04)]'
+              )}
+            >
               {tab === 'lc' && (
                 <>
                     {/* One dropdown rather than four chips — they were mutually
@@ -2816,7 +2843,7 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                       className={cn(
                         'flex flex-wrap items-center gap-2',
                         __WEB__ &&
-                          '!gap-[3px] !rounded-[4px] !border !border-[#DCE7DB] !bg-[#EAF0E9] !p-[3px] !shadow-[inset_0_1px_2px_rgba(10,31,23,.05)]'
+                          '!gap-[4px] !rounded-[5px] !border !border-[#CBDACB] !bg-[#EDF2EC] !p-[4px] !shadow-[inset_0_1px_2px_rgba(10,31,23,.07)]'
                       )}
                     >
                     {(
@@ -2841,17 +2868,23 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         className={cn(
                           'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
                           lcStatusFilter === p.key ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50',
-                          __WEB__ && '!h-[32px] !rounded-[2px] !border-0 !px-3 !text-[12.5px] !font-extrabold !capitalize !tracking-normal',
+                          __WEB__ && '!h-[32px] !rounded-[3px] !border !px-[11px] !text-[12.5px] !font-extrabold !capitalize !tracking-normal',
                           __WEB__ &&
                             (lcStatusFilter === p.key
-                              ? '!bg-[#0B3D2E] !text-white'
-                              : '!bg-transparent !text-[#5A6B62] hover:!bg-white/70')
+                              ? '!border-[#0B3D2E] !bg-[#0B3D2E] !text-white !shadow-[0_1px_2px_rgba(10,31,23,.22),inset_0_-2px_0_#C7F03F]'
+                              : '!border-[#D5E1D4] !bg-white !text-[#5A6B62] !shadow-[0_1px_1px_rgba(10,31,23,.04)] hover:!border-[#B7CBB6] hover:!text-[#0A1F17]')
                         )}
                       >
                         {p.label}
                         {__WEB__ && <ChipCount n={lcChipCounts[p.key]} on={lcStatusFilter === p.key} />}
                       </button>
                     ))}
+                    {__WEB__ && (
+                      <span
+                        aria-hidden
+                        className="mx-[3px] h-[22px] w-px shrink-0 self-center bg-[#C3D2C6]"
+                      />
+                    )}
                     {(['manufacturing', 'trading'] as const).map((p) => (
                       <button
                         key={p}
@@ -2860,18 +2893,18 @@ export function Treasury({ onCompanyChange }: Props): React.JSX.Element {
                         className={cn(
                           'rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide capitalize transition-colors',
                           lcPurposeFilter === p ? 'border-[#1a2c56] bg-[#1a2c56] text-white' : 'border-[#d9d2b8] bg-white text-[#1a2c56] hover:bg-amber-50',
-                          __WEB__ && '!h-[32px] !rounded-[2px] !border-0 !px-3 !text-[12.5px] !font-extrabold !capitalize !tracking-normal',
+                          __WEB__ && '!h-[32px] !rounded-[3px] !border !px-[11px] !text-[12.5px] !font-extrabold !capitalize !tracking-normal',
                           __WEB__ &&
                             (lcPurposeFilter === p
-                              ? '!bg-[#0B3D2E] !text-white'
-                              : '!bg-transparent !text-[#5A6B62] hover:!bg-white/70')
+                              ? '!border-[#3D3179] !bg-[#3D3179] !text-white !shadow-[0_1px_2px_rgba(10,31,23,.22),inset_0_-2px_0_#C7BCF0]'
+                              : '!border-[#D5E1D4] !bg-white !text-[#5A6B62] !shadow-[0_1px_1px_rgba(10,31,23,.04)] hover:!border-[#B7CBB6] hover:!text-[#0A1F17]')
                         )}
                       >
                         {/* The real word, not the stored key leaning on CSS
                             capitalize — the label is text people copy, read
                             aloud and search for. */}
                         {p === 'manufacturing' ? 'Manufacturing' : 'Trading'}
-                        {__WEB__ && <ChipCount n={lcChipCounts[p]} on={lcPurposeFilter === p} />}
+                        {__WEB__ && <ChipCount n={lcChipCounts[p]} on={lcPurposeFilter === p} tone="violet" />}
                       </button>
                     ))}
                     </div>

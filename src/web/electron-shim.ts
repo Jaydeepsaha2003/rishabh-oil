@@ -34,7 +34,30 @@ async function invoke(channel: string, args?: unknown): Promise<unknown> {
     // 404 means the channel does not exist on this build; anything else is the
     // server itself failing. Neither is a business error, so say which.
     const text = await res.text().catch(() => '')
-    throw new Error(text || `Server error ${res.status}`)
+    // The body is JSON. Thrown as-is, it reaches the screen as a toast reading
+    // {"error":"Unknown channel: stockOpening:ppStages"} — which is a stack
+    // trace shown to somebody counting oil.
+    let detail = ''
+    try {
+      detail = String((JSON.parse(text) as Row)?.error ?? '')
+    } catch {
+      detail = text
+    }
+    // A 404 has one cause and one fix, and both are worth naming. The client
+    // bundle is static: it goes live the moment it is pulled. The server holds
+    // its channel map in memory and keeps the old one until the process
+    // restarts. So a page can be newer than the server it is talking to, and
+    // every channel added since that restart answers 404 — while everything
+    // else on the page works, which is what makes it read as a mystery.
+    //
+    // Nothing ran, so nothing was written: worth saying, because the reflex on
+    // seeing an error after pressing Save is to press it again.
+    if (res.status === 404 && /unknown channel/i.test(detail)) {
+      throw new Error(
+        'This page is newer than the server — it needs restarting before this part works. Nothing was saved.'
+      )
+    }
+    throw new Error(detail || `Server error ${res.status}`)
   }
   const body = (await res.json()) as Row
   // A handler that threw comes back as ok:false with its message intact, so a

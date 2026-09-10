@@ -148,6 +148,61 @@ export async function runStartupTasks(): Promise<void> {
       })
   }).catch((e) => console.error('[stock] opening adjustment column failed:', e))
 
+  // What the PP figure is actually MADE OF.
+  //
+  // "PP 53 MT" is the sum of what is standing in each vessel on the morning
+  // the books open — 6 in the bleacher, 32 in the deo scrubber, 3 in the
+  // filter press, and so on down the line. The plant writes that breakdown out
+  // by hand every time it counts, and until now the sheet took only the total,
+  // so the one figure nobody could check afterwards was the one made of seven
+  // parts.
+  //
+  // Two tables. The STAGES are the site's own list, shared by every product on
+  // the sheet: a stage added while counting one oil is offered against all of
+  // them, because a refinery has one set of vessels. The LINES are what each
+  // product had in each of them.
+  //
+  // `active` is what makes a cross safe to press. A stage crossed off is only
+  // deleted outright if nothing anywhere has a quantity against it; if
+  // something does, the stage is retired instead — it stops being offered to
+  // rows that never used it, and stays on the rows that did.
+  await runOnce('stock_pp_stages_v1', async () => {
+    const c = getClient()
+    await c.execute(`CREATE TABLE IF NOT EXISTS stock_pp_stages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      -- 'f<factory_id>' where the site is known, else 'c<company_id>'. The
+      -- opening sheet itself is read by site with a company fallback, and the
+      -- stage list has to be scoped the same way or one company's stages would
+      -- be invisible to another trading through the same tanks.
+      scope TEXT NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(scope, name)
+    )`)
+    await c.execute(`CREATE TABLE IF NOT EXISTS stock_opening_pp (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope TEXT NOT NULL,
+      product_id INTEGER NOT NULL REFERENCES products(id),
+      stage_id INTEGER NOT NULL REFERENCES stock_pp_stages(id),
+      qty REAL NOT NULL DEFAULT 0,
+      -- 'with' | 'without' | NULL. Whether that vessel's contents were
+      -- measured with the free fatty acid still in them. NULL is a real
+      -- answer — "counted, not yet classified" — and is reported as such
+      -- rather than quietly folded into one side.
+      ffa TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(scope, product_id, stage_id)
+    )`)
+    await c.execute(
+      'CREATE INDEX IF NOT EXISTS idx_stock_opening_pp_prod ON stock_opening_pp(scope, product_id)'
+    )
+    await c.execute(
+      'CREATE INDEX IF NOT EXISTS idx_stock_opening_pp_stage ON stock_opening_pp(stage_id)'
+    )
+  }).catch((e) => console.error('[stock] PP stage tables failed:', e))
+
   // How a product is MEASURED.
   //
   // Everything the mill makes is weighed, so MT is the default and every

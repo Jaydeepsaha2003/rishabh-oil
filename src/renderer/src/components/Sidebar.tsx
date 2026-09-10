@@ -19,7 +19,7 @@ import {
   FilePlus2,
   LayoutDashboard,
   LogOut,
-  Menu,
+  MoreVertical,
   Package,
   PackageOpen,
   Repeat,
@@ -27,6 +27,7 @@ import {
   Settings as SettingsIcon,
   ShoppingCart,
   Tag,
+  History,
   Truck,
   UserCog,
   Wallet,
@@ -38,6 +39,7 @@ import { cn } from '@/lib/utils'
 import type { AppUser } from '@/lib/session'
 import { canAccess } from '@/lib/modules'
 import { useBrandLogo } from '@/lib/brand'
+import { useMobileMenu } from '@/lib/mobileMenu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
@@ -71,6 +73,7 @@ export type Page =
   | 'approvals'
   | 'notifications'
   | 'userAccess'
+  | 'userActivity'
 
 const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   dashboard: { label: 'Dashboard', icon: LayoutDashboard },
@@ -101,6 +104,7 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   approvals: { label: 'Approvals', icon: ClipboardCheck },
   notifications: { label: 'Notifications', icon: BellRing },
   userAccess: { label: 'User Access', icon: UserCog },
+  userActivity: { label: 'User Activity', icon: History },
   settings: { label: 'Settings', icon: SettingsIcon }
 }
 
@@ -123,7 +127,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
       'factories',
       'approvals',
       'notifications',
-      ...(__WEB__ ? ['userAccess'] : []),
+      ...(__WEB__ ? ['userAccess', 'userActivity'] : []),
       'settings'
     ]
   }
@@ -171,6 +175,10 @@ export function Sidebar({
   const [expanded, setExpanded] = useState(false)
   // The mill's uploaded mark, if there is one — it also sets the tab icon.
   const brandLogo = useBrandLogo()
+  // On a phone the overlay is opened from the PAGE's top bar (MobileBar), not
+  // from a button this component floats over the page. Desktop's `expanded`
+  // above is the hover-expand and is left alone.
+  const mobileMenu = useMobileMenu()
   const activeCompany = companies.find((c) => Number(c.id) === Number(companyId))
 
   const visibleGroups = GROUPS.map((g) => ({
@@ -191,7 +199,7 @@ export function Sidebar({
       <button
         onClick={() => {
           onNavigate(id as Page)
-          if (mobile) setExpanded(false)
+          if (mobile) mobileMenu.setOpen(false)
         }}
         className={cn(
           'flex w-full items-center gap-3 rounded-lg py-2 text-sm font-medium transition-colors',
@@ -219,21 +227,29 @@ export function Sidebar({
   }
 
   if (mobile) {
+    const mOpen = mobileMenu.open
+    const closeM = (): void => mobileMenu.setOpen(false)
     return (
       <>
-        {/* The one thing on screen at rest — no reserved rail, nothing else
-            competing for the width a phone doesn't have. */}
-        <button
-          onClick={() => setExpanded(true)}
-          aria-label="Open menu"
-          className="fixed left-3 top-3 z-40 flex h-10 w-10 items-center justify-center rounded-lg bg-[#0B3D2E] text-[#C7F03F] shadow-md"
-        >
-          <Menu className="h-5 w-5" />
-        </button>
+        {/* The trigger normally lives in the PAGE's own top bar now
+            (components/MobileBar), because a button fixed at left-3 top-3 sat
+            on top of every mobile header's title. But a page with no mobile
+            fork still renders its desktop layout at phone width and draws no
+            bar — so the floating button comes back for exactly those, and
+            never alongside one. */}
+        {!mobileMenu.hasBar && (
+          <button
+            onClick={() => mobileMenu.setOpen(true)}
+            aria-label="Open menu"
+            className="fixed left-3 top-3 z-40 flex h-10 w-10 items-center justify-center rounded-lg bg-[#0B3D2E] text-[#C7F03F] shadow-md"
+          >
+            <MoreVertical className="h-5 w-5" />
+          </button>
+        )}
 
-        {expanded && (
+        {mOpen && (
           <>
-            <div className="fixed inset-0 z-40 bg-[rgba(10,31,23,.42)]" onClick={() => setExpanded(false)} />
+            <div className="fixed inset-0 z-40 bg-[rgba(10,31,23,.42)]" onClick={closeM} />
             <aside className="fixed left-0 top-0 z-50 flex h-screen w-72 max-w-[85vw] flex-col bg-[#0B3D2E] shadow-xl">
               <div className="flex h-14 items-center gap-2.5 border-b border-white/10 px-3">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#C7F03F] text-[#0B3D2E] shadow-sm">
@@ -248,7 +264,7 @@ export function Sidebar({
                   <div className="text-[11px] text-[#8FBFA8]">Software</div>
                 </div>
                 <button
-                  onClick={() => setExpanded(false)}
+                  onClick={closeM}
                   aria-label="Close menu"
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[#6E9484] hover:bg-white/10 hover:text-[#C7F03F]"
                 >

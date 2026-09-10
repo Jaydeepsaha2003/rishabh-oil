@@ -30,6 +30,7 @@ import {
   SlidersHorizontal
 } from 'lucide-react'
 import { formatDate, formatNum } from '@/lib/format'
+import { MobileBar } from '@/components/MobileBar'
 import { cn } from '@/lib/utils'
 import { useLiveRefresh } from '@/lib/useLiveRefresh'
 
@@ -275,7 +276,8 @@ export function TreasuryMobile(): React.JSX.Element {
     <div className="flex min-h-[100dvh] flex-col" style={{ background: T.ground, color: T.ink }}>
       {/* Header. Pinned, because the three figures are the reason the page is
           opened and scrolling a list should not cost them. */}
-      <div className="sticky top-0 z-20 flex-none px-3.5 pb-3 pt-3" style={{ background: T.forest, color: '#fff' }}>
+      <div className="sticky top-0 z-20 flex-none px-3.5 pb-3 pt-2.5" style={{ background: T.forest, color: '#fff' }}>
+        <MobileBar onRefresh={() => load()} />
         <div className="flex items-center justify-between gap-2.5">
           <div className="flex min-w-0 items-center gap-2.5">
             <Landmark className="h-[22px] w-[22px] shrink-0" style={{ color: T.lime }} />
