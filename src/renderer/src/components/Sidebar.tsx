@@ -28,6 +28,7 @@ import {
   ShoppingCart,
   Tag,
   Truck,
+  UserCog,
   Wallet,
   Warehouse,
   X,
@@ -69,6 +70,7 @@ export type Page =
   | 'factories'
   | 'approvals'
   | 'notifications'
+  | 'userAccess'
 
 const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   dashboard: { label: 'Dashboard', icon: LayoutDashboard },
@@ -98,6 +100,7 @@ const ITEMS: Record<string, { label: string; icon: LucideIcon }> = {
   factories: { label: 'Factories', icon: Factory },
   approvals: { label: 'Approvals', icon: ClipboardCheck },
   notifications: { label: 'Notifications', icon: BellRing },
+  userAccess: { label: 'User Access', icon: UserCog },
   settings: { label: 'Settings', icon: SettingsIcon }
 }
 
@@ -109,7 +112,21 @@ const GROUPS: { label: string; ids: string[] }[] = [
   { label: 'Trading', ids: ['trading'] },
   { label: 'Accounts', ids: ['accounts', 'treasury', 'bankRecon'] },
   { label: 'Masters', ids: ['categories', 'suppliers', 'transporters', 'customers', 'ports', 'banks', 'brokers', 'packaging'] },
-  { label: 'System', ids: ['companies', 'factories', 'approvals', 'notifications', 'settings'] }
+  // userAccess is web-only. It is a NEW page rather than a rename, and the
+  // desktop app still reaches the same job through Settings -> Users, which is
+  // untouched — so putting it in the rail there would be two doors onto one
+  // register, with only one of them redesigned.
+  {
+    label: 'System',
+    ids: [
+      'companies',
+      'factories',
+      'approvals',
+      'notifications',
+      ...(__WEB__ ? ['userAccess'] : []),
+      'settings'
+    ]
+  }
 ]
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

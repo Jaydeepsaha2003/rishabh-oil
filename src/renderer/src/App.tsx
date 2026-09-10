@@ -7,6 +7,7 @@ import { LoadingSplash } from './components/LoadingSplash'
 import { DbSetupScreen } from './components/DbSetupScreen'
 import { Dashboard } from './pages/Dashboard'
 import { Settings } from './pages/Settings'
+import { UserAccess } from './pages/UserAccess'
 import { Bargains } from './pages/Bargains'
 import { Orders } from './pages/Orders'
 import { Consignment } from './pages/Consignment'
@@ -522,6 +523,7 @@ function App(): React.JSX.Element {
         {view === 'factories' && <Factories />}
         {view === 'approvals' && <Approvals />}
         {view === 'notifications' && <Notifications />}
+        {view === 'userAccess' && <UserAccess />}
         {view === 'settings' && <Settings user={user} />}
       </main>
       </div>

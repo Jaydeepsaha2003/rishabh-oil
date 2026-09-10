@@ -1632,7 +1632,11 @@ export function Settings({ user }: { user: AppUser }): React.JSX.Element {
             <TabsTrigger value="general">General</TabsTrigger>
             {!__WEB__ && <TabsTrigger value="update">Software update</TabsTrigger>}
             {!__WEB__ && isAdmin && <TabsTrigger value="companies">Companies</TabsTrigger>}
-            {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
+            {/* Website: this moved out to its own page on the sidebar (User
+                Access), so the tab is dropped rather than left as a second and
+                older way into the same register. The desktop app keeps it —
+                there is no sidebar entry there. */}
+            {isAdmin && !__WEB__ && <TabsTrigger value="users">Users</TabsTrigger>}
             {isAdmin && <TabsTrigger value="access">Access</TabsTrigger>}
             {isAdmin && <TabsTrigger value="database">Database</TabsTrigger>}
           </TabsList>
