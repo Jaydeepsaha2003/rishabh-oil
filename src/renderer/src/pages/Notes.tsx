@@ -121,7 +121,11 @@ export function Notes({ kind }: { kind: NoteType }): React.JSX.Element {
   // sales returns) with a fallback to everything.
   const noteProducts = useMemo(() => {
     const cats = type === 'debit' ? ['raw', 'intermediate'] : ['finished']
-    const filtered = products.filter((p) => cats.includes(String(p.category)))
+    // A both-flagged product is returnable on either side, the same way it is
+    // buyable and sellable on either side.
+    const filtered = products.filter(
+      (p) => cats.includes(String(p.category)) || Number(p.use_both) === 1
+    )
     return filtered.length ? filtered : products
   }, [products, type])
   const items: Row[] = Array.isArray(form.items) ? form.items : []

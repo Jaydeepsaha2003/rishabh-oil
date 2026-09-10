@@ -136,15 +136,20 @@ const saleCatLabel = (v: unknown): string => {
 // The sale categories to OFFER: the master's active sales-side rows, plus
 // whatever is already stored on a record so an old bargain never becomes
 // unreadable. `rows` is the Category master.
-function saleCatsFrom(rows: Row[], stored: unknown[]): { v: string; label: string }[] {
+// `always` holds the categories of products flagged "Used for both" on the
+// Products page. A purchase-only category — OIL, HUSK — is offered here when a
+// product inside it is flagged, or the flag could not survive the cascade.
+function saleCatsFrom(rows: Row[], stored: unknown[], always: unknown[] = []): { v: string; label: string }[] {
+  const forced = new Set(always.map((x) => catAlias(x)).filter(Boolean))
   const live = new Set<string>()
   let sawMaster = false
   for (const r of rows) {
     const side = String(r.applies_to || 'both').toLowerCase()
-    if (side !== 'both' && side !== 'sales') continue
+    const key = catKey(r.name)
+    if (side !== 'both' && side !== 'sales' && !forced.has(catAlias(key))) continue
     sawMaster = true
     if (Number(r.active) === 0) continue
-    live.add(catKey(r.name))
+    live.add(key)
   }
   // No master rows for this side at all (first run, or it failed to load) —
   // fall back to the built-in list rather than emptying the dropdown.
@@ -438,7 +443,10 @@ function SalesTab({
     ])
     setRows(s)
     setDefaultShortagePct(String(cfg.allowed_shortage_pct ?? '0.2'))
-    setProducts(pr.filter((x) => x.active && x.category === 'finished'))
+    // Finished is what a mill sells. `use_both` adds back a product traded
+    // rather than made — a raw oil sold on, which the sub-category gate alone
+    // would never offer here.
+    setProducts(pr.filter((x) => x.active && (x.category === 'finished' || Number(x.use_both) === 1)))
     setBargains(sb)
     setCustomers(cu.filter((x) => x.active))
     setPackagings(pk.filter((x) => x.active))
@@ -4071,8 +4079,16 @@ function SalesBargainsTab({ onOpenSale }: { onOpenSale?: (id: number) => void } 
   // The Category master, so an inactive category drops out of these dropdowns.
   const { rows: catRows } = useCategories([], 'sales')
   const saleCats = useMemo(
-    () => saleCatsFrom(catRows, rows.map((r) => r.sale_category)),
-    [catRows, rows]
+    () =>
+      saleCatsFrom(
+        catRows,
+        rows.map((r) => r.sale_category),
+        products.filter((p) => Number(p.use_both) === 1).map((p) => p.material_type)
+      ),
+    // `products` belongs here: it arrives asynchronously, so without it the
+    // list is computed once against an empty catalogue and a both-flagged
+    // product's category never makes it into the dropdown.
+    [catRows, rows, products]
   )
   // listSales defaults to the ACTIVE company when given nothing, so "all" has
   // to be spelled out as every id. Known only after the first load; until then

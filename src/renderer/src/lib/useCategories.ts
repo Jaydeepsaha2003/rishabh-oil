@@ -11,7 +11,13 @@ export type CategoryScope = 'purchase' | 'sales'
 export function useCategories(
   extra: unknown[] = [],
   // Narrow to one side of the trade. A category marked 'both' always counts.
-  scope?: CategoryScope
+  scope?: CategoryScope,
+  // Categories that must be offered whatever side the master files them
+  // under, because a PRODUCT inside them is flagged "Used for both". Without
+  // this the product-level flag cannot work through a cascade: a HUSK product
+  // flagged both is unreachable under Sales while HUSK itself is
+  // purchase-only, since the category dropdown never offers HUSK there.
+  alwaysOffer: unknown[] = []
 ): {
   categories: string[]
   rows: Row[]
@@ -32,13 +38,18 @@ export function useCategories(
     reload()
   }, [reload])
 
+  const always = new Set(
+    alwaysOffer.map((x) => String(x ?? '').trim().toUpperCase()).filter(Boolean)
+  )
   const forScope = (want?: CategoryScope): string[] => {
     const seen = new Set<string>()
     for (const r of rows) {
       if (Number(r.active) === 0) continue
       const side = String(r.applies_to || 'both').toLowerCase()
-      if (want && side !== 'both' && side !== want) continue
       const v = String(r.name || '').trim().toUpperCase()
+      // The side gate is skipped for a category holding a both-flagged
+      // product. `active` still applies: a retired category stays retired.
+      if (want && side !== 'both' && side !== want && !always.has(v)) continue
       if (v) seen.add(v)
     }
     // Values already stored on records are always offered, whatever the master

@@ -116,7 +116,9 @@ export function Consignment(): React.JSX.Element {
     setSummary(sm)
     setPending(pg)
     setSuppliers(s.filter((x) => x.active))
-    setProducts(p.filter((x) => x.active && x.category === 'raw'))
+    // Raw, plus anything flagged "Used for both" on the Products page — a
+    // traded product is bought in the same way a raw one is.
+    setProducts(p.filter((x) => x.active && (x.category === 'raw' || Number(x.use_both) === 1)))
     setBargains(b)
     setSettings(cfg)
     setCompanies(co.filter((x) => x.active))

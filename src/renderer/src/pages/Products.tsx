@@ -42,7 +42,21 @@ const baseFields: FieldDef[] = [
   // dropdowns entirely, which is far too blunt for packaging you still buy
   // every week but never hold a tonnage of. This says only "do not carry a
   // stock balance for it", and it can be switched back at any time.
-  { key: 'show_in_stock', label: 'Show in stock', type: 'switch', default: true }
+  { key: 'show_in_stock', label: 'Show in stock', type: 'switch', default: true },
+  // The product-level twin of the Category master's "Used for". There, a
+  // category is Purchase, Sales or Both; here there is only the Both case,
+  // because that is the only one a product needs to say for itself.
+  //
+  // Which side a product may be picked on is decided by its SUB-CATEGORY, not
+  // by its category: a purchase bargain offers Raw, a sale invoice offers
+  // Finished. Correct for a mill, wrong for anything traded — RPS is filed
+  // Finished because the mill refines it, and is also bought in, so it could
+  // not go on a purchase bargain at all. On, and the product is offered under
+  // Purchase and under Sales both, whatever its sub-category.
+  //
+  // Stock is untouched by it — that is still the sub-category's job, and the
+  // Category master's.
+  { key: 'use_both', label: 'Used for both', type: 'switch', default: false }
 ]
 
 // Two products may share a name if they are different goods: RPL is a raw oil
@@ -69,6 +83,9 @@ const columns: ColumnDef[] = [
   { key: 'uom', label: 'Unit', type: 'select', filterable: true },
   { key: 'active', label: 'Active', type: 'switch', filterable: true },
   { key: 'show_in_stock', label: 'Show in stock', type: 'switch', toggle: true, filterable: true },
+  // Flippable from the list like Show in stock, so turning it on for the three
+  // or four products the mill actually trades does not mean opening each one.
+  { key: 'use_both', label: 'Used for both', type: 'switch', toggle: true, filterable: true },
   { key: 'created_at', label: 'Created', type: 'date' }
 ]
 
@@ -81,7 +98,7 @@ export function Products(): React.JSX.Element {
   )
   return (
     <>
-      <PageHeader title="Products" subtitle="Raw oils, intermediates and finished products" hint="The master catalog. Raw oils are bought via bargains; intermediates and finished goods are built from formulations and tracked in stock. The measuring unit says how a product is counted — MT for anything weighed, PCS for a countable item like a carton; only MT products can be a production output." />
+      <PageHeader title="Products" subtitle="Raw oils, intermediates and finished products" hint="The master catalog. Raw oils are bought via bargains; intermediates and finished goods are built from formulations and tracked in stock. The measuring unit says how a product is counted — MT for anything weighed, PCS for a countable item like a carton; only MT products can be a production output. Used for both offers a product on the purchase AND the sales side whatever its sub-category says — for something the mill trades rather than refines; it does not change where the product sits in stock." />
       <div className="px-4 py-6">
         <EntityManager
           table="products"

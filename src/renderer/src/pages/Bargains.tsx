@@ -320,7 +320,11 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
     setDefaultShortagePct(settings.allowed_shortage_pct ?? '0.2')
     setOilTypes(
       o
-        .filter((x) => x.active && x.category === 'raw')
+        // Raw is what a mill buys, so that is the default gate. `use_both` is
+        // the per-product override for something TRADED rather than refined —
+        // a finished oil the mill also buys in could not be put on a purchase
+        // bargain at all before.
+        .filter((x) => x.active && (x.category === 'raw' || Number(x.use_both) === 1))
         .sort((a, b) => String(a.name).localeCompare(String(b.name)))
     )
     setDefaultUom(settings.default_uom ?? 'MT')
@@ -381,7 +385,18 @@ export function Bargains({ onOpenOrder }: { onOpenOrder?: (orderId: number) => v
 
   // Categories that actually have purchasable products, and the products inside
   // the chosen category (the cascade behind Product category → Product).
-  const { categories: bargainCats } = useCategories(suppliers.map((x) => x.supplier_type), 'purchase')
+  // A both-flagged product filed under a SALES-only category would be
+  // unreachable through the cascade — the category dropdown would never offer
+  // its category here — so those categories are forced into the list.
+  const bothCats = useMemo(
+    () => oilTypes.filter((o) => Number(o.use_both) === 1).map((o) => o.material_type),
+    [oilTypes]
+  )
+  const { categories: bargainCats } = useCategories(
+    suppliers.map((x) => x.supplier_type),
+    'purchase',
+    bothCats
+  )
   // Every ACTIVE purchase-side category from the master — not only the ones that
   // already have a product behind them. A category with nothing purchasable
   // used to just vanish from this dropdown, which reads as the master not

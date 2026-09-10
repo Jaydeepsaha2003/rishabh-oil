@@ -899,6 +899,35 @@ export async function runStartupTasks(): Promise<void> {
     await c.execute('UPDATE products SET show_in_stock = 1 WHERE show_in_stock IS NULL')
   }).catch((e) => console.error('[products] show_in_stock column failed:', e))
 
+  // A product that trades on BOTH sides, whatever its sub-category says.
+  //
+  // The two sides are gated by products.category, not by the Category
+  // master's applies_to: a purchase bargain offers only `raw`, a sale invoice
+  // only `finished`. That is right for a mill — you buy the raw oil and sell
+  // what you refined — and wrong the moment the same product is traded. RPS is
+  // filed `finished` because the mill makes it, and it is also BOUGHT for
+  // trading, so it could not be put on a purchase bargain at all.
+  //
+  // This is the per-product escape hatch for exactly that: on, and the product
+  // is offered on the purchase side AND the sales side. It is the product-level
+  // twin of the Category master's "Used for: Both", and it overrides the
+  // sub-category gate rather than the master.
+  //
+  // Deliberately nothing to do with stock. Stock groups by sub-category and
+  // material type and never reads this column, so a flagged product stays in
+  // exactly the Raw/Intermediate/Finished sheet it sits in today.
+  //
+  // Defaults to 0, so the migration changes nothing until somebody turns it on.
+  await runOnce('products_use_both_v1', async () => {
+    const c = getClient()
+    await c
+      .execute('ALTER TABLE products ADD COLUMN use_both INTEGER NOT NULL DEFAULT 0')
+      .catch((e: unknown) => {
+        if (!/duplicate column/i.test(String((e as Error).message))) throw e
+      })
+    await c.execute('UPDATE products SET use_both = 0 WHERE use_both IS NULL')
+  }).catch((e) => console.error('[products] use_both column failed:', e))
+
   // The gate supervisor's diary of what is standing OUTSIDE the gate — see
   // outsidetankers.ts for why this is not a flag on gate_entries.
   await runOnce('outside_tankers_v1', async () => {
