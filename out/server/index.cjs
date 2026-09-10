@@ -5030,6 +5030,18 @@ async function listWaivedGateOuts() {
            MAX(s.customer) AS customer,
            SUM(s.qty) AS qty,
            MAX(s.uom) AS uom,
+           -- What is on the invoice, not just how much of it. A waived
+           -- dispatch is recognised by what it was carrying \u2014 "162 MT" says
+           -- nothing about which oil never had a lorry weighed against it.
+           COUNT(*) AS line_count,
+           (SELECT GROUP_CONCAT(x.nm, ', ') FROM (
+              SELECT DISTINCT COALESCE(pk.name, pr.name, 'Item') AS nm
+                FROM sales s2
+                LEFT JOIN products pr ON pr.id = s2.product_id
+                LEFT JOIN packagings pk ON pk.id = s2.packaging_id
+               WHERE s2.invoice_group = s.invoice_group
+               ORDER BY nm
+            ) x) AS items,
            MAX(s.gate_out_waived_at) AS waived_at,
            MAX(s.gate_out_waived_reason) AS waived_reason
       FROM sales s
@@ -8732,6 +8744,10 @@ async function stockRegisters(companyIds, range) {
                  tr.name AS transporter,
                  o.invoice_no AS bill_no,
                  pt.tanker_no AS vehicle_no,
+                 -- The product's own category off the master \u2014 OIL, HUSK,
+                 -- PACKAGING. The register was one long list of product names
+                 -- with no way to read it by kind.
+                 p.material_type AS category,
                  p.name AS oil_type,
                  pt.loaded_qty AS dispatch_qty,
                  CASE WHEN pt.status = 'empty' THEN pt.received_qty ELSE NULL END AS received_qty,
@@ -8759,6 +8775,7 @@ async function stockRegisters(companyIds, range) {
                  tr.name AS transporter,
                  o.invoice_no AS bill_no,
                  o.tanker_no AS vehicle_no,
+                 p.material_type AS category,
                  p.name AS oil_type,
                  o.ordered_qty AS dispatch_qty,
                  o.received_qty AS received_qty,
@@ -8795,6 +8812,7 @@ async function stockRegisters(companyIds, range) {
                                WHERE gs.gate_entry_id = ge.id AND gs.invoice_group = s.invoice_group))
                      AND s.invoice_group IS NOT NULL
                    ORDER BY ge.id DESC LIMIT 1) AS vehicle_no,
+                 p.material_type AS category,
                  p.name AS oil_type,
                  s.qty AS dispatch_qty,
                  -- What the transporter delivered, captured when the invoice was
@@ -9994,6 +10012,10 @@ async function resolveSaleQty(v) {
     });
     if (b.rows.length && b.rows[0].uom) target = String(b.rows[0].uom);
   }
+  if (!target && n7(v.product_id)) {
+    const p = await getClient().execute({ sql: "SELECT uom FROM products WHERE id = ?", args: [n7(v.product_id)] }).catch(() => null);
+    if (p?.rows.length && p.rows[0].uom) target = String(p.rows[0].uom);
+  }
   if (!target) target = "MT";
   if (String(v.sale_type) === "PACKED" && v.packaging_id) {
     const p = await getClient().execute({
@@ -10311,11 +10333,16 @@ async function setSaleStage(id, stageIn, force = false, dateIn, receivedQty) {
   const stage = stageOf({ dispatch_stage: stageIn });
   const status = statusForStage(stage);
   const r = await getClient().execute({
-    sql: "SELECT product_id, qty, uom, status, track_stock, loaded_date, transit_date, unloaded_date, received_qty FROM sales WHERE id = ?",
+    sql: "SELECT product_id, qty, uom, status, track_stock, loaded_date, transit_date, unloaded_date, received_qty, rejected_at, invoice_no FROM sales WHERE id = ?",
     args: [id]
   });
   if (!r.rows.length) throw new Error("Sale not found");
   const row = r.rows[0];
+  if (row.rejected_at) {
+    throw new Error(
+      `${String(row.invoice_no || "This invoice")} was rejected by the customer \u2014 restore it before moving its delivery on`
+    );
+  }
   const pid = n7(row.product_id);
   const saleQty = n7(row.qty);
   const wasDispatched = String(row.status) === "done";
