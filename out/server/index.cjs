@@ -8007,8 +8007,24 @@ async function stockLevels(range, companyIds) {
                   ELSE COALESCE(received_date, order_date) END`,
       group: "GROUP BY oil_type_id"
     },
+    // Recirculation is excluded from all three production sources.
+    //
+    // It draws nothing and makes nothing — the same oil goes in and comes
+    // back out — so counting it would put a quantity into Produced and the
+    // same quantity into Consumed, two figures that cancel in the closing
+    // balance but overstate what the plant did on both sides of the sheet.
+    // It is reported on its own below, as the paired +/- it actually is.
     produced: {
-      base: `SELECT product_id AS pid, SUM(qty) AS q FROM production WHERE company_id IN (${ph})`,
+      base: `SELECT product_id AS pid, SUM(qty) AS q FROM production
+              WHERE company_id IN (${ph}) AND COALESCE(kind, 'batch') <> 'recirculation'`,
+      date: "prod_date",
+      group: "GROUP BY product_id"
+    },
+    // Oil run back through the plant to keep it turning while the mill is
+    // idle. Carried so the register can SAY it happened; it moves no balance.
+    recirculated: {
+      base: `SELECT product_id AS pid, SUM(qty) AS q FROM production
+              WHERE company_id IN (${ph}) AND COALESCE(kind, 'batch') = 'recirculation'`,
       date: "prod_date",
       group: "GROUP BY product_id"
     },
@@ -8018,14 +8034,16 @@ async function stockLevels(range, companyIds) {
     byProduct: {
       base: `SELECT i.product_id AS pid, SUM(i.qty) AS q FROM production_items i
              JOIN production p ON p.id = i.production_id
-             WHERE i.kind = 'output' AND p.company_id IN (${ph})`,
+             WHERE i.kind = 'output' AND p.company_id IN (${ph})
+               AND COALESCE(p.kind, 'batch') <> 'recirculation'`,
       date: "p.prod_date",
       group: "GROUP BY i.product_id"
     },
     consumed: {
       base: `SELECT i.product_id AS pid, SUM(i.qty) AS q FROM production_items i
              JOIN production p ON p.id = i.production_id
-             WHERE i.kind = 'input' AND p.company_id IN (${ph})`,
+             WHERE i.kind = 'input' AND p.company_id IN (${ph})
+               AND COALESCE(p.kind, 'batch') <> 'recirculation'`,
       date: "p.prod_date",
       group: "GROUP BY i.product_id"
     },
@@ -8216,6 +8234,9 @@ async function stockLevels(range, companyIds) {
       opening_brought: brought.get(id) || 0,
       received: rec,
       produced: prod,
+      // Shown beside Produced as the +N -N it is, never added to it. Nothing
+      // in `stock` below reads this.
+      recirculated: g(period, "recirculated"),
       consumed: cons,
       sold: sld,
       transferred_in: tIn,
@@ -8240,7 +8261,10 @@ async function productValuationRates() {
     if (q > 0) cost.set(Number(r.pid), (Number(r.v) || 0) / q);
   }
   const batches = await c.execute({
-    sql: "SELECT id, product_id, qty FROM production WHERE company_id = ?",
+    // Recirculation excluded: it produced nothing, and counting its
+    // quantity would spread the same cost over a larger output and
+    // quietly cheapen every unit the batch actually made.
+    sql: "SELECT id, product_id, qty FROM production WHERE company_id = ? AND COALESCE(kind, 'batch') <> 'recirculation'",
     args: [cid]
   });
   const items = await c.execute({
@@ -8281,9 +8305,15 @@ async function productStockForCompany(companyId, productId) {
     return Number(r.rows[0]?.q) || 0;
   };
   const rec = await one("SELECT COALESCE(SUM(received_qty), 0) AS q FROM orders WHERE status = 'received' AND COALESCE(affects_stock, 1) = 1 AND company_id = ? AND oil_type_id = ?");
-  const prod = await one("SELECT COALESCE(SUM(qty), 0) AS q FROM production WHERE company_id = ? AND product_id = ?");
-  const byProd = await one("SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE i.kind = 'output' AND p.company_id = ? AND i.product_id = ?");
-  const cons = await one("SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE i.kind = 'input' AND p.company_id = ? AND i.product_id = ?");
+  const prod = await one(
+    "SELECT COALESCE(SUM(qty), 0) AS q FROM production WHERE company_id = ? AND product_id = ? AND COALESCE(kind, 'batch') <> 'recirculation'"
+  );
+  const byProd = await one(
+    "SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE i.kind = 'output' AND p.company_id = ? AND i.product_id = ? AND COALESCE(p.kind, 'batch') <> 'recirculation'"
+  );
+  const cons = await one(
+    "SELECT COALESCE(SUM(i.qty), 0) AS q FROM production_items i JOIN production p ON p.id = i.production_id WHERE i.kind = 'input' AND p.company_id = ? AND i.product_id = ? AND COALESCE(p.kind, 'batch') <> 'recirculation'"
+  );
   const sld = await one("SELECT COALESCE(SUM(qty), 0) AS q FROM sales WHERE status = 'done' AND COALESCE(affects_stock, 1) = 1 AND company_id = ? AND product_id = ?");
   const tIn = await one("SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE to_company_id = ? AND product_id = ?");
   const tOut = await one("SELECT COALESCE(SUM(qty), 0) AS q FROM stock_transfers WHERE from_company_id = ? AND product_id = ?");
@@ -8991,7 +9021,36 @@ async function getProductionItems(productionId) {
   });
   return toPlain8(res);
 }
+async function recordRecirculation(v, id = 0) {
+  const c = getClient();
+  const productId = n6(v.product_id);
+  const qty = n6(v.qty);
+  if (!productId) throw new Error("Pick the oil that was put through the machine");
+  if (qty <= 0) throw new Error("Recirculated quantity must be greater than zero");
+  const day = String(v.prod_date || "").slice(0, 10);
+  if (day && day > (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)) {
+    throw new Error("Recirculation cannot be dated in the future");
+  }
+  if (id) {
+    await c.execute({
+      sql: `UPDATE production
+               SET prod_date = ?, product_id = ?, qty = ?, uom = ?, note = ?,
+                   formulation_id = NULL, formulation_version_id = NULL
+             WHERE id = ?`,
+      args: [v.prod_date, productId, qty, v.uom || "MT", v.note || null, n6(id)]
+    });
+    await c.execute({ sql: "DELETE FROM production_items WHERE production_id = ?", args: [n6(id)] });
+    return { id: n6(id) };
+  }
+  const ins = await c.execute({
+    sql: `INSERT INTO production (company_id, factory_id, prod_date, product_id, qty, uom, note, kind)
+          VALUES (?, (SELECT factory_id FROM companies WHERE id = ?), ?, ?, ?, ?, ?, 'recirculation')`,
+    args: [getActiveCompanyId(), getActiveCompanyId(), v.prod_date, productId, qty, v.uom || "MT", v.note || null]
+  });
+  return { id: Number(ins.lastInsertRowid) };
+}
 async function createProduction(v) {
+  if (String(v.kind || "batch") === "recirculation") return recordRecirculation(v);
   const c = getClient();
   const productId = n6(v.product_id);
   const qty = n6(v.qty);
@@ -9050,10 +9109,14 @@ async function createProduction(v) {
 async function updateProduction(id, v) {
   const c = getClient();
   const cur = await c.execute({
-    sql: "SELECT id, formulation_id, formulation_version_id FROM production WHERE id = ?",
+    sql: "SELECT id, formulation_id, formulation_version_id, COALESCE(kind, 'batch') AS kind FROM production WHERE id = ?",
     args: [n6(id)]
   });
   if (!cur.rows.length) throw new Error("Production run not found");
+  const wasRecirc = String(cur.rows[0].kind) === "recirculation";
+  if (String(v.kind || (wasRecirc ? "recirculation" : "batch")) === "recirculation") {
+    return recordRecirculation(v, n6(id));
+  }
   const wasFid = n6(cur.rows[0].formulation_id);
   const wasVersion = n6(cur.rows[0].formulation_version_id);
   const productId = n6(v.product_id);
@@ -12709,6 +12772,11 @@ async function runStartupTasks() {
       });
     }
   }).catch((e) => console.error("[formulations] version table failed:", e));
+  await runOnce("production_kind_v1", async () => {
+    await getClient().execute("ALTER TABLE production ADD COLUMN kind TEXT NOT NULL DEFAULT 'batch'").catch((e) => {
+      if (!/duplicate column/i.test(String(e))) throw e;
+    });
+  }).catch((e) => console.error("[production] kind column failed:", e));
   startRevisionWatcher();
 }
 
